@@ -76,12 +76,13 @@ CREATE TABLE IF NOT EXISTS codex_invocations (
 
 ## 6. Web SPA 界面
 
-- 在仓库根目录新增 `web/`，使用 `Vite + Vue`（或 React）构建支持 hash 路由的单页应用。
+- 在仓库根目录新增 `web/`，使用 `Vite + React + TypeScript` 组合构建支持 hash 路由的单页应用。
+- UI 基于 `Tailwind CSS + DaisyUI`，提供一致的主题与组件库；打包时保留 `PostCSS` 配置以支持按需裁剪样式。
 - 界面包含两种视图：
-  - **图表模式**：折线/柱状展示调用频次、费用趋势，建议选用 `ECharts` 或 `Chart.js`。
+  - **图表模式**：折线/柱状展示调用频次、费用趋势，首选 `Recharts`，如需更复杂图表可平滑切换至 `ECharts`。
   - **列表模式**：以表格展现最新记录，包含状态标签、错误信息、搜索过滤。
-- 前端初次加载通过 HTTP API 获取数据，随后订阅 SSE 实时刷新。
-- 构建产物打包进 Docker 镜像，最终由 Rust 服务静态托管。
+- 数据层：初次加载通过 HTTP API 获取历史数据，随后使用 `EventSource` 订阅 SSE 实时刷新；若浏览器不支持 SSE，保留降级轮询方案。
+- 本地开发时使用 Vite 反向代理到 Rust 服务 (`/api`, `/events`)，生产构建产物打包进 Docker 镜像，由后端静态托管（`XY_STATIC_DIR` 缺省指向 `web/dist`）。
 
 ## 7. Docker 化部署
 
