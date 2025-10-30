@@ -31,7 +31,13 @@
 
 ## 4. 数据入库设计
 
-- 依赖 `rusqlite` 或 `sqlx`（`sqlx` 需启用 `sqlite` feature）。
+### 4.1 驱动选型
+
+- 使用 `sqlx` 作为 SQLite 异步驱动，开启 `sqlite`、`runtime-tokio`、`macros`、`json` 等特性，确保全链路 `async/await` 风格与编译期 SQL 校验。
+- `sqlx` 内部通过轻量线程池与 `libsqlite3` 交互，满足 SQLite 单写者模型下的本地嵌入式需求，不额外引入 Turso/libSQL 远端依赖。
+- 后续若迁移到云端或需要复制，可再评估切换至 `libsql` 系列驱动，但当前版本以本地 SQLite 为主。
+
+- 依赖 `sqlx`（启用 `sqlite`、`runtime-tokio`、`macros`、`json` 特性）。
 - 表结构建议：
 
 ```sql
