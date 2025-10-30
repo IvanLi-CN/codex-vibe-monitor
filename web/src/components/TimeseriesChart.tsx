@@ -40,50 +40,12 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds }: Timeseries
     totalCount: point.totalCount,
   }))
 
-  const useBar = (bucketSeconds ?? 0) >= 3600
+  const useLine = (bucketSeconds ?? 0) >= 3600
 
   return (
     <div className="h-96 w-full">
       <ResponsiveContainer>
-        {useBar ? (
-          <ComposedChart data={chartData} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="label" minTickGap={32} angle={-15} dy={8} height={60} />
-            <YAxis
-              yAxisId="tokens"
-              orientation="left"
-              tickFormatter={(value) => numberFormatter.format(value as number)}
-            />
-            <YAxis
-              yAxisId="cost"
-              orientation="right"
-              tickFormatter={(value) => `$${numberFormatter.format(value as number)}`}
-              width={80}
-            />
-            <Tooltip
-              formatter={(value: number, key) =>
-                key === 'totalCost'
-                  ? `$${numberFormatter.format(value)}`
-                  : numberFormatter.format(value)
-              }
-            />
-            <Legend />
-            <Bar
-              yAxisId="tokens"
-              dataKey="totalTokens"
-              name="Total Tokens"
-              fill="#3b82f6"
-              radius={[4, 4, 0, 0]}
-            />
-            <Bar
-              yAxisId="cost"
-              dataKey="totalCost"
-              name="Cost (USD)"
-              fill="#fb923c"
-              radius={[4, 4, 0, 0]}
-            />
-          </ComposedChart>
-        ) : (
+        {useLine ? (
           <AreaChart data={chartData} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="label" minTickGap={32} angle={-15} dy={8} height={60} />
@@ -127,6 +89,44 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds }: Timeseries
               strokeWidth={2}
             />
           </AreaChart>
+        ) : (
+          <ComposedChart data={chartData} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="label" minTickGap={32} angle={-15} dy={8} height={60} />
+            <YAxis
+              yAxisId="tokens"
+              orientation="left"
+              tickFormatter={(value) => numberFormatter.format(value as number)}
+            />
+            <YAxis
+              yAxisId="cost"
+              orientation="right"
+              tickFormatter={(value) => `$${numberFormatter.format(value as number)}`}
+              width={80}
+            />
+            <Tooltip
+              formatter={(value: number, key) =>
+                key === 'totalCost'
+                  ? `$${numberFormatter.format(value)}`
+                  : numberFormatter.format(value)
+              }
+            />
+            <Legend />
+            <Bar
+              yAxisId="tokens"
+              dataKey="totalTokens"
+              name="Total Tokens"
+              fill="#3b82f6"
+              radius={[4, 4, 0, 0]}
+            />
+            <Bar
+              yAxisId="cost"
+              dataKey="totalCost"
+              name="Cost (USD)"
+              fill="#fb923c"
+              radius={[4, 4, 0, 0]}
+            />
+          </ComposedChart>
         )}
       </ResponsiveContainer>
     </div>
