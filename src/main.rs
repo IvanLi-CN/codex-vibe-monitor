@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, str::FromStr, time::Duration};
+use std::{collections::HashSet, env, path::PathBuf, str::FromStr, time::Duration};
 
 use anyhow::{Context, Result};
 use dotenvy::dotenv;
@@ -6,7 +6,7 @@ use reqwest::{Client, Url, header};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{
-    SqlitePool,
+    Row, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 
@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
         .await
         .context("failed to open sqlite database")?;
 
-    initialize_db(&pool).await?;
+    ensure_schema(&pool).await?;
 
     let inserted = persist_records(&pool, &quota_records).await?;
     println!(
@@ -89,13 +89,22 @@ async fn fetch_quota(client: &Client, config: &AppConfig) -> Result<Vec<CodexRec
     Ok(records)
 }
 
-async fn initialize_db(pool: &SqlitePool) -> Result<()> {
+async fn ensure_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS codex_invocations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             invoke_id TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
+            model TEXT,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cache_input_tokens INTEGER,
+            reasoning_tokens INTEGER,
+            total_tokens INTEGER,
+            cost REAL,
+            status TEXT,
+            error_message TEXT,
             payload TEXT,
             raw_response TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -105,7 +114,36 @@ async fn initialize_db(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await
-    .context("failed to initialize database schema")?;
+    .context("failed to ensure codex_invocations table existence")?;
+
+    let existing: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
+        .fetch_all(pool)
+        .await
+        .context("failed to inspect codex_invocations schema")?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect();
+
+    for (column, ty) in [
+        ("model", "TEXT"),
+        ("input_tokens", "INTEGER"),
+        ("output_tokens", "INTEGER"),
+        ("cache_input_tokens", "INTEGER"),
+        ("reasoning_tokens", "INTEGER"),
+        ("total_tokens", "INTEGER"),
+        ("cost", "REAL"),
+        ("status", "TEXT"),
+        ("error_message", "TEXT"),
+        ("payload", "TEXT"),
+    ] {
+        if !existing.contains(column) {
+            let statement = format!("ALTER TABLE codex_invocations ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .with_context(|| format!("failed to add column {column}"))?;
+        }
+    }
 
     Ok(())
 }
@@ -132,12 +170,35 @@ async fn persist_records(pool: &SqlitePool, records: &[CodexRecord]) -> Result<u
 
         let result = sqlx::query(
             r#"
-            INSERT OR IGNORE INTO codex_invocations (invoke_id, occurred_at, payload, raw_response)
-            VALUES (?1, ?2, ?3, ?4)
+            INSERT OR IGNORE INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                reasoning_tokens,
+                total_tokens,
+                cost,
+                status,
+                error_message,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             "#,
         )
         .bind(&record.request_id)
         .bind(&record.request_time)
+        .bind(&record.model)
+        .bind(record.input_tokens)
+        .bind(record.output_tokens)
+        .bind(record.cache_input_tokens)
+        .bind(record.reasoning_tokens)
+        .bind(record.total_tokens)
+        .bind(record.cost)
+        .bind(&record.status)
+        .bind(&record.error_message)
         .bind(payload_text)
         .bind(raw_text)
         .execute(&mut *tx)
