@@ -172,6 +172,7 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<JoinHandle<()>> {
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
         .route("/api/stats/timeseries", get(fetch_timeseries))
+        .route("/api/quota/latest", get(latest_quota_snapshot))
         .route("/events", get(sse_stream))
         .with_state(state.clone())
         .layer(TraceLayer::new_for_http())
@@ -221,7 +222,19 @@ async fn fetch_and_store(
     let client = state
         .http_clients
         .client_for_parallelism(force_new_connection)?;
-    let records = fetch_quota(&client, &state.config).await?;
+    let QuotaFetch {
+        records,
+        usage,
+        subscription,
+    } = fetch_quota(&client, &state.config).await?;
+
+    maybe_persist_snapshot(
+        &state.pool,
+        usage,
+        subscription,
+        state.config.snapshot_min_interval,
+    )
+    .await?;
 
     if records.is_empty() {
         return Ok(Vec::new());
@@ -231,7 +244,7 @@ async fn fetch_and_store(
     Ok(inserted)
 }
 
-async fn fetch_quota(client: &Client, config: &AppConfig) -> Result<Vec<CodexRecord>> {
+async fn fetch_quota(client: &Client, config: &AppConfig) -> Result<QuotaFetch> {
     let url = config.quota_url()?;
     let cookie_header = format!("{}={}", config.cookie_name, config.cookie_value);
 
@@ -249,13 +262,23 @@ async fn fetch_quota(client: &Client, config: &AppConfig) -> Result<Vec<CodexRec
         .await
         .context("failed to decode quota response JSON")?;
 
-    let records = payload
-        .data
-        .and_then(|data| data.codex)
-        .map(|service| service.recent_records)
-        .unwrap_or_default();
+    let mut records = Vec::new();
+    let mut usage = None;
+    let mut subscription = None;
 
-    Ok(records)
+    if let Some(data) = payload.data {
+        if let Some(service) = data.codex {
+            records = service.recent_records;
+            usage = service.current_usage;
+            subscription = service.subscriptions;
+        }
+    }
+
+    Ok(QuotaFetch {
+        records,
+        usage,
+        subscription,
+    })
 }
 
 async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
@@ -313,6 +336,33 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 .with_context(|| format!("failed to add column {column}"))?;
         }
     }
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS codex_quota_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            captured_at TEXT NOT NULL DEFAULT (datetime('now')),
+            amount_limit REAL,
+            used_amount REAL,
+            remaining_amount REAL,
+            period TEXT,
+            period_reset_time TEXT,
+            expire_time TEXT,
+            is_active INTEGER,
+            total_cost REAL,
+            total_requests INTEGER,
+            total_tokens INTEGER,
+            last_request_time TEXT,
+            billing_type TEXT,
+            remaining_count INTEGER,
+            used_count INTEGER,
+            sub_type_name TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure codex_quota_snapshots table existence")?;
 
     Ok(())
 }
@@ -408,6 +458,140 @@ async fn persist_records(
 
     tx.commit().await?;
     Ok(inserted)
+}
+
+async fn maybe_persist_snapshot(
+    pool: &Pool<Sqlite>,
+    usage: Option<CurrentUsage>,
+    subscription: Option<Subscription>,
+    min_interval: Duration,
+) -> Result<Option<QuotaSnapshotResponse>> {
+    let usage = match usage {
+        Some(usage) => usage,
+        None => return Ok(None),
+    };
+    let subscription = match subscription {
+        Some(subscription) => subscription,
+        None => return Ok(None),
+    };
+
+    let last_row = sqlx::query_as::<_, QuotaSnapshotRow>(
+        r#"
+        SELECT
+            captured_at,
+            amount_limit,
+            used_amount,
+            remaining_amount,
+            period,
+            period_reset_time,
+            expire_time,
+            is_active,
+            total_cost,
+            total_requests,
+            total_tokens,
+            last_request_time,
+            billing_type,
+            remaining_count,
+            used_count,
+            sub_type_name
+        FROM codex_quota_snapshots
+        ORDER BY captured_at DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    let now = Utc::now().naive_utc();
+    let min_interval =
+        ChronoDuration::from_std(min_interval).unwrap_or_else(|_| ChronoDuration::minutes(5));
+
+    if let Some(ref last) = last_row {
+        if let Ok(last_captured) =
+            NaiveDateTime::parse_from_str(&last.captured_at, "%Y-%m-%d %H:%M:%S")
+        {
+            let recent_enough = now - last_captured < min_interval;
+            let cost_close = (usage.total_cost - last.total_cost).abs() < 0.000_001;
+            let requests_same = usage.total_requests == last.total_requests;
+            let tokens_same = usage.total_tokens == last.total_tokens;
+            let subs_used = subscription.used_amount.unwrap_or(0.0);
+            let last_used = last.used_amount.unwrap_or(0.0);
+            let usage_same = (subs_used - last_used).abs() < 0.000_001;
+
+            if recent_enough && cost_close && requests_same && tokens_same && usage_same {
+                return Ok(None);
+            }
+        }
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_quota_snapshots (
+            amount_limit,
+            used_amount,
+            remaining_amount,
+            period,
+            period_reset_time,
+            expire_time,
+            is_active,
+            total_cost,
+            total_requests,
+            total_tokens,
+            last_request_time,
+            billing_type,
+            remaining_count,
+            used_count,
+            sub_type_name
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+        "#,
+    )
+    .bind(subscription.amount_limit.or(subscription.limit))
+    .bind(subscription.used_amount)
+    .bind(subscription.remaining_amount)
+    .bind(subscription.period)
+    .bind(subscription.period_reset_time)
+    .bind(subscription.expire_time)
+    .bind(subscription.is_active.unwrap_or(false) as i64)
+    .bind(usage.total_cost)
+    .bind(usage.total_requests)
+    .bind(usage.total_tokens)
+    .bind(usage.last_request_time)
+    .bind(subscription.billing_type)
+    .bind(subscription.remaining_count)
+    .bind(subscription.used_count)
+    .bind(subscription.sub_type_name)
+    .execute(pool)
+    .await?;
+
+    let row = sqlx::query_as::<_, QuotaSnapshotRow>(
+        r#"
+        SELECT
+            captured_at,
+            amount_limit,
+            used_amount,
+            remaining_amount,
+            period,
+            period_reset_time,
+            expire_time,
+            is_active,
+            total_cost,
+            total_requests,
+            total_tokens,
+            last_request_time,
+            billing_type,
+            remaining_count,
+            used_count,
+            sub_type_name
+        FROM codex_quota_snapshots
+        ORDER BY captured_at DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(Some(row.into()))
 }
 
 async fn list_invocations(
@@ -599,6 +783,40 @@ async fn fetch_timeseries(
 
     Ok(Json(response))
 }
+
+async fn latest_quota_snapshot(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<QuotaSnapshotResponse>, ApiError> {
+    let row = sqlx::query_as::<_, QuotaSnapshotRow>(
+        r#"
+        SELECT
+            captured_at,
+            amount_limit,
+            used_amount,
+            remaining_amount,
+            period,
+            period_reset_time,
+            expire_time,
+            is_active,
+            total_cost,
+            total_requests,
+            total_tokens,
+            last_request_time,
+            billing_type,
+            remaining_count,
+            used_count,
+            sub_type_name
+        FROM codex_quota_snapshots
+        ORDER BY captured_at DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| anyhow!("no quota snapshot available"))?;
+
+    Ok(Json(row.into()))
+}
 async fn sse_stream(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
@@ -728,6 +946,70 @@ struct TimeseriesPoint {
     total_cost: f64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuotaSnapshotResponse {
+    captured_at: String,
+    amount_limit: Option<f64>,
+    used_amount: Option<f64>,
+    remaining_amount: Option<f64>,
+    period: Option<String>,
+    period_reset_time: Option<String>,
+    expire_time: Option<String>,
+    is_active: bool,
+    total_cost: f64,
+    total_requests: i64,
+    total_tokens: i64,
+    last_request_time: Option<String>,
+    billing_type: Option<String>,
+    remaining_count: Option<i64>,
+    used_count: Option<i64>,
+    sub_type_name: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct QuotaSnapshotRow {
+    captured_at: String,
+    amount_limit: Option<f64>,
+    used_amount: Option<f64>,
+    remaining_amount: Option<f64>,
+    period: Option<String>,
+    period_reset_time: Option<String>,
+    expire_time: Option<String>,
+    is_active: Option<i64>,
+    total_cost: f64,
+    total_requests: i64,
+    total_tokens: i64,
+    last_request_time: Option<String>,
+    billing_type: Option<String>,
+    remaining_count: Option<i64>,
+    used_count: Option<i64>,
+    sub_type_name: Option<String>,
+}
+
+impl From<QuotaSnapshotRow> for QuotaSnapshotResponse {
+    fn from(value: QuotaSnapshotRow) -> Self {
+        Self {
+            captured_at: value.captured_at,
+            amount_limit: value.amount_limit,
+            used_amount: value.used_amount,
+            remaining_amount: value.remaining_amount,
+            period: value.period,
+            period_reset_time: value.period_reset_time,
+            expire_time: value.expire_time,
+            is_active: value.is_active.unwrap_or(0) != 0,
+            total_cost: value.total_cost,
+            total_requests: value.total_requests,
+            total_tokens: value.total_tokens,
+            last_request_time: value.last_request_time,
+            billing_type: value.billing_type,
+            remaining_count: value.remaining_count,
+            used_count: value.used_count,
+            sub_type_name: value.sub_type_name,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListQuery {
@@ -844,6 +1126,7 @@ struct AppConfig {
     list_limit_max: usize,
     user_agent: String,
     static_dir: Option<PathBuf>,
+    snapshot_min_interval: Duration,
 }
 
 impl AppConfig {
@@ -900,6 +1183,11 @@ impl AppConfig {
                     None
                 }
             });
+        let snapshot_min_interval = env::var("XY_SNAPSHOT_MIN_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| Duration::from_secs(300));
 
         Ok(Self {
             base_url: Url::parse(&base_url).context("invalid XY_BASE_URL")?,
@@ -915,6 +1203,7 @@ impl AppConfig {
             list_limit_max,
             user_agent,
             static_dir,
+            snapshot_min_interval,
         })
     }
 
@@ -1080,6 +1369,63 @@ struct QuotaData {
 struct ServiceQuota {
     #[serde(default)]
     recent_records: Vec<CodexRecord>,
+    #[serde(default)]
+    current_usage: Option<CurrentUsage>,
+    #[serde(default)]
+    subscriptions: Option<Subscription>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CurrentUsage {
+    #[serde(default)]
+    last_request_time: Option<String>,
+    #[serde(default)]
+    total_cost: f64,
+    #[serde(default)]
+    total_requests: i64,
+    #[serde(default)]
+    total_tokens: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Subscription {
+    #[serde(default)]
+    amount_limit: Option<f64>,
+    #[serde(default)]
+    billing_type: Option<String>,
+    #[serde(default)]
+    expire_time: Option<String>,
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    is_active: Option<bool>,
+    #[serde(default)]
+    limit: Option<f64>,
+    #[serde(default)]
+    period: Option<String>,
+    #[serde(default)]
+    period_reset_time: Option<String>,
+    #[serde(default)]
+    remaining_amount: Option<f64>,
+    #[serde(default)]
+    remaining_count: Option<i64>,
+    #[serde(default)]
+    sub_type_id: Option<i64>,
+    #[serde(default)]
+    sub_type_name: Option<String>,
+    #[serde(default)]
+    used_amount: Option<f64>,
+    #[serde(default)]
+    used_count: Option<i64>,
+}
+
+#[derive(Debug)]
+struct QuotaFetch {
+    records: Vec<CodexRecord>,
+    usage: Option<CurrentUsage>,
+    subscription: Option<Subscription>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

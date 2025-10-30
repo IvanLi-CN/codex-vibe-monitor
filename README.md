@@ -124,6 +124,7 @@ docker run --rm \
   ```bash
   curl "http://127.0.0.1:8080/api/invocations?limit=10"
   curl "http://127.0.0.1:8080/api/stats"
+  curl "http://127.0.0.1:8080/api/quota/latest"
   ```
 
 - SSE 测试（浏览器或 CLI 工具如 `hey`、`curl`、`sse-cat`）。

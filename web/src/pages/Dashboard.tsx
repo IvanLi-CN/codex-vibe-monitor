@@ -1,13 +1,20 @@
 import { InvocationTable } from '../components/InvocationTable'
+import { QuotaOverview } from '../components/QuotaOverview'
 import { StatsCards } from '../components/StatsCards'
 import { TimeseriesChart } from '../components/TimeseriesChart'
 import { useInvocationStream } from '../hooks/useInvocations'
+import { useQuotaSnapshot } from '../hooks/useQuotaSnapshot'
 import { useSummary } from '../hooks/useStats'
 import { useTimeseries } from '../hooks/useTimeseries'
 
 const RECENT_LIMIT = 20
 
 export default function DashboardPage() {
+  const {
+    snapshot,
+    isLoading: snapshotLoading,
+    error: snapshotError,
+  } = useQuotaSnapshot()
   const {
     summary,
     isLoading: summaryLoading,
@@ -26,6 +33,8 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+      <QuotaOverview snapshot={snapshot} isLoading={snapshotLoading} error={snapshotError} />
+
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-6">
           <div className="flex items-center justify-between">

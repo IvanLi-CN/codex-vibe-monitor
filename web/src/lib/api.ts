@@ -64,6 +64,25 @@ export interface TimeseriesResponse {
   points: TimeseriesPoint[]
 }
 
+export interface QuotaSnapshot {
+  capturedAt: string
+  amountLimit?: number
+  usedAmount?: number
+  remainingAmount?: number
+  period?: string
+  periodResetTime?: string
+  expireTime?: string
+  isActive: boolean
+  totalCost: number
+  totalRequests: number
+  totalTokens: number
+  lastRequestTime?: string
+  billingType?: string
+  remainingCount?: number
+  usedCount?: number
+  subTypeName?: string
+}
+
 export type BroadcastPayload =
   | {
       type: 'records'
@@ -98,6 +117,10 @@ export async function fetchTimeseries(range: string, params?: { bucket?: string;
   if (params?.bucket) search.set('bucket', params.bucket)
   if (params?.settlementHour !== undefined) search.set('settlementHour', String(params.settlementHour))
   return fetchJson<TimeseriesResponse>(`/api/stats/timeseries?${search.toString()}`)
+}
+
+export async function fetchQuotaSnapshot() {
+  return fetchJson<QuotaSnapshot>('/api/quota/latest')
 }
 
 export function createEventSource(path: string) {
