@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS codex_invocations (
 
 - `payload` 用于存储提取后的关键字段，`raw_response` 保留原始 JSON 便于调试。
 
+### 4.2 接口说明
+
+- **请求**：`GET https://new.xychatai.com/frontend-api/vibe-code/quota`
+  - 依赖 `share-session=<token>` Cookie，已保存在 `.env.local` 的 `XY_SESSION_COOKIE_VALUE`。
+  - 响应体中 `data.codex.recentRecords` 即页面「最近20条调用记录 - Codex」数据；`currentUsage` 与 `subscriptions` 则可填充统计卡片。
+- **字段对照**（`recentRecords`）
+  - `requestTime` → 表格时间列。
+  - `model` → 模型。
+  - `inputTokens`、`outputTokens`、`cacheInputTokens`、`reasoningTokens`、`totalTokens` 对应数值列。
+  - `cost` → 费用。
+  - `status` / `errorMessage` → 成功或失败状态及错误详情。
+
 ## 5. 配置与可扩展性
 
 - `Config` 结构体：管理基础 URL、轮询间隔、数据库路径和请求头。
