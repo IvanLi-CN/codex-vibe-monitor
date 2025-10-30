@@ -47,6 +47,23 @@ export interface StatsResponse {
   totalTokens: number
 }
 
+export interface TimeseriesPoint {
+  bucketStart: string
+  bucketEnd: string
+  totalCount: number
+  successCount: number
+  failureCount: number
+  totalTokens: number
+  totalCost: number
+}
+
+export interface TimeseriesResponse {
+  rangeStart: string
+  rangeEnd: string
+  bucketSeconds: number
+  points: TimeseriesPoint[]
+}
+
 export type BroadcastPayload =
   | {
       type: 'records'
@@ -64,6 +81,23 @@ export async function fetchInvocations(limit: number, params?: { model?: string;
 
 export async function fetchStats() {
   return fetchJson<StatsResponse>('/api/stats')
+}
+
+export async function fetchSummary(window: string, options?: { limit?: number }) {
+  const search = new URLSearchParams()
+  search.set('window', window)
+  if (options?.limit !== undefined) {
+    search.set('limit', String(options.limit))
+  }
+  return fetchJson<StatsResponse>(`/api/stats/summary?${search.toString()}`)
+}
+
+export async function fetchTimeseries(range: string, params?: { bucket?: string; settlementHour?: number }) {
+  const search = new URLSearchParams()
+  search.set('range', range)
+  if (params?.bucket) search.set('bucket', params.bucket)
+  if (params?.settlementHour !== undefined) search.set('settlementHour', String(params.settlementHour))
+  return fetchJson<TimeseriesResponse>(`/api/stats/timeseries?${search.toString()}`)
 }
 
 export function createEventSource(path: string) {

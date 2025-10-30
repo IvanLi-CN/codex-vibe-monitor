@@ -1,9 +1,15 @@
 use std::{
-    collections::HashSet, convert::Infallible, env, net::SocketAddr, path::PathBuf, str::FromStr,
-    sync::Arc, time::Duration,
+    collections::{BTreeMap, HashSet},
+    convert::Infallible,
+    env,
+    net::SocketAddr,
+    path::PathBuf,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
@@ -12,6 +18,7 @@ use axum::{
     response::{IntoResponse, Json, Response, Sse},
     routing::get,
 };
+use chrono::{Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc};
 use dotenvy::dotenv;
 use futures_util::StreamExt;
 use reqwest::{Client, ClientBuilder, Url, header};
@@ -163,6 +170,8 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<JoinHandle<()>> {
         .route("/health", get(health_check))
         .route("/api/invocations", get(list_invocations))
         .route("/api/stats", get(fetch_stats))
+        .route("/api/stats/summary", get(fetch_summary))
+        .route("/api/stats/timeseries", get(fetch_timeseries))
         .route("/events", get(sse_stream))
         .with_state(state.clone())
         .layer(TraceLayer::new_for_http())
@@ -437,29 +446,159 @@ async fn list_invocations(
 }
 
 async fn fetch_stats(State(state): State<Arc<AppState>>) -> Result<Json<StatsResponse>, ApiError> {
-    let row = sqlx::query_as::<_, StatsRow>(
-        r#"
-        SELECT
-            COUNT(*) AS total_count,
-            SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-            SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
-            COALESCE(SUM(cost), 0.0) AS total_cost,
-            COALESCE(SUM(total_tokens), 0) AS total_tokens
-        FROM codex_invocations
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await?;
-
-    Ok(Json(StatsResponse {
-        total_count: row.total_count,
-        success_count: row.success_count.unwrap_or(0),
-        failure_count: row.failure_count.unwrap_or(0),
-        total_cost: row.total_cost,
-        total_tokens: row.total_tokens,
-    }))
+    let row = query_stats_row(&state.pool, StatsFilter::All).await?;
+    Ok(Json(row.into()))
 }
 
+async fn fetch_summary(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SummaryQuery>,
+) -> Result<Json<StatsResponse>, ApiError> {
+    let default_limit = state.config.list_limit_max as i64;
+    let window = parse_summary_window(&params, default_limit)?;
+
+    let row = match window {
+        SummaryWindow::All => query_stats_row(&state.pool, StatsFilter::All).await?,
+        SummaryWindow::Current(limit) => {
+            query_stats_row(&state.pool, StatsFilter::RecentLimit(limit)).await?
+        }
+        SummaryWindow::Duration(duration) => {
+            let start_dt = (Utc::now() - duration).naive_utc();
+            let start = format_naive(start_dt);
+            query_stats_row(&state.pool, StatsFilter::Since(start)).await?
+        }
+    };
+
+    Ok(Json(row.into()))
+}
+
+async fn fetch_timeseries(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TimeseriesQuery>,
+) -> Result<Json<TimeseriesResponse>, ApiError> {
+    let range_duration = parse_duration_spec(&params.range)?;
+    let mut bucket_seconds = if let Some(spec) = params.bucket.as_deref() {
+        bucket_seconds_from_spec(spec)
+            .ok_or_else(|| anyhow!("unsupported bucket specification: {spec}"))?
+    } else {
+        default_bucket_seconds(range_duration)
+    };
+
+    if bucket_seconds <= 0 {
+        return Err(ApiError(anyhow!("bucket seconds must be positive")));
+    }
+
+    let range_seconds = range_duration.num_seconds();
+    if range_seconds < bucket_seconds {
+        return Err(ApiError(anyhow!(
+            "bucket duration must not exceed selected range"
+        )));
+    }
+
+    if range_seconds / bucket_seconds > 10_000 {
+        // avoid accidentally returning extremely large payloads
+        bucket_seconds = range_seconds / 10_000;
+    }
+
+    let settlement_hour = params.settlement_hour.unwrap_or(0);
+    if settlement_hour >= 24 {
+        return Err(ApiError(anyhow!(
+            "settlement hour must be between 0 and 23 inclusive"
+        )));
+    }
+
+    let offset_seconds = if bucket_seconds >= 86_400 {
+        (settlement_hour as i64) * 3_600
+    } else {
+        0
+    };
+
+    let end_dt = Utc::now();
+    let start_dt = end_dt - range_duration;
+    let start_str = format_naive(start_dt.naive_utc());
+
+    let records = sqlx::query_as::<_, TimeseriesRecord>(
+        r#"
+        SELECT occurred_at, status, total_tokens, cost
+        FROM codex_invocations
+        WHERE occurred_at >= ?1
+        ORDER BY occurred_at ASC
+        "#,
+    )
+    .bind(&start_str)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
+
+    let start_epoch = start_dt.timestamp();
+    let mut max_epoch = end_dt.timestamp();
+
+    for record in records {
+        let naive = NaiveDateTime::parse_from_str(&record.occurred_at, "%Y-%m-%d %H:%M:%S")
+            .map_err(|err| anyhow!("failed to parse occurred_at: {err}"))?;
+        let epoch = naive.and_utc().timestamp();
+        if epoch > max_epoch {
+            max_epoch = epoch;
+        }
+        let bucket_epoch = align_bucket_epoch(epoch, bucket_seconds, offset_seconds);
+        let entry = aggregates.entry(bucket_epoch).or_default();
+        entry.total_count += 1;
+        match record.status.as_deref() {
+            Some("success") => entry.success_count += 1,
+            _ => entry.failure_count += 1,
+        }
+        entry.total_tokens += record.total_tokens.unwrap_or(0);
+        entry.total_cost += record.cost.unwrap_or(0.0);
+    }
+
+    let mut bucket_cursor = align_bucket_epoch(start_epoch, bucket_seconds, offset_seconds);
+    if bucket_cursor > start_epoch {
+        bucket_cursor -= bucket_seconds;
+    }
+
+    let fill_end_epoch =
+        align_bucket_epoch(max_epoch, bucket_seconds, offset_seconds) + bucket_seconds;
+    while bucket_cursor <= fill_end_epoch {
+        aggregates.entry(bucket_cursor).or_default();
+        bucket_cursor += bucket_seconds;
+    }
+
+    let mut points = Vec::with_capacity(aggregates.len());
+    for (bucket_epoch, agg) in aggregates {
+        let start = Utc
+            .timestamp_opt(bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+        let end = Utc
+            .timestamp_opt(bucket_epoch + bucket_seconds, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+        points.push(TimeseriesPoint {
+            bucket_start: format_naive(start.naive_utc()),
+            bucket_end: format_naive(end.naive_utc()),
+            total_count: agg.total_count,
+            success_count: agg.success_count,
+            failure_count: agg.failure_count,
+            total_tokens: agg.total_tokens,
+            total_cost: agg.total_cost,
+        });
+    }
+
+    let response = TimeseriesResponse {
+        range_start: start_str,
+        range_end: format_naive(
+            Utc.timestamp_opt(fill_end_epoch, 0)
+                .single()
+                .unwrap_or_else(|| Utc::now())
+                .naive_utc(),
+        ),
+        bucket_seconds,
+        points,
+    };
+
+    Ok(Json(response))
+}
 async fn sse_stream(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
@@ -556,12 +695,92 @@ struct StatsRow {
     total_tokens: i64,
 }
 
+impl From<StatsRow> for StatsResponse {
+    fn from(value: StatsRow) -> Self {
+        Self {
+            total_count: value.total_count,
+            success_count: value.success_count.unwrap_or(0),
+            failure_count: value.failure_count.unwrap_or(0),
+            total_cost: value.total_cost,
+            total_tokens: value.total_tokens,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TimeseriesResponse {
+    range_start: String,
+    range_end: String,
+    bucket_seconds: i64,
+    points: Vec<TimeseriesPoint>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TimeseriesPoint {
+    bucket_start: String,
+    bucket_end: String,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListQuery {
     limit: Option<i64>,
     model: Option<String>,
     status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SummaryQuery {
+    window: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TimeseriesQuery {
+    #[serde(default = "default_range")]
+    range: String,
+    bucket: Option<String>,
+    settlement_hour: Option<u8>,
+}
+
+#[derive(Debug)]
+enum SummaryWindow {
+    All,
+    Current(i64),
+    Duration(ChronoDuration),
+}
+
+#[derive(Debug)]
+enum StatsFilter {
+    All,
+    Since(String),
+    RecentLimit(i64),
+}
+
+#[derive(Debug, FromRow)]
+struct TimeseriesRecord {
+    occurred_at: String,
+    status: Option<String>,
+    total_tokens: Option<i64>,
+    cost: Option<f64>,
+}
+
+#[derive(Default)]
+struct BucketAggregate {
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -711,6 +930,136 @@ impl AppConfig {
 
     fn database_url(&self) -> String {
         format!("sqlite://{}", self.database_path.to_string_lossy())
+    }
+}
+
+fn default_range() -> String {
+    "1d".to_string()
+}
+
+fn format_naive(dt: NaiveDateTime) -> String {
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn parse_duration_spec(spec: &str) -> Result<ChronoDuration> {
+    if let Some(value) = spec.strip_suffix("mo") {
+        let months: i64 = value.parse()?;
+        return Ok(ChronoDuration::days(30 * months));
+    }
+    if let Some(value) = spec.strip_suffix('d') {
+        let days: i64 = value.parse()?;
+        return Ok(ChronoDuration::days(days));
+    }
+    if let Some(value) = spec.strip_suffix('h') {
+        let hours: i64 = value.parse()?;
+        return Ok(ChronoDuration::hours(hours));
+    }
+    if let Some(value) = spec.strip_suffix('m') {
+        let minutes: i64 = value.parse()?;
+        return Ok(ChronoDuration::minutes(minutes));
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported duration specification: {spec}"
+    ))
+}
+
+fn bucket_seconds_from_spec(spec: &str) -> Option<i64> {
+    match spec {
+        "1m" => Some(60),
+        "5m" => Some(300),
+        "15m" => Some(900),
+        "30m" => Some(1800),
+        "1h" => Some(3600),
+        "6h" => Some(21_600),
+        "12h" => Some(43_200),
+        "1d" => Some(86_400),
+        _ => None,
+    }
+}
+
+fn default_bucket_seconds(range: ChronoDuration) -> i64 {
+    let seconds = range.num_seconds();
+    if seconds <= 3_600 {
+        60
+    } else if seconds <= 172_800 {
+        1_800
+    } else if seconds <= 2_592_000 {
+        3_600
+    } else {
+        86_400
+    }
+}
+
+fn align_bucket_epoch(epoch: i64, bucket_seconds: i64, offset_seconds: i64) -> i64 {
+    ((epoch + offset_seconds) / bucket_seconds) * bucket_seconds - offset_seconds
+}
+
+fn parse_summary_window(query: &SummaryQuery, default_limit: i64) -> Result<SummaryWindow> {
+    match query.window.as_deref() {
+        Some("current") => {
+            let limit = query.limit.unwrap_or(default_limit).clamp(1, default_limit);
+            Ok(SummaryWindow::Current(limit))
+        }
+        Some("all") => Ok(SummaryWindow::All),
+        Some(raw) => Ok(SummaryWindow::Duration(parse_duration_spec(raw)?)),
+        None => Ok(SummaryWindow::Duration(ChronoDuration::days(1))),
+    }
+}
+
+async fn query_stats_row(pool: &Pool<Sqlite>, filter: StatsFilter) -> Result<StatsRow> {
+    match filter {
+        StatsFilter::All => sqlx::query_as::<_, StatsRow>(
+            r#"
+                SELECT
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
+                    COALESCE(SUM(cost), 0.0) AS total_cost,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM codex_invocations
+                "#,
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(Into::into),
+        StatsFilter::Since(start) => sqlx::query_as::<_, StatsRow>(
+            r#"
+                SELECT
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
+                    COALESCE(SUM(cost), 0.0) AS total_cost,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM codex_invocations
+                WHERE occurred_at >= ?1
+                "#,
+        )
+        .bind(start)
+        .fetch_one(pool)
+        .await
+        .map_err(Into::into),
+        StatsFilter::RecentLimit(limit) => sqlx::query_as::<_, StatsRow>(
+            r#"
+                WITH recent AS (
+                    SELECT *
+                    FROM codex_invocations
+                    ORDER BY occurred_at DESC
+                    LIMIT ?1
+                )
+                SELECT
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
+                    COALESCE(SUM(cost), 0.0) AS total_cost,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM recent
+                "#,
+        )
+        .bind(limit)
+        .fetch_one(pool)
+        .await
+        .map_err(Into::into),
     }
 }
 

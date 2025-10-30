@@ -50,10 +50,12 @@ export function useInvocationStream(
   limit: number,
   filters?: InvocationFilters,
   onNewRecords?: (records: ApiInvocation[]) => void,
+  options?: { enableStream?: boolean },
 ) {
   const [records, setRecords] = useState<ApiInvocation[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const enableStream = options?.enableStream ?? true
 
   useEffect(() => {
     let isMounted = true
@@ -79,6 +81,10 @@ export function useInvocationStream(
   }, [filters?.model, filters?.status, limit])
 
   useEffect(() => {
+    if (!enableStream) {
+      return
+    }
+
     const source = createEventSource('/events')
 
     source.onmessage = (event) => {
@@ -117,7 +123,7 @@ export function useInvocationStream(
     return () => {
       source.close()
     }
-  }, [filters?.model, filters?.status, limit, onNewRecords])
+  }, [enableStream, filters?.model, filters?.status, limit, onNewRecords])
 
   const hasData = useMemo(() => records.length > 0, [records])
 

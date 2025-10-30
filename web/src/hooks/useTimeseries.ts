@@ -1,35 +1,36 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fetchSummary } from '../lib/api'
-import type { StatsResponse } from '../lib/api'
+import { fetchTimeseries } from '../lib/api'
+import type { TimeseriesResponse } from '../lib/api'
 
-interface UseSummaryOptions {
-  limit?: number
+export interface UseTimeseriesOptions {
+  bucket?: string
+  settlementHour?: number
 }
 
-export function useSummary(window: string, options?: UseSummaryOptions) {
-  const [stats, setStats] = useState<StatsResponse | null>(null)
+export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
+  const [data, setData] = useState<TimeseriesResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setIsLoading(true)
     try {
-      const response = await fetchSummary(window, { limit: options?.limit })
-      setStats(response)
+      const response = await fetchTimeseries(range, options)
+      setData(response)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setIsLoading(false)
     }
-  }, [options?.limit, window])
+  }, [options?.bucket, options?.settlementHour, range])
 
   useEffect(() => {
     void load()
   }, [load])
 
   return {
-    summary: stats,
+    data,
     isLoading,
     error,
     refresh: load,
