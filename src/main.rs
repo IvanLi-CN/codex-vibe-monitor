@@ -141,13 +141,31 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<()> {
     tokio::spawn(async move {
         let fut = fetch_and_store(&state_clone, force_new_connection);
         match timeout(state_clone.config.request_timeout, fut).await {
-            Ok(Ok(new_records)) => {
-                if !new_records.is_empty() {
-                    let payload = BroadcastPayload::Records {
-                        records: new_records,
-                    };
-                    if let Err(err) = state_clone.broadcaster.send(payload) {
-                        warn!(?err, "failed to broadcast new records");
+            Ok(Ok(publish)) => {
+                if let Some(records) = publish.records {
+                    if !records.is_empty() {
+                        if let Err(err) = state_clone
+                            .broadcaster
+                            .send(BroadcastPayload::Records { records })
+                        {
+                            warn!(?err, "failed to broadcast new records");
+                        }
+                    }
+                }
+                if let Some(summary) = publish.summary {
+                    if let Err(err) = state_clone
+                        .broadcaster
+                        .send(BroadcastPayload::Summary { summary })
+                    {
+                        warn!(?err, "failed to broadcast summary payload");
+                    }
+                }
+                if let Some(snapshot) = publish.quota_snapshot {
+                    if let Err(err) = state_clone
+                        .broadcaster
+                        .send(BroadcastPayload::Quota { snapshot })
+                    {
+                        warn!(?err, "failed to broadcast quota snapshot");
                     }
                 }
             }
@@ -215,10 +233,16 @@ async fn shutdown_signal() {
     info!("shutdown signal received");
 }
 
+struct PublishResult {
+    records: Option<Vec<ApiInvocation>>,
+    summary: Option<StatsResponse>,
+    quota_snapshot: Option<QuotaSnapshotResponse>,
+}
+
 async fn fetch_and_store(
     state: &AppState,
     force_new_connection: bool,
-) -> Result<Vec<ApiInvocation>> {
+) -> Result<PublishResult> {
     let client = state
         .http_clients
         .client_for_parallelism(force_new_connection)?;
@@ -236,12 +260,20 @@ async fn fetch_and_store(
     )
     .await?;
 
-    if records.is_empty() {
-        return Ok(Vec::new());
-    }
+    let inserted = if records.is_empty() {
+        Vec::new()
+    } else {
+        persist_records(&state.pool, &records).await?
+    };
 
-    let inserted = persist_records(&state.pool, &records).await?;
-    Ok(inserted)
+    let summary_row = query_stats_row(&state.pool, StatsFilter::All).await?;
+    let quota_payload = QuotaSnapshotResponse::fetch_latest(&state.pool).await?;
+
+    Ok(PublishResult {
+        records: if inserted.is_empty() { None } else { Some(inserted) },
+        summary: Some(summary_row.into()),
+        quota_snapshot: quota_payload,
+    })
 }
 
 async fn fetch_quota(client: &Client, config: &AppConfig) -> Result<QuotaFetch> {
@@ -868,6 +900,8 @@ struct AppState {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum BroadcastPayload {
     Records { records: Vec<ApiInvocation> },
+    Summary { summary: StatsResponse },
+    Quota { snapshot: QuotaSnapshotResponse },
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -1007,6 +1041,39 @@ impl From<QuotaSnapshotRow> for QuotaSnapshotResponse {
             used_count: value.used_count,
             sub_type_name: value.sub_type_name,
         }
+    }
+}
+
+impl QuotaSnapshotResponse {
+    async fn fetch_latest(pool: &Pool<Sqlite>) -> Result<Option<Self>> {
+        let row = sqlx::query_as::<_, QuotaSnapshotRow>(
+            r#"
+            SELECT
+                captured_at,
+                amount_limit,
+                used_amount,
+                remaining_amount,
+                period,
+                period_reset_time,
+                expire_time,
+                is_active,
+                total_cost,
+                total_requests,
+                total_tokens,
+                last_request_time,
+                billing_type,
+                remaining_count,
+                used_count,
+                sub_type_name
+            FROM codex_quota_snapshots
+            ORDER BY captured_at DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(row.map(Into::into))
     }
 }
 
