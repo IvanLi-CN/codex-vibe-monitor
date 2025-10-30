@@ -10,7 +10,7 @@ export function AppLayout() {
   return (
     <div className="min-h-screen bg-base-200 text-base-content">
       <header className="navbar bg-base-100 border-b border-base-300 sticky top-0 z-50">
-        <div className="flex-1 gap-2 px-4">
+        <div className="flex flex-1 items-center gap-2 px-4">
           <img src="/favicon.svg" alt="Codex Vibe Monitor icon" className="h-8 w-8" />
           <span className="text-xl font-semibold">Codex Vibe Monitor</span>
         </div>
