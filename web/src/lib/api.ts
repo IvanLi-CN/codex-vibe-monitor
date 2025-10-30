@@ -88,6 +88,15 @@ export type BroadcastPayload =
       type: 'records'
       records: ApiInvocation[]
     }
+  | {
+      type: 'summary'
+      window: string
+      summary: StatsResponse
+    }
+  | {
+      type: 'quota'
+      snapshot: QuotaSnapshot
+    }
 
 export async function fetchInvocations(limit: number, params?: { model?: string; status?: string }) {
   const search = new URLSearchParams()

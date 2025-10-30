@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { createEventSource, fetchInvocations } from '../lib/api'
+import { fetchInvocations } from '../lib/api'
 import type { ApiInvocation, BroadcastPayload } from '../lib/api'
+import { subscribeToSse } from '../lib/sse'
 
 export interface InvocationFilters {
   model?: string
@@ -85,44 +86,30 @@ export function useInvocationStream(
       return
     }
 
-    const source = createEventSource('/events')
-
-    source.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data) as BroadcastPayload
-        if (payload.type === 'records') {
-          setRecords((current) => {
-            const next = mergeRecords(payload.records, current, limit, filters)
-            if (onNewRecords) {
-              const changed =
-                next.length !== current.length ||
-                next.some((record, index) => {
-                  const existing = current[index]
-                  return (
-                    !existing ||
-                    existing.invokeId !== record.invokeId ||
-                    existing.occurredAt !== record.occurredAt
-                  )
-                })
-              if (changed) {
-                onNewRecords(next)
-              }
-            }
-            return next
-          })
+    const unsubscribe = subscribeToSse((payload: BroadcastPayload) => {
+      if (payload.type !== 'records') return
+      setRecords((current) => {
+        const next = mergeRecords(payload.records, current, limit, filters)
+        if (onNewRecords) {
+          const changed =
+            next.length !== current.length ||
+            next.some((record, index) => {
+              const existing = current[index]
+              return (
+                !existing ||
+                existing.invokeId !== record.invokeId ||
+                existing.occurredAt !== record.occurredAt
+              )
+            })
+          if (changed) {
+            onNewRecords(next)
+          }
         }
-      } catch (err) {
-        console.error('Failed to parse SSE payload', err)
-      }
-    }
+        return next
+      })
+    })
 
-    source.onerror = (event) => {
-      console.error('SSE connection error', event)
-    }
-
-    return () => {
-      source.close()
-    }
+    return unsubscribe
   }, [enableStream, filters?.model, filters?.status, limit, onNewRecords])
 
   const hasData = useMemo(() => records.length > 0, [records])

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchTimeseries } from '../lib/api'
 import type { TimeseriesResponse } from '../lib/api'
+import { subscribeToSse } from '../lib/sse'
 
 export interface UseTimeseriesOptions {
   bucket?: string
@@ -27,6 +28,15 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
 
   useEffect(() => {
     void load()
+  }, [load])
+
+  useEffect(() => {
+    const unsubscribe = subscribeToSse((payload) => {
+      if (payload.type === 'records') {
+        void load()
+      }
+    })
+    return unsubscribe
   }, [load])
 
   return {

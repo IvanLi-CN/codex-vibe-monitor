@@ -1,9 +1,12 @@
-import type { QuotaSnapshot } from '../lib/api'
+import type { QuotaSnapshot, StatsResponse } from '../lib/api'
 
 interface QuotaOverviewProps {
   snapshot: QuotaSnapshot | null
   isLoading: boolean
+  summary24h: StatsResponse | null
+  summaryLoading: boolean
   error?: string | null
+  summaryError?: string | null
 }
 
 function formatCurrency(value?: number) {
@@ -32,7 +35,19 @@ function calcUsagePercent(limit?: number, used?: number) {
   return Math.min(100, Math.max(0, (used / limit) * 100))
 }
 
-export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps) {
+function formatPercent(value?: number) {
+  if (value === undefined || Number.isNaN(value)) return '—'
+  return `${(value * 100).toFixed(1)}%`
+}
+
+export function QuotaOverview({
+  snapshot,
+  isLoading,
+  summary24h,
+  summaryLoading,
+  error,
+  summaryError,
+}: QuotaOverviewProps) {
   if (error) {
     return <div className="alert alert-error">{error}</div>
   }
@@ -41,6 +56,10 @@ export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps
   const usedAmount = snapshot?.usedAmount ?? 0
   const remainingAmount = snapshot?.remainingAmount ?? (amountLimit - usedAmount)
   const usagePercent = calcUsagePercent(amountLimit, usedAmount)
+  let successRate: number | undefined
+  if (summary24h && summary24h.totalCount > 0) {
+    successRate = summary24h.successCount / summary24h.totalCount
+  }
 
   return (
     <div className="card bg-base-100 shadow-sm">
@@ -59,56 +78,77 @@ export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps
           </div>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-5">
-          <div className="flex items-center justify-center">
-            <div className="radial-progress text-primary" style={{ ['--value' as any]: usagePercent, ['--size' as any]: '6rem', ['--thickness' as any]: '0.6rem' }}>
-              {isLoading ? '…' : `${Math.round(usagePercent)}%`}
+        <div className="grid gap-6 lg:grid-cols-3">
+          <section className="space-y-4">
+            <SectionTitle>套餐信息</SectionTitle>
+            <div className="flex items-center justify-center">
+              <div
+                className="radial-progress text-primary"
+                style={{ ['--value' as any]: usagePercent, ['--size' as any]: '6rem', ['--thickness' as any]: '0.6rem' }}
+              >
+                {isLoading ? '…' : `${Math.round(usagePercent)}%`}
+              </div>
             </div>
-          </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <OverviewTile label="总额度" value={formatCurrency(amountLimit)} caption="按天结算" loading={isLoading} />
+              <OverviewTile label="计费类型" value={snapshot?.billingType ?? '—'} loading={isLoading} />
+              <OverviewTile label="订阅 ID" value={snapshot?.subTypeName ?? '—'} loading={isLoading} />
+            </div>
+          </section>
 
-          <div className="md:col-span-4 grid gap-4 md:grid-cols-2">
-            <OverviewTile label="总额度" value={formatCurrency(amountLimit)} caption="按天结算" loading={isLoading} />
-            <OverviewTile label="已使用" value={formatCurrency(usedAmount)} loading={isLoading} />
-            <OverviewTile label="剩余额度" value={formatCurrency(remainingAmount)} loading={isLoading} />
-            <OverviewTile
-              label="到期时间"
-              value={formatDate(snapshot?.expireTime)}
-              loading={isLoading}
-            />
-            <OverviewTile
-              label="下次重置"
-              value={formatDate(snapshot?.periodResetTime)}
-              loading={isLoading}
-            />
-            <OverviewTile
-              label="计费类型"
-              value={snapshot?.billingType ?? '—'}
-              loading={isLoading}
-            />
-          </div>
-        </div>
+          <section className="space-y-4">
+            <SectionTitle>当前重置周期</SectionTitle>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <OverviewTile label="已使用" value={formatCurrency(usedAmount)} loading={isLoading} />
+              <OverviewTile label="剩余额度" value={formatCurrency(remainingAmount)} loading={isLoading} />
+              <OverviewTile label="下次重置" value={formatDate(snapshot?.periodResetTime)} loading={isLoading} />
+              <OverviewTile label="到期时间" value={formatDate(snapshot?.expireTime)} loading={isLoading} />
+              <OverviewTile label="允许使用" value={snapshot?.period ?? '—'} loading={isLoading} />
+              <OverviewTile label="可用次数" value={formatNumber(snapshot?.remainingCount)} loading={isLoading} />
+            </div>
+          </section>
 
-        <div className="grid gap-4 md:grid-cols-4">
-          <OverviewTile
-            label="总调用次数"
-            value={formatNumber(snapshot?.totalRequests)}
-            loading={isLoading}
-          />
-          <OverviewTile
-            label="Token 消耗"
-            value={formatNumber(snapshot?.totalTokens)}
-            loading={isLoading}
-          />
-          <OverviewTile
-            label="费用消耗"
-            value={formatCurrency(snapshot?.totalCost)}
-            loading={isLoading}
-          />
-          <OverviewTile
-            label="最后请求时间"
-            value={formatDate(snapshot?.lastRequestTime)}
-            loading={isLoading}
-          />
+          <section className="space-y-4">
+            <SectionTitle>最近 24 小时</SectionTitle>
+            {summaryError ? (
+              <div className="alert alert-warning text-sm">
+                <span>统计数据暂不可用：{summaryError}</span>
+              </div>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <OverviewTile
+                  label="总调用"
+                  value={formatNumber(summary24h?.totalCount)}
+                  loading={summaryLoading}
+                />
+                <OverviewTile
+                  label="成功次数"
+                  value={formatNumber(summary24h?.successCount)}
+                  loading={summaryLoading}
+                />
+                <OverviewTile
+                  label="失败次数"
+                  value={formatNumber(summary24h?.failureCount)}
+                  loading={summaryLoading}
+                />
+                <OverviewTile
+                  label="成功率"
+                  value={formatPercent(successRate)}
+                  loading={summaryLoading}
+                />
+                <OverviewTile
+                  label="费用"
+                  value={formatCurrency(summary24h?.totalCost)}
+                  loading={summaryLoading}
+                />
+                <OverviewTile
+                  label="Token"
+                  value={formatNumber(summary24h?.totalTokens)}
+                  loading={summaryLoading}
+                />
+              </div>
+            )}
+          </section>
         </div>
       </div>
     </div>
@@ -132,4 +172,8 @@ function OverviewTile({ label, value, caption, loading }: OverviewTileProps) {
       {caption ? <div className="text-xs text-base-content/50">{caption}</div> : null}
     </div>
   )
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <h3 className="text-sm font-semibold uppercase text-base-content/60">{children}</h3>
 }

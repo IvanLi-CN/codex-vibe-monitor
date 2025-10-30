@@ -142,7 +142,13 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<()> {
         let fut = fetch_and_store(&state_clone, force_new_connection);
         match timeout(state_clone.config.request_timeout, fut).await {
             Ok(Ok(publish)) => {
-                if let Some(records) = publish.records {
+                let PublishResult {
+                    records,
+                    summaries,
+                    quota_snapshot,
+                } = publish;
+
+                if let Some(records) = records {
                     if !records.is_empty() {
                         if let Err(err) = state_clone
                             .broadcaster
@@ -152,15 +158,17 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<()> {
                         }
                     }
                 }
-                if let Some(summary) = publish.summary {
-                    if let Err(err) = state_clone
-                        .broadcaster
-                        .send(BroadcastPayload::Summary { summary })
-                    {
+
+                for summary in summaries {
+                    if let Err(err) = state_clone.broadcaster.send(BroadcastPayload::Summary {
+                        window: summary.window,
+                        summary: summary.summary,
+                    }) {
                         warn!(?err, "failed to broadcast summary payload");
                     }
                 }
-                if let Some(snapshot) = publish.quota_snapshot {
+
+                if let Some(snapshot) = quota_snapshot {
                     if let Err(err) = state_clone
                         .broadcaster
                         .send(BroadcastPayload::Quota { snapshot })
@@ -235,14 +243,16 @@ async fn shutdown_signal() {
 
 struct PublishResult {
     records: Option<Vec<ApiInvocation>>,
-    summary: Option<StatsResponse>,
+    summaries: Vec<SummaryPublish>,
     quota_snapshot: Option<QuotaSnapshotResponse>,
 }
 
-async fn fetch_and_store(
-    state: &AppState,
-    force_new_connection: bool,
-) -> Result<PublishResult> {
+struct SummaryPublish {
+    window: String,
+    summary: StatsResponse,
+}
+
+async fn fetch_and_store(state: &AppState, force_new_connection: bool) -> Result<PublishResult> {
     let client = state
         .http_clients
         .client_for_parallelism(force_new_connection)?;
@@ -266,14 +276,83 @@ async fn fetch_and_store(
         persist_records(&state.pool, &records).await?
     };
 
-    let summary_row = query_stats_row(&state.pool, StatsFilter::All).await?;
+    let summaries = collect_summary_snapshots(&state.pool).await?;
     let quota_payload = QuotaSnapshotResponse::fetch_latest(&state.pool).await?;
 
     Ok(PublishResult {
-        records: if inserted.is_empty() { None } else { Some(inserted) },
-        summary: Some(summary_row.into()),
+        records: if inserted.is_empty() {
+            None
+        } else {
+            Some(inserted)
+        },
+        summaries,
         quota_snapshot: quota_payload,
     })
+}
+
+struct SummaryBroadcastSpec {
+    window: &'static str,
+    duration: Option<ChronoDuration>,
+}
+
+fn summary_broadcast_specs() -> Vec<SummaryBroadcastSpec> {
+    vec![
+        SummaryBroadcastSpec {
+            window: "all",
+            duration: None,
+        },
+        SummaryBroadcastSpec {
+            window: "30m",
+            duration: Some(ChronoDuration::minutes(30)),
+        },
+        SummaryBroadcastSpec {
+            window: "1h",
+            duration: Some(ChronoDuration::hours(1)),
+        },
+        SummaryBroadcastSpec {
+            window: "1d",
+            duration: Some(ChronoDuration::days(1)),
+        },
+        SummaryBroadcastSpec {
+            window: "1mo",
+            duration: Some(ChronoDuration::days(30)),
+        },
+    ]
+}
+
+async fn collect_summary_snapshots(pool: &Pool<Sqlite>) -> Result<Vec<SummaryPublish>> {
+    let mut summaries = Vec::new();
+    let mut cached_all: Option<StatsResponse> = None;
+    let now = Utc::now();
+
+    for spec in summary_broadcast_specs() {
+        let summary = match spec.duration {
+            None => {
+                if let Some(existing) = &cached_all {
+                    existing.clone()
+                } else {
+                    let stats: StatsResponse =
+                        query_stats_row(pool, StatsFilter::All).await?.into();
+                    cached_all = Some(stats.clone());
+                    stats
+                }
+            }
+            Some(duration) => {
+                let start = now - duration;
+                let start_str = format_naive(start.naive_utc());
+                query_stats_row(pool, StatsFilter::Since(start_str))
+                    .await?
+                    .into()
+            }
+        };
+
+        summaries.push(SummaryPublish {
+            window: spec.window.to_string(),
+            summary,
+        });
+    }
+
+    Ok(summaries)
 }
 
 async fn fetch_quota(client: &Client, config: &AppConfig) -> Result<QuotaFetch> {
@@ -899,9 +978,16 @@ struct AppState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum BroadcastPayload {
-    Records { records: Vec<ApiInvocation> },
-    Summary { summary: StatsResponse },
-    Quota { snapshot: QuotaSnapshotResponse },
+    Records {
+        records: Vec<ApiInvocation>,
+    },
+    Summary {
+        window: String,
+        summary: StatsResponse,
+    },
+    Quota {
+        snapshot: QuotaSnapshotResponse,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -928,7 +1014,7 @@ struct ListResponse {
     records: Vec<ApiInvocation>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StatsResponse {
     total_count: i64,
@@ -980,7 +1066,7 @@ struct TimeseriesPoint {
     total_cost: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct QuotaSnapshotResponse {
     captured_at: String,

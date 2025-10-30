@@ -33,13 +33,20 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-      <QuotaOverview snapshot={snapshot} isLoading={snapshotLoading} error={snapshotError} />
+      <QuotaOverview
+        snapshot={snapshot}
+        isLoading={snapshotLoading}
+        summary24h={summary}
+        summaryLoading={summaryLoading}
+        summaryError={summaryError}
+        error={snapshotError}
+      />
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-6">
           <div className="flex items-center justify-between">
-            <h2 className="card-title">概览</h2>
-            <span className="text-sm text-base-content/60">最近 24 小时</span>
+            <h2 className="card-title">最近 24 小时统计</h2>
+            <span className="text-sm text-base-content/60">实时刷新</span>
           </div>
           <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />
           {timeseriesError ? (

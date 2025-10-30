@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchQuotaSnapshot } from '../lib/api'
 import type { QuotaSnapshot } from '../lib/api'
+import { subscribeToSse } from '../lib/sse'
 
 export function useQuotaSnapshot() {
   const [snapshot, setSnapshot] = useState<QuotaSnapshot | null>(null)
@@ -23,6 +24,17 @@ export function useQuotaSnapshot() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    const unsubscribe = subscribeToSse((payload) => {
+      if (payload.type === 'quota') {
+        setSnapshot(payload.snapshot)
+        setError(null)
+        setIsLoading(false)
+      }
+    })
+    return unsubscribe
+  }, [])
 
   return {
     snapshot,
