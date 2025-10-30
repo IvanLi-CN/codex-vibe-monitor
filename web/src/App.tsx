@@ -59,7 +59,14 @@ function App() {
     <div className="min-h-full bg-base-200">
       <header className="navbar bg-base-100 border-b border-base-300">
         <div className="flex-1 px-2">
-          <span className="text-xl font-semibold">Codex Vibe Monitor</span>
+          <div className="flex items-center gap-3">
+            <img
+              src="/favicon.svg"
+              alt="Codex Vibe Monitor icon"
+              className="h-8 w-8"
+            />
+            <span className="text-xl font-semibold">Codex Vibe Monitor</span>
+          </div>
         </div>
         <div className="flex-none gap-4 px-2">
           <label className="form-control w-36">
