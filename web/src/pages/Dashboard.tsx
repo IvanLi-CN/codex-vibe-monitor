@@ -36,7 +36,11 @@ export default function DashboardPage() {
           {timeseriesError ? (
             <div className="alert alert-error">{timeseriesError}</div>
           ) : (
-            <TimeseriesChart points={timeseries?.points ?? []} isLoading={timeseriesLoading} />
+            <TimeseriesChart
+              points={timeseries?.points ?? []}
+              isLoading={timeseriesLoading}
+              bucketSeconds={timeseries?.bucketSeconds}
+            />
           )}
         </div>
       </section>
