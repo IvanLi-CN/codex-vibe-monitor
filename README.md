@@ -62,6 +62,8 @@ cargo run
 cargo run -- --database-path /path/to/custom.db
 ```
 
+大多数环境变量都有同名的 CLI 覆盖项（例如 `--base-url`、`--quota-endpoint`、`--session-cookie-name`、`--session-cookie-value`、`--http-bind`、`--poll-interval-secs` 等），用于在不同环境下快速切换配置。
+
 启动后端后将会：
 
 - 每 10 秒拉取最新 quota 数据并写入 SQLite

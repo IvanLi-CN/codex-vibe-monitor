@@ -43,16 +43,55 @@ use tower_http::{
 };
 use tracing::{error, info, warn};
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 #[command(
     name = "codex-vibe-monitor",
     about = "Monitor Codex Vibes",
     disable_help_subcommand = true
 )]
 struct CliArgs {
+    /// Override the base URL used for upstream requests.
+    #[arg(long, value_name = "URL")]
+    base_url: Option<String>,
+    /// Override the quota endpoint path or URL.
+    #[arg(long, value_name = "ENDPOINT")]
+    quota_endpoint: Option<String>,
+    /// Override the session cookie name.
+    #[arg(long, value_name = "NAME")]
+    session_cookie_name: Option<String>,
+    /// Override the session cookie value.
+    #[arg(long, value_name = "VALUE")]
+    session_cookie_value: Option<String>,
     /// Override the SQLite database path; falls back to env or default.
     #[arg(long, value_name = "PATH")]
     database_path: Option<PathBuf>,
+    /// Override the polling interval in seconds.
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64))]
+    poll_interval_secs: Option<u64>,
+    /// Override the request timeout in seconds.
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64))]
+    request_timeout_secs: Option<u64>,
+    /// Override the maximum number of concurrent polls.
+    #[arg(long, value_name = "COUNT", value_parser = clap::value_parser!(usize))]
+    max_parallel_polls: Option<usize>,
+    /// Override the shared connection parallelism for HTTP clients.
+    #[arg(long, value_name = "COUNT", value_parser = clap::value_parser!(usize))]
+    shared_connection_parallelism: Option<usize>,
+    /// Override the HTTP bind address (ip:port).
+    #[arg(long, value_name = "ADDR", value_parser = clap::value_parser!(SocketAddr))]
+    http_bind: Option<SocketAddr>,
+    /// Override the maximum list limit for paged responses.
+    #[arg(long, value_name = "COUNT", value_parser = clap::value_parser!(usize))]
+    list_limit_max: Option<usize>,
+    /// Override the user agent sent to upstream services.
+    #[arg(long, value_name = "UA")]
+    user_agent: Option<String>,
+    /// Override the static directory served by the HTTP server.
+    #[arg(long, value_name = "PATH")]
+    static_dir: Option<PathBuf>,
+    /// Override the minimum interval between quota snapshots in seconds.
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64))]
+    snapshot_min_interval_secs: Option<u64>,
 }
 
 #[tokio::main]
@@ -62,7 +101,7 @@ async fn main() -> Result<()> {
     init_tracing();
 
     let cli = CliArgs::parse();
-    let config = AppConfig::from_sources(cli.database_path)?;
+    let config = AppConfig::from_sources(&cli)?;
     info!(?config, "starting codex vibe monitor");
 
     let database_url = config.database_url();
@@ -1296,52 +1335,95 @@ struct AppConfig {
 }
 
 impl AppConfig {
-    fn from_sources(database_override: Option<PathBuf>) -> Result<Self> {
-        let base_url = env::var("XY_BASE_URL").context("XY_BASE_URL is not set")?;
-        let quota_endpoint = env::var("XY_VIBE_QUOTA_ENDPOINT")
-            .unwrap_or_else(|_| "/frontend-api/vibe-code/quota".to_string());
-        let cookie_name =
-            env::var("XY_SESSION_COOKIE_NAME").context("XY_SESSION_COOKIE_NAME is not set")?;
-        let cookie_value =
-            env::var("XY_SESSION_COOKIE_VALUE").context("XY_SESSION_COOKIE_VALUE is not set")?;
-        let database_path = database_override
+    fn from_sources(overrides: &CliArgs) -> Result<Self> {
+        let base_url_raw = overrides
+            .base_url
+            .clone()
+            .or_else(|| env::var("XY_BASE_URL").ok())
+            .ok_or_else(|| anyhow!("XY_BASE_URL is not set"))?;
+        let quota_endpoint = overrides
+            .quota_endpoint
+            .clone()
+            .or_else(|| env::var("XY_VIBE_QUOTA_ENDPOINT").ok())
+            .unwrap_or_else(|| "/frontend-api/vibe-code/quota".to_string());
+        let cookie_name = overrides
+            .session_cookie_name
+            .clone()
+            .or_else(|| env::var("XY_SESSION_COOKIE_NAME").ok())
+            .ok_or_else(|| anyhow!("XY_SESSION_COOKIE_NAME is not set"))?;
+        let cookie_value = overrides
+            .session_cookie_value
+            .clone()
+            .or_else(|| env::var("XY_SESSION_COOKIE_VALUE").ok())
+            .ok_or_else(|| anyhow!("XY_SESSION_COOKIE_VALUE is not set"))?;
+        let database_path = overrides
+            .database_path
+            .clone()
             .or_else(|| env::var("XY_DATABASE_PATH").ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("codex_vibe_monitor.db"));
-        let poll_interval = env::var("XY_POLL_INTERVAL_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
+        let poll_interval = overrides
+            .poll_interval_secs
+            .or_else(|| {
+                env::var("XY_POLL_INTERVAL_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+            })
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(10));
-        let request_timeout = env::var("XY_REQUEST_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
+        let request_timeout = overrides
+            .request_timeout_secs
+            .or_else(|| {
+                env::var("XY_REQUEST_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+            })
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(60));
-        let max_parallel_polls = env::var("XY_MAX_PARALLEL_POLLS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
+        let max_parallel_polls = overrides
+            .max_parallel_polls
+            .or_else(|| {
+                env::var("XY_MAX_PARALLEL_POLLS")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+            })
             .filter(|&v| v > 0)
             .unwrap_or(6);
-        let shared_connection_parallelism = env::var("XY_SHARED_CONNECTION_PARALLELISM")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
+        let shared_connection_parallelism = overrides
+            .shared_connection_parallelism
+            .or_else(|| {
+                env::var("XY_SHARED_CONNECTION_PARALLELISM")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+            })
             .unwrap_or(2);
-        let http_bind = env::var("XY_HTTP_BIND")
-            .ok()
-            .map(|v| v.parse())
-            .transpose()
-            .context("invalid XY_HTTP_BIND socket address")?
-            .unwrap_or_else(|| "127.0.0.1:8080".parse().expect("valid default address"));
-        let list_limit_max = env::var("XY_LIST_LIMIT_MAX")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
+        let http_bind = if let Some(addr) = overrides.http_bind {
+            addr
+        } else {
+            env::var("XY_HTTP_BIND")
+                .ok()
+                .map(|v| v.parse())
+                .transpose()
+                .context("invalid XY_HTTP_BIND socket address")?
+                .unwrap_or_else(|| "127.0.0.1:8080".parse().expect("valid default address"))
+        };
+        let list_limit_max = overrides
+            .list_limit_max
+            .or_else(|| {
+                env::var("XY_LIST_LIMIT_MAX")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+            })
             .filter(|&v| v > 0)
             .unwrap_or(200);
-        let user_agent =
-            env::var("XY_USER_AGENT").unwrap_or_else(|_| "codex-vibe-monitor/0.1.0".to_string());
-        let static_dir = env::var("XY_STATIC_DIR")
-            .ok()
-            .map(PathBuf::from)
+        let user_agent = overrides
+            .user_agent
+            .clone()
+            .or_else(|| env::var("XY_USER_AGENT").ok())
+            .unwrap_or_else(|| "codex-vibe-monitor/0.1.0".to_string());
+        let static_dir = overrides
+            .static_dir
+            .clone()
+            .or_else(|| env::var("XY_STATIC_DIR").ok().map(PathBuf::from))
             .or_else(|| {
                 let default = PathBuf::from("web/dist");
                 if default.exists() {
@@ -1350,14 +1432,18 @@ impl AppConfig {
                     None
                 }
             });
-        let snapshot_min_interval = env::var("XY_SNAPSHOT_MIN_INTERVAL_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
+        let snapshot_min_interval = overrides
+            .snapshot_min_interval_secs
+            .or_else(|| {
+                env::var("XY_SNAPSHOT_MIN_INTERVAL_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+            })
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(300));
 
         Ok(Self {
-            base_url: Url::parse(&base_url).context("invalid XY_BASE_URL")?,
+            base_url: Url::parse(&base_url_raw).context("invalid XY_BASE_URL")?,
             quota_endpoint,
             cookie_name,
             cookie_value,
