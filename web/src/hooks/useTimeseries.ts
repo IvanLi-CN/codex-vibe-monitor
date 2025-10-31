@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { fetchTimeseries } from '../lib/api'
 import type { TimeseriesResponse } from '../lib/api'
 import { subscribeToSse } from '../lib/sse'
@@ -12,11 +12,21 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const [data, setData] = useState<TimeseriesResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const bucket = options?.bucket
+  const settlementHour = options?.settlementHour
+
+  const normalizedOptions = useMemo<UseTimeseriesOptions>(
+    () => ({
+      bucket,
+      settlementHour,
+    }),
+    [bucket, settlementHour],
+  )
 
   const load = useCallback(async () => {
     setIsLoading(true)
     try {
-      const response = await fetchTimeseries(range, options)
+      const response = await fetchTimeseries(range, normalizedOptions)
       setData(response)
       setError(null)
     } catch (err) {
@@ -24,7 +34,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     } finally {
       setIsLoading(false)
     }
-  }, [options?.bucket, options?.settlementHour, range])
+  }, [normalizedOptions, range])
 
   useEffect(() => {
     void load()

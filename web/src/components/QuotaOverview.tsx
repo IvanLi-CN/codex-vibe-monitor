@@ -1,4 +1,11 @@
+import type { CSSProperties } from 'react'
 import type { QuotaSnapshot, StatsResponse } from '../lib/api'
+
+type RadialProgressStyle = CSSProperties & {
+  '--value': number
+  '--size': string
+  '--thickness': string
+}
 
 interface QuotaOverviewProps {
   snapshot: QuotaSnapshot | null
@@ -61,6 +68,12 @@ export function QuotaOverview({
     successRate = summary24h.successCount / summary24h.totalCount
   }
 
+  const radialProgressStyle: RadialProgressStyle = {
+    '--value': usagePercent,
+    '--size': '6rem',
+    '--thickness': '0.6rem',
+  }
+
   return (
     <div className="card bg-base-100 shadow-sm">
       <div className="card-body gap-6">
@@ -84,7 +97,7 @@ export function QuotaOverview({
             <div className="flex items-center justify-center">
               <div
                 className="radial-progress text-primary"
-                style={{ ['--value' as any]: usagePercent, ['--size' as any]: '6rem', ['--thickness' as any]: '0.6rem' }}
+                style={radialProgressStyle}
               >
                 {isLoading ? '…' : `${Math.round(usagePercent)}%`}
               </div>

@@ -79,7 +79,7 @@ export function useInvocationStream(
     return () => {
       isMounted = false
     }
-  }, [filters?.model, filters?.status, limit])
+  }, [filters, limit])
 
   useEffect(() => {
     if (!enableStream) {
@@ -110,7 +110,7 @@ export function useInvocationStream(
     })
 
     return unsubscribe
-  }, [enableStream, filters?.model, filters?.status, limit, onNewRecords])
+  }, [enableStream, filters, limit, onNewRecords])
 
   const hasData = useMemo(() => records.length > 0, [records])
 

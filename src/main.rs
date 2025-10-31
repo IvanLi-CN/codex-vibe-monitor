@@ -3,7 +3,7 @@ use std::{
     convert::Infallible,
     env,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
     time::Duration,
@@ -169,10 +169,9 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<()> {
                 }
 
                 if let Some(snapshot) = quota_snapshot {
-                    if let Err(err) = state_clone
-                        .broadcaster
-                        .send(BroadcastPayload::Quota { snapshot })
-                    {
+                    if let Err(err) = state_clone.broadcaster.send(BroadcastPayload::Quota {
+                        snapshot: Box::new(snapshot),
+                    }) {
                         warn!(?err, "failed to broadcast quota snapshot");
                     }
                 }
@@ -712,7 +711,7 @@ async fn list_invocations(
     let limit = params
         .limit
         .unwrap_or(50)
-        .clamp(1, state.config.list_limit_max as i64) as i64;
+        .clamp(1, state.config.list_limit_max as i64);
 
     let mut query = QueryBuilder::new(
         "SELECT id, invoke_id, occurred_at, model, input_tokens, output_tokens, \
@@ -885,7 +884,7 @@ async fn fetch_timeseries(
         range_end: format_naive(
             Utc.timestamp_opt(fill_end_epoch, 0)
                 .single()
-                .unwrap_or_else(|| Utc::now())
+                .unwrap_or_else(Utc::now)
                 .naive_utc(),
         ),
         bucket_seconds,
@@ -955,7 +954,7 @@ async fn health_check() -> &'static str {
     "ok"
 }
 
-fn ensure_db_directory(path: &PathBuf) -> Result<()> {
+fn ensure_db_directory(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).with_context(|| {
@@ -986,7 +985,7 @@ enum BroadcastPayload {
         summary: StatsResponse,
     },
     Quota {
-        snapshot: QuotaSnapshotResponse,
+        snapshot: Box<QuotaSnapshotResponse>,
     },
 }
 
@@ -1231,7 +1230,7 @@ impl HttpClients {
         let user_agent = config.user_agent.clone();
 
         let shared = Self::builder(timeout, &user_agent)
-            .pool_max_idle_per_host(config.shared_connection_parallelism as usize)
+            .pool_max_idle_per_host(config.shared_connection_parallelism)
             .build()
             .context("failed to construct shared HTTP client")?;
 
