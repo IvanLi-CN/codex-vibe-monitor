@@ -19,6 +19,7 @@ use axum::{
     routing::get,
 };
 use chrono::{Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc};
+use clap::Parser;
 use dotenvy::dotenv;
 use futures_util::StreamExt;
 use reqwest::{Client, ClientBuilder, Url, header};
@@ -42,13 +43,26 @@ use tower_http::{
 };
 use tracing::{error, info, warn};
 
+#[derive(Parser, Debug)]
+#[command(
+    name = "codex-vibe-monitor",
+    about = "Monitor Codex Vibes",
+    disable_help_subcommand = true
+)]
+struct CliArgs {
+    /// Override the SQLite database path; falls back to env or default.
+    #[arg(long, value_name = "PATH")]
+    database_path: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
     dotenvy::from_filename(".env.local").ok();
     init_tracing();
 
-    let config = AppConfig::from_env()?;
+    let cli = CliArgs::parse();
+    let config = AppConfig::from_sources(cli.database_path)?;
     info!(?config, "starting codex vibe monitor");
 
     let database_url = config.database_url();
@@ -1282,7 +1296,7 @@ struct AppConfig {
 }
 
 impl AppConfig {
-    fn from_env() -> Result<Self> {
+    fn from_sources(database_override: Option<PathBuf>) -> Result<Self> {
         let base_url = env::var("XY_BASE_URL").context("XY_BASE_URL is not set")?;
         let quota_endpoint = env::var("XY_VIBE_QUOTA_ENDPOINT")
             .unwrap_or_else(|_| "/frontend-api/vibe-code/quota".to_string());
@@ -1290,8 +1304,9 @@ impl AppConfig {
             env::var("XY_SESSION_COOKIE_NAME").context("XY_SESSION_COOKIE_NAME is not set")?;
         let cookie_value =
             env::var("XY_SESSION_COOKIE_VALUE").context("XY_SESSION_COOKIE_VALUE is not set")?;
-        let database_path =
-            env::var("XY_DATABASE_PATH").unwrap_or_else(|_| "codex_vibe_monitor.db".to_string());
+        let database_path = database_override
+            .or_else(|| env::var("XY_DATABASE_PATH").ok().map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("codex_vibe_monitor.db"));
         let poll_interval = env::var("XY_POLL_INTERVAL_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -1346,7 +1361,7 @@ impl AppConfig {
             quota_endpoint,
             cookie_name,
             cookie_value,
-            database_path: database_path.into(),
+            database_path,
             poll_interval,
             request_timeout,
             max_parallel_polls,

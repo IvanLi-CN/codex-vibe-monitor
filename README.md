@@ -56,6 +56,12 @@ Codex Vibe Monitor 负责以 10 秒固定节奏抓取 `https://new.xychatai.com/
 cargo run
 ```
 
+若需临时使用其他 SQLite 文件，可通过命令行覆盖：
+
+```bash
+cargo run -- --database-path /path/to/custom.db
+```
+
 启动后端后将会：
 
 - 每 10 秒拉取最新 quota 数据并写入 SQLite

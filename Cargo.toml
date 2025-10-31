@@ -18,3 +18,4 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 futures-util = "0.3"
+clap = { version = "4.5", features = ["derive"] }
