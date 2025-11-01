@@ -13,9 +13,24 @@
 - `cargo check` — type-check backend without producing binaries.
 - `cargo run` — start the backend (reads `.env.local`, listens on `127.0.0.1:8080`).
 - `cd web && npm install` — install SPA dependencies once per setup.
-- `cd web && npm run dev -- --host 127.0.0.1 --port 5173` — run the front-end dev server with proxy to the backend.
+- `cd web && npm run dev -- --host 127.0.0.1 --port 60080` — run the front-end dev server with proxy to the backend.
 - `cd web && npm run build` — produce production assets for `web/dist`.
 - `cd web && npm run test` — execute front-end unit tests (Vitest).
+
+## Development Runtime (Background, Non-blocking)
+
+- During development, run the backend and front-end dev server concurrently in the background so the Agent is not blocked waiting for commands to finish.
+- Backend (Rust, port `8080`):
+  - Foreground (for local debugging): `RUST_LOG=info cargo run` (reads `.env.local`).
+  - Background example: `nohup env RUST_LOG=info cargo run > logs/backend.dev.log 2>&1 & echo $! > logs/backend.pid`
+- Front-end (Vite, port `60080`):
+  - Foreground (for local debugging): `cd web && npm run dev -- --host 127.0.0.1 --port 60080`.
+  - Background example: `cd web && nohup npm run dev -- --host 127.0.0.1 --port 60080 > ../logs/web.dev.log 2>&1 & echo $! > ../logs/web.pid`
+- Stopping background servers:
+  - Backend: `kill $(cat logs/backend.pid)`
+  - Front-end: `kill $(cat logs/web.pid)`
+- Logs: `tail -f logs/backend.dev.log` and `tail -f logs/web.dev.log` to monitor runtime output.
+- Notes: ensure `logs/` exists; do not commit log or PID files. The Vite dev server proxies to the backend as wired in `web/vite.config.ts`.
 
 ## Coding Style & Naming Conventions
 
