@@ -4,14 +4,14 @@ ARG APP_EFFECTIVE_VERSION
 WORKDIR /app/web
 
 COPY web/package*.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci
 
 COPY web/ ./
 ENV VITE_APP_VERSION=${APP_EFFECTIVE_VERSION}
 RUN npm run build
 
 # Stage 2: build the Rust binary
-FROM rust:1.82 AS rust-builder
+FROM rust:1.86 AS rust-builder
 ARG APP_EFFECTIVE_VERSION
 WORKDIR /app
 
