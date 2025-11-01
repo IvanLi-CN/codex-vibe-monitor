@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 use std::{
     collections::{BTreeMap, HashSet},
     convert::Infallible,
@@ -432,12 +430,12 @@ async fn fetch_quota(client: &Client, config: &AppConfig) -> Result<QuotaFetch> 
     let mut usage = None;
     let mut subscription = None;
 
-    if let Some(data) = payload.data {
-        if let Some(service) = data.codex {
-            records = service.recent_records;
-            usage = service.current_usage;
-            subscription = service.subscriptions;
-        }
+    if let Some(data) = payload.data
+        && let Some(service) = data.codex
+    {
+        records = service.recent_records;
+        usage = service.current_usage;
+        subscription = service.subscriptions;
     }
 
     Ok(QuotaFetch {
@@ -672,21 +670,20 @@ async fn maybe_persist_snapshot(
     let min_interval =
         ChronoDuration::from_std(min_interval).unwrap_or_else(|_| ChronoDuration::minutes(5));
 
-    if let Some(ref last) = last_row {
-        if let Ok(last_captured) =
+    if let Some(ref last) = last_row
+        && let Ok(last_captured) =
             NaiveDateTime::parse_from_str(&last.captured_at, "%Y-%m-%d %H:%M:%S")
-        {
-            let recent_enough = now - last_captured < min_interval;
-            let cost_close = (usage.total_cost - last.total_cost).abs() < 0.000_001;
-            let requests_same = usage.total_requests == last.total_requests;
-            let tokens_same = usage.total_tokens == last.total_tokens;
-            let subs_used = subscription.used_amount.unwrap_or(0.0);
-            let last_used = last.used_amount.unwrap_or(0.0);
-            let usage_same = (subs_used - last_used).abs() < 0.000_001;
+    {
+        let recent_enough = now - last_captured < min_interval;
+        let cost_close = (usage.total_cost - last.total_cost).abs() < 0.000_001;
+        let requests_same = usage.total_requests == last.total_requests;
+        let tokens_same = usage.total_tokens == last.total_tokens;
+        let subs_used = subscription.used_amount.unwrap_or(0.0);
+        let last_used = last.used_amount.unwrap_or(0.0);
+        let usage_same = (subs_used - last_used).abs() < 0.000_001;
 
-            if recent_enough && cost_close && requests_same && tokens_same && usage_same {
-                return Ok(None);
-            }
+        if recent_enough && cost_close && requests_same && tokens_same && usage_same {
+            return Ok(None);
         }
     }
 
@@ -1083,12 +1080,12 @@ fn detect_versions(static_dir: Option<&Path>) -> (String, String) {
 }
 
 fn ensure_db_directory(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create database directory: {}", parent.display())
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create database directory: {}", parent.display())
+        })?;
     }
     Ok(())
 }
