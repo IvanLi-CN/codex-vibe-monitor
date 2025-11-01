@@ -1,0 +1,9 @@
+
+> web@0.0.0 dev
+> vite --host 127.0.0.1 --port 5173
+
+
+  VITE v7.1.12  ready in 173 ms
+
+  ➜  Local:   http://127.0.0.1:5173/
+/*! 🌼 daisyUI 5.3.10 */

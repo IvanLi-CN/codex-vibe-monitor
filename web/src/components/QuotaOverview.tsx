@@ -1,5 +1,6 @@
+import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
-import type { QuotaSnapshot, StatsResponse } from '../lib/api'
+import type { QuotaSnapshot } from '../lib/api'
 
 type RadialProgressStyle = CSSProperties & {
   '--value': number
@@ -10,10 +11,7 @@ type RadialProgressStyle = CSSProperties & {
 interface QuotaOverviewProps {
   snapshot: QuotaSnapshot | null
   isLoading: boolean
-  summary24h: StatsResponse | null
-  summaryLoading: boolean
   error?: string | null
-  summaryError?: string | null
 }
 
 function formatCurrency(value?: number) {
@@ -21,20 +19,26 @@ function formatCurrency(value?: number) {
   return `$${value.toFixed(2)}`
 }
 
-function formatNumber(value?: number) {
-  if (value === undefined || Number.isNaN(value)) return '—'
-  if (Math.abs(value) >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(2)}M`
-  }
-  if (Math.abs(value) >= 1_000) {
-    return `${(value / 1_000).toFixed(2)}K`
-  }
-  return value.toLocaleString()
-}
+// number formatting not needed after removing count fields
 
 function formatDate(value?: string) {
   if (!value) return '—'
-  return value.replace('T', ' ').replace('Z', '')
+  // Prefer robust parsing and output as YYYY-MM-DD HH:mm:ss (single line)
+  const parsed = new Date(value)
+  if (!Number.isNaN(parsed.getTime())) {
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const y = parsed.getFullYear()
+    const m = pad(parsed.getMonth() + 1)
+    const d = pad(parsed.getDate())
+    const hh = pad(parsed.getHours())
+    const mm = pad(parsed.getMinutes())
+    const ss = pad(parsed.getSeconds())
+    return `${y}-${m}-${d} ${hh}:${mm}:${ss}`
+  }
+  // Fallback: strip milliseconds and timezone, keep up to seconds
+  const m = value.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/)
+  if (m) return `${m[1]} ${m[2]}`
+  return value.replace('T', ' ').replace(/\.\d+/, '').replace(/Z|[+-]\d{2}:\d{2}$/g, '')
 }
 
 function calcUsagePercent(limit?: number, used?: number) {
@@ -42,18 +46,10 @@ function calcUsagePercent(limit?: number, used?: number) {
   return Math.min(100, Math.max(0, (used / limit) * 100))
 }
 
-function formatPercent(value?: number) {
-  if (value === undefined || Number.isNaN(value)) return '—'
-  return `${(value * 100).toFixed(1)}%`
-}
-
 export function QuotaOverview({
   snapshot,
   isLoading,
-  summary24h,
-  summaryLoading,
   error,
-  summaryError,
 }: QuotaOverviewProps) {
   if (error) {
     return <div className="alert alert-error">{error}</div>
@@ -63,15 +59,11 @@ export function QuotaOverview({
   const usedAmount = snapshot?.usedAmount ?? 0
   const remainingAmount = snapshot?.remainingAmount ?? (amountLimit - usedAmount)
   const usagePercent = calcUsagePercent(amountLimit, usedAmount)
-  let successRate: number | undefined
-  if (summary24h && summary24h.totalCount > 0) {
-    successRate = summary24h.successCount / summary24h.totalCount
-  }
 
   const radialProgressStyle: RadialProgressStyle = {
     '--value': usagePercent,
-    '--size': '6rem',
-    '--thickness': '0.6rem',
+    '--size': '4rem',
+    '--thickness': '0.5rem',
   }
 
   return (
@@ -80,7 +72,10 @@ export function QuotaOverview({
         <div className="flex flex-wrap items-center justify-between">
           <div>
             <h2 className="card-title">配额概览</h2>
-            <p className="text-sm text-base-content/60">订阅：{snapshot?.subTypeName ?? '—'}</p>
+            <p className="text-sm text-base-content/60 flex items-center gap-2">
+              <span>订阅：{snapshot?.subTypeName ?? '—'}</span>
+              <CountdownUntil expireISO={snapshot?.expireTime} />
+            </p>
           </div>
           <div className="flex items-center gap-4">
             <div className="text-sm text-base-content/60">
@@ -91,77 +86,17 @@ export function QuotaOverview({
           </div>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          <section className="space-y-4">
-            <SectionTitle>套餐信息</SectionTitle>
-            <div className="flex items-center justify-center">
-              <div
-                className="radial-progress text-primary"
-                style={radialProgressStyle}
-              >
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 items-stretch">
+          <OverviewTile label="使用率" compact>
+            <div className="flex items-center gap-3">
+              <div className="radial-progress text-primary" style={radialProgressStyle}>
                 {isLoading ? '…' : `${Math.round(usagePercent)}%`}
               </div>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <OverviewTile label="总额度" value={formatCurrency(amountLimit)} caption="按天结算" loading={isLoading} />
-              <OverviewTile label="计费类型" value={snapshot?.billingType ?? '—'} loading={isLoading} />
-              <OverviewTile label="订阅 ID" value={snapshot?.subTypeName ?? '—'} loading={isLoading} />
-            </div>
-          </section>
-
-          <section className="space-y-4">
-            <SectionTitle>当前重置周期</SectionTitle>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <OverviewTile label="已使用" value={formatCurrency(usedAmount)} loading={isLoading} />
-              <OverviewTile label="剩余额度" value={formatCurrency(remainingAmount)} loading={isLoading} />
-              <OverviewTile label="下次重置" value={formatDate(snapshot?.periodResetTime)} loading={isLoading} />
-              <OverviewTile label="到期时间" value={formatDate(snapshot?.expireTime)} loading={isLoading} />
-              <OverviewTile label="允许使用" value={snapshot?.period ?? '—'} loading={isLoading} />
-              <OverviewTile label="可用次数" value={formatNumber(snapshot?.remainingCount)} loading={isLoading} />
-            </div>
-          </section>
-
-          <section className="space-y-4">
-            <SectionTitle>最近 24 小时</SectionTitle>
-            {summaryError ? (
-              <div className="alert alert-warning text-sm">
-                <span>统计数据暂不可用：{summaryError}</span>
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <OverviewTile
-                  label="总调用"
-                  value={formatNumber(summary24h?.totalCount)}
-                  loading={summaryLoading}
-                />
-                <OverviewTile
-                  label="成功次数"
-                  value={formatNumber(summary24h?.successCount)}
-                  loading={summaryLoading}
-                />
-                <OverviewTile
-                  label="失败次数"
-                  value={formatNumber(summary24h?.failureCount)}
-                  loading={summaryLoading}
-                />
-                <OverviewTile
-                  label="成功率"
-                  value={formatPercent(successRate)}
-                  loading={summaryLoading}
-                />
-                <OverviewTile
-                  label="费用"
-                  value={formatCurrency(summary24h?.totalCost)}
-                  loading={summaryLoading}
-                />
-                <OverviewTile
-                  label="Token"
-                  value={formatNumber(summary24h?.totalTokens)}
-                  loading={summaryLoading}
-                />
-              </div>
-            )}
-          </section>
+          </OverviewTile>
+          <OverviewTile label="已使用" value={formatCurrency(usedAmount)} loading={isLoading} />
+          <OverviewTile label="剩余额度" value={formatCurrency(remainingAmount)} loading={isLoading} />
+          <OverviewTile label="下次重置" value={formatDate(snapshot?.periodResetTime)} loading={isLoading} compact />
         </div>
       </div>
     </div>
@@ -170,23 +105,76 @@ export function QuotaOverview({
 
 interface OverviewTileProps {
   label: string
-  value: string
+  value?: string
   caption?: string
   loading?: boolean
+  compact?: boolean
+  children?: React.ReactNode
 }
 
-function OverviewTile({ label, value, caption, loading }: OverviewTileProps) {
+function OverviewTile({ label, value, caption, loading, compact, children }: OverviewTileProps) {
+  const valueClass = compact
+    ? 'text-xl font-semibold whitespace-nowrap overflow-hidden text-ellipsis'
+    : 'text-2xl font-semibold whitespace-nowrap overflow-hidden text-ellipsis'
   return (
     <div className="rounded-box border border-base-300 bg-base-200/60 p-4">
       <div className="text-sm text-base-content/60">{label}</div>
-      <div className="text-2xl font-semibold">
-        {loading ? <span className="loading loading-dots loading-md" /> : value}
-      </div>
+      <div className={valueClass}>{loading ? <span className="loading loading-dots loading-md" /> : (children ?? value)}</div>
       {caption ? <div className="text-xs text-base-content/50">{caption}</div> : null}
     </div>
   )
 }
 
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <h3 className="text-sm font-semibold uppercase text-base-content/60">{children}</h3>
+function CountdownUntil({ expireISO }: { expireISO?: string }) {
+  const [showAbsolute, setShowAbsolute] = useState(false)
+  const [now, setNow] = useState(() => new Date())
+
+  // tick interval depends on remaining time
+  useEffect(() => {
+    const tick = () => setNow(new Date())
+    const id = setInterval(tick, 30_000)
+    return () => clearInterval(id)
+  }, [])
+
+  const expire = useMemo(() => (expireISO ? new Date(expireISO) : null), [expireISO])
+  const remaining = useMemo(() => (expire ? expire.getTime() - now.getTime() : NaN), [expire, now])
+
+  const isExpired = Number.isFinite(remaining) && remaining <= 0
+  const minutes = Number.isFinite(remaining) ? Math.ceil(remaining / 60_000) : NaN
+  const hours = Number.isFinite(remaining) ? Math.ceil(remaining / 3_600_000) : NaN
+  const days = Number.isFinite(remaining) ? Math.ceil(remaining / 86_400_000) : NaN
+
+  let display = '—'
+  let tone = 'text-base-content/60'
+  if (expire) {
+    if (isExpired) {
+      display = '已到期'
+      tone = 'text-error'
+    } else if (Number.isFinite(days) && (days as number) >= 2) {
+      display = `到期：剩余${days}天`
+    } else if (Number.isFinite(hours) && (minutes as number) >= 100) {
+      display = `到期：剩余${hours}小时`
+      tone = 'text-warning'
+    } else if (Number.isFinite(minutes)) {
+      const mins = Math.max(1, minutes as number)
+      display = `到期：剩余${mins}分钟`
+      tone = 'text-warning'
+    }
+  }
+
+  const absolute = expire ? `到期：${formatDate(expireISO!)}` : '到期：—'
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 cursor-pointer select-none ${tone}`}
+      title={absolute}
+      onMouseEnter={() => setShowAbsolute(true)}
+      onMouseLeave={() => setShowAbsolute(false)}
+      onClick={() => setShowAbsolute(v => !v)}
+    >
+      {showAbsolute ? absolute : display}
+    </span>
+  )
 }
+
+// SectionTitle removed as headings are no longer needed per design

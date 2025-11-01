@@ -36,9 +36,6 @@ export default function DashboardPage() {
       <QuotaOverview
         snapshot={snapshot}
         isLoading={snapshotLoading}
-        summary24h={summary}
-        summaryLoading={summaryLoading}
-        summaryError={summaryError}
         error={snapshotError}
       />
 

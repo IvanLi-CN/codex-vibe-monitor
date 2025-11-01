@@ -1,0 +1,30 @@
+
+> web@0.0.0 dev
+> vite --host 127.0.0.1 --port 5173
+
+
+  VITE v7.1.12  ready in 132 ms
+
+  ➜  Local:   http://127.0.0.1:5173/
+/*! 🌼 daisyUI 5.3.10 */
+11:57:23 AM [vite] (client) hmr update /src/index.css, /src/components/InvocationChart.tsx
+11:58:39 AM [vite] (client) hmr update /src/index.css, /src/components/InvocationChart.tsx
+11:59:34 AM [vite] (client) hmr update /src/index.css, /src/components/InvocationChart.tsx
+11:59:34 AM [vite] (client) hmr update /src/index.css, /src/components/InvocationChart.tsx
+11:59:40 AM [vite] (client) hmr update /src/index.css, /src/components/InvocationChart.tsx
+12:00:01 PM [vite] (client) hmr update /src/index.css, /src/components/InvocationChart.tsx
+12:00:07 PM [vite] (client) hmr update /src/index.css, /src/components/InvocationChart.tsx
+12:18:50 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+12:18:59 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+12:19:32 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+12:19:40 PM [vite] (client) hmr update /src/pages/Dashboard.tsx, /src/index.css
+12:19:58 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+12:36:17 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+12:41:19 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+12:42:04 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+12:42:14 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+1:00:10 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+1:03:21 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+1:03:44 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+1:04:58 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
+1:05:13 PM [vite] (client) hmr update /src/index.css, /src/components/QuotaOverview.tsx
