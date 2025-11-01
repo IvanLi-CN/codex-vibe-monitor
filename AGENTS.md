@@ -19,18 +19,21 @@
 
 ## Development Runtime (Background, Non-blocking)
 
-- During development, run the backend and front-end dev server concurrently in the background so the Agent is not blocked waiting for commands to finish.
+- Run backend and front-end concurrently in the background to avoid blocking the shell.
+- Always detach stdin for background services to prevent TTY-induced hangs: add `</dev/null` to `nohup` commands.
 - Backend (Rust, port `8080`):
-  - Foreground (for local debugging): `RUST_LOG=info cargo run` (reads `.env.local`).
-  - Background example: `nohup env RUST_LOG=info cargo run > logs/backend.dev.log 2>&1 & echo $! > logs/backend.pid`
+  - Foreground: `RUST_LOG=info cargo run` (reads `.env.local`).
+  - Background (detached): `nohup env RUST_LOG=info cargo run </dev/null >> logs/backend.dev.log 2>&1 & echo $! > logs/backend.pid`
+  - Readiness check (timeout 60s): `until curl -sS -m 1 http://127.0.0.1:8080/health | grep -q ok; do sleep 1; done`
 - Front-end (Vite, port `60080`):
-  - Foreground (for local debugging): `cd web && npm run dev -- --host 127.0.0.1 --port 60080`.
-  - Background example: `cd web && nohup npm run dev -- --host 127.0.0.1 --port 60080 > ../logs/web.dev.log 2>&1 & echo $! > ../logs/web.pid`
-- Stopping background servers:
-  - Backend: `kill $(cat logs/backend.pid)`
-  - Front-end: `kill $(cat logs/web.pid)`
-- Logs: `tail -f logs/backend.dev.log` and `tail -f logs/web.dev.log` to monitor runtime output.
-- Notes: ensure `logs/` exists; do not commit log or PID files. The Vite dev server proxies to the backend as wired in `web/vite.config.ts`.
+  - Foreground: `cd web && npm run dev -- --host 127.0.0.1 --port 60080`.
+  - Background (detached): `cd web && nohup npm run dev -- --host 127.0.0.1 --port 60080 </dev/null >> ../logs/web.dev.log 2>&1 & echo $! > ../logs/web.pid`
+  - Readiness check (timeout 90s): `until curl -sS -m 1 http://127.0.0.1:60080/ >/dev/null; do sleep 1; done`
+- Avoid overlapping instances:
+  - Prefer killing by port before restart: `kill $(lsof -ti tcp:8080 -sTCP:LISTEN)` (backend) / `kill $(lsof -ti tcp:60080 -sTCP:LISTEN)` (front-end).
+  - Or kill by PID file: `kill $(cat logs/backend.pid)` / `kill $(cat logs/web.pid)`.
+- Logs: `tail -f logs/backend.dev.log` and `tail -f logs/web.dev.log`.
+- Notes: ensure `logs/` exists; never commit log/PID files. Vite dev server proxies to the backend as configured in `web/vite.config.ts`.
 
 ## Coding Style & Naming Conventions
 

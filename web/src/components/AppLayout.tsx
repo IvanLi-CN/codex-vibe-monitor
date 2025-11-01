@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { subscribeToSse } from '../lib/sse'
+import { fetchVersion } from '../lib/api'
+import type { VersionResponse } from '../lib/api'
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard' },
@@ -12,6 +14,7 @@ export function AppLayout() {
   const [pulse, setPulse] = useState(false)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const animationDurationMs = 1400
+  const [version, setVersion] = useState<VersionResponse | null>(null)
 
   useEffect(() => {
     const unsubscribe = subscribeToSse(() => {
@@ -21,6 +24,7 @@ export function AppLayout() {
       }
       timeoutRef.current = setTimeout(() => setPulse(false), animationDurationMs)
     })
+    fetchVersion().then(setVersion).catch(() => setVersion(null))
     return () => {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current)
@@ -81,9 +85,19 @@ export function AppLayout() {
           </ul>
         </nav>
       </header>
-      <main className="px-4 py-6">
+      <main className="px-4 py-6 pb-16">
         <Outlet />
       </main>
+      <footer className="bt border-base-300 bg-base-100 text-sm text-base-content/70 w-full py-2 px-4 fixed bottom-0 left-0 flex items-center justify-between">
+        <span>© Codex Vibe Monitor</span>
+        <span>
+          {version ? (
+            <>Version v{version.backend}</>
+          ) : (
+            'Loading version…'
+          )}
+        </span>
+      </footer>
     </div>
   )
 }

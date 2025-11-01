@@ -111,6 +111,15 @@ export async function fetchStats() {
   return fetchJson<StatsResponse>('/api/stats')
 }
 
+export interface VersionResponse {
+  backend: string
+  frontend: string
+}
+
+export async function fetchVersion() {
+  return fetchJson<VersionResponse>('/api/version')
+}
+
 export async function fetchSummary(window: string, options?: { limit?: number }) {
   const search = new URLSearchParams()
   search.set('window', window)

@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if)]
+
 use std::{
     collections::{BTreeMap, HashSet},
     convert::Infallible,
@@ -29,6 +31,8 @@ use sqlx::{
     FromRow, Pool, QueryBuilder, Row, Sqlite,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
+use std::fs;
+use std::io::Read;
 use tokio::{
     net::TcpListener,
     sync::{Semaphore, broadcast},
@@ -102,7 +106,8 @@ async fn main() -> Result<()> {
 
     let cli = CliArgs::parse();
     let config = AppConfig::from_sources(&cli)?;
-    info!(?config, "starting codex vibe monitor");
+    let (backend_ver, frontend_ver) = detect_versions(config.static_dir.as_deref());
+    info!(?config, backend_version = %backend_ver, frontend_version = %frontend_ver, "starting codex vibe monitor");
 
     let database_url = config.database_url();
     ensure_db_directory(&config.database_path)?;
@@ -201,15 +206,12 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<()> {
                     quota_snapshot,
                 } = publish;
 
-                if let Some(records) = records {
-                    if !records.is_empty() {
-                        if let Err(err) = state_clone
-                            .broadcaster
-                            .send(BroadcastPayload::Records { records })
-                        {
-                            warn!(?err, "failed to broadcast new records");
-                        }
-                    }
+                if let Some(records) = records.filter(|v| !v.is_empty())
+                    && let Err(err) = state_clone
+                        .broadcaster
+                        .send(BroadcastPayload::Records { records })
+                {
+                    warn!(?err, "failed to broadcast new records");
                 }
 
                 for summary in summaries {
@@ -221,12 +223,12 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<()> {
                     }
                 }
 
-                if let Some(snapshot) = quota_snapshot {
-                    if let Err(err) = state_clone.broadcaster.send(BroadcastPayload::Quota {
+                if let Some(snapshot) = quota_snapshot
+                    && let Err(err) = state_clone.broadcaster.send(BroadcastPayload::Quota {
                         snapshot: Box::new(snapshot),
-                    }) {
-                        warn!(?err, "failed to broadcast quota snapshot");
-                    }
+                    })
+                {
+                    warn!(?err, "failed to broadcast quota snapshot");
                 }
             }
             Ok(Err(err)) => {
@@ -246,6 +248,7 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<()> {
 async fn spawn_http_server(state: Arc<AppState>) -> Result<JoinHandle<()>> {
     let mut router = Router::new()
         .route("/health", get(health_check))
+        .route("/api/version", get(get_versions))
         .route("/api/invocations", get(list_invocations))
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
@@ -1005,6 +1008,78 @@ async fn sse_stream(
 
 async fn health_check() -> &'static str {
     "ok"
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VersionResponse {
+    backend: String,
+    frontend: String,
+}
+
+async fn get_versions(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<VersionResponse>, ApiError> {
+    let (backend, frontend) = detect_versions(state.config.static_dir.as_deref());
+    Ok(Json(VersionResponse { backend, frontend }))
+}
+
+fn detect_versions(static_dir: Option<&Path>) -> (String, String) {
+    let backend_base = option_env!("APP_EFFECTIVE_VERSION")
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let backend = if cfg!(debug_assertions) {
+        format!("{}-dev", backend_base)
+    } else {
+        backend_base
+    };
+
+    // Try to get frontend version from a version.json written during build
+    let frontend = static_dir
+        .and_then(|p| {
+            let path = p.join("version.json");
+            fs::File::open(&path).ok().and_then(|mut f| {
+                let mut s = String::new();
+                if f.read_to_string(&mut s).is_ok() {
+                    serde_json::from_str::<serde_json::Value>(&s)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("version")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                } else {
+                    None
+                }
+            })
+        })
+        .or_else(|| {
+            // Fallback to reading the web/package.json in dev setups
+            let path = Path::new("web").join("package.json");
+            fs::File::open(&path).ok().and_then(|mut f| {
+                let mut s = String::new();
+                if f.read_to_string(&mut s).is_ok() {
+                    serde_json::from_str::<serde_json::Value>(&s)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("version")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let frontend = if cfg!(debug_assertions) {
+        format!("{}-dev", frontend)
+    } else {
+        frontend
+    };
+
+    (backend, frontend)
 }
 
 fn ensure_db_directory(path: &Path) -> Result<()> {

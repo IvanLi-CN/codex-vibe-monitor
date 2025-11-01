@@ -156,7 +156,7 @@ jobs:
     needs: [lint, unit-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
-      contents: read
+      contents: write
       packages: write
     timeout-minutes: 45
     outputs:
@@ -164,6 +164,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute effective version
+        shell: bash
+        run: ./.github/scripts/compute-version.sh
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -196,6 +202,10 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
             type=ref,event=tag
+            type=raw,value=v${{ env.APP_EFFECTIVE_VERSION }}
+            type=raw,value=be-${{ env.BACKEND_EFFECTIVE_VERSION }}
+            type=raw,value=fe-${{ env.FRONTEND_EFFECTIVE_VERSION }}
+            type=raw,value=b${{ env.BACKEND_EFFECTIVE_VERSION }}-f${{ env.FRONTEND_EFFECTIVE_VERSION }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -206,5 +216,16 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
+      - name: Create version tag
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${APP_EFFECTIVE_VERSION}" -m "release ${APP_EFFECTIVE_VERSION}" || true
+          git push origin "v${APP_EFFECTIVE_VERSION}" || true
