@@ -879,14 +879,18 @@ async fn fetch_timeseries(
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
 
     let start_epoch = start_dt.timestamp();
-    let mut max_epoch = end_dt.timestamp();
+    // Track the latest record timestamp only for internal stats, but do not
+    // let it extend the visible range beyond "now". Some providers or clock
+    // skews can produce future-dated records which previously caused the
+    // time-series to expand past the requested window.
+    let mut latest_record_epoch = end_dt.timestamp();
 
     for record in records {
         let naive = NaiveDateTime::parse_from_str(&record.occurred_at, "%Y-%m-%d %H:%M:%S")
             .map_err(|err| anyhow!("failed to parse occurred_at: {err}"))?;
         let epoch = naive.and_utc().timestamp();
-        if epoch > max_epoch {
-            max_epoch = epoch;
+        if epoch > latest_record_epoch {
+            latest_record_epoch = epoch;
         }
         let bucket_epoch = align_bucket_epoch(epoch, bucket_seconds, offset_seconds);
         let entry = aggregates.entry(bucket_epoch).or_default();
@@ -899,13 +903,19 @@ async fn fetch_timeseries(
         entry.total_cost += record.cost.unwrap_or(0.0);
     }
 
+    // Compute the inclusive fill range [fill_start_epoch, fill_end_epoch].
+    // Start from the aligned bucket that intersects the requested start time.
     let mut bucket_cursor = align_bucket_epoch(start_epoch, bucket_seconds, offset_seconds);
     if bucket_cursor > start_epoch {
         bucket_cursor -= bucket_seconds;
     }
+    let fill_start_epoch = bucket_cursor;
 
+    // Clamp the filled range end to the current time (aligned to the next bucket).
+    // This prevents future-dated records from pushing the chart beyond the
+    // intended window (e.g., "last 24 hours").
     let fill_end_epoch =
-        align_bucket_epoch(max_epoch, bucket_seconds, offset_seconds) + bucket_seconds;
+        align_bucket_epoch(end_dt.timestamp(), bucket_seconds, offset_seconds) + bucket_seconds;
     while bucket_cursor <= fill_end_epoch {
         aggregates.entry(bucket_cursor).or_default();
         bucket_cursor += bucket_seconds;
@@ -913,6 +923,11 @@ async fn fetch_timeseries(
 
     let mut points = Vec::with_capacity(aggregates.len());
     for (bucket_epoch, agg) in aggregates {
+        // Skip any buckets outside the desired window. This guards against
+        // future-dated records leaking past the clamped end.
+        if bucket_epoch < fill_start_epoch || bucket_epoch + bucket_seconds > fill_end_epoch {
+            continue;
+        }
         let start = Utc
             .timestamp_opt(bucket_epoch, 0)
             .single()
