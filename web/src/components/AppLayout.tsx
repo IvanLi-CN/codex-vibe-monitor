@@ -83,19 +83,7 @@ export function AppLayout() {
               </li>
             ))}
           </ul>
-          {import.meta.env.DEV && (
-            <button
-              type="button"
-              className="btn btn-xs btn-primary"
-              title="触发一次演示更新 (dev only)"
-              onClick={() => {
-                const anyWin = window as unknown as { __DEV_SUMMARY_TICK__?: () => void }
-                anyWin.__DEV_SUMMARY_TICK__?.()
-              }}
-            >
-              Demo+
-            </button>
-          )}
+          {/* Dev-only Demo+ button removed */}
         </nav>
       </header>
       <main className="px-4 py-6 pb-16">
