@@ -112,8 +112,7 @@ export async function fetchStats() {
 }
 
 export interface VersionResponse {
-  backend: string
-  frontend: string
+  version: string
 }
 
 export async function fetchVersion() {
