@@ -42,7 +42,6 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         <thead>
           <tr>
             <th>Time</th>
-            <th>Invoke ID</th>
             <th>Model</th>
             <th>Status</th>
             <th>Input</th>
@@ -58,7 +57,6 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
             return (
               <tr key={`${record.invokeId}-${record.occurredAt}`}>
                 <td>{isNaN(occurred.getTime()) ? record.occurredAt : dateFormatter.format(occurred)}</td>
-                <td className="font-mono text-xs">{record.invokeId}</td>
                 <td>{record.model ?? '—'}</td>
                 <td>
                   <span
