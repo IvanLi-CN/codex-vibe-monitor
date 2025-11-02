@@ -87,7 +87,7 @@ export function QuotaOverview({
           </div>
         </div>
 
-        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 items-stretch">
+        <div className="grid gap-3 grid-cols-2 items-stretch">
           <OverviewTile label="使用率" compact>
             <div className="flex items-center gap-3">
               <div className="radial-progress text-primary" style={radialProgressStyle}>

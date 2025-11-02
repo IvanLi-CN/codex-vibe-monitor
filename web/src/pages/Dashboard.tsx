@@ -2,6 +2,7 @@ import { InvocationTable } from '../components/InvocationTable'
 import { QuotaOverview } from '../components/QuotaOverview'
 import { StatsCards } from '../components/StatsCards'
 import { TimeseriesChart } from '../components/TimeseriesChart'
+import { UsageCalendar } from '../components/UsageCalendar'
 import { useInvocationStream } from '../hooks/useInvocations'
 import { useQuotaSnapshot } from '../hooks/useQuotaSnapshot'
 import { useSummary } from '../hooks/useStats'
@@ -33,11 +34,14 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-      <QuotaOverview
-        snapshot={snapshot}
-        isLoading={snapshotLoading}
-        error={snapshotError}
-      />
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_max-content] items-start">
+        <QuotaOverview
+          snapshot={snapshot}
+          isLoading={snapshotLoading}
+          error={snapshotError}
+        />
+        <UsageCalendar />
+      </div>
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-6">

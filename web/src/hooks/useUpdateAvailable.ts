@@ -62,8 +62,9 @@ export function useUpdateAvailable() {
     if (availableVersion) {
       try {
         localStorage.setItem(DISMISS_KEY, availableVersion)
-      } catch {
-        /* noop */
+      } catch (err) {
+        // ignore storage errors (Safari private mode, etc.)
+        void err
       }
     }
     setVisible(false)
@@ -73,7 +74,7 @@ export function useUpdateAvailable() {
     window.location.reload()
   }, [])
 
-  // Dev-only helper
+  // Dev-only helper to force showing the banner
   useEffect(() => {
     if (!import.meta.env.DEV) return
     ;(window as unknown as { __DEV_FORCE_UPDATE_BANNER__?: () => void }).__DEV_FORCE_UPDATE_BANNER__ = () => {
@@ -82,7 +83,13 @@ export function useUpdateAvailable() {
     }
   }, [currentVersion])
 
-  return { currentVersion, availableVersion, visible, dismiss, reload }
+  return {
+    currentVersion,
+    availableVersion,
+    visible,
+    dismiss,
+    reload,
+  }
 }
 
 export default useUpdateAvailable
