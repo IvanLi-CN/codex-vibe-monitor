@@ -68,7 +68,7 @@ export function AppLayout() {
           </span>
           <span className="text-xl font-semibold">Codex Vibe Monitor</span>
         </div>
-        <nav className="flex-none">
+        <nav className="flex-none flex items-center gap-2">
           <ul className="menu menu-horizontal px-1">
             {navItems.map((item) => (
               <li key={item.to}>
@@ -83,6 +83,19 @@ export function AppLayout() {
               </li>
             ))}
           </ul>
+          {import.meta.env.DEV && (
+            <button
+              type="button"
+              className="btn btn-xs btn-primary"
+              title="触发一次演示更新 (dev only)"
+              onClick={() => {
+                const anyWin = window as unknown as { __DEV_SUMMARY_TICK__?: () => void }
+                anyWin.__DEV_SUMMARY_TICK__?.()
+              }}
+            >
+              Demo+
+            </button>
+          )}
         </nav>
       </header>
       <main className="px-4 py-6 pb-16">
@@ -92,7 +105,7 @@ export function AppLayout() {
         <span>© Codex Vibe Monitor</span>
         <span>
           {version ? (
-            <>Version v{version.backend}</>
+            <>Version v{version.version}</>
           ) : (
             'Loading version…'
           )}

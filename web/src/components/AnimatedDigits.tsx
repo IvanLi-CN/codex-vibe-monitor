@@ -12,24 +12,24 @@ type Direction = 'up' | 'down' | 'none'
 export function AnimatedDigits({ value, duration = 450, easing = 'cubic-bezier(0.22, 1, 0.36, 1)', className }: AnimatedDigitsProps) {
   const text = String(value ?? '')
 
-  // Track previous text to compute direction and per-position transitions
-  const [prevText, setPrevText] = useState(text)
+  // Keep previous text in a ref to avoid race with effects/StrictMode
+  const prevRef = useRef(text)
 
   const direction: Direction = useMemo(() => {
-    const prevNum = parseNumber(prevText)
+    const prevNum = parseNumber(prevRef.current)
     const nextNum = parseNumber(text)
     if (Number.isFinite(prevNum) && Number.isFinite(nextNum)) {
       if (nextNum > prevNum) return 'up'
       if (nextNum < prevNum) return 'down'
     }
     return 'none'
-  }, [prevText, text])
+  }, [text])
 
-  const mapping = useMemo(() => buildDigitMapping(prevText, text), [prevText, text])
+  const mapping = useMemo(() => buildDigitMapping(prevRef.current, text), [text])
 
   useEffect(() => {
-    // update prev after rendering with new text, so next change compares correctly
-    setPrevText(text)
+    // After commit with new text, advance prev to current for next diff
+    prevRef.current = text
   }, [text])
 
   let digitIndex = 0
@@ -54,22 +54,16 @@ export function AnimatedDigits({ value, duration = 450, easing = 'cubic-bezier(0
 
 function DigitRoll({ prev, next, direction, duration, easing }: { prev: number; next: number; direction: Direction; duration: number; easing: string }) {
   const [path, setPath] = useState<number[]>([next])
-  const [index, setIndex] = useState<number>(path.length - 1)
-  const firstRender = useRef(true)
+  const [index, setIndex] = useState<number>(0)
 
   useEffect(() => {
     const newPath = buildPath(prev, next, direction)
+    // Start from the first element (prev) then animate to last (next)
     setPath(newPath)
-    // Kick the transition on the next frame
+    setIndex(0)
+    // Next frame, move to the end to trigger transition
     requestAnimationFrame(() => setIndex(newPath.length - 1))
   }, [prev, next, direction])
-
-  useEffect(() => {
-    if (firstRender.current) {
-      firstRender.current = false
-      return
-    }
-  }, [])
 
   const translateY = -index * 1.0
   const hasTransition = path.length > 1
@@ -127,16 +121,10 @@ function buildPath(prev: number, next: number, dir: Direction): number[] {
 function buildDigitMapping(prevText: string, nextText: string) {
   const prevDigits = extractDigits(prevText)
   const nextDigits = extractDigits(nextText)
-  const maxLen = Math.max(prevDigits.length, nextDigits.length)
-  const prevPadded = padLeft(prevDigits, maxLen, 0)
-  // Align from right: reverse mapping then reverse back
-  const prevRev = prevPadded.slice().reverse()
-  // We return prev aligned sequence in normal (left-to-right) order for next digits sequence
-  const alignedRev: number[] = []
-  for (let i = 0; i < maxLen; i++) {
-    alignedRev.push(prevRev[i] ?? 0)
-  }
-  const prevDigitsAligned = alignedRev.slice().reverse()
+  // Align prev to the number of digits in the NEXT text (right-aligned)
+  const len = nextDigits.length
+  const prevPadded = padLeft(prevDigits, len, 0)
+  const prevDigitsAligned = prevPadded
   return { prevDigitsAligned }
 }
 
