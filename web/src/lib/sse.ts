@@ -14,37 +14,43 @@ let devSummary: StatsResponse | null = null
 const DEV_SILENCE_MS = 5000
 const DEV_TICK_MS = 3000
 
+function devEmitSummaryTick() {
+  if (!import.meta.env.DEV) return
+  // Initialize or increment a fake summary
+  if (!devSummary) {
+    devSummary = {
+      totalCount: 25,
+      successCount: 24,
+      failureCount: 1,
+      totalCost: 0.35,
+      totalTokens: 128_000,
+    }
+  } else {
+    // Gentle increments to visualize rolling numbers clearly
+    devSummary = {
+      totalCount: devSummary.totalCount + 1,
+      successCount: devSummary.successCount + 1,
+      failureCount: devSummary.failureCount,
+      totalCost: +(devSummary.totalCost + 0.01).toFixed(2),
+      totalTokens: devSummary.totalTokens + 12_345,
+    }
+  }
+  const payload: BroadcastPayload = {
+    type: 'summary',
+    window: '1d',
+    summary: devSummary,
+  }
+  listeners.forEach((l) => l(payload))
+}
+
 function ensureDevSimulator() {
   if (!import.meta.env.DEV) return
   if (devSimTimer != null) return
+  ;(window as unknown as { __DEV_SUMMARY_TICK__?: () => void }).__DEV_SUMMARY_TICK__ = devEmitSummaryTick
   devSimTimer = window.setInterval(() => {
     const now = Date.now()
     if (now - lastEventAt < DEV_SILENCE_MS) return
-    // Initialize or increment a fake summary
-    if (!devSummary) {
-      devSummary = {
-        totalCount: 25,
-        successCount: 24,
-        failureCount: 1,
-        totalCost: 0.35,
-        totalTokens: 128_000,
-      }
-    } else {
-      // Gentle increments to visualize rolling numbers clearly
-      devSummary = {
-        totalCount: devSummary.totalCount + 1,
-        successCount: devSummary.successCount + 1,
-        failureCount: devSummary.failureCount,
-        totalCost: +(devSummary.totalCost + 0.01).toFixed(2),
-        totalTokens: devSummary.totalTokens + 12_345,
-      }
-    }
-    const payload: BroadcastPayload = {
-      type: 'summary',
-      window: '1d',
-      summary: devSummary,
-    }
-    listeners.forEach((l) => l(payload))
+    devEmitSummaryTick()
   }, DEV_TICK_MS)
 }
 
