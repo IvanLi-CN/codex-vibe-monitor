@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { subscribeToSse } from '../lib/sse'
+import useUpdateAvailable from '../hooks/useUpdateAvailable'
 import { fetchVersion } from '../lib/api'
 import type { VersionResponse } from '../lib/api'
 
@@ -15,6 +16,7 @@ export function AppLayout() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const animationDurationMs = 1400
   const [version, setVersion] = useState<VersionResponse | null>(null)
+  const update = useUpdateAvailable()
 
   useEffect(() => {
     const unsubscribe = subscribeToSse(() => {
@@ -86,6 +88,34 @@ export function AppLayout() {
           {/* Dev-only Demo+ button removed */}
         </nav>
       </header>
+      {update.visible && (
+        <div className="alert alert-warning rounded-none sticky top-[64px] z-40 shadow-md">
+          <div className="flex flex-1 flex-wrap items-center gap-3">
+            <span className="font-semibold">有新版本可用：</span>
+            <span className="kbd kbd-sm">{version?.version ?? '当前'}</span>
+            <span>→</span>
+            <span className="kbd kbd-sm">{update.availableVersion}</span>
+            <div className="flex gap-4 ml-auto items-center">
+              <button
+                type="button"
+                className="link link-primary cursor-pointer"
+                style={{ cursor: 'pointer' }}
+                onClick={update.reload}
+              >
+                立即刷新
+              </button>
+              <button
+                type="button"
+                className="link cursor-pointer"
+                style={{ cursor: 'pointer' }}
+                onClick={update.dismiss}
+              >
+                稍后
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <main className="px-4 py-6 pb-16">
         <Outlet />
       </main>
