@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { QuotaSnapshot } from '../lib/api'
+import { AnimatedDigits } from './AnimatedDigits'
 
 type RadialProgressStyle = CSSProperties & {
   '--value': number
@@ -67,7 +68,7 @@ export function QuotaOverview({
   }
 
   return (
-    <div className="card bg-base-100 shadow-sm">
+    <div className="card h-full bg-base-100 shadow-sm">
       <div className="card-body gap-6">
         <div className="flex flex-wrap items-center justify-between">
           <div>
@@ -86,16 +87,20 @@ export function QuotaOverview({
           </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 items-stretch">
+        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 items-stretch">
           <OverviewTile label="使用率" compact>
             <div className="flex items-center gap-3">
               <div className="radial-progress text-primary" style={radialProgressStyle}>
-                {isLoading ? '…' : `${Math.round(usagePercent)}%`}
+                {isLoading ? '…' : <AnimatedDigits value={`${Math.round(usagePercent)}%`} />}
               </div>
             </div>
           </OverviewTile>
-          <OverviewTile label="已使用" value={formatCurrency(usedAmount)} loading={isLoading} />
-          <OverviewTile label="剩余额度" value={formatCurrency(remainingAmount)} loading={isLoading} />
+          <OverviewTile label="已使用" loading={isLoading}>
+            {isLoading ? '…' : <AnimatedDigits value={formatCurrency(usedAmount)} />}
+          </OverviewTile>
+          <OverviewTile label="剩余额度" loading={isLoading}>
+            {isLoading ? '…' : <AnimatedDigits value={formatCurrency(remainingAmount)} />}
+          </OverviewTile>
           <OverviewTile label="下次重置" value={formatDate(snapshot?.periodResetTime)} loading={isLoading} compact />
         </div>
       </div>

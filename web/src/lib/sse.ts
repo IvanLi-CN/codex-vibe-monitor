@@ -1,4 +1,4 @@
-import type { BroadcastPayload, StatsResponse } from './api'
+import type { BroadcastPayload, StatsResponse, QuotaSnapshot } from './api'
 import { createEventSource } from './api'
 
 export type SseListener = (payload: BroadcastPayload) => void
@@ -11,6 +11,7 @@ let lastEventAt = Date.now()
 // synthesize a small summary update to drive UI animations.
 let devSimTimer: number | null = null
 let devSummary: StatsResponse | null = null
+let devQuota: QuotaSnapshot | null = null
 const DEV_SILENCE_MS = 5000
 const DEV_TICK_MS = 3000
 
@@ -41,6 +42,39 @@ function devEmitSummaryTick() {
     summary: devSummary,
   }
   listeners.forEach((l) => l(payload))
+
+  // Also emit a quota snapshot to drive top overview
+  if (!devQuota) {
+    devQuota = {
+      capturedAt: new Date().toISOString(),
+      amountLimit: 90,
+      usedAmount: 55.0,
+      remainingAmount: 35.0,
+      period: 'monthly',
+      periodResetTime: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      expireTime: new Date(Date.now() + 25 * 24 * 3600 * 1000).toISOString(),
+      isActive: true,
+      totalCost: devSummary.totalCost,
+      totalRequests: devSummary.totalCount,
+      totalTokens: devSummary.totalTokens,
+      subTypeName: 'dev 模拟',
+    }
+  } else {
+    const inc = 0.07
+    const limit = devQuota.amountLimit ?? 90
+    const nextUsed = Math.min(limit, (devQuota.usedAmount ?? 0) + inc)
+    devQuota = {
+      ...devQuota,
+      capturedAt: new Date().toISOString(),
+      usedAmount: nextUsed,
+      remainingAmount: Math.max(0, limit - nextUsed),
+      totalCost: devSummary.totalCost,
+      totalRequests: devSummary.totalCount,
+      totalTokens: devSummary.totalTokens,
+    }
+  }
+  const quotaPayload: BroadcastPayload = { type: 'quota', snapshot: devQuota }
+  listeners.forEach((l) => l(quotaPayload))
 }
 
 function ensureDevSimulator() {
