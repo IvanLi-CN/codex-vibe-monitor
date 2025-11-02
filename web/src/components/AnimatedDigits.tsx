@@ -2,54 +2,80 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 interface AnimatedDigitsProps {
   value: number | string
-  /**
-   * Duration of the rolling animation in milliseconds
-   */
   duration?: number
-  /**
-   * Easing function for CSS transitions
-   */
   easing?: string
-  /** Optional className applied to the root container */
   className?: string
 }
 
-/**
- * AnimatedDigits renders a string or number and animates numeric characters by vertically
- * rolling them to the next value. Non-digit characters are rendered statically.
- */
+type Direction = 'up' | 'down' | 'none'
+
 export function AnimatedDigits({ value, duration = 450, easing = 'cubic-bezier(0.22, 1, 0.36, 1)', className }: AnimatedDigitsProps) {
   const text = String(value ?? '')
-  const tokens = useMemo(() => text.split(''), [text])
+
+  // Track previous text to compute direction and per-position transitions
+  const [prevText, setPrevText] = useState(text)
+
+  const direction: Direction = useMemo(() => {
+    const prevNum = parseNumber(prevText)
+    const nextNum = parseNumber(text)
+    if (Number.isFinite(prevNum) && Number.isFinite(nextNum)) {
+      if (nextNum > prevNum) return 'up'
+      if (nextNum < prevNum) return 'down'
+    }
+    return 'none'
+  }, [prevText, text])
+
+  const mapping = useMemo(() => buildDigitMapping(prevText, text), [prevText, text])
+
+  useEffect(() => {
+    // update prev after rendering with new text, so next change compares correctly
+    setPrevText(text)
+  }, [text])
+
+  let digitIndex = 0
   return (
     <span className={className} style={{ display: 'inline-flex', alignItems: 'baseline', gap: '0' }}>
-      {tokens.map((ch, idx) =>
-        /\d/.test(ch) ? (
-          <DigitRoll key={idx} digit={ch} duration={duration} easing={easing} />
-        ) : (
+      {text.split('').map((ch, idx) => {
+        if (/\d/.test(ch)) {
+          const prev = mapping.prevDigitsAligned[digitIndex] ?? clampDigit(ch)
+          const next = clampDigit(ch)
+          digitIndex += 1
+          return (
+            <DigitRoll key={idx} prev={prev} next={next} direction={direction} duration={duration} easing={easing} />
+          )
+        }
+        return (
           <span key={idx}>{ch}</span>
-        ),
-      )}
+        )
+      })}
     </span>
   )
 }
 
-function DigitRoll({ digit, duration, easing }: { digit: string; duration: number; easing: string }) {
-  const target = clampDigit(digit)
-  const [current, setCurrent] = useState<number>(target)
-  const containerRef = useRef<HTMLSpanElement | null>(null)
+function DigitRoll({ prev, next, direction, duration, easing }: { prev: number; next: number; direction: Direction; duration: number; easing: string }) {
+  const [path, setPath] = useState<number[]>([next])
+  const [index, setIndex] = useState<number>(path.length - 1)
+  const firstRender = useRef(true)
 
   useEffect(() => {
-    const next = clampDigit(digit)
-    setCurrent((prev) => (prev === next ? prev : next))
-  }, [digit])
+    const newPath = buildPath(prev, next, direction)
+    setPath(newPath)
+    // Kick the transition on the next frame
+    requestAnimationFrame(() => setIndex(newPath.length - 1))
+  }, [prev, next, direction])
 
-  const translateY = -current * 1.0 // 1em per line
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false
+      return
+    }
+  }, [])
+
+  const translateY = -index * 1.0
+  const hasTransition = path.length > 1
 
   return (
     <span
-      ref={containerRef}
-      aria-hidden={false}
       style={{
         display: 'inline-block',
         height: '1em',
@@ -63,12 +89,12 @@ function DigitRoll({ digit, duration, easing }: { digit: string; duration: numbe
           display: 'inline-flex',
           flexDirection: 'column',
           transform: `translateY(${translateY}em)`,
-          transition: `transform ${duration}ms ${easing}`,
-          willChange: 'transform',
+          transition: hasTransition ? `transform ${duration}ms ${easing}` : 'none',
+          willChange: hasTransition ? 'transform' : 'auto',
         }}
       >
-        {DIGITS.map((d) => (
-          <span key={d} style={{ height: '1em' }}>
+        {path.map((d, i) => (
+          <span key={`${d}-${i}`} style={{ height: '1em' }}>
             {d}
           </span>
         ))}
@@ -77,13 +103,70 @@ function DigitRoll({ digit, duration, easing }: { digit: string; duration: numbe
   )
 }
 
-const DIGITS = Array.from({ length: 10 }, (_, i) => String(i))
+function buildPath(prev: number, next: number, dir: Direction): number[] {
+  if (dir === 'none' || prev === next) return [next]
+  const seq: number[] = [prev]
+  if (dir === 'up') {
+    let cur = prev
+    while (cur !== next) {
+      cur = (cur + 1) % 10
+      seq.push(cur)
+      if (seq.length > 12) break // safety
+    }
+  } else {
+    let cur = prev
+    while (cur !== next) {
+      cur = (cur + 9) % 10 // minus 1 mod 10
+      seq.push(cur)
+      if (seq.length > 12) break // safety
+    }
+  }
+  return seq
+}
 
+function buildDigitMapping(prevText: string, nextText: string) {
+  const prevDigits = extractDigits(prevText)
+  const nextDigits = extractDigits(nextText)
+  const maxLen = Math.max(prevDigits.length, nextDigits.length)
+  const prevPadded = padLeft(prevDigits, maxLen, 0)
+  // Align from right: reverse mapping then reverse back
+  const prevRev = prevPadded.slice().reverse()
+  // We return prev aligned sequence in normal (left-to-right) order for next digits sequence
+  const alignedRev: number[] = []
+  for (let i = 0; i < maxLen; i++) {
+    alignedRev.push(prevRev[i] ?? 0)
+  }
+  const prevDigitsAligned = alignedRev.slice().reverse()
+  return { prevDigitsAligned }
+}
+
+function extractDigits(s: string): number[] {
+  const arr: number[] = []
+  for (const ch of s) {
+    if (/\d/.test(ch)) arr.push(clampDigit(ch))
+  }
+  return arr
+}
+
+function padLeft<T>(arr: T[], len: number, fill: T): T[] {
+  if (arr.length >= len) return arr
+  return Array(len - arr.length).fill(fill).concat(arr)
+}
+
+function parseNumber(s: string): number {
+  // keep digits and at most one decimal point
+  const cleaned = s.replace(/[^0-9.]/g, '')
+  const parts = cleaned.split('.')
+  const normalized = parts.length > 2 ? `${parts[0]}.${parts.slice(1).join('')}` : cleaned
+  const n = Number(normalized)
+  return Number.isFinite(n) ? n : NaN
+}
+
+const DIGIT_ZERO_CODE = '0'.charCodeAt(0)
 function clampDigit(ch: string): number {
   const code = ch.charCodeAt(0)
-  if (code >= 48 && code <= 57) return code - 48
+  if (code >= DIGIT_ZERO_CODE && code <= DIGIT_ZERO_CODE + 9) return code - DIGIT_ZERO_CODE
   return 0
 }
 
 export default AnimatedDigits
-
