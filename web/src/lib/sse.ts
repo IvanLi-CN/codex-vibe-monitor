@@ -5,6 +5,7 @@ export type SseListener = (payload: BroadcastPayload) => void
 
 let eventSource: EventSource | null = null
 const listeners = new Set<SseListener>()
+const openListeners = new Set<() => void>()
 let lastEventAt = Date.now()
 
 // Dev-only heartbeat simulator: when SSE is silent for a while, periodically
@@ -113,11 +114,23 @@ function handleError(event: Event) {
   console.warn('SSE connection error', event)
 }
 
+function handleOpen() {
+  lastEventAt = Date.now()
+  openListeners.forEach((cb) => {
+    try {
+      cb()
+    } catch {
+      /* noop */
+    }
+  })
+}
+
 function ensureEventSource() {
   if (eventSource) return eventSource
   eventSource = createEventSource('/events')
   eventSource.addEventListener('message', handleMessage as EventListener)
   eventSource.addEventListener('error', handleError)
+  eventSource.addEventListener('open', handleOpen)
   ensureDevSimulator()
   return eventSource
 }
@@ -126,6 +139,7 @@ function cleanupEventSource() {
   if (eventSource && listeners.size === 0) {
     eventSource.removeEventListener('message', handleMessage as EventListener)
     eventSource.removeEventListener('error', handleError)
+    eventSource.removeEventListener('open', handleOpen)
     eventSource.close()
     eventSource = null
   }
@@ -140,5 +154,13 @@ export function subscribeToSse(listener: SseListener) {
   return () => {
     listeners.delete(listener)
     cleanupEventSource()
+  }
+}
+
+export function subscribeToSseOpen(callback: () => void) {
+  openListeners.add(callback)
+  ensureEventSource()
+  return () => {
+    openListeners.delete(callback)
   }
 }
