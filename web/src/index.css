@@ -10,4 +10,7 @@ body,
 
 body {
   @apply bg-base-200 text-base-content antialiased;
+  /* Ensure all numeric glyphs render with equal width across the app */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
