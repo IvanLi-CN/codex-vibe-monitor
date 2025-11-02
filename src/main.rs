@@ -21,7 +21,7 @@ use axum::{
 use chrono::{Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
 use reqwest::{Client, ClientBuilder, Url, header};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -256,6 +256,8 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<JoinHandle<()>> {
         .with_state(state.clone())
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive());
+
+    // Optionally attach headers in the future; standard EventSource cannot read headers
 
     if let Some(static_dir) = state.config.static_dir.clone() {
         let index_file = static_dir.join("index.html");
@@ -999,7 +1001,7 @@ async fn sse_stream(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
     let rx = state.broadcaster.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|res| async {
+    let broadcast = BroadcastStream::new(rx).filter_map(|res| async {
         match res {
             Ok(payload) => match Event::default().json_data(&payload) {
                 Ok(event) => Some(Ok(event)),
@@ -1014,8 +1016,19 @@ async fn sse_stream(
             }
         }
     });
+    // Seed a version event on connect so clients know the current server version immediately
+    let initial = {
+        let (backend, _frontend) = detect_versions(state.config.static_dir.as_deref());
+        let payload = BroadcastPayload::Version { version: backend };
+        let ev = Event::default().json_data(&payload);
+        match ev {
+            Ok(event) => stream::iter(vec![Ok(event)]),
+            Err(_) => stream::iter(Vec::<Result<Event, Infallible>>::new()),
+        }
+    };
 
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+    let merged = initial.chain(broadcast);
+    Sse::new(merged).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
 async fn health_check() -> &'static str {
@@ -1117,6 +1130,9 @@ struct AppState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum BroadcastPayload {
+    Version {
+        version: String,
+    },
     Records {
         records: Vec<ApiInvocation>,
     },

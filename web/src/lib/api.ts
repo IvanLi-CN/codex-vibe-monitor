@@ -97,6 +97,10 @@ export type BroadcastPayload =
       type: 'quota'
       snapshot: QuotaSnapshot
     }
+  | {
+      type: 'version'
+      version: string
+    }
 
 export async function fetchInvocations(limit: number, params?: { model?: string; status?: string }) {
   const search = new URLSearchParams()
@@ -111,12 +115,11 @@ export async function fetchStats() {
   return fetchJson<StatsResponse>('/api/stats')
 }
 
-export interface VersionResponse {
-  version: string
-}
-
-export async function fetchVersion() {
-  return fetchJson<VersionResponse>('/api/version')
+interface VersionApi { backend: string; frontend: string }
+export interface VersionResponse { version: string }
+export async function fetchVersion(): Promise<VersionResponse> {
+  const v = await fetchJson<VersionApi>('/api/version')
+  return { version: v.backend }
 }
 
 export async function fetchSummary(window: string, options?: { limit?: number }) {
