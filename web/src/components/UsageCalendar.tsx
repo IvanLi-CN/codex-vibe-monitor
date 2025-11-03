@@ -25,9 +25,29 @@ const MIN_BLOCK_SIZE = 8
 const MAX_BLOCK_SIZE = 20
 const WEEKDAY_LABEL_SPACE = 16
 
-const CALENDAR_THEME: { light: string[]; dark: string[] } = {
-  light: ['#E2E8F0', '#C7D2FE', '#93C5FD', '#60A5FA', '#2563EB'],
-  dark: ['#1F2937', '#4338CA', '#2563EB', '#1D4ED8', '#1E40AF'],
+const BASE_ZERO = { light: '#E2E8F0', dark: '#1F2937' }
+const THEME_BY_METRIC: Record<MetricKey, { light: string[]; dark: string[] }> = {
+  // 次数：蓝色系
+  totalCount: {
+    light: [BASE_ZERO.light, '#BFDBFE', '#93C5FD', '#60A5FA', '#3B82F6'],
+    dark: [BASE_ZERO.dark, '#1E40AF', '#1D4ED8', '#2563EB', '#3B82F6'],
+  },
+  // 金额：琥珀/橙色系
+  totalCost: {
+    light: [BASE_ZERO.light, '#FDE68A', '#FCD34D', '#F59E0B', '#D97706'],
+    dark: [BASE_ZERO.dark, '#92400E', '#B45309', '#D97706', '#F59E0B'],
+  },
+  // Tokens：紫色系
+  totalTokens: {
+    light: [BASE_ZERO.light, '#DDD6FE', '#C4B5FD', '#A78BFA', '#8B5CF6'],
+    dark: [BASE_ZERO.dark, '#5B21B6', '#6D28D9', '#7C3AED', '#8B5CF6'],
+  },
+}
+
+const ACCENT_BY_METRIC: Record<MetricKey, string> = {
+  totalCount: '#3B82F6',
+  totalCost: '#F59E0B',
+  totalTokens: '#8B5CF6',
 }
 
 export function UsageCalendar() {
@@ -35,6 +55,9 @@ export function UsageCalendar() {
   const { data, isLoading, error } = useTimeseries('90d', { bucket: '1d' })
   const [blockSize, setBlockSize] = useState(DEFAULT_BLOCK_SIZE)
   const containerRef = useRef<HTMLDivElement>(null)
+  const tabsRef = useRef<HTMLDivElement>(null)
+  const [tabsWidth, setTabsWidth] = useState(128)
+  const [leftOffset, setLeftOffset] = useState(0) // svg.marginLeft introduced by weekday labels
 
   const metricDefinition = useMemo(
     () => METRIC_OPTIONS.find((o) => o.key === metric) ?? METRIC_OPTIONS[0],
@@ -50,27 +73,101 @@ export function UsageCalendar() {
     if (!containerRef.current || calendarData.weekCount === 0) return
     const node = containerRef.current
 
-    const updateSize = (width: number) => {
+    const computeByContainer = (width: number) => {
       if (!Number.isFinite(width) || width <= 0) {
         setBlockSize(DEFAULT_BLOCK_SIZE)
         return
       }
-      const effectiveWidth = Math.max(0, width - WEEKDAY_LABEL_SPACE)
-      const columns = Math.max(1, calendarData.weekCount)
-      const candidate = Math.floor(effectiveWidth / columns - BLOCK_MARGIN * 2)
+      // First pass: approximate by container width minus tabs width, weekday label offset and a small gap.
+      const GAP = 6
+      const approxWidth = Math.max(0, width - leftOffset - GAP)
+      const cols = Math.max(1, calendarData.weekCount)
+      const candidate = Math.floor(((approxWidth + BLOCK_MARGIN) / cols) - BLOCK_MARGIN)
       const next = Math.max(MIN_BLOCK_SIZE, Math.min(MAX_BLOCK_SIZE, candidate))
-      setBlockSize(next || DEFAULT_BLOCK_SIZE)
+      setBlockSize((prev) => {
+        const base = next || DEFAULT_BLOCK_SIZE
+        return prev ? Math.min(prev, base) : base
+      })
     }
 
-    updateSize(node.getBoundingClientRect().width)
+    // Second pass: refine using actual rendered width of the content box.
+    const refineByMeasurements = () => {
+      const svg = node.querySelector('article svg') as SVGElement | null
+      if (!svg) return
+      const styles = getComputedStyle(node)
+      const paddingLeft = parseFloat(styles.paddingLeft || '0')
+      const paddingRight = parseFloat(styles.paddingRight || '0')
+      const contentWidth = Math.max(0, node.clientWidth - paddingLeft - paddingRight)
+      const desiredGap = 0
+      const available = Math.max(0, Math.floor(contentWidth - leftOffset - desiredGap))
+      const gList = Array.from(svg.querySelectorAll('g'))
+      const measuredCols = gList.filter(g => (g as SVGGElement).children.length === 7).length
+      const cols = Math.max(1, measuredCols || calendarData.weekCount)
+      const candidate = Math.floor(((available + BLOCK_MARGIN) / cols) - BLOCK_MARGIN)
+      const clamped = Math.max(MIN_BLOCK_SIZE, Math.min(MAX_BLOCK_SIZE, candidate))
+      if (Number.isFinite(clamped) && clamped > 0) {
+        setBlockSize((prev) => (Math.abs(prev - clamped) >= 1 ? clamped : prev))
+      }
+    }
+
+    // initial and when deps change
+    computeByContainer(node.getBoundingClientRect().width)
+    // observe container size changes
     const observer = new ResizeObserver((entries) => {
       const entry = entries.at(0)
       if (!entry) return
-      updateSize(entry.contentRect.width)
+      computeByContainer(entry.contentRect.width)
+      // defer refine to the next frame to ensure the SVG updated
+      requestAnimationFrame(refineByMeasurements)
     })
     observer.observe(node)
-    return () => observer.disconnect()
-  }, [calendarData.weekCount])
+    // also refine shortly after mount/change to catch initial SVG paint
+    const raf = requestAnimationFrame(refineByMeasurements)
+    const t = window.setTimeout(refineByMeasurements, 120)
+    return () => { observer.disconnect(); cancelAnimationFrame(raf); window.clearTimeout(t) }
+  }, [calendarData.weekCount, tabsWidth, leftOffset])
+
+  // Measure tabs width (kept for possible future responsive tweaks)
+  useLayoutEffect(() => {
+    const tabsEl = tabsRef.current
+    const contEl = containerRef.current
+    if (!tabsEl || !contEl) return
+    const update = () => {
+      const w = Math.ceil(tabsEl.getBoundingClientRect().width)
+      setTabsWidth(Math.max(0, w))
+    }
+    update()
+    const ro1 = new ResizeObserver(update)
+    const ro2 = new ResizeObserver(update)
+    ro1.observe(tabsEl)
+    ro2.observe(contEl)
+    window.addEventListener('resize', update)
+    return () => {
+      ro1.disconnect()
+      ro2.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [metric])
+
+  // Measure svg margin-left (weekday label offset) and track changes
+  useLayoutEffect(() => {
+    const contEl = containerRef.current
+    if (!contEl) return
+    const queryAndSet = () => {
+      const svg = contEl.querySelector('svg') as SVGElement | null
+      if (!svg) return
+      const ml = parseFloat(getComputedStyle(svg).marginLeft || '0')
+      if (Number.isFinite(ml)) setLeftOffset(Math.max(0, Math.round(ml)))
+    }
+    // initial read and on resize
+    queryAndSet()
+    const ro = new ResizeObserver(queryAndSet)
+    ro.observe(contEl)
+    window.addEventListener('resize', queryAndSet)
+    // guard for first render of ActivityCalendar
+    const id = window.setInterval(queryAndSet, 600)
+    return () => { ro.disconnect(); window.removeEventListener('resize', queryAndSet); window.clearInterval(id) }
+  }, [metric, calendarData.weekCount])
 
   if (error) {
     return <div className="alert alert-error">{error}</div>
@@ -82,21 +179,49 @@ export function UsageCalendar() {
     <section className="card h-full w-full max-w-full overflow-hidden bg-base-100 shadow-sm lg:w-fit lg:max-w-none">
       <div className="card-body gap-4 lg:w-auto">
         <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-center justify-between gap-3">
             <h2 className="card-title">使用活动</h2>
+            <div
+              ref={tabsRef}
+              className="tabs tabs-md tabs-border gap-2 sm:gap-4"
+              role="tablist"
+              aria-label="统计指标切换"
+            >
+              {METRIC_OPTIONS.map((option) => {
+                const active = metric === option.key
+                return (
+                  <button
+                    key={option.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    aria-current={active ? 'true' : undefined}
+                    className={`tab whitespace-nowrap px-3 sm:px-4 ${
+                      active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
+                    }`}
+                    style={active ? { color: ACCENT_BY_METRIC[option.key] } : undefined}
+                    onClick={() => setMetric(option.key)}
+                  >
+                    {option.label}
+                  </button>
+                )
+              })}
+            </div>
           </div>
 
-          <div className="flex flex-col gap-4 md:flex-row md:items-start md:gap-6">
-            <div className="order-1 md:order-1 md:flex-1 md:min-w-0">
+          <div className="divider my-1 opacity-40" />
+
+          <div className="grid gap-3">
+            <div className="min-w-0">
               <div
                 ref={containerRef}
-                className="relative w-full overflow-hidden pt-4 [&>svg]:h-auto [&>svg]:w-full lg:w-fit"
+                className="relative inline-block w-full overflow-hidden pt-4 [&>svg]:h-auto [&>svg]:w-full lg:w-fit"
               >
                 <MonthLabelOverlay
                   markers={calendarData.monthMarkers}
                   blockSize={blockSize}
                   blockMargin={BLOCK_MARGIN}
-                  offset={WEEKDAY_LABEL_SPACE}
+                  offset={leftOffset || WEEKDAY_LABEL_SPACE}
                 />
                 <ActivityCalendar
                   data={calendarData.activities}
@@ -106,9 +231,8 @@ export function UsageCalendar() {
                   blockMargin={BLOCK_MARGIN}
                   weekStart={1}
                   maxLevel={MAX_LEVEL}
-                  theme={CALENDAR_THEME}
+                  theme={THEME_BY_METRIC[metric]}
                   colorScheme="light"
-                  style={{ width: '100%', height: 'auto' }}
                   hideTotalCount
                   hideColorLegend
                   hideMonthLabels
@@ -130,25 +254,7 @@ export function UsageCalendar() {
               </div>
             </div>
 
-            <div className="order-2 flex flex-col items-end gap-2 md:order-2 md:ml-auto md:items-end">
-              <span className="text-xs font-medium text-base-content/60">指标切换</span>
-              <div className="tabs tabs-lifted tabs-sm tabs-vertical self-end gap-1 w-28" role="tablist" aria-label="统计指标切换">
-                {METRIC_OPTIONS.map((option) => (
-                  <button
-                    key={option.key}
-                    type="button"
-                    role="tab"
-                    aria-selected={metric === option.key}
-                    className={`tab tab-sm text-xs whitespace-nowrap cursor-pointer ${
-                      metric === option.key ? 'tab-active' : 'opacity-80 hover:opacity-100'
-                    }`}
-                    onClick={() => setMetric(option.key)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            {/* tabs moved to header */}
           </div>
         </div>
       </div>
