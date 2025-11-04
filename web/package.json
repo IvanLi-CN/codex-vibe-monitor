@@ -7,16 +7,19 @@
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/write-version.mjs",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "react": "^19.1.1",
+    "react-activity-calendar": "^2.7.15",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.9.5",
     "recharts": "^3.3.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
+    "@playwright/test": "^1.49.0",
     "@types/node": "^24.6.0",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",

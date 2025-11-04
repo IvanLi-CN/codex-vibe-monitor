@@ -1574,6 +1574,65 @@ impl AppConfig {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Json;
+    use axum::extract::State;
+    use sqlx::SqlitePool;
+    use std::{path::PathBuf, sync::Arc, time::Duration};
+    use tokio::sync::{Semaphore, broadcast};
+
+    fn test_config() -> AppConfig {
+        AppConfig {
+            base_url: Url::parse("https://example.com/").expect("valid url"),
+            quota_endpoint: "/quota".to_string(),
+            cookie_name: "session".to_string(),
+            cookie_value: "test".to_string(),
+            database_path: PathBuf::from(":memory:"),
+            poll_interval: Duration::from_secs(10),
+            request_timeout: Duration::from_secs(30),
+            max_parallel_polls: 2,
+            shared_connection_parallelism: 1,
+            http_bind: "127.0.0.1:38080".parse().expect("valid socket address"),
+            list_limit_max: 100,
+            user_agent: "codex-test".to_string(),
+            static_dir: None,
+            snapshot_min_interval: Duration::from_secs(60),
+        }
+    }
+
+    #[tokio::test]
+    async fn quota_latest_returns_degraded_when_empty() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let config = test_config();
+        let http_clients = HttpClients::build(&config).expect("http clients");
+        let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+        let (broadcaster, _rx) = broadcast::channel(16);
+        let state = Arc::new(AppState {
+            config,
+            pool,
+            http_clients,
+            broadcaster,
+            semaphore,
+        });
+
+        let Json(snapshot) = latest_quota_snapshot(State(state))
+            .await
+            .expect("route should succeed");
+
+        assert!(!snapshot.is_active);
+        assert_eq!(snapshot.total_requests, 0);
+        assert_eq!(snapshot.total_cost, 0.0);
+    }
+}
+
 fn default_range() -> String {
     "1d".to_string()
 }

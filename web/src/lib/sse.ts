@@ -120,7 +120,7 @@ function handleOpen() {
     try {
       cb()
     } catch {
-      /* noop */
+      // ignore
     }
   })
 }
@@ -162,5 +162,6 @@ export function subscribeToSseOpen(callback: () => void) {
   ensureEventSource()
   return () => {
     openListeners.delete(callback)
+    // do not cleanup event source here; rely on message listener cleanup
   }
 }

@@ -89,29 +89,17 @@ export function AppLayout() {
         </nav>
       </header>
       {update.visible && (
-        <div className="alert alert-warning rounded-none sticky top-[64px] z-40 shadow-md">
+        <div className="alert alert-info rounded-none sticky top-[64px] z-40">
           <div className="flex flex-1 flex-wrap items-center gap-3">
-            <span className="font-semibold">有新版本可用：</span>
-            <span className="kbd kbd-sm">{version?.version ?? '当前'}</span>
-            <span>→</span>
-            <span className="kbd kbd-sm">{update.availableVersion}</span>
-            <div className="flex gap-4 ml-auto items-center">
-              <button
-                type="button"
-                className="link link-primary cursor-pointer"
-                style={{ cursor: 'pointer' }}
-                onClick={update.reload}
-              >
-                立即刷新
-              </button>
-              <button
-                type="button"
-                className="link cursor-pointer"
-                style={{ cursor: 'pointer' }}
-                onClick={update.dismiss}
-              >
-                稍后
-              </button>
+            <span>
+              有新版本可用：
+              <span className="font-mono">{version?.version ?? '当前'}</span>
+              {' → '}
+              <span className="font-mono">{update.availableVersion}</span>
+            </span>
+            <div className="flex gap-2 ml-auto">
+              <button className="btn btn-sm btn-primary" onClick={update.reload}>立即刷新</button>
+              <button className="btn btn-sm" onClick={update.dismiss}>稍后</button>
             </div>
           </div>
         </div>

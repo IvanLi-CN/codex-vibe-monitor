@@ -1,4 +1,5 @@
 import { cloneElement, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { ReactElement } from 'react'
 import ActivityCalendar, { type Activity } from 'react-activity-calendar'
 import { useTimeseries } from '../hooks/useTimeseries'
 import type { TimeseriesPoint } from '../lib/api'
@@ -10,6 +11,8 @@ interface MetricOption {
   label: string
   formatter: (value: number) => string
 }
+
+type AccessibleBlock = ReactElement<{ title?: string; 'aria-label'?: string }>
 
 const METRIC_OPTIONS: MetricOption[] = [
   { key: 'totalCount', label: '次数', formatter: (v) => v.toLocaleString() },
@@ -176,7 +179,10 @@ export function UsageCalendar() {
   const calendarLoading = isLoading || calendarData.activities.length === 0
 
   return (
-    <section className="card h-full w-full max-w-full overflow-hidden bg-base-100 shadow-sm lg:w-fit lg:max-w-none">
+    <section
+      className="card h-full w-full max-w-full overflow-hidden bg-base-100 shadow-sm lg:w-fit lg:max-w-none"
+      data-testid="usage-calendar-card"
+    >
       <div className="card-body gap-4 lg:w-auto">
         <div className="flex flex-col gap-4">
           <div className="flex items-center justify-between gap-3">
@@ -216,6 +222,7 @@ export function UsageCalendar() {
               <div
                 ref={containerRef}
                 className="relative inline-block w-full overflow-hidden pt-4 [&>svg]:h-auto [&>svg]:w-full lg:w-fit"
+                data-testid="usage-calendar-wrapper"
               >
                 <MonthLabelOverlay
                   markers={calendarData.monthMarkers}
@@ -239,16 +246,18 @@ export function UsageCalendar() {
                   labels={{ legend: { less: '低', more: '高' }, weekdays: ['日', '一', '二', '三', '四', '五', '六'] }}
                   showWeekdayLabels={WEEKDAY_LABELS}
                   renderBlock={(block, activity) => {
+                    const accessibleBlock = block as AccessibleBlock
                     const formatted = metricDefinition.formatter(activity.count)
                     const title = `${activity.date}：${formatted}`
-                    return cloneElement(block, { title, 'aria-label': title })
+                    return cloneElement(accessibleBlock, { title, 'aria-label': title })
                   }}
                   renderColorLegend={(block, level) => {
-                    if (level === 0) return cloneElement(block, { title: '低', 'aria-label': '低' })
+                    const accessibleBlock = block as AccessibleBlock
+                    if (level === 0) return cloneElement(accessibleBlock, { title: '低', 'aria-label': '低' })
                     const threshold = calendarData.thresholds[level] ?? calendarData.maxValue
                     const formatted = metricDefinition.formatter(threshold)
                     const title = `≤ ${formatted}`
-                    return cloneElement(block, { title, 'aria-label': title })
+                    return cloneElement(accessibleBlock, { title, 'aria-label': title })
                   }}
                 />
               </div>
