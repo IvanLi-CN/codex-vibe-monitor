@@ -1,5 +1,5 @@
 import { cloneElement, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { ReactElement } from 'react'
+import type { ReactElement, CSSProperties } from 'react'
 import ActivityCalendar, { type Activity } from 'react-activity-calendar'
 import { useTimeseries } from '../hooks/useTimeseries'
 import type { TimeseriesPoint } from '../lib/api'
@@ -12,7 +12,7 @@ interface MetricOption {
   formatter: (value: number) => string
 }
 
-type AccessibleBlock = ReactElement<{ title?: string; 'aria-label'?: string }>
+type AccessibleBlock = ReactElement<{ title?: string; 'aria-label'?: string; style?: CSSProperties }>
 
 const METRIC_OPTIONS: MetricOption[] = [
   { key: 'totalCount', label: '次数', formatter: (v) => v.toLocaleString() },
@@ -22,28 +22,36 @@ const METRIC_OPTIONS: MetricOption[] = [
 
 const WEEKDAY_LABELS: Array<'mon' | 'wed' | 'fri' | 'sun'> = ['mon', 'wed', 'fri', 'sun']
 const MAX_LEVEL = 4
-const BLOCK_MARGIN = 2
+// Keep visual spacing consistent with WeeklyHourlyHeatmap (uses 3px gaps)
+const BLOCK_MARGIN = 3
 const DEFAULT_BLOCK_SIZE = 18
 const MIN_BLOCK_SIZE = 8
 const MAX_BLOCK_SIZE = 20
 const WEEKDAY_LABEL_SPACE = 16
 
-const BASE_ZERO = { light: '#E2E8F0', dark: '#1F2937' }
+// Use DaisyUI/Tailwind aligned palette so it visually matches
+// the 7-day heatmap (WeeklyHourlyHeatmap.tsx).
+// Level0 uses base-300 token rendered through color function; DaisyUI exports
+// `--b3` as OKLCH components, so we must wrap it with `oklch(...)` (directly
+// using `var(--b3)` would resolve to "black").
+// Use explicit HEX for zero level to avoid SVG var()/oklch() incompatibilities
+// in presentation attributes. This matches DaisyUI base-300 in light theme.
+const BASE_ZERO = { light: '#E5E7EB', dark: '#374151' }
 const THEME_BY_METRIC: Record<MetricKey, { light: string[]; dark: string[] }> = {
-  // 次数：蓝色系
+  // 次数：蓝色系（200..500）
   totalCount: {
     light: [BASE_ZERO.light, '#BFDBFE', '#93C5FD', '#60A5FA', '#3B82F6'],
-    dark: [BASE_ZERO.dark, '#1E40AF', '#1D4ED8', '#2563EB', '#3B82F6'],
+    dark: [BASE_ZERO.dark, '#93C5FD', '#60A5FA', '#3B82F6', '#1D4ED8'],
   },
-  // 金额：琥珀/橙色系
+  // 金额：琥珀/橙色系（200..500）
   totalCost: {
     light: [BASE_ZERO.light, '#FDE68A', '#FCD34D', '#F59E0B', '#D97706'],
-    dark: [BASE_ZERO.dark, '#92400E', '#B45309', '#D97706', '#F59E0B'],
+    dark: [BASE_ZERO.dark, '#FCD34D', '#F59E0B', '#D97706', '#B45309'],
   },
-  // Tokens：紫色系
+  // Tokens：紫色系（200..500）
   totalTokens: {
     light: [BASE_ZERO.light, '#DDD6FE', '#C4B5FD', '#A78BFA', '#8B5CF6'],
-    dark: [BASE_ZERO.dark, '#5B21B6', '#6D28D9', '#7C3AED', '#8B5CF6'],
+    dark: [BASE_ZERO.dark, '#C4B5FD', '#A78BFA', '#8B5CF6', '#7C3AED'],
   },
 }
 
@@ -61,6 +69,8 @@ export function UsageCalendar() {
   const tabsRef = useRef<HTMLDivElement>(null)
   const [tabsWidth, setTabsWidth] = useState(128)
   const [leftOffset, setLeftOffset] = useState(0) // svg.marginLeft introduced by weekday labels
+  const colorProbeRef = useRef<HTMLSpanElement>(null)
+  const [baseZeroColor, setBaseZeroColor] = useState<string>(BASE_ZERO.light)
 
   const metricDefinition = useMemo(
     () => METRIC_OPTIONS.find((o) => o.key === metric) ?? METRIC_OPTIONS[0],
@@ -71,6 +81,20 @@ export function UsageCalendar() {
     () => transformPointsToActivities(data?.points ?? [], metric),
     [data, metric],
   )
+
+  // Probe actual theme color for base-300 to match 7-day heatmap exactly
+  useLayoutEffect(() => {
+    const el = colorProbeRef.current
+    if (!el) return
+    const read = () => {
+      const bg = getComputedStyle(el).backgroundColor
+      if (bg && bg !== baseZeroColor) setBaseZeroColor(bg)
+    }
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [baseZeroColor])
 
   useLayoutEffect(() => {
     if (!containerRef.current || calendarData.weekCount === 0) return
@@ -172,11 +196,16 @@ export function UsageCalendar() {
     return () => { ro.disconnect(); window.removeEventListener('resize', queryAndSet); window.clearInterval(id) }
   }, [metric, calendarData.weekCount])
 
-  if (error) {
-    return <div className="alert alert-error">{error}</div>
-  }
-
   const calendarLoading = isLoading || calendarData.activities.length === 0
+
+  // Build theme palette with runtime-resolved zero level color
+  const themeForMetric = useMemo(() => {
+    const base = THEME_BY_METRIC[metric]
+    return {
+      light: [baseZeroColor, ...base.light.slice(1)],
+      dark: [baseZeroColor, ...base.dark.slice(1)],
+    }
+  }, [metric, baseZeroColor])
 
   return (
     <section
@@ -217,6 +246,9 @@ export function UsageCalendar() {
 
           <div className="divider my-1 opacity-40" />
 
+          {error ? (
+            <div className="alert alert-error">{error}</div>
+          ) : (
           <div className="grid gap-3">
             <div className="min-w-0">
               <div
@@ -224,6 +256,8 @@ export function UsageCalendar() {
                 className="relative inline-block w-full overflow-hidden pt-4 [&>svg]:h-auto [&>svg]:w-full lg:w-fit"
                 data-testid="usage-calendar-wrapper"
               >
+                {/* Theme color probe to fetch exact bg-base-300 value */}
+                <span ref={colorProbeRef} className="invisible absolute h-0 w-0 bg-base-300" aria-hidden />
                 <MonthLabelOverlay
                   markers={calendarData.monthMarkers}
                   blockSize={blockSize}
@@ -234,11 +268,12 @@ export function UsageCalendar() {
                   data={calendarData.activities}
                   loading={calendarLoading}
                   blockSize={blockSize}
-                  blockRadius={4}
+                  // Match the subtle rounding used by the 7-day heatmap
+                  blockRadius={2}
                   blockMargin={BLOCK_MARGIN}
                   weekStart={1}
                   maxLevel={MAX_LEVEL}
-                  theme={THEME_BY_METRIC[metric]}
+                  theme={themeForMetric}
                   colorScheme="light"
                   hideTotalCount
                   hideColorLegend
@@ -249,15 +284,30 @@ export function UsageCalendar() {
                     const accessibleBlock = block as AccessibleBlock
                     const formatted = metricDefinition.formatter(activity.count)
                     const title = `${activity.date}：${formatted}`
-                    return cloneElement(accessibleBlock, { title, 'aria-label': title })
+                    return cloneElement(accessibleBlock, {
+                      title,
+                      'aria-label': title,
+                      // Remove default stroke from react-activity-calendar to
+                      // match WeeklyHourlyHeatmap appearance exactly
+                      style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
+                    })
                   }}
                   renderColorLegend={(block, level) => {
                     const accessibleBlock = block as AccessibleBlock
-                    if (level === 0) return cloneElement(accessibleBlock, { title: '低', 'aria-label': '低' })
+                    if (level === 0)
+                      return cloneElement(accessibleBlock, {
+                        title: '低',
+                        'aria-label': '低',
+                        style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
+                      })
                     const threshold = calendarData.thresholds[level] ?? calendarData.maxValue
                     const formatted = metricDefinition.formatter(threshold)
                     const title = `≤ ${formatted}`
-                    return cloneElement(accessibleBlock, { title, 'aria-label': title })
+                    return cloneElement(accessibleBlock, {
+                      title,
+                      'aria-label': title,
+                      style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
+                    })
                   }}
                 />
               </div>
@@ -265,6 +315,7 @@ export function UsageCalendar() {
 
             {/* tabs moved to header */}
           </div>
+          )}
         </div>
       </div>
     </section>

@@ -14,7 +14,7 @@ interface MetricOption {
 
 const METRIC_OPTIONS: MetricOption[] = [
   { key: 'totalCount', label: '次数', formatter: (v) => v.toLocaleString() },
-  { key: 'totalCost', label: '余额', formatter: (v) => `$${v.toFixed(2)}` },
+  { key: 'totalCost', label: '金额', formatter: (v) => `$${v.toFixed(2)}` },
   { key: 'totalTokens', label: 'Tokens', formatter: (v) => v.toLocaleString() },
 ]
 
@@ -23,6 +23,13 @@ const LEVEL_COLORS_BY_METRIC: Record<MetricKey, string[]> = {
   totalCount: ['bg-base-300', 'bg-blue-200', 'bg-blue-300', 'bg-blue-400', 'bg-blue-500'],
   totalCost: ['bg-base-300', 'bg-amber-200', 'bg-amber-300', 'bg-amber-400', 'bg-amber-500'],
   totalTokens: ['bg-base-300', 'bg-violet-200', 'bg-violet-300', 'bg-violet-400', 'bg-violet-500'],
+}
+
+// Keep tab accent color consistent with UsageCalendar
+const ACCENT_BY_METRIC: Record<MetricKey, string> = {
+  totalCount: '#3B82F6',
+  totalCost: '#F59E0B',
+  totalTokens: '#8B5CF6',
 }
 
 function parseDateTimeParts(naive: string) {
@@ -108,6 +115,7 @@ export function WeeklyHourlyHeatmap() {
                   className={`tab whitespace-nowrap px-2 sm:px-3 ${
                     active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
                   }`}
+                  style={active ? { color: ACCENT_BY_METRIC[o.key] } : undefined}
                   onClick={() => setMetric(o.key)}
                 >
                   {o.label}
