@@ -1,16 +1,29 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useTimeseries } from '../hooks/useTimeseries'
 import type { TimeseriesPoint } from '../lib/api'
 
 type Cell = { date: string; hour: number; value: number }
 
-const LEVEL_COLORS = [
-  'bg-base-300', // 0
-  'bg-blue-200', // 1
-  'bg-blue-300', // 2
-  'bg-blue-400', // 3
-  'bg-blue-500', // 4
+type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
+
+interface MetricOption {
+  key: MetricKey
+  label: string
+  formatter: (value: number) => string
+}
+
+const METRIC_OPTIONS: MetricOption[] = [
+  { key: 'totalCount', label: '次数', formatter: (v) => v.toLocaleString() },
+  { key: 'totalCost', label: '余额', formatter: (v) => `$${v.toFixed(2)}` },
+  { key: 'totalTokens', label: 'Tokens', formatter: (v) => v.toLocaleString() },
 ]
+
+const LEVEL_COLORS_BY_METRIC: Record<MetricKey, string[]> = {
+  // 0..4 levels
+  totalCount: ['bg-base-300', 'bg-blue-200', 'bg-blue-300', 'bg-blue-400', 'bg-blue-500'],
+  totalCost: ['bg-base-300', 'bg-amber-200', 'bg-amber-300', 'bg-amber-400', 'bg-amber-500'],
+  totalTokens: ['bg-base-300', 'bg-violet-200', 'bg-violet-300', 'bg-violet-400', 'bg-violet-500'],
+}
 
 function parseDateTimeParts(naive: string) {
   const [datePart, timePart] = naive.split(' ')
@@ -24,7 +37,7 @@ function toIsoDate(y: number, m: number, d: number) {
   return `${y}-${pad(m)}-${pad(d)}`
 }
 
-function compute7x24(points: TimeseriesPoint[]) {
+function compute7x24(points: TimeseriesPoint[], metric: MetricKey) {
   if (!points || points.length === 0) {
     return { days: [] as string[], rows: [] as Cell[][], max: 0 }
   }
@@ -54,7 +67,8 @@ function compute7x24(points: TimeseriesPoint[]) {
     const iso = toIsoDate(year, month, day)
     const rowIndex = indexByDate.get(iso)
     if (rowIndex == null) continue
-    const value = p.totalCount ?? 0
+    const value =
+      metric === 'totalCount' ? p.totalCount ?? 0 : metric === 'totalCost' ? p.totalCost ?? 0 : p.totalTokens ?? 0
     rows[rowIndex][hour] = { date: iso, hour, value }
     if (value > max) max = value
   }
@@ -72,31 +86,52 @@ function levelFor(value: number, max: number) {
 }
 
 export function WeeklyHourlyHeatmap() {
+  const [metric, setMetric] = useState<MetricKey>('totalCount')
   const { data, isLoading, error } = useTimeseries('7d', { bucket: '1h' })
-
-  const grid = useMemo(() => compute7x24(data?.points ?? []), [data?.points])
-
-  if (error) {
-    return <div className="alert alert-error">{error}</div>
-  }
+  const option = useMemo(() => METRIC_OPTIONS.find((o) => o.key === metric) ?? METRIC_OPTIONS[0], [metric])
+  const grid = useMemo(() => compute7x24(data?.points ?? [], metric), [data?.points, metric])
 
   return (
-    <section className="card bg-base-100 shadow-sm">
+    <section className="card bg-base-100 shadow-sm" data-testid="weekly-hourly-heatmap">
       <div className="card-body gap-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <h2 className="card-title">最近 7 天活动图</h2>
-          <span className="text-sm text-base-content/60">按小时聚合</span>
+          <div className="tabs tabs-sm tabs-border" role="tablist" aria-label="指标切换">
+            {METRIC_OPTIONS.map((o) => {
+              const active = o.key === metric
+              return (
+                <button
+                  key={o.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  className={`tab whitespace-nowrap px-2 sm:px-3 ${
+                    active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
+                  }`}
+                  onClick={() => setMetric(o.key)}
+                >
+                  {o.label}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
-        {isLoading ? (
+        {error ? (
+          <div className="alert alert-error">{error}</div>
+        ) : isLoading ? (
           <div className="skeleton h-40 w-full" />
         ) : grid.days.length === 0 ? (
           <div className="text-base-content/70">暂无数据</div>
         ) : (
-          <div className="overflow-x-auto">
-            <div className="inline-block">
+          <div className="w-full overflow-x-auto">
+            <div className="flex justify-center">
+              <div className="inline-block">
               {/* Column labels */}
-              <div className="ml-12 grid grid-cols-24 gap-[2px] pl-[2px]">
+              <div
+                className="ml-14 grid gap-[3px] pl-[3px]"
+                style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}
+              >
                 {Array.from({ length: 24 }, (_, h) => (
                   <div key={`h-${h}`} className="text-center text-[10px] leading-3 text-base-content/60">
                     {h}
@@ -105,21 +140,26 @@ export function WeeklyHourlyHeatmap() {
               </div>
 
               {/* Grid rows */}
-              <div className="mt-2 flex flex-col gap-[2px]">
+              <div className="mt-2 flex flex-col gap-[3px]">
                 {grid.rows.map((row, idx) => {
                   const dateLabel = grid.days[idx]?.slice(5) ?? '' // MM-DD
                   return (
-                    <div key={`r-${idx}`} className="flex items-center gap-2">
-                      <div className="w-12 shrink-0 text-right text-xs text-base-content/70">{dateLabel}</div>
-                      <div className="grid grid-cols-24 gap-[2px]">
+                    <div key={`r-${idx}`} className="flex items-center gap-3">
+                      <div className="w-14 shrink-0 text-right text-xs text-base-content/70">{dateLabel}</div>
+                      <div
+                        className="grid gap-[3px]"
+                        style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}
+                      >
                         {row.map((cell, ci) => {
                           const lvl = levelFor(cell.value, grid.max)
-                          const cls = LEVEL_COLORS[lvl] ?? LEVEL_COLORS[0]
-                          const title = `${cell.date || grid.days[idx]} ${String(ci).padStart(2, '0')}:00：${cell.value.toLocaleString()} 次`
+                          const palette = LEVEL_COLORS_BY_METRIC[metric]
+                          const cls = palette[lvl] ?? palette[0]
+                          const formatted = option.formatter(cell.value)
+                          const title = `${cell.date || grid.days[idx]} ${String(ci).padStart(2, '0')}:00：${formatted}`
                           return (
                             <div
                               key={`c-${idx}-${ci}`}
-                              className={`${cls} h-4 w-4 rounded-sm`}
+                              className={`${cls} h-5 w-5 sm:h-6 sm:w-6 rounded-sm`}
                               title={title}
                               aria-label={title}
                             />
@@ -129,6 +169,7 @@ export function WeeklyHourlyHeatmap() {
                     </div>
                   )
                 })}
+              </div>
               </div>
             </div>
           </div>
