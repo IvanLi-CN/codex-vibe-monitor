@@ -967,35 +967,10 @@ async fn fetch_timeseries(
 async fn latest_quota_snapshot(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<QuotaSnapshotResponse>, ApiError> {
-    let row = sqlx::query_as::<_, QuotaSnapshotRow>(
-        r#"
-        SELECT
-            captured_at,
-            amount_limit,
-            used_amount,
-            remaining_amount,
-            period,
-            period_reset_time,
-            expire_time,
-            is_active,
-            total_cost,
-            total_requests,
-            total_tokens,
-            last_request_time,
-            billing_type,
-            remaining_count,
-            used_count,
-            sub_type_name
-        FROM codex_quota_snapshots
-        ORDER BY captured_at DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| anyhow!("no quota snapshot available"))?;
-
-    Ok(Json(row.into()))
+    let snapshot = QuotaSnapshotResponse::fetch_latest(&state.pool)
+        .await?
+        .unwrap_or_else(QuotaSnapshotResponse::degraded_default);
+    Ok(Json(snapshot))
 }
 async fn sse_stream(
     State(state): State<Arc<AppState>>,
@@ -1315,6 +1290,27 @@ impl QuotaSnapshotResponse {
         .await?;
 
         Ok(row.map(Into::into))
+    }
+
+    fn degraded_default() -> Self {
+        Self {
+            captured_at: format_naive(Utc::now().naive_utc()),
+            amount_limit: None,
+            used_amount: None,
+            remaining_amount: None,
+            period: None,
+            period_reset_time: None,
+            expire_time: None,
+            is_active: false,
+            total_cost: 0.0,
+            total_requests: 0,
+            total_tokens: 0,
+            last_request_time: None,
+            billing_type: None,
+            remaining_count: None,
+            used_count: None,
+            sub_type_name: None,
+        }
     }
 }
 
