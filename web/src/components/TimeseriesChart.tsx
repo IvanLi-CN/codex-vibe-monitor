@@ -54,6 +54,8 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds }: Timeseries
               orientation="left"
               tickFormatter={(value) => numberFormatter.format(value as number)}
             />
+            {/* Hidden Y axis for count to maintain independent scaling without clutter */}
+            <YAxis yAxisId="count" hide />
             <YAxis
               yAxisId="cost"
               orientation="right"
@@ -73,6 +75,16 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds }: Timeseries
               dataKey="totalTokens"
               name="Total Tokens"
               yAxisId="tokens"
+              stroke="#8b5cf6"
+              fill="#a78bfa"
+              fillOpacity={0.2}
+              strokeWidth={2}
+            />
+            <Area
+              type="monotone"
+              dataKey="totalCount"
+              name="次数"
+              yAxisId="count"
               stroke="#2563eb"
               fill="#3b82f6"
               fillOpacity={0.2}
@@ -98,6 +110,8 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds }: Timeseries
               orientation="left"
               tickFormatter={(value) => numberFormatter.format(value as number)}
             />
+            {/* Hidden Y axis for count to maintain independent scaling without clutter */}
+            <YAxis yAxisId="count" hide />
             <YAxis
               yAxisId="cost"
               orientation="right"
@@ -116,6 +130,14 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds }: Timeseries
               yAxisId="tokens"
               dataKey="totalTokens"
               name="Total Tokens"
+              fill="#a78bfa"
+              radius={[4, 4, 0, 0]}
+            />
+            {/* Show count as a separate bar */}
+            <Bar
+              yAxisId="count"
+              dataKey="totalCount"
+              name="次数"
               fill="#3b82f6"
               radius={[4, 4, 0, 0]}
             />
