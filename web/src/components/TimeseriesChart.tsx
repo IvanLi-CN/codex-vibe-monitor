@@ -16,11 +16,12 @@ interface TimeseriesChartProps {
   points: TimeseriesPoint[]
   isLoading: boolean
   bucketSeconds?: number
+  showDate?: boolean
 }
 
 const numberFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
 
-export function TimeseriesChart({ points, isLoading, bucketSeconds }: TimeseriesChartProps) {
+export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = true }: TimeseriesChartProps) {
   if (isLoading) {
     return (
       <div className="flex justify-center py-10">
@@ -33,12 +34,16 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds }: Timeseries
     return <div className="alert">No data for selected range.</div>
   }
 
-  const chartData = points.map((point) => ({
-    label: point.bucketStart,
-    totalTokens: point.totalTokens,
-    totalCost: point.totalCost,
-    totalCount: point.totalCount,
-  }))
+  const chartData = points.map((point) => {
+    const start = new Date(point.bucketStart)
+    const label = formatLocalLabel(start, bucketSeconds, showDate)
+    return {
+      label,
+      totalTokens: point.totalTokens,
+      totalCost: point.totalCost,
+      totalCount: point.totalCount,
+    }
+  })
 
   const useLine = (bucketSeconds ?? 0) >= 3600
 
@@ -153,4 +158,21 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds }: Timeseries
       </ResponsiveContainer>
     </div>
   )
+}
+
+function pad2(n: number) {
+  return n.toString().padStart(2, '0')
+}
+
+function formatLocalLabel(date: Date, bucketSeconds?: number, showDate = true) {
+  const y = date.getFullYear()
+  const m = pad2(date.getMonth() + 1)
+  const d = pad2(date.getDate())
+  const hh = pad2(date.getHours())
+  const mm = pad2(date.getMinutes())
+  // For hourly or larger buckets, show date + hour; for minute buckets show hour:minute
+  if (!bucketSeconds || bucketSeconds >= 3600) {
+    return showDate ? `${y}-${m}-${d} ${hh}:00` : `${hh}:00`
+  }
+  return showDate ? `${y}-${m}-${d} ${hh}:${mm}` : `${hh}:${mm}`
 }

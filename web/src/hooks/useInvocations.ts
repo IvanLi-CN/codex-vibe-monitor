@@ -81,6 +81,21 @@ export function useInvocationStream(
     }
   }, [filters, limit])
 
+  // Auto-retry if initial load failed (e.g., backend temporarily unavailable)
+  useEffect(() => {
+    if (!error || records.length > 0) return
+    const id = setTimeout(() => {
+      fetchInvocations(limit, filters)
+        .then((response) => {
+          const next = mergeRecords(response.records, [], limit, filters)
+          setRecords(next)
+          setError(null)
+        })
+        .catch((err) => setError(err.message))
+    }, 2000)
+    return () => clearTimeout(id)
+  }, [error, filters, limit, records.length])
+
   useEffect(() => {
     if (!enableStream) {
       return

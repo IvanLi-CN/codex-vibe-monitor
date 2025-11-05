@@ -18,7 +18,8 @@ use axum::{
     response::{IntoResponse, Json, Response, Sse},
     routing::get,
 };
-use chrono::{Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, SecondsFormat, TimeZone, Utc};
+use chrono_tz::Asia::Shanghai;
 use clap::Parser;
 use dotenvy::dotenv;
 use futures_util::{StreamExt, stream};
@@ -753,10 +754,10 @@ async fn maybe_persist_snapshot(
         LIMIT 1
         "#,
     )
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await?;
 
-    Ok(Some(row.into()))
+    Ok(row.map(Into::into))
 }
 
 async fn list_invocations(
@@ -864,7 +865,7 @@ async fn fetch_timeseries(
 
     let end_dt = Utc::now();
     let start_dt = end_dt - range_duration;
-    let start_str = format_naive(start_dt.naive_utc());
+    let start_str_iso = format_utc_iso(start_dt);
 
     let records = sqlx::query_as::<_, TimeseriesRecord>(
         r#"
@@ -874,7 +875,7 @@ async fn fetch_timeseries(
         ORDER BY occurred_at ASC
         "#,
     )
-    .bind(&start_str)
+    .bind(format_naive(start_dt.naive_utc()))
     .fetch_all(&state.pool)
     .await?;
 
@@ -890,7 +891,12 @@ async fn fetch_timeseries(
     for record in records {
         let naive = NaiveDateTime::parse_from_str(&record.occurred_at, "%Y-%m-%d %H:%M:%S")
             .map_err(|err| anyhow!("failed to parse occurred_at: {err}"))?;
-        let epoch = naive.and_utc().timestamp();
+        // Interpret stored naive time as local Asia/Shanghai and convert to UTC epoch
+        let epoch = Shanghai
+            .from_local_datetime(&naive)
+            .single()
+            .map(|dt| dt.with_timezone(&Utc).timestamp())
+            .unwrap_or_else(|| naive.and_utc().timestamp());
         if epoch > latest_record_epoch {
             latest_record_epoch = epoch;
         }
@@ -939,8 +945,8 @@ async fn fetch_timeseries(
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
         points.push(TimeseriesPoint {
-            bucket_start: format_naive(start.naive_utc()),
-            bucket_end: format_naive(end.naive_utc()),
+            bucket_start: format_utc_iso(start),
+            bucket_end: format_utc_iso(end),
             total_count: agg.total_count,
             success_count: agg.success_count,
             failure_count: agg.failure_count,
@@ -950,13 +956,14 @@ async fn fetch_timeseries(
     }
 
     let response = TimeseriesResponse {
-        range_start: start_str,
-        range_end: format_naive(
-            Utc.timestamp_opt(fill_end_epoch, 0)
+        range_start: start_str_iso,
+        range_end: {
+            let end = Utc
+                .timestamp_opt(fill_end_epoch, 0)
                 .single()
-                .unwrap_or_else(Utc::now)
-                .naive_utc(),
-        ),
+                .unwrap_or_else(Utc::now);
+            format_utc_iso(end)
+        },
         bucket_seconds,
         points,
     };
@@ -1125,6 +1132,7 @@ enum BroadcastPayload {
 struct ApiInvocation {
     id: i64,
     invoke_id: String,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     occurred_at: String,
     model: Option<String>,
     input_tokens: Option<i64>,
@@ -1135,6 +1143,7 @@ struct ApiInvocation {
     cost: Option<f64>,
     status: Option<String>,
     error_message: Option<String>,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     created_at: String,
 }
 
@@ -1199,17 +1208,21 @@ struct TimeseriesPoint {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct QuotaSnapshotResponse {
+    #[serde(serialize_with = "serialize_local_or_utc_to_utc_iso")]
     captured_at: String,
     amount_limit: Option<f64>,
     used_amount: Option<f64>,
     remaining_amount: Option<f64>,
     period: Option<String>,
+    #[serde(serialize_with = "serialize_opt_local_or_utc_to_utc_iso")]
     period_reset_time: Option<String>,
+    #[serde(serialize_with = "serialize_opt_local_or_utc_to_utc_iso")]
     expire_time: Option<String>,
     is_active: bool,
     total_cost: f64,
     total_requests: i64,
     total_tokens: i64,
+    #[serde(serialize_with = "serialize_opt_local_or_utc_to_utc_iso")]
     last_request_time: Option<String>,
     billing_type: Option<String>,
     remaining_count: Option<i64>,
@@ -1294,7 +1307,7 @@ impl QuotaSnapshotResponse {
 
     fn degraded_default() -> Self {
         Self {
-            captured_at: format_naive(Utc::now().naive_utc()),
+            captured_at: format_utc_iso(Utc::now()),
             amount_limit: None,
             used_amount: None,
             remaining_amount: None,
@@ -1873,5 +1886,56 @@ where
 {
     fn from(err: E) -> Self {
         Self(err.into())
+    }
+}
+
+// --- ISO8601 UTC helpers and serializers ---
+fn format_utc_iso(dt: DateTime<Utc>) -> String {
+    dt.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn parse_to_utc_datetime(s: &str) -> Option<DateTime<Utc>> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        if let Some(loc) = Shanghai.from_local_datetime(&naive).single() {
+            return Some(loc.with_timezone(&Utc));
+        }
+        return Some(Utc.from_utc_datetime(&naive));
+    }
+    None
+}
+
+#[allow(clippy::ptr_arg)]
+fn serialize_local_naive_to_utc_iso<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let iso = parse_to_utc_datetime(value)
+        .map(format_utc_iso)
+        .unwrap_or_else(|| value.clone());
+    serializer.serialize_str(&iso)
+}
+
+#[allow(clippy::ptr_arg)]
+fn serialize_local_or_utc_to_utc_iso<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serialize_local_naive_to_utc_iso(value, serializer)
+}
+
+#[allow(clippy::ptr_arg)]
+fn serialize_opt_local_or_utc_to_utc_iso<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(s) => serialize_local_naive_to_utc_iso(s, serializer),
+        None => serializer.serialize_none(),
     }
 }

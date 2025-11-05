@@ -32,8 +32,12 @@ const ACCENT_BY_METRIC: Record<MetricKey, string> = {
   totalTokens: '#8B5CF6',
 }
 
-function parseDateTimeParts(naive: string) {
-  const [datePart, timePart] = naive.split(' ')
+function parseDateTimeParts(value: string) {
+  if (value.includes('T')) {
+    const d = new Date(value)
+    return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours() }
+  }
+  const [datePart, timePart] = value.split(' ')
   const [year, month, day] = (datePart ?? '').split('-').map(Number)
   const [hour] = (timePart ?? '').split(':').map(Number)
   return { year, month, day, hour: Number.isFinite(hour) ? hour : 0 }

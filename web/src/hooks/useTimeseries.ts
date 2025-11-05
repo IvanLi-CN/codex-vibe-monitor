@@ -40,6 +40,15 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     void load()
   }, [load])
 
+  // Auto-retry on transient failures (e.g., backend temporarily unavailable)
+  useEffect(() => {
+    if (!error) return
+    const id = setTimeout(() => {
+      void load()
+    }, 2000)
+    return () => clearTimeout(id)
+  }, [error, load])
+
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type === 'records') {
@@ -91,10 +100,10 @@ function applyRecordsToTimeseries(
   }
 
   let mutating = false
-  let latestRangeEndEpoch = parseNaiveDateTime(current.rangeEnd) ?? null
+  let latestRangeEndEpoch = parseIsoEpoch(current.rangeEnd)
 
   for (const record of records) {
-    const occurredEpoch = parseNaiveDateTime(record.occurredAt)
+    const occurredEpoch = parseIsoEpoch(record.occurredAt)
     if (occurredEpoch == null) continue
 
     if (latestRangeEndEpoch == null) {
@@ -110,8 +119,8 @@ function applyRecordsToTimeseries(
 
     const bucketStartEpoch = alignBucketEpoch(occurredEpoch, bucketSeconds, offsetSeconds)
     const bucketEndEpoch = bucketStartEpoch + bucketSeconds
-    const bucketStart = formatNaiveDateTime(bucketStartEpoch)
-    const bucketEnd = formatNaiveDateTime(bucketEndEpoch)
+    const bucketStart = formatEpochToIso(bucketStartEpoch)
+    const bucketEnd = formatEpochToIso(bucketEndEpoch)
 
     let point = points.get(bucketStart)
     if (!point) {
@@ -148,8 +157,8 @@ function applyRecordsToTimeseries(
   }
 
   const sortedPoints = Array.from(points.values()).sort((a, b) => {
-    const aEpoch = parseNaiveDateTime(a.bucketStart) ?? 0
-    const bEpoch = parseNaiveDateTime(b.bucketStart) ?? 0
+    const aEpoch = parseIsoEpoch(a.bucketStart) ?? 0
+    const bEpoch = parseIsoEpoch(b.bucketStart) ?? 0
     return aEpoch - bEpoch
   })
 
@@ -157,7 +166,7 @@ function applyRecordsToTimeseries(
     const earliestAllowed = latestRangeEndEpoch - rangeSeconds
     while (sortedPoints.length > 0) {
       const first = sortedPoints[0]
-      const firstEndEpoch = parseNaiveDateTime(first.bucketEnd)
+      const firstEndEpoch = parseIsoEpoch(first.bucketEnd)
       if (firstEndEpoch != null && firstEndEpoch <= earliestAllowed) {
         sortedPoints.shift()
         continue
@@ -166,11 +175,11 @@ function applyRecordsToTimeseries(
     }
   }
 
-  const nextRangeEndEpoch = latestRangeEndEpoch ?? parseNaiveDateTime(current.rangeEnd)
-  const nextRangeEnd = nextRangeEndEpoch != null ? formatNaiveDateTime(nextRangeEndEpoch) : current.rangeEnd
+  const nextRangeEndEpoch = latestRangeEndEpoch ?? parseIsoEpoch(current.rangeEnd)
+  const nextRangeEnd = nextRangeEndEpoch != null ? formatEpochToIso(nextRangeEndEpoch) : current.rangeEnd
   const nextRangeStart =
     rangeSeconds != null && nextRangeEndEpoch != null
-      ? formatNaiveDateTime(nextRangeEndEpoch - rangeSeconds)
+      ? formatEpochToIso(nextRangeEndEpoch - rangeSeconds)
       : current.rangeStart
 
   return {
@@ -207,22 +216,13 @@ function alignBucketEpoch(epochSeconds: number, bucketSeconds: number, offsetSec
   return aligned
 }
 
-function parseNaiveDateTime(value: string) {
-  const [datePart, timePart] = value?.split(' ') ?? []
-  if (!datePart || !timePart) {
-    return null
-  }
-  const [year, month, day] = datePart.split('-').map(Number)
-  const [hour, minute, second] = timePart.split(':').map(Number)
-  if ([year, month, day, hour, minute, second].some((part) => !Number.isFinite(part))) {
-    return null
-  }
-  const date = Date.UTC(year, (month ?? 1) - 1, day ?? 1, hour ?? 0, minute ?? 0, second ?? 0)
-  return Math.floor(date / 1000)
+function parseIsoEpoch(value?: string | null) {
+  if (!value) return null
+  const t = Date.parse(value)
+  if (Number.isNaN(t)) return null
+  return Math.floor(t / 1000)
 }
 
-function formatNaiveDateTime(epochSeconds: number) {
-  const date = new Date(epochSeconds * 1000)
-  const pad = (value: number) => value.toString().padStart(2, '0')
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`
+function formatEpochToIso(epochSeconds: number) {
+  return new Date(epochSeconds * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
 }
