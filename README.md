@@ -1,99 +1,102 @@
 # Codex Vibe Monitor
 
-Codex Vibe Monitor 负责以 10 秒固定节奏抓取 `https://new.xychatai.com/pastel/#/vibe-code/dashboard` 中「最近 20 条调用记录 - Codex」接口的数据，存入 SQLite，并通过 HTTP API 与 SSE 为前端仪表盘提供实时更新。
+[![CI](https://github.com/IvanLi-CN/codex-vibe-monitor/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/IvanLi-CN/codex-vibe-monitor/actions/workflows/ci.yml)
+[![Git Tags](https://img.shields.io/github/v/tag/IvanLi-CN/codex-vibe-monitor?sort=semver)](https://github.com/IvanLi-CN/codex-vibe-monitor/tags)
+[![Container](https://img.shields.io/badge/ghcr.io%2FIvanLi--CN%2Fcodex--vibe--monitor-available-2ea44f?logo=docker)](https://github.com/IvanLi-CN/codex-vibe-monitor/pkgs/container/codex-vibe-monitor)
+![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)
+![Node](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![Vite](https://img.shields.io/badge/Vite-7-646CFF?logo=vite&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)
 
-- **轮询调度**：`tokio` 定时器 + 信号量控制并发，60 秒超时，上限 6 条并发请求，自动选择 HTTP/2 连接复用或独立连接。
-- **数据持久化**：`sqlx` + SQLite，保留原始响应及常用字段，确保唯一性约束 (`invoke_id` + `occurred_at`)。
-- **服务接口**：`axum` 提供 REST API（列表/统计）、SSE 实时推送以及静态 SPA 托管。
-- **前端界面**：`web/` 目录内的 Vite + React + TypeScript + TailwindCSS + DaisyUI 单页应用，支持图表/列表双视图，默认通过 SSE 实时刷新。
-- **容器化**：多阶段 Dockerfile 同时构建 Rust 二进制与前端静态资源，产出轻量运行镜像。
+以 10 秒固定节奏抓取「Codex 调用记录/配额快照」，写入 SQLite，并通过 REST API 与 SSE 为前端仪表盘提供实时数据流；前端使用 Vite + React 渲染图表、表格与配额状态。
+
+## 特性
+
+- 调度与并发：Tokio 定时器 + 信号量并发控制，60s 请求超时，智能选择连接复用或独立连接。
+- 数据持久化：SQLx/SQLite，包含唯一性约束（`invoke_id` + `occurred_at`）。
+- 接口与事件：Axum 提供 REST API、SSE 推送；可选托管静态 SPA。
+- 前端应用：DaisyUI/Tailwind 组件化 UI，实时图表与统计概览，SSE 自动更新。
+- 容器镜像：多阶段 Dockerfile，产出轻量运行时；CI 自动推送 GHCR。
 
 ## 目录结构
 
 ```
-├── Cargo.toml
-├── Dockerfile               # 生产镜像构建脚本
-├── DESGIN.md                # 系统设计与补充约束
-├── src/                     # Rust 后端（轮询、API、SSE、静态资源）
-├── web/                     # 前端 SPA（Vite + React + DaisyUI）
-│   ├── src/
-│   ├── package.json
-│   └── vite.config.ts
-└── codex_vibe_monitor.db    # 默认数据库（已在 .gitignore 中）
+├── Cargo.toml               # Rust 包与依赖
+├── src/                     # 后端：调度/HTTP API/SSE/SQLite
+├── web/                     # 前端：Vite + React + TypeScript
+│   ├── src/                 # 组件、hooks 与 API 封装
+│   └── vite.config.ts       # 60080 端口，代理 /api 与 /events
+├── Dockerfile               # 多阶段构建（前后端）
+└── .github/workflows/ci.yml # CI：Lint/Test/Build/Docker 推送
 ```
 
-## 运行前准备
+## 快速开始（本地开发）
 
-1. **环境依赖**
-   - Rust 1.78+（建议使用 `rustup`）
-   - Node.js 20+（Vite 开发与构建）
-   - SQLite（可选，用于手动检查数据）
-
-2. **配置认证信息**
-   在项目根目录创建 `.env.local`（已加入 `.gitignore`）并填入：
-
-   ```env
-   XY_BASE_URL=https://new.xychatai.com
-   XY_VIBE_QUOTA_ENDPOINT=/frontend-api/vibe-code/quota
-   XY_SESSION_COOKIE_NAME=share-session
-   XY_SESSION_COOKIE_VALUE=<通过 DevTools 导出的 Cookie>
-   # 以下可按需覆盖默认值
-   # XY_DATABASE_PATH=codex_vibe_monitor.db
-   # XY_POLL_INTERVAL_SECS=10
-   # XY_REQUEST_TIMEOUT_SECS=60
-   # XY_MAX_PARALLEL_POLLS=6
-   # XY_HTTP_BIND=127.0.0.1:8080
-   # XY_STATIC_DIR=web/dist
-   ```
-
-   `XY_STATIC_DIR` 默认会尝试使用 `web/dist`，若不存在则仅提供 API/SSE。
-
-## 本地开发流程
-
-### 1. 后端服务
+1. 后端
 
 ```bash
 cargo run
 ```
 
-若需临时使用其他 SQLite 文件，可通过命令行覆盖：
+默认监听 `127.0.0.1:8080`。健康检查：`GET /health`。
 
-```bash
-cargo run -- --database-path /path/to/custom.db
-```
-
-大多数环境变量都有同名的 CLI 覆盖项（例如 `--base-url`、`--quota-endpoint`、`--session-cookie-name`、`--session-cookie-value`、`--http-bind`、`--poll-interval-secs` 等），用于在不同环境下快速切换配置。
-
-启动后端后将会：
-
-- 每 10 秒拉取最新 quota 数据并写入 SQLite
-- 在 `XY_HTTP_BIND` 指定端口开放：
-  - `GET /api/invocations?limit=50&model=&status=` 最新记录
-  - `GET /api/stats` 聚合统计
-  - `GET /events` SSE 实时推送 `{ type: "records", records: [...] }`
-  - `GET /health` 健康检查
-  - 静态 SPA（若配置了 `XY_STATIC_DIR`）
-
-### 2. 前端（开发模式）
+2. 前端（开发模式）
 
 ```bash
 cd web
 npm install
-npm run dev
+npm run dev -- --host 127.0.0.1 --port 60080
 ```
 
-Vite 会读取 `VITE_BACKEND_PROXY`（默认 `http://localhost:8080`）并自动代理 `/api` 与 `/events` 请求，保证本地开发时前端可直接调用后端服务。
+开发服务器默认代理到 `http://127.0.0.1:8080`，也可用 `VITE_BACKEND_PROXY` 覆盖。
 
-### 3. 打包前端
+## 配置
+
+在仓库根目录创建 `.env.local`（已忽略提交），常用变量如下（括号内为默认值）：
+
+```env
+XY_BASE_URL=https://new.xychatai.com
+XY_VIBE_QUOTA_ENDPOINT=/frontend-api/vibe-code/quota
+XY_SESSION_COOKIE_NAME=share-session
+XY_SESSION_COOKIE_VALUE=<从浏览器开发者工具导出的 Cookie>
+XY_DATABASE_PATH=codex_vibe_monitor.db         # (默认)
+XY_POLL_INTERVAL_SECS=10                       # (10)
+XY_REQUEST_TIMEOUT_SECS=60                     # (60)
+XY_MAX_PARALLEL_POLLS=6                        # (6)
+XY_SHARED_CONNECTION_PARALLELISM=2             # (2)
+XY_HTTP_BIND=127.0.0.1:8080                    # (127.0.0.1:8080)
+XY_LIST_LIMIT_MAX=200                          # (200)
+XY_USER_AGENT=codex-vibe-monitor/0.1.0         # (自动)
+XY_STATIC_DIR=web/dist                         # (存在时自动使用)
+XY_SNAPSHOT_MIN_INTERVAL_SECS=300              # (300)
+```
+
+上述大部分变量均可使用 CLI 覆盖，例如：
 
 ```bash
-cd web
-npm run build
+cargo run -- \
+  --database-path /tmp/codex.db \
+  --http-bind 127.0.0.1:38080 \
+  --poll-interval-secs 5
 ```
 
-构建产物位于 `web/dist`，后端默认会在静态目录存在时自动托管这些文件。
+## HTTP API 与 SSE
 
-## Docker 部署
+- `GET /health`：健康检查，返回 `ok`。
+- `GET /api/version`：返回 `{ backend, frontend }`。
+- `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `XY_LIST_LIMIT_MAX` 控制）。
+- `GET /api/stats`：全量聚合统计。
+- `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计。
+- `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）。
+- `GET /api/quota/latest`：最近一次配额快照。
+- `GET /events`：SSE 推送，事件类型：
+  - `{ type: "version", version }`
+  - `{ type: "records", records: [...] }`
+  - `{ type: "summary", window, summary }`
+  - `{ type: "quota", snapshot }`
+
+## Docker
 
 构建镜像：
 
@@ -101,7 +104,7 @@ npm run build
 docker build -t codex-vibe-monitor .
 ```
 
-运行容器（映射数据目录与环境变量）：
+运行（持久化数据与注入认证信息）：
 
 ```bash
 docker run --rm \
@@ -110,37 +113,31 @@ docker run --rm \
   -e XY_BASE_URL=https://new.xychatai.com \
   -e XY_SESSION_COOKIE_NAME=share-session \
   -e XY_SESSION_COOKIE_VALUE=... \
-  codex-vibe-monitor
+  ghcr.io/ivanli-cn/codex-vibe-monitor:latest
 ```
 
-容器镜像默认环境：
+容器内默认：`XY_DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db`，`XY_HTTP_BIND=0.0.0.0:8080`，`XY_STATIC_DIR=/srv/app/web`。
 
-- 数据库路径 `/srv/app/data/codex_vibe_monitor.db`（可通过挂载卷持久化）
-- 静态资源目录 `/srv/app/web`
-- 对外端口 8080
+## 验证与排查
 
-## 调试与验证
-
-- 查询最新记录：
-
+- SQLite 检查：
   ```bash
-  sqlite3 codex_vibe_monitor.db 'SELECT invoke_id, occurred_at, status FROM codex_invocations ORDER BY occurred_at DESC LIMIT 5;'
+  sqlite3 codex_vibe_monitor.db "SELECT invoke_id, occurred_at, status FROM codex_invocations ORDER BY occurred_at DESC LIMIT 5;"
   ```
-
-- 使用 `curl` 验证 API：
-
+- API 采样：
   ```bash
   curl "http://127.0.0.1:8080/api/invocations?limit=10"
   curl "http://127.0.0.1:8080/api/stats"
   curl "http://127.0.0.1:8080/api/quota/latest"
   ```
+- SSE 观察：浏览器打开 `http://127.0.0.1:8080/events` 或使用 `curl`/`sse-cat`。
 
-- SSE 测试（浏览器或 CLI 工具如 `hey`、`curl`、`sse-cat`）。
+## CI / CD
 
-## 参考文档
+- 工作流：`.github/workflows/ci.yml`（Lint/Format、后端测试、构建产物、构建并推送 Docker）。
+- 版本：CI 使用脚本按 `Cargo.toml` 版本自动生成 `APP_EFFECTIVE_VERSION`，必要时自增补丁位。
+- 镜像：推送至 GHCR `ghcr.io/ivanli-cn/codex-vibe-monitor`（支持 `latest`、`sha`、以及计算得出的多种版本标签）。
 
-- `DESGIN.md`：包含轮询策略、SSE、前端结构与 Docker 要求等详细设计。
-- `src/main.rs`：主程序，调度、HTTP 服务入口与数据库 schema 管理。
-- `web/src/`：React 组件、hooks、API 封装等实现细节。
+---
 
-有新的需求或补充要求时，请同步更新设计文档和 README，确保开发与部署体验持续一致喵。
+欢迎提 Issue/PR，一起把数据链路和可观测性打磨得更稳更顺！
