@@ -99,8 +99,8 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
             dataKey="totalTokens"
             name="Total Tokens"
             yAxisId="tokens"
-            stroke="#2563eb"
-            fill="#3b82f6"
+            stroke="#8b5cf6"
+            fill="#a78bfa"
             fillOpacity={0.25}
             strokeWidth={2}
             isAnimationActive={false}
