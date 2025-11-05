@@ -26,7 +26,7 @@ export default function DashboardPage() {
     data: timeseries,
     isLoading: timeseriesLoading,
     error: timeseriesError,
-  } = useTimeseries('1d', { bucket: '30m' })
+  } = useTimeseries('1d', { bucket: '1h' })
   const {
     records,
     isLoading: tableLoading,
