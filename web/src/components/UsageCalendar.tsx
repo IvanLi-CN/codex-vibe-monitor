@@ -218,7 +218,7 @@ export function UsageCalendar() {
             <h2 className="card-title">使用活动</h2>
             <div
               ref={tabsRef}
-              className="tabs tabs-md tabs-border gap-2 sm:gap-4"
+              className="tabs tabs-sm tabs-border"
               role="tablist"
               aria-label="统计指标切换"
             >
@@ -231,7 +231,7 @@ export function UsageCalendar() {
                     role="tab"
                     aria-selected={active}
                     aria-current={active ? 'true' : undefined}
-                    className={`tab whitespace-nowrap px-3 sm:px-4 ${
+                    className={`tab whitespace-nowrap px-2 sm:px-3 ${
                       active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
                     }`}
                     style={active ? { color: ACCENT_BY_METRIC[option.key] } : undefined}
