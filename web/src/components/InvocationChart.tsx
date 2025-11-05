@@ -23,8 +23,8 @@ const numberFormatter = new Intl.NumberFormat('en-US', {
 export function InvocationChart({ records, isLoading }: InvocationChartProps) {
   const data = useMemo(() => {
     const chronological = [...records].sort((a, b) => {
-      const aEpoch = parseNaiveDateTime(a.occurredAt)
-      const bEpoch = parseNaiveDateTime(b.occurredAt)
+      const aEpoch = parseIsoEpoch(a.occurredAt)
+      const bEpoch = parseIsoEpoch(b.occurredAt)
       if (aEpoch == null && bEpoch == null) return 0
       if (aEpoch == null) return -1
       if (bEpoch == null) return 1
@@ -32,7 +32,7 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
     })
 
     return chronological.map((record, index) => {
-      const occurredEpoch = parseNaiveDateTime(record.occurredAt)
+      const occurredEpoch = parseIsoEpoch(record.occurredAt)
       const occurred = occurredEpoch != null ? new Date(occurredEpoch * 1000) : null
       const timeLabel = occurred
         ? occurred.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -122,18 +122,9 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
   )
 }
 
-function parseNaiveDateTime(value: string) {
-  const [datePart, timePart] = value?.split(' ') ?? []
-  if (!datePart || !timePart) {
-    return null
-  }
-
-  const [year, month, day] = datePart.split('-').map(Number)
-  const [hour, minute, second] = timePart.split(':').map(Number)
-  if ([year, month, day, hour, minute, second].some((segment) => !Number.isFinite(segment))) {
-    return null
-  }
-
-  const epochMilliseconds = Date.UTC(year, (month ?? 1) - 1, day ?? 1, hour ?? 0, minute ?? 0, second ?? 0)
-  return Math.floor(epochMilliseconds / 1000)
+function parseIsoEpoch(value?: string | null) {
+  if (!value) return null
+  const t = Date.parse(value)
+  if (Number.isNaN(t)) return null
+  return Math.floor(t / 1000)
 }

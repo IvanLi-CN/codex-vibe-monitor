@@ -60,6 +60,7 @@ export default function DashboardPage() {
               points={timeseries?.points ?? []}
               isLoading={timeseriesLoading}
               bucketSeconds={timeseries?.bucketSeconds}
+              showDate={false}
             />
           )}
         </div>

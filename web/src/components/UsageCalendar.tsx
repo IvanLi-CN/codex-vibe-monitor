@@ -336,7 +336,7 @@ function transformPointsToActivities(points: TimeseriesPoint[], metric: MetricKe
     return { activities: [], maxValue: 0, totalValue: 0, thresholds: [], weekCount: 0, monthMarkers: [] }
   }
 
-  const sortedPoints = [...points].sort((a, b) => parseNaiveDate(a.bucketStart) - parseNaiveDate(b.bucketStart))
+  const sortedPoints = [...points].sort((a, b) => parseDateLocal(a.bucketStart) - parseDateLocal(b.bucketStart))
 
   const valuesByDate = new Map<string, number>()
   for (const point of sortedPoints) {
@@ -345,8 +345,8 @@ function transformPointsToActivities(points: TimeseriesPoint[], metric: MetricKe
     valuesByDate.set(iso, current + (point[metric] ?? 0))
   }
 
-  const startDate = new Date(parseNaiveDate(sortedPoints[0].bucketStart))
-  const endDate = new Date(parseNaiveDate(sortedPoints[sortedPoints.length - 1].bucketStart))
+  const startDate = new Date(parseDateLocal(sortedPoints[0].bucketStart))
+  const endDate = new Date(parseDateLocal(sortedPoints[sortedPoints.length - 1].bucketStart))
 
   const activities: Activity[] = []
   const values: number[] = []
@@ -385,17 +385,26 @@ function createThresholds(maxValue: number, maxLevel: number) {
   return thresholds
 }
 
-function parseNaiveDate(value: string) {
+function toISODate(value: string) {
+  if (value.includes('T')) {
+    // local day ISO (YYYY-MM-DD in local timezone)
+    const d = new Date(value)
+    const pad = (n: number) => n.toString().padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  }
+  const [datePart] = value.split(' ')
+  return datePart ?? ''
+}
+
+function parseDateLocal(value: string) {
+  if (value.includes('T')) {
+    const d = new Date(value)
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  }
   const [datePart] = value.split(' ')
   if (!datePart) return 0
   const [year, month, day] = datePart.split('-').map(Number)
-  const date = Date.UTC(year, (month ?? 1) - 1, day ?? 1)
-  return date
-}
-
-function toISODate(value: string) {
-  const [datePart] = value.split(' ')
-  return datePart ?? ''
+  return new Date(year, (month ?? 1) - 1, day ?? 1).getTime()
 }
 
 function formatISODate(date: Date) {
