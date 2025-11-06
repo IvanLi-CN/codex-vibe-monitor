@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   Area,
   AreaChart,
@@ -10,17 +10,26 @@ import {
   YAxis,
 } from 'recharts'
 import type { ApiInvocation } from '../lib/api'
+import { useTranslation } from '../i18n'
 
 interface InvocationChartProps {
   records: ApiInvocation[]
   isLoading: boolean
 }
 
-const numberFormatter = new Intl.NumberFormat('en-US', {
-  maximumFractionDigits: 2,
-})
-
 export function InvocationChart({ records, isLoading }: InvocationChartProps) {
+  const { t, locale } = useTranslation()
+  const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
+
+  const numberFormatter = useMemo(
+    () => new Intl.NumberFormat(localeTag, { maximumFractionDigits: 2 }),
+    [localeTag],
+  )
+  const currencyFormatter = useMemo(
+    () => new Intl.NumberFormat(localeTag, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 }),
+    [localeTag],
+  )
+
   const data = useMemo(() => {
     const chronological = [...records].sort((a, b) => {
       const aEpoch = parseIsoEpoch(a.occurredAt)
@@ -35,28 +44,54 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
       const occurredEpoch = parseIsoEpoch(record.occurredAt)
       const occurred = occurredEpoch != null ? new Date(occurredEpoch * 1000) : null
       const timeLabel = occurred
-        ? occurred.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        ? occurred.toLocaleTimeString(localeTag, {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+          })
         : record.occurredAt
 
       return {
-        i: index, // 用序号做等距数轴
+        i: index, // use index as evenly spaced axis
         timeLabel,
         totalTokens: record.totalTokens ?? 0,
         cost: record.cost ?? 0,
       }
     })
-  }, [records])
+  }, [records, localeTag])
+
+  const seriesNames = useMemo(
+    () => ({
+      totalTokens: t('chart.totalTokens'),
+      cost: t('chart.totalCost'),
+    }),
+    [t],
+  )
+
+  const tooltipFormatter = useCallback(
+    (value: number, key: string | number) => {
+      if (key === 'cost') {
+        return [currencyFormatter.format(value), seriesNames.cost]
+      }
+      if (key === 'totalTokens') {
+        return [numberFormatter.format(value), seriesNames.totalTokens]
+      }
+      return [numberFormatter.format(value), String(key)]
+    },
+    [currencyFormatter, numberFormatter, seriesNames],
+  )
 
   if (isLoading) {
     return (
       <div className="flex justify-center py-10">
-        <span className="loading loading-bars loading-lg" aria-label="Loading chart" />
+        <span className="loading loading-bars loading-lg" aria-label={t('chart.loadingDetailed')} />
       </div>
     )
   }
 
   if (data.length === 0) {
-    return <div className="alert">No data points yet.</div>
+    return <div className="alert">{t('chart.noDataPoints')}</div>
   }
 
   return (
@@ -75,11 +110,15 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
               return label ?? String(idx)
             }}
           />
-          <YAxis yAxisId="tokens" orientation="left" tickFormatter={numberFormatter.format} />
+          <YAxis
+            yAxisId="tokens"
+            orientation="left"
+            tickFormatter={(value) => numberFormatter.format(value as number)}
+          />
           <YAxis
             yAxisId="cost"
             orientation="right"
-            tickFormatter={(value) => `$${numberFormatter.format(value)}`}
+            tickFormatter={(value) => currencyFormatter.format(value as number)}
             width={80}
           />
           <Tooltip
@@ -87,17 +126,13 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
               const idx = Math.max(0, Math.min(data.length - 1, Math.round(Number(value))))
               return data[idx]?.timeLabel ?? String(idx)
             }}
-            formatter={(value: number, key) =>
-              key === 'cost'
-                ? `$${numberFormatter.format(value)}`
-                : numberFormatter.format(value)
-            }
+            formatter={tooltipFormatter}
           />
           <Legend />
           <Area
             type="monotone"
             dataKey="totalTokens"
-            name="Total Tokens"
+            name={seriesNames.totalTokens}
             yAxisId="tokens"
             stroke="#8b5cf6"
             fill="#a78bfa"
@@ -108,7 +143,7 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
           <Area
             type="monotone"
             dataKey="cost"
-            name="Cost (USD)"
+            name={seriesNames.cost}
             yAxisId="cost"
             stroke="#f97316"
             fill="#fb923c"

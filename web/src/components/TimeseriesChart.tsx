@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import {
   Area,
   AreaChart,
@@ -11,6 +12,7 @@ import {
   YAxis,
 } from 'recharts'
 import type { TimeseriesPoint } from '../lib/api'
+import { useTranslation } from '../i18n'
 
 interface TimeseriesChartProps {
   points: TimeseriesPoint[]
@@ -19,22 +21,36 @@ interface TimeseriesChartProps {
   showDate?: boolean
 }
 
-const numberFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+interface ChartDatum {
+  label: string
+  totalTokens: number
+  totalCost: number
+  totalCount: number
+}
 
 export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = true }: TimeseriesChartProps) {
+  const { t, locale } = useTranslation()
+  const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
+
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag, { maximumFractionDigits: 2 }), [localeTag])
+  const currencyFormatter = useMemo(
+    () => new Intl.NumberFormat(localeTag, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 }),
+    [localeTag],
+  )
+
   if (isLoading) {
     return (
       <div className="flex justify-center py-10">
-        <span className="loading loading-bars loading-lg" aria-label="Loading" />
+        <span className="loading loading-bars loading-lg" aria-label={t('chart.loadingDetailed')} />
       </div>
     )
   }
 
   if (points.length === 0) {
-    return <div className="alert">No data for selected range.</div>
+    return <div className="alert">{t('chart.noDataRange')}</div>
   }
 
-  const chartData = points.map((point) => {
+  const chartData: ChartDatum[] = points.map((point) => {
     const start = new Date(point.bucketStart)
     const label = formatLocalLabel(start, bucketSeconds, showDate)
     return {
@@ -45,7 +61,20 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
     }
   })
 
+  const seriesNames = {
+    totalTokens: t('chart.totalTokens'),
+    totalCost: t('chart.totalCost'),
+    totalCount: t('chart.totalCount'),
+  }
+
   const useLine = (bucketSeconds ?? 0) >= 3600
+
+  const formatValue = (value: number, key: keyof typeof seriesNames) => {
+    if (key === 'totalCost') {
+      return currencyFormatter.format(value)
+    }
+    return numberFormatter.format(value)
+  }
 
   return (
     <div className="h-96 w-full">
@@ -59,26 +88,21 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
               orientation="left"
               tickFormatter={(value) => numberFormatter.format(value as number)}
             />
-            {/* Hidden Y axis for count to maintain independent scaling without clutter */}
             <YAxis yAxisId="count" hide />
             <YAxis
               yAxisId="cost"
               orientation="right"
-              tickFormatter={(value) => `$${numberFormatter.format(value as number)}`}
-              width={80}
+              tickFormatter={(value) => currencyFormatter.format(value as number)}
+              width={90}
             />
             <Tooltip
-              formatter={(value: number, key) =>
-                key === 'totalCost'
-                  ? `$${numberFormatter.format(value)}`
-                  : numberFormatter.format(value)
-              }
+              formatter={(value, key) => [formatValue(value as number, key as keyof typeof seriesNames), seriesNames[key as keyof typeof seriesNames]]}
             />
             <Legend />
             <Area
               type="monotone"
               dataKey="totalTokens"
-              name="Total Tokens"
+              name={seriesNames.totalTokens}
               yAxisId="tokens"
               stroke="#8b5cf6"
               fill="#a78bfa"
@@ -88,7 +112,7 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
             <Area
               type="monotone"
               dataKey="totalCount"
-              name="次数"
+              name={seriesNames.totalCount}
               yAxisId="count"
               stroke="#2563eb"
               fill="#3b82f6"
@@ -98,7 +122,7 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
             <Area
               type="monotone"
               dataKey="totalCost"
-              name="Cost (USD)"
+              name={seriesNames.totalCost}
               yAxisId="cost"
               stroke="#f97316"
               fill="#fb923c"
@@ -115,44 +139,20 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
               orientation="left"
               tickFormatter={(value) => numberFormatter.format(value as number)}
             />
-            {/* Hidden Y axis for count to maintain independent scaling without clutter */}
             <YAxis yAxisId="count" hide />
             <YAxis
               yAxisId="cost"
               orientation="right"
-              tickFormatter={(value) => `$${numberFormatter.format(value as number)}`}
-              width={80}
+              tickFormatter={(value) => currencyFormatter.format(value as number)}
+              width={90}
             />
             <Tooltip
-              formatter={(value: number, key) =>
-                key === 'totalCost'
-                  ? `$${numberFormatter.format(value)}`
-                  : numberFormatter.format(value)
-              }
+              formatter={(value, key) => [formatValue(value as number, key as keyof typeof seriesNames), seriesNames[key as keyof typeof seriesNames]]}
             />
             <Legend />
-            <Bar
-              yAxisId="tokens"
-              dataKey="totalTokens"
-              name="Total Tokens"
-              fill="#a78bfa"
-              radius={[4, 4, 0, 0]}
-            />
-            {/* Show count as a separate bar */}
-            <Bar
-              yAxisId="count"
-              dataKey="totalCount"
-              name="次数"
-              fill="#3b82f6"
-              radius={[4, 4, 0, 0]}
-            />
-            <Bar
-              yAxisId="cost"
-              dataKey="totalCost"
-              name="Cost (USD)"
-              fill="#fb923c"
-              radius={[4, 4, 0, 0]}
-            />
+            <Bar yAxisId="tokens" dataKey="totalTokens" name={seriesNames.totalTokens} fill="#a78bfa" radius={[4, 4, 0, 0]} />
+            <Bar yAxisId="count" dataKey="totalCount" name={seriesNames.totalCount} fill="#3b82f6" radius={[4, 4, 0, 0]} />
+            <Bar yAxisId="cost" dataKey="totalCost" name={seriesNames.totalCost} fill="#fb923c" radius={[4, 4, 0, 0]} />
           </ComposedChart>
         )}
       </ResponsiveContainer>
@@ -164,13 +164,12 @@ function pad2(n: number) {
   return n.toString().padStart(2, '0')
 }
 
-function formatLocalLabel(date: Date, bucketSeconds?: number, showDate = true) {
+function formatLocalLabel(date: Date, bucketSeconds: number | undefined, showDate: boolean) {
   const y = date.getFullYear()
   const m = pad2(date.getMonth() + 1)
   const d = pad2(date.getDate())
   const hh = pad2(date.getHours())
   const mm = pad2(date.getMinutes())
-  // For hourly or larger buckets, show date + hour; for minute buckets show hour:minute
   if (!bucketSeconds || bucketSeconds >= 3600) {
     return showDate ? `${y}-${m}-${d} ${hh}:00` : `${hh}:00`
   }

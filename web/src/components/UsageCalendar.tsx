@@ -1,23 +1,24 @@
-import { cloneElement, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { cloneElement, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement, CSSProperties } from 'react'
 import ActivityCalendar, { type Activity } from 'react-activity-calendar'
 import { useTimeseries } from '../hooks/useTimeseries'
 import type { TimeseriesPoint } from '../lib/api'
+import { useTranslation } from '../i18n'
+import type { TranslationKey } from '../i18n'
 
 type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
 interface MetricOption {
   key: MetricKey
-  label: string
-  formatter: (value: number) => string
+  labelKey: TranslationKey
 }
 
 type AccessibleBlock = ReactElement<{ title?: string; 'aria-label'?: string; style?: CSSProperties }>
 
 const METRIC_OPTIONS: MetricOption[] = [
-  { key: 'totalCount', label: '次数', formatter: (v) => v.toLocaleString() },
-  { key: 'totalCost', label: '金额', formatter: (v) => `$${v.toFixed(2)}` },
-  { key: 'totalTokens', label: 'Tokens', formatter: (v) => v.toLocaleString() },
+  { key: 'totalCount', labelKey: 'metric.totalCount' },
+  { key: 'totalCost', labelKey: 'metric.totalCost' },
+  { key: 'totalTokens', labelKey: 'metric.totalTokens' },
 ]
 
 const WEEKDAY_LABELS: Array<'mon' | 'wed' | 'fri' | 'sun'> = ['mon', 'wed', 'fri', 'sun']
@@ -38,17 +39,17 @@ const WEEKDAY_LABEL_SPACE = 16
 // in presentation attributes. This matches DaisyUI base-300 in light theme.
 const BASE_ZERO = { light: '#E5E7EB', dark: '#374151' }
 const THEME_BY_METRIC: Record<MetricKey, { light: string[]; dark: string[] }> = {
-  // 次数：蓝色系（200..500）
+// Counts palette: blue family (200..500)
   totalCount: {
     light: [BASE_ZERO.light, '#BFDBFE', '#93C5FD', '#60A5FA', '#3B82F6'],
     dark: [BASE_ZERO.dark, '#93C5FD', '#60A5FA', '#3B82F6', '#1D4ED8'],
   },
-  // 金额：琥珀/橙色系（200..500）
+  // Cost palette: amber/orange family (200..500)
   totalCost: {
     light: [BASE_ZERO.light, '#FDE68A', '#FCD34D', '#F59E0B', '#D97706'],
     dark: [BASE_ZERO.dark, '#FCD34D', '#F59E0B', '#D97706', '#B45309'],
   },
-  // Tokens：紫色系（200..500）
+  // Tokens palette: violet family (200..500)
   totalTokens: {
     light: [BASE_ZERO.light, '#DDD6FE', '#C4B5FD', '#A78BFA', '#8B5CF6'],
     dark: [BASE_ZERO.dark, '#C4B5FD', '#A78BFA', '#8B5CF6', '#7C3AED'],
@@ -62,6 +63,7 @@ const ACCENT_BY_METRIC: Record<MetricKey, string> = {
 }
 
 export function UsageCalendar() {
+  const { t, locale } = useTranslation()
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const { data, isLoading, error } = useTimeseries('90d', { bucket: '1d' })
   const [blockSize, setBlockSize] = useState(DEFAULT_BLOCK_SIZE)
@@ -72,14 +74,54 @@ export function UsageCalendar() {
   const colorProbeRef = useRef<HTMLSpanElement>(null)
   const [baseZeroColor, setBaseZeroColor] = useState<string>(BASE_ZERO.light)
 
-  const metricDefinition = useMemo(
-    () => METRIC_OPTIONS.find((o) => o.key === metric) ?? METRIC_OPTIONS[0],
-    [metric],
+  const legendLabels = useMemo(
+    () => ({
+      low: t('legend.low'),
+      high: t('legend.high'),
+    }),
+    [t],
+  )
+
+  const weekdayLabels = useMemo(
+    () => [
+      t('calendar.weekday.sun'),
+      t('calendar.weekday.mon'),
+      t('calendar.weekday.tue'),
+      t('calendar.weekday.wed'),
+      t('calendar.weekday.thu'),
+      t('calendar.weekday.fri'),
+      t('calendar.weekday.sat'),
+    ],
+    [t],
+  )
+
+  const valueSeparator = t('calendar.valueSeparator')
+  const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
+
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
+  const currencyFormatter = useMemo(() => new Intl.NumberFormat(localeTag, { style: 'currency', currency: 'USD' }), [localeTag])
+
+  const metricOptions = useMemo(
+    () => METRIC_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
+    [t],
+  )
+
+  const formatMetricValue = useCallback(
+    (value: number) => (metric === 'totalCost' ? currencyFormatter.format(value) : numberFormatter.format(value)),
+    [currencyFormatter, metric, numberFormatter],
   )
 
   const calendarData = useMemo(
     () => transformPointsToActivities(data?.points ?? [], metric),
     [data, metric],
+  )
+
+  const formatMonthLabel = useCallback(
+    (marker: MonthMarker) => {
+      const monthValue = locale === 'zh' ? marker.month.toString() : marker.month.toString().padStart(2, '0')
+      return t('calendar.monthLabel', { year: marker.year, month: monthValue })
+    },
+    [locale, t],
   )
 
   // Probe actual theme color for base-300 to match 7-day heatmap exactly
@@ -215,14 +257,14 @@ export function UsageCalendar() {
       <div className="card-body gap-4 lg:w-auto">
         <div className="flex flex-col gap-4">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="card-title">使用活动</h2>
+            <h2 className="card-title">{t('calendar.title')}</h2>
             <div
               ref={tabsRef}
               className="tabs tabs-sm tabs-border"
               role="tablist"
-              aria-label="统计指标切换"
+              aria-label={t('calendar.metricsToggleAria')}
             >
-              {METRIC_OPTIONS.map((option) => {
+              {metricOptions.map((option) => {
                 const active = metric === option.key
                 return (
                   <button
@@ -263,6 +305,7 @@ export function UsageCalendar() {
                   blockSize={blockSize}
                   blockMargin={BLOCK_MARGIN}
                   offset={leftOffset || WEEKDAY_LABEL_SPACE}
+                  formatLabel={formatMonthLabel}
                 />
                 <ActivityCalendar
                   data={calendarData.activities}
@@ -278,12 +321,12 @@ export function UsageCalendar() {
                   hideTotalCount
                   hideColorLegend
                   hideMonthLabels
-                  labels={{ legend: { less: '低', more: '高' }, weekdays: ['日', '一', '二', '三', '四', '五', '六'] }}
+                  labels={{ legend: { less: legendLabels.low, more: legendLabels.high }, weekdays: weekdayLabels }}
                   showWeekdayLabels={WEEKDAY_LABELS}
                   renderBlock={(block, activity) => {
                     const accessibleBlock = block as AccessibleBlock
-                    const formatted = metricDefinition.formatter(activity.count)
-                    const title = `${activity.date}：${formatted}`
+                    const formatted = formatMetricValue(activity.count)
+                    const title = `${activity.date}${valueSeparator}${formatted}`
                     return cloneElement(accessibleBlock, {
                       title,
                       'aria-label': title,
@@ -296,12 +339,12 @@ export function UsageCalendar() {
                     const accessibleBlock = block as AccessibleBlock
                     if (level === 0)
                       return cloneElement(accessibleBlock, {
-                        title: '低',
-                        'aria-label': '低',
+                        title: legendLabels.low,
+                        'aria-label': legendLabels.low,
                         style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
                       })
                     const threshold = calendarData.thresholds[level] ?? calendarData.maxValue
-                    const formatted = metricDefinition.formatter(threshold)
+                    const formatted = formatMetricValue(threshold ?? 0)
                     const title = `≤ ${formatted}`
                     return cloneElement(accessibleBlock, {
                       title,
@@ -412,7 +455,7 @@ function formatISODate(date: Date) {
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`
 }
 
-interface MonthMarker { weekIndex: number; label: string }
+interface MonthMarker { weekIndex: number; year: number; month: number }
 
 function createMonthMarkers(activities: Activity[], weekCount: number): MonthMarker[] {
   if (!activities.length || weekCount <= 0) return []
@@ -430,7 +473,7 @@ function createMonthMarkers(activities: Activity[], weekCount: number): MonthMar
     if (year === lastYear && month === lastMonth) return
     const weekIndex = Math.floor(index / 7)
     if (weekIndex >= weekCount) return
-    markers.push({ weekIndex, label: `${year}年${month}月` })
+    markers.push({ weekIndex, year, month })
     lastYear = year
     lastMonth = month
   })
@@ -443,11 +486,13 @@ function MonthLabelOverlay({
   blockSize,
   blockMargin,
   offset,
+  formatLabel,
 }: {
   markers: MonthMarker[]
   blockSize: number
   blockMargin: number
   offset: number
+  formatLabel: (marker: MonthMarker) => string
 }) {
   if (!markers.length) return null
   return (
@@ -457,11 +502,11 @@ function MonthLabelOverlay({
         const position = offset + marker.weekIndex * columnWidth + columnWidth / 2
         return (
           <span
-            key={`${marker.label}-${marker.weekIndex}`}
+            key={`${marker.year}-${marker.month}-${marker.weekIndex}`}
             className="absolute top-0 -translate-x-1/2 transform text-xs font-medium text-base-content/70 whitespace-nowrap"
             style={{ left: `${position}px` }}
           >
-            {marker.label}
+            {formatLabel(marker)}
           </span>
         )
       })}

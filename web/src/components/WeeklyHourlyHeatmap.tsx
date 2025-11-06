@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useTimeseries } from '../hooks/useTimeseries'
 import type { TimeseriesPoint } from '../lib/api'
+import { useTranslation } from '../i18n'
+import type { TranslationKey } from '../i18n'
 
 type Cell = { date: string; hour: number; value: number }
 
@@ -8,24 +10,21 @@ type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
 interface MetricOption {
   key: MetricKey
-  label: string
-  formatter: (value: number) => string
+  labelKey: TranslationKey
 }
 
 const METRIC_OPTIONS: MetricOption[] = [
-  { key: 'totalCount', label: '次数', formatter: (v) => v.toLocaleString() },
-  { key: 'totalCost', label: '金额', formatter: (v) => `$${v.toFixed(2)}` },
-  { key: 'totalTokens', label: 'Tokens', formatter: (v) => v.toLocaleString() },
+  { key: 'totalCount', labelKey: 'metric.totalCount' },
+  { key: 'totalCost', labelKey: 'metric.totalCost' },
+  { key: 'totalTokens', labelKey: 'metric.totalTokens' },
 ]
 
 const LEVEL_COLORS_BY_METRIC: Record<MetricKey, string[]> = {
-  // 0..4 levels
   totalCount: ['bg-base-300', 'bg-blue-200', 'bg-blue-300', 'bg-blue-400', 'bg-blue-500'],
   totalCost: ['bg-base-300', 'bg-amber-200', 'bg-amber-300', 'bg-amber-400', 'bg-amber-500'],
   totalTokens: ['bg-base-300', 'bg-violet-200', 'bg-violet-300', 'bg-violet-400', 'bg-violet-500'],
 }
 
-// Keep tab accent color consistent with UsageCalendar
 const ACCENT_BY_METRIC: Record<MetricKey, string> = {
   totalCount: '#3B82F6',
   totalCost: '#F59E0B',
@@ -54,19 +53,18 @@ function compute7x24(points: TimeseriesPoint[], metric: MetricKey) {
   }
 
   const sorted = [...points].sort((a, b) => a.bucketStart.localeCompare(b.bucketStart))
-  // Collect unique ISO dates in order
-  const dateSet: string[] = []
+  const dates: string[] = []
   for (const p of sorted) {
     const { year, month, day } = parseDateTimeParts(p.bucketStart)
     if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) continue
     const iso = toIsoDate(year, month, day)
-    if (dateSet.length === 0 || dateSet[dateSet.length - 1] !== iso) {
-      if (dateSet.length === 0 || dateSet[dateSet.length - 1] !== iso) dateSet.push(iso)
+    if (!dates.includes(iso)) {
+      dates.push(iso)
     }
   }
-  const last7 = dateSet.slice(-7)
+  const last7 = dates.slice(-7)
   const indexByDate = new Map<string, number>()
-  last7.forEach((d, i) => indexByDate.set(d, i))
+  last7.forEach((d, idx) => indexByDate.set(d, idx))
 
   const rows: Cell[][] = Array.from({ length: last7.length }, () =>
     Array.from({ length: 24 }, (_, h) => ({ date: '', hour: h, value: 0 })),
@@ -97,18 +95,31 @@ function levelFor(value: number, max: number) {
 }
 
 export function WeeklyHourlyHeatmap() {
+  const { t, locale } = useTranslation()
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const { data, isLoading, error } = useTimeseries('7d', { bucket: '1h' })
-  const option = useMemo(() => METRIC_OPTIONS.find((o) => o.key === metric) ?? METRIC_OPTIONS[0], [metric])
+  const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
+  const currencyFormatter = useMemo(() => new Intl.NumberFormat(localeTag, { style: 'currency', currency: 'USD' }), [localeTag])
+
+  const metricOptions = useMemo(
+    () => METRIC_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
+    [t],
+  )
+
   const grid = useMemo(() => compute7x24(data?.points ?? [], metric), [data?.points, metric])
+
+  const formatValue = (value: number) => (metric === 'totalCost' ? currencyFormatter.format(value) : numberFormatter.format(value))
+
+  const noDataText = t('heatmap.noData')
 
   return (
     <section className="card bg-base-100 shadow-sm" data-testid="weekly-hourly-heatmap">
       <div className="card-body gap-4">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="card-title">最近 7 天活动图</h2>
-          <div className="tabs tabs-sm tabs-border" role="tablist" aria-label="指标切换">
-            {METRIC_OPTIONS.map((o) => {
+          <h2 className="card-title">{t('heatmap.title')}</h2>
+          <div className="tabs tabs-sm tabs-border" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
+            {metricOptions.map((o) => {
               const active = o.key === metric
               return (
                 <button
@@ -134,54 +145,47 @@ export function WeeklyHourlyHeatmap() {
         ) : isLoading ? (
           <div className="skeleton h-40 w-full" />
         ) : grid.days.length === 0 ? (
-          <div className="text-base-content/70">暂无数据</div>
+          <div className="text-base-content/70">{noDataText}</div>
         ) : (
           <div className="w-full overflow-x-auto">
             <div className="flex justify-center">
               <div className="inline-block">
-              {/* Column labels */}
-              <div
-                className="ml-14 grid gap-[3px] pl-[3px]"
-                style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}
-              >
-                {Array.from({ length: 24 }, (_, h) => (
-                  <div key={`h-${h}`} className="text-center text-[10px] leading-3 text-base-content/60">
-                    {h}
-                  </div>
-                ))}
-              </div>
-
-              {/* Grid rows */}
-              <div className="mt-2 flex flex-col gap-[3px]">
-                {grid.rows.map((row, idx) => {
-                  const dateLabel = grid.days[idx]?.slice(5) ?? '' // MM-DD
-                  return (
-                    <div key={`r-${idx}`} className="flex items-center gap-3">
-                      <div className="w-14 shrink-0 text-right text-xs text-base-content/70">{dateLabel}</div>
-                      <div
-                        className="grid gap-[3px]"
-                        style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}
-                      >
-                        {row.map((cell, ci) => {
-                          const lvl = levelFor(cell.value, grid.max)
-                          const palette = LEVEL_COLORS_BY_METRIC[metric]
-                          const cls = palette[lvl] ?? palette[0]
-                          const formatted = option.formatter(cell.value)
-                          const title = `${cell.date || grid.days[idx]} ${String(ci).padStart(2, '0')}:00：${formatted}`
-                          return (
-                            <div
-                              key={`c-${idx}-${ci}`}
-                              className={`${cls} h-5 w-5 sm:h-6 sm:w-6 rounded-sm`}
-                              title={title}
-                              aria-label={title}
-                            />
-                          )
-                        })}
-                      </div>
+                <div className="ml-14 grid gap-[3px] pl-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
+                  {Array.from({ length: 24 }, (_, h) => (
+                    <div key={`h-${h}`} className="text-center text-[10px] leading-3 text-base-content/60">
+                      {h}
                     </div>
-                  )
-                })}
-              </div>
+                  ))}
+                </div>
+
+                <div className="mt-2 flex flex-col gap-[3px]">
+                  {grid.rows.map((row, idx) => {
+                    const dateLabel = grid.days[idx]?.slice(5) ?? ''
+                    return (
+                      <div key={`r-${idx}`} className="flex items-center gap-3">
+                        <div className="w-14 shrink-0 text-right text-xs text-base-content/70">{dateLabel}</div>
+                        <div className="grid gap-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
+                          {row.map((cell, ci) => {
+                            const lvl = levelFor(cell.value, grid.max)
+                            const palette = LEVEL_COLORS_BY_METRIC[metric]
+                            const cls = palette[lvl] ?? palette[0]
+                            const formatted = formatValue(cell.value)
+                            const hourLabel = String(ci).padStart(2, '0')
+                            const title = `${cell.date || grid.days[idx]} ${hourLabel}:00 ${formatted}`
+                            return (
+                              <div
+                                key={`c-${idx}-${ci}`}
+                                className={`${cls} h-5 w-5 sm:h-6 sm:w-6 rounded-sm`}
+                                title={title}
+                                aria-label={title}
+                              />
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
             </div>
           </div>

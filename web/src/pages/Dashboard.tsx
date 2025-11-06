@@ -8,10 +8,12 @@ import { useInvocationStream } from '../hooks/useInvocations'
 import { useQuotaSnapshot } from '../hooks/useQuotaSnapshot'
 import { useSummary } from '../hooks/useStats'
 import { useTimeseries } from '../hooks/useTimeseries'
+import { useTranslation } from '../i18n'
 
 const RECENT_LIMIT = 20
 
 export default function DashboardPage() {
+  const { t } = useTranslation()
   const {
     snapshot,
     isLoading: snapshotLoading,
@@ -49,8 +51,8 @@ export default function DashboardPage() {
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-6">
           <div className="flex items-center justify-between">
-            <h2 className="card-title">最近 24 小时统计</h2>
-            <span className="text-sm text-base-content/60">实时刷新</span>
+            <h2 className="card-title">{t('dashboard.section.summaryTitle')}</h2>
+            <span className="text-sm text-base-content/60">{t('dashboard.section.liveRefreshing')}</span>
           </div>
           <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />
           {timeseriesError ? (
@@ -69,7 +71,7 @@ export default function DashboardPage() {
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
           <div className="flex items-center justify-between">
-            <h2 className="card-title">最近 {RECENT_LIMIT} 条实况</h2>
+            <h2 className="card-title">{t('dashboard.section.recentLiveTitle', { count: RECENT_LIMIT })}</h2>
           </div>
           <InvocationTable records={records} isLoading={tableLoading} error={tableError} />
         </div>
