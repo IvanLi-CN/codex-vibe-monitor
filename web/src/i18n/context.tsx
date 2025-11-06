@@ -1,14 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import {
-  FALLBACK_LOCALE,
-  formatTranslation,
-  supportedLocales,
-  translations,
-  type Locale,
-  type TranslationKey,
-  type TranslationValues,
-} from './translations'
+import { FALLBACK_LOCALE, formatTranslation, supportedLocales, translations, type Locale, type TranslationValues } from './translations'
 
 const STORAGE_KEY = 'codex-vibe-monitor.locale'
 const DOC_LANG_MAP: Record<Locale, string> = {
@@ -19,7 +11,7 @@ const DOC_LANG_MAP: Record<Locale, string> = {
 interface I18nContextValue {
   locale: Locale
   setLocale: (next: Locale) => void
-  t: (key: TranslationKey, values?: TranslationValues) => string
+  t: (key: string, values?: TranslationValues) => string
   availableLocales: readonly Locale[]
 }
 
@@ -29,9 +21,12 @@ function isLocale(value: unknown): value is Locale {
   return typeof value === 'string' && supportedLocales.includes(value as Locale)
 }
 
-function translate(locale: Locale, key: TranslationKey, values?: TranslationValues) {
+function translate(locale: Locale, key: string, values?: TranslationValues) {
   const dictionary = translations[locale] ?? translations[FALLBACK_LOCALE]
-  const template = dictionary[key] ?? translations[FALLBACK_LOCALE][key] ?? key
+  const fallback = translations[FALLBACK_LOCALE]
+  const safeDictionary = dictionary as Record<string, string>
+  const safeFallback = fallback as Record<string, string>
+  const template = safeDictionary[key] ?? safeFallback[key] ?? key
   return formatTranslation(template, values)
 }
 
@@ -72,10 +67,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     document.documentElement.setAttribute('data-locale', locale)
   }, [locale])
 
-  const t = useCallback(
-    (key: TranslationKey, values?: TranslationValues) => translate(locale, key, values),
-    [locale],
-  )
+  const t = useCallback((key: string, values?: TranslationValues) => translate(locale, key, values), [locale])
 
   const value = useMemo<I18nContextValue>(
     () => ({
