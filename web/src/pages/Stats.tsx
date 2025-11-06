@@ -3,29 +3,31 @@ import { StatsCards } from '../components/StatsCards'
 import { TimeseriesChart } from '../components/TimeseriesChart'
 import { useSummary } from '../hooks/useStats'
 import { useTimeseries } from '../hooks/useTimeseries'
+import { useTranslation } from '../i18n'
+import type { TranslationKey } from '../i18n'
 
 const RANGE_OPTIONS = [
-  { value: '1h', label: '最近 1 小时' },
-  { value: '1d', label: '最近 1 天' },
-  { value: '1mo', label: '最近 1 个月' },
-] as const
+  { value: '1h', labelKey: 'stats.range.lastHour' },
+  { value: '1d', labelKey: 'stats.range.lastDay' },
+  { value: '1mo', labelKey: 'stats.range.lastMonth' },
+] as const satisfies readonly { value: string; labelKey: TranslationKey }[]
 
-const BUCKET_OPTIONS: Record<string, { value: string; label: string }[]> = {
+const BUCKET_OPTION_KEYS: Record<string, { value: string; labelKey: TranslationKey }[]> = {
   '1h': [
-    { value: '1m', label: '每分钟' },
-    { value: '5m', label: '每 5 分钟' },
-    { value: '15m', label: '每 15 分钟' },
+    { value: '1m', labelKey: 'stats.bucket.eachMinute' },
+    { value: '5m', labelKey: 'stats.bucket.each5Minutes' },
+    { value: '15m', labelKey: 'stats.bucket.each15Minutes' },
   ],
   '1d': [
-    { value: '15m', label: '每 15 分钟' },
-    { value: '30m', label: '每 30 分钟' },
-    { value: '1h', label: '每小时' },
-    { value: '6h', label: '每 6 小时' },
+    { value: '15m', labelKey: 'stats.bucket.each15Minutes' },
+    { value: '30m', labelKey: 'stats.bucket.each30Minutes' },
+    { value: '1h', labelKey: 'stats.bucket.eachHour' },
+    { value: '6h', labelKey: 'stats.bucket.each6Hours' },
   ],
   '1mo': [
-    { value: '6h', label: '每 6 小时' },
-    { value: '12h', label: '每 12 小时' },
-    { value: '1d', label: '每天' },
+    { value: '6h', labelKey: 'stats.bucket.each6Hours' },
+    { value: '12h', labelKey: 'stats.bucket.each12Hours' },
+    { value: '1d', labelKey: 'stats.bucket.eachDay' },
   ],
 }
 
@@ -41,17 +43,28 @@ const BUCKET_SECONDS: Record<string, number> = {
 }
 
 export default function StatsPage() {
+  const { t } = useTranslation()
   const [range, setRange] = useState<typeof RANGE_OPTIONS[number]['value']>('1d')
-  const bucketOptions = useMemo(() => BUCKET_OPTIONS[range] ?? BUCKET_OPTIONS['1d'], [range])
-  const [bucket, setBucket] = useState<string>(bucketOptions[0]?.value ?? '1h')
+  const rawBucketOptions = useMemo(() => BUCKET_OPTION_KEYS[range] ?? BUCKET_OPTION_KEYS['1d'], [range])
+  const [bucket, setBucket] = useState<string>(rawBucketOptions[0]?.value ?? '1h')
   const [settlementHour, setSettlementHour] = useState(0)
 
   useEffect(() => {
-    const nextBucket = bucketOptions[0]?.value
-    if (nextBucket && !bucketOptions.some((option) => option.value === bucket)) {
+    const nextBucket = rawBucketOptions[0]?.value
+    if (nextBucket && !rawBucketOptions.some((option) => option.value === bucket)) {
       setBucket(nextBucket)
     }
-  }, [bucket, bucketOptions])
+  }, [bucket, rawBucketOptions])
+
+  const rangeOptions = useMemo(
+    () => RANGE_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
+    [t],
+  )
+
+  const bucketOptions = useMemo(
+    () => rawBucketOptions.map((option) => ({ ...option, label: t(option.labelKey) })),
+    [rawBucketOptions, t],
+  )
 
   const needsSettlement = BUCKET_SECONDS[bucket] >= 86_400
 
@@ -76,8 +89,8 @@ export default function StatsPage() {
         <div className="card-body gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="card-title">统计</h2>
-              <p className="text-sm text-base-content/60">选择时间范围与聚合粒度</p>
+              <h2 className="card-title">{t('stats.title')}</h2>
+              <p className="text-sm text-base-content/60">{t('stats.subtitle')}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <select
@@ -85,7 +98,7 @@ export default function StatsPage() {
                 value={range}
                 onChange={(event) => setRange(event.target.value as typeof range)}
               >
-                {RANGE_OPTIONS.map((option) => (
+                {rangeOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -105,7 +118,7 @@ export default function StatsPage() {
               {needsSettlement && (
                 <label className="form-control w-28">
                   <div className="label py-0">
-                    <span className="label-text text-xs">结算小时</span>
+                    <span className="label-text text-xs">{t('stats.settlementHour')}</span>
                   </div>
                   <input
                     type="number"
@@ -125,7 +138,7 @@ export default function StatsPage() {
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
-          <h3 className="card-title">趋势</h3>
+          <h3 className="card-title">{t('stats.trendTitle')}</h3>
           {timeseriesError ? (
             <div className="alert alert-error">{timeseriesError}</div>
           ) : (

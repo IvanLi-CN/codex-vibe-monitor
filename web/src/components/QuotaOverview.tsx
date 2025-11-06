@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { QuotaSnapshot } from '../lib/api'
 import { AnimatedDigits } from './AnimatedDigits'
+import { useTranslation } from '../i18n'
 
 type RadialProgressStyle = CSSProperties & {
   '--value': number
@@ -20,26 +21,18 @@ function formatCurrency(value?: number) {
   return `$${value.toFixed(2)}`
 }
 
-// number formatting not needed after removing count fields
-
 function formatDate(value?: string) {
   if (!value) return '—'
-  // Prefer robust parsing and output as YYYY-MM-DD HH:mm:ss (single line)
   const parsed = new Date(value)
   if (!Number.isNaN(parsed.getTime())) {
     const pad = (n: number) => String(n).padStart(2, '0')
-    const y = parsed.getFullYear()
-    const m = pad(parsed.getMonth() + 1)
-    const d = pad(parsed.getDate())
-    const hh = pad(parsed.getHours())
-    const mm = pad(parsed.getMinutes())
-    const ss = pad(parsed.getSeconds())
-    return `${y}-${m}-${d} ${hh}:${mm}:${ss}`
+    return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())}`
   }
-  // Fallback: strip milliseconds and timezone, keep up to seconds
-  const m = value.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/)
-  if (m) return `${m[1]} ${m[2]}`
-  return value.replace('T', ' ').replace(/\.\d+/, '').replace(/Z|[+-]\d{2}:\d{2}$/g, '')
+  const match = value.match(/^([0-9]{4}-[0-9]{2}-[0-9]{2})[ T]([0-9]{2}:[0-9]{2}:[0-9]{2})/)
+  if (match) {
+    return `${match[1]} ${match[2]}`
+  }
+  return value.replace('T', ' ').replace(/\..*/, '').replace(/Z|[+-][0-9]{2}:[0-9]{2}$/g, '')
 }
 
 function calcUsagePercent(limit?: number, used?: number) {
@@ -47,18 +40,16 @@ function calcUsagePercent(limit?: number, used?: number) {
   return Math.min(100, Math.max(0, (used / limit) * 100))
 }
 
-export function QuotaOverview({
-  snapshot,
-  isLoading,
-  error,
-}: QuotaOverviewProps) {
+export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps) {
+  const { t } = useTranslation()
+
   if (error) {
     return <div className="alert alert-error">{error}</div>
   }
 
   const amountLimit = snapshot?.amountLimit ?? snapshot?.usedAmount ?? 0
   const usedAmount = snapshot?.usedAmount ?? 0
-  const remainingAmount = snapshot?.remainingAmount ?? (amountLimit - usedAmount)
+  const remainingAmount = snapshot?.remainingAmount ?? amountLimit - usedAmount
   const usagePercent = calcUsagePercent(amountLimit, usedAmount)
 
   const radialProgressStyle: RadialProgressStyle = {
@@ -72,36 +63,41 @@ export function QuotaOverview({
       <div className="card-body gap-6">
         <div className="flex flex-wrap items-center justify-between">
           <div>
-            <h2 className="card-title">配额概览</h2>
+            <h2 className="card-title">{t('quota.title')}</h2>
             <p className="text-sm text-base-content/60 flex items-center gap-2">
-              <span>订阅：{snapshot?.subTypeName ?? '—'}</span>
+              <span>{t('quota.subscription', { name: snapshot?.subTypeName ?? '—' })}</span>
               <CountdownUntil expireISO={snapshot?.expireTime} />
             </p>
           </div>
           <div className="flex items-center gap-4">
             <div className="text-sm text-base-content/60">
               <span className="badge badge-success badge-sm" hidden={!snapshot?.isActive}>
-                正常使用
+                {t('quota.status.active')}
               </span>
             </div>
           </div>
         </div>
 
         <div className="grid gap-3 grid-cols-2 items-stretch">
-          <OverviewTile label="使用率" compact>
+          <OverviewTile label={t('quota.labels.usageRate')} compact>
             <div className="flex items-center gap-3">
               <div className="radial-progress text-primary" style={radialProgressStyle}>
                 {isLoading ? '…' : <AnimatedDigits value={`${Math.round(usagePercent)}%`} />}
               </div>
             </div>
           </OverviewTile>
-          <OverviewTile label="已使用" loading={isLoading}>
+          <OverviewTile label={t('quota.labels.used')} loading={isLoading}>
             {isLoading ? '…' : <AnimatedDigits value={formatCurrency(usedAmount)} />}
           </OverviewTile>
-          <OverviewTile label="剩余额度" loading={isLoading}>
+          <OverviewTile label={t('quota.labels.remaining')} loading={isLoading}>
             {isLoading ? '…' : <AnimatedDigits value={formatCurrency(remainingAmount)} />}
           </OverviewTile>
-          <OverviewTile label="下次重置" value={formatDate(snapshot?.periodResetTime)} loading={isLoading} compact />
+          <OverviewTile
+            label={t('quota.labels.nextReset')}
+            value={formatDate(snapshot?.periodResetTime)}
+            loading={isLoading}
+            compact
+          />
         </div>
       </div>
     </div>
@@ -131,10 +127,10 @@ function OverviewTile({ label, value, caption, loading, compact, children }: Ove
 }
 
 function CountdownUntil({ expireISO }: { expireISO?: string }) {
+  const { t } = useTranslation()
   const [showAbsolute, setShowAbsolute] = useState(false)
   const [now, setNow] = useState(() => new Date())
 
-  // tick interval depends on remaining time
   useEffect(() => {
     const tick = () => setNow(new Date())
     const id = setInterval(tick, 30_000)
@@ -153,21 +149,23 @@ function CountdownUntil({ expireISO }: { expireISO?: string }) {
   let tone = 'text-base-content/60'
   if (expire) {
     if (isExpired) {
-      display = '已到期'
+      display = t('quota.status.expired.badge')
       tone = 'text-error'
     } else if (Number.isFinite(days) && (days as number) >= 2) {
-      display = `到期：剩余${days}天`
+      display = t('quota.status.expireInDays', { count: days as number })
     } else if (Number.isFinite(hours) && (minutes as number) >= 100) {
-      display = `到期：剩余${hours}小时`
+      display = t('quota.status.expireInHours', { count: hours as number })
       tone = 'text-warning'
     } else if (Number.isFinite(minutes)) {
       const mins = Math.max(1, minutes as number)
-      display = `到期：剩余${mins}分钟`
+      display = t('quota.status.expireInMinutes', { count: mins })
       tone = 'text-warning'
     }
   }
 
-  const absolute = expire ? `到期：${formatDate(expireISO!)}` : '到期：—'
+  const absolute = expire
+    ? t('quota.status.expireAt', { time: formatDate(expireISO!) })
+    : t('quota.status.expireUnknown')
 
   return (
     <span
@@ -175,11 +173,9 @@ function CountdownUntil({ expireISO }: { expireISO?: string }) {
       title={absolute}
       onMouseEnter={() => setShowAbsolute(true)}
       onMouseLeave={() => setShowAbsolute(false)}
-      onClick={() => setShowAbsolute(v => !v)}
+      onClick={() => setShowAbsolute((v) => !v)}
     >
       {showAbsolute ? absolute : display}
     </span>
   )
 }
-
-// SectionTitle removed as headings are no longer needed per design
