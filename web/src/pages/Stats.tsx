@@ -136,6 +136,7 @@ export default function StatsPage() {
         </div>
       </section>
 
+
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
           <h3 className="card-title">{t('stats.trendTitle')}</h3>

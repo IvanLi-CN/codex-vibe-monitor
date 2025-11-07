@@ -1,19 +1,21 @@
 import { InvocationTable } from '../components/InvocationTable'
+import { useState } from 'react'
 import { QuotaOverview } from '../components/QuotaOverview'
 import { StatsCards } from '../components/StatsCards'
-import { TimeseriesChart } from '../components/TimeseriesChart'
 import { UsageCalendar } from '../components/UsageCalendar'
 import { WeeklyHourlyHeatmap } from '../components/WeeklyHourlyHeatmap'
+import { Last24hTenMinuteHeatmap, type MetricKey, ACCENT_BY_METRIC } from '../components/Last24hTenMinuteHeatmap'
 import { useInvocationStream } from '../hooks/useInvocations'
 import { useQuotaSnapshot } from '../hooks/useQuotaSnapshot'
 import { useSummary } from '../hooks/useStats'
-import { useTimeseries } from '../hooks/useTimeseries'
 import { useTranslation } from '../i18n'
 
 const RECENT_LIMIT = 20
 
 export default function DashboardPage() {
   const { t } = useTranslation()
+  // Metric selector moved to the card top-right
+  const [metric, setMetric] = useState<MetricKey>('totalCount')
   const {
     snapshot,
     isLoading: snapshotLoading,
@@ -24,11 +26,6 @@ export default function DashboardPage() {
     isLoading: summaryLoading,
     error: summaryError,
   } = useSummary('1d')
-  const {
-    data: timeseries,
-    isLoading: timeseriesLoading,
-    error: timeseriesError,
-  } = useTimeseries('1d', { bucket: '1h' })
   const {
     records,
     isLoading: tableLoading,
@@ -50,21 +47,36 @@ export default function DashboardPage() {
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-6">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <h2 className="card-title">{t('dashboard.section.summaryTitle')}</h2>
-            <span className="text-sm text-base-content/60">{t('dashboard.section.liveRefreshing')}</span>
+            <div className="tabs tabs-sm tabs-border" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
+              {[
+                { key: 'totalCount', label: t('metric.totalCount') },
+                { key: 'totalCost', label: t('metric.totalCost') },
+                { key: 'totalTokens', label: t('metric.totalTokens') },
+              ].map((o) => {
+                const active = o.key === metric
+                return (
+                  <button
+                    key={o.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    className={`tab whitespace-nowrap px-2 sm:px-3 ${
+                      active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
+                    }`}
+                    style={active ? { color: ACCENT_BY_METRIC[o.key as MetricKey] } : undefined}
+                    onClick={() => setMetric(o.key as MetricKey)}
+                  >
+                    {o.label}
+                  </button>
+                )
+              })}
+            </div>
           </div>
           <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />
-          {timeseriesError ? (
-            <div className="alert alert-error">{timeseriesError}</div>
-          ) : (
-            <TimeseriesChart
-              points={timeseries?.points ?? []}
-              isLoading={timeseriesLoading}
-              bucketSeconds={timeseries?.bucketSeconds}
-              showDate={false}
-            />
-          )}
+          {/* 24x6 heatmap (each cell = 10 minutes) under last 24h stats */}
+          <Last24hTenMinuteHeatmap metric={metric} onChangeMetric={setMetric} showHeader={false} />
         </div>
       </section>
 

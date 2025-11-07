@@ -31,10 +31,17 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      // Bootstrap an empty timeseries so SSE records can hydrate the view
+      const bucketSeconds = guessBucketSeconds(bucket) ?? defaultBucketSecondsForRange(range)
+      const now = Date.now()
+      const rangeSeconds = parseRangeSpec(range) ?? 86_400
+      const start = formatEpochToIso(Math.floor((now - rangeSeconds * 1000) / 1000))
+      const end = formatEpochToIso(Math.floor(now / 1000))
+      setData({ rangeStart: start, rangeEnd: end, bucketSeconds, points: [] })
     } finally {
       setIsLoading(false)
     }
-  }, [normalizedOptions, range])
+  }, [normalizedOptions, range, bucket])
 
   useEffect(() => {
     void load()
@@ -52,17 +59,24 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type === 'records') {
-        setData((current) =>
-          applyRecordsToTimeseries(current, payload.records, {
+        setData((current) => {
+          const seeded =
+            current ?? {
+              rangeStart: formatEpochToIso(Math.floor((Date.now() - (parseRangeSpec(range) ?? 86_400) * 1000) / 1000)),
+              rangeEnd: formatEpochToIso(Math.floor(Date.now() / 1000)),
+              bucketSeconds: guessBucketSeconds(options?.bucket) ?? defaultBucketSecondsForRange(range),
+              points: [],
+            }
+          return applyRecordsToTimeseries(seeded, payload.records, {
             range,
-            bucketSeconds: current?.bucketSeconds,
+            bucketSeconds: seeded.bucketSeconds,
             settlementHour: normalizedOptions.settlementHour,
-          }),
-        )
+          })
+        })
       }
     })
     return unsubscribe
-  }, [normalizedOptions.settlementHour, range])
+  }, [normalizedOptions.settlementHour, options?.bucket, range])
 
   return {
     data,
@@ -225,4 +239,35 @@ function parseIsoEpoch(value?: string | null) {
 
 function formatEpochToIso(epochSeconds: number) {
   return new Date(epochSeconds * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+function guessBucketSeconds(spec?: string) {
+  switch (spec) {
+    case '1m':
+      return 60
+    case '5m':
+      return 300
+    case '15m':
+      return 900
+    case '30m':
+      return 1800
+    case '1h':
+      return 3600
+    case '6h':
+      return 21600
+    case '12h':
+      return 43200
+    case '1d':
+      return 86400
+    default:
+      return undefined
+  }
+}
+
+function defaultBucketSecondsForRange(range: string) {
+  const sec = parseRangeSpec(range) ?? 86_400
+  if (sec <= 3_600) return 60
+  if (sec <= 172_800) return 1_800
+  if (sec <= 2_592_000) return 3_600
+  return 86_400
 }

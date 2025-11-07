@@ -142,11 +142,7 @@ export function WeeklyHourlyHeatmap() {
 
         {error ? (
           <div className="alert alert-error">{error}</div>
-        ) : isLoading ? (
-          <div className="skeleton h-40 w-full" />
-        ) : grid.days.length === 0 ? (
-          <div className="text-base-content/70">{noDataText}</div>
-        ) : (
+        ) : grid.days.length > 0 ? (
           <div className="w-full overflow-x-auto">
             <div className="flex justify-center">
               <div className="inline-block">
@@ -189,6 +185,10 @@ export function WeeklyHourlyHeatmap() {
               </div>
             </div>
           </div>
+        ) : isLoading ? (
+          <div className="skeleton h-40 w-full" />
+        ) : (
+          <div className="text-base-content/70">{noDataText}</div>
         )}
       </div>
     </section>
