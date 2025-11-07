@@ -9,12 +9,20 @@ interface StatsCardsProps {
   error?: string | null
 }
 
-export function StatsCards({ stats, loading }: StatsCardsProps) {
+export function StatsCards({ stats, loading, error }: StatsCardsProps) {
   const { t, locale } = useTranslation()
   const numberFormatter = useMemo(
     () => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 2 }),
     [locale],
   )
+
+  if (error) {
+    return (
+      <div className="alert alert-error">
+        <span>{t('stats.cards.loadError', { error })}</span>
+      </div>
+    )
+  }
 
   const totalCalls = stats?.totalCount ?? 0
   const successCount = stats?.successCount ?? 0

@@ -97,7 +97,7 @@ function levelFor(value: number, max: number) {
 export function WeeklyHourlyHeatmap() {
   const { t, locale } = useTranslation()
   const [metric, setMetric] = useState<MetricKey>('totalCount')
-  const { data, isLoading } = useTimeseries('7d', { bucket: '1h' })
+  const { data, isLoading, error } = useTimeseries('7d', { bucket: '1h' })
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
   const currencyFormatter = useMemo(() => new Intl.NumberFormat(localeTag, { style: 'currency', currency: 'USD' }), [localeTag])
@@ -140,7 +140,9 @@ export function WeeklyHourlyHeatmap() {
           </div>
         </div>
 
-        {grid.days.length > 0 ? (
+        {error ? (
+          <div className="alert alert-error">{error}</div>
+        ) : grid.days.length > 0 ? (
           <div className="w-full overflow-x-auto">
             <div className="flex justify-center">
               <div className="inline-block">

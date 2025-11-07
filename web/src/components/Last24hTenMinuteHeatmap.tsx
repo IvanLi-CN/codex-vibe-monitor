@@ -90,7 +90,7 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
   const [uncontrolledMetric, setUncontrolledMetric] = useState<MetricKey>('totalCount')
   const metric = controlledMetric ?? uncontrolledMetric
   // Force 1-day range with 1-minute buckets, aggregate to 10-minute cells
-  const { data, isLoading } = useTimeseries('1d', { bucket: '1m' })
+  const { data, isLoading, error } = useTimeseries('1d', { bucket: '1m' })
 
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
@@ -146,7 +146,9 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
           </div>
         )}
 
-        {grid.rows.length > 0 ? (
+        {error ? (
+          <div className="alert alert-error">{error}</div>
+        ) : grid.rows.length > 0 ? (
           <div className="w-full overflow-x-auto">
             <div className="flex justify-center">
               <div className="inline-block">

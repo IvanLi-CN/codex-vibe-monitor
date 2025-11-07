@@ -140,8 +140,8 @@ export default function StatsPage() {
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
           <h3 className="card-title">{t('stats.trendTitle')}</h3>
-          {timeseriesLoading || timeseriesError ? (
-            <div className="skeleton h-40 w-full" />
+          {timeseriesError ? (
+            <div className="alert alert-error">{timeseriesError}</div>
           ) : (
             <TimeseriesChart
               points={timeseries?.points ?? []}

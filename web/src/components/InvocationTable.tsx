@@ -68,8 +68,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
   if (error) {
     return (
-      <div className="flex justify-center py-10">
-        <span className="loading loading-bars loading-lg" aria-label={t('table.loadingRecordsAria')} />
+      <div className="alert alert-error">
+        <span>{t('table.loadError', { error })}</span>
       </div>
     )
   }
