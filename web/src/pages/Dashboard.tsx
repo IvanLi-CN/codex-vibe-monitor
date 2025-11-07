@@ -34,17 +34,7 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_max-content] items-start">
-        <QuotaOverview
-          snapshot={snapshot}
-          isLoading={snapshotLoading}
-          error={snapshotError}
-        />
-        <UsageCalendar />
-      </div>
-
-      <WeeklyHourlyHeatmap />
-
+      {/* Place statistics above Access Token/Quota section */}
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-6">
           <div className="flex items-center justify-between gap-3">
@@ -79,6 +69,17 @@ export default function DashboardPage() {
           <Last24hTenMinuteHeatmap metric={metric} onChangeMetric={setMetric} showHeader={false} />
         </div>
       </section>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_max-content] items-start">
+        <QuotaOverview
+          snapshot={snapshot}
+          isLoading={snapshotLoading}
+          error={snapshotError}
+        />
+        <UsageCalendar />
+      </div>
+
+      <WeeklyHourlyHeatmap />
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
