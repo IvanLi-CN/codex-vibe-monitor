@@ -19,22 +19,41 @@
 
 ## Development Runtime (Background, Non-blocking)
 
-- Run backend and front-end concurrently in the background to avoid blocking the shell.
-- For ad-hoc commands that might hang (e.g., one-off builds, migrations), wrap them with `perl -e 'alarm 180; exec @ARGV' -- <command>` unless a different limit is explicitly required. Do **not** apply this timeout wrapper to long-running dev services started with `nohup`.
-- Always detach stdin for background services to prevent TTY-induced hangs: add `</dev/null` to `nohup` commands.
+This workflow avoids blocking the shell and strictly prohibits using `alarm` for long‑running services. The only acceptable use of short timeouts is for one‑off, non‑service commands (e.g., a build), never for dev servers.
+
+- NEVER wrap long‑running dev services (backend, Vite) with `alarm` or any hard kill timeout.
+- Run services in background with `nohup` + PID files; detach stdin to prevent TTY hangs.
+- Use bounded readiness probes (curl loops with a hard max wait) instead of waiting on processes.
+- If readiness fails, fail fast and print the last log lines; do not keep waiting.
+
+Service management (recommended patterns)
+
 - Backend (Rust, port `8080`):
-  - Foreground (time-limited): `perl -e 'alarm 180; exec @ARGV' -- env RUST_LOG=info cargo run` (reads `.env.local`).
-  - Background (detached): `nohup env RUST_LOG=info cargo run </dev/null >> logs/backend.dev.log 2>&1 & echo $! > logs/backend.pid`
-  - Readiness check (timeout 60s): `until curl -sS -m 1 http://127.0.0.1:8080/health | grep -q ok; do sleep 1; done`
-- Front-end (Vite, port `60080`):
-  - Foreground (time-limited): `perl -e 'alarm 180; exec @ARGV' -- bash -lc 'cd web && npm run dev -- --host 127.0.0.1 --port 60080'`.
-  - Background (detached): `nohup bash -lc 'cd web && npm run dev -- --host 127.0.0.1 --port 60080' </dev/null >> logs/web.dev.log 2>&1 & echo $! > logs/web.pid`
-  - Readiness check (timeout 90s): `until curl -sS -m 1 http://127.0.0.1:60080/ >/dev/null; do sleep 1; done`
+  - Start (detached):
+    - `mkdir -p logs && nohup env RUST_LOG=info cargo run </dev/null >> logs/backend.dev.log 2>&1 & echo $! > logs/backend.pid`
+  - Readiness (max 60s):
+    - `SECS=0; until curl -sS -m 1 http://127.0.0.1:8080/health | grep -q ok; do sleep 1; SECS=$((SECS+1)); if [ $SECS -ge 60 ]; then echo 'backend not ready'; tail -n 200 logs/backend.dev.log; exit 1; fi; done`
+  - Stop:
+    - `kill $(lsof -ti tcp:8080 -sTCP:LISTEN) 2>/dev/null || kill $(cat logs/backend.pid) 2>/dev/null || true`
+
+- Front‑end (Vite, port `60080`):
+  - Start (detached):
+    - `mkdir -p logs && nohup bash -lc 'cd web && npm run dev -- --host 127.0.0.1 --port 60080' </dev/null >> logs/web.dev.log 2>&1 & echo $! > logs/web.pid`
+  - Readiness (max 90s):
+    - `SECS=0; until curl -sS -m 1 http://127.0.0.1:60080/ >/dev/null; do sleep 1; SECS=$((SECS+1)); if [ $SECS -ge 90 ]; then echo 'frontend not ready'; tail -n 200 logs/web.dev.log; exit 1; fi; done`
+  - Stop:
+    - `kill $(lsof -ti tcp:60080 -sTCP:LISTEN) 2>/dev/null || kill $(cat logs/web.pid) 2>/dev/null || true`
+
 - Avoid overlapping instances:
-  - Prefer killing by port before restart: `kill $(lsof -ti tcp:8080 -sTCP:LISTEN)` (backend) / `kill $(lsof -ti tcp:60080 -sTCP:LISTEN)` (front-end).
-  - Or kill by PID file: `kill $(cat logs/backend.pid)` / `kill $(cat logs/web.pid)`.
-- Logs: `tail -f logs/backend.dev.log` and `tail -f logs/web.dev.log`.
-- Notes: ensure `logs/` exists; never commit log/PID files. Vite dev server proxies to the backend as configured in `web/vite.config.ts`.
+  - Prefer kill‑by‑port before restart (see Stop commands above).
+  - Always write `logs/*.pid`; do not commit log/PID files.
+
+Operational notes
+
+- `alarm` must NOT be used for any background service. It is permitted only for ad‑hoc commands that could hang (e.g., migrations) and must never be combined with `nohup`.
+- Always run readiness checks with finite timeouts and exit non‑zero on failure to avoid indefinite blocking.
+- Keep services’ stdout/err in `logs/*.log` and rely on `tail -n` on failures instead of `tail -f` to avoid blocking the shell.
+- Vite dev server proxies to the backend as configured in `web/vite.config.ts`.
 
 ## Coding Style & Naming Conventions
 
