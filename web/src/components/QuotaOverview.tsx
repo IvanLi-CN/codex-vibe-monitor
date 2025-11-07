@@ -40,12 +40,8 @@ function calcUsagePercent(limit?: number, used?: number) {
   return Math.min(100, Math.max(0, (used / limit) * 100))
 }
 
-export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps) {
+export function QuotaOverview({ snapshot, isLoading }: QuotaOverviewProps) {
   const { t } = useTranslation()
-
-  if (error) {
-    return <div className="alert alert-error">{error}</div>
-  }
 
   const amountLimit = snapshot?.amountLimit ?? snapshot?.usedAmount ?? 0
   const usedAmount = snapshot?.usedAmount ?? 0

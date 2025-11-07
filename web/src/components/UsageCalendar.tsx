@@ -288,9 +288,7 @@ export function UsageCalendar() {
 
           <div className="divider my-1 opacity-40" />
 
-          {error ? (
-            <div className="alert alert-error">{error}</div>
-          ) : (
+          {(
           <div className="grid gap-3">
             <div className="min-w-0">
               <div
@@ -309,7 +307,7 @@ export function UsageCalendar() {
                 />
                 <ActivityCalendar
                   data={calendarData.activities}
-                  loading={calendarLoading}
+                  loading={calendarLoading || !!error}
                   blockSize={blockSize}
                   // Match the subtle rounding used by the 7-day heatmap
                   blockRadius={2}
