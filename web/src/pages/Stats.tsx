@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { StatsCards } from '../components/StatsCards'
 import { TimeseriesChart } from '../components/TimeseriesChart'
+import { SuccessFailureChart } from '../components/SuccessFailureChart'
 import { useSummary } from '../hooks/useStats'
 import { useTimeseries } from '../hooks/useTimeseries'
 import { useTranslation } from '../i18n'
@@ -144,6 +145,21 @@ export default function StatsPage() {
             <div className="alert alert-error">{timeseriesError}</div>
           ) : (
             <TimeseriesChart
+              points={timeseries?.points ?? []}
+              isLoading={timeseriesLoading}
+              bucketSeconds={timeseries?.bucketSeconds}
+            />
+          )}
+        </div>
+      </section>
+
+      <section className="card bg-base-100 shadow-sm">
+        <div className="card-body gap-4">
+          <h3 className="card-title">{t('stats.successFailureTitle')}</h3>
+          {timeseriesError ? (
+            <div className="alert alert-error">{timeseriesError}</div>
+          ) : (
+            <SuccessFailureChart
               points={timeseries?.points ?? []}
               isLoading={timeseriesLoading}
               bucketSeconds={timeseries?.bucketSeconds}
