@@ -86,7 +86,7 @@ export default function StatsPage() {
     settlementHour: needsSettlement ? settlementHour : undefined,
   })
 
-  const { data: errors, isLoading: errorsLoading, error: errorsError } = useErrorDistribution(range, { top: 8 })
+  const { data: errors, isLoading: errorsLoading, error: errorsError } = useErrorDistribution(range, 8)
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">

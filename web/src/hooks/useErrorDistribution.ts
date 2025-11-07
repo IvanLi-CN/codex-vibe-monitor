@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { fetchErrorDistribution } from '../lib/api'
 import type { ErrorDistributionResponse } from '../lib/api'
 
-export function useErrorDistribution(range: string, options?: { top?: number }) {
+export function useErrorDistribution(range: string, top?: number) {
   const [data, setData] = useState<ErrorDistributionResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -10,7 +10,7 @@ export function useErrorDistribution(range: string, options?: { top?: number }) 
   const load = useCallback(async () => {
     setIsLoading(true)
     try {
-      const res = await fetchErrorDistribution(range, options)
+      const res = await fetchErrorDistribution(range, top != null ? { top } : undefined)
       setData(res)
       setError(null)
     } catch (err) {
@@ -18,7 +18,7 @@ export function useErrorDistribution(range: string, options?: { top?: number }) 
     } finally {
       setIsLoading(false)
     }
-  }, [range, options])
+  }, [range, top])
 
   useEffect(() => {
     void load()
@@ -26,4 +26,3 @@ export function useErrorDistribution(range: string, options?: { top?: number }) 
 
   return { data, isLoading, error, refresh: load }
 }
-
