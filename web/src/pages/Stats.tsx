@@ -4,8 +4,10 @@ import { TimeseriesChart } from '../components/TimeseriesChart'
 import { SuccessFailureChart } from '../components/SuccessFailureChart'
 import { useSummary } from '../hooks/useStats'
 import { useTimeseries } from '../hooks/useTimeseries'
+import { useErrorDistribution } from '../hooks/useErrorDistribution'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
+import { ErrorReasonPieChart } from '../components/ErrorReasonPieChart'
 
 const RANGE_OPTIONS = [
   { value: '1h', labelKey: 'stats.range.lastHour' },
@@ -83,6 +85,8 @@ export default function StatsPage() {
     bucket,
     settlementHour: needsSettlement ? settlementHour : undefined,
   })
+
+  const { data: errors, isLoading: errorsLoading, error: errorsError } = useErrorDistribution(range, { top: 8 })
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
@@ -164,6 +168,17 @@ export default function StatsPage() {
               isLoading={timeseriesLoading}
               bucketSeconds={timeseries?.bucketSeconds}
             />
+          )}
+        </div>
+      </section>
+
+      <section className="card bg-base-100 shadow-sm">
+        <div className="card-body gap-4">
+          <h3 className="card-title">{t('stats.errors.title')}</h3>
+          {errorsError ? (
+            <div className="alert alert-error">{errorsError}</div>
+          ) : (
+            <ErrorReasonPieChart items={errors?.items ?? []} isLoading={errorsLoading} />
           )}
         </div>
       </section>
