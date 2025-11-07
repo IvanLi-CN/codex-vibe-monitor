@@ -118,8 +118,8 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
   const minuteSlotLabel = (slot: number) => String(slot * 10).padStart(2, '0')
 
   return (
-    <section className="card bg-base-100 shadow-sm" data-testid="last24h-10m-heatmap">
-      <div className="card-body gap-4">
+    <div data-testid="last24h-10m-heatmap">
+      <div className="gap-4">
         {showHeader && (
           <div className="flex items-center justify-between gap-3">
             <h3 className="card-title">{t('heatmap24h.title')}</h3>
@@ -196,7 +196,7 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
           <div className="text-base-content/70">{noDataText}</div>
         )}
       </div>
-    </section>
+    </div>
   )
 }
 
