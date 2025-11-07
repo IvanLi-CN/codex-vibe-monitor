@@ -12,15 +12,16 @@ const COLORS = ['#ef4444', '#f97316', '#f59e0b', '#eab308', '#22c55e', '#10b981'
 export function ErrorReasonPieChart({ items, isLoading }: ErrorReasonPieChartProps) {
   const { t } = useTranslation()
 
-  if (isLoading) {
-    return (
-      <div className="flex justify-center py-10">
-        <span className="loading loading-bars loading-lg" aria-label={t('chart.loadingDetailed')} />
-      </div>
-    )
-  }
+  const hasData = Array.isArray(items) && items.length > 0
 
-  if (!items || items.length === 0) {
+  if (!hasData) {
+    if (isLoading) {
+      return (
+        <div className="flex justify-center py-10">
+          <span className="loading loading-bars loading-lg" aria-label={t('chart.loadingDetailed')} />
+        </div>
+      )
+    }
     return <div className="alert">{t('chart.noDataRange')}</div>
   }
 
