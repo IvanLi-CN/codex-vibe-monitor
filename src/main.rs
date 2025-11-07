@@ -252,7 +252,6 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<JoinHandle<()>> {
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
         .route("/api/stats/timeseries", get(fetch_timeseries))
-        .route("/api/stats/errors", get(fetch_error_distribution))
         .route("/api/quota/latest", get(latest_quota_snapshot))
         .route("/events", get(sse_stream))
         .with_state(state.clone())
@@ -970,66 +969,6 @@ async fn fetch_timeseries(
     };
 
     Ok(Json(response))
-}
-
-#[derive(serde::Deserialize)]
-struct ErrorQuery {
-    range: String,
-    top: Option<i64>,
-}
-
-#[derive(serde::Serialize)]
-struct ErrorDistributionItem {
-    reason: String,
-    count: i64,
-}
-
-#[derive(serde::Serialize)]
-struct ErrorDistributionResponse {
-    range_start: String,
-    range_end: String,
-    items: Vec<ErrorDistributionItem>,
-}
-
-async fn fetch_error_distribution(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<ErrorQuery>,
-) -> Result<Json<ErrorDistributionResponse>, ApiError> {
-    let range_duration = parse_duration_spec(&params.range)?;
-    let end_dt = Utc::now();
-    let start_dt = end_dt - range_duration;
-
-    // Group error reasons; normalize empty to 'Unknown' and trim spaces
-    #[derive(sqlx::FromRow)]
-    struct ErrorRow {
-        reason: String,
-        count: i64,
-    }
-
-    let mut qb = sqlx::QueryBuilder::new(
-        "SELECT CASE WHEN error_message IS NULL OR TRIM(error_message) = '' THEN 'Unknown' ELSE TRIM(error_message) END AS reason, COUNT(*) as count FROM codex_invocations WHERE occurred_at >= ",
-    );
-    qb.push_bind(format_naive(start_dt.naive_utc()));
-    qb.push(" AND (status IS NULL OR status != 'success') GROUP BY reason ORDER BY count DESC");
-    if let Some(top) = params.top {
-        let limited = top.clamp(1, 50);
-        qb.push(" LIMIT ").push_bind(limited);
-    }
-    let rows: Vec<ErrorRow> = qb.build_query_as().fetch_all(&state.pool).await?;
-
-    let items = rows
-        .into_iter()
-        .map(|r| ErrorDistributionItem {
-            reason: r.reason,
-            count: r.count,
-        })
-        .collect();
-
-    Ok(Json(ErrorDistributionResponse {
-        range_start: format_utc_iso(start_dt),
-        range_end: format_utc_iso(end_dt),
-        items,
-    }))
 }
 
 async fn latest_quota_snapshot(
