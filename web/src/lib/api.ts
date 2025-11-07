@@ -64,6 +64,17 @@ export interface TimeseriesResponse {
   points: TimeseriesPoint[]
 }
 
+export interface ErrorDistributionItem {
+  reason: string
+  count: number
+}
+
+export interface ErrorDistributionResponse {
+  rangeStart: string
+  rangeEnd: string
+  items: ErrorDistributionItem[]
+}
+
 export interface QuotaSnapshot {
   capturedAt: string
   amountLimit?: number
@@ -137,6 +148,13 @@ export async function fetchTimeseries(range: string, params?: { bucket?: string;
   if (params?.bucket) search.set('bucket', params.bucket)
   if (params?.settlementHour !== undefined) search.set('settlementHour', String(params.settlementHour))
   return fetchJson<TimeseriesResponse>(`/api/stats/timeseries?${search.toString()}`)
+}
+
+export async function fetchErrorDistribution(range: string, params?: { top?: number }) {
+  const search = new URLSearchParams()
+  search.set('range', range)
+  if (params?.top != null) search.set('top', String(params.top))
+  return fetchJson<ErrorDistributionResponse>(`/api/stats/errors?${search.toString()}`)
 }
 
 export async function fetchQuotaSnapshot() {

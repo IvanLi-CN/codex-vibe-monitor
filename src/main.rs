@@ -23,6 +23,8 @@ use chrono_tz::Asia::Shanghai;
 use clap::Parser;
 use dotenvy::dotenv;
 use futures_util::{StreamExt, stream};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use reqwest::{Client, ClientBuilder, Url, header};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -252,6 +254,8 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<JoinHandle<()>> {
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
         .route("/api/stats/timeseries", get(fetch_timeseries))
+        .route("/api/stats/errors", get(fetch_error_distribution))
+        .route("/api/stats/errors/others", get(fetch_other_errors))
         .route("/api/quota/latest", get(latest_quota_snapshot))
         .route("/events", get(sse_stream))
         .with_state(state.clone())
@@ -969,6 +973,315 @@ async fn fetch_timeseries(
     };
 
     Ok(Json(response))
+}
+
+#[derive(serde::Deserialize)]
+struct ErrorQuery {
+    range: String,
+    top: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+struct ErrorDistributionItem {
+    reason: String,
+    count: i64,
+}
+
+#[derive(serde::Serialize)]
+struct ErrorDistributionResponse {
+    range_start: String,
+    range_end: String,
+    items: Vec<ErrorDistributionItem>,
+}
+
+#[derive(serde::Deserialize)]
+struct OtherErrorsQuery {
+    range: String,
+    page: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+struct OtherErrorItem {
+    id: i64,
+    occurred_at: String,
+    error_message: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct OtherErrorsResponse {
+    total: i64,
+    page: i64,
+    limit: i64,
+    items: Vec<OtherErrorItem>,
+}
+
+async fn fetch_error_distribution(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ErrorQuery>,
+) -> Result<Json<ErrorDistributionResponse>, ApiError> {
+    let range_duration = parse_duration_spec(&params.range)?;
+    let end_dt = Utc::now();
+    let start_dt = end_dt - range_duration;
+
+    #[derive(sqlx::FromRow)]
+    struct RawErr {
+        error_message: Option<String>,
+    }
+
+    let rows: Vec<RawErr> = sqlx::query_as(
+        r#"
+        SELECT error_message
+        FROM codex_invocations
+        WHERE occurred_at >= ?1 AND (status IS NULL OR status != 'success')
+        "#,
+    )
+    .bind(format_naive(start_dt.naive_utc()))
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for r in rows {
+        let raw = r.error_message.unwrap_or_default();
+        let key = categorize_error(&raw);
+        *counts.entry(key).or_insert(0) += 1;
+    }
+
+    let mut items: Vec<ErrorDistributionItem> = counts
+        .into_iter()
+        .map(|(reason, count)| ErrorDistributionItem { reason, count })
+        .collect();
+    items.sort_by(|a, b| b.count.cmp(&a.count));
+    if let Some(top) = params.top {
+        let limited = top.clamp(1, 50) as usize;
+        if items.len() > limited {
+            items.truncate(limited);
+        }
+    }
+
+    Ok(Json(ErrorDistributionResponse {
+        range_start: format_utc_iso(start_dt),
+        range_end: format_utc_iso(end_dt),
+        items,
+    }))
+}
+
+// Classify error message by rules:
+// - If contains HTTP code >= 501, group as "HTTP <code>"
+// - If 4xx: try to extract concrete type (json error.type or regex phrases); otherwise "HTTP <code>"
+// - Otherwise: normalize message and if still not matched, return "Other"
+fn categorize_error(input: &str) -> String {
+    let s = input.trim();
+    if s.is_empty() {
+        return "Other".to_string();
+    }
+
+    if let Some(code) = extract_http_code(s) {
+        if code >= 501 {
+            return format!("HTTP {}", code);
+        }
+        if (400..500).contains(&code) {
+            if let Some(t) = extract_json_error_type(s) {
+                return t.to_string();
+            }
+            if RE_USAGE_NOT_INCLUDED.is_match(s) {
+                return "usage_not_included".to_string();
+            }
+            if RE_USAGE_LIMIT_REACHED.is_match(s) {
+                return "usage_limit_reached".to_string();
+            }
+            if code == 429 {
+                if RE_TOO_MANY_REQUESTS.is_match(s) {
+                    return "too_many_requests".to_string();
+                }
+                return "http_429".to_string();
+            }
+            if code == 401 {
+                return "unauthorized".to_string();
+            }
+            if code == 403 {
+                return "forbidden".to_string();
+            }
+            if code == 404 {
+                return "not_found".to_string();
+            }
+            return format!("HTTP {}", code);
+        }
+    }
+
+    // Fallback to normalized text; if empty -> Other
+    let norm = normalize_error_reason(s);
+    if norm == "Unknown" || norm.is_empty() {
+        "Other".to_string()
+    } else {
+        norm
+    }
+}
+
+fn normalize_error_reason(input: &str) -> String {
+    let s = input.trim();
+    if s.is_empty() {
+        return "Unknown".to_string();
+    }
+    // Extract stable info from JSON payloads if present
+    if s.starts_with('{')
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(s)
+        && let Some(err) = v.get("error")
+        && let Some(ty) = err.get("type").and_then(|x| x.as_str())
+    {
+        return format!("json error: {ty}");
+    }
+
+    let mut out = s.to_lowercase();
+
+    static RE_HTTP: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\bhttp\s*(\d{3})\b").expect("valid regex"));
+    let status = RE_HTTP
+        .captures(&out)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string());
+
+    static RE_ISO_DT: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\b\d{4}-\d{2}-\d{2}[ t]\d{2}:\d{2}:\d{2}(?:\.\d+)?z?\b").expect("valid regex")
+    });
+    out = RE_ISO_DT.replace_all(&out, "").into_owned();
+
+    static RE_UUID: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+            .expect("valid regex")
+    });
+    out = RE_UUID.replace_all(&out, "").into_owned();
+
+    static RE_LONG_ID: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\b[a-z0-9_\-]{10,}\b").expect("valid regex"));
+    out = RE_LONG_ID.replace_all(&out, "").into_owned();
+
+    static RE_URL: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r#"https?://[^\s'\"]+"#).expect("valid regex"));
+    out = RE_URL
+        .replace_all(&out, |caps: &regex::Captures| {
+            let url = &caps[0];
+            if let Ok(u) = reqwest::Url::parse(url) {
+                format!(
+                    "{}://{}{}",
+                    u.scheme(),
+                    u.host_str().unwrap_or(""),
+                    u.path()
+                )
+            } else {
+                String::new()
+            }
+        })
+        .into_owned();
+
+    static RE_BIG_NUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{4,}\b").expect("valid regex"));
+    out = RE_BIG_NUM.replace_all(&out, "").into_owned();
+
+    out = out.replace("request failed:", "request failed");
+    out = out.replace("exception recovered:", "exception");
+
+    static RE_WS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").expect("valid regex"));
+    out = RE_WS.replace_all(&out, " ").trim().to_string();
+
+    if let Some(code) = status.as_ref().filter(|c| !out.contains(&c[..])) {
+        out = format!("http {code}: {out}");
+    }
+
+    if out.is_empty() {
+        "Unknown".to_string()
+    } else {
+        out.chars().take(160).collect()
+    }
+}
+
+fn extract_http_code(s: &str) -> Option<u16> {
+    static RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\bhttp\s*:?\s*(\d{3})\b").expect("valid regex"));
+    RE.captures(s)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<u16>().ok())
+}
+
+fn extract_json_error_type(s: &str) -> Option<String> {
+    if !s.trim_start().starts_with('{') {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(s).ok()?;
+    let ty = v
+        .get("error")
+        .and_then(|e| e.get("type"))
+        .and_then(|t| t.as_str())?;
+    Some(ty.to_string())
+}
+
+static RE_USAGE_NOT_INCLUDED: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)usage[_\s-]*not[_\s-]*included").expect("valid regex"));
+static RE_USAGE_LIMIT_REACHED: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)usage[_\s-]*limit[_\s-]*reached").expect("valid regex"));
+static RE_TOO_MANY_REQUESTS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)too\s+many\s+requests").expect("valid regex"));
+
+async fn fetch_other_errors(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<OtherErrorsQuery>,
+) -> Result<Json<OtherErrorsResponse>, ApiError> {
+    let range_duration = parse_duration_spec(&params.range)?;
+    let end_dt = Utc::now();
+    let start_dt = end_dt - range_duration;
+
+    #[derive(sqlx::FromRow)]
+    struct RowItem {
+        id: i64,
+        occurred_at: String,
+        error_message: Option<String>,
+    }
+    let rows: Vec<RowItem> = sqlx::query_as(
+        r#"
+        SELECT id, occurred_at, error_message
+        FROM codex_invocations
+        WHERE occurred_at >= ?1 AND (status IS NULL OR status != 'success')
+        ORDER BY occurred_at DESC
+        "#,
+    )
+    .bind(format_naive(start_dt.naive_utc()))
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut others: Vec<RowItem> = Vec::new();
+    for r in rows.into_iter() {
+        let msg = r.error_message.clone().unwrap_or_default();
+        let cat = categorize_error(&msg);
+        if cat == "Other" {
+            others.push(r);
+        }
+    }
+
+    let total = others.len() as i64;
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let page = params.page.unwrap_or(1).max(1);
+    let start = ((page - 1) * limit) as usize;
+    let end = (start + limit as usize).min(others.len());
+    let slice = if start < end {
+        &others[start..end]
+    } else {
+        &[]
+    };
+
+    let items = slice
+        .iter()
+        .map(|r| OtherErrorItem {
+            id: r.id,
+            occurred_at: r.occurred_at.clone(),
+            error_message: r.error_message.clone(),
+        })
+        .collect();
+
+    Ok(Json(OtherErrorsResponse {
+        total,
+        page,
+        limit,
+        items,
+    }))
 }
 
 async fn latest_quota_snapshot(
