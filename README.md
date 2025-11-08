@@ -144,6 +144,10 @@ docker run --rm \
 - 版本：CI 使用脚本按 `Cargo.toml` 版本自动生成 `APP_EFFECTIVE_VERSION`，必要时自增补丁位。
 - 镜像：推送至 GHCR `ghcr.io/ivanli-cn/codex-vibe-monitor`（支持 `latest`、`sha`、以及计算得出的多种版本标签）。
 
+## 许可证
+
+本项目使用 MIT 协议开源，详见 `LICENSE` 文件。
+
 ---
 
 欢迎提 Issue/PR，一起把数据链路和可观测性打磨得更稳更顺！
