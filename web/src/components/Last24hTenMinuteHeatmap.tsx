@@ -31,7 +31,13 @@ export const ACCENT_BY_METRIC: Record<MetricKey, string> = {
   totalTokens: '#8B5CF6',
 }
 
-type Cell = { hour: number; slot: number; value: number }
+const COLUMN_COUNT = 25
+const HOUR_MS = 3_600_000
+const SLOT_MINUTES = 10
+const SLOT_MS = SLOT_MINUTES * 60 * 1000
+
+type Cell = { columnStart: number; columnEnd: number; slot: number; value: number }
+type Column = { start: number; end: number }
 
 function parseLocalParts(value: string) {
   if (value.includes('T')) {
@@ -51,23 +57,39 @@ function parseLocalParts(value: string) {
 }
 
 function compute24h6(points: TimeseriesPoint[] | undefined, metric: MetricKey) {
-  // Always initialize a 24x6 grid to keep layout stable even without data
+  const now = Date.now()
+  const endAnchor = Math.ceil(now / HOUR_MS) * HOUR_MS
+  const columnCount = COLUMN_COUNT
+  const startAnchor = endAnchor - columnCount * HOUR_MS
+  const columns: Column[] = Array.from({ length: columnCount }, (_, idx) => {
+    const start = startAnchor + idx * HOUR_MS
+    return { start, end: start + HOUR_MS }
+  })
+
+  // Always initialize a fixed grid (6 slots x `columnCount` hours)
   const rows: Cell[][] = Array.from({ length: 6 }, (_, slot) =>
-    Array.from({ length: 24 }, (_, h) => ({ hour: h, slot, value: 0 })),
+    columns.map((col) => ({ columnStart: col.start, columnEnd: col.end, slot, value: 0 })),
   )
 
   let max = 0
+  let hasData = false
   for (const p of points ?? []) {
-    const { h, min } = parseLocalParts(p.bucketStart)
-    if (!Number.isFinite(h) || !Number.isFinite(min)) continue
-    const slot = Math.floor(Math.max(0, Math.min(59, min)) / 10) // 0..5
+    const bucketStartMs = Date.parse(p.bucketStart)
+    if (Number.isNaN(bucketStartMs)) continue
+    if (bucketStartMs < startAnchor || bucketStartMs >= endAnchor) continue
+    const columnIndex = Math.floor((bucketStartMs - startAnchor) / HOUR_MS)
+    if (columnIndex < 0 || columnIndex >= columns.length) continue
+    const { min } = parseLocalParts(p.bucketStart)
+    if (!Number.isFinite(min)) continue
+    const slot = Math.floor(Math.max(0, Math.min(59, min)) / SLOT_MINUTES)
     const val = metric === 'totalCount' ? p.totalCount ?? 0 : metric === 'totalCost' ? p.totalCost ?? 0 : p.totalTokens ?? 0
-    const cell = rows[slot][h]
+    const cell = rows[slot][columnIndex]
     cell.value += val
     if (cell.value > max) max = cell.value
+    hasData = true
   }
 
-  return { rows, max }
+  return { rows, max, columns, hasData }
 }
 
 function levelFor(value: number, max: number) {
@@ -148,36 +170,55 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
 
         {error ? (
           <div className="alert alert-error">{error}</div>
-        ) : grid.rows.length > 0 ? (
+        ) : grid.hasData ? (
           <div className="w-full overflow-x-auto">
             <div className="flex justify-center">
               <div className="inline-block">
                 {/* Hour labels */}
-                <div className="ml-14 grid gap-[3px] pl-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
-                  {Array.from({ length: 24 }, (_, h) => (
-                    <div key={`h-${h}`} className="text-center text-[10px] leading-3 text-base-content/60">
-                      {h}
-                    </div>
-                  ))}
+                <div
+                  className="ml-14 grid gap-[3px] pl-[3px]"
+                  style={{ gridTemplateColumns: `repeat(${grid.columns.length}, minmax(0, 1fr))` }}
+                >
+                  {grid.columns.map((col, idx) => {
+                    const colDate = new Date(col.start)
+                    const hour = String(colDate.getHours()).padStart(2, '0')
+                    return (
+                      <div key={`h-${idx}`} className="text-center text-[10px] leading-3 text-base-content/60">
+                        {hour}
+                      </div>
+                    )
+                  })}
                 </div>
 
-                {/* Grid 6 rows (10-minute slots), 24 columns (hours) */}
+                {/* Grid 6 rows (10-minute slots), rolling columns */}
                 <div className="mt-2 flex flex-col gap-[3px]">
                   {grid.rows.map((row, slotIdx) => {
                     const label = `${minuteSlotLabel(slotIdx)}m`
                     return (
                       <div key={`r-${slotIdx}`} className="flex items-center gap-3">
                         <div className="w-14 shrink-0 text-right text-xs text-base-content/70">{label}</div>
-                        <div className="grid gap-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
+                        <div
+                          className="grid gap-[3px]"
+                          style={{ gridTemplateColumns: `repeat(${grid.columns.length}, minmax(0, 1fr))` }}
+                        >
                           {row.map((cell, ci) => {
                             const lvl = levelFor(cell.value, grid.max)
                             const palette = LEVEL_COLORS_BY_METRIC[metric]
                             const cls = palette[lvl] ?? palette[0]
                             const formatted = formatValue(cell.value)
-                            const hLabel = String(ci).padStart(2, '0')
-                            const mStart = String(cell.slot * 10).padStart(2, '0')
-                            const mEnd = String(cell.slot * 10 + 9).padStart(2, '0')
-                            const title = `${hLabel}:${mStart}-${hLabel}:${mEnd} ${formatted}`
+                            const slotStart = cell.columnStart + cell.slot * SLOT_MS
+                            const slotEnd = Math.min(cell.columnEnd, slotStart + SLOT_MS - 1)
+                            const startLabel = new Date(slotStart).toLocaleString(localeTag, {
+                              month: '2-digit',
+                              day: '2-digit',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
+                            const endLabel = new Date(slotEnd).toLocaleString(localeTag, {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
+                            const title = `${startLabel} - ${endLabel} ${formatted}`
                             return (
                               <div key={`c-${slotIdx}-${ci}`} className={`${cls} h-5 w-5 sm:h-6 sm:w-6 rounded-sm`} title={title} aria-label={title} />
                             )
