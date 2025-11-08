@@ -11,6 +11,10 @@
 
 以 10 秒固定节奏抓取「Codex 调用记录/配额快照」，写入 SQLite，并通过 REST API 与 SSE 为前端仪表盘提供实时数据流；前端使用 Vite + React 渲染图表、表格与配额状态。
 
+## 项目截图
+
+<img src="docs/screenshot-dashboard.png" alt="Codex Vibe Monitor Dashboard" width="1024" />
+
 ## 特性
 
 - 调度与并发：Tokio 定时器 + 信号量并发控制，60s 请求超时，智能选择连接复用或独立连接。
@@ -69,7 +73,7 @@ XY_MAX_PARALLEL_POLLS=6                        # (6)
 XY_SHARED_CONNECTION_PARALLELISM=2             # (2)
 XY_HTTP_BIND=127.0.0.1:8080                    # (127.0.0.1:8080)
 XY_LIST_LIMIT_MAX=200                          # (200)
-XY_USER_AGENT=codex-vibe-monitor/0.1.0         # (自动)
+XY_USER_AGENT=codex-vibe-monitor/0.2.0         # (自动)
 XY_STATIC_DIR=web/dist                         # (存在时自动使用)
 XY_SNAPSHOT_MIN_INTERVAL_SECS=300              # (300)
 ```
@@ -139,6 +143,10 @@ docker run --rm \
 - 工作流：`.github/workflows/ci.yml`（Lint/Format、后端测试、构建产物、构建并推送 Docker）。
 - 版本：CI 使用脚本按 `Cargo.toml` 版本自动生成 `APP_EFFECTIVE_VERSION`，必要时自增补丁位。
 - 镜像：推送至 GHCR `ghcr.io/ivanli-cn/codex-vibe-monitor`（支持 `latest`、`sha`、以及计算得出的多种版本标签）。
+
+## 许可证
+
+本项目使用 MIT 协议开源，详见 `LICENSE` 文件。
 
 ---
 

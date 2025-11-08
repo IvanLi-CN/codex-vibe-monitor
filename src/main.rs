@@ -1890,7 +1890,7 @@ impl AppConfig {
             .user_agent
             .clone()
             .or_else(|| env::var("XY_USER_AGENT").ok())
-            .unwrap_or_else(|| "codex-vibe-monitor/0.1.0".to_string());
+            .unwrap_or_else(|| "codex-vibe-monitor/0.2.0".to_string());
         let static_dir = overrides
             .static_dir
             .clone()
