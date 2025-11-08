@@ -21,7 +21,7 @@ export function useUpdateAvailable() {
   const loadVersion = useCallback(async () => {
     try {
       const v = await fetchVersion()
-      return v.version
+      return v.backend
     } catch {
       return null
     }

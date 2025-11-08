@@ -203,8 +203,6 @@ jobs:
             type=sha
             type=ref,event=tag
             type=raw,value=v${{ env.APP_EFFECTIVE_VERSION }}
-            type=raw,value=be-${{ env.BACKEND_EFFECTIVE_VERSION }}
-            type=raw,value=fe-${{ env.FRONTEND_EFFECTIVE_VERSION }}
             type=raw,value=b${{ env.BACKEND_EFFECTIVE_VERSION }}-f${{ env.FRONTEND_EFFECTIVE_VERSION }}
 
       - name: Build and push Docker image

@@ -126,11 +126,13 @@ export async function fetchStats() {
   return fetchJson<StatsResponse>('/api/stats')
 }
 
-interface VersionApi { backend: string; frontend: string }
-export interface VersionResponse { version: string }
+export interface VersionResponse {
+  backend: string
+  frontend: string
+}
+
 export async function fetchVersion(): Promise<VersionResponse> {
-  const v = await fetchJson<VersionApi>('/api/version')
-  return { version: v.backend }
+  return fetchJson<VersionResponse>('/api/version')
 }
 
 export async function fetchSummary(window: string, options?: { limit?: number }) {
