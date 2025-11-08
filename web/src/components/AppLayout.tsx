@@ -5,6 +5,7 @@ import { subscribeToSse } from '../lib/sse'
 import useUpdateAvailable from '../hooks/useUpdateAvailable'
 import { fetchVersion } from '../lib/api'
 import type { VersionResponse } from '../lib/api'
+import { frontendVersion, normalizeVersion } from '../lib/version'
 import { useTranslation } from '../i18n'
 import { supportedLocales, type Locale } from '../i18n'
 
@@ -25,9 +26,9 @@ export function AppLayout() {
   const [pulse, setPulse] = useState(false)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const animationDurationMs = 1400
-  const [version, setVersion] = useState<VersionResponse | null>(null)
+  const [versionInfo, setVersionInfo] = useState<VersionResponse | null>(null)
+  const [backendLoading, setBackendLoading] = useState(true)
   const update = useUpdateAvailable()
-  const tagVersion = version?.version.startsWith('v') ? version.version : (version ? `v${version.version}` : null)
 
   useEffect(() => {
     const unsubscribe = subscribeToSse(() => {
@@ -37,7 +38,11 @@ export function AppLayout() {
       }
       timeoutRef.current = setTimeout(() => setPulse(false), animationDurationMs)
     })
-    fetchVersion().then(setVersion).catch(() => setVersion(null))
+    setBackendLoading(true)
+    fetchVersion()
+      .then(setVersionInfo)
+      .catch(() => setVersionInfo(null))
+      .finally(() => setBackendLoading(false))
     return () => {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current)
@@ -91,7 +96,65 @@ export function AppLayout() {
       document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [languageMenuOpen])
+    }, [languageMenuOpen])
+
+  const normalizedFrontendVersion = normalizeVersion(frontendVersion)
+  const normalizedBackendVersion = versionInfo?.backend ? normalizeVersion(versionInfo.backend) : null
+  const releaseLink = normalizedBackendVersion
+    ? `${repositoryUrl}/releases/tag/${normalizedBackendVersion}`
+    : null
+  const showBackendVersion =
+    !!normalizedBackendVersion && normalizedBackendVersion !== normalizedFrontendVersion
+  const frontendLabel = t('app.footer.frontendLabel')
+  const backendLabel = t('app.footer.backendLabel')
+
+  const frontendVersionLabel = (
+    <span className="inline-flex items-center gap-2">
+      <span className="font-mono">
+        {t('app.footer.versionLabel', {
+          scope: frontendLabel,
+          version: normalizedFrontendVersion,
+        })}
+      </span>
+      {backendLoading && (
+        <span className="flex items-center gap-1 text-base-content/60" aria-live="polite">
+          <Icon icon="mdi:loading" className="h-3 w-3 animate-spin" aria-hidden />
+          <span className="sr-only">{t('app.footer.loadingVersion')}</span>
+        </span>
+      )}
+    </span>
+  )
+
+  const shouldLinkFrontend =
+    !!releaseLink && normalizedBackendVersion === normalizedFrontendVersion
+
+  const frontendVersionNode = shouldLinkFrontend ? (
+    <a
+      className="link inline-flex items-center gap-2"
+      href={releaseLink ?? undefined}
+      target="_blank"
+      rel="noreferrer"
+    >
+      {frontendVersionLabel}
+    </a>
+  ) : (
+    frontendVersionLabel
+  )
+
+  const backendVersionNode =
+    showBackendVersion && normalizedBackendVersion ? (
+      <a
+        className="link font-mono"
+        href={`${repositoryUrl}/releases/tag/${normalizedBackendVersion}`}
+        target="_blank"
+        rel="noreferrer"
+      >
+        {t('app.footer.versionLabel', {
+          scope: backendLabel,
+          version: normalizedBackendVersion,
+        })}
+      </a>
+    ) : null
 
   return (
     <div className="min-h-screen bg-base-200 text-base-content">
@@ -194,7 +257,7 @@ export function AppLayout() {
           <div className="flex flex-1 flex-wrap items-center gap-3">
             <span>
               {t('app.update.available')}{' '}
-              <span className="font-mono">{version?.version ?? t('app.update.current')}</span>
+              <span className="font-mono">{versionInfo?.backend ?? t('app.update.current')}</span>
               {' → '}
               <span className="font-mono">{update.availableVersion}</span>
             </span>
@@ -221,20 +284,15 @@ export function AppLayout() {
             <Icon icon="mdi:github" className="h-4 w-4" aria-hidden />
             <span>GitHub</span>
           </a>
-          <span>
-            {version && tagVersion ? (
-              <a
-                className="link font-mono"
-                href={`${repositoryUrl}/releases/tag/${tagVersion}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {t('app.footer.versionLabel', { version: tagVersion })}
-              </a>
-            ) : (
-              t('app.footer.loadingVersion')
+          <div className="flex items-center gap-2">
+            {frontendVersionNode}
+            {backendVersionNode && (
+              <>
+                <span className="text-base-content/50">/</span>
+                {backendVersionNode}
+              </>
             )}
-          </span>
+          </div>
         </div>
       </footer>
     </div>
