@@ -41,6 +41,7 @@ use tokio::{
     time::{MissedTickBehavior, interval, timeout},
 };
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_util::sync::CancellationToken;
 use tower_http::{
     cors::CorsLayer,
     services::{ServeDir, ServeFile},
@@ -135,20 +136,28 @@ async fn main() -> Result<()> {
         semaphore: semaphore.clone(),
     });
 
-    let poller_handle = spawn_scheduler(state.clone());
-    let server_handle = spawn_http_server(state.clone()).await?;
+    // Shared cancellation token for graceful shutdown
+    let cancel = CancellationToken::new();
 
-    tokio::select! {
-        res = poller_handle => {
-            if let Err(err) = res {
-                error!(?err, "poller task terminated unexpectedly");
-            }
-        }
-        res = server_handle => {
-            if let Err(err) = res {
-                error!(?err, "http server terminated unexpectedly");
-            }
-        }
+    // Listen for OS signals and trigger cancellation
+    let cancel_for_signals = cancel.clone();
+    let signals_task = tokio::spawn(async move {
+        shutdown_listener().await;
+        cancel_for_signals.cancel();
+        info!("shutdown signal received; beginning graceful shutdown");
+    });
+
+    let poller_handle = spawn_scheduler(state.clone(), cancel.clone());
+    let server_handle = spawn_http_server(state.clone(), cancel.clone()).await?;
+
+    // Wait until a shutdown signal is received, then wait for tasks to finish
+    let _ = signals_task.await;
+
+    if let Err(err) = server_handle.await {
+        error!(?err, "http server terminated unexpectedly");
+    }
+    if let Err(err) = poller_handle.await {
+        error!(?err, "poller task terminated unexpectedly");
     }
 
     Ok(())
@@ -164,25 +173,48 @@ fn init_tracing() {
         .init();
 }
 
-fn spawn_scheduler(state: Arc<AppState>) -> JoinHandle<()> {
+fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(err) = schedule_poll(state.clone()).await {
-            warn!(?err, "initial poll failed");
+        // Track in-flight tasks so we can wait for them on shutdown
+        let mut inflight: Vec<JoinHandle<()>> = Vec::new();
+        match schedule_poll(state.clone()).await {
+            Ok(h) => inflight.push(h),
+            Err(err) => warn!(?err, "initial poll failed"),
         }
 
         let mut ticker = interval(state.config.poll_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
-            ticker.tick().await;
-            if let Err(err) = schedule_poll(state.clone()).await {
-                warn!(?err, "scheduled poll failed");
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    info!("scheduler received shutdown; waiting for in-flight polls");
+                    // Drain completed tasks first
+                    inflight.retain(|h| !h.is_finished());
+                    // Wait for remaining tasks to finish
+                    for h in inflight {
+                        let _ = h.await;
+                    }
+                    break;
+                }
+                _ = ticker.tick() => {
+                    match schedule_poll(state.clone()).await {
+                        Ok(handle) => {
+                            inflight.push(handle);
+                            // Clean up finished tasks to avoid unbounded growth
+                            inflight.retain(|h| !h.is_finished());
+                        }
+                        Err(err) => {
+                            warn!(?err, "scheduled poll failed");
+                        }
+                    }
+                }
             }
         }
     })
 }
 
-async fn schedule_poll(state: Arc<AppState>) -> Result<()> {
+async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
     let permit = state
         .semaphore
         .clone()
@@ -197,7 +229,7 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<()> {
     let force_new_connection = in_flight > state.config.shared_connection_parallelism;
     let state_clone = state.clone();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let fut = fetch_and_store(&state_clone, force_new_connection);
         match timeout(state_clone.config.request_timeout, fut).await {
             Ok(Ok(publish)) => {
@@ -243,10 +275,13 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<()> {
         drop(permit);
     });
 
-    Ok(())
+    Ok(handle)
 }
 
-async fn spawn_http_server(state: Arc<AppState>) -> Result<JoinHandle<()>> {
+async fn spawn_http_server(
+    state: Arc<AppState>,
+    cancel: CancellationToken,
+) -> Result<JoinHandle<()>> {
     let mut router = Router::new()
         .route("/health", get(health_check))
         .route("/api/version", get(get_versions))
@@ -284,7 +319,7 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<JoinHandle<()>> {
 
     let handle = tokio::spawn(async move {
         if let Err(err) = axum::serve(listener, router)
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(async move { cancel.cancelled().await })
             .await
         {
             error!(?err, "http server exited with error");
@@ -294,11 +329,22 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<JoinHandle<()>> {
     Ok(handle)
 }
 
-async fn shutdown_signal() {
-    if let Err(err) = tokio::signal::ctrl_c().await {
-        error!(?err, "failed to listen for shutdown signal");
+async fn shutdown_listener() {
+    // Wait for Ctrl+C or SIGTERM (unix)
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = sigterm.recv() => {},
+        }
     }
-    info!("shutdown signal received");
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 struct PublishResult {
