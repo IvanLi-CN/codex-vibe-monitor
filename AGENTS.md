@@ -21,6 +21,11 @@
 
 This workflow avoids blocking the shell and strictly prohibits using `alarm` for long‑running services. The only acceptable use of short timeouts is for one‑off, non‑service commands (e.g., a build), never for dev servers.
 
+- Always start local dev servers via the wrapper scripts under `scripts/`:
+  - `./scripts/start-backend.sh` for the Rust API (port 8080).
+  - `./scripts/start-frontend.sh` for the Vite SPA (port 60080).
+- Do **not** launch these services by hand with ad-hoc `nohup`/`cargo run`/`npm run dev` commands; the wrappers enforce PID tracking and strict port usage. If a port is in use the script exits and you must resolve the conflict manually instead of allowing automatic port changes.
+
 - NEVER wrap long‑running dev services (backend, Vite) with `alarm` or any hard kill timeout.
 - Run services in background with `nohup` + PID files; detach stdin to prevent TTY hangs.
 - Use bounded readiness probes (curl loops with a hard max wait) instead of waiting on processes.
