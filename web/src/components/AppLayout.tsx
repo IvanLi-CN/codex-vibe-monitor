@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@iconify/react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { subscribeToSse } from '../lib/sse'
+import { subscribeToSse, requestImmediateReconnect } from '../lib/sse'
+import useSseStatus from '../hooks/useSseStatus'
 import useUpdateAvailable from '../hooks/useUpdateAvailable'
 import { fetchVersion } from '../lib/api'
 import type { VersionResponse } from '../lib/api'
@@ -20,6 +21,7 @@ const LOCALE_FLAG: Record<Locale, string> = {
   zh: '🇨🇳',
   en: '🇺🇸',
 }
+const OFFLINE_NOTICE_THRESHOLD_MS = 2 * 60 * 1000
 
 export function AppLayout() {
   const { t, locale, setLocale } = useTranslation()
@@ -29,6 +31,28 @@ export function AppLayout() {
   const [versionInfo, setVersionInfo] = useState<VersionResponse | null>(null)
   const [backendLoading, setBackendLoading] = useState(true)
   const update = useUpdateAvailable()
+  const sseStatus = useSseStatus()
+
+  const isReconnecting = sseStatus.phase === 'connecting' || sseStatus.phase === 'reconnecting'
+  const isSseDisabled = sseStatus.phase === 'disabled'
+  const isOffline = sseStatus.phase !== 'connected' && sseStatus.phase !== 'idle'
+  const showOfflineBanner = isOffline && sseStatus.downtimeMs >= OFFLINE_NOTICE_THRESHOLD_MS
+  const downtimeSeconds = Math.max(Math.floor(sseStatus.downtimeMs / 1000), 0)
+  const downtimeMinutesPart = Math.floor(downtimeSeconds / 60)
+  const downtimeSecondsPart = downtimeSeconds % 60
+  const nextRetrySeconds =
+    sseStatus.nextRetryAt != null
+      ? Math.max(Math.ceil((sseStatus.nextRetryAt - Date.now()) / 1000), 0)
+      : null
+  const durationChipLabel = t('app.sse.banner.durationChip', {
+    minutes: downtimeMinutesPart,
+    seconds: downtimeSecondsPart.toString().padStart(2, '0'),
+  })
+  const statusLine = sseStatus.autoReconnect
+    ? nextRetrySeconds != null && nextRetrySeconds > 0
+      ? t('app.sse.banner.retryIn', { seconds: nextRetrySeconds })
+      : t('app.sse.banner.retryingNow')
+    : t('app.sse.banner.autoDisabled')
 
   useEffect(() => {
     const unsubscribe = subscribeToSse(() => {
@@ -77,6 +101,10 @@ export function AppLayout() {
   }
 
   const closeLanguageMenu = () => setLanguageMenuOpen(false)
+
+  const handleManualReconnect = () => {
+    requestImmediateReconnect()
+  }
 
   useEffect(() => {
     if (!languageMenuOpen) return
@@ -156,6 +184,16 @@ export function AppLayout() {
       </a>
     ) : null
 
+  const logoImageClass = `h-8 w-8 relative z-20 transition-transform duration-300 ${
+    pulse
+      ? 'animate-pulse-core scale-110 drop-shadow-[0_0_18px_rgba(59,130,246,0.65)]'
+      : 'drop-shadow-[0_0_6px_rgba(59,130,246,0.35)]'
+  } ${isOffline ? 'grayscale opacity-70' : ''} ${isSseDisabled ? 'opacity-60' : ''}`
+
+  const reconnectRingClass = `pointer-events-none absolute inline-flex h-14 w-14 rounded-full border-2 border-dashed transition-opacity duration-300 ${
+    isSseDisabled ? 'border-warning/80' : 'border-primary/70'
+  } ${isReconnecting ? 'opacity-95 animate-orbit-spin' : 'opacity-0'}`
+
   return (
     <div className="min-h-screen bg-base-200 text-base-content">
       <header className="navbar bg-base-100 border-b border-base-300 sticky top-0 z-50">
@@ -167,6 +205,7 @@ export function AppLayout() {
               }`}
               aria-hidden
             />
+            <span className={reconnectRingClass} aria-hidden />
             <span
               className={`pointer-events-none absolute inline-flex h-12 w-12 rounded-full border-2 border-primary/70 transition-opacity ${
                 pulse ? 'opacity-100 animate-pulse-ring' : 'opacity-0'
@@ -179,15 +218,7 @@ export function AppLayout() {
               }`}
               aria-hidden
             />
-            <img
-              src="/favicon.svg"
-              alt={t('app.logoAlt')}
-              className={`h-8 w-8 relative z-20 transition-transform duration-300 ${
-                pulse
-                  ? 'animate-pulse-core scale-110 drop-shadow-[0_0_18px_rgba(59,130,246,0.65)]'
-                  : 'drop-shadow-[0_0_6px_rgba(59,130,246,0.35)]'
-              }`}
-            />
+            <img src="/favicon.svg" alt={t('app.logoAlt')} className={logoImageClass} />
           </span>
           <span className="text-xl font-semibold">{t('app.brand')}</span>
         </div>
@@ -252,6 +283,37 @@ export function AppLayout() {
           </div>
         </nav>
       </header>
+      {showOfflineBanner && (
+        <div className="fixed top-[72px] left-1/2 z-[60] w-full max-w-3xl -translate-x-1/2 px-4">
+          <div
+            className="alert w-full flex flex-col gap-3 bg-warning/90 text-warning-content shadow-lg border border-warning/60 sm:flex-row sm:items-center"
+            role="status"
+            aria-live="assertive"
+          >
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <Icon icon="mdi:alert-circle" className="h-6 w-6 flex-shrink-0" aria-hidden />
+              <div className="min-w-0 space-y-1">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="font-semibold">{t('app.sse.banner.title')}</span>
+                  <span className="rounded-full bg-warning/20 px-2 py-0.5 text-xs font-mono text-warning-content">
+                    {durationChipLabel}
+                  </span>
+                </div>
+                <p className="text-sm text-warning-content/90 truncate">
+                  {t('app.sse.banner.description')} · {statusLine}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="btn btn-sm btn-primary w-full sm:w-auto sm:ml-auto"
+              onClick={handleManualReconnect}
+            >
+              {t('app.sse.banner.reconnectButton')}
+            </button>
+          </div>
+        </div>
+      )}
       {update.visible && (
         <div className="alert alert-info rounded-none sticky top-[64px] z-40">
           <div className="flex flex-1 flex-wrap items-center gap-3">
