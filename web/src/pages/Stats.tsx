@@ -52,12 +52,18 @@ export default function StatsPage() {
   const [bucket, setBucket] = useState<string>(rawBucketOptions[0]?.value ?? '1h')
   const [settlementHour, setSettlementHour] = useState(0)
 
-  useEffect(() => {
-    const nextBucket = rawBucketOptions[0]?.value
-    if (nextBucket && !rawBucketOptions.some((option) => option.value === bucket)) {
-      setBucket(nextBucket)
-    }
+  // Guarantee we never request an incompatible bucket for the selected range.
+  // When range changes, the previous bucket (e.g., 15m) may be invalid for 1mo.
+  // Compute an effective bucket that always belongs to the current range options.
+  const effectiveBucket = useMemo(() => {
+    if (rawBucketOptions.some((option) => option.value === bucket)) return bucket
+    return rawBucketOptions[0]?.value ?? '1h'
   }, [bucket, rawBucketOptions])
+
+  // Keep internal bucket state in sync after range changes so the select displays correctly
+  useEffect(() => {
+    if (bucket !== effectiveBucket) setBucket(effectiveBucket)
+  }, [bucket, effectiveBucket])
 
   const rangeOptions = useMemo(
     () => RANGE_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
@@ -69,7 +75,7 @@ export default function StatsPage() {
     [rawBucketOptions, t],
   )
 
-  const needsSettlement = BUCKET_SECONDS[bucket] >= 86_400
+  const needsSettlement = BUCKET_SECONDS[effectiveBucket] >= 86_400
 
   const {
     summary,
@@ -82,7 +88,7 @@ export default function StatsPage() {
     isLoading: timeseriesLoading,
     error: timeseriesError,
   } = useTimeseries(range, {
-    bucket,
+    bucket: effectiveBucket,
     settlementHour: needsSettlement ? settlementHour : undefined,
   })
 
@@ -111,7 +117,7 @@ export default function StatsPage() {
               </select>
               <select
                 className="select select-bordered select-sm"
-                value={bucket}
+                value={effectiveBucket}
                 onChange={(event) => setBucket(event.target.value)}
               >
                 {bucketOptions.map((option) => (
