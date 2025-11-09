@@ -61,6 +61,9 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
     }
   })
 
+  // Keep animations for normal point counts; auto-disable only for extreme cases to avoid UI lockups
+  const animate = chartData.length <= 800
+
   const seriesNames = {
     totalTokens: t('chart.totalTokens'),
     totalCost: t('chart.totalCost'),
@@ -82,7 +85,7 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
         {useLine ? (
           <AreaChart data={chartData} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="label" minTickGap={32} angle={-15} dy={8} height={60} />
+            <XAxis dataKey="label" minTickGap={32} angle={-15} dy={8} height={60} interval="preserveStartEnd" />
             <YAxis
               yAxisId="tokens"
               orientation="left"
@@ -108,6 +111,7 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
               fill="#a78bfa"
               fillOpacity={0.2}
               strokeWidth={2}
+              isAnimationActive={animate}
             />
             <Area
               type="monotone"
@@ -118,6 +122,7 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
               fill="#3b82f6"
               fillOpacity={0.2}
               strokeWidth={2}
+              isAnimationActive={animate}
             />
             <Area
               type="monotone"
@@ -128,12 +133,13 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
               fill="#fb923c"
               fillOpacity={0.2}
               strokeWidth={2}
+              isAnimationActive={animate}
             />
           </AreaChart>
         ) : (
           <ComposedChart data={chartData} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="label" minTickGap={32} angle={-15} dy={8} height={60} />
+            <XAxis dataKey="label" minTickGap={32} angle={-15} dy={8} height={60} interval="preserveStartEnd" />
             <YAxis
               yAxisId="tokens"
               orientation="left"
@@ -150,9 +156,9 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
               formatter={(value, key) => [formatValue(value as number, key as keyof typeof seriesNames), seriesNames[key as keyof typeof seriesNames]]}
             />
             <Legend />
-            <Bar yAxisId="tokens" dataKey="totalTokens" name={seriesNames.totalTokens} fill="#a78bfa" radius={[4, 4, 0, 0]} />
-            <Bar yAxisId="count" dataKey="totalCount" name={seriesNames.totalCount} fill="#3b82f6" radius={[4, 4, 0, 0]} />
-            <Bar yAxisId="cost" dataKey="totalCost" name={seriesNames.totalCost} fill="#fb923c" radius={[4, 4, 0, 0]} />
+            <Bar yAxisId="tokens" dataKey="totalTokens" name={seriesNames.totalTokens} fill="#a78bfa" radius={[4, 4, 0, 0]} isAnimationActive={animate} />
+            <Bar yAxisId="count" dataKey="totalCount" name={seriesNames.totalCount} fill="#3b82f6" radius={[4, 4, 0, 0]} isAnimationActive={animate} />
+            <Bar yAxisId="cost" dataKey="totalCost" name={seriesNames.totalCost} fill="#fb923c" radius={[4, 4, 0, 0]} isAnimationActive={animate} />
           </ComposedChart>
         )}
       </ResponsiveContainer>

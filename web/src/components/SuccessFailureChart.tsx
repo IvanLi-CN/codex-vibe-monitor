@@ -38,19 +38,20 @@ export function SuccessFailureChart({ points, isLoading, bucketSeconds }: Succes
     success: p.successCount,
     failure: p.failureCount,
   }))
+  const animate = chartData.length <= 800
 
   return (
     <div className="h-96 w-full">
       <ResponsiveContainer>
         <BarChart data={chartData} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="label" minTickGap={32} angle={-15} dy={8} height={60} />
+          <XAxis dataKey="label" minTickGap={32} angle={-15} dy={8} height={60} interval="preserveStartEnd" />
           <YAxis tickFormatter={(v) => numberFormatter.format(v as number)} />
           <Tooltip formatter={(v, k) => [numberFormatter.format(v as number), legendName(k as string, t)]} />
           <Legend />
           {/* Success at bottom, Failure stacked above */}
-          <Bar dataKey="success" name={t('stats.cards.success')} stackId="count" fill="#22c55e" radius={[4, 4, 0, 0]} />
-          <Bar dataKey="failure" name={t('stats.cards.failures')} stackId="count" fill="#ef4444" radius={[4, 4, 0, 0]} />
+          <Bar dataKey="success" name={t('stats.cards.success')} stackId="count" fill="#22c55e" radius={[4, 4, 0, 0]} isAnimationActive={animate} />
+          <Bar dataKey="failure" name={t('stats.cards.failures')} stackId="count" fill="#ef4444" radius={[4, 4, 0, 0]} isAnimationActive={animate} />
         </BarChart>
       </ResponsiveContainer>
     </div>

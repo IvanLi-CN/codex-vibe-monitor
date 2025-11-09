@@ -525,6 +525,28 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure codex_invocations table existence")?;
 
+    // Speed up time-range scans and ordering on the stats endpoints
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_occurred_at
+        ON codex_invocations (occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_occurred_at")?;
+
+    // Benefit queries that filter by time and status (e.g., error distribution)
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_occurred_at_status
+        ON codex_invocations (occurred_at, status)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_occurred_at_status")?;
+
     let existing: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
         .fetch_all(pool)
         .await
@@ -580,6 +602,17 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure codex_quota_snapshots table existence")?;
+
+    // Speed up latest snapshot lookup
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_quota_snapshots_captured_at
+        ON codex_quota_snapshots (captured_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_quota_snapshots_captured_at")?;
 
     Ok(())
 }
