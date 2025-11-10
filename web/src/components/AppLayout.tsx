@@ -131,58 +131,54 @@ export function AppLayout() {
   const releaseLink = normalizedBackendVersion
     ? `${repositoryUrl}/releases/tag/${normalizedBackendVersion}`
     : null
-  const showBackendVersion =
-    !!normalizedBackendVersion && normalizedBackendVersion !== normalizedFrontendVersion
-  const frontendLabel = t('app.footer.frontendLabel')
-  const backendLabel = t('app.footer.backendLabel')
 
-  const frontendVersionLabel = (
-    <span className="inline-flex items-center gap-2">
-      <span className="font-mono">
-        {t('app.footer.versionLabel', {
-          scope: frontendLabel,
-          version: normalizedFrontendVersion,
-        })}
-      </span>
-      {backendLoading && (
-        <span className="flex items-center gap-1 text-base-content/60" aria-live="polite">
-          <Icon icon="mdi:loading" className="h-3 w-3 animate-spin" aria-hidden />
-          <span className="sr-only">{t('app.footer.loadingVersion')}</span>
-        </span>
-      )}
-    </span>
-  )
+  const sameVersion =
+    !!normalizedBackendVersion && normalizedBackendVersion === normalizedFrontendVersion
 
-  const shouldLinkFrontend =
-    !!releaseLink && normalizedBackendVersion === normalizedFrontendVersion
-
-  const frontendVersionNode = shouldLinkFrontend ? (
-    <a
-      className="link inline-flex items-center gap-2"
-      href={releaseLink ?? undefined}
-      target="_blank"
-      rel="noreferrer"
-    >
-      {frontendVersionLabel}
-    </a>
-  ) : (
-    frontendVersionLabel
-  )
-
-  const backendVersionNode =
-    showBackendVersion && normalizedBackendVersion ? (
-      <a
-        className="link font-mono"
-        href={`${repositoryUrl}/releases/tag/${normalizedBackendVersion}`}
-        target="_blank"
-        rel="noreferrer"
-      >
-        {t('app.footer.versionLabel', {
-          scope: backendLabel,
-          version: normalizedBackendVersion,
-        })}
-      </a>
-    ) : null
+  function renderDiffVersion(oldV: string, newV: string) {
+    const oldRaw = oldV.replace(/^v/, '')
+    const newRaw = newV.replace(/^v/, '')
+    const minLen = Math.min(oldRaw.length, newRaw.length)
+    let i = 0
+    while (i < minLen && oldRaw[i] === newRaw[i]) i++
+    const common = newRaw.slice(0, i)
+    const oldSuffix = oldRaw.slice(i)
+    const newSuffix = newRaw.slice(i)
+    // Scheme B: when only a suffix is added (e.g., v0.2.0 -> v0.2.0-dev),
+    // show the whole old version struck through, followed by the new one.
+    if (!oldSuffix) {
+      return (
+        <>
+          <span>{t('app.footer.newVersionAvailable')}{' '}</span>
+          <a
+            className="link font-mono"
+            href={releaseLink ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <del>{oldV}</del>{' '}
+            {newV}
+          </a>
+        </>
+      )
+    }
+    return (
+      <>
+        <span>{t('app.footer.newVersionAvailable')}{' '}</span>
+        <a
+          className="link font-mono"
+          href={releaseLink ?? undefined}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {'v'}
+          {common}
+          <del>{oldSuffix}</del>
+          {newSuffix}
+        </a>
+      </>
+    )
+  }
 
   const logoImageClass = `h-8 w-8 relative z-20 transition-transform duration-300 ${
     pulse
@@ -347,12 +343,39 @@ export function AppLayout() {
             <span>GitHub</span>
           </a>
           <div className="flex items-center gap-2">
-            {frontendVersionNode}
-            {backendVersionNode && (
-              <>
-                <span className="text-base-content/50">/</span>
-                {backendVersionNode}
-              </>
+            {sameVersion && normalizedBackendVersion ? (
+              releaseLink ? (
+                <a
+                  className="link font-mono"
+                  href={releaseLink}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {normalizedBackendVersion}
+                </a>
+              ) : (
+                <span className="font-mono">{normalizedFrontendVersion}</span>
+              )
+            ) : normalizedBackendVersion ? (
+              <span className="inline-flex items-center gap-2">
+                {renderDiffVersion(normalizedFrontendVersion, normalizedBackendVersion)}
+                {backendLoading && (
+                  <span className="flex items-center gap-1 text-base-content/60" aria-live="polite">
+                    <Icon icon="mdi:loading" className="h-3 w-3 animate-spin" aria-hidden />
+                    <span className="sr-only">{t('app.footer.loadingVersion')}</span>
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-2">
+                <span className="font-mono">{normalizedFrontendVersion}</span>
+                {backendLoading && (
+                  <span className="flex items-center gap-1 text-base-content/60" aria-live="polite">
+                    <Icon icon="mdi:loading" className="h-3 w-3 animate-spin" aria-hidden />
+                    <span className="sr-only">{t('app.footer.loadingVersion')}</span>
+                  </span>
+                )}
+              </span>
             )}
           </div>
         </div>
