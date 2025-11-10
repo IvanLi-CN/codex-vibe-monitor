@@ -136,32 +136,24 @@ export function AppLayout() {
     !!normalizedBackendVersion && normalizedBackendVersion === normalizedFrontendVersion
 
   function renderDiffVersion(oldV: string, newV: string) {
-    const oldRaw = oldV.replace(/^v/, '')
-    const newRaw = newV.replace(/^v/, '')
+    // For display, strip prerelease/build suffixes like -dev/-rc/+meta, to match
+    // the requested visual style (e.g., show v0.2.~3~5 instead of including -dev).
+    const stripSuffix = (v: string) => v.replace(/^v/, '').split(/[+-]/, 1)[0]
+    const oldRaw = stripSuffix(oldV)
+    const newRaw = stripSuffix(newV)
     const minLen = Math.min(oldRaw.length, newRaw.length)
-    let i = 0
-    while (i < minLen && oldRaw[i] === newRaw[i]) i++
-    const common = newRaw.slice(0, i)
-    const oldSuffix = oldRaw.slice(i)
-    const newSuffix = newRaw.slice(i)
-    // Scheme B: when only a suffix is added (e.g., v0.2.0 -> v0.2.0-dev),
-    // show the whole old version struck through, followed by the new one.
-    if (!oldSuffix) {
-      return (
-        <>
-          <span>{t('app.footer.newVersionAvailable')}{' '}</span>
-          <a
-            className="link font-mono"
-            href={releaseLink ?? undefined}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <del>{oldV}</del>{' '}
-            {newV}
-          </a>
-        </>
-      )
+    // Longest common prefix
+    let p = 0
+    while (p < minLen && oldRaw[p] === newRaw[p]) p++
+    // Longest common suffix, avoid overlapping prefix
+    let s = 0
+    while (s < minLen - p && oldRaw[oldRaw.length - 1 - s] === newRaw[newRaw.length - 1 - s]) {
+      s++
     }
+    const prefix = newRaw.slice(0, p)
+    const oldMid = oldRaw.slice(p, oldRaw.length - s)
+    const newMid = newRaw.slice(p, newRaw.length - s)
+    const suffix = newRaw.slice(newRaw.length - s)
     return (
       <>
         <span>{t('app.footer.newVersionAvailable')}{' '}</span>
@@ -172,9 +164,10 @@ export function AppLayout() {
           rel="noreferrer"
         >
           {'v'}
-          {common}
-          <del>{oldSuffix}</del>
-          {newSuffix}
+          {prefix}
+          {oldMid ? <del>{oldMid}</del> : null}
+          {newMid}
+          {suffix}
         </a>
       </>
     )
