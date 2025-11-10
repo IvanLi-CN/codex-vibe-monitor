@@ -136,45 +136,21 @@ export function AppLayout() {
     !!normalizedBackendVersion && normalizedBackendVersion === normalizedFrontendVersion
 
   function renderDiffVersion(oldV: string, newV: string) {
-    const oldRaw = oldV.replace(/^v/, '')
-    const newRaw = newV.replace(/^v/, '')
-    const minLen = Math.min(oldRaw.length, newRaw.length)
-    let i = 0
-    while (i < minLen && oldRaw[i] === newRaw[i]) i++
-    const common = newRaw.slice(0, i)
-    const oldSuffix = oldRaw.slice(i)
-    const newSuffix = newRaw.slice(i)
-    // Scheme B: when only a suffix is added (e.g., v0.2.0 -> v0.2.0-dev),
-    // show the whole old version struck through, followed by the new one.
-    if (!oldSuffix) {
-      return (
-        <>
-          <span>{t('app.footer.newVersionAvailable')}{' '}</span>
-          <a
-            className="link font-mono"
-            href={releaseLink ?? undefined}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <del>{oldV}</del>{' '}
-            {newV}
-          </a>
-        </>
-      )
-    }
+    // Simple, clear style: strike the whole old version (grey), arrow, then new version.
     return (
       <>
         <span>{t('app.footer.newVersionAvailable')}{' '}</span>
+        <span className="font-mono text-base-content/60">
+          <del style={{ textDecorationColor: 'currentColor' }}>{oldV}</del>
+        </span>
+        <span aria-hidden>{' '}										{' 		'}→{' '}</span>
         <a
           className="link font-mono"
           href={releaseLink ?? undefined}
           target="_blank"
           rel="noreferrer"
         >
-          {'v'}
-          {common}
-          <del>{oldSuffix}</del>
-          {newSuffix}
+          {newV}
         </a>
       </>
     )
