@@ -184,17 +184,17 @@ export function UsageCalendar() {
   // Measure tabs width (kept for possible future responsive tweaks)
   // no-op: tab width no longer influences calendar sizing
 
-  // Measure svg margin-left (weekday label offset) and track changes
+  // Measure left offset from container to SVG (includes weekday label margin + centering gap)
   // Avoid periodic polling that could cause layout thrashing/jitter.
   useLayoutEffect(() => {
     const contEl = containerRef.current
     if (!contEl) return
     const queryAndSet = () => {
-      const svg = contEl.querySelector('svg') as SVGElement | null
+      const svg = contEl.querySelector('article svg') as SVGElement | null
       if (!svg) return
-      const ml = parseFloat(getComputedStyle(svg).marginLeft || '0')
-      if (!Number.isFinite(ml)) return
-      const next = Math.max(0, Math.round(ml))
+      const svgRect = svg.getBoundingClientRect()
+      const contRect = contEl.getBoundingClientRect()
+      const next = Math.max(0, Math.round(svgRect.left - contRect.left))
       setLeftOffset((prev) => (prev !== next ? next : prev))
     }
     // initial read and re-read once after paint
