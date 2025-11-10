@@ -144,6 +144,24 @@ export function AppLayout() {
     const common = newRaw.slice(0, i)
     const oldSuffix = oldRaw.slice(i)
     const newSuffix = newRaw.slice(i)
+    // Scheme B: when only a suffix is added (e.g., v0.2.0 -> v0.2.0-dev),
+    // show the whole old version struck through, followed by the new one.
+    if (!oldSuffix) {
+      return (
+        <>
+          <span>{t('app.footer.newVersionAvailable')}{' '}</span>
+          <a
+            className="link font-mono"
+            href={releaseLink ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <del>{oldV}</del>{' '}
+            {newV}
+          </a>
+        </>
+      )
+    }
     return (
       <>
         <span>{t('app.footer.newVersionAvailable')}{' '}</span>
