@@ -76,4 +76,25 @@ test.describe('UsageCalendar responsive layout', () => {
     test.info().annotations.push({ type: 'width-samples', description: JSON.stringify(samples) })
     expect(max - min).toBeLessThanOrEqual(2)
   })
+
+  test('centers calendar when stacked at 768px', async ({ page }) => {
+    await page.setViewportSize({ width: 768, height: 900 })
+    await page.goto('/dashboard')
+    const wrapper = page.getByTestId('usage-calendar-wrapper')
+    await wrapper.waitFor({ state: 'visible' })
+    await page.waitForTimeout(300)
+    const gaps = await wrapper.evaluate((el) => {
+      const rect = (el as HTMLElement).getBoundingClientRect()
+      const article = (el as HTMLElement).querySelector('article') as HTMLElement | null
+      if (!article) {
+        return { leftGap: 0, rightGap: 0, width: rect.width, articleWidth: rect.width }
+      }
+      const a = article.getBoundingClientRect()
+      const leftGap = Math.round(a.left - rect.left)
+      const rightGap = Math.round(rect.right - a.right)
+      return { leftGap, rightGap, width: Math.round(rect.width), articleWidth: Math.round(a.width) }
+    })
+    test.info().annotations.push({ type: 'center-gaps', description: JSON.stringify(gaps) })
+    expect(Math.abs(gaps.leftGap - gaps.rightGap)).toBeLessThanOrEqual(16)
+  })
 })

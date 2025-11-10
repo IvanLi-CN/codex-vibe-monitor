@@ -268,7 +268,7 @@ export function UsageCalendar() {
             <div className="min-w-0">
               <div
                 ref={containerRef}
-                className="relative block w-full overflow-hidden pt-4 [&>svg]:h-auto [&>svg]:w-full"
+                className="relative flex w-full justify-center overflow-hidden pt-4 [&>svg]:h-auto"
                 style={minContainerWidth ? { minWidth: `${minContainerWidth}px` } : undefined}
                 data-testid="usage-calendar-wrapper"
               >
