@@ -136,11 +136,10 @@ export function AppLayout() {
     !!normalizedBackendVersion && normalizedBackendVersion === normalizedFrontendVersion
 
   function renderDiffVersion(oldV: string, newV: string) {
-    // For display, strip prerelease/build suffixes like -dev/-rc/+meta, to match
-    // the requested visual style (e.g., show v0.2.~3~5 instead of including -dev).
-    const stripSuffix = (v: string) => v.replace(/^v/, '').split(/[+-]/, 1)[0]
-    const oldRaw = stripSuffix(oldV)
-    const newRaw = stripSuffix(newV)
+    // Compute visual diff on full normalized version (including suffix),
+    // and strike only the changed part from the old version.
+    const oldRaw = oldV.replace(/^v/, '')
+    const newRaw = newV.replace(/^v/, '')
     const minLen = Math.min(oldRaw.length, newRaw.length)
     // Longest common prefix
     let p = 0
@@ -165,8 +164,12 @@ export function AppLayout() {
         >
           {'v'}
           {prefix}
-          {oldMid ? <del>{oldMid}</del> : null}
-          {newMid}
+          {oldMid ? (
+            <del className="text-error" style={{ textDecorationColor: 'currentColor' }}>
+              {oldMid}
+            </del>
+          ) : null}
+          <span className="text-success">{newMid}</span>
           {suffix}
         </a>
       </>
