@@ -68,8 +68,7 @@ export function UsageCalendar() {
   const { data, isLoading, error } = useTimeseries('90d', { bucket: '1d' })
   const [blockSize, setBlockSize] = useState(DEFAULT_BLOCK_SIZE)
   const containerRef = useRef<HTMLDivElement>(null)
-  const tabsRef = useRef<HTMLDivElement>(null)
-  const [tabsWidth, setTabsWidth] = useState(128)
+  // tabs width measurement removed (no longer needed for sizing)
   const [leftOffset, setLeftOffset] = useState(0) // svg.marginLeft introduced by weekday labels
   const colorProbeRef = useRef<HTMLSpanElement>(null)
   const [baseZeroColor, setBaseZeroColor] = useState<string>(BASE_ZERO.light)
@@ -116,6 +115,17 @@ export function UsageCalendar() {
     [data, metric],
   )
 
+  // Minimum width to keep blocks at least DEFAULT_BLOCK_SIZE so vertical size feels balanced
+  const minContainerWidth = useMemo(() => {
+    const cols = Math.max(1, calendarData.weekCount || 0)
+    if (!cols) return undefined
+    const offset = Math.max(leftOffset || WEEKDAY_LABEL_SPACE, WEEKDAY_LABEL_SPACE)
+    // Width needed so that per-column block size is at least DEFAULT_BLOCK_SIZE
+    // Derivation from sizing formula: A = L*(S + M) - M
+    const required = cols * (DEFAULT_BLOCK_SIZE + BLOCK_MARGIN) - BLOCK_MARGIN
+    return Math.ceil(offset + required)
+  }, [calendarData.weekCount, leftOffset])
+
   const formatMonthLabel = useCallback(
     (marker: MonthMarker) => {
       const monthValue = locale === 'zh' ? marker.month.toString() : marker.month.toString().padStart(2, '0')
@@ -143,82 +153,39 @@ export function UsageCalendar() {
     const node = containerRef.current
 
     const computeByContainer = (width: number) => {
-      if (!Number.isFinite(width) || width <= 0) {
-        setBlockSize(DEFAULT_BLOCK_SIZE)
-        return
-      }
-      // First pass: approximate by container width minus tabs width, weekday label offset and a small gap.
+      if (!Number.isFinite(width) || width <= 0) return
       const GAP = 6
       const approxWidth = Math.max(0, width - leftOffset - GAP)
       const cols = Math.max(1, calendarData.weekCount)
       const candidate = Math.floor(((approxWidth + BLOCK_MARGIN) / cols) - BLOCK_MARGIN)
       const next = Math.max(MIN_BLOCK_SIZE, Math.min(MAX_BLOCK_SIZE, candidate))
-      setBlockSize((prev) => {
-        const base = next || DEFAULT_BLOCK_SIZE
-        return prev ? Math.min(prev, base) : base
-      })
-    }
-
-    // Second pass: refine using actual rendered width of the content box.
-    const refineByMeasurements = () => {
-      const svg = node.querySelector('article svg') as SVGElement | null
-      if (!svg) return
-      const styles = getComputedStyle(node)
-      const paddingLeft = parseFloat(styles.paddingLeft || '0')
-      const paddingRight = parseFloat(styles.paddingRight || '0')
-      const contentWidth = Math.max(0, node.clientWidth - paddingLeft - paddingRight)
-      const desiredGap = 0
-      const available = Math.max(0, Math.floor(contentWidth - leftOffset - desiredGap))
-      const gList = Array.from(svg.querySelectorAll('g'))
-      const measuredCols = gList.filter(g => (g as SVGGElement).children.length === 7).length
-      const cols = Math.max(1, measuredCols || calendarData.weekCount)
-      const candidate = Math.floor(((available + BLOCK_MARGIN) / cols) - BLOCK_MARGIN)
-      const clamped = Math.max(MIN_BLOCK_SIZE, Math.min(MAX_BLOCK_SIZE, candidate))
-      if (Number.isFinite(clamped) && clamped > 0) {
-        setBlockSize((prev) => (Math.abs(prev - clamped) >= 1 ? clamped : prev))
-      }
+      setBlockSize((prev) => (Math.abs(prev - next) >= 1 ? next : prev))
     }
 
     // initial and when deps change
     computeByContainer(node.getBoundingClientRect().width)
     // observe container size changes
+    let raf = 0
+    let lastWidth = node.getBoundingClientRect().width
+    const schedule = (width: number) => {
+      lastWidth = width
+      if (raf) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => computeByContainer(lastWidth))
+    }
     const observer = new ResizeObserver((entries) => {
       const entry = entries.at(0)
       if (!entry) return
-      computeByContainer(entry.contentRect.width)
-      // defer refine to the next frame to ensure the SVG updated
-      requestAnimationFrame(refineByMeasurements)
+      schedule(entry.contentRect.width)
     })
     observer.observe(node)
-    // also refine shortly after mount/change to catch initial SVG paint
-    const raf = requestAnimationFrame(refineByMeasurements)
-    const t = window.setTimeout(refineByMeasurements, 120)
-    return () => { observer.disconnect(); cancelAnimationFrame(raf); window.clearTimeout(t) }
-  }, [calendarData.weekCount, tabsWidth, leftOffset])
+    return () => { observer.disconnect(); if (raf) cancelAnimationFrame(raf) }
+  }, [calendarData.weekCount, leftOffset])
 
   // Measure tabs width (kept for possible future responsive tweaks)
-  useLayoutEffect(() => {
-    const tabsEl = tabsRef.current
-    const contEl = containerRef.current
-    if (!tabsEl || !contEl) return
-    const update = () => {
-      const w = Math.ceil(tabsEl.getBoundingClientRect().width)
-      setTabsWidth(Math.max(0, w))
-    }
-    update()
-    const ro1 = new ResizeObserver(update)
-    const ro2 = new ResizeObserver(update)
-    ro1.observe(tabsEl)
-    ro2.observe(contEl)
-    window.addEventListener('resize', update)
-    return () => {
-      ro1.disconnect()
-      ro2.disconnect()
-      window.removeEventListener('resize', update)
-    }
-  }, [metric])
+  // no-op: tab width no longer influences calendar sizing
 
   // Measure svg margin-left (weekday label offset) and track changes
+  // Avoid periodic polling that could cause layout thrashing/jitter.
   useLayoutEffect(() => {
     const contEl = containerRef.current
     if (!contEl) return
@@ -226,16 +193,23 @@ export function UsageCalendar() {
       const svg = contEl.querySelector('svg') as SVGElement | null
       if (!svg) return
       const ml = parseFloat(getComputedStyle(svg).marginLeft || '0')
-      if (Number.isFinite(ml)) setLeftOffset(Math.max(0, Math.round(ml)))
+      if (!Number.isFinite(ml)) return
+      const next = Math.max(0, Math.round(ml))
+      setLeftOffset((prev) => (prev !== next ? next : prev))
     }
-    // initial read and on resize
+    // initial read and re-read once after paint
     queryAndSet()
     const ro = new ResizeObserver(queryAndSet)
     ro.observe(contEl)
     window.addEventListener('resize', queryAndSet)
-    // guard for first render of ActivityCalendar
-    const id = window.setInterval(queryAndSet, 600)
-    return () => { ro.disconnect(); window.removeEventListener('resize', queryAndSet); window.clearInterval(id) }
+    const raf = requestAnimationFrame(queryAndSet)
+    const t = window.setTimeout(queryAndSet, 300)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', queryAndSet)
+      cancelAnimationFrame(raf)
+      window.clearTimeout(t)
+    }
   }, [metric, calendarData.weekCount])
 
   const calendarLoading = isLoading || calendarData.activities.length === 0
@@ -251,7 +225,7 @@ export function UsageCalendar() {
 
   return (
     <section
-      className="card h-full w-full max-w-full overflow-hidden bg-base-100 shadow-sm lg:w-fit lg:max-w-none"
+      className="card h-full w-full max-w-full overflow-hidden bg-base-100 shadow-sm lg:w-fit"
       data-testid="usage-calendar-card"
     >
       <div className="card-body gap-4 lg:w-auto">
@@ -259,7 +233,6 @@ export function UsageCalendar() {
           <div className="flex items-center justify-between gap-3">
             <h2 className="card-title">{t('calendar.title')}</h2>
             <div
-              ref={tabsRef}
               className="tabs tabs-sm tabs-border"
               role="tablist"
               aria-label={t('calendar.metricsToggleAria')}
@@ -295,7 +268,8 @@ export function UsageCalendar() {
             <div className="min-w-0">
               <div
                 ref={containerRef}
-                className="relative inline-block w-full overflow-hidden pt-4 [&>svg]:h-auto [&>svg]:w-full lg:w-fit"
+                className="relative block w-full overflow-hidden pt-4 [&>svg]:h-auto [&>svg]:w-full"
+                style={minContainerWidth ? { minWidth: `${minContainerWidth}px` } : undefined}
                 data-testid="usage-calendar-wrapper"
               >
                 {/* Theme color probe to fetch exact bg-base-300 value */}

@@ -5,6 +5,8 @@ const VIEWPORTS = [
   { width: 768, height: 900 },
   { width: 1024, height: 900 },
   { width: 1440, height: 900 },
+  // Regression for shrink-on-large screens (reported at ~1873px)
+  { width: 1873, height: 900 },
 ]
 
 test.describe('UsageCalendar responsive layout', () => {
@@ -54,4 +56,24 @@ test.describe('UsageCalendar responsive layout', () => {
       }
     })
   }
+  
+  test('does not jitter width at 1873px', async ({ page }) => {
+    await page.setViewportSize({ width: 1873, height: 900 })
+    await page.goto('/dashboard')
+    const wrapper = page.getByTestId('usage-calendar-wrapper')
+    await wrapper.waitFor({ state: 'visible' })
+    // wait for calendar body to render
+    await page.locator('article').first().waitFor({ state: 'visible' })
+    // sample width several times; ensure it stays stable (<= 2px span)
+    const samples: number[] = []
+    for (let i = 0; i < 6; i++) {
+      await page.waitForTimeout(250)
+      const w = await wrapper.evaluate((el) => (el as HTMLElement).getBoundingClientRect().width)
+      samples.push(Math.round(w))
+    }
+    const max = Math.max(...samples)
+    const min = Math.min(...samples)
+    test.info().annotations.push({ type: 'width-samples', description: JSON.stringify(samples) })
+    expect(max - min).toBeLessThanOrEqual(2)
+  })
 })
