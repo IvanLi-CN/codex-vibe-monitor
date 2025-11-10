@@ -5,6 +5,8 @@ const VIEWPORTS = [
   { width: 768, height: 900 },
   { width: 1024, height: 900 },
   { width: 1440, height: 900 },
+  // Regression for shrink-on-large screens (reported at ~1873px)
+  { width: 1873, height: 900 },
 ]
 
 test.describe('UsageCalendar responsive layout', () => {
@@ -54,4 +56,45 @@ test.describe('UsageCalendar responsive layout', () => {
       }
     })
   }
+  
+  test('does not jitter width at 1873px', async ({ page }) => {
+    await page.setViewportSize({ width: 1873, height: 900 })
+    await page.goto('/dashboard')
+    const wrapper = page.getByTestId('usage-calendar-wrapper')
+    await wrapper.waitFor({ state: 'visible' })
+    // wait for calendar body to render
+    await page.locator('article').first().waitFor({ state: 'visible' })
+    // sample width several times; ensure it stays stable (<= 2px span)
+    const samples: number[] = []
+    for (let i = 0; i < 6; i++) {
+      await page.waitForTimeout(250)
+      const w = await wrapper.evaluate((el) => (el as HTMLElement).getBoundingClientRect().width)
+      samples.push(Math.round(w))
+    }
+    const max = Math.max(...samples)
+    const min = Math.min(...samples)
+    test.info().annotations.push({ type: 'width-samples', description: JSON.stringify(samples) })
+    expect(max - min).toBeLessThanOrEqual(2)
+  })
+
+  test('centers calendar when stacked at 768px', async ({ page }) => {
+    await page.setViewportSize({ width: 768, height: 900 })
+    await page.goto('/dashboard')
+    const wrapper = page.getByTestId('usage-calendar-wrapper')
+    await wrapper.waitFor({ state: 'visible' })
+    await page.waitForTimeout(300)
+    const gaps = await wrapper.evaluate((el) => {
+      const rect = (el as HTMLElement).getBoundingClientRect()
+      const article = (el as HTMLElement).querySelector('article') as HTMLElement | null
+      if (!article) {
+        return { leftGap: 0, rightGap: 0, width: rect.width, articleWidth: rect.width }
+      }
+      const a = article.getBoundingClientRect()
+      const leftGap = Math.round(a.left - rect.left)
+      const rightGap = Math.round(rect.right - a.right)
+      return { leftGap, rightGap, width: Math.round(rect.width), articleWidth: Math.round(a.width) }
+    })
+    test.info().annotations.push({ type: 'center-gaps', description: JSON.stringify(gaps) })
+    expect(Math.abs(gaps.leftGap - gaps.rightGap)).toBeLessThanOrEqual(16)
+  })
 })
