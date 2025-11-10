@@ -136,41 +136,21 @@ export function AppLayout() {
     !!normalizedBackendVersion && normalizedBackendVersion === normalizedFrontendVersion
 
   function renderDiffVersion(oldV: string, newV: string) {
-    // Compute visual diff on full normalized version (including suffix),
-    // and strike only the changed part from the old version.
-    const oldRaw = oldV.replace(/^v/, '')
-    const newRaw = newV.replace(/^v/, '')
-    const minLen = Math.min(oldRaw.length, newRaw.length)
-    // Longest common prefix
-    let p = 0
-    while (p < minLen && oldRaw[p] === newRaw[p]) p++
-    // Longest common suffix, avoid overlapping prefix
-    let s = 0
-    while (s < minLen - p && oldRaw[oldRaw.length - 1 - s] === newRaw[newRaw.length - 1 - s]) {
-      s++
-    }
-    const prefix = newRaw.slice(0, p)
-    const oldMid = oldRaw.slice(p, oldRaw.length - s)
-    const newMid = newRaw.slice(p, newRaw.length - s)
-    const suffix = newRaw.slice(newRaw.length - s)
+    // Simple, clear style: strike the whole old version (grey), arrow, then new version.
     return (
       <>
         <span>{t('app.footer.newVersionAvailable')}{' '}</span>
+        <span className="font-mono text-base-content/60">
+          <del style={{ textDecorationColor: 'currentColor' }}>{oldV}</del>
+        </span>
+        <span aria-hidden>{' '}										{' 		'}→{' '}</span>
         <a
           className="link font-mono"
           href={releaseLink ?? undefined}
           target="_blank"
           rel="noreferrer"
         >
-          {'v'}
-          {prefix}
-          {oldMid ? (
-            <del className="text-error" style={{ textDecorationColor: 'currentColor' }}>
-              {oldMid}
-            </del>
-          ) : null}
-          <span className="text-success">{newMid}</span>
-          {suffix}
+          {newV}
         </a>
       </>
     )
