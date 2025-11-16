@@ -131,7 +131,7 @@ export default function StatsPage() {
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <select
-                className="select select-bordered select-sm"
+                className="select select-bordered select-sm min-w-[8.5rem]"
                 value={range}
                 onChange={(event) => setRange(event.target.value as typeof range)}
               >
@@ -142,7 +142,7 @@ export default function StatsPage() {
                 ))}
               </select>
               <select
-                className="select select-bordered select-sm"
+                className="select select-bordered select-sm min-w-[7rem]"
                 value={effectiveBucket}
                 onChange={(event) => setBucket(event.target.value)}
               >
