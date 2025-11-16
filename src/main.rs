@@ -18,7 +18,10 @@ use axum::{
     response::{IntoResponse, Json, Response, Sse},
     routing::get,
 };
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, SecondsFormat, TimeZone, Utc};
+use chrono::{
+    DateTime, Datelike, Duration as ChronoDuration, LocalResult, NaiveDateTime, SecondsFormat,
+    TimeZone, Utc,
+};
 use chrono_tz::Asia::Shanghai;
 use clap::Parser;
 use dotenvy::dotenv;
@@ -900,6 +903,13 @@ async fn fetch_summary(
             let start = format_naive(start_dt);
             query_stats_row(&state.pool, StatsFilter::Since(start)).await?
         }
+        SummaryWindow::Calendar(spec) => {
+            let now = Utc::now();
+            let start = named_range_start(spec.as_str(), now)
+                .ok_or_else(|| ApiError(anyhow!("unsupported calendar window: {spec}")))?;
+            let start_str = format_naive(start.naive_utc());
+            query_stats_row(&state.pool, StatsFilter::Since(start_str)).await?
+        }
     };
 
     Ok(Json(row.into()))
@@ -909,24 +919,19 @@ async fn fetch_timeseries(
     State(state): State<Arc<AppState>>,
     Query(params): Query<TimeseriesQuery>,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
-    let range_duration = parse_duration_spec(&params.range)?;
+    let range_window = resolve_range_window(&params.range)?;
     let mut bucket_seconds = if let Some(spec) = params.bucket.as_deref() {
         bucket_seconds_from_spec(spec)
             .ok_or_else(|| anyhow!("unsupported bucket specification: {spec}"))?
     } else {
-        default_bucket_seconds(range_duration)
+        default_bucket_seconds(range_window.duration)
     };
 
     if bucket_seconds <= 0 {
         return Err(ApiError(anyhow!("bucket seconds must be positive")));
     }
 
-    let range_seconds = range_duration.num_seconds();
-    if range_seconds < bucket_seconds {
-        return Err(ApiError(anyhow!(
-            "bucket duration must not exceed selected range"
-        )));
-    }
+    let range_seconds = range_window.duration.num_seconds();
 
     if range_seconds / bucket_seconds > 10_000 {
         // avoid accidentally returning extremely large payloads
@@ -946,8 +951,8 @@ async fn fetch_timeseries(
         0
     };
 
-    let end_dt = Utc::now();
-    let start_dt = end_dt - range_duration;
+    let end_dt = range_window.end;
+    let start_dt = range_window.start;
     let start_str_iso = format_utc_iso(start_dt);
 
     let records = sqlx::query_as::<_, TimeseriesRecord>(
@@ -1099,9 +1104,9 @@ async fn fetch_error_distribution(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ErrorQuery>,
 ) -> Result<Json<ErrorDistributionResponse>, ApiError> {
-    let range_duration = parse_duration_spec(&params.range)?;
-    let end_dt = Utc::now();
-    let start_dt = end_dt - range_duration;
+    let range_window = resolve_range_window(&params.range)?;
+    let start_dt = range_window.start;
+    let end_dt = range_window.end;
 
     #[derive(sqlx::FromRow)]
     struct RawErr {
@@ -1304,9 +1309,8 @@ async fn fetch_other_errors(
     State(state): State<Arc<AppState>>,
     Query(params): Query<OtherErrorsQuery>,
 ) -> Result<Json<OtherErrorsResponse>, ApiError> {
-    let range_duration = parse_duration_spec(&params.range)?;
-    let end_dt = Utc::now();
-    let start_dt = end_dt - range_duration;
+    let range_window = resolve_range_window(&params.range)?;
+    let start_dt = range_window.start;
 
     #[derive(sqlx::FromRow)]
     struct RowItem {
@@ -1748,6 +1752,7 @@ enum SummaryWindow {
     All,
     Current(i64),
     Duration(ChronoDuration),
+    Calendar(String),
 }
 
 #[derive(Debug)]
@@ -2069,6 +2074,79 @@ fn parse_duration_spec(spec: &str) -> Result<ChronoDuration> {
     ))
 }
 
+struct RangeWindow {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    duration: ChronoDuration,
+}
+
+fn resolve_range_window(spec: &str) -> Result<RangeWindow> {
+    let end = Utc::now();
+    let start = if let Some(anchor) = named_range_start(spec, end) {
+        anchor
+    } else {
+        let duration = parse_duration_spec(spec)?;
+        let start = end - duration;
+        return Ok(RangeWindow {
+            start,
+            end,
+            duration,
+        });
+    };
+
+    let duration = end.signed_duration_since(start);
+    Ok(RangeWindow {
+        start,
+        end,
+        duration,
+    })
+}
+
+fn named_range_start(spec: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    match spec {
+        "today" => Some(start_of_local_day(now)),
+        "thisWeek" => Some(start_of_local_week(now)),
+        "thisMonth" => Some(start_of_local_month(now)),
+        _ => None,
+    }
+}
+
+fn start_of_local_day(now: DateTime<Utc>) -> DateTime<Utc> {
+    let local = now.with_timezone(&Shanghai);
+    let date = local.date_naive();
+    let naive = date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight should be representable");
+    local_naive_to_utc(naive)
+}
+
+fn start_of_local_week(now: DateTime<Utc>) -> DateTime<Utc> {
+    let local = now.with_timezone(&Shanghai);
+    let date = local.date_naive();
+    let start_of_day = date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight should be representable");
+    let offset_days = local.weekday().num_days_from_monday() as i64;
+    local_naive_to_utc(start_of_day - ChronoDuration::days(offset_days))
+}
+
+fn start_of_local_month(now: DateTime<Utc>) -> DateTime<Utc> {
+    let local = now.with_timezone(&Shanghai);
+    let date = local.date_naive();
+    let first_day = date.with_day(1).unwrap_or(date);
+    let naive = first_day
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight should be representable");
+    local_naive_to_utc(naive)
+}
+
+fn local_naive_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
+    match Shanghai.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => dt.with_timezone(&Utc),
+        _ => naive.and_utc(),
+    }
+}
+
 fn bucket_seconds_from_spec(spec: &str) -> Option<i64> {
     match spec {
         "1m" => Some(60),
@@ -2107,6 +2185,9 @@ fn parse_summary_window(query: &SummaryQuery, default_limit: i64) -> Result<Summ
             Ok(SummaryWindow::Current(limit))
         }
         Some("all") => Ok(SummaryWindow::All),
+        Some(raw @ ("today" | "thisWeek" | "thisMonth")) => {
+            Ok(SummaryWindow::Calendar(raw.to_string()))
+        }
         Some(raw) => Ok(SummaryWindow::Duration(parse_duration_spec(raw)?)),
         None => Ok(SummaryWindow::Duration(ChronoDuration::days(1))),
     }

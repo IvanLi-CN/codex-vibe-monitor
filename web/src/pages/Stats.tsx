@@ -11,8 +11,11 @@ import { ErrorReasonPieChart } from '../components/ErrorReasonPieChart'
 
 const RANGE_OPTIONS = [
   { value: '1h', labelKey: 'stats.range.lastHour' },
+  { value: 'today', labelKey: 'stats.range.today' },
   { value: '1d', labelKey: 'stats.range.lastDay' },
+  { value: 'thisWeek', labelKey: 'stats.range.thisWeek' },
   { value: '7d', labelKey: 'stats.range.lastWeek' },
+  { value: 'thisMonth', labelKey: 'stats.range.thisMonth' },
   { value: '1mo', labelKey: 'stats.range.lastMonth' },
 ] as const satisfies readonly { value: string; labelKey: TranslationKey }[]
 
@@ -28,12 +31,29 @@ const BUCKET_OPTION_KEYS: Record<string, { value: string; labelKey: TranslationK
     { value: '1h', labelKey: 'stats.bucket.eachHour' },
     { value: '6h', labelKey: 'stats.bucket.each6Hours' },
   ],
+  today: [
+    { value: '15m', labelKey: 'stats.bucket.each15Minutes' },
+    { value: '30m', labelKey: 'stats.bucket.each30Minutes' },
+    { value: '1h', labelKey: 'stats.bucket.eachHour' },
+    { value: '6h', labelKey: 'stats.bucket.each6Hours' },
+  ],
   '7d': [
     { value: '1h', labelKey: 'stats.bucket.eachHour' },
     { value: '6h', labelKey: 'stats.bucket.each6Hours' },
     { value: '12h', labelKey: 'stats.bucket.each12Hours' },
   ],
+  thisWeek: [
+    { value: '1h', labelKey: 'stats.bucket.eachHour' },
+    { value: '6h', labelKey: 'stats.bucket.each6Hours' },
+    { value: '12h', labelKey: 'stats.bucket.each12Hours' },
+    { value: '1d', labelKey: 'stats.bucket.eachDay' },
+  ],
   '1mo': [
+    { value: '6h', labelKey: 'stats.bucket.each6Hours' },
+    { value: '12h', labelKey: 'stats.bucket.each12Hours' },
+    { value: '1d', labelKey: 'stats.bucket.eachDay' },
+  ],
+  thisMonth: [
     { value: '6h', labelKey: 'stats.bucket.each6Hours' },
     { value: '12h', labelKey: 'stats.bucket.each12Hours' },
     { value: '1d', labelKey: 'stats.bucket.eachDay' },
@@ -53,7 +73,7 @@ const BUCKET_SECONDS: Record<string, number> = {
 
 export default function StatsPage() {
   const { t } = useTranslation()
-  const [range, setRange] = useState<typeof RANGE_OPTIONS[number]['value']>('1d')
+  const [range, setRange] = useState<typeof RANGE_OPTIONS[number]['value']>('today')
   const rawBucketOptions = useMemo(() => BUCKET_OPTION_KEYS[range] ?? BUCKET_OPTION_KEYS['1d'], [range])
   const [bucket, setBucket] = useState<string>(rawBucketOptions[0]?.value ?? '1h')
   const [settlementHour, setSettlementHour] = useState(0)
