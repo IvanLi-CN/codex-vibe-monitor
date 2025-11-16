@@ -12,6 +12,7 @@ import { ErrorReasonPieChart } from '../components/ErrorReasonPieChart'
 const RANGE_OPTIONS = [
   { value: '1h', labelKey: 'stats.range.lastHour' },
   { value: '1d', labelKey: 'stats.range.lastDay' },
+  { value: '7d', labelKey: 'stats.range.lastWeek' },
   { value: '1mo', labelKey: 'stats.range.lastMonth' },
 ] as const satisfies readonly { value: string; labelKey: TranslationKey }[]
 
@@ -26,6 +27,11 @@ const BUCKET_OPTION_KEYS: Record<string, { value: string; labelKey: TranslationK
     { value: '30m', labelKey: 'stats.bucket.each30Minutes' },
     { value: '1h', labelKey: 'stats.bucket.eachHour' },
     { value: '6h', labelKey: 'stats.bucket.each6Hours' },
+  ],
+  '7d': [
+    { value: '1h', labelKey: 'stats.bucket.eachHour' },
+    { value: '6h', labelKey: 'stats.bucket.each6Hours' },
+    { value: '12h', labelKey: 'stats.bucket.each12Hours' },
   ],
   '1mo': [
     { value: '6h', labelKey: 'stats.bucket.each6Hours' },
