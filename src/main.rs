@@ -19,8 +19,8 @@ use axum::{
     routing::get,
 };
 use chrono::{
-    DateTime, Datelike, Duration as ChronoDuration, LocalResult, NaiveDateTime, SecondsFormat,
-    TimeZone, Utc,
+    DateTime, Datelike, Duration as ChronoDuration, LocalResult, NaiveDate, NaiveDateTime,
+    SecondsFormat, TimeZone, Utc,
 };
 use chrono_tz::Asia::Shanghai;
 use clap::Parser;
@@ -952,6 +952,7 @@ async fn fetch_timeseries(
     };
 
     let end_dt = range_window.end;
+    let display_end_dt = range_window.display_end;
     let start_dt = range_window.start;
     let start_str_iso = format_utc_iso(start_dt);
 
@@ -1011,7 +1012,8 @@ async fn fetch_timeseries(
     // This prevents future-dated records from pushing the chart beyond the
     // intended window (e.g., "last 24 hours").
     let fill_end_epoch =
-        align_bucket_epoch(end_dt.timestamp(), bucket_seconds, offset_seconds) + bucket_seconds;
+        align_bucket_epoch(display_end_dt.timestamp(), bucket_seconds, offset_seconds)
+            + bucket_seconds;
     while bucket_cursor <= fill_end_epoch {
         aggregates.entry(bucket_cursor).or_default();
         bucket_cursor += bucket_seconds;
@@ -1106,7 +1108,7 @@ async fn fetch_error_distribution(
 ) -> Result<Json<ErrorDistributionResponse>, ApiError> {
     let range_window = resolve_range_window(&params.range)?;
     let start_dt = range_window.start;
-    let end_dt = range_window.end;
+    let display_end = range_window.display_end;
 
     #[derive(sqlx::FromRow)]
     struct RawErr {
@@ -1145,7 +1147,7 @@ async fn fetch_error_distribution(
 
     Ok(Json(ErrorDistributionResponse {
         range_start: format_utc_iso(start_dt),
-        range_end: format_utc_iso(end_dt),
+        range_end: format_utc_iso(display_end),
         items,
     }))
 }
@@ -2077,38 +2079,56 @@ fn parse_duration_spec(spec: &str) -> Result<ChronoDuration> {
 struct RangeWindow {
     start: DateTime<Utc>,
     end: DateTime<Utc>,
+    display_end: DateTime<Utc>,
     duration: ChronoDuration,
 }
 
 fn resolve_range_window(spec: &str) -> Result<RangeWindow> {
-    let end = Utc::now();
-    let start = if let Some(anchor) = named_range_start(spec, end) {
-        anchor
-    } else {
-        let duration = parse_duration_spec(spec)?;
-        let start = end - duration;
+    let now = Utc::now();
+    if let Some((start, display_end)) = named_range_bounds(spec, now) {
+        let end = now.min(display_end);
+        let duration = display_end
+            .signed_duration_since(start)
+            .max(ChronoDuration::zero());
         return Ok(RangeWindow {
             start,
             end,
+            display_end,
             duration,
         });
-    };
+    }
 
-    let duration = end.signed_duration_since(start);
+    let duration = parse_duration_spec(spec)?;
+    let end = now;
+    let start = end - duration;
     Ok(RangeWindow {
         start,
         end,
+        display_end: end,
         duration,
     })
 }
 
-fn named_range_start(spec: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+fn named_range_bounds(spec: &str, now: DateTime<Utc>) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
     match spec {
-        "today" => Some(start_of_local_day(now)),
-        "thisWeek" => Some(start_of_local_week(now)),
-        "thisMonth" => Some(start_of_local_month(now)),
+        "today" => {
+            let start = start_of_local_day(now);
+            Some((start, start + ChronoDuration::days(1)))
+        }
+        "thisWeek" => {
+            let start = start_of_local_week(now);
+            Some((start, start + ChronoDuration::days(7)))
+        }
+        "thisMonth" => {
+            let start = start_of_local_month(now);
+            Some((start, start_of_next_month(start)))
+        }
         _ => None,
     }
+}
+
+fn named_range_start(spec: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    named_range_bounds(spec, now).map(|(start, _)| start)
 }
 
 fn start_of_local_day(now: DateTime<Utc>) -> DateTime<Utc> {
@@ -2135,6 +2155,23 @@ fn start_of_local_month(now: DateTime<Utc>) -> DateTime<Utc> {
     let date = local.date_naive();
     let first_day = date.with_day(1).unwrap_or(date);
     let naive = first_day
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight should be representable");
+    local_naive_to_utc(naive)
+}
+
+fn start_of_next_month(start: DateTime<Utc>) -> DateTime<Utc> {
+    let local = start.with_timezone(&Shanghai);
+    let naive = local.naive_local();
+    let mut year = naive.year();
+    let mut month = naive.month();
+    month += 1;
+    if month > 12 {
+        month = 1;
+        year += 1;
+    }
+    let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid month");
+    let naive = first
         .and_hms_opt(0, 0, 0)
         .expect("midnight should be representable");
     local_naive_to_utc(naive)
