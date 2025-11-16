@@ -14,6 +14,8 @@ import {
 import type { TimeseriesPoint } from '../lib/api'
 import { useTranslation } from '../i18n'
 
+const LINE_CHART_POINT_THRESHOLD = 48
+
 interface TimeseriesChartProps {
   points: TimeseriesPoint[]
   isLoading: boolean
@@ -70,7 +72,8 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
     totalCount: t('chart.totalCount'),
   }
 
-  const useLine = (bucketSeconds ?? 0) >= 3600
+  // Use a line/area visualization once the buckets get dense to avoid cramped bars
+  const useLine = chartData.length >= LINE_CHART_POINT_THRESHOLD
 
   const formatValue = (value: number, key: keyof typeof seriesNames) => {
     if (key === 'totalCost') {
