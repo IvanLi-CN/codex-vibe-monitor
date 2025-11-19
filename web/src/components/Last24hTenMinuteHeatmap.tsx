@@ -3,6 +3,7 @@ import { useTimeseries } from '../hooks/useTimeseries'
 import type { TimeseriesPoint } from '../lib/api'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
+import { formatTokensShort } from '../lib/numberFormatters'
 
 export type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
@@ -120,6 +121,7 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
     () => new Intl.NumberFormat(localeTag, { style: 'currency', currency: 'USD' }),
     [localeTag],
   )
+  const countUnit = t('unit.calls')
 
   const metricOptions = useMemo(
     () => METRIC_OPTIONS.map((o) => ({ ...o, label: t(o.labelKey) })),
@@ -128,7 +130,15 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
 
   const grid = useMemo(() => compute24h6(data?.points ?? [], metric), [data?.points, metric])
 
-  const formatValue = (value: number) => (metric === 'totalCost' ? currencyFormatter.format(value) : numberFormatter.format(value))
+  const formatValue = (value: number) => {
+    if (metric === 'totalCost') return currencyFormatter.format(value)
+    if (metric === 'totalTokens') return formatTokensShort(value, localeTag)
+    if (metric === 'totalCount') {
+      const base = numberFormatter.format(value)
+      return `${base} ${countUnit}`
+    }
+    return numberFormatter.format(value)
+  }
 
   const noDataText = t('heatmap.noData')
 
@@ -171,7 +181,7 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
         {error ? (
           <div className="alert alert-error">{error}</div>
         ) : grid.hasData ? (
-          <div className="w-full overflow-x-auto">
+          <div className="w-full overflow-x-auto no-scrollbar">
             <div className="flex justify-center">
               <div className="inline-block">
                 {/* Hour labels */}
@@ -194,6 +204,8 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
                 <div className="mt-2 flex flex-col gap-[3px]">
                   {grid.rows.map((row, slotIdx) => {
                     const label = `${minuteSlotLabel(slotIdx)}m`
+                    // Treat the last two rows as bottom edge to avoid clipping by card border
+                    const isBottomBand = slotIdx >= grid.rows.length - 2
                     return (
                       <div key={`r-${slotIdx}`} className="flex items-center gap-3">
                         <div className="w-14 shrink-0 text-right text-xs text-base-content/70">{label}</div>
@@ -218,9 +230,26 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
                               hour: '2-digit',
                               minute: '2-digit',
                             })
-                            const title = `${startLabel} - ${endLabel} ${formatted}`
+                            const rangeLabel = `${startLabel} - ${endLabel}`
+                            const title = `${rangeLabel} ${formatted}`
+                            const verticalClass = isBottomBand ? 'bottom-full mb-1' : 'top-full mt-1'
                             return (
-                              <div key={`c-${slotIdx}-${ci}`} className={`${cls} h-5 w-5 sm:h-6 sm:w-6 rounded-sm`} title={title} aria-label={title} />
+                              <div
+                                key={`c-${slotIdx}-${ci}`}
+                                className="group relative"
+                                aria-label={title}
+                                title={title}
+                              >
+                                <div className={`${cls} h-5 w-5 sm:h-6 sm:w-6 rounded-sm`} />
+                                <div
+                                  className={`pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] sm:text-xs leading-tight text-base-content shadow-md opacity-0 group-hover:opacity-100 ${verticalClass}`}
+                                >
+                                  <div className="text-[10px] sm:text-xs text-base-content/80">{rangeLabel}</div>
+                                  <div className="mt-0.5 font-mono font-semibold text-sm sm:text-base tracking-tight text-center">
+                                    {formatted}
+                                  </div>
+                                </div>
+                              </div>
                             )
                           })}
                         </div>

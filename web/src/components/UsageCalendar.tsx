@@ -1,10 +1,11 @@
 import { cloneElement, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { ReactElement, CSSProperties } from 'react'
+import type { ReactElement, CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 import ActivityCalendar, { type Activity } from 'react-activity-calendar'
 import { useTimeseries } from '../hooks/useTimeseries'
 import type { TimeseriesPoint } from '../lib/api'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
+import { formatTokensShort } from '../lib/numberFormatters'
 
 type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
@@ -13,7 +14,13 @@ interface MetricOption {
   labelKey: TranslationKey
 }
 
-type AccessibleBlock = ReactElement<{ title?: string; 'aria-label'?: string; style?: CSSProperties }>
+type AccessibleBlock = ReactElement<{
+  title?: string
+  'aria-label'?: string
+  style?: CSSProperties
+  onMouseEnter?: (event: ReactMouseEvent<SVGElement>) => void
+  onMouseLeave?: (event: ReactMouseEvent<SVGElement>) => void
+}>
 
 const METRIC_OPTIONS: MetricOption[] = [
   { key: 'totalCount', labelKey: 'metric.totalCount' },
@@ -62,12 +69,20 @@ const ACCENT_BY_METRIC: Record<MetricKey, string> = {
   totalTokens: '#8B5CF6',
 }
 
+interface CalendarTooltipState {
+  x: number
+  y: number
+  dateLabel: string
+  valueLabel: string
+}
+
 export function UsageCalendar() {
   const { t, locale } = useTranslation()
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const { data, isLoading, error } = useTimeseries('90d', { bucket: '1d' })
   const [blockSize, setBlockSize] = useState(DEFAULT_BLOCK_SIZE)
   const containerRef = useRef<HTMLDivElement>(null)
+  const [tooltip, setTooltip] = useState<CalendarTooltipState | null>(null)
   // tabs width measurement removed (no longer needed for sizing)
   const [leftOffset, setLeftOffset] = useState(0) // svg.marginLeft introduced by weekday labels
   const colorProbeRef = useRef<HTMLSpanElement>(null)
@@ -99,6 +114,7 @@ export function UsageCalendar() {
 
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
   const currencyFormatter = useMemo(() => new Intl.NumberFormat(localeTag, { style: 'currency', currency: 'USD' }), [localeTag])
+  const countUnit = t('unit.calls')
 
   const metricOptions = useMemo(
     () => METRIC_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
@@ -106,8 +122,16 @@ export function UsageCalendar() {
   )
 
   const formatMetricValue = useCallback(
-    (value: number) => (metric === 'totalCost' ? currencyFormatter.format(value) : numberFormatter.format(value)),
-    [currencyFormatter, metric, numberFormatter],
+    (value: number) => {
+      if (metric === 'totalCost') return currencyFormatter.format(value)
+      if (metric === 'totalTokens') return formatTokensShort(value, localeTag)
+      if (metric === 'totalCount') {
+        const base = numberFormatter.format(value)
+        return `${base} ${countUnit}`
+      }
+      return numberFormatter.format(value)
+    },
+    [countUnit, currencyFormatter, metric, numberFormatter, localeTag],
   )
 
   const calendarData = useMemo(
@@ -225,7 +249,7 @@ export function UsageCalendar() {
 
   return (
     <section
-      className="card h-full w-full max-w-full overflow-hidden bg-base-100 shadow-sm lg:w-fit"
+      className="card h-full w-full max-w-full overflow-visible bg-base-100 shadow-sm lg:w-fit"
       data-testid="usage-calendar-card"
     >
       <div className="card-body gap-4 lg:w-auto">
@@ -268,7 +292,7 @@ export function UsageCalendar() {
             <div className="min-w-0">
               <div
                 ref={containerRef}
-                className="relative flex w-full justify-center overflow-hidden pt-4 [&>svg]:h-auto"
+                className="relative flex w-full justify-center overflow-visible pt-4 [&>svg]:h-auto"
                 style={minContainerWidth ? { minWidth: `${minContainerWidth}px` } : undefined}
                 data-testid="usage-calendar-wrapper"
               >
@@ -301,9 +325,32 @@ export function UsageCalendar() {
                     const accessibleBlock = block as AccessibleBlock
                     const formatted = formatMetricValue(activity.count)
                     const title = `${activity.date}${valueSeparator}${formatted}`
+                    const handleEnter = (event: ReactMouseEvent<SVGElement>) => {
+                      if (!containerRef.current) return
+                      const target = event.currentTarget as Element
+                      const rect = target.getBoundingClientRect()
+                      const containerRect = containerRef.current.getBoundingClientRect()
+                      const centerXRaw = rect.left + rect.width / 2 - containerRect.left
+                      const y = rect.top - containerRect.top
+                      // Clamp the tooltip center so that even on the first/last column
+                      // the bubble stays fully inside the card.
+                      const margin = 80 // px, wider than half typical tooltip width
+                      const minCenter = margin
+                      const maxCenter = Math.max(margin, containerRect.width - margin)
+                      const x = Math.max(minCenter, Math.min(maxCenter, centerXRaw))
+                      setTooltip({
+                        x,
+                        y,
+                        dateLabel: activity.date,
+                        valueLabel: formatted,
+                      })
+                    }
+                    const handleLeave = () => setTooltip(null)
                     return cloneElement(accessibleBlock, {
                       title,
                       'aria-label': title,
+                      onMouseEnter: handleEnter,
+                      onMouseLeave: handleLeave,
                       // Remove default stroke from react-activity-calendar to
                       // match WeeklyHourlyHeatmap appearance exactly
                       style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
@@ -327,6 +374,19 @@ export function UsageCalendar() {
                     })
                   }}
                 />
+                {tooltip && (
+                  <div
+                    className="pointer-events-none absolute z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] sm:text-xs leading-tight text-base-content shadow-md"
+                    style={{ left: tooltip.x, top: tooltip.y - 8 }}
+                  >
+                    <div className="text-[10px] sm:text-xs text-base-content/80">
+                      {tooltip.dateLabel}
+                    </div>
+                    <div className="mt-0.5 font-mono font-semibold text-sm sm:text-base tracking-tight text-center">
+                      {tooltip.valueLabel}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

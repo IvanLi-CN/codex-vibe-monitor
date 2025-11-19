@@ -45,7 +45,7 @@ export default function DashboardPage() {
 
       <WeeklyHourlyHeatmap />
 
-      <section className="card bg-base-100 shadow-sm">
+      <section className="card bg-base-100 shadow-sm overflow-visible">
         <div className="card-body gap-6">
           <div className="flex items-center justify-between gap-3">
             <h2 className="card-title">{t('dashboard.section.summaryTitle')}</h2>
