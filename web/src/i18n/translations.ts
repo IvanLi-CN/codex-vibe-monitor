@@ -130,6 +130,7 @@ const baseTranslations = {
     'chart.totalTokens': 'Total tokens',
     'chart.totalCost': 'Cost (USD)',
     'chart.totalCount': 'Calls',
+    'unit.calls': 'calls',
     'quota.status.expired.badge': 'Expired',
   },
   zh: {
@@ -258,6 +259,7 @@ const baseTranslations = {
     'chart.totalTokens': '总 Tokens',
     'chart.totalCost': '成本（美元）',
     'chart.totalCount': '次数',
+    'unit.calls': '次',
     'quota.status.expired.badge': '已到期',
   },
 } as const
