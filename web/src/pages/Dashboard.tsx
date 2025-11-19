@@ -30,7 +30,7 @@ export default function DashboardPage() {
     records,
     isLoading: tableLoading,
     error: tableError,
-  } = useInvocationStream(RECENT_LIMIT, undefined, undefined, { enableStream: false })
+  } = useInvocationStream(RECENT_LIMIT, undefined, undefined, { enableStream: true })
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
