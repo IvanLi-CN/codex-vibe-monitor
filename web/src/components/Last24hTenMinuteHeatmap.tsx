@@ -154,7 +154,9 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
       <div className="gap-4">
         {showHeader && (
           <div className="flex items-center justify-between gap-3">
-            <h3 className="card-title">{t('heatmap24h.title')}</h3>
+            <div className="card-heading">
+              <h3 className="card-title">{t('heatmap24h.title')}</h3>
+            </div>
             <div className="tabs tabs-sm tabs-border" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
               {metricOptions.map((o) => {
                 const active = o.key === metric

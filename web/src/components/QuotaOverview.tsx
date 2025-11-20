@@ -62,10 +62,10 @@ export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps
   return (
     <div className="card h-full bg-base-100 shadow-sm">
       <div className="card-body gap-6">
-        <div className="flex flex-wrap items-center justify-between">
-          <div>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="card-heading">
             <h2 className="card-title">{t('quota.title')}</h2>
-            <p className="text-sm text-base-content/60 flex items-center gap-2">
+            <p className="card-description flex items-center gap-2">
               <span>{t('quota.subscription', { name: snapshot?.subTypeName ?? '—' })}</span>
               <CountdownUntil expireISO={snapshot?.expireTime} />
             </p>
