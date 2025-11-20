@@ -124,10 +124,10 @@ export default function StatsPage() {
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="card-heading">
               <h2 className="card-title">{t('stats.title')}</h2>
-              <p className="text-sm text-base-content/60">{t('stats.subtitle')}</p>
+              <p className="card-description">{t('stats.subtitle')}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <select
@@ -176,7 +176,9 @@ export default function StatsPage() {
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
-          <h3 className="card-title">{t('stats.trendTitle')}</h3>
+          <div className="card-heading">
+            <h3 className="card-title">{t('stats.trendTitle')}</h3>
+          </div>
           {timeseriesError ? (
             <div className="alert alert-error">{timeseriesError}</div>
           ) : (
@@ -191,7 +193,9 @@ export default function StatsPage() {
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
-          <h3 className="card-title">{t('stats.successFailureTitle')}</h3>
+          <div className="card-heading">
+            <h3 className="card-title">{t('stats.successFailureTitle')}</h3>
+          </div>
           {timeseriesError ? (
             <div className="alert alert-error">{timeseriesError}</div>
           ) : (
@@ -206,7 +210,9 @@ export default function StatsPage() {
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
-          <h3 className="card-title">{t('stats.errors.title')}</h3>
+          <div className="card-heading">
+            <h3 className="card-title">{t('stats.errors.title')}</h3>
+          </div>
           {errorsError ? (
             <div className="alert alert-error">{errorsError}</div>
           ) : (

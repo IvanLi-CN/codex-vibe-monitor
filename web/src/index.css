@@ -15,6 +15,30 @@ body {
   font-feature-settings: "tnum" 1;
 }
 
+/* Unified card typography */
+.card-heading {
+  @apply flex flex-col gap-1;
+}
+
+.card-title {
+  @apply text-lg sm:text-xl font-semibold leading-tight tracking-tight text-base-content;
+}
+
+.card-subtitle,
+.card-eyebrow {
+  @apply text-xs font-semibold uppercase text-base-content opacity-60;
+  letter-spacing: 0.12em;
+}
+
+.card-description {
+  @apply text-sm leading-relaxed text-base-content opacity-70;
+}
+
+/* Align stat tiles with the card heading tone */
+.stats .stat-title {
+  @apply text-xs font-semibold uppercase text-base-content opacity-70 tracking-[0.14em];
+}
+
 /* Utility to hide scrollbars while preserving scroll behavior */
 .no-scrollbar {
   -ms-overflow-style: none; /* IE and Edge */

@@ -47,8 +47,10 @@ export default function DashboardPage() {
 
       <section className="card bg-base-100 shadow-sm overflow-visible">
         <div className="card-body gap-6">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="card-title">{t('dashboard.section.summaryTitle')}</h2>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="card-heading">
+              <h2 className="card-title">{t('dashboard.section.summaryTitle')}</h2>
+            </div>
             <div className="tabs tabs-sm tabs-border" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
               {[
                 { key: 'totalCount', label: t('metric.totalCount') },
@@ -83,7 +85,9 @@ export default function DashboardPage() {
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
           <div className="flex items-center justify-between">
-            <h2 className="card-title">{t('dashboard.section.recentLiveTitle', { count: RECENT_LIMIT })}</h2>
+            <div className="card-heading">
+              <h2 className="card-title">{t('dashboard.section.recentLiveTitle', { count: RECENT_LIMIT })}</h2>
+            </div>
           </div>
           <InvocationTable records={records} isLoading={tableLoading} error={tableError} />
         </div>

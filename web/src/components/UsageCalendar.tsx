@@ -252,13 +252,15 @@ export function UsageCalendar() {
       className="card h-full w-full max-w-full overflow-visible bg-base-100 shadow-sm lg:w-fit"
       data-testid="usage-calendar-card"
     >
-      <div className="card-body gap-4 lg:w-auto">
-        <div className="flex flex-col gap-4">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="card-title">{t('calendar.title')}</h2>
-            <div
-              className="tabs tabs-sm tabs-border"
-              role="tablist"
+        <div className="card-body gap-4 lg:w-auto">
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="card-heading">
+                <h2 className="card-title">{t('calendar.title')}</h2>
+              </div>
+              <div
+                className="tabs tabs-sm tabs-border"
+                role="tablist"
               aria-label={t('calendar.metricsToggleAria')}
             >
               {metricOptions.map((option) => {

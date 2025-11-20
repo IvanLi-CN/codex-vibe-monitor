@@ -46,8 +46,10 @@ export default function LivePage() {
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="card-title">{t('live.summary.title')}</h2>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="card-heading">
+              <h2 className="card-title">{t('live.summary.title')}</h2>
+            </div>
             <div className="join">
               {summaryWindows.map((option) => (
                 <input
@@ -69,8 +71,10 @@ export default function LivePage() {
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="card-title">{t('live.chart.title')}</h2>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="card-heading">
+              <h2 className="card-title">{t('live.chart.title')}</h2>
+            </div>
             <label className="form-control w-36">
               <div className="label py-0">
                 <span className="label-text text-xs uppercase tracking-wide">{t('live.window.label')}</span>
@@ -94,7 +98,9 @@ export default function LivePage() {
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
-          <h2 className="card-title">{t('live.latest.title')}</h2>
+          <div className="card-heading">
+            <h2 className="card-title">{t('live.latest.title')}</h2>
+          </div>
           <InvocationTable records={records} isLoading={isLoading} error={error} />
         </div>
       </section>
