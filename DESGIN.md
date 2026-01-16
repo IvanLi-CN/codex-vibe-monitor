@@ -13,6 +13,14 @@
    - 必要的 Header（尤其是 `Authorization`、`Cookie`、`x-token` 等自定义字段）
 4. 确认响应 JSON 中包含的字段，并与页面显示的列（时间、ID、调用状态、消耗等）对应，写出字段映射表。
 
+### 1.1 Claude Relay 日统计（无明细）
+
+- 入口页面：`/admin-next/api-stats?apiId=<id>`（仅用于 UI）
+- 实际数据接口：`POST /apiStats/api/user-model-stats`
+  - Body: `{ apiId, period: "daily" }`
+  - 返回模型级日统计（requests/tokens/costs），需在本地汇总为当日总量
+- 该源仅提供“当日累计”，需高频轮询并做增量计算；不包含调用明细。
+
 ## 2. 认证与会话维持
 
 - 账号登录后，使用 DevTools 的「Copy as cURL」功能导出请求，提取其中的 Cookie 和 Header。
@@ -45,11 +53,16 @@ CREATE TABLE IF NOT EXISTS codex_invocations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     invoke_id TEXT NOT NULL,
     occurred_at TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'xy',
     payload JSON,
     raw_response JSON,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(invoke_id, occurred_at)
 );
+
+-- 外部日统计快照与增量（简化示意）
+CREATE TABLE IF NOT EXISTS stats_source_snapshots (...);
+CREATE TABLE IF NOT EXISTS stats_source_deltas (...);
 ```
 
 - `payload` 用于存储提取后的关键字段，`raw_response` 保留原始 JSON 便于调试。
