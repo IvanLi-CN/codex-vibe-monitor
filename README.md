@@ -19,6 +19,7 @@
 
 - 调度与并发：Tokio 定时器 + 信号量并发控制，60s 请求超时，智能选择连接复用或独立连接。
 - 数据持久化：SQLx/SQLite，包含唯一性约束（`invoke_id` + `occurred_at`）。
+- 多源统计：支持合并外部日统计源（无明细）与本地调用记录。
 - 接口与事件：Axum 提供 REST API、SSE 推送；可选托管静态 SPA。
 - 前端应用：DaisyUI/Tailwind 组件化 UI，实时图表与统计概览，SSE 自动更新。
 - 容器镜像：多阶段 Dockerfile，产出轻量运行时；CI 自动推送 GHCR。
@@ -76,6 +77,12 @@ XY_LIST_LIMIT_MAX=200                          # (200)
 XY_USER_AGENT=codex-vibe-monitor/0.2.0         # (自动)
 XY_STATIC_DIR=web/dist                         # (存在时自动使用)
 XY_SNAPSHOT_MIN_INTERVAL_SECS=300              # (300)
+
+# CRS 日统计源（可选；未配置则禁用）
+CRS_STATS_BASE_URL=https://claude-relay-service.nsngc.org
+CRS_STATS_API_ID=<apiId>
+CRS_STATS_PERIOD=daily                         # (daily)
+CRS_STATS_POLL_INTERVAL_SECS=10                # (10，默认跟随 XY_POLL_INTERVAL_SECS)
 ```
 
 上述大部分变量均可使用 CLI 覆盖，例如：

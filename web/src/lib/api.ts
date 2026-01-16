@@ -23,6 +23,7 @@ export interface ApiInvocation {
   id: number
   invokeId: string
   occurredAt: string
+  source?: string
   model?: string
   inputTokens?: number
   outputTokens?: number

@@ -52,6 +52,9 @@ use tower_http::{
 };
 use tracing::{error, info, warn};
 
+const SOURCE_XY: &str = "xy";
+const SOURCE_CRS: &str = "crs";
+
 #[derive(Parser, Debug, Default)]
 #[command(
     name = "codex-vibe-monitor",
@@ -365,6 +368,7 @@ async fn fetch_and_store(state: &AppState, force_new_connection: bool) -> Result
     let client = state
         .http_clients
         .client_for_parallelism(force_new_connection)?;
+    let relay_config = state.config.crs_stats.clone();
     let QuotaFetch {
         records,
         usage,
@@ -385,7 +389,22 @@ async fn fetch_and_store(state: &AppState, force_new_connection: bool) -> Result
         persist_records(&state.pool, &records).await?
     };
 
-    let summaries = collect_summary_snapshots(&state.pool).await?;
+    if let Some(relay) = relay_config.as_ref()
+        && should_poll_crs_stats(&state.pool, relay).await?
+    {
+        match fetch_crs_stats(&client, relay).await {
+            Ok(payload) => {
+                if let Err(err) = persist_crs_stats(&state.pool, relay, payload).await {
+                    warn!(?err, "failed to persist crs stats");
+                }
+            }
+            Err(err) => {
+                warn!(?err, "failed to fetch crs stats");
+            }
+        }
+    }
+
+    let summaries = collect_summary_snapshots(&state.pool, relay_config.as_ref()).await?;
     let quota_payload = QuotaSnapshotResponse::fetch_latest(&state.pool).await?;
 
     Ok(PublishResult {
@@ -429,7 +448,10 @@ fn summary_broadcast_specs() -> Vec<SummaryBroadcastSpec> {
     ]
 }
 
-async fn collect_summary_snapshots(pool: &Pool<Sqlite>) -> Result<Vec<SummaryPublish>> {
+async fn collect_summary_snapshots(
+    pool: &Pool<Sqlite>,
+    relay: Option<&CrsStatsConfig>,
+) -> Result<Vec<SummaryPublish>> {
     let mut summaries = Vec::new();
     let mut cached_all: Option<StatsResponse> = None;
     let now = Utc::now();
@@ -440,18 +462,18 @@ async fn collect_summary_snapshots(pool: &Pool<Sqlite>) -> Result<Vec<SummaryPub
                 if let Some(existing) = &cached_all {
                     existing.clone()
                 } else {
-                    let stats: StatsResponse =
-                        query_stats_row(pool, StatsFilter::All).await?.into();
+                    let stats = query_combined_totals(pool, relay, StatsFilter::All)
+                        .await?
+                        .into_response();
                     cached_all = Some(stats.clone());
                     stats
                 }
             }
             Some(duration) => {
                 let start = now - duration;
-                let start_str = format_naive(start.naive_utc());
-                query_stats_row(pool, StatsFilter::Since(start_str))
+                query_combined_totals(pool, relay, StatsFilter::Since(start))
                     .await?
-                    .into()
+                    .into_response()
             }
         };
 
@@ -501,6 +523,320 @@ async fn fetch_quota(client: &Client, config: &AppConfig) -> Result<QuotaFetch> 
     })
 }
 
+async fn should_poll_crs_stats(pool: &Pool<Sqlite>, relay: &CrsStatsConfig) -> Result<bool> {
+    let last_epoch = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT captured_at_epoch
+        FROM stats_source_snapshots
+        WHERE source = ?1 AND period = ?2 AND model IS NULL
+        ORDER BY captured_at_epoch DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(SOURCE_CRS)
+    .bind(&relay.period)
+    .fetch_optional(pool)
+    .await?;
+
+    let now_epoch = Utc::now().timestamp();
+    Ok(match last_epoch {
+        Some(last) => now_epoch.saturating_sub(last) >= relay.poll_interval.as_secs() as i64,
+        None => true,
+    })
+}
+
+async fn fetch_crs_stats(client: &Client, relay: &CrsStatsConfig) -> Result<CrsStatsResponse> {
+    let url = relay
+        .base_url
+        .join("apiStats/api/user-model-stats")
+        .context("failed to join crs stats endpoint")?;
+    let payload = json!({
+        "apiId": relay.api_id,
+        "period": relay.period,
+    });
+
+    let response = client
+        .post(url)
+        .json(&payload)
+        .send()
+        .await
+        .context("failed to send crs stats request")?
+        .error_for_status()
+        .context("crs stats request returned error status")?;
+
+    let payload: CrsStatsResponse = response
+        .json()
+        .await
+        .context("failed to decode crs stats JSON")?;
+
+    if !payload.success {
+        return Err(anyhow!("crs stats responded with success=false"));
+    }
+
+    Ok(payload)
+}
+
+fn aggregate_crs_totals(models: &[CrsModelStats]) -> CrsTotals {
+    let mut totals = CrsTotals::default();
+    for model in models {
+        totals.total_count += model.requests;
+        totals.total_tokens += model.all_tokens;
+        totals.total_cost += model.costs.total;
+        totals.input_tokens += model.input_tokens;
+        totals.output_tokens += model.output_tokens;
+        totals.cache_create_tokens += model.cache_create_tokens;
+        totals.cache_read_tokens += model.cache_read_tokens;
+        totals.cost_input += model.costs.input;
+        totals.cost_output += model.costs.output;
+        totals.cost_cache_write += model.costs.cache_write;
+        totals.cost_cache_read += model.costs.cache_read;
+    }
+    totals
+}
+
+#[derive(Debug, FromRow)]
+struct CrsMaxRow {
+    max_requests: Option<i64>,
+    max_all_tokens: Option<i64>,
+    max_cost_total: Option<f64>,
+}
+
+fn compute_crs_delta(
+    stats_date: &str,
+    now_utc: DateTime<Utc>,
+    totals: CrsTotals,
+    prev: CrsMaxRow,
+) -> StatsTotals {
+    let max_requests = prev.max_requests.unwrap_or(0);
+    let max_tokens = prev.max_all_tokens.unwrap_or(0);
+    let max_cost = prev.max_cost_total.unwrap_or(0.0);
+
+    if totals.total_count < max_requests {
+        if totals.total_count == 0 {
+            let local = now_utc.with_timezone(&Shanghai);
+            error!(
+                stats_date,
+                now = %local.to_rfc3339(),
+                current = totals.total_count,
+                previous_max = max_requests,
+                "crs stats reset to zero outside day boundary"
+            );
+        } else {
+            warn!(
+                stats_date,
+                current = totals.total_count,
+                previous_max = max_requests,
+                "crs stats total decreased; keeping daily max"
+            );
+        }
+    }
+
+    let delta_count = if totals.total_count > max_requests {
+        totals.total_count - max_requests
+    } else {
+        0
+    };
+    let delta_tokens = if totals.total_tokens > max_tokens {
+        totals.total_tokens - max_tokens
+    } else {
+        0
+    };
+    let delta_cost = if totals.total_cost > max_cost {
+        totals.total_cost - max_cost
+    } else {
+        0.0
+    };
+
+    StatsTotals {
+        total_count: delta_count,
+        success_count: delta_count,
+        failure_count: 0,
+        total_tokens: delta_tokens,
+        total_cost: delta_cost,
+    }
+}
+
+async fn persist_crs_stats(
+    pool: &Pool<Sqlite>,
+    relay: &CrsStatsConfig,
+    payload: CrsStatsResponse,
+) -> Result<Option<StatsTotals>> {
+    let now_utc = Utc::now();
+    let captured_at = format_naive(now_utc.naive_utc());
+    let captured_at_epoch = now_utc.timestamp();
+    let stats_date = now_utc
+        .with_timezone(&Shanghai)
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let period = if payload.period.is_empty() {
+        relay.period.clone()
+    } else {
+        payload.period.clone()
+    };
+
+    if period != relay.period {
+        warn!(
+            expected = %relay.period,
+            actual = %period,
+            "crs stats period mismatch; using response period"
+        );
+    }
+
+    let totals = aggregate_crs_totals(&payload.data);
+    let raw_response = serde_json::to_string(&payload)?;
+
+    let mut tx = pool.begin().await?;
+    let prev = sqlx::query_as::<_, CrsMaxRow>(
+        r#"
+        SELECT
+            MAX(requests) AS max_requests,
+            MAX(all_tokens) AS max_all_tokens,
+            MAX(cost_total) AS max_cost_total
+        FROM stats_source_snapshots
+        WHERE source = ?1 AND period = ?2 AND stats_date = ?3 AND model IS NULL
+        "#,
+    )
+    .bind(SOURCE_CRS)
+    .bind(&period)
+    .bind(&stats_date)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    for model in &payload.data {
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO stats_source_snapshots (
+                source,
+                period,
+                stats_date,
+                model,
+                requests,
+                input_tokens,
+                output_tokens,
+                cache_create_tokens,
+                cache_read_tokens,
+                all_tokens,
+                cost_input,
+                cost_output,
+                cost_cache_write,
+                cost_cache_read,
+                cost_total,
+                raw_response,
+                captured_at,
+                captured_at_epoch
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            "#,
+        )
+        .bind(SOURCE_CRS)
+        .bind(&period)
+        .bind(&stats_date)
+        .bind(&model.model)
+        .bind(model.requests)
+        .bind(model.input_tokens)
+        .bind(model.output_tokens)
+        .bind(model.cache_create_tokens)
+        .bind(model.cache_read_tokens)
+        .bind(model.all_tokens)
+        .bind(model.costs.input)
+        .bind(model.costs.output)
+        .bind(model.costs.cache_write)
+        .bind(model.costs.cache_read)
+        .bind(model.costs.total)
+        .bind(Option::<String>::None)
+        .bind(&captured_at)
+        .bind(captured_at_epoch)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO stats_source_snapshots (
+            source,
+            period,
+            stats_date,
+            model,
+            requests,
+            input_tokens,
+            output_tokens,
+            cache_create_tokens,
+            cache_read_tokens,
+            all_tokens,
+            cost_input,
+            cost_output,
+            cost_cache_write,
+            cost_cache_read,
+            cost_total,
+            raw_response,
+            captured_at,
+            captured_at_epoch
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+        "#,
+    )
+    .bind(SOURCE_CRS)
+    .bind(&period)
+    .bind(&stats_date)
+    .bind(Option::<String>::None)
+    .bind(totals.total_count)
+    .bind(totals.input_tokens)
+    .bind(totals.output_tokens)
+    .bind(totals.cache_create_tokens)
+    .bind(totals.cache_read_tokens)
+    .bind(totals.total_tokens)
+    .bind(totals.cost_input)
+    .bind(totals.cost_output)
+    .bind(totals.cost_cache_write)
+    .bind(totals.cost_cache_read)
+    .bind(totals.total_cost)
+    .bind(raw_response)
+    .bind(&captured_at)
+    .bind(captured_at_epoch)
+    .execute(&mut *tx)
+    .await?;
+
+    let delta = compute_crs_delta(&stats_date, now_utc, totals, prev);
+    let has_delta = delta.total_count > 0 || delta.total_tokens > 0 || delta.total_cost > 0.0;
+    if has_delta {
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO stats_source_deltas (
+                source,
+                period,
+                stats_date,
+                captured_at,
+                captured_at_epoch,
+                total_count,
+                success_count,
+                failure_count,
+                total_tokens,
+                total_cost
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(SOURCE_CRS)
+        .bind(&period)
+        .bind(&stats_date)
+        .bind(&captured_at)
+        .bind(captured_at_epoch)
+        .bind(delta.total_count)
+        .bind(delta.success_count)
+        .bind(delta.failure_count)
+        .bind(delta.total_tokens)
+        .bind(delta.total_cost)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+
+    Ok(if has_delta { Some(delta) } else { None })
+}
+
 async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
@@ -508,6 +844,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             invoke_id TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'xy',
             model TEXT,
             input_tokens INTEGER,
             output_tokens INTEGER,
@@ -527,6 +864,36 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure codex_invocations table existence")?;
+
+    let existing: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
+        .fetch_all(pool)
+        .await
+        .context("failed to inspect codex_invocations schema")?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect();
+
+    for (column, ty) in [
+        ("source", "TEXT NOT NULL DEFAULT 'xy'"),
+        ("model", "TEXT"),
+        ("input_tokens", "INTEGER"),
+        ("output_tokens", "INTEGER"),
+        ("cache_input_tokens", "INTEGER"),
+        ("reasoning_tokens", "INTEGER"),
+        ("total_tokens", "INTEGER"),
+        ("cost", "REAL"),
+        ("status", "TEXT"),
+        ("error_message", "TEXT"),
+        ("payload", "TEXT"),
+    ] {
+        if !existing.contains(column) {
+            let statement = format!("ALTER TABLE codex_invocations ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .with_context(|| format!("failed to add column {column}"))?;
+        }
+    }
 
     // Speed up time-range scans and ordering on the stats endpoints
     sqlx::query(
@@ -550,34 +917,15 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_occurred_at_status")?;
 
-    let existing: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
-        .fetch_all(pool)
-        .await
-        .context("failed to inspect codex_invocations schema")?
-        .into_iter()
-        .filter_map(|row| row.try_get::<String, _>("name").ok())
-        .collect();
-
-    for (column, ty) in [
-        ("model", "TEXT"),
-        ("input_tokens", "INTEGER"),
-        ("output_tokens", "INTEGER"),
-        ("cache_input_tokens", "INTEGER"),
-        ("reasoning_tokens", "INTEGER"),
-        ("total_tokens", "INTEGER"),
-        ("cost", "REAL"),
-        ("status", "TEXT"),
-        ("error_message", "TEXT"),
-        ("payload", "TEXT"),
-    ] {
-        if !existing.contains(column) {
-            let statement = format!("ALTER TABLE codex_invocations ADD COLUMN {column} {ty}");
-            sqlx::query(&statement)
-                .execute(pool)
-                .await
-                .with_context(|| format!("failed to add column {column}"))?;
-        }
-    }
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_source_occurred_at
+        ON codex_invocations (source, occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_source_occurred_at")?;
 
     sqlx::query(
         r#"
@@ -617,6 +965,80 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_quota_snapshots_captured_at")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS stats_source_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            period TEXT NOT NULL,
+            stats_date TEXT NOT NULL,
+            model TEXT,
+            requests INTEGER NOT NULL,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cache_create_tokens INTEGER,
+            cache_read_tokens INTEGER,
+            all_tokens INTEGER,
+            cost_input REAL,
+            cost_output REAL,
+            cost_cache_write REAL,
+            cost_cache_read REAL,
+            cost_total REAL,
+            raw_response TEXT,
+            captured_at TEXT NOT NULL,
+            captured_at_epoch INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(source, period, stats_date, model, captured_at_epoch)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure stats_source_snapshots table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_stats_source_snapshots_date
+        ON stats_source_snapshots (source, period, stats_date, captured_at_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_stats_source_snapshots_date")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS stats_source_deltas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            period TEXT NOT NULL,
+            stats_date TEXT NOT NULL,
+            captured_at TEXT NOT NULL,
+            captured_at_epoch INTEGER NOT NULL,
+            total_count INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(source, period, stats_date, captured_at_epoch)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure stats_source_deltas table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_stats_source_deltas_epoch
+        ON stats_source_deltas (source, period, captured_at_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_stats_source_deltas_epoch")?;
+
     Ok(())
 }
 
@@ -648,6 +1070,7 @@ async fn persist_records(
             INSERT OR IGNORE INTO codex_invocations (
                 invoke_id,
                 occurred_at,
+                source,
                 model,
                 input_tokens,
                 output_tokens,
@@ -660,11 +1083,12 @@ async fn persist_records(
                 payload,
                 raw_response
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             "#,
         )
         .bind(&record.request_id)
         .bind(&record.request_time)
+        .bind(SOURCE_XY)
         .bind(&record.model)
         .bind(record.input_tokens)
         .bind(record.output_tokens)
@@ -686,6 +1110,7 @@ async fn persist_records(
                     id,
                     invoke_id,
                     occurred_at,
+                    source,
                     model,
                     input_tokens,
                     output_tokens,
@@ -856,7 +1281,7 @@ async fn list_invocations(
         .clamp(1, state.config.list_limit_max as i64);
 
     let mut query = QueryBuilder::new(
-        "SELECT id, invoke_id, occurred_at, model, input_tokens, output_tokens, \
+        "SELECT id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, \
          cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, created_at \
          FROM codex_invocations WHERE 1 = 1",
     );
@@ -882,8 +1307,13 @@ async fn list_invocations(
 }
 
 async fn fetch_stats(State(state): State<Arc<AppState>>) -> Result<Json<StatsResponse>, ApiError> {
-    let row = query_stats_row(&state.pool, StatsFilter::All).await?;
-    Ok(Json(row.into()))
+    let totals = query_combined_totals(
+        &state.pool,
+        state.config.crs_stats.as_ref(),
+        StatsFilter::All,
+    )
+    .await?;
+    Ok(Json(totals.into_response()))
 }
 
 async fn fetch_summary(
@@ -893,26 +1323,46 @@ async fn fetch_summary(
     let default_limit = state.config.list_limit_max as i64;
     let window = parse_summary_window(&params, default_limit)?;
 
-    let row = match window {
-        SummaryWindow::All => query_stats_row(&state.pool, StatsFilter::All).await?,
+    let totals = match window {
+        SummaryWindow::All => {
+            query_combined_totals(
+                &state.pool,
+                state.config.crs_stats.as_ref(),
+                StatsFilter::All,
+            )
+            .await?
+        }
         SummaryWindow::Current(limit) => {
-            query_stats_row(&state.pool, StatsFilter::RecentLimit(limit)).await?
+            query_combined_totals(
+                &state.pool,
+                state.config.crs_stats.as_ref(),
+                StatsFilter::RecentLimit(limit),
+            )
+            .await?
         }
         SummaryWindow::Duration(duration) => {
-            let start_dt = (Utc::now() - duration).naive_utc();
-            let start = format_naive(start_dt);
-            query_stats_row(&state.pool, StatsFilter::Since(start)).await?
+            let start = Utc::now() - duration;
+            query_combined_totals(
+                &state.pool,
+                state.config.crs_stats.as_ref(),
+                StatsFilter::Since(start),
+            )
+            .await?
         }
         SummaryWindow::Calendar(spec) => {
             let now = Utc::now();
             let start = named_range_start(spec.as_str(), now)
                 .ok_or_else(|| ApiError(anyhow!("unsupported calendar window: {spec}")))?;
-            let start_str = format_naive(start.naive_utc());
-            query_stats_row(&state.pool, StatsFilter::Since(start_str)).await?
+            query_combined_totals(
+                &state.pool,
+                state.config.crs_stats.as_ref(),
+                StatsFilter::Since(start),
+            )
+            .await?
         }
     };
 
-    Ok(Json(row.into()))
+    Ok(Json(totals.into_response()))
 }
 
 async fn fetch_timeseries(
@@ -998,6 +1448,23 @@ async fn fetch_timeseries(
         }
         entry.total_tokens += record.total_tokens.unwrap_or(0);
         entry.total_cost += record.cost.unwrap_or(0.0);
+    }
+
+    let relay_deltas = if let Some(relay) = state.config.crs_stats.as_ref() {
+        query_crs_deltas(&state.pool, relay, start_epoch, display_end_dt.timestamp()).await?
+    } else {
+        Vec::new()
+    };
+
+    for delta in relay_deltas {
+        let bucket_epoch =
+            align_bucket_epoch(delta.captured_at_epoch, bucket_seconds, offset_seconds);
+        let entry = aggregates.entry(bucket_epoch).or_default();
+        entry.total_count += delta.total_count;
+        entry.success_count += delta.success_count;
+        entry.failure_count += delta.failure_count;
+        entry.total_tokens += delta.total_tokens;
+        entry.total_cost += delta.total_cost;
     }
 
     // Compute the inclusive fill range [fill_start_epoch, fill_end_epoch].
@@ -1532,6 +1999,7 @@ struct ApiInvocation {
     invoke_id: String,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     occurred_at: String,
+    source: String,
     model: Option<String>,
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
@@ -1570,7 +2038,38 @@ struct StatsRow {
     total_tokens: i64,
 }
 
-impl From<StatsRow> for StatsResponse {
+#[derive(Debug, Default, Clone, Copy)]
+struct StatsTotals {
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_cost: f64,
+    total_tokens: i64,
+}
+
+impl StatsTotals {
+    fn add(self, other: StatsTotals) -> StatsTotals {
+        StatsTotals {
+            total_count: self.total_count + other.total_count,
+            success_count: self.success_count + other.success_count,
+            failure_count: self.failure_count + other.failure_count,
+            total_cost: self.total_cost + other.total_cost,
+            total_tokens: self.total_tokens + other.total_tokens,
+        }
+    }
+
+    fn into_response(self) -> StatsResponse {
+        StatsResponse {
+            total_count: self.total_count,
+            success_count: self.success_count,
+            failure_count: self.failure_count,
+            total_cost: self.total_cost,
+            total_tokens: self.total_tokens,
+        }
+    }
+}
+
+impl From<StatsRow> for StatsTotals {
     fn from(value: StatsRow) -> Self {
         Self {
             total_count: value.total_count,
@@ -1579,6 +2078,12 @@ impl From<StatsRow> for StatsResponse {
             total_cost: value.total_cost,
             total_tokens: value.total_tokens,
         }
+    }
+}
+
+impl From<StatsRow> for StatsResponse {
+    fn from(value: StatsRow) -> Self {
+        StatsTotals::from(value).into_response()
     }
 }
 
@@ -1757,10 +2262,10 @@ enum SummaryWindow {
     Calendar(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum StatsFilter {
     All,
-    Since(String),
+    Since(DateTime<Utc>),
     RecentLimit(i64),
 }
 
@@ -1770,6 +2275,16 @@ struct TimeseriesRecord {
     status: Option<String>,
     total_tokens: Option<i64>,
     cost: Option<f64>,
+}
+
+#[derive(Debug, FromRow)]
+struct StatsDeltaRecord {
+    captured_at_epoch: i64,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
 }
 
 #[derive(Default)]
@@ -1843,6 +2358,16 @@ struct AppConfig {
     user_agent: String,
     static_dir: Option<PathBuf>,
     snapshot_min_interval: Duration,
+    crs_stats: Option<CrsStatsConfig>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrsStatsConfig {
+    base_url: Url,
+    api_id: String,
+    period: String,
+    poll_interval: Duration,
 }
 
 impl AppConfig {
@@ -1953,6 +2478,36 @@ impl AppConfig {
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(300));
 
+        let crs_stats_base_url = env::var("CRS_STATS_BASE_URL").ok();
+        let crs_stats_api_id = env::var("CRS_STATS_API_ID").ok();
+        if crs_stats_base_url.is_some() ^ crs_stats_api_id.is_some() {
+            return Err(anyhow!(
+                "CRS_STATS_BASE_URL and CRS_STATS_API_ID must be set together"
+            ));
+        }
+
+        let crs_stats_period = env::var("CRS_STATS_PERIOD")
+            .ok()
+            .unwrap_or_else(|| "daily".to_string());
+        if crs_stats_period != "daily" {
+            return Err(anyhow!("CRS_STATS_PERIOD only supports 'daily' for now"));
+        }
+
+        let crs_stats_poll_interval = env::var("CRS_STATS_POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_secs)
+            .unwrap_or(poll_interval);
+        let crs_stats = match (crs_stats_base_url, crs_stats_api_id) {
+            (Some(url), Some(api_id)) => Some(CrsStatsConfig {
+                base_url: Url::parse(&url).context("invalid CRS_STATS_BASE_URL")?,
+                api_id,
+                period: crs_stats_period,
+                poll_interval: crs_stats_poll_interval,
+            }),
+            _ => None,
+        };
+
         Ok(Self {
             base_url: Url::parse(&base_url_raw).context("invalid XY_BASE_URL")?,
             quota_endpoint,
@@ -1968,6 +2523,7 @@ impl AppConfig {
             user_agent,
             static_dir,
             snapshot_min_interval,
+            crs_stats,
         })
     }
 
@@ -2011,6 +2567,7 @@ mod tests {
             user_agent: "codex-test".to_string(),
             static_dir: None,
             snapshot_min_interval: Duration::from_secs(60),
+            crs_stats: None,
         }
     }
 
@@ -2258,7 +2815,7 @@ async fn query_stats_row(pool: &Pool<Sqlite>, filter: StatsFilter) -> Result<Sta
                 WHERE occurred_at >= ?1
                 "#,
         )
-        .bind(start)
+        .bind(format_naive(start.naive_utc()))
         .fetch_one(pool)
         .await
         .map_err(Into::into),
@@ -2286,6 +2843,95 @@ async fn query_stats_row(pool: &Pool<Sqlite>, filter: StatsFilter) -> Result<Sta
     }
 }
 
+async fn query_invocation_totals(pool: &Pool<Sqlite>, filter: StatsFilter) -> Result<StatsTotals> {
+    let row = query_stats_row(pool, filter).await?;
+    Ok(StatsTotals::from(row))
+}
+
+async fn query_crs_totals(
+    pool: &Pool<Sqlite>,
+    relay: Option<&CrsStatsConfig>,
+    filter: &StatsFilter,
+) -> Result<StatsTotals> {
+    let relay = match relay {
+        Some(relay) => relay,
+        None => return Ok(StatsTotals::default()),
+    };
+    let mut query = String::from(
+        r#"
+        SELECT
+            COALESCE(SUM(total_count), 0) AS total_count,
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count,
+            COALESCE(SUM(total_cost), 0.0) AS total_cost,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens
+        FROM stats_source_deltas
+        WHERE source = ?1 AND period = ?2
+        "#,
+    );
+
+    let mut binds: Vec<i64> = Vec::new();
+    if let StatsFilter::Since(start) = filter {
+        query.push_str(" AND captured_at_epoch >= ?3");
+        binds.push(start.timestamp());
+    } else if matches!(filter, StatsFilter::RecentLimit(_)) {
+        return Ok(StatsTotals::default());
+    }
+
+    let mut sql = sqlx::query_as::<_, StatsRow>(&query)
+        .bind(SOURCE_CRS)
+        .bind(&relay.period);
+
+    if let Some(epoch) = binds.first() {
+        sql = sql.bind(epoch);
+    }
+
+    let row = sql.fetch_one(pool).await?;
+    Ok(StatsTotals::from(row))
+}
+
+async fn query_combined_totals(
+    pool: &Pool<Sqlite>,
+    relay: Option<&CrsStatsConfig>,
+    filter: StatsFilter,
+) -> Result<StatsTotals> {
+    let base = query_invocation_totals(pool, filter.clone()).await?;
+    let relay_totals = query_crs_totals(pool, relay, &filter).await?;
+    Ok(base.add(relay_totals))
+}
+
+async fn query_crs_deltas(
+    pool: &Pool<Sqlite>,
+    relay: &CrsStatsConfig,
+    start_epoch: i64,
+    end_epoch: i64,
+) -> Result<Vec<StatsDeltaRecord>> {
+    sqlx::query_as::<_, StatsDeltaRecord>(
+        r#"
+        SELECT
+            captured_at_epoch,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost
+        FROM stats_source_deltas
+        WHERE source = ?1
+          AND period = ?2
+          AND captured_at_epoch >= ?3
+          AND captured_at_epoch <= ?4
+        ORDER BY captured_at_epoch ASC
+        "#,
+    )
+    .bind(SOURCE_CRS)
+    .bind(&relay.period)
+    .bind(start_epoch)
+    .bind(end_epoch)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
 #[derive(Debug, Deserialize)]
 struct QuotaResponse {
     #[allow(dead_code)]
@@ -2307,6 +2953,54 @@ struct ServiceQuota {
     current_usage: Option<CurrentUsage>,
     #[serde(default)]
     subscriptions: Option<Subscription>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrsStatsResponse {
+    success: bool,
+    #[serde(default)]
+    data: Vec<CrsModelStats>,
+    #[serde(default)]
+    period: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrsModelStats {
+    model: String,
+    requests: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_create_tokens: i64,
+    cache_read_tokens: i64,
+    all_tokens: i64,
+    costs: CrsCosts,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrsCosts {
+    input: f64,
+    output: f64,
+    cache_write: f64,
+    cache_read: f64,
+    total: f64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct CrsTotals {
+    total_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_create_tokens: i64,
+    cache_read_tokens: i64,
+    cost_input: f64,
+    cost_output: f64,
+    cost_cache_write: f64,
+    cost_cache_read: f64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
