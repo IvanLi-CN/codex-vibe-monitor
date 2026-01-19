@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchTimeseries } from '../lib/api'
 import type { ApiInvocation, TimeseriesPoint, TimeseriesResponse } from '../lib/api'
-import { subscribeToSse } from '../lib/sse'
+import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 
 export interface UseTimeseriesOptions {
   bucket?: string
@@ -14,6 +14,8 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const [error, setError] = useState<string | null>(null)
   const bucket = options?.bucket
   const settlementHour = options?.settlementHour
+  const hasHydratedRef = useRef(false)
+  const lastResyncAtRef = useRef(0)
 
   const normalizedOptions = useMemo<UseTimeseriesOptions>(
     () => ({
@@ -23,11 +25,15 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     [bucket, settlementHour],
   )
 
-  const load = useCallback(async () => {
-    setIsLoading(true)
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const shouldShowLoading = !(opts?.silent && hasHydratedRef.current)
+    if (shouldShowLoading) {
+      setIsLoading(true)
+    }
     try {
       const response = await fetchTimeseries(range, normalizedOptions)
       setData(response)
+      hasHydratedRef.current = true
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -38,6 +44,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       const start = formatEpochToIso(Math.floor((now - rangeSeconds * 1000) / 1000))
       const end = formatEpochToIso(Math.floor(now / 1000))
       setData({ rangeStart: start, rangeEnd: end, bucketSeconds, points: [] })
+      hasHydratedRef.current = true
     } finally {
       setIsLoading(false)
     }
@@ -77,6 +84,32 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     })
     return unsubscribe
   }, [normalizedOptions.settlementHour, options?.bucket, range])
+
+  const requestResync = useCallback(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+    const now = Date.now()
+    if (now - lastResyncAtRef.current < 3000) return
+    lastResyncAtRef.current = now
+    void load({ silent: true })
+  }, [load])
+
+  // Backfill missed SSE records when the page returns to the foreground or the SSE transport reconnects.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      requestResync()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [requestResync])
+
+  useEffect(() => {
+    const unsubscribe = subscribeToSseOpen(() => {
+      requestResync()
+    })
+    return unsubscribe
+  }, [requestResync])
 
   return {
     data,
