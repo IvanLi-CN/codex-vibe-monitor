@@ -52,7 +52,7 @@
 
 ## Index（固定表格）
 
-|   ID | Title                    | Status | Plan                                  | Last       | Notes |
-| ---: | ------------------------ | ------ | ------------------------------------- | ---------- | ----- |
-| 0001 | 接入 Claude Relay 统计源 | 待实现 | `0001:claude-relay-api-stats/PLAN.md` | 2026-01-16 | -     |
-| 0002 | PR 标签驱动发版          | 待实现 | `0002:pr-label-release/PLAN.md`       | 2026-02-19 | -     |
+|   ID | Title                    | Status | Plan                                  | Last       | Notes  |
+| ---: | ------------------------ | ------ | ------------------------------------- | ---------- | ------ |
+| 0001 | 接入 Claude Relay 统计源 | 待实现 | `0001:claude-relay-api-stats/PLAN.md` | 2026-01-16 | -      |
+| 0002 | PR 标签驱动发版          | 已完成 | `0002:pr-label-release/PLAN.md`       | 2026-02-19 | PR #36 |

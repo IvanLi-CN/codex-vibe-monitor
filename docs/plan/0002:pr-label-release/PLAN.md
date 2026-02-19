@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-02-19
 - Last: 2026-02-19
 
@@ -98,10 +98,14 @@
 
 ## 里程碑（Milestones）
 
-- [ ] M1: 创建 labels + 新增 label gate workflow
-- [ ] M2: release-intent gate + 版本计算（stable/rc）落地
-- [ ] M3: tag 创建幂等 + GitHub Release 创建幂等 + README 更新
+- [x] M1: 创建 labels + 新增 label gate workflow
+- [x] M2: release-intent gate + 版本计算（stable/rc）落地
+- [x] M3: tag 创建幂等 + GitHub Release 创建幂等 + README 更新
 
 ## 参考（References）
 
 - Style playbook: `PR label release`（`/Users/ivan/.codex/skills/style-playbook/references/tags/pr-label-release.md`）
+
+## 变更记录（Change log）
+
+- 2026-02-19: 落地 PR 标签驱动发版（label gate + CI release gate + 版本/tag/Release 规则）。PR #36。
