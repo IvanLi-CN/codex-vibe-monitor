@@ -7,8 +7,6 @@ on:
   pull_request:
     branches:
       - main
-  release:
-    types: [published]
   workflow_dispatch:
 
 concurrency:
@@ -151,30 +149,102 @@ jobs:
         run: cargo build --release --locked
 
   docker:
-    name: Build and Push Docker Image
+    name: Release (GHCR + tag + GitHub Release)
     runs-on: ubuntu-latest
     needs: [lint, unit-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
       packages: write
+      pull-requests: read
     timeout-minutes: 45
-    outputs:
-      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Compute effective version
-        shell: bash
-        run: ./.github/scripts/compute-version.sh
+      - name: Resolve release intent (PR labels)
+        id: intent
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const sha = context.sha
+            const allowedTypes = new Set([
+              'type:patch',
+              'type:minor',
+              'type:major',
+              'type:docs',
+              'type:skip',
+            ])
+            const allowedChannels = new Set(['channel:stable', 'channel:rc'])
+
+            const prsResp = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner,
+              repo,
+              commit_sha: sha,
+              mediaType: { previews: ['groot'] },
+            })
+            const prs = prsResp.data || []
+
+            if (prs.length !== 1) {
+              core.notice(
+                `Release disabled: expected exactly 1 PR associated with commit ${sha}, got ${prs.length}`
+              )
+              core.setOutput('release_enabled', 'false')
+              return
+            }
+
+            const pr = prs[0]
+            const labels = (pr.labels || []).map(l => l?.name).filter(Boolean)
+            const typeLabels = labels.filter(l => l.startsWith('type:'))
+            const channelLabels = labels.filter(l => l.startsWith('channel:'))
+
+            const problems = []
+            if (typeLabels.length !== 1) {
+              problems.push(
+                `Expected exactly 1 type:* label, got ${typeLabels.length}: ${typeLabels.join(', ') || '(none)'}`
+              )
+            } else if (!allowedTypes.has(typeLabels[0])) {
+              problems.push(`Unknown type label: ${typeLabels[0]}`)
+            }
+
+            if (channelLabels.length !== 1) {
+              problems.push(
+                `Expected exactly 1 channel:* label, got ${channelLabels.length}: ${channelLabels.join(', ') || '(none)'}`
+              )
+            } else if (!allowedChannels.has(channelLabels[0])) {
+              problems.push(`Unknown channel label: ${channelLabels[0]}`)
+            }
+
+            if (problems.length > 0) {
+              core.setFailed(problems.join('\n'))
+              return
+            }
+
+            const typeLabel = typeLabels[0]
+            const channelLabel = channelLabels[0]
+
+            core.setOutput('pr_number', String(pr.number))
+            core.setOutput('pr_title', pr.title || '')
+
+            if (typeLabel === 'type:docs' || typeLabel === 'type:skip') {
+              core.notice(`Release disabled: ${typeLabel} (${channelLabel})`)
+              core.setOutput('release_enabled', 'false')
+              return
+            }
+
+            core.setOutput('release_enabled', 'true')
+            core.setOutput('release_bump', typeLabel.split(':', 2)[1]) // patch|minor|major
+            core.setOutput('release_channel', channelLabel.split(':', 2)[1]) // stable|rc
 
       - name: Set up QEMU
+        if: steps.intent.outputs.release_enabled == 'true'
         uses: docker/setup-qemu-action@v3
 
       - name: Compute lowercase image name
+        if: steps.intent.outputs.release_enabled == 'true'
         id: image-name
         shell: bash
         run: |
@@ -183,47 +253,135 @@ jobs:
           echo "IMAGE_NAME_LOWER=${lower}" >> "$GITHUB_ENV"
           echo "image_name_lower=${lower}" >> "$GITHUB_OUTPUT"
 
+      - name: Compute effective version
+        if: steps.intent.outputs.release_enabled == 'true'
+        shell: bash
+        env:
+          RELEASE_BUMP: ${{ steps.intent.outputs.release_bump }}
+          RELEASE_CHANNEL: ${{ steps.intent.outputs.release_channel }}
+        run: ./.github/scripts/compute-version.sh
+
+      - name: Compute image tags
+        if: steps.intent.outputs.release_enabled == 'true'
+        id: image-tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}"
+          if [[ "${RELEASE_CHANNEL}" == "stable" ]]; then
+            {
+              echo "tags<<EOF"
+              echo "${image}:latest"
+              echo "${image}:v${APP_EFFECTIVE_VERSION}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "tags<<EOF"
+              echo "${image}:v${APP_EFFECTIVE_VERSION}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Docker Buildx
+        if: steps.intent.outputs.release_enabled == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: steps.intent.outputs.release_enabled == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
-            type=ref,event=tag
-            type=raw,value=v${{ env.APP_EFFECTIVE_VERSION }}
-            type=raw,value=b${{ env.BACKEND_EFFECTIVE_VERSION }}-f${{ env.FRONTEND_EFFECTIVE_VERSION }}
-
       - name: Build and push Docker image
+        if: steps.intent.outputs.release_enabled == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           platforms: ${{ env.PLATFORMS }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.image-tags.outputs.tags }}
           build-args: |
             APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
-      - name: Create version tag
-        if: success()
+
+      - name: Create and push git tag
+        if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${APP_EFFECTIVE_VERSION}" -m "release ${APP_EFFECTIVE_VERSION}" || true
-          git push origin "v${APP_EFFECTIVE_VERSION}" || true
+
+          tag="${RELEASE_TAG}"
+          sha="${GITHUB_SHA}"
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            existing="$(git rev-list -n 1 "${tag}")"
+            if [[ "${existing}" != "${sha}" ]]; then
+              echo "Tag ${tag} already exists but points to ${existing} (expected ${sha})" >&2
+              exit 1
+            fi
+            echo "Tag ${tag} already exists and points to ${sha}."
+          else
+            git tag -a "${tag}" -m "release ${APP_EFFECTIVE_VERSION}"
+          fi
+
+          git push origin "${tag}"
+
+      - name: Create GitHub Release
+        if: steps.intent.outputs.release_enabled == 'true'
+        uses: actions/github-script@v7
+        env:
+          RELEASE_PR_NUMBER: ${{ steps.intent.outputs.pr_number }}
+          RELEASE_PR_TITLE: ${{ steps.intent.outputs.pr_title }}
+          RELEASE_BUMP: ${{ steps.intent.outputs.release_bump }}
+          RELEASE_CHANNEL: ${{ steps.intent.outputs.release_channel }}
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const tag = process.env.RELEASE_TAG
+            const prerelease = process.env.RELEASE_PRERELEASE === 'true'
+            const prNumber = process.env.RELEASE_PR_NUMBER
+            const prTitle = process.env.RELEASE_PR_TITLE
+            const bump = process.env.RELEASE_BUMP
+            const channel = process.env.RELEASE_CHANNEL
+
+            if (!tag) {
+              core.setFailed('Missing RELEASE_TAG')
+              return
+            }
+
+            let existing = null
+            try {
+              existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag })
+            } catch (err) {
+              if (err.status !== 404) throw err
+            }
+
+            if (existing) {
+              core.notice(`GitHub Release already exists for tag ${tag}, skipping.`)
+              return
+            }
+
+            const bodyLines = [
+              prNumber ? `PR: #${prNumber} ${prTitle || ''}`.trim() : 'PR: (unknown)',
+              `Channel: ${channel || '(unknown)'}`,
+              `Bump: ${bump || '(unknown)'}`,
+              `Commit: ${context.sha}`,
+            ]
+
+            await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              name: tag,
+              prerelease,
+              body: bodyLines.join('\n'),
+            })
+
+            core.notice(`Created GitHub Release for tag ${tag}`)

@@ -1,0 +1,59 @@
+name: Label Gate
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  label-gate:
+    name: Validate PR labels
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate release intent labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = (context.payload.pull_request.labels || [])
+              .map(l => l?.name)
+              .filter(Boolean)
+
+            const typeLabels = labels.filter(l => l.startsWith('type:'))
+            const channelLabels = labels.filter(l => l.startsWith('channel:'))
+
+            const allowedTypes = new Set([
+              'type:patch',
+              'type:minor',
+              'type:major',
+              'type:docs',
+              'type:skip',
+            ])
+            const allowedChannels = new Set(['channel:stable', 'channel:rc'])
+
+            const problems = []
+
+            if (typeLabels.length !== 1) {
+              problems.push(
+                `Expected exactly 1 type:* label, got ${typeLabels.length}: ${typeLabels.join(', ') || '(none)'}`
+              )
+            } else if (!allowedTypes.has(typeLabels[0])) {
+              problems.push(`Unknown type label: ${typeLabels[0]}`)
+            }
+
+            if (channelLabels.length !== 1) {
+              problems.push(
+                `Expected exactly 1 channel:* label, got ${channelLabels.length}: ${channelLabels.join(', ') || '(none)'}`
+              )
+            } else if (!allowedChannels.has(channelLabels[0])) {
+              problems.push(`Unknown channel label: ${channelLabels[0]}`)
+            }
+
+            if (problems.length > 0) {
+              core.setFailed(problems.join('\n'))
+            } else {
+              core.notice(`Label gate passed: ${typeLabels[0]} + ${channelLabels[0]}`)
+            }
+
