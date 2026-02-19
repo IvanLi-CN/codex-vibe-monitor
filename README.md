@@ -147,9 +147,21 @@ docker run --rm \
 
 ## CI / CD
 
-- 工作流：`.github/workflows/ci.yml`（Lint/Format、后端测试、构建产物、构建并推送 Docker）。
-- 版本：CI 使用脚本按 `Cargo.toml` 版本自动生成 `APP_EFFECTIVE_VERSION`，必要时自增补丁位。
-- 镜像：推送至 GHCR `ghcr.io/ivanli-cn/codex-vibe-monitor`（支持 `latest`、`sha`、以及计算得出的多种版本标签）。
+- 工作流：
+  - `.github/workflows/label-gate.yml`：PR 标签校验（发版意图 gate）。
+  - `.github/workflows/ci.yml`：Lint/Test/Build；在 `main` 上按 PR 标签决定是否发版与发布产物。
+- PR 发版意图（labels，必须且各 1 个）：
+  - `type:patch` | `type:minor` | `type:major`：触发发版（semver bump）
+  - `type:docs` | `type:skip`：不发版（不推镜像/不打 tag/不建 Release）
+  - `channel:stable`：稳定版
+  - `channel:rc`：预发行（prerelease）
+- 版本与 tag 规则：
+  - stable：`vX.Y.Z`（以“最大 stable tag”做基线按 type bump）
+  - rc：`vX.Y.Z-rc.<sha7>`（不更新 `latest`）
+- 镜像：推送至 GHCR `ghcr.io/ivanli-cn/codex-vibe-monitor`
+  - stable：`${image}:vX.Y.Z` 与 `${image}:latest`
+  - rc：`${image}:vX.Y.Z-rc.<sha7>`（仅该 tag）
+  - 同步创建 GitHub Release（stable 为非 prerelease，rc 为 prerelease）
 
 ## 许可证
 

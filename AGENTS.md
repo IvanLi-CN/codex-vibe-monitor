@@ -81,6 +81,19 @@ Operational notes
   - Verification steps or screenshots/gifs for UI updates.
   - Notes about config or schema changes (e.g., migrating SQLite, new env vars).
 
+## CI / CD (Release via PR labels)
+
+- Releases only happen on `push` to `main` (after PR merge). PR builds never publish artifacts.
+- Every PR must set exactly **one** release type label and exactly **one** release channel label
+  (enforced by `.github/workflows/label-gate.yml`).
+- Release type (`type:*`):
+  - `type:patch` | `type:minor` | `type:major` - trigger a release (semver bump).
+  - `type:docs` | `type:skip` - skip release (no image/tag/GitHub Release).
+- Release channel (`channel:*`):
+  - `channel:stable` - stable release (`vX.Y.Z`, also updates the Docker image `latest` tag).
+  - `channel:rc` - pre-release (`vX.Y.Z-rc.<sha7>`, does not update `latest`).
+- For more details, see `README.md` and `.github/scripts/compute-version.sh`.
+
 ## Security & Configuration Tips
 
 - Store authentication cookies and secrets in `.env.local`; the file is ignored—never commit credentials.
