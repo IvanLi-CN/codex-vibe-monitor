@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（2/3）
+- Status: 已完成
 - Created: 2026-02-20
 - Last: 2026-02-20
 
@@ -70,8 +70,12 @@
 
 - [x] M1: `scripts/` 启动/停止脚本迁移为 `devctl`（No fallback）
 - [x] M2: 文档口径对齐（AGENTS.md + README.md + .gitignore）
-- [ ] M3: 最小验证与 PR 交付（PR + checks 结果明确）
+- [x] M3: 最小验证与 PR 交付（PR + checks 结果明确）
 
 ## 风险与开放问题（Risks / Open questions）
 
 - 本仓库脚本强依赖 `zellij` + `~/.codex/bin/devctl`；若不满足则启动失败（符合 No fallback 的预期）。
+
+## 变更记录（Change log）
+
+- 2026-02-20: 对齐开发环境长驻服务到 devctl+zellij（脚本、文档、忽略规则）。PR #37。
