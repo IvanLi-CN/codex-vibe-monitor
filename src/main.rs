@@ -2693,9 +2693,70 @@ mod tests {
     use super::*;
     use axum::Json;
     use axum::extract::State;
+    use chrono::Timelike;
     use sqlx::SqlitePool;
     use std::{path::PathBuf, sync::Arc, time::Duration};
     use tokio::sync::{Semaphore, broadcast};
+
+    #[test]
+    fn named_range_today_end_respects_dst() {
+        let tz = chrono_tz::America::Los_Angeles;
+        let now = Utc
+            .with_ymd_and_hms(2024, 3, 10, 12, 0, 0)
+            .single()
+            .expect("valid dt");
+
+        let (start, end) = named_range_bounds("today", now, tz).expect("today bounds");
+        // Midnight before DST jump is still PST (-08:00).
+        assert_eq!(
+            start,
+            Utc.with_ymd_and_hms(2024, 3, 10, 8, 0, 0).single().unwrap()
+        );
+        // Next midnight is PDT (-07:00) after the DST jump.
+        assert_eq!(
+            end,
+            Utc.with_ymd_and_hms(2024, 3, 11, 7, 0, 0).single().unwrap()
+        );
+    }
+
+    #[test]
+    fn named_range_this_week_end_respects_dst() {
+        let tz = chrono_tz::America::Los_Angeles;
+        let now = Utc
+            .with_ymd_and_hms(2024, 3, 6, 12, 0, 0)
+            .single()
+            .expect("valid dt");
+
+        let (start, end) = named_range_bounds("thisWeek", now, tz).expect("thisWeek bounds");
+        // Start of week: Mon 2024-03-04 00:00 PST => 08:00Z.
+        assert_eq!(
+            start,
+            Utc.with_ymd_and_hms(2024, 3, 4, 8, 0, 0).single().unwrap()
+        );
+        // End of week: Mon 2024-03-11 00:00 PDT => 07:00Z.
+        assert_eq!(
+            end,
+            Utc.with_ymd_and_hms(2024, 3, 11, 7, 0, 0).single().unwrap()
+        );
+    }
+
+    #[test]
+    fn local_naive_to_utc_does_not_fall_back_to_and_utc_on_dst_gap() {
+        let tz = chrono_tz::America::Los_Angeles;
+        let naive = NaiveDate::from_ymd_opt(2024, 3, 10)
+            .unwrap()
+            .and_hms_opt(2, 30, 0)
+            .unwrap();
+
+        assert!(matches!(tz.from_local_datetime(&naive), LocalResult::None));
+        let resolved = local_naive_to_utc(naive, tz);
+        assert_ne!(resolved, naive.and_utc());
+
+        let local = resolved.with_timezone(&tz);
+        assert_eq!(local.hour(), 3);
+        assert_eq!(local.minute(), 0);
+        assert_eq!(local.second(), 0);
+    }
 
     fn test_config() -> AppConfig {
         AppConfig {
@@ -2833,12 +2894,21 @@ fn named_range_bounds(
 ) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
     match spec {
         "today" => {
+            let local_date = now.with_timezone(&tz).date_naive();
             let start = start_of_local_day(now, tz);
-            Some((start, start + ChronoDuration::days(1)))
+            let next_date = local_date
+                .succ_opt()
+                .unwrap_or(local_date + ChronoDuration::days(1));
+            let end = local_midnight_utc(next_date, tz);
+            Some((start, end))
         }
         "thisWeek" => {
             let start = start_of_local_week(now, tz);
-            Some((start, start + ChronoDuration::days(7)))
+            // Week end must be computed via the next local boundary, not a fixed +7*24h.
+            // This keeps correctness across DST transitions.
+            let start_local_date = start.with_timezone(&tz).date_naive();
+            let end = local_midnight_utc(start_local_date + ChronoDuration::days(7), tz);
+            Some((start, end))
         }
         "thisMonth" => {
             let start = start_of_local_month(now, tz);
@@ -2855,6 +2925,13 @@ fn named_range_start(spec: &str, now: DateTime<Utc>, tz: Tz) -> Option<DateTime<
 fn start_of_local_day(now: DateTime<Utc>, tz: Tz) -> DateTime<Utc> {
     let local = now.with_timezone(&tz);
     let date = local.date_naive();
+    let naive = date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight should be representable");
+    local_naive_to_utc(naive, tz)
+}
+
+fn local_midnight_utc(date: NaiveDate, tz: Tz) -> DateTime<Utc> {
     let naive = date
         .and_hms_opt(0, 0, 0)
         .expect("midnight should be representable");
@@ -2902,7 +2979,21 @@ fn local_naive_to_utc(naive: NaiveDateTime, tz: Tz) -> DateTime<Utc> {
     match tz.from_local_datetime(&naive) {
         LocalResult::Single(dt) => dt.with_timezone(&Utc),
         LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
-        _ => naive.and_utc(),
+        LocalResult::None => {
+            // Handle nonexistent local times (e.g. DST spring-forward gaps) by
+            // selecting the first valid local instant *after* the requested time.
+            // This avoids silently interpreting a local timestamp as UTC.
+            for step_minutes in 1..=(24 * 60) {
+                let probe = naive + ChronoDuration::minutes(step_minutes);
+                match tz.from_local_datetime(&probe) {
+                    LocalResult::Single(dt) => return dt.with_timezone(&Utc),
+                    LocalResult::Ambiguous(dt, _) => return dt.with_timezone(&Utc),
+                    LocalResult::None => continue,
+                }
+            }
+            // Extremely unlikely: no valid local instant found in the next 24h.
+            naive.and_utc()
+        }
     }
 }
 
