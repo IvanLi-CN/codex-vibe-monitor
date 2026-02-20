@@ -63,9 +63,25 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     return () => clearTimeout(id)
   }, [error, load])
 
+  const requestResync = useCallback(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+    const now = Date.now()
+    if (now - lastResyncAtRef.current < 3000) return
+    lastResyncAtRef.current = now
+    void load({ silent: true })
+  }, [load])
+
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type === 'records') {
+        const ctxBucketSeconds =
+          guessBucketSeconds(options?.bucket) ?? defaultBucketSecondsForRange(range)
+        // Daily buckets depend on IANA timezone rules (incl. DST). Let the backend
+        // be the source of truth and resync instead of applying local deltas.
+        if (ctxBucketSeconds >= 86_400) {
+          requestResync()
+          return
+        }
         setData((current) => {
           const seeded =
             current ?? {
@@ -83,15 +99,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       }
     })
     return unsubscribe
-  }, [normalizedOptions.settlementHour, options?.bucket, range])
-
-  const requestResync = useCallback(() => {
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
-    const now = Date.now()
-    if (now - lastResyncAtRef.current < 3000) return
-    lastResyncAtRef.current = now
-    void load({ silent: true })
-  }, [load])
+  }, [normalizedOptions.settlementHour, options?.bucket, range, requestResync])
 
   // Backfill missed SSE records when the page returns to the foreground or the SSE transport reconnects.
   useEffect(() => {

@@ -6,6 +6,7 @@ import type { TimeseriesPoint } from '../lib/api'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { formatTokensShort } from '../lib/numberFormatters'
+import { getBrowserTimeZone } from '../lib/timeZone'
 
 type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
@@ -78,6 +79,7 @@ interface CalendarTooltipState {
 
 export function UsageCalendar() {
   const { t, locale } = useTranslation()
+  const timeZone = getBrowserTimeZone()
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const { data, isLoading, error } = useTimeseries('90d', { bucket: '1d' })
   const [blockSize, setBlockSize] = useState(DEFAULT_BLOCK_SIZE)
@@ -257,6 +259,9 @@ export function UsageCalendar() {
             <div className="flex items-center justify-between gap-3">
               <div className="card-heading">
                 <h2 className="card-title">{t('calendar.title')}</h2>
+                <p className="card-description">
+                  {t('calendar.timeZoneLabel')}{valueSeparator}{timeZone}
+                </p>
               </div>
               <div
                 className="tabs tabs-sm tabs-border"
@@ -419,23 +424,25 @@ function transformPointsToActivities(points: TimeseriesPoint[], metric: MetricKe
 
   const valuesByDate = new Map<string, number>()
   for (const point of sortedPoints) {
-    const iso = toISODate(point.bucketStart)
+    const iso = toLocalISODate(point.bucketStart)
     const current = valuesByDate.get(iso) ?? 0
     valuesByDate.set(iso, current + (point[metric] ?? 0))
   }
 
-  const startDate = new Date(parseDateLocal(sortedPoints[0].bucketStart))
-  const endDate = new Date(parseDateLocal(sortedPoints[sortedPoints.length - 1].bucketStart))
+  const startIso = toLocalISODate(sortedPoints[0].bucketStart)
+  const endIso = toLocalISODate(sortedPoints[sortedPoints.length - 1].bucketStart)
+  const startDate = parseLocalISODate(startIso)
+  const endDate = parseLocalISODate(endIso)
 
   const activities: Activity[] = []
   const values: number[] = []
   const cursor = new Date(startDate)
   while (cursor <= endDate) {
-    const iso = formatISODate(cursor)
+    const iso = formatLocalISODate(cursor)
     const value = valuesByDate.get(iso) ?? 0
     values.push(value)
     activities.push({ date: iso, count: value, level: 0 })
-    cursor.setUTCDate(cursor.getUTCDate() + 1)
+    cursor.setDate(cursor.getDate() + 1)
   }
 
   const maxValue = values.reduce((max, v) => (v > max ? v : max), 0)
@@ -464,12 +471,20 @@ function createThresholds(maxValue: number, maxLevel: number) {
   return thresholds
 }
 
-function toISODate(value: string) {
+function formatLocalISODate(date: Date) {
+  const pad = (num: number) => num.toString().padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+function parseLocalISODate(value: string) {
+  const [year, month, day] = value.split('-').map(Number)
+  return new Date(year, (month ?? 1) - 1, day ?? 1)
+}
+
+function toLocalISODate(value: string) {
   if (value.includes('T')) {
-    // local day ISO (YYYY-MM-DD in local timezone)
-    const d = new Date(value)
-    const pad = (n: number) => n.toString().padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    // bucketStart/bucketEnd are RFC3339 UTC timestamps; convert to local day.
+    return formatLocalISODate(new Date(value))
   }
   const [datePart] = value.split(' ')
   return datePart ?? ''
@@ -484,11 +499,6 @@ function parseDateLocal(value: string) {
   if (!datePart) return 0
   const [year, month, day] = datePart.split('-').map(Number)
   return new Date(year, (month ?? 1) - 1, day ?? 1).getTime()
-}
-
-function formatISODate(date: Date) {
-  const pad = (num: number) => num.toString().padStart(2, '0')
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`
 }
 
 interface MonthMarker { weekIndex: number; year: number; month: number }

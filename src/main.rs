@@ -22,7 +22,7 @@ use chrono::{
     DateTime, Datelike, Duration as ChronoDuration, LocalResult, NaiveDate, NaiveDateTime,
     SecondsFormat, TimeZone, Utc,
 };
-use chrono_tz::Asia::Shanghai;
+use chrono_tz::{Asia::Shanghai, Tz};
 use clap::Parser;
 use dotenvy::dotenv;
 use futures_util::{StreamExt, stream};
@@ -1322,6 +1322,7 @@ async fn fetch_summary(
 ) -> Result<Json<StatsResponse>, ApiError> {
     let default_limit = state.config.list_limit_max as i64;
     let window = parse_summary_window(&params, default_limit)?;
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
 
     let totals = match window {
         SummaryWindow::All => {
@@ -1351,7 +1352,7 @@ async fn fetch_summary(
         }
         SummaryWindow::Calendar(spec) => {
             let now = Utc::now();
-            let start = named_range_start(spec.as_str(), now)
+            let start = named_range_start(spec.as_str(), now, reporting_tz)
                 .ok_or_else(|| ApiError(anyhow!("unsupported calendar window: {spec}")))?;
             query_combined_totals(
                 &state.pool,
@@ -1369,7 +1370,8 @@ async fn fetch_timeseries(
     State(state): State<Arc<AppState>>,
     Query(params): Query<TimeseriesQuery>,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
-    let range_window = resolve_range_window(&params.range)?;
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let mut bucket_seconds = if let Some(spec) = params.bucket.as_deref() {
         bucket_seconds_from_spec(spec)
             .ok_or_else(|| anyhow!("unsupported bucket specification: {spec}"))?
@@ -1388,21 +1390,13 @@ async fn fetch_timeseries(
         bucket_seconds = range_seconds / 10_000;
     }
 
-    let settlement_hour = params.settlement_hour.unwrap_or(0);
-    if settlement_hour >= 24 {
-        return Err(ApiError(anyhow!(
-            "settlement hour must be between 0 and 23 inclusive"
-        )));
+    if bucket_seconds == 86_400 {
+        return fetch_timeseries_daily(state, params, reporting_tz).await;
     }
 
-    let offset_seconds = if bucket_seconds >= 86_400 {
-        (settlement_hour as i64) * 3_600
-    } else {
-        0
-    };
+    let offset_seconds = 0;
 
     let end_dt = range_window.end;
-    let display_end_dt = range_window.display_end;
     let start_dt = range_window.start;
     let start_str_iso = format_utc_iso(start_dt);
 
@@ -1414,7 +1408,7 @@ async fn fetch_timeseries(
         ORDER BY occurred_at ASC
         "#,
     )
-    .bind(format_naive(start_dt.naive_utc()))
+    .bind(db_occurred_at_lower_bound(start_dt))
     .fetch_all(&state.pool)
     .await?;
 
@@ -1451,7 +1445,7 @@ async fn fetch_timeseries(
     }
 
     let relay_deltas = if let Some(relay) = state.config.crs_stats.as_ref() {
-        query_crs_deltas(&state.pool, relay, start_epoch, display_end_dt.timestamp()).await?
+        query_crs_deltas(&state.pool, relay, start_epoch, end_dt.timestamp()).await?
     } else {
         Vec::new()
     };
@@ -1479,8 +1473,7 @@ async fn fetch_timeseries(
     // This prevents future-dated records from pushing the chart beyond the
     // intended window (e.g., "last 24 hours").
     let fill_end_epoch =
-        align_bucket_epoch(display_end_dt.timestamp(), bucket_seconds, offset_seconds)
-            + bucket_seconds;
+        align_bucket_epoch(end_dt.timestamp(), bucket_seconds, offset_seconds) + bucket_seconds;
     while bucket_cursor <= fill_end_epoch {
         aggregates.entry(bucket_cursor).or_default();
         bucket_cursor += bucket_seconds;
@@ -1528,10 +1521,156 @@ async fn fetch_timeseries(
     Ok(Json(response))
 }
 
+fn resolve_daily_date_range(
+    spec: &str,
+    now: DateTime<Utc>,
+    tz: Tz,
+) -> Result<(NaiveDate, NaiveDate)> {
+    if let Some((start, _raw_end)) = named_range_bounds(spec, now, tz) {
+        let start_local = start.with_timezone(&tz).date_naive();
+        let end_local = now.with_timezone(&tz).date_naive();
+        return Ok((start_local, end_local));
+    }
+
+    let duration = parse_duration_spec(spec)?;
+    let mut days = duration.num_days();
+    if days <= 0 {
+        days = 1;
+    }
+    let end_local = now.with_timezone(&tz).date_naive();
+    let start_local = if days <= 1 {
+        end_local
+    } else {
+        end_local - ChronoDuration::days(days - 1)
+    };
+
+    Ok((start_local, end_local))
+}
+
+async fn fetch_timeseries_daily(
+    state: Arc<AppState>,
+    params: TimeseriesQuery,
+    reporting_tz: Tz,
+) -> Result<Json<TimeseriesResponse>, ApiError> {
+    let now = Utc::now();
+    let (start_date, end_date) = resolve_daily_date_range(&params.range, now, reporting_tz)?;
+
+    let start_naive = start_date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight should be representable");
+    let start_dt = local_naive_to_utc(start_naive, reporting_tz);
+
+    let mut aggregates: BTreeMap<NaiveDate, BucketAggregate> = BTreeMap::new();
+    let mut cursor = start_date;
+    while cursor <= end_date {
+        aggregates.entry(cursor).or_default();
+        cursor = cursor
+            .succ_opt()
+            .unwrap_or(cursor + ChronoDuration::days(1));
+    }
+
+    let records = sqlx::query_as::<_, TimeseriesRecord>(
+        r#"
+        SELECT occurred_at, status, total_tokens, cost
+        FROM codex_invocations
+        WHERE occurred_at >= ?1
+        ORDER BY occurred_at ASC
+        "#,
+    )
+    .bind(db_occurred_at_lower_bound(start_dt))
+    .fetch_all(&state.pool)
+    .await?;
+
+    for record in records {
+        let occurred_utc = match parse_to_utc_datetime(&record.occurred_at) {
+            Some(dt) => dt,
+            None => continue,
+        };
+        let local_date = occurred_utc.with_timezone(&reporting_tz).date_naive();
+        if local_date < start_date || local_date > end_date {
+            continue;
+        }
+        let entry = aggregates.entry(local_date).or_default();
+        entry.total_count += 1;
+        match record.status.as_deref() {
+            Some("success") => entry.success_count += 1,
+            _ => entry.failure_count += 1,
+        }
+        entry.total_tokens += record.total_tokens.unwrap_or(0);
+        entry.total_cost += record.cost.unwrap_or(0.0);
+    }
+
+    if let Some(relay) = state.config.crs_stats.as_ref() {
+        let deltas =
+            query_crs_deltas(&state.pool, relay, start_dt.timestamp(), now.timestamp()).await?;
+
+        for delta in deltas {
+            let captured = match Utc.timestamp_opt(delta.captured_at_epoch, 0).single() {
+                Some(dt) => dt,
+                None => continue,
+            };
+            let local_date = captured.with_timezone(&reporting_tz).date_naive();
+            if local_date < start_date || local_date > end_date {
+                continue;
+            }
+            let entry = aggregates.entry(local_date).or_default();
+            entry.total_count += delta.total_count;
+            entry.success_count += delta.success_count;
+            entry.failure_count += delta.failure_count;
+            entry.total_tokens += delta.total_tokens;
+            entry.total_cost += delta.total_cost;
+        }
+    }
+
+    let mut points = Vec::with_capacity(aggregates.len());
+    for (date, agg) in aggregates {
+        let start_naive = date
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight should be representable");
+        let end_naive = (date + ChronoDuration::days(1))
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight should be representable");
+        let start = local_naive_to_utc(start_naive, reporting_tz);
+        let end = local_naive_to_utc(end_naive, reporting_tz);
+        points.push(TimeseriesPoint {
+            bucket_start: format_utc_iso(start),
+            bucket_end: format_utc_iso(end),
+            total_count: agg.total_count,
+            success_count: agg.success_count,
+            failure_count: agg.failure_count,
+            total_tokens: agg.total_tokens,
+            total_cost: agg.total_cost,
+        });
+    }
+
+    let range_start = {
+        let naive = start_date
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight should be representable");
+        format_utc_iso(local_naive_to_utc(naive, reporting_tz))
+    };
+    let range_end = {
+        let next = end_date + ChronoDuration::days(1);
+        let naive = next
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight should be representable");
+        format_utc_iso(local_naive_to_utc(naive, reporting_tz))
+    };
+
+    Ok(Json(TimeseriesResponse {
+        range_start,
+        range_end,
+        bucket_seconds: 86_400,
+        points,
+    }))
+}
+
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ErrorQuery {
     range: String,
     top: Option<i64>,
+    time_zone: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -1548,10 +1687,12 @@ struct ErrorDistributionResponse {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct OtherErrorsQuery {
     range: String,
     page: Option<i64>,
     limit: Option<i64>,
+    time_zone: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -1573,7 +1714,8 @@ async fn fetch_error_distribution(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ErrorQuery>,
 ) -> Result<Json<ErrorDistributionResponse>, ApiError> {
-    let range_window = resolve_range_window(&params.range)?;
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
     let display_end = range_window.display_end;
 
@@ -1589,7 +1731,7 @@ async fn fetch_error_distribution(
         WHERE occurred_at >= ?1 AND (status IS NULL OR status != 'success')
         "#,
     )
-    .bind(format_naive(start_dt.naive_utc()))
+    .bind(db_occurred_at_lower_bound(start_dt))
     .fetch_all(&state.pool)
     .await?;
 
@@ -1778,7 +1920,8 @@ async fn fetch_other_errors(
     State(state): State<Arc<AppState>>,
     Query(params): Query<OtherErrorsQuery>,
 ) -> Result<Json<OtherErrorsResponse>, ApiError> {
-    let range_window = resolve_range_window(&params.range)?;
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
 
     #[derive(sqlx::FromRow)]
@@ -1795,7 +1938,7 @@ async fn fetch_other_errors(
         ORDER BY occurred_at DESC
         "#,
     )
-    .bind(format_naive(start_dt.naive_utc()))
+    .bind(db_occurred_at_lower_bound(start_dt))
     .fetch_all(&state.pool)
     .await?;
 
@@ -2243,6 +2386,7 @@ struct ListQuery {
 struct SummaryQuery {
     window: Option<String>,
     limit: Option<i64>,
+    time_zone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2251,7 +2395,9 @@ struct TimeseriesQuery {
     #[serde(default = "default_range")]
     range: String,
     bucket: Option<String>,
+    #[allow(dead_code)]
     settlement_hour: Option<u8>,
+    time_zone: Option<String>,
 }
 
 #[derive(Debug)]
@@ -2610,6 +2756,21 @@ fn format_naive(dt: NaiveDateTime) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+fn parse_reporting_tz(time_zone: Option<&str>) -> Result<Tz> {
+    let tz_name = time_zone.unwrap_or("Asia/Shanghai");
+    tz_name
+        .parse::<Tz>()
+        .with_context(|| format!("invalid timeZone: {tz_name}"))
+}
+
+// `codex_invocations.occurred_at` is stored as a naive Asia/Shanghai timestamp string
+// (e.g. "2026-01-21 01:02:15"). For lexicographic filtering to work correctly,
+// we must bind the lower bound using the same representation.
+fn db_occurred_at_lower_bound(start_utc: DateTime<Utc>) -> String {
+    let shanghai = start_utc.with_timezone(&Shanghai);
+    format_naive(shanghai.naive_local())
+}
+
 fn parse_duration_spec(spec: &str) -> Result<ChronoDuration> {
     if let Some(value) = spec.strip_suffix("mo") {
         let months: i64 = value.parse()?;
@@ -2640,17 +2801,16 @@ struct RangeWindow {
     duration: ChronoDuration,
 }
 
-fn resolve_range_window(spec: &str) -> Result<RangeWindow> {
+fn resolve_range_window(spec: &str, tz: Tz) -> Result<RangeWindow> {
     let now = Utc::now();
-    if let Some((start, display_end)) = named_range_bounds(spec, now) {
-        let end = now.min(display_end);
-        let duration = display_end
-            .signed_duration_since(start)
-            .max(ChronoDuration::zero());
+    if let Some((start, raw_end)) = named_range_bounds(spec, now, tz) {
+        // Clamp to "now" so charts do not render future empty buckets.
+        let end = now.min(raw_end);
+        let duration = end.signed_duration_since(start).max(ChronoDuration::zero());
         return Ok(RangeWindow {
             start,
             end,
-            display_end,
+            display_end: end,
             duration,
         });
     }
@@ -2666,59 +2826,63 @@ fn resolve_range_window(spec: &str) -> Result<RangeWindow> {
     })
 }
 
-fn named_range_bounds(spec: &str, now: DateTime<Utc>) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+fn named_range_bounds(
+    spec: &str,
+    now: DateTime<Utc>,
+    tz: Tz,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
     match spec {
         "today" => {
-            let start = start_of_local_day(now);
+            let start = start_of_local_day(now, tz);
             Some((start, start + ChronoDuration::days(1)))
         }
         "thisWeek" => {
-            let start = start_of_local_week(now);
+            let start = start_of_local_week(now, tz);
             Some((start, start + ChronoDuration::days(7)))
         }
         "thisMonth" => {
-            let start = start_of_local_month(now);
-            Some((start, start_of_next_month(start)))
+            let start = start_of_local_month(now, tz);
+            Some((start, start_of_next_month(start, tz)))
         }
         _ => None,
     }
 }
 
-fn named_range_start(spec: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    named_range_bounds(spec, now).map(|(start, _)| start)
+fn named_range_start(spec: &str, now: DateTime<Utc>, tz: Tz) -> Option<DateTime<Utc>> {
+    named_range_bounds(spec, now, tz).map(|(start, _)| start)
 }
 
-fn start_of_local_day(now: DateTime<Utc>) -> DateTime<Utc> {
-    let local = now.with_timezone(&Shanghai);
+fn start_of_local_day(now: DateTime<Utc>, tz: Tz) -> DateTime<Utc> {
+    let local = now.with_timezone(&tz);
     let date = local.date_naive();
     let naive = date
         .and_hms_opt(0, 0, 0)
         .expect("midnight should be representable");
-    local_naive_to_utc(naive)
+    local_naive_to_utc(naive, tz)
 }
 
-fn start_of_local_week(now: DateTime<Utc>) -> DateTime<Utc> {
-    let local = now.with_timezone(&Shanghai);
+fn start_of_local_week(now: DateTime<Utc>, tz: Tz) -> DateTime<Utc> {
+    let local = now.with_timezone(&tz);
     let date = local.date_naive();
     let start_of_day = date
         .and_hms_opt(0, 0, 0)
         .expect("midnight should be representable");
     let offset_days = local.weekday().num_days_from_monday() as i64;
-    local_naive_to_utc(start_of_day - ChronoDuration::days(offset_days))
+    local_naive_to_utc(start_of_day - ChronoDuration::days(offset_days), tz)
 }
 
-fn start_of_local_month(now: DateTime<Utc>) -> DateTime<Utc> {
-    let local = now.with_timezone(&Shanghai);
+fn start_of_local_month(now: DateTime<Utc>, tz: Tz) -> DateTime<Utc> {
+    let local = now.with_timezone(&tz);
     let date = local.date_naive();
     let first_day = date.with_day(1).unwrap_or(date);
     let naive = first_day
         .and_hms_opt(0, 0, 0)
         .expect("midnight should be representable");
-    local_naive_to_utc(naive)
+    local_naive_to_utc(naive, tz)
 }
 
-fn start_of_next_month(start: DateTime<Utc>) -> DateTime<Utc> {
-    let local = start.with_timezone(&Shanghai);
+fn start_of_next_month(start: DateTime<Utc>, tz: Tz) -> DateTime<Utc> {
+    let local = start.with_timezone(&tz);
     let naive = local.naive_local();
     let mut year = naive.year();
     let mut month = naive.month();
@@ -2731,12 +2895,13 @@ fn start_of_next_month(start: DateTime<Utc>) -> DateTime<Utc> {
     let naive = first
         .and_hms_opt(0, 0, 0)
         .expect("midnight should be representable");
-    local_naive_to_utc(naive)
+    local_naive_to_utc(naive, tz)
 }
 
-fn local_naive_to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    match Shanghai.from_local_datetime(&naive) {
+fn local_naive_to_utc(naive: NaiveDateTime, tz: Tz) -> DateTime<Utc> {
+    match tz.from_local_datetime(&naive) {
         LocalResult::Single(dt) => dt.with_timezone(&Utc),
+        LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
         _ => naive.and_utc(),
     }
 }
@@ -2815,7 +2980,7 @@ async fn query_stats_row(pool: &Pool<Sqlite>, filter: StatsFilter) -> Result<Sta
                 WHERE occurred_at >= ?1
                 "#,
         )
-        .bind(format_naive(start.naive_utc()))
+        .bind(db_occurred_at_lower_bound(start))
         .fetch_one(pool)
         .await
         .map_err(Into::into),
