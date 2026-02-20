@@ -60,23 +60,11 @@ const BUCKET_OPTION_KEYS: Record<string, { value: string; labelKey: TranslationK
   ],
 }
 
-const BUCKET_SECONDS: Record<string, number> = {
-  '1m': 60,
-  '5m': 300,
-  '15m': 900,
-  '30m': 1_800,
-  '1h': 3_600,
-  '6h': 21_600,
-  '12h': 43_200,
-  '1d': 86_400,
-}
-
 export default function StatsPage() {
   const { t } = useTranslation()
   const [range, setRange] = useState<typeof RANGE_OPTIONS[number]['value']>('today')
   const rawBucketOptions = useMemo(() => BUCKET_OPTION_KEYS[range] ?? BUCKET_OPTION_KEYS['1d'], [range])
   const [bucket, setBucket] = useState<string>(rawBucketOptions[0]?.value ?? '1h')
-  const [settlementHour, setSettlementHour] = useState(0)
 
   // Guarantee we never request an incompatible bucket for the selected range.
   // When range changes, the previous bucket (e.g., 15m) may be invalid for 1mo.
@@ -101,8 +89,6 @@ export default function StatsPage() {
     [rawBucketOptions, t],
   )
 
-  const needsSettlement = BUCKET_SECONDS[effectiveBucket] >= 86_400
-
   const {
     summary,
     isLoading: summaryLoading,
@@ -115,7 +101,6 @@ export default function StatsPage() {
     error: timeseriesError,
   } = useTimeseries(range, {
     bucket: effectiveBucket,
-    settlementHour: needsSettlement ? settlementHour : undefined,
   })
 
   const { data: errors, isLoading: errorsLoading, error: errorsError } = useErrorDistribution(range, 8)
@@ -152,21 +137,6 @@ export default function StatsPage() {
                   </option>
                 ))}
               </select>
-              {needsSettlement && (
-                <label className="form-control w-28">
-                  <div className="label py-0">
-                    <span className="label-text text-xs">{t('stats.settlementHour')}</span>
-                  </div>
-                  <input
-                    type="number"
-                    min={0}
-                    max={23}
-                    value={settlementHour}
-                    onChange={(event) => setSettlementHour(Number(event.target.value))}
-                    className="input input-bordered input-sm"
-                  />
-                </label>
-              )}
             </div>
           </div>
           <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />

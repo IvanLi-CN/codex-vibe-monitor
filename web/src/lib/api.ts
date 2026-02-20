@@ -1,3 +1,5 @@
+import { getBrowserTimeZone } from './timeZone'
+
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? ''
 const API_BASE = rawBase.endsWith('/') ? rawBase.slice(0, -1) : rawBase
 
@@ -136,26 +138,29 @@ export async function fetchVersion(): Promise<VersionResponse> {
   return fetchJson<VersionResponse>('/api/version')
 }
 
-export async function fetchSummary(window: string, options?: { limit?: number }) {
+export async function fetchSummary(window: string, options?: { limit?: number; timeZone?: string }) {
   const search = new URLSearchParams()
   search.set('window', window)
+  search.set('timeZone', options?.timeZone ?? getBrowserTimeZone())
   if (options?.limit !== undefined) {
     search.set('limit', String(options.limit))
   }
   return fetchJson<StatsResponse>(`/api/stats/summary?${search.toString()}`)
 }
 
-export async function fetchTimeseries(range: string, params?: { bucket?: string; settlementHour?: number }) {
+export async function fetchTimeseries(range: string, params?: { bucket?: string; settlementHour?: number; timeZone?: string }) {
   const search = new URLSearchParams()
   search.set('range', range)
+  search.set('timeZone', params?.timeZone ?? getBrowserTimeZone())
   if (params?.bucket) search.set('bucket', params.bucket)
   if (params?.settlementHour !== undefined) search.set('settlementHour', String(params.settlementHour))
   return fetchJson<TimeseriesResponse>(`/api/stats/timeseries?${search.toString()}`)
 }
 
-export async function fetchErrorDistribution(range: string, params?: { top?: number }) {
+export async function fetchErrorDistribution(range: string, params?: { top?: number; timeZone?: string }) {
   const search = new URLSearchParams()
   search.set('range', range)
+  search.set('timeZone', params?.timeZone ?? getBrowserTimeZone())
   if (params?.top != null) search.set('top', String(params.top))
   return fetchJson<ErrorDistributionResponse>(`/api/stats/errors?${search.toString()}`)
 }
