@@ -58,6 +58,34 @@ npm run dev -- --host 127.0.0.1 --port 60080
 
 开发服务器默认代理到 `http://127.0.0.1:8080`，也可用 `VITE_BACKEND_PROXY` 覆盖。
 
+### Codex（devctl + zellij）推荐启动方式
+
+在 Codex 环境中，长驻开发服务建议使用 `devctl`（Zellij 后台 session），以便服务在 turn 边界后仍持续运行，并提供统一的 `status/logs/down` 管理入口。
+
+一键方式（推荐）：
+
+```bash
+./scripts/start-backend.sh
+./scripts/start-frontend.sh
+./scripts/dev-status.sh
+
+# stop
+./scripts/stop-backend.sh
+./scripts/stop-frontend.sh
+```
+
+日志默认落在：
+
+- `.codex/logs/backend.log`
+- `.codex/logs/frontend.log`
+
+也可以使用 `devctl` 直接查看：
+
+```bash
+~/.codex/bin/devctl --root "$(pwd)" logs backend -n 200
+~/.codex/bin/devctl --root "$(pwd)" logs frontend -n 200
+```
+
 ## 配置
 
 在仓库根目录创建 `.env.local`（已忽略提交），常用变量如下（括号内为默认值）：

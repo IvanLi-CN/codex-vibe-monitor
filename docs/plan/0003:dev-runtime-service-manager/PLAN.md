@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 部分完成（2/3）
 - Created: 2026-02-20
 - Last: 2026-02-20
 
@@ -68,8 +68,8 @@
 
 ## 里程碑（Milestones）
 
-- [ ] M1: `scripts/` 启动/停止脚本迁移为 `devctl`（No fallback）
-- [ ] M2: 文档口径对齐（AGENTS.md + README.md + .gitignore）
+- [x] M1: `scripts/` 启动/停止脚本迁移为 `devctl`（No fallback）
+- [x] M2: 文档口径对齐（AGENTS.md + README.md + .gitignore）
 - [ ] M3: 最小验证与 PR 交付（PR + checks 结果明确）
 
 ## 风险与开放问题（Risks / Open questions）
