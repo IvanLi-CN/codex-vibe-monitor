@@ -57,4 +57,4 @@
 | 0001 | 接入 Claude Relay 统计源    | 待实现 | `0001:claude-relay-api-stats/PLAN.md`         | 2026-01-16 | -      |
 | 0002 | PR 标签驱动发版             | 已完成 | `0002:pr-label-release/PLAN.md`               | 2026-02-19 | PR #36 |
 | 0003 | 开发环境 devctl+zellij 保活 | 已完成 | `0003:dev-runtime-service-manager/PLAN.md`    | 2026-02-20 | PR #37 |
-| 0004 | 统计按浏览器时区自然日      | 待实现 | `0004:reporting-timezone-natural-day/PLAN.md` | 2026-02-20 | -      |
+| 0004 | 统计按浏览器时区自然日      | 已完成 | `0004:reporting-timezone-natural-day/PLAN.md` | 2026-02-20 | PR #38 |
