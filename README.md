@@ -92,6 +92,7 @@ npm run dev -- --host 127.0.0.1 --port 60080
 
 ```env
 XY_BASE_URL=https://new.xychatai.com
+OPENAI_UPSTREAM_BASE_URL=https://api.openai.com
 XY_VIBE_QUOTA_ENDPOINT=/frontend-api/vibe-code/quota
 XY_SESSION_COOKIE_NAME=share-session
 XY_SESSION_COOKIE_VALUE=<从浏览器开发者工具导出的 Cookie>
@@ -131,6 +132,7 @@ cargo run -- \
 - `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计。
 - `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）。
 - `GET /api/quota/latest`：最近一次配额快照。
+- `ANY /v1/*`：OpenAI 兼容反向代理（请求头/请求体/状态码/响应头/响应体透明透传，包含流式响应）。
 - `GET /events`：SSE 推送，事件类型：
   - `{ type: "version", version }`
   - `{ type: "records", records: [...] }`

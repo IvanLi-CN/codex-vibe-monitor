@@ -74,6 +74,6 @@
 
 ## 里程碑
 
-- [ ] M1 配置与路由接入（`OPENAI_UPSTREAM_BASE_URL` + `/v1/*`）
-- [ ] M2 代理请求/响应透传（含 header 过滤与流式响应）
-- [ ] M3 测试与文档更新（README + 自动化测试通过）
+- [x] M1 配置与路由接入（`OPENAI_UPSTREAM_BASE_URL` + `/v1/*`）
+- [x] M2 代理请求/响应透传（含 header 过滤与流式响应）
+- [x] M3 测试与文档更新（README + 自动化测试通过）
