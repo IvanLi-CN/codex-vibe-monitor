@@ -13,10 +13,11 @@ use anyhow::{Context, Result, anyhow};
 use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
-    extract::{Query, State},
-    http::StatusCode,
+    body::{Body, to_bytes},
+    extract::{OriginalUri, Query, State},
+    http::{HeaderMap, HeaderName, Method, StatusCode, Uri},
     response::{IntoResponse, Json, Response, Sse},
-    routing::get,
+    routing::{any, get},
 };
 use chrono::{
     DateTime, Datelike, Duration as ChronoDuration, LocalResult, NaiveDate, NaiveDateTime,
@@ -36,7 +37,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use tokio::{
     net::TcpListener,
     sync::{Semaphore, broadcast},
@@ -299,6 +300,7 @@ async fn spawn_http_server(
         .route("/api/stats/errors/others", get(fetch_other_errors))
         .route("/api/quota/latest", get(latest_quota_snapshot))
         .route("/events", get(sse_stream))
+        .route("/v1/*path", any(proxy_openai_v1))
         .with_state(state.clone())
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive());
@@ -2025,6 +2027,118 @@ async fn health_check() -> &'static str {
     "ok"
 }
 
+async fn proxy_openai_v1(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(original_uri): OriginalUri,
+    method: Method,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    match proxy_openai_v1_inner(state, original_uri, method, headers, body).await {
+        Ok(response) => response,
+        Err((status, message)) => {
+            warn!(status = %status, error = %message, "openai proxy request failed");
+            (status, Json(json!({ "error": message }))).into_response()
+        }
+    }
+}
+
+async fn proxy_openai_v1_inner(
+    state: Arc<AppState>,
+    original_uri: Uri,
+    method: Method,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, (StatusCode, String)> {
+    let target_url =
+        build_proxy_upstream_url(&state.config.openai_upstream_base_url, &original_uri).map_err(
+            |err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to build upstream url: {err}"),
+                )
+            },
+        )?;
+
+    let body_bytes = to_bytes(body, usize::MAX).await.map_err(|err| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("failed to read request body: {err}"),
+        )
+    })?;
+
+    let mut upstream_request = state
+        .http_clients
+        .shared
+        .request(method, target_url)
+        .body(body_bytes);
+
+    for (name, value) in &headers {
+        if should_proxy_header(name) {
+            upstream_request = upstream_request.header(name, value);
+        }
+    }
+
+    let upstream_response = upstream_request.send().await.map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed to contact upstream: {err}"),
+        )
+    })?;
+
+    let mut response_builder = Response::builder().status(upstream_response.status());
+    for (name, value) in upstream_response.headers() {
+        if should_proxy_header(name) {
+            response_builder = response_builder.header(name, value);
+        }
+    }
+
+    let body_stream = upstream_response.bytes_stream().map(|chunk| {
+        chunk.map_err(|err| io::Error::other(format!("upstream stream error: {err}")))
+    });
+
+    response_builder
+        .body(Body::from_stream(body_stream))
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to build proxy response: {err}"),
+            )
+        })
+}
+
+fn build_proxy_upstream_url(base: &Url, original_uri: &Uri) -> Result<Url> {
+    let mut normalized_base = base.clone();
+    if !normalized_base.path().ends_with('/') {
+        let mut path = normalized_base.path().to_string();
+        path.push('/');
+        normalized_base.set_path(&path);
+    }
+
+    let relative_path = original_uri.path().trim_start_matches('/');
+    let mut target = normalized_base
+        .join(relative_path)
+        .context("failed to join upstream path")?;
+    target.set_query(original_uri.query());
+    Ok(target)
+}
+
+fn should_proxy_header(name: &HeaderName) -> bool {
+    !matches!(
+        name.as_str(),
+        "host"
+            | "content-length"
+            | "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct VersionResponse {
@@ -2491,6 +2605,7 @@ impl HttpClients {
 #[serde(rename_all = "camelCase")]
 struct AppConfig {
     base_url: Url,
+    openai_upstream_base_url: Url,
     quota_endpoint: String,
     cookie_name: String,
     cookie_value: String,
@@ -2523,6 +2638,8 @@ impl AppConfig {
             .clone()
             .or_else(|| env::var("XY_BASE_URL").ok())
             .ok_or_else(|| anyhow!("XY_BASE_URL is not set"))?;
+        let openai_upstream_base_url = env::var("OPENAI_UPSTREAM_BASE_URL")
+            .map_err(|_| anyhow!("OPENAI_UPSTREAM_BASE_URL is not set"))?;
         let quota_endpoint = overrides
             .quota_endpoint
             .clone()
@@ -2656,6 +2773,8 @@ impl AppConfig {
 
         Ok(Self {
             base_url: Url::parse(&base_url_raw).context("invalid XY_BASE_URL")?,
+            openai_upstream_base_url: Url::parse(&openai_upstream_base_url)
+                .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
             quota_endpoint,
             cookie_name,
             cookie_value,
@@ -2691,12 +2810,21 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::Json;
-    use axum::extract::State;
+    use axum::{
+        Json, Router,
+        body::{Body, Bytes, to_bytes},
+        extract::State,
+        http::{HeaderValue, Method, StatusCode, Uri, header as http_header},
+        response::IntoResponse,
+        routing::any,
+    };
     use chrono::Timelike;
+    use serde_json::Value;
     use sqlx::SqlitePool;
     use std::{path::PathBuf, sync::Arc, time::Duration};
+    use tokio::net::TcpListener;
     use tokio::sync::{Semaphore, broadcast};
+    use tokio::task::JoinHandle;
 
     #[test]
     fn named_range_today_end_respects_dst() {
@@ -2761,6 +2889,7 @@ mod tests {
     fn test_config() -> AppConfig {
         AppConfig {
             base_url: Url::parse("https://example.com/").expect("valid url"),
+            openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
             quota_endpoint: "/quota".to_string(),
             cookie_name: "session".to_string(),
             cookie_value: "test".to_string(),
@@ -2776,6 +2905,201 @@ mod tests {
             snapshot_min_interval: Duration::from_secs(60),
             crs_stats: None,
         }
+    }
+
+    async fn test_state_with_openai_base(openai_base: Url) -> Arc<AppState> {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let mut config = test_config();
+        config.openai_upstream_base_url = openai_base;
+        let http_clients = HttpClients::build(&config).expect("http clients");
+        let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+        let (broadcaster, _rx) = broadcast::channel(16);
+
+        Arc::new(AppState {
+            config,
+            pool,
+            http_clients,
+            broadcaster,
+            semaphore,
+        })
+    }
+
+    async fn test_upstream_echo(
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: String,
+    ) -> impl IntoResponse {
+        let auth = headers
+            .get(http_header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let host_header = headers
+            .get(http_header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let connection_seen = headers.contains_key(http_header::CONNECTION);
+
+        (
+            StatusCode::CREATED,
+            [(
+                http_header::HeaderName::from_static("x-upstream"),
+                HeaderValue::from_static("ok"),
+            )],
+            Json(json!({
+                "method": method.as_str(),
+                "path": uri.path(),
+                "query": uri.query().unwrap_or_default(),
+                "authorization": auth,
+                "hostHeader": host_header,
+                "connectionSeen": connection_seen,
+                "body": body,
+            })),
+        )
+    }
+
+    async fn test_upstream_stream() -> impl IntoResponse {
+        let chunks = stream::iter(vec![
+            Ok::<_, Infallible>(Bytes::from_static(b"chunk-a")),
+            Ok::<_, Infallible>(Bytes::from_static(b"chunk-b")),
+        ]);
+        (
+            StatusCode::OK,
+            [(
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            )],
+            Body::from_stream(chunks),
+        )
+    }
+
+    async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
+        let app = Router::new()
+            .route("/v1/echo", any(test_upstream_echo))
+            .route("/v1/stream", any(test_upstream_stream));
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream test server");
+        let addr = listener.local_addr().expect("upstream local addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("upstream test server should run");
+        });
+
+        (format!("http://{addr}/"), handle)
+    }
+
+    #[test]
+    fn build_proxy_upstream_url_preserves_path_prefix_and_query() {
+        let base = Url::parse("https://proxy.example.com/gateway").expect("valid base");
+        let uri: Uri = "/v1/models?limit=10".parse().expect("valid uri");
+        let target = build_proxy_upstream_url(&base, &uri).expect("url should build");
+        assert_eq!(
+            target.as_str(),
+            "https://proxy.example.com/gateway/v1/models?limit=10"
+        );
+    }
+
+    #[test]
+    fn should_proxy_header_filters_hop_by_hop_headers() {
+        assert!(should_proxy_header(&http_header::AUTHORIZATION));
+        assert!(!should_proxy_header(&http_header::HOST));
+        assert!(!should_proxy_header(&http_header::CONNECTION));
+        assert!(!should_proxy_header(&http_header::TRANSFER_ENCODING));
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer test-token"),
+        );
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("client.example.com"),
+        );
+        headers.insert(
+            http_header::CONNECTION,
+            HeaderValue::from_static("keep-alive"),
+        );
+
+        let uri: Uri = "/v1/echo?foo=bar".parse().expect("valid uri");
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri(uri),
+            Method::POST,
+            headers,
+            Body::from("hello-proxy"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            response.headers().get("x-upstream"),
+            Some(&HeaderValue::from_static("ok"))
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+        assert_eq!(payload["method"], "POST");
+        assert_eq!(payload["path"], "/v1/echo");
+        assert_eq!(payload["query"], "foo=bar");
+        assert_eq!(payload["authorization"], "Bearer test-token");
+        assert_ne!(payload["hostHeader"], "client.example.com");
+        assert_eq!(payload["connectionSeen"], false);
+        assert_eq!(payload["body"], "hello-proxy");
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_preserves_streaming_response() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/stream".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(http_header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("text/event-stream"))
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read stream body");
+        assert_eq!(&body[..], b"chunk-achunk-b");
+
+        upstream_handle.abort();
     }
 
     #[tokio::test]
