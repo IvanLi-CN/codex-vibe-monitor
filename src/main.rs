@@ -3045,10 +3045,32 @@ mod tests {
         )
     }
 
+    async fn test_upstream_slow_stream() -> impl IntoResponse {
+        let chunks = stream::unfold(0usize, |state| async move {
+            match state {
+                0 => Some((Ok::<_, Infallible>(Bytes::from_static(b"chunk-a")), 1)),
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    Some((Ok::<_, Infallible>(Bytes::from_static(b"chunk-b")), 2))
+                }
+                _ => None,
+            }
+        });
+        (
+            StatusCode::OK,
+            [(
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            )],
+            Body::from_stream(chunks),
+        )
+    }
+
     async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
         let app = Router::new()
             .route("/v1/echo", any(test_upstream_echo))
-            .route("/v1/stream", any(test_upstream_stream));
+            .route("/v1/stream", any(test_upstream_stream))
+            .route("/v1/slow-stream", any(test_upstream_slow_stream));
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -3163,6 +3185,104 @@ mod tests {
             .expect("read stream body");
         assert_eq!(&body[..], b"chunk-achunk-b");
 
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_e2e_http_roundtrip() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let app = Router::new()
+            .route("/v1/*path", any(proxy_openai_v1))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind proxy test server");
+        let addr = listener.local_addr().expect("proxy test server addr");
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("proxy test server should run");
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://{addr}/v1/echo?foo=e2e"))
+            .header(http_header::AUTHORIZATION, "Bearer e2e-token")
+            .body("hello-e2e")
+            .send()
+            .await
+            .expect("send proxy request");
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let payload: Value = response
+            .json()
+            .await
+            .expect("decode proxied upstream payload");
+        assert_eq!(payload["method"], "POST");
+        assert_eq!(payload["path"], "/v1/echo");
+        assert_eq!(payload["query"], "foo=e2e");
+        assert_eq!(payload["authorization"], "Bearer e2e-token");
+        assert_eq!(payload["body"], "hello-e2e");
+
+        server_handle.abort();
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let mut config = test_config();
+        config.openai_upstream_base_url =
+            Url::parse(&upstream_base).expect("valid upstream base url");
+        config.request_timeout = Duration::from_millis(200);
+        let http_clients = HttpClients::build(&config).expect("http clients");
+        let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+        let (broadcaster, _rx) = broadcast::channel(16);
+        let state = Arc::new(AppState {
+            config,
+            pool,
+            http_clients,
+            broadcaster,
+            semaphore,
+        });
+
+        let app = Router::new()
+            .route("/v1/*path", any(proxy_openai_v1))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind proxy test server");
+        let addr = listener.local_addr().expect("proxy test server addr");
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("proxy test server should run");
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://{addr}/v1/slow-stream"))
+            .send()
+            .await
+            .expect("send proxy stream request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.bytes().await.expect("read proxied stream");
+        assert_eq!(&body[..], b"chunk-achunk-b");
+
+        server_handle.abort();
         upstream_handle.abort();
     }
 
