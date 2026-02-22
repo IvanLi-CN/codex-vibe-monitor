@@ -134,8 +134,55 @@ export interface VersionResponse {
   frontend: string
 }
 
+export interface ProxyModelSettings {
+  hijackEnabled: boolean
+  mergeUpstreamEnabled: boolean
+  defaultHijackEnabled: boolean
+  models: string[]
+  enabledModels: string[]
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
+function normalizeProxyModelSettings(raw: unknown): ProxyModelSettings {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const models = normalizeStringArray(payload.models)
+  const hasEnabledModelsField = Object.prototype.hasOwnProperty.call(payload, 'enabledModels')
+  const enabledModelsRaw = normalizeStringArray(payload.enabledModels)
+  const allowSet = new Set(models)
+  const enabledModels = (hasEnabledModelsField ? enabledModelsRaw : models).filter((modelId) => allowSet.has(modelId))
+
+  return {
+    hijackEnabled: Boolean(payload.hijackEnabled),
+    mergeUpstreamEnabled: Boolean(payload.mergeUpstreamEnabled),
+    defaultHijackEnabled: Boolean(payload.defaultHijackEnabled),
+    models,
+    enabledModels,
+  }
+}
+
 export async function fetchVersion(): Promise<VersionResponse> {
   return fetchJson<VersionResponse>('/api/version')
+}
+
+export async function fetchProxyModelSettings(): Promise<ProxyModelSettings> {
+  const response = await fetchJson<unknown>('/api/settings/proxy-models')
+  return normalizeProxyModelSettings(response)
+}
+
+export async function updateProxyModelSettings(payload: {
+  hijackEnabled: boolean
+  mergeUpstreamEnabled: boolean
+  enabledModels: string[]
+}): Promise<ProxyModelSettings> {
+  const response = await fetchJson<unknown>('/api/settings/proxy-models', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+  return normalizeProxyModelSettings(response)
 }
 
 export async function fetchSummary(window: string, options?: { limit?: number; timeZone?: string }) {

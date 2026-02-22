@@ -3,7 +3,7 @@ use std::{
     convert::Infallible,
     env,
     error::Error as StdError,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
@@ -19,7 +19,7 @@ use axum::{
     Router,
     body::Body,
     extract::{OriginalUri, Query, State},
-    http::{HeaderMap, HeaderName, Method, StatusCode, Uri},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
     response::{IntoResponse, Json, Response, Sse},
     routing::{any, get},
 };
@@ -35,7 +35,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Url, header};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::{
     FromRow, Pool, QueryBuilder, Row, Sqlite,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -44,7 +44,7 @@ use std::fs;
 use std::io::{self, Read};
 use tokio::{
     net::TcpListener,
-    sync::{Semaphore, broadcast},
+    sync::{Mutex, RwLock, Semaphore, broadcast},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, timeout},
 };
@@ -66,6 +66,19 @@ const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
 const PROXY_INVALID_REQUEST_TARGET: &str = "proxy request target is malformed";
 const PROXY_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream handshake timed out";
+const PROXY_MODEL_MERGE_STATUS_HEADER: &str = "x-proxy-model-merge-upstream";
+const PROXY_MODEL_MERGE_STATUS_SUCCESS: &str = "success";
+const PROXY_MODEL_MERGE_STATUS_FAILED: &str = "failed";
+const PROXY_MODEL_SETTINGS_SINGLETON_ID: i64 = 1;
+const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
+const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
+const PROXY_PRESET_MODEL_IDS: &[&str] = &[
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+];
 static NEXT_PROXY_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Parser, Debug, Default)]
@@ -142,6 +155,7 @@ async fn main() -> Result<()> {
         .context("failed to open sqlite database")?;
 
     ensure_schema(&pool).await?;
+    let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
 
     let http_clients = HttpClients::build(&config)?;
     let (tx, _rx) = broadcast::channel(128);
@@ -153,6 +167,8 @@ async fn main() -> Result<()> {
         http_clients,
         broadcaster: tx.clone(),
         semaphore: semaphore.clone(),
+        proxy_model_settings,
+        proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
     });
 
     // Shared cancellation token for graceful shutdown
@@ -304,6 +320,10 @@ async fn spawn_http_server(
     let mut router = Router::new()
         .route("/health", get(health_check))
         .route("/api/version", get(get_versions))
+        .route(
+            "/api/settings/proxy-models",
+            get(get_proxy_model_settings).put(put_proxy_model_settings),
+        )
         .route("/api/invocations", get(list_invocations))
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
@@ -1052,6 +1072,103 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_stats_source_deltas_epoch")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS proxy_model_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            hijack_enabled INTEGER NOT NULL DEFAULT 0,
+            merge_upstream_enabled INTEGER NOT NULL DEFAULT 0,
+            enabled_preset_models_json TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure proxy_model_settings table existence")?;
+
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE proxy_model_settings
+        ADD COLUMN enabled_preset_models_json TEXT
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context("failed to ensure enabled_preset_models_json column");
+    }
+
+    let default_enabled_models_json = serde_json::to_string(&default_enabled_preset_models())
+        .context("failed to serialize default enabled preset models")?;
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO proxy_model_settings (
+            id,
+            hijack_enabled,
+            merge_upstream_enabled,
+            enabled_preset_models_json
+        )
+        VALUES (?1, ?2, ?3, ?4)
+        "#,
+    )
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .bind(DEFAULT_PROXY_MODELS_HIJACK_ENABLED as i64)
+    .bind(DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED as i64)
+    .bind(default_enabled_models_json)
+    .execute(pool)
+    .await
+    .context("failed to ensure default proxy_model_settings row")?;
+
+    Ok(())
+}
+
+async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSettings> {
+    let row = sqlx::query_as::<_, ProxyModelSettingsRow>(
+        r#"
+        SELECT hijack_enabled, merge_upstream_enabled, enabled_preset_models_json
+        FROM proxy_model_settings
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .fetch_optional(pool)
+    .await
+    .context("failed to load proxy_model_settings row")?;
+
+    Ok(row
+        .map(Into::into)
+        .unwrap_or_else(ProxyModelSettings::default))
+}
+
+async fn save_proxy_model_settings(
+    pool: &Pool<Sqlite>,
+    settings: ProxyModelSettings,
+) -> Result<()> {
+    let settings = settings.normalized();
+    let enabled_models_json = serde_json::to_string(&settings.enabled_preset_models)
+        .context("failed to serialize enabled preset models")?;
+    sqlx::query(
+        r#"
+        UPDATE proxy_model_settings
+        SET hijack_enabled = ?1,
+            merge_upstream_enabled = ?2,
+            enabled_preset_models_json = ?3,
+            updated_at = datetime('now')
+        WHERE id = ?4
+        "#,
+    )
+    .bind(settings.hijack_enabled as i64)
+    .bind(settings.merge_upstream_enabled as i64)
+    .bind(enabled_models_json)
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .execute(pool)
+    .await
+    .context("failed to persist proxy_model_settings row")?;
 
     Ok(())
 }
@@ -2119,6 +2236,54 @@ async fn proxy_openai_v1_inner(
             },
         )?;
 
+    if method == Method::GET && is_models_list_path(original_uri.path()) {
+        let settings = state.proxy_model_settings.read().await.clone();
+        if settings.hijack_enabled {
+            let mut payload = build_preset_models_payload(&settings.enabled_preset_models);
+            let mut merge_status: Option<&'static str> = None;
+            if settings.merge_upstream_enabled {
+                match fetch_upstream_models_payload(&state, target_url.clone(), &headers).await {
+                    Ok(upstream_payload) => {
+                        match merge_models_payload_with_upstream(
+                            &upstream_payload,
+                            &settings.enabled_preset_models,
+                        ) {
+                            Ok(merged_payload) => {
+                                payload = merged_payload;
+                                merge_status = Some(PROXY_MODEL_MERGE_STATUS_SUCCESS);
+                            }
+                            Err(err) => {
+                                warn!(
+                                    proxy_request_id,
+                                    error = %err,
+                                    "failed to merge upstream model list; falling back to preset models"
+                                );
+                                merge_status = Some(PROXY_MODEL_MERGE_STATUS_FAILED);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            proxy_request_id,
+                            error = %err,
+                            "failed to fetch upstream model list for merge; falling back to preset models"
+                        );
+                        merge_status = Some(PROXY_MODEL_MERGE_STATUS_FAILED);
+                    }
+                }
+            }
+
+            let mut response = Json(payload).into_response();
+            if let Some(status) = merge_status {
+                response.headers_mut().insert(
+                    HeaderName::from_static(PROXY_MODEL_MERGE_STATUS_HEADER),
+                    HeaderValue::from_static(status),
+                );
+            }
+            return Ok(response);
+        }
+    }
+
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     if let Some(content_length) = headers
         .get(header::CONTENT_LENGTH)
@@ -2552,11 +2717,249 @@ struct VersionResponse {
     frontend: String,
 }
 
+async fn get_proxy_model_settings(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ProxyModelSettingsResponse>, ApiError> {
+    let current = state.proxy_model_settings.read().await.clone();
+    Ok(Json(current.into()))
+}
+
+async fn put_proxy_model_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ProxyModelSettingsUpdateRequest>,
+) -> Result<Json<ProxyModelSettingsResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin settings writes are forbidden".to_string(),
+        ));
+    }
+
+    let next = ProxyModelSettings {
+        hijack_enabled: payload.hijack_enabled,
+        merge_upstream_enabled: payload.merge_upstream_enabled,
+        enabled_preset_models: payload.enabled_models,
+    }
+    .normalized();
+    let _update_guard = state.proxy_model_settings_update_lock.lock().await;
+    save_proxy_model_settings(&state.pool, next.clone())
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let mut guard = state.proxy_model_settings.write().await;
+    *guard = next.clone();
+    Ok(Json(next.into()))
+}
+
 async fn get_versions(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<VersionResponse>, ApiError> {
     let (backend, frontend) = detect_versions(state.config.static_dir.as_deref());
     Ok(Json(VersionResponse { backend, frontend }))
+}
+
+fn is_models_list_path(path: &str) -> bool {
+    path == "/v1/models"
+}
+
+fn is_same_origin_settings_write(headers: &HeaderMap) -> bool {
+    if matches!(
+        header_value_as_str(headers, "sec-fetch-site"),
+        Some(site)
+            if site.eq_ignore_ascii_case("cross-site")
+    ) {
+        return false;
+    }
+
+    let Some(origin_raw) = headers.get(header::ORIGIN) else {
+        // Non-browser clients may omit Origin; allow those requests.
+        return true;
+    };
+    let Ok(origin) = origin_raw.to_str() else {
+        return false;
+    };
+    let Ok(origin_url) = Url::parse(origin) else {
+        return false;
+    };
+    if !matches!(origin_url.scheme(), "http" | "https") {
+        return false;
+    }
+
+    let Some(origin_host) = origin_url.host_str() else {
+        return false;
+    };
+
+    let Some((request_host, request_port)) =
+        forwarded_or_host_authority(headers, origin_url.scheme())
+    else {
+        return false;
+    };
+
+    let origin_port = origin_url.port_or_known_default();
+    if origin_host.eq_ignore_ascii_case(&request_host) && origin_port == request_port {
+        return true;
+    }
+
+    // Dev proxies (for example Vite on 60080 -> backend on 8080) may rewrite Host and/or port,
+    // but both ends remain loopback. Allow that local-only mismatch.
+    is_loopback_authority_host(origin_host) && is_loopback_authority_host(&request_host)
+}
+
+fn forwarded_or_host_authority(
+    headers: &HeaderMap,
+    origin_scheme: &str,
+) -> Option<(String, Option<u16>)> {
+    if let Some(forwarded_host_raw) = header_value_as_str(headers, "x-forwarded-host")
+        && let Some(forwarded_host_first) = forwarded_host_raw
+            .split(',')
+            .next()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        && let Ok(authority) = Authority::from_str(forwarded_host_first)
+    {
+        let forwarded_proto = header_value_as_str(headers, "x-forwarded-proto").and_then(|raw| {
+            raw.split(',')
+                .next()
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+                .filter(|v| v == "http" || v == "https")
+        });
+        let scheme = forwarded_proto.as_deref().unwrap_or(origin_scheme);
+        let port = authority
+            .port_u16()
+            .or_else(|| default_port_for_scheme(scheme));
+        return Some((authority.host().to_string(), port));
+    }
+
+    let host_raw = headers.get(header::HOST)?;
+    let host_value = host_raw.to_str().ok()?;
+    let authority = Authority::from_str(host_value).ok()?;
+    Some((
+        authority.host().to_string(),
+        authority
+            .port_u16()
+            .or_else(|| default_port_for_scheme(origin_scheme)),
+    ))
+}
+
+fn default_port_for_scheme(scheme: &str) -> Option<u16> {
+    match scheme {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    }
+}
+
+fn header_value_as_str<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
+    headers
+        .get(HeaderName::from_static(name))
+        .and_then(|value| value.to_str().ok())
+}
+
+fn is_loopback_authority_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+fn build_preset_models_payload(enabled_model_ids: &[String]) -> Value {
+    let data = enabled_model_ids
+        .iter()
+        .map(|id| {
+            json!({
+                "id": id,
+                "object": "model",
+                "owned_by": "proxy",
+                "created": 0
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "object": "list",
+        "data": data
+    })
+}
+
+fn merge_models_payload_with_upstream(
+    upstream_payload: &Value,
+    enabled_model_ids: &[String],
+) -> Result<Value> {
+    let upstream_items = upstream_payload
+        .get("data")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("upstream models payload missing data array"))?;
+    let mut merged = build_preset_models_payload(enabled_model_ids)
+        .get("data")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut seen_ids: HashSet<String> = enabled_model_ids.iter().cloned().collect();
+
+    for item in upstream_items {
+        if let Some(id) = item.get("id").and_then(|v| v.as_str())
+            && seen_ids.insert(id.to_string())
+        {
+            merged.push(item.clone());
+        }
+    }
+
+    Ok(json!({
+        "object": "list",
+        "data": merged
+    }))
+}
+
+async fn fetch_upstream_models_payload(
+    state: &AppState,
+    target_url: Url,
+    headers: &HeaderMap,
+) -> Result<Value> {
+    let mut upstream_request = state.http_clients.proxy.request(Method::GET, target_url);
+    let request_connection_scoped = connection_scoped_header_names(headers);
+    for (name, value) in headers {
+        if should_forward_proxy_header(name, &request_connection_scoped) {
+            upstream_request = upstream_request.header(name, value);
+        }
+    }
+
+    let handshake_timeout = state.config.openai_proxy_handshake_timeout;
+    let upstream_response = timeout(handshake_timeout, upstream_request.send())
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
+                handshake_timeout.as_millis()
+            )
+        })?
+        .context("failed to contact upstream")?;
+
+    if !upstream_response.status().is_success() {
+        bail!(
+            "upstream /v1/models returned status {}",
+            upstream_response.status()
+        );
+    }
+
+    let payload = timeout(
+        handshake_timeout,
+        upstream_response.json::<Value>(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms while decoding upstream /v1/models response",
+            handshake_timeout.as_millis()
+        )
+    })?
+    .context("failed to decode upstream /v1/models response as JSON")?;
+
+    payload
+        .get("data")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| anyhow!("upstream /v1/models payload missing data array"))?;
+
+    Ok(payload)
 }
 
 fn detect_versions(static_dir: Option<&Path>) -> (String, String) {
@@ -2635,6 +3038,8 @@ struct AppState {
     http_clients: HttpClients,
     broadcaster: broadcast::Sender<BroadcastPayload>,
     semaphore: Arc<Semaphore>,
+    proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
+    proxy_model_settings_update_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2899,6 +3304,118 @@ struct ListQuery {
     limit: Option<i64>,
     model: Option<String>,
     status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProxyModelSettings {
+    hijack_enabled: bool,
+    merge_upstream_enabled: bool,
+    enabled_preset_models: Vec<String>,
+}
+
+impl Default for ProxyModelSettings {
+    fn default() -> Self {
+        Self {
+            hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
+            merge_upstream_enabled: DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED,
+            enabled_preset_models: default_enabled_preset_models(),
+        }
+    }
+}
+
+impl ProxyModelSettings {
+    fn normalized(self) -> Self {
+        let merge_upstream_enabled = if self.hijack_enabled {
+            self.merge_upstream_enabled
+        } else {
+            false
+        };
+        Self {
+            hijack_enabled: self.hijack_enabled,
+            merge_upstream_enabled,
+            enabled_preset_models: normalize_enabled_preset_models(self.enabled_preset_models),
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct ProxyModelSettingsRow {
+    hijack_enabled: i64,
+    merge_upstream_enabled: i64,
+    enabled_preset_models_json: Option<String>,
+}
+
+impl From<ProxyModelSettingsRow> for ProxyModelSettings {
+    fn from(value: ProxyModelSettingsRow) -> Self {
+        Self {
+            hijack_enabled: value.hijack_enabled != 0,
+            merge_upstream_enabled: value.merge_upstream_enabled != 0,
+            enabled_preset_models: decode_enabled_preset_models(
+                value.enabled_preset_models_json.as_deref(),
+            ),
+        }
+        .normalized()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProxyModelSettingsUpdateRequest {
+    hijack_enabled: bool,
+    merge_upstream_enabled: bool,
+    #[serde(default = "default_enabled_preset_models")]
+    enabled_models: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProxyModelSettingsResponse {
+    hijack_enabled: bool,
+    merge_upstream_enabled: bool,
+    default_hijack_enabled: bool,
+    models: Vec<String>,
+    enabled_models: Vec<String>,
+}
+
+impl From<ProxyModelSettings> for ProxyModelSettingsResponse {
+    fn from(value: ProxyModelSettings) -> Self {
+        Self {
+            hijack_enabled: value.hijack_enabled,
+            merge_upstream_enabled: value.merge_upstream_enabled,
+            default_hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
+            models: PROXY_PRESET_MODEL_IDS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
+            enabled_models: value.enabled_preset_models,
+        }
+    }
+}
+
+fn default_enabled_preset_models() -> Vec<String> {
+    PROXY_PRESET_MODEL_IDS
+        .iter()
+        .map(|model| (*model).to_string())
+        .collect()
+}
+
+fn normalize_enabled_preset_models(enabled_models: Vec<String>) -> Vec<String> {
+    let enabled_set: HashSet<&str> = enabled_models.iter().map(String::as_str).collect();
+    PROXY_PRESET_MODEL_IDS
+        .iter()
+        .filter(|model| enabled_set.contains(**model))
+        .map(|model| (*model).to_string())
+        .collect()
+}
+
+fn decode_enabled_preset_models(raw: Option<&str>) -> Vec<String> {
+    match raw {
+        Some(serialized) => serde_json::from_str::<Vec<String>>(serialized)
+            .map(normalize_enabled_preset_models)
+            .unwrap_or_else(|_| default_enabled_preset_models()),
+        None => default_enabled_preset_models(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -3251,7 +3768,7 @@ mod tests {
         extract::State,
         http::{HeaderValue, Method, StatusCode, Uri, header as http_header},
         response::IntoResponse,
-        routing::any,
+        routing::{any, get},
     };
     use chrono::Timelike;
     use serde_json::Value;
@@ -3378,6 +3895,8 @@ mod tests {
             http_clients,
             broadcaster,
             semaphore,
+            proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
+            proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -3492,12 +4011,85 @@ mod tests {
         )
     }
 
+    async fn test_upstream_models(uri: Uri) -> impl IntoResponse {
+        if uri
+            .query()
+            .is_some_and(|query| query.contains("mode=error"))
+        {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": "upstream model list unavailable"
+                })),
+            )
+                .into_response();
+        }
+
+        if uri
+            .query()
+            .is_some_and(|query| query.contains("mode=slow-body"))
+        {
+            let chunked = stream::unfold(0u8, |state| async move {
+                match state {
+                    0 => Some((
+                        Ok::<Bytes, Infallible>(Bytes::from_static(
+                            br#"{"object":"list","data":["#,
+                        )),
+                        1,
+                    )),
+                    1 => {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        Some((
+                            Ok::<Bytes, Infallible>(Bytes::from_static(
+                                br#"{"id":"slow-model","object":"model"}]}"#,
+                            )),
+                            2,
+                        ))
+                    }
+                    _ => None,
+                }
+            });
+            return (
+                StatusCode::OK,
+                [(
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                )],
+                Body::from_stream(chunked),
+            )
+                .into_response();
+        }
+
+        (
+            StatusCode::OK,
+            Json(json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "upstream-model-a",
+                        "object": "model",
+                        "owned_by": "upstream",
+                        "created": 1712345678
+                    },
+                    {
+                        "id": "gpt-5.2-codex",
+                        "object": "model",
+                        "owned_by": "upstream",
+                        "created": 1712345679
+                    }
+                ]
+            })),
+        )
+            .into_response()
+    }
+
     async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
         let app = Router::new()
             .route("/v1/echo", any(test_upstream_echo))
             .route("/v1/stream", any(test_upstream_stream))
             .route("/v1/slow-stream", any(test_upstream_slow_stream))
             .route("/v1/hang", any(test_upstream_hang))
+            .route("/v1/models", get(test_upstream_models))
             .route("/v1/redirect", any(test_upstream_redirect))
             .route(
                 "/v1/redirect-external",
@@ -3515,6 +4107,17 @@ mod tests {
         });
 
         (format!("http://{addr}/"), handle)
+    }
+
+    fn extract_model_ids(payload: &Value) -> Vec<String> {
+        payload
+            .get("data")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("id").and_then(|v| v.as_str()))
+            .map(str::to_string)
+            .collect()
     }
 
     #[test]
@@ -3607,6 +4210,124 @@ mod tests {
         assert!(!request_may_have_body(&Method::GET, &with_length));
         with_length.insert(http_header::CONTENT_LENGTH, HeaderValue::from_static("10"));
         assert!(request_may_have_body(&Method::GET, &with_length));
+    }
+
+    #[test]
+    fn same_origin_settings_write_allows_missing_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        assert!(is_same_origin_settings_write(&headers));
+    }
+
+    #[test]
+    fn same_origin_settings_write_allows_matching_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("http://127.0.0.1:8080"),
+        );
+        assert!(is_same_origin_settings_write(&headers));
+    }
+
+    #[test]
+    fn same_origin_settings_write_allows_matching_origin_without_explicit_host_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("proxy.example.com"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://proxy.example.com"),
+        );
+        assert!(is_same_origin_settings_write(&headers));
+    }
+
+    #[test]
+    fn same_origin_settings_write_rejects_mismatched_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://evil.example.com"),
+        );
+        assert!(!is_same_origin_settings_write(&headers));
+    }
+
+    #[test]
+    fn same_origin_settings_write_allows_loopback_proxy_port_mismatch() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("http://127.0.0.1:60080"),
+        );
+        assert!(is_same_origin_settings_write(&headers));
+    }
+
+    #[test]
+    fn same_origin_settings_write_allows_forwarded_host_match() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://proxy.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("proxy.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-fetch-site"),
+            HeaderValue::from_static("same-origin"),
+        );
+        assert!(is_same_origin_settings_write(&headers));
+    }
+
+    #[test]
+    fn same_origin_settings_write_rejects_cross_site_even_with_forwarded_spoof() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://evil.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("evil.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-fetch-site"),
+            HeaderValue::from_static("cross-site"),
+        );
+        assert!(!is_same_origin_settings_write(&headers));
     }
 
     #[test]
@@ -3723,6 +4444,487 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_model_settings_api_reads_and_persists_updates() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let Json(initial) = get_proxy_model_settings(State(state.clone()))
+            .await
+            .expect("get settings should succeed");
+        assert!(!initial.hijack_enabled);
+        assert!(!initial.merge_upstream_enabled);
+        assert_eq!(initial.models.len(), PROXY_PRESET_MODEL_IDS.len());
+        assert_eq!(
+            initial.enabled_models,
+            PROXY_PRESET_MODEL_IDS
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+        );
+
+        let Json(updated) = put_proxy_model_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ProxyModelSettingsUpdateRequest {
+                hijack_enabled: true,
+                merge_upstream_enabled: true,
+                enabled_models: vec!["gpt-5.2-codex".to_string(), "unknown-model".to_string()],
+            }),
+        )
+        .await
+        .expect("put settings should succeed");
+        assert!(updated.hijack_enabled);
+        assert!(updated.merge_upstream_enabled);
+        assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
+
+        let persisted = load_proxy_model_settings(&state.pool)
+            .await
+            .expect("settings should persist");
+        assert!(persisted.hijack_enabled);
+        assert!(persisted.merge_upstream_enabled);
+        assert_eq!(
+            persisted.enabled_preset_models,
+            vec!["gpt-5.2-codex".to_string()]
+        );
+
+        let Json(normalized) = put_proxy_model_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ProxyModelSettingsUpdateRequest {
+                hijack_enabled: false,
+                merge_upstream_enabled: true,
+                enabled_models: Vec::new(),
+            }),
+        )
+        .await
+        .expect("put settings should normalize payload");
+        assert!(!normalized.hijack_enabled);
+        assert!(!normalized.merge_upstream_enabled);
+        assert!(normalized.enabled_models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn proxy_model_settings_api_rejects_cross_origin_writes() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://evil.example.com"),
+        );
+
+        let err = put_proxy_model_settings(
+            State(state),
+            headers,
+            Json(ProxyModelSettingsUpdateRequest {
+                hijack_enabled: true,
+                merge_upstream_enabled: true,
+                enabled_models: vec!["gpt-5.2-codex".to_string()],
+            }),
+        )
+        .await
+        .expect_err("cross-origin write should be rejected");
+
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn proxy_model_settings_api_rejects_cross_site_forwarded_spoof() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://evil.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("evil.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-fetch-site"),
+            HeaderValue::from_static("cross-site"),
+        );
+
+        let err = put_proxy_model_settings(
+            State(state),
+            headers,
+            Json(ProxyModelSettingsUpdateRequest {
+                hijack_enabled: true,
+                merge_upstream_enabled: false,
+                enabled_models: vec!["gpt-5.2-codex".to_string()],
+            }),
+        )
+        .await
+        .expect_err("cross-site spoof should be rejected");
+
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn proxy_model_settings_api_allows_loopback_proxy_origin_mismatch() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("http://127.0.0.1:60080"),
+        );
+
+        let Json(updated) = put_proxy_model_settings(
+            State(state),
+            headers,
+            Json(ProxyModelSettingsUpdateRequest {
+                hijack_enabled: true,
+                merge_upstream_enabled: false,
+                enabled_models: vec!["gpt-5.2-codex".to_string()],
+            }),
+        )
+        .await
+        .expect("loopback proxied write should be allowed");
+
+        assert!(updated.hijack_enabled);
+        assert!(!updated.merge_upstream_enabled);
+        assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn proxy_model_settings_api_allows_forwarded_host_origin_match() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://proxy.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("proxy.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-fetch-site"),
+            HeaderValue::from_static("same-origin"),
+        );
+
+        let Json(updated) = put_proxy_model_settings(
+            State(state),
+            headers,
+            Json(ProxyModelSettingsUpdateRequest {
+                hijack_enabled: true,
+                merge_upstream_enabled: false,
+                enabled_models: vec!["gpt-5.2-codex".to_string()],
+            }),
+        )
+        .await
+        .expect("forwarded host write should be allowed");
+
+        assert!(updated.hijack_enabled);
+        assert!(!updated.merge_upstream_enabled);
+        assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn proxy_model_settings_api_allows_matching_origin_without_explicit_host_port() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("proxy.example.com"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://proxy.example.com"),
+        );
+
+        let Json(updated) = put_proxy_model_settings(
+            State(state),
+            headers,
+            Json(ProxyModelSettingsUpdateRequest {
+                hijack_enabled: true,
+                merge_upstream_enabled: false,
+                enabled_models: vec!["gpt-5.2-codex".to_string()],
+            }),
+        )
+        .await
+        .expect("same-origin write without explicit host port should be allowed");
+
+        assert!(updated.hijack_enabled);
+        assert!(!updated.merge_upstream_enabled);
+        assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+        let ids = extract_model_ids(&payload);
+        assert_eq!(
+            ids,
+            vec!["upstream-model-a".to_string(), "gpt-5.2-codex".to_string()]
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        {
+            let mut settings = state.proxy_model_settings.write().await;
+            *settings = ProxyModelSettings {
+                hijack_enabled: true,
+                merge_upstream_enabled: false,
+                enabled_preset_models: vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()],
+            };
+        }
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .get(PROXY_MODEL_MERGE_STATUS_HEADER)
+                .is_none()
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode hijacked payload");
+        let ids = extract_model_ids(&payload);
+        assert_eq!(
+            ids,
+            vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()]
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        {
+            let mut settings = state.proxy_model_settings.write().await;
+            *settings = ProxyModelSettings {
+                hijack_enabled: true,
+                merge_upstream_enabled: true,
+                enabled_preset_models: vec![
+                    "gpt-5.2-codex".to_string(),
+                    "gpt-5.1-codex-mini".to_string(),
+                ],
+            };
+        }
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(PROXY_MODEL_MERGE_STATUS_HEADER),
+            Some(&HeaderValue::from_static(PROXY_MODEL_MERGE_STATUS_SUCCESS))
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode merged payload");
+        let ids = extract_model_ids(&payload);
+
+        assert!(ids.contains(&"upstream-model-a".to_string()));
+        assert!(ids.contains(&"gpt-5.2-codex".to_string()));
+        assert!(ids.contains(&"gpt-5.1-codex-mini".to_string()));
+        assert!(!ids.contains(&"gpt-5.3-codex".to_string()));
+        assert_eq!(
+            ids.iter()
+                .filter(|id| id.as_str() == "gpt-5.2-codex")
+                .count(),
+            1
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        {
+            let mut settings = state.proxy_model_settings.write().await;
+            *settings = ProxyModelSettings {
+                hijack_enabled: true,
+                merge_upstream_enabled: true,
+                enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+            };
+        }
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models?mode=error".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(PROXY_MODEL_MERGE_STATUS_HEADER),
+            Some(&HeaderValue::from_static(PROXY_MODEL_MERGE_STATUS_FAILED))
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode fallback payload");
+        let ids = extract_model_ids(&payload);
+        assert_eq!(ids, vec!["gpt-5.1-codex-mini".to_string()]);
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let mut config = test_config();
+        config.openai_upstream_base_url =
+            Url::parse(&upstream_base).expect("valid upstream base url");
+        config.openai_proxy_handshake_timeout = Duration::from_millis(100);
+        let http_clients = HttpClients::build(&config).expect("http clients");
+        let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+        let (broadcaster, _rx) = broadcast::channel(16);
+        let state = Arc::new(AppState {
+            config,
+            pool,
+            http_clients,
+            broadcaster,
+            semaphore,
+            proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
+                hijack_enabled: true,
+                merge_upstream_enabled: true,
+                enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+            })),
+            proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+        });
+
+        let started = Instant::now();
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models?mode=slow-body".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "merge fallback should return quickly when decode times out"
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(PROXY_MODEL_MERGE_STATUS_HEADER),
+            Some(&HeaderValue::from_static(PROXY_MODEL_MERGE_STATUS_FAILED))
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read fallback response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode fallback payload");
+        let ids = extract_model_ids(&payload);
+        assert_eq!(ids, vec!["gpt-5.1-codex-mini".to_string()]);
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
     async fn proxy_openai_v1_preserves_streaming_response() {
         let (upstream_base, upstream_handle) = spawn_test_upstream().await;
         let state = test_state_with_openai_base(
@@ -3834,6 +5036,8 @@ mod tests {
             http_clients,
             broadcaster,
             semaphore,
+            proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
+            proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         });
 
         let slow_chunks = stream::unfold(0u8, |state| async move {
@@ -3942,6 +5146,8 @@ mod tests {
             http_clients,
             broadcaster,
             semaphore,
+            proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
+            proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         });
 
         let app = Router::new()
@@ -4092,6 +5298,8 @@ mod tests {
             http_clients,
             broadcaster,
             semaphore,
+            proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
+            proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         });
 
         let response = proxy_openai_v1(
@@ -4141,6 +5349,8 @@ mod tests {
             http_clients,
             broadcaster,
             semaphore,
+            proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
+            proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         });
 
         let response = proxy_openai_v1(
@@ -4186,6 +5396,8 @@ mod tests {
             http_clients,
             broadcaster,
             semaphore,
+            proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
+            proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         });
 
         let Json(snapshot) = latest_quota_snapshot(State(state))
