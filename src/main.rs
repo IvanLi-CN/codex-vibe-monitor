@@ -2828,28 +2828,30 @@ fn forwarded_or_host_authority(
     headers: &HeaderMap,
     origin_scheme: &str,
 ) -> Option<(String, Option<u16>)> {
-    if let Some(forwarded_host_raw) = header_value_as_str(headers, "x-forwarded-host")
-        && let Some(forwarded_host_first) = forwarded_host_raw
-            .split(',')
-            .next()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        && let Ok(authority) = Authority::from_str(forwarded_host_first)
-    {
-        let forwarded_proto = header_value_as_str(headers, "x-forwarded-proto").and_then(|raw| {
-            raw.split(',')
-                .next()
-                .map(str::trim)
-                .map(str::to_ascii_lowercase)
-                .filter(|v| v == "http" || v == "https")
-        });
+    if let Some(forwarded_host_raw) = header_value_as_str(headers, "x-forwarded-host") {
+        // This service expects a single trusted edge gateway. If forwarded headers
+        // arrive as a chain, treat it as unsupported/misconfigured and reject writes.
+        let forwarded_host = single_forwarded_header_value(forwarded_host_raw)?;
+        let authority = Authority::from_str(forwarded_host).ok()?;
+        let forwarded_proto = match header_value_as_str(headers, "x-forwarded-proto") {
+            Some(raw) => {
+                let proto = single_forwarded_header_value(raw)?.to_ascii_lowercase();
+                if proto == "http" || proto == "https" {
+                    Some(proto)
+                } else {
+                    return None;
+                }
+            }
+            None => None,
+        };
         let scheme = forwarded_proto.as_deref().unwrap_or(origin_scheme);
-        let forwarded_port = header_value_as_str(headers, "x-forwarded-port").and_then(|raw| {
-            raw.split(',')
-                .next()
-                .map(str::trim)
-                .and_then(|value| value.parse::<u16>().ok())
-        });
+        let forwarded_port = match header_value_as_str(headers, "x-forwarded-port") {
+            Some(raw) => {
+                let value = single_forwarded_header_value(raw)?;
+                Some(value.parse::<u16>().ok()?)
+            }
+            None => None,
+        };
         let port = authority
             .port_u16()
             .or(forwarded_port)
@@ -2866,6 +2868,18 @@ fn forwarded_or_host_authority(
             .port_u16()
             .or_else(|| default_port_for_scheme(origin_scheme)),
     ))
+}
+
+fn single_forwarded_header_value(raw: &str) -> Option<&str> {
+    let mut parts = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let first = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(first)
 }
 
 fn default_port_for_scheme(scheme: &str) -> Option<u16> {
@@ -4403,6 +4417,28 @@ mod tests {
             HeaderValue::from_static("same-origin"),
         );
         assert!(is_same_origin_settings_write(&headers));
+    }
+
+    #[test]
+    fn same_origin_settings_write_rejects_multi_hop_forwarded_host_chain() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://evil.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("evil.example.com, proxy.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        assert!(!is_same_origin_settings_write(&headers));
     }
 
     #[test]
