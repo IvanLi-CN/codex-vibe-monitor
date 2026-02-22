@@ -2771,6 +2771,12 @@ fn is_models_list_path(path: &str) -> bool {
     path == "/v1/models"
 }
 
+// Browser-side CSRF mitigation for settings writes.
+//
+// This is intentionally not a full authentication mechanism: non-browser clients
+// (CLI/automation) may omit Origin and are allowed by policy. The security boundary
+// is deployment-level network isolation (trusted gateway only), documented in
+// docs/deployment.md.
 fn is_same_origin_settings_write(headers: &HeaderMap) -> bool {
     if matches!(
         header_value_as_str(headers, "sec-fetch-site"),
@@ -2781,7 +2787,8 @@ fn is_same_origin_settings_write(headers: &HeaderMap) -> bool {
     }
 
     let Some(origin_raw) = headers.get(header::ORIGIN) else {
-        // Non-browser clients may omit Origin; allow those requests.
+        // Non-browser clients may omit Origin (for example curl or internal tooling).
+        // We only treat explicit browser cross-site signals as forbidden above.
         return true;
     };
     let Ok(origin) = origin_raw.to_str() else {
@@ -4270,6 +4277,20 @@ mod tests {
             HeaderValue::from_static("127.0.0.1:8080"),
         );
         assert!(is_same_origin_settings_write(&headers));
+    }
+
+    #[test]
+    fn same_origin_settings_write_rejects_cross_site_without_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-fetch-site"),
+            HeaderValue::from_static("cross-site"),
+        );
+        assert!(!is_same_origin_settings_write(&headers));
     }
 
     #[test]
