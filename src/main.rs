@@ -2210,7 +2210,13 @@ fn build_proxy_upstream_url(base: &Url, original_uri: &Uri) -> Result<Url> {
         }
         target.push('@');
     }
-    target.push_str(host);
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        target.push('[');
+        target.push_str(host);
+        target.push(']');
+    } else {
+        target.push_str(host);
+    }
     if let Some(port) = base.port() {
         target.push(':');
         target.push_str(&port.to_string());
@@ -3286,6 +3292,17 @@ mod tests {
         assert_eq!(
             target.as_str(),
             "https://proxy.example.com/gateway/v1/models?limit=10"
+        );
+    }
+
+    #[test]
+    fn build_proxy_upstream_url_supports_ipv6_literal_base() {
+        let base = Url::parse("http://[::1]:8080/gateway/").expect("valid ipv6 base");
+        let uri: Uri = "/v1/models?limit=10".parse().expect("valid uri");
+        let target = build_proxy_upstream_url(&base, &uri).expect("url should build");
+        assert_eq!(
+            target.as_str(),
+            "http://[::1]:8080/gateway/v1/models?limit=10"
         );
     }
 
