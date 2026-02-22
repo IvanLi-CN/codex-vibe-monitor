@@ -59,3 +59,4 @@
 | 0003 | 开发环境 devctl+zellij 保活 | 已完成 | `0003:dev-runtime-service-manager/PLAN.md`    | 2026-02-20 | PR #37 |
 | 0004 | 统计按浏览器时区自然日      | 已完成 | `0004:reporting-timezone-natural-day/PLAN.md` | 2026-02-20 | PR #38 |
 | 0005 | OpenAI 反向代理透传         | 已完成 | `0005:openai-reverse-proxy/PLAN.md`           | 2026-02-22 | PR #40 |
+| 0006 | 代理模型列表劫持与合并      | 已完成 | `0006:proxy-model-list-hijack/PLAN.md`        | 2026-02-22 | PR #41 |

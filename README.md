@@ -129,12 +129,14 @@ cargo run -- \
 
 - `GET /health`：健康检查，返回 `ok`。
 - `GET /api/version`：返回 `{ backend, frontend }`。
+- `GET /api/settings/proxy-models`：获取 `/v1/models` 劫持与上游合并开关状态。
+- `PUT /api/settings/proxy-models`：更新 `/v1/models` 劫持与上游合并开关状态（全局持久化）。
 - `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `XY_LIST_LIMIT_MAX` 控制）。
 - `GET /api/stats`：全量聚合统计。
 - `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计。
 - `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）。
 - `GET /api/quota/latest`：最近一次配额快照。
-- `ANY /v1/*`：OpenAI 兼容反向代理（请求头/请求体/状态码/响应头/响应体透明透传，包含流式响应）。
+- `ANY /v1/*`：OpenAI 兼容反向代理（请求头/请求体/状态码/响应头/响应体透明透传，包含流式响应）；`GET /v1/models` 可按设置切换为预置列表或预置+上游实时合并。
 - `GET /events`：SSE 推送，事件类型：
   - `{ type: "version", version }`
   - `{ type: "records", records: [...] }`
@@ -142,6 +144,8 @@ cargo run -- \
   - `{ type: "quota", snapshot }`
 
 ## Docker
+
+部署到网关/反向代理（例如 Traefik）时，请先阅读部署与安全边界说明：[`docs/deployment.md`](docs/deployment.md)。
 
 构建镜像：
 
