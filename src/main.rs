@@ -6,8 +6,11 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::Arc,
-    time::Duration,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -62,6 +65,7 @@ const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
 const PROXY_INVALID_REQUEST_TARGET: &str = "proxy request target is malformed";
 const PROXY_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream handshake timed out";
+static NEXT_PROXY_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Parser, Debug, Default)]
 #[command(
@@ -2041,10 +2045,49 @@ async fn proxy_openai_v1(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    match proxy_openai_v1_inner(state, original_uri, method, headers, body).await {
-        Ok(response) => response,
+    let proxy_request_id = next_proxy_request_id();
+    let started_at = Instant::now();
+    let request_content_length = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok());
+    let request_may_have_body = request_may_have_body(&method, &headers);
+    let method_for_log = method.clone();
+    let uri_for_log = original_uri.clone();
+
+    info!(
+        proxy_request_id,
+        method = %method_for_log,
+        uri = %uri_for_log,
+        has_body = request_may_have_body,
+        content_length = ?request_content_length,
+        "openai proxy request started"
+    );
+
+    match proxy_openai_v1_inner(state, proxy_request_id, original_uri, method, headers, body).await
+    {
+        Ok(response) => {
+            let status = response.status();
+            info!(
+                proxy_request_id,
+                method = %method_for_log,
+                uri = %uri_for_log,
+                status = %status,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "openai proxy response finished"
+            );
+            response
+        }
         Err((status, message)) => {
-            warn!(status = %status, error = %message, "openai proxy request failed");
+            warn!(
+                proxy_request_id,
+                method = %method_for_log,
+                uri = %uri_for_log,
+                status = %status,
+                error = %message,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "openai proxy request failed"
+            );
             (status, Json(json!({ "error": message }))).into_response()
         }
     }
@@ -2052,6 +2095,7 @@ async fn proxy_openai_v1(
 
 async fn proxy_openai_v1_inner(
     state: Arc<AppState>,
+    proxy_request_id: u64,
     original_uri: Uri,
     method: Method,
     headers: HeaderMap,
@@ -2091,6 +2135,11 @@ async fn proxy_openai_v1_inner(
     let mut seen_body_bytes = 0usize;
     let request_body_stream = body.into_data_stream().map(move |chunk| {
         let chunk = chunk.map_err(|err| {
+            warn!(
+                proxy_request_id,
+                error = %err,
+                "openai proxy request body stream error"
+            );
             io::Error::other(format!("failed to read request body stream: {err}"))
         })?;
         seen_body_bytes = seen_body_bytes.saturating_add(chunk.len());
@@ -2172,8 +2221,15 @@ async fn proxy_openai_v1_inner(
         }
     }
 
-    let body_stream = upstream_response.bytes_stream().map(|chunk| {
-        chunk.map_err(|err| io::Error::other(format!("upstream stream error: {err}")))
+    let body_stream = upstream_response.bytes_stream().map(move |chunk| {
+        chunk.map_err(|err| {
+            warn!(
+                proxy_request_id,
+                error = %err,
+                "openai proxy upstream response stream error"
+            );
+            io::Error::other(format!("upstream stream error: {err}"))
+        })
     });
 
     response_builder
@@ -2184,6 +2240,10 @@ async fn proxy_openai_v1_inner(
                 format!("failed to build proxy response: {err}"),
             )
         })
+}
+
+fn next_proxy_request_id() -> u64 {
+    NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 fn is_body_too_large_error(err: &reqwest::Error) -> bool {
@@ -2404,7 +2464,7 @@ fn normalize_proxy_location_header(
         if !is_same_origin(&parsed, upstream_base) {
             bail!("cross-origin redirect is not allowed");
         }
-        let mut normalized = parsed.path().to_string();
+        let mut normalized = rewrite_proxy_location_path(parsed.path(), upstream_base).to_string();
         if let Some(query) = parsed.query() {
             normalized.push('?');
             normalized.push_str(query);
@@ -2417,6 +2477,22 @@ fn normalize_proxy_location_header(
     }
 
     Ok(Some(raw_location.to_string()))
+}
+
+fn rewrite_proxy_location_path(upstream_path: &str, upstream_base: &Url) -> String {
+    let base_path = upstream_base.path().trim_end_matches('/');
+    if base_path.is_empty() || base_path == "/" {
+        return upstream_path.to_string();
+    }
+    if upstream_path == base_path {
+        return "/".to_string();
+    }
+    if let Some(stripped) = upstream_path.strip_prefix(base_path)
+        && stripped.starts_with('/')
+    {
+        return stripped.to_string();
+    }
+    upstream_path.to_string()
 }
 
 fn is_same_origin(lhs: &Url, rhs: &Url) -> bool {
@@ -3495,6 +3571,37 @@ mod tests {
         assert!(!request_may_have_body(&Method::GET, &with_length));
         with_length.insert(http_header::CONTENT_LENGTH, HeaderValue::from_static("10"));
         assert!(request_may_have_body(&Method::GET, &with_length));
+    }
+
+    #[test]
+    fn rewrite_proxy_location_path_strips_upstream_base_prefix() {
+        let upstream_base = Url::parse("https://proxy.example.com/gateway/").expect("valid base");
+        assert_eq!(
+            rewrite_proxy_location_path("/gateway/v1/echo", &upstream_base),
+            "/v1/echo"
+        );
+        assert_eq!(
+            rewrite_proxy_location_path("/v1/echo", &upstream_base),
+            "/v1/echo"
+        );
+    }
+
+    #[test]
+    fn normalize_proxy_location_header_strips_upstream_base_prefix_for_absolute_redirect() {
+        let upstream_base = Url::parse("https://proxy.example.com/gateway/").expect("valid base");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::LOCATION,
+            HeaderValue::from_static("https://proxy.example.com/gateway/v1/echo?from=redirect"),
+        );
+
+        let normalized = normalize_proxy_location_header(
+            StatusCode::TEMPORARY_REDIRECT,
+            &headers,
+            &upstream_base,
+        )
+        .expect("normalize should succeed");
+        assert_eq!(normalized.as_deref(), Some("/v1/echo?from=redirect"));
     }
 
     #[tokio::test]
