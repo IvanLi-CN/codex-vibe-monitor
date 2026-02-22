@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
@@ -58,6 +58,7 @@ const SOURCE_XY: &str = "xy";
 const SOURCE_CRS: &str = "crs";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit exceeded";
+const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
 
 #[derive(Parser, Debug, Default)]
 #[command(
@@ -2056,10 +2057,12 @@ async fn proxy_openai_v1_inner(
     let target_url =
         build_proxy_upstream_url(&state.config.openai_upstream_base_url, &original_uri).map_err(
             |err| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("failed to build upstream url: {err}"),
-                )
+                let status = if err.to_string().contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED) {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                (status, format!("failed to build upstream url: {err}"))
             },
         )?;
 
@@ -2160,26 +2163,66 @@ fn error_chain_contains(err: &(dyn StdError + 'static), needle: &str) -> bool {
 }
 
 fn build_proxy_upstream_url(base: &Url, original_uri: &Uri) -> Result<Url> {
-    let mut normalized_base = base.clone();
-    if !normalized_base.path().ends_with('/') {
-        let mut path = normalized_base.path().to_string();
-        path.push('/');
-        normalized_base.set_path(&path);
+    if path_has_forbidden_dot_segment(original_uri.path()) {
+        bail!(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED);
     }
 
-    let relative_path = original_uri.path().trim_start_matches('/');
-    let mut target = normalized_base
-        .join(relative_path)
-        .context("failed to join upstream path")?;
-    target.set_query(original_uri.query());
-    Ok(target)
+    let host = base
+        .host_str()
+        .ok_or_else(|| anyhow!("OPENAI_UPSTREAM_BASE_URL is missing host"))?;
+    let mut target = String::new();
+    target.push_str(base.scheme());
+    target.push_str("://");
+    if !base.username().is_empty() {
+        target.push_str(base.username());
+        if let Some(password) = base.password() {
+            target.push(':');
+            target.push_str(password);
+        }
+        target.push('@');
+    }
+    target.push_str(host);
+    if let Some(port) = base.port() {
+        target.push(':');
+        target.push_str(&port.to_string());
+    }
+
+    let base_path = if base.path() == "/" {
+        ""
+    } else {
+        base.path().trim_end_matches('/')
+    };
+    target.push_str(base_path);
+    let request_path = original_uri.path();
+    if !request_path.starts_with('/') {
+        target.push('/');
+    }
+    target.push_str(request_path);
+    if let Some(query) = original_uri.query() {
+        target.push('?');
+        target.push_str(query);
+    }
+
+    Url::parse(&target).context("failed to parse proxy upstream url")
+}
+
+fn path_has_forbidden_dot_segment(path: &str) -> bool {
+    path.split('/').any(is_forbidden_dot_segment)
+}
+
+fn is_forbidden_dot_segment(segment: &str) -> bool {
+    segment == "."
+        || segment == ".."
+        || segment.eq_ignore_ascii_case("%2e")
+        || segment.eq_ignore_ascii_case(".%2e")
+        || segment.eq_ignore_ascii_case("%2e.")
+        || segment.eq_ignore_ascii_case("%2e%2e")
 }
 
 fn should_proxy_header(name: &HeaderName) -> bool {
     !matches!(
         name.as_str(),
         "host"
-            | "content-length"
             | "connection"
             | "keep-alive"
             | "proxy-authenticate"
@@ -3117,8 +3160,30 @@ mod tests {
     }
 
     #[test]
+    fn path_has_forbidden_dot_segment_detects_plain_and_encoded_variants() {
+        assert!(path_has_forbidden_dot_segment("/v1/../models"));
+        assert!(path_has_forbidden_dot_segment("/v1/%2e%2e/models"));
+        assert!(path_has_forbidden_dot_segment("/v1/.%2E/models"));
+        assert!(!path_has_forbidden_dot_segment("/v1/models"));
+    }
+
+    #[test]
+    fn build_proxy_upstream_url_rejects_dot_segment_paths() {
+        let base = Url::parse("https://proxy.example.com/gateway/").expect("valid base");
+        let uri: Uri = "/v1/%2e%2e/%2E%2e/admin?scope=test"
+            .parse()
+            .expect("valid uri with dot segments");
+        let err = build_proxy_upstream_url(&base, &uri).expect_err("dot segments should fail");
+        assert!(
+            err.to_string().contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED),
+            "error should indicate forbidden dot segments: {err}"
+        );
+    }
+
+    #[test]
     fn should_proxy_header_filters_hop_by_hop_headers() {
         assert!(should_proxy_header(&http_header::AUTHORIZATION));
+        assert!(should_proxy_header(&http_header::CONTENT_LENGTH));
         assert!(!should_proxy_header(&http_header::HOST));
         assert!(!should_proxy_header(&http_header::CONNECTION));
         assert!(!should_proxy_header(&http_header::TRANSFER_ENCODING));
@@ -3161,6 +3226,7 @@ mod tests {
             response.headers().get("x-upstream"),
             Some(&HeaderValue::from_static("ok"))
         );
+        assert!(response.headers().contains_key(http_header::CONTENT_LENGTH));
 
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
@@ -3334,6 +3400,38 @@ mod tests {
                 .as_str()
                 .expect("error message should be present")
                 .contains("request body exceeds")
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_rejects_dot_segment_path() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/%2e%2e/admin".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED)
         );
 
         upstream_handle.abort();
