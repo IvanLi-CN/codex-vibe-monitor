@@ -56,6 +56,7 @@ use tracing::{error, info, warn};
 
 const SOURCE_XY: &str = "xy";
 const SOURCE_CRS: &str = "crs";
+const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit exceeded";
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
@@ -2098,8 +2099,9 @@ async fn proxy_openai_v1_inner(
         .request(method, target_url)
         .body(reqwest::Body::wrap_stream(request_body_stream));
 
+    let request_connection_scoped = connection_scoped_header_names(&headers);
     for (name, value) in &headers {
-        if should_proxy_header(name) {
+        if should_forward_proxy_header(name, &request_connection_scoped) {
             upstream_request = upstream_request.header(name, value);
         }
     }
@@ -2118,9 +2120,10 @@ async fn proxy_openai_v1_inner(
         }
     })?;
 
+    let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
     let mut response_builder = Response::builder().status(upstream_response.status());
     for (name, value) in upstream_response.headers() {
-        if should_proxy_header(name) {
+        if should_forward_proxy_header(name, &upstream_connection_scoped) {
             response_builder = response_builder.header(name, value);
         }
     }
@@ -2207,16 +2210,80 @@ fn build_proxy_upstream_url(base: &Url, original_uri: &Uri) -> Result<Url> {
 }
 
 fn path_has_forbidden_dot_segment(path: &str) -> bool {
-    path.split('/').any(is_forbidden_dot_segment)
+    let mut candidate = path.to_string();
+    for _ in 0..3 {
+        if decoded_path_has_forbidden_dot_segment(&candidate) {
+            return true;
+        }
+        let decoded = percent_decode_once_lossy(&candidate);
+        if decoded == candidate {
+            break;
+        }
+        candidate = decoded;
+    }
+    decoded_path_has_forbidden_dot_segment(&candidate)
+}
+
+fn decoded_path_has_forbidden_dot_segment(path: &str) -> bool {
+    path.split(['/', '\\']).any(is_forbidden_dot_segment)
 }
 
 fn is_forbidden_dot_segment(segment: &str) -> bool {
-    segment == "."
-        || segment == ".."
-        || segment.eq_ignore_ascii_case("%2e")
-        || segment.eq_ignore_ascii_case(".%2e")
-        || segment.eq_ignore_ascii_case("%2e.")
-        || segment.eq_ignore_ascii_case("%2e%2e")
+    segment == "." || segment == ".."
+}
+
+fn percent_decode_once_lossy(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] == b'%'
+            && idx + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
+                decode_hex_nibble(bytes[idx + 1]),
+                decode_hex_nibble(bytes[idx + 2]),
+            )
+        {
+            decoded.push((hi << 4) | lo);
+            idx += 3;
+            continue;
+        }
+        decoded.push(bytes[idx]);
+        idx += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn decode_hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn connection_scoped_header_names(headers: &HeaderMap) -> HashSet<HeaderName> {
+    let mut names = HashSet::new();
+    for value in headers.get_all(header::CONNECTION).iter() {
+        let Ok(raw) = value.to_str() else {
+            continue;
+        };
+        for token in raw.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            if let Ok(header_name) = HeaderName::from_bytes(token.as_bytes()) {
+                names.insert(header_name);
+            }
+        }
+    }
+    names
+}
+
+fn should_forward_proxy_header(name: &HeaderName, connection_scoped: &HashSet<HeaderName>) -> bool {
+    should_proxy_header(name) && !connection_scoped.contains(name)
 }
 
 fn should_proxy_header(name: &HeaderName) -> bool {
@@ -2747,7 +2814,7 @@ impl AppConfig {
             .or_else(|| env::var("XY_BASE_URL").ok())
             .ok_or_else(|| anyhow!("XY_BASE_URL is not set"))?;
         let openai_upstream_base_url = env::var("OPENAI_UPSTREAM_BASE_URL")
-            .map_err(|_| anyhow!("OPENAI_UPSTREAM_BASE_URL is not set"))?;
+            .unwrap_or_else(|_| DEFAULT_OPENAI_UPSTREAM_BASE_URL.to_string());
         let quota_endpoint = overrides
             .quota_endpoint
             .clone()
@@ -3074,13 +3141,24 @@ mod tests {
             .unwrap_or_default()
             .to_string();
         let connection_seen = headers.contains_key(http_header::CONNECTION);
+        let x_foo_seen = headers.contains_key(http_header::HeaderName::from_static("x-foo"));
+        let mut response_headers = HeaderMap::new();
+        response_headers.insert(
+            http_header::HeaderName::from_static("x-upstream"),
+            HeaderValue::from_static("ok"),
+        );
+        response_headers.insert(
+            http_header::CONNECTION,
+            HeaderValue::from_static("x-upstream-hop"),
+        );
+        response_headers.insert(
+            http_header::HeaderName::from_static("x-upstream-hop"),
+            HeaderValue::from_static("should-be-filtered"),
+        );
 
         (
             StatusCode::CREATED,
-            [(
-                http_header::HeaderName::from_static("x-upstream"),
-                HeaderValue::from_static("ok"),
-            )],
+            response_headers,
             Json(json!({
                 "method": method.as_str(),
                 "path": uri.path(),
@@ -3088,6 +3166,7 @@ mod tests {
                 "authorization": auth,
                 "hostHeader": host_header,
                 "connectionSeen": connection_seen,
+                "xFooSeen": x_foo_seen,
                 "body": body,
             })),
         )
@@ -3164,13 +3243,17 @@ mod tests {
         assert!(path_has_forbidden_dot_segment("/v1/../models"));
         assert!(path_has_forbidden_dot_segment("/v1/%2e%2e/models"));
         assert!(path_has_forbidden_dot_segment("/v1/.%2E/models"));
+        assert!(path_has_forbidden_dot_segment("/v1/%2e%2e%2fadmin"));
+        assert!(path_has_forbidden_dot_segment("/v1/%2e%2e%5cadmin"));
+        assert!(path_has_forbidden_dot_segment("/v1/%252e%252e%252fadmin"));
+        assert!(!path_has_forbidden_dot_segment("/v1/%2efoo/models"));
         assert!(!path_has_forbidden_dot_segment("/v1/models"));
     }
 
     #[test]
     fn build_proxy_upstream_url_rejects_dot_segment_paths() {
         let base = Url::parse("https://proxy.example.com/gateway/").expect("valid base");
-        let uri: Uri = "/v1/%2e%2e/%2E%2e/admin?scope=test"
+        let uri: Uri = "/v1/%2e%2e%2fadmin?scope=test"
             .parse()
             .expect("valid uri with dot segments");
         let err = build_proxy_upstream_url(&base, &uri).expect_err("dot segments should fail");
@@ -3187,6 +3270,20 @@ mod tests {
         assert!(!should_proxy_header(&http_header::HOST));
         assert!(!should_proxy_header(&http_header::CONNECTION));
         assert!(!should_proxy_header(&http_header::TRANSFER_ENCODING));
+    }
+
+    #[test]
+    fn connection_scoped_header_names_parses_connection_tokens() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::CONNECTION,
+            HeaderValue::from_static("keep-alive, x-foo"),
+        );
+        headers.append(http_header::CONNECTION, HeaderValue::from_static("x-bar"));
+        let names = connection_scoped_header_names(&headers);
+        assert!(names.contains(&http_header::HeaderName::from_static("keep-alive")));
+        assert!(names.contains(&http_header::HeaderName::from_static("x-foo")));
+        assert!(names.contains(&http_header::HeaderName::from_static("x-bar")));
     }
 
     #[tokio::test]
@@ -3208,7 +3305,11 @@ mod tests {
         );
         headers.insert(
             http_header::CONNECTION,
-            HeaderValue::from_static("keep-alive"),
+            HeaderValue::from_static("keep-alive, x-foo"),
+        );
+        headers.insert(
+            http_header::HeaderName::from_static("x-foo"),
+            HeaderValue::from_static("should-not-forward"),
         );
 
         let uri: Uri = "/v1/echo?foo=bar".parse().expect("valid uri");
@@ -3227,6 +3328,11 @@ mod tests {
             Some(&HeaderValue::from_static("ok"))
         );
         assert!(response.headers().contains_key(http_header::CONTENT_LENGTH));
+        assert!(
+            !response
+                .headers()
+                .contains_key(http_header::HeaderName::from_static("x-upstream-hop"))
+        );
 
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
@@ -3238,6 +3344,7 @@ mod tests {
         assert_eq!(payload["authorization"], "Bearer test-token");
         assert_ne!(payload["hostHeader"], "client.example.com");
         assert_eq!(payload["connectionSeen"], false);
+        assert_eq!(payload["xFooSeen"], false);
         assert_eq!(payload["body"], "hello-proxy");
 
         upstream_handle.abort();

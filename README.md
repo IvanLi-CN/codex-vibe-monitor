@@ -92,7 +92,7 @@ npm run dev -- --host 127.0.0.1 --port 60080
 
 ```env
 XY_BASE_URL=https://new.xychatai.com
-OPENAI_UPSTREAM_BASE_URL=https://api.openai.com
+OPENAI_UPSTREAM_BASE_URL=https://api.openai.com  # (可选，默认 https://api.openai.com/)
 XY_VIBE_QUOTA_ENDPOINT=/frontend-api/vibe-code/quota
 XY_SESSION_COOKIE_NAME=share-session
 XY_SESSION_COOKIE_VALUE=<从浏览器开发者工具导出的 Cookie>
