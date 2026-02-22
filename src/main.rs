@@ -2700,6 +2700,7 @@ fn should_proxy_header(name: &HeaderName) -> bool {
         name.as_str(),
         "host"
             | "connection"
+            | "proxy-connection"
             | "keep-alive"
             | "proxy-authenticate"
             | "proxy-authorization"
@@ -2707,6 +2708,14 @@ fn should_proxy_header(name: &HeaderName) -> bool {
             | "trailer"
             | "transfer-encoding"
             | "upgrade"
+            | "forwarded"
+            | "via"
+            | "x-real-ip"
+            | "x-forwarded-for"
+            | "x-forwarded-host"
+            | "x-forwarded-proto"
+            | "x-forwarded-port"
+            | "x-forwarded-client-cert"
     )
 }
 
@@ -2788,7 +2797,6 @@ fn is_same_origin_settings_write(headers: &HeaderMap) -> bool {
     let Some(origin_host) = origin_url.host_str() else {
         return false;
     };
-
     let Some((request_host, request_port)) =
         forwarded_or_host_authority(headers, origin_url.scheme())
     else {
@@ -2800,8 +2808,12 @@ fn is_same_origin_settings_write(headers: &HeaderMap) -> bool {
         return true;
     }
 
-    // Dev proxies (for example Vite on 60080 -> backend on 8080) may rewrite Host and/or port,
+    // Dev loopback proxies (for example Vite on 60080 -> backend on 8080) may rewrite Host and/or port,
     // but both ends remain loopback. Allow that local-only mismatch.
+    //
+    // For non-loopback deployments behind reverse proxies, we accept trusted forwarded
+    // host/proto/port headers for origin matching, but these headers are never relayed
+    // to upstream/downstream proxy traffic (see should_proxy_header).
     is_loopback_authority_host(origin_host) && is_loopback_authority_host(&request_host)
 }
 
@@ -2825,8 +2837,15 @@ fn forwarded_or_host_authority(
                 .filter(|v| v == "http" || v == "https")
         });
         let scheme = forwarded_proto.as_deref().unwrap_or(origin_scheme);
+        let forwarded_port = header_value_as_str(headers, "x-forwarded-port").and_then(|raw| {
+            raw.split(',')
+                .next()
+                .map(str::trim)
+                .and_then(|value| value.parse::<u16>().ok())
+        });
         let port = authority
             .port_u16()
+            .or(forwarded_port)
             .or_else(|| default_port_for_scheme(scheme));
         return Some((authority.host().to_string(), port));
     }
@@ -3918,6 +3937,11 @@ mod tests {
             .to_string();
         let connection_seen = headers.contains_key(http_header::CONNECTION);
         let x_foo_seen = headers.contains_key(http_header::HeaderName::from_static("x-foo"));
+        let x_forwarded_for_seen =
+            headers.contains_key(http_header::HeaderName::from_static("x-forwarded-for"));
+        let forwarded_seen =
+            headers.contains_key(http_header::HeaderName::from_static("forwarded"));
+        let via_seen = headers.contains_key(http_header::HeaderName::from_static("via"));
         let mut response_headers = HeaderMap::new();
         response_headers.insert(
             http_header::HeaderName::from_static("x-upstream"),
@@ -3931,6 +3955,14 @@ mod tests {
             http_header::HeaderName::from_static("x-upstream-hop"),
             HeaderValue::from_static("should-be-filtered"),
         );
+        response_headers.insert(
+            http_header::HeaderName::from_static("via"),
+            HeaderValue::from_static("1.1 upstream-proxy"),
+        );
+        response_headers.insert(
+            http_header::HeaderName::from_static("forwarded"),
+            HeaderValue::from_static("for=192.0.2.1;proto=https;host=api.example.com"),
+        );
 
         (
             StatusCode::CREATED,
@@ -3943,6 +3975,9 @@ mod tests {
                 "hostHeader": host_header,
                 "connectionSeen": connection_seen,
                 "xFooSeen": x_foo_seen,
+                "xForwardedForSeen": x_forwarded_for_seen,
+                "forwardedSeen": forwarded_seen,
+                "viaSeen": via_seen,
                 "body": body,
             })),
         )
@@ -4183,6 +4218,21 @@ mod tests {
         assert!(!should_proxy_header(&http_header::HOST));
         assert!(!should_proxy_header(&http_header::CONNECTION));
         assert!(!should_proxy_header(&http_header::TRANSFER_ENCODING));
+        assert!(!should_proxy_header(&HeaderName::from_static("forwarded")));
+        assert!(!should_proxy_header(&HeaderName::from_static("via")));
+        assert!(!should_proxy_header(&HeaderName::from_static(
+            "x-forwarded-for"
+        )));
+        assert!(!should_proxy_header(&HeaderName::from_static(
+            "x-forwarded-host"
+        )));
+        assert!(!should_proxy_header(&HeaderName::from_static(
+            "x-forwarded-proto"
+        )));
+        assert!(!should_proxy_header(&HeaderName::from_static(
+            "x-forwarded-port"
+        )));
+        assert!(!should_proxy_header(&HeaderName::from_static("x-real-ip")));
     }
 
     #[test]
@@ -4305,7 +4355,37 @@ mod tests {
     }
 
     #[test]
-    fn same_origin_settings_write_rejects_cross_site_even_with_forwarded_spoof() {
+    fn same_origin_settings_write_allows_forwarded_port_for_non_default_origin_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://proxy.example.com:8443"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("proxy.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-port"),
+            HeaderValue::from_static("8443"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-fetch-site"),
+            HeaderValue::from_static("same-origin"),
+        );
+        assert!(is_same_origin_settings_write(&headers));
+    }
+
+    #[test]
+    fn same_origin_settings_write_rejects_cross_site_request() {
         let mut headers = HeaderMap::new();
         headers.insert(
             http_header::HOST,
@@ -4314,14 +4394,6 @@ mod tests {
         headers.insert(
             http_header::ORIGIN,
             HeaderValue::from_static("https://evil.example.com"),
-        );
-        headers.insert(
-            HeaderName::from_static("x-forwarded-host"),
-            HeaderValue::from_static("evil.example.com"),
-        );
-        headers.insert(
-            HeaderName::from_static("x-forwarded-proto"),
-            HeaderValue::from_static("https"),
         );
         headers.insert(
             HeaderName::from_static("sec-fetch-site"),
@@ -4404,6 +4476,14 @@ mod tests {
             http_header::HeaderName::from_static("x-foo"),
             HeaderValue::from_static("should-not-forward"),
         );
+        headers.insert(
+            http_header::HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_static("198.51.100.20"),
+        );
+        headers.insert(
+            http_header::HeaderName::from_static("via"),
+            HeaderValue::from_static("1.1 browser-proxy"),
+        );
 
         let uri: Uri = "/v1/echo?foo=bar".parse().expect("valid uri");
         let response = proxy_openai_v1(
@@ -4426,6 +4506,16 @@ mod tests {
                 .headers()
                 .contains_key(http_header::HeaderName::from_static("x-upstream-hop"))
         );
+        assert!(
+            !response
+                .headers()
+                .contains_key(http_header::HeaderName::from_static("via"))
+        );
+        assert!(
+            !response
+                .headers()
+                .contains_key(http_header::HeaderName::from_static("forwarded"))
+        );
 
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
@@ -4438,6 +4528,9 @@ mod tests {
         assert_ne!(payload["hostHeader"], "client.example.com");
         assert_eq!(payload["connectionSeen"], false);
         assert_eq!(payload["xFooSeen"], false);
+        assert_eq!(payload["xForwardedForSeen"], false);
+        assert_eq!(payload["forwardedSeen"], false);
+        assert_eq!(payload["viaSeen"], false);
         assert_eq!(payload["body"], "hello-proxy");
 
         upstream_handle.abort();
@@ -4538,7 +4631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn proxy_model_settings_api_rejects_cross_site_forwarded_spoof() {
+    async fn proxy_model_settings_api_rejects_cross_site_request() {
         let state = test_state_with_openai_base(
             Url::parse("https://api.example.com/").expect("valid upstream base url"),
         )
@@ -4552,14 +4645,6 @@ mod tests {
         headers.insert(
             http_header::ORIGIN,
             HeaderValue::from_static("https://evil.example.com"),
-        );
-        headers.insert(
-            HeaderName::from_static("x-forwarded-host"),
-            HeaderValue::from_static("evil.example.com"),
-        );
-        headers.insert(
-            HeaderName::from_static("x-forwarded-proto"),
-            HeaderValue::from_static("https"),
         );
         headers.insert(
             HeaderName::from_static("sec-fetch-site"),
@@ -4576,7 +4661,7 @@ mod tests {
             }),
         )
         .await
-        .expect_err("cross-site spoof should be rejected");
+        .expect_err("cross-site request should be rejected");
 
         assert_eq!(err.0, StatusCode::FORBIDDEN);
     }
@@ -4655,6 +4740,56 @@ mod tests {
         )
         .await
         .expect("forwarded host write should be allowed");
+
+        assert!(updated.hijack_enabled);
+        assert!(!updated.merge_upstream_enabled);
+        assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn proxy_model_settings_api_allows_forwarded_port_non_default_origin_port() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::HOST,
+            HeaderValue::from_static("127.0.0.1:8080"),
+        );
+        headers.insert(
+            http_header::ORIGIN,
+            HeaderValue::from_static("https://proxy.example.com:8443"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("proxy.example.com"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-port"),
+            HeaderValue::from_static("8443"),
+        );
+        headers.insert(
+            HeaderName::from_static("sec-fetch-site"),
+            HeaderValue::from_static("same-origin"),
+        );
+
+        let Json(updated) = put_proxy_model_settings(
+            State(state),
+            headers,
+            Json(ProxyModelSettingsUpdateRequest {
+                hijack_enabled: true,
+                merge_upstream_enabled: false,
+                enabled_models: vec!["gpt-5.2-codex".to_string()],
+            }),
+        )
+        .await
+        .expect("forwarded port write should be allowed");
 
         assert!(updated.hijack_enabled);
         assert!(!updated.merge_upstream_enabled);
