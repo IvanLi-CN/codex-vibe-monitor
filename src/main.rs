@@ -61,6 +61,7 @@ const SOURCE_XY: &str = "xy";
 const SOURCE_CRS: &str = "crs";
 const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
 const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit exceeded";
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
 const PROXY_INVALID_REQUEST_TARGET: &str = "proxy request target is malformed";
@@ -2131,7 +2132,6 @@ async fn proxy_openai_v1_inner(
         ));
     }
 
-    let request_may_have_body = request_may_have_body(&method, &headers);
     let mut seen_body_bytes = 0usize;
     let request_body_stream = body.into_data_stream().map(move |chunk| {
         let chunk = chunk.map_err(|err| {
@@ -2177,23 +2177,19 @@ async fn proxy_openai_v1_inner(
         }
     };
 
-    let upstream_response = if request_may_have_body {
-        upstream_request.send().await.map_err(map_upstream_error)?
-    } else {
-        let handshake_timeout = state.config.request_timeout;
-        timeout(handshake_timeout, upstream_request.send())
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::BAD_GATEWAY,
-                    format!(
-                        "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
-                        handshake_timeout.as_millis()
-                    ),
-                )
-            })?
-            .map_err(map_upstream_error)?
-    };
+    let handshake_timeout = state.config.openai_proxy_handshake_timeout;
+    let upstream_response = timeout(handshake_timeout, upstream_request.send())
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
+                    handshake_timeout.as_millis()
+                ),
+            )
+        })?
+        .map_err(map_upstream_error)?;
 
     let rewritten_location = normalize_proxy_location_header(
         upstream_response.status(),
@@ -2476,7 +2472,36 @@ fn normalize_proxy_location_header(
         return Ok(Some(normalized));
     }
 
+    if raw_location.starts_with('/') {
+        return Ok(Some(rewrite_proxy_relative_location(
+            raw_location,
+            upstream_base,
+        )));
+    }
+
     Ok(Some(raw_location.to_string()))
+}
+
+fn rewrite_proxy_relative_location(location: &str, upstream_base: &Url) -> String {
+    let (path_and_query, fragment) = match location.split_once('#') {
+        Some((pq, frag)) => (pq, Some(frag)),
+        None => (location, None),
+    };
+    let (path, query) = match path_and_query.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path_and_query, None),
+    };
+
+    let mut rewritten = rewrite_proxy_location_path(path, upstream_base);
+    if let Some(query) = query {
+        rewritten.push('?');
+        rewritten.push_str(query);
+    }
+    if let Some(fragment) = fragment {
+        rewritten.push('#');
+        rewritten.push_str(fragment);
+    }
+    rewritten
 }
 
 fn rewrite_proxy_location_path(upstream_path: &str, upstream_base: &Url) -> String {
@@ -3007,6 +3032,7 @@ struct AppConfig {
     database_path: PathBuf,
     poll_interval: Duration,
     request_timeout: Duration,
+    openai_proxy_handshake_timeout: Duration,
     openai_proxy_max_request_body_bytes: usize,
     max_parallel_polls: usize,
     shared_connection_parallelism: usize,
@@ -3074,6 +3100,12 @@ impl AppConfig {
             })
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(60));
+        let openai_proxy_handshake_timeout = env::var("OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&v| v > 0)
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| Duration::from_secs(DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS));
         let openai_proxy_max_request_body_bytes = env::var("OPENAI_PROXY_MAX_REQUEST_BODY_BYTES")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -3182,6 +3214,7 @@ impl AppConfig {
             database_path,
             poll_interval,
             request_timeout,
+            openai_proxy_handshake_timeout,
             openai_proxy_max_request_body_bytes,
             max_parallel_polls,
             shared_connection_parallelism,
@@ -3298,6 +3331,9 @@ mod tests {
             database_path: PathBuf::from(":memory:"),
             poll_interval: Duration::from_secs(10),
             request_timeout: Duration::from_secs(30),
+            openai_proxy_handshake_timeout: Duration::from_secs(
+                DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
+            ),
             openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
             max_parallel_polls: 2,
             shared_connection_parallelism: 1,
@@ -3602,6 +3638,24 @@ mod tests {
         )
         .expect("normalize should succeed");
         assert_eq!(normalized.as_deref(), Some("/v1/echo?from=redirect"));
+    }
+
+    #[test]
+    fn normalize_proxy_location_header_strips_upstream_base_prefix_for_relative_redirect() {
+        let upstream_base = Url::parse("https://proxy.example.com/gateway/").expect("valid base");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::LOCATION,
+            HeaderValue::from_static("/gateway/v1/echo?from=redirect#frag"),
+        );
+
+        let normalized = normalize_proxy_location_header(
+            StatusCode::TEMPORARY_REDIRECT,
+            &headers,
+            &upstream_base,
+        )
+        .expect("normalize should succeed");
+        assert_eq!(normalized.as_deref(), Some("/v1/echo?from=redirect#frag"));
     }
 
     #[tokio::test]
@@ -4028,7 +4082,7 @@ mod tests {
         let mut config = test_config();
         config.openai_upstream_base_url =
             Url::parse(&upstream_base).expect("valid upstream base url");
-        config.request_timeout = Duration::from_millis(100);
+        config.openai_proxy_handshake_timeout = Duration::from_millis(100);
         let http_clients = HttpClients::build(&config).expect("http clients");
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
@@ -4046,6 +4100,55 @@ mod tests {
             Method::GET,
             HeaderMap::new(),
             Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains(PROXY_UPSTREAM_HANDSHAKE_TIMEOUT)
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_body() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let mut config = test_config();
+        config.openai_upstream_base_url =
+            Url::parse(&upstream_base).expect("valid upstream base url");
+        config.openai_proxy_handshake_timeout = Duration::from_millis(100);
+        let http_clients = HttpClients::build(&config).expect("http clients");
+        let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+        let (broadcaster, _rx) = broadcast::channel(16);
+        let state = Arc::new(AppState {
+            config,
+            pool,
+            http_clients,
+            broadcaster,
+            semaphore,
+        });
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/hang".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from("hello"),
         )
         .await;
 
