@@ -2087,6 +2087,7 @@ async fn proxy_openai_v1_inner(
         ));
     }
 
+    let request_may_have_body = request_may_have_body(&method, &headers);
     let mut seen_body_bytes = 0usize;
     let request_body_stream = body.into_data_stream().map(move |chunk| {
         let chunk = chunk.map_err(|err| {
@@ -2113,37 +2114,61 @@ async fn proxy_openai_v1_inner(
         }
     }
 
-    let handshake_timeout = state.config.request_timeout;
-    let upstream_response = timeout(handshake_timeout, upstream_request.send())
-        .await
-        .map_err(|_| {
+    let map_upstream_error = |err: reqwest::Error| {
+        if is_body_too_large_error(&err) {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("request body exceeds {body_limit} bytes"),
+            )
+        } else {
             (
                 StatusCode::BAD_GATEWAY,
-                format!(
-                    "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
-                    handshake_timeout.as_millis()
-                ),
+                format!("failed to contact upstream: {err}"),
             )
-        })?
-        .map_err(|err| {
-            if is_body_too_large_error(&err) {
-                (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    format!("request body exceeds {body_limit} bytes"),
-                )
-            } else {
+        }
+    };
+
+    let upstream_response = if request_may_have_body {
+        upstream_request.send().await.map_err(map_upstream_error)?
+    } else {
+        let handshake_timeout = state.config.request_timeout;
+        timeout(handshake_timeout, upstream_request.send())
+            .await
+            .map_err(|_| {
                 (
                     StatusCode::BAD_GATEWAY,
-                    format!("failed to contact upstream: {err}"),
+                    format!(
+                        "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
+                        handshake_timeout.as_millis()
+                    ),
                 )
-            }
-        })?;
+            })?
+            .map_err(map_upstream_error)?
+    };
+
+    let rewritten_location = normalize_proxy_location_header(
+        upstream_response.status(),
+        upstream_response.headers(),
+        &state.config.openai_upstream_base_url,
+    )
+    .map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed to process upstream redirect: {err}"),
+        )
+    })?;
 
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
     let mut response_builder = Response::builder().status(upstream_response.status());
     for (name, value) in upstream_response.headers() {
         if should_forward_proxy_header(name, &upstream_connection_scoped) {
-            response_builder = response_builder.header(name, value);
+            if name == header::LOCATION {
+                if let Some(rewritten) = rewritten_location.as_deref() {
+                    response_builder = response_builder.header(name, rewritten);
+                }
+            } else {
+                response_builder = response_builder.header(name, value);
+            }
         }
     }
 
@@ -2335,6 +2360,73 @@ fn connection_scoped_header_names(headers: &HeaderMap) -> HashSet<HeaderName> {
 
 fn should_forward_proxy_header(name: &HeaderName, connection_scoped: &HashSet<HeaderName>) -> bool {
     should_proxy_header(name) && !connection_scoped.contains(name)
+}
+
+fn request_may_have_body(method: &Method, headers: &HeaderMap) -> bool {
+    if headers.contains_key(header::TRANSFER_ENCODING) {
+        return true;
+    }
+    if let Some(content_length) = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return content_length > 0;
+    }
+    !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+fn normalize_proxy_location_header(
+    status: StatusCode,
+    headers: &HeaderMap,
+    upstream_base: &Url,
+) -> Result<Option<String>> {
+    let Some(raw_location) = headers.get(header::LOCATION) else {
+        return Ok(None);
+    };
+
+    let raw_location = raw_location
+        .to_str()
+        .context("upstream Location header is not valid UTF-8")?;
+    if raw_location.is_empty() {
+        return Ok(None);
+    }
+
+    if !status.is_redirection() {
+        return Ok(Some(raw_location.to_string()));
+    }
+
+    if raw_location.starts_with("//") {
+        bail!("cross-origin redirect is not allowed");
+    }
+
+    if let Ok(parsed) = Url::parse(raw_location) {
+        if !is_same_origin(&parsed, upstream_base) {
+            bail!("cross-origin redirect is not allowed");
+        }
+        let mut normalized = parsed.path().to_string();
+        if let Some(query) = parsed.query() {
+            normalized.push('?');
+            normalized.push_str(query);
+        }
+        if let Some(fragment) = parsed.fragment() {
+            normalized.push('#');
+            normalized.push_str(fragment);
+        }
+        return Ok(Some(normalized));
+    }
+
+    Ok(Some(raw_location.to_string()))
+}
+
+fn is_same_origin(lhs: &Url, rhs: &Url) -> bool {
+    lhs.scheme() == rhs.scheme()
+        && lhs.host_str() == rhs.host_str()
+        && effective_port(lhs) == effective_port(rhs)
+}
+
+fn effective_port(url: &Url) -> Option<u16> {
+    url.port_or_known_default()
 }
 
 fn should_proxy_header(name: &HeaderName) -> bool {
@@ -2789,6 +2881,8 @@ impl HttpClients {
 
         let proxy = Self::builder(None, &user_agent)
             .pool_max_idle_per_host(config.shared_connection_parallelism)
+            .connect_timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .context("failed to construct proxy HTTP client")?;
 
@@ -3264,12 +3358,39 @@ mod tests {
         StatusCode::NO_CONTENT
     }
 
+    async fn test_upstream_redirect() -> impl IntoResponse {
+        (
+            StatusCode::TEMPORARY_REDIRECT,
+            [(
+                http_header::LOCATION,
+                HeaderValue::from_static("/v1/echo?from=redirect"),
+            )],
+            Body::empty(),
+        )
+    }
+
+    async fn test_upstream_external_redirect() -> impl IntoResponse {
+        (
+            StatusCode::TEMPORARY_REDIRECT,
+            [(
+                http_header::LOCATION,
+                HeaderValue::from_static("https://example.org/outside"),
+            )],
+            Body::empty(),
+        )
+    }
+
     async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
         let app = Router::new()
             .route("/v1/echo", any(test_upstream_echo))
             .route("/v1/stream", any(test_upstream_stream))
             .route("/v1/slow-stream", any(test_upstream_slow_stream))
-            .route("/v1/hang", any(test_upstream_hang));
+            .route("/v1/hang", any(test_upstream_hang))
+            .route("/v1/redirect", any(test_upstream_redirect))
+            .route(
+                "/v1/redirect-external",
+                any(test_upstream_external_redirect),
+            );
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -3363,6 +3484,19 @@ mod tests {
         assert!(names.contains(&http_header::HeaderName::from_static("x-bar")));
     }
 
+    #[test]
+    fn request_may_have_body_uses_method_and_headers() {
+        let empty = HeaderMap::new();
+        assert!(!request_may_have_body(&Method::GET, &empty));
+        assert!(request_may_have_body(&Method::POST, &empty));
+
+        let mut with_length = HeaderMap::new();
+        with_length.insert(http_header::CONTENT_LENGTH, HeaderValue::from_static("0"));
+        assert!(!request_may_have_body(&Method::GET, &with_length));
+        with_length.insert(http_header::CONTENT_LENGTH, HeaderValue::from_static("10"));
+        assert!(request_may_have_body(&Method::GET, &with_length));
+    }
+
     #[tokio::test]
     async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
         let (upstream_base, upstream_handle) = spawn_test_upstream().await;
@@ -3454,6 +3588,127 @@ mod tests {
             .await
             .expect("read stream body");
         assert_eq!(&body[..], b"chunk-achunk-b");
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_preserves_redirect_without_following() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/redirect".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response.headers().get(http_header::LOCATION),
+            Some(&HeaderValue::from_static("/v1/echo?from=redirect"))
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_blocks_cross_origin_redirect() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/redirect-external".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains("cross-origin redirect is not allowed")
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let mut config = test_config();
+        config.openai_upstream_base_url =
+            Url::parse(&upstream_base).expect("valid upstream base url");
+        config.request_timeout = Duration::from_millis(100);
+        let http_clients = HttpClients::build(&config).expect("http clients");
+        let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+        let (broadcaster, _rx) = broadcast::channel(16);
+        let state = Arc::new(AppState {
+            config,
+            pool,
+            http_clients,
+            broadcaster,
+            semaphore,
+        });
+
+        let slow_chunks = stream::unfold(0u8, |state| async move {
+            match state {
+                0 => {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    Some((Ok::<_, Infallible>(Bytes::from_static(b"hello-")), 1))
+                }
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    Some((Ok::<_, Infallible>(Bytes::from_static(b"slow-")), 2))
+                }
+                2 => {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    Some((Ok::<_, Infallible>(Bytes::from_static(b"upload")), 3))
+                }
+                _ => None,
+            }
+        });
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/echo?mode=slow-upload".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from_stream(slow_chunks),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy response payload");
+        assert_eq!(payload["query"], "mode=slow-upload");
+        assert_eq!(payload["body"], "hello-slow-upload");
 
         upstream_handle.abort();
     }
