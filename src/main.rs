@@ -60,6 +60,8 @@ const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit exceeded";
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
+const PROXY_INVALID_REQUEST_TARGET: &str = "proxy request target is malformed";
+const PROXY_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream handshake timed out";
 
 #[derive(Parser, Debug, Default)]
 #[command(
@@ -2058,7 +2060,12 @@ async fn proxy_openai_v1_inner(
     let target_url =
         build_proxy_upstream_url(&state.config.openai_upstream_base_url, &original_uri).map_err(
             |err| {
-                let status = if err.to_string().contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED) {
+                let status = if err.to_string().contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED)
+                    || err.to_string().contains(PROXY_INVALID_REQUEST_TARGET)
+                    || err
+                        .to_string()
+                        .contains("failed to parse proxy upstream url")
+                {
                     StatusCode::BAD_REQUEST
                 } else {
                     StatusCode::INTERNAL_SERVER_ERROR
@@ -2106,19 +2113,31 @@ async fn proxy_openai_v1_inner(
         }
     }
 
-    let upstream_response = upstream_request.send().await.map_err(|err| {
-        if is_body_too_large_error(&err) {
-            (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("request body exceeds {body_limit} bytes"),
-            )
-        } else {
+    let handshake_timeout = state.config.request_timeout;
+    let upstream_response = timeout(handshake_timeout, upstream_request.send())
+        .await
+        .map_err(|_| {
             (
                 StatusCode::BAD_GATEWAY,
-                format!("failed to contact upstream: {err}"),
+                format!(
+                    "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
+                    handshake_timeout.as_millis()
+                ),
             )
-        }
-    })?;
+        })?
+        .map_err(|err| {
+            if is_body_too_large_error(&err) {
+                (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!("request body exceeds {body_limit} bytes"),
+                )
+            } else {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("failed to contact upstream: {err}"),
+                )
+            }
+        })?;
 
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
     let mut response_builder = Response::builder().status(upstream_response.status());
@@ -2168,6 +2187,13 @@ fn error_chain_contains(err: &(dyn StdError + 'static), needle: &str) -> bool {
 fn build_proxy_upstream_url(base: &Url, original_uri: &Uri) -> Result<Url> {
     if path_has_forbidden_dot_segment(original_uri.path()) {
         bail!(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED);
+    }
+    if has_invalid_percent_encoding(original_uri.path())
+        || original_uri
+            .query()
+            .is_some_and(has_invalid_percent_encoding)
+    {
+        bail!(PROXY_INVALID_REQUEST_TARGET);
     }
 
     let host = base
@@ -2222,6 +2248,25 @@ fn path_has_forbidden_dot_segment(path: &str) -> bool {
         candidate = decoded;
     }
     decoded_path_has_forbidden_dot_segment(&candidate)
+}
+
+fn has_invalid_percent_encoding(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] == b'%' {
+            if idx + 2 >= bytes.len()
+                || decode_hex_nibble(bytes[idx + 1]).is_none()
+                || decode_hex_nibble(bytes[idx + 2]).is_none()
+            {
+                return true;
+            }
+            idx += 3;
+            continue;
+        }
+        idx += 1;
+    }
+    false
 }
 
 fn decoded_path_has_forbidden_dot_segment(path: &str) -> bool {
@@ -3208,11 +3253,17 @@ mod tests {
         )
     }
 
+    async fn test_upstream_hang() -> impl IntoResponse {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        StatusCode::NO_CONTENT
+    }
+
     async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
         let app = Router::new()
             .route("/v1/echo", any(test_upstream_echo))
             .route("/v1/stream", any(test_upstream_stream))
-            .route("/v1/slow-stream", any(test_upstream_slow_stream));
+            .route("/v1/slow-stream", any(test_upstream_slow_stream))
+            .route("/v1/hang", any(test_upstream_hang));
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -3261,6 +3312,15 @@ mod tests {
             err.to_string().contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED),
             "error should indicate forbidden dot segments: {err}"
         );
+    }
+
+    #[test]
+    fn has_invalid_percent_encoding_detects_malformed_sequences() {
+        assert!(has_invalid_percent_encoding("/v1/%zz/models"));
+        assert!(has_invalid_percent_encoding("/v1/%/models"));
+        assert!(has_invalid_percent_encoding("/v1/%2/models"));
+        assert!(!has_invalid_percent_encoding("/v1/%2F/models"));
+        assert!(!has_invalid_percent_encoding("/v1/models"));
     }
 
     #[test]
@@ -3539,6 +3599,87 @@ mod tests {
                 .as_str()
                 .expect("error message should be present")
                 .contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED)
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_rejects_malformed_percent_encoded_path() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/%zz/models".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains(PROXY_INVALID_REQUEST_TARGET)
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let mut config = test_config();
+        config.openai_upstream_base_url =
+            Url::parse(&upstream_base).expect("valid upstream base url");
+        config.request_timeout = Duration::from_millis(100);
+        let http_clients = HttpClients::build(&config).expect("http clients");
+        let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+        let (broadcaster, _rx) = broadcast::channel(16);
+        let state = Arc::new(AppState {
+            config,
+            pool,
+            http_clients,
+            broadcaster,
+            semaphore,
+        });
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/hang".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains(PROXY_UPSTREAM_HANDSHAKE_TIMEOUT)
         );
 
         upstream_handle.abort();
