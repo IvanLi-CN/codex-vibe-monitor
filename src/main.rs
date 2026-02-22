@@ -14,7 +14,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     extract::{OriginalUri, Query, State},
     http::{HeaderMap, HeaderName, Method, StatusCode, Uri},
     response::{IntoResponse, Json, Response, Sse},
@@ -56,6 +56,8 @@ use tracing::{error, info, warn};
 
 const SOURCE_XY: &str = "xy";
 const SOURCE_CRS: &str = "crs";
+const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
+const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit exceeded";
 
 #[derive(Parser, Debug, Default)]
 #[command(
@@ -2074,25 +2076,24 @@ async fn proxy_openai_v1_inner(
         ));
     }
 
-    let body_bytes = to_bytes(body, body_limit).await.map_err(|err| {
-        if is_body_too_large_error(&err) {
-            (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("request body exceeds {body_limit} bytes"),
-            )
+    let mut seen_body_bytes = 0usize;
+    let request_body_stream = body.into_data_stream().map(move |chunk| {
+        let chunk = chunk.map_err(|err| {
+            io::Error::other(format!("failed to read request body stream: {err}"))
+        })?;
+        seen_body_bytes = seen_body_bytes.saturating_add(chunk.len());
+        if seen_body_bytes > body_limit {
+            Err(io::Error::other(PROXY_REQUEST_BODY_LIMIT_EXCEEDED))
         } else {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("failed to read request body: {err}"),
-            )
+            Ok(chunk)
         }
-    })?;
+    });
 
     let mut upstream_request = state
         .http_clients
         .proxy
         .request(method, target_url)
-        .body(body_bytes);
+        .body(reqwest::Body::wrap_stream(request_body_stream));
 
     for (name, value) in &headers {
         if should_proxy_header(name) {
@@ -2101,10 +2102,17 @@ async fn proxy_openai_v1_inner(
     }
 
     let upstream_response = upstream_request.send().await.map_err(|err| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("failed to contact upstream: {err}"),
-        )
+        if is_body_too_large_error(&err) {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("request body exceeds {body_limit} bytes"),
+            )
+        } else {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to contact upstream: {err}"),
+            )
+        }
     })?;
 
     let mut response_builder = Response::builder().status(upstream_response.status());
@@ -2128,14 +2136,22 @@ async fn proxy_openai_v1_inner(
         })
 }
 
-fn is_body_too_large_error(err: &axum::Error) -> bool {
-    if err.to_string().contains("length limit exceeded") {
+fn is_body_too_large_error(err: &reqwest::Error) -> bool {
+    if error_chain_contains(err, "length limit exceeded")
+        || error_chain_contains(err, PROXY_REQUEST_BODY_LIMIT_EXCEEDED)
+    {
         return true;
     }
+    false
+}
 
+fn error_chain_contains(err: &(dyn StdError + 'static), needle: &str) -> bool {
+    if err.to_string().contains(needle) {
+        return true;
+    }
     let mut source = err.source();
     while let Some(inner) = source {
-        if inner.to_string().contains("length limit exceeded") {
+        if inner.to_string().contains(needle) {
             return true;
         }
         source = inner.source();
@@ -2731,7 +2747,7 @@ impl AppConfig {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
-            .unwrap_or(64 * 1024 * 1024);
+            .unwrap_or(DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES);
         let max_parallel_polls = overrides
             .max_parallel_polls
             .or_else(|| {
@@ -2951,7 +2967,7 @@ mod tests {
             database_path: PathBuf::from(":memory:"),
             poll_interval: Duration::from_secs(10),
             request_timeout: Duration::from_secs(30),
-            openai_proxy_max_request_body_bytes: 64 * 1024 * 1024,
+            openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
             max_parallel_polls: 2,
             shared_connection_parallelism: 1,
             http_bind: "127.0.0.1:38080".parse().expect("valid socket address"),
@@ -2964,7 +2980,11 @@ mod tests {
     }
 
     async fn test_state_with_openai_base(openai_base: Url) -> Arc<AppState> {
-        test_state_with_openai_base_and_body_limit(openai_base, 64 * 1024 * 1024).await
+        test_state_with_openai_base_and_body_limit(
+            openai_base,
+            DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        )
+        .await
     }
 
     async fn test_state_with_openai_base_and_body_limit(
