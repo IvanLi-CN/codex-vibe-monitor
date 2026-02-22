@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     convert::Infallible,
     env,
+    error::Error as StdError,
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
@@ -2060,16 +2061,36 @@ async fn proxy_openai_v1_inner(
             },
         )?;
 
-    let body_bytes = to_bytes(body, usize::MAX).await.map_err(|err| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("failed to read request body: {err}"),
-        )
+    let body_limit = state.config.openai_proxy_max_request_body_bytes;
+    if let Some(content_length) = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        && content_length > body_limit
+    {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("request body exceeds {body_limit} bytes"),
+        ));
+    }
+
+    let body_bytes = to_bytes(body, body_limit).await.map_err(|err| {
+        if is_body_too_large_error(&err) {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("request body exceeds {body_limit} bytes"),
+            )
+        } else {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("failed to read request body: {err}"),
+            )
+        }
     })?;
 
     let mut upstream_request = state
         .http_clients
-        .shared
+        .proxy
         .request(method, target_url)
         .body(body_bytes);
 
@@ -2105,6 +2126,21 @@ async fn proxy_openai_v1_inner(
                 format!("failed to build proxy response: {err}"),
             )
         })
+}
+
+fn is_body_too_large_error(err: &axum::Error) -> bool {
+    if err.to_string().contains("length limit exceeded") {
+        return true;
+    }
+
+    let mut source = err.source();
+    while let Some(inner) = source {
+        if inner.to_string().contains("length limit exceeded") {
+            return true;
+        }
+        source = inner.source();
+    }
+    false
 }
 
 fn build_proxy_upstream_url(base: &Url, original_uri: &Uri) -> Result<Url> {
@@ -2559,6 +2595,7 @@ struct BucketAggregate {
 #[derive(Debug, Clone)]
 struct HttpClients {
     shared: Client,
+    proxy: Client,
     timeout: Duration,
     user_agent: String,
 }
@@ -2568,13 +2605,19 @@ impl HttpClients {
         let timeout = config.request_timeout;
         let user_agent = config.user_agent.clone();
 
-        let shared = Self::builder(timeout, &user_agent)
+        let shared = Self::builder(Some(timeout), &user_agent)
             .pool_max_idle_per_host(config.shared_connection_parallelism)
             .build()
             .context("failed to construct shared HTTP client")?;
 
+        let proxy = Self::builder(None, &user_agent)
+            .pool_max_idle_per_host(config.shared_connection_parallelism)
+            .build()
+            .context("failed to construct proxy HTTP client")?;
+
         Ok(Self {
             shared,
+            proxy,
             timeout,
             user_agent,
         })
@@ -2582,7 +2625,7 @@ impl HttpClients {
 
     fn client_for_parallelism(&self, force_new_connection: bool) -> Result<Client> {
         if force_new_connection {
-            let client = Self::builder(self.timeout, &self.user_agent)
+            let client = Self::builder(Some(self.timeout), &self.user_agent)
                 .pool_max_idle_per_host(0)
                 .build()
                 .context("failed to construct dedicated HTTP client")?;
@@ -2592,12 +2635,17 @@ impl HttpClients {
         }
     }
 
-    fn builder(timeout: Duration, user_agent: &str) -> ClientBuilder {
-        Client::builder()
-            .timeout(timeout)
+    fn builder(timeout: Option<Duration>, user_agent: &str) -> ClientBuilder {
+        let builder = Client::builder()
             .user_agent(user_agent)
             .pool_idle_timeout(Duration::from_secs(90))
-            .tcp_keepalive(Duration::from_secs(90))
+            .tcp_keepalive(Duration::from_secs(90));
+
+        if let Some(timeout) = timeout {
+            builder.timeout(timeout)
+        } else {
+            builder
+        }
     }
 }
 
@@ -2612,6 +2660,7 @@ struct AppConfig {
     database_path: PathBuf,
     poll_interval: Duration,
     request_timeout: Duration,
+    openai_proxy_max_request_body_bytes: usize,
     max_parallel_polls: usize,
     shared_connection_parallelism: usize,
     http_bind: SocketAddr,
@@ -2678,6 +2727,11 @@ impl AppConfig {
             })
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(60));
+        let openai_proxy_max_request_body_bytes = env::var("OPENAI_PROXY_MAX_REQUEST_BODY_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(64 * 1024 * 1024);
         let max_parallel_polls = overrides
             .max_parallel_polls
             .or_else(|| {
@@ -2781,6 +2835,7 @@ impl AppConfig {
             database_path,
             poll_interval,
             request_timeout,
+            openai_proxy_max_request_body_bytes,
             max_parallel_polls,
             shared_connection_parallelism,
             http_bind,
@@ -2896,6 +2951,7 @@ mod tests {
             database_path: PathBuf::from(":memory:"),
             poll_interval: Duration::from_secs(10),
             request_timeout: Duration::from_secs(30),
+            openai_proxy_max_request_body_bytes: 64 * 1024 * 1024,
             max_parallel_polls: 2,
             shared_connection_parallelism: 1,
             http_bind: "127.0.0.1:38080".parse().expect("valid socket address"),
@@ -2908,6 +2964,13 @@ mod tests {
     }
 
     async fn test_state_with_openai_base(openai_base: Url) -> Arc<AppState> {
+        test_state_with_openai_base_and_body_limit(openai_base, 64 * 1024 * 1024).await
+    }
+
+    async fn test_state_with_openai_base_and_body_limit(
+        openai_base: Url,
+        body_limit: usize,
+    ) -> Arc<AppState> {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
             .expect("connect in-memory sqlite");
@@ -2917,6 +2980,7 @@ mod tests {
 
         let mut config = test_config();
         config.openai_upstream_base_url = openai_base;
+        config.openai_proxy_max_request_body_bytes = body_limit;
         let http_clients = HttpClients::build(&config).expect("http clients");
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
@@ -3098,6 +3162,39 @@ mod tests {
             .await
             .expect("read stream body");
         assert_eq!(&body[..], b"chunk-achunk-b");
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_rejects_oversized_request_body() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base_and_body_limit(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            4,
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/echo".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from("hello"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains("request body exceeds")
+        );
 
         upstream_handle.abort();
     }

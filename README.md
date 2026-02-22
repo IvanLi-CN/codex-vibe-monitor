@@ -99,6 +99,7 @@ XY_SESSION_COOKIE_VALUE=<从浏览器开发者工具导出的 Cookie>
 XY_DATABASE_PATH=codex_vibe_monitor.db         # (默认)
 XY_POLL_INTERVAL_SECS=10                       # (10)
 XY_REQUEST_TIMEOUT_SECS=60                     # (60)
+OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=67108864   # (64MiB)
 XY_MAX_PARALLEL_POLLS=6                        # (6)
 XY_SHARED_CONNECTION_PARALLELISM=2             # (2)
 XY_HTTP_BIND=127.0.0.1:8080                    # (127.0.0.1:8080)
