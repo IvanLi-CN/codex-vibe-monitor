@@ -41,6 +41,21 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 3. Traefik 路由按固定 Host 转发到应用服务。
 4. 不允许旁路访问应用容器（安全组、防火墙、网络策略）。
 
+## Proxy Capture Runtime
+
+建议在部署清单中显式配置以下变量（未配置时使用服务默认值）：
+
+- `PROXY_RAW_MAX_BYTES`：单次请求/响应原文采集上限；默认 `0=unlimited`（支持显式配置正整数上限）。
+- `PROXY_RAW_RETENTION_DAYS`：原文留存天数（到期清理原文字段/文件，不影响结构化统计）。
+- `PROXY_ENFORCE_STREAM_INCLUDE_USAGE`：是否在 `chat.completions` 流式请求中强制注入 `stream_options.include_usage=true`。
+- `PROXY_PRICING_CATALOG_PATH`：本地价目表文件路径（用于成本估算）。
+- `XY_LEGACY_POLL_ENABLED`：legacy 轮询写入开关（默认关闭；开启后会并行写入旧来源统计）。
+
+统计接口行为：
+
+- `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries` 默认以代理采集（`source=proxy`）为主。
+- `GET /api/stats/perf` 返回代理链路阶段耗时聚合统计。
+
 ## Header Relay Policy
 
 应用在转发 `/v1/*` 到上游时，不会透传以下代理身份相关头：
