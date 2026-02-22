@@ -145,6 +145,8 @@ cargo run -- \
 
 ## Docker
 
+部署到网关/反向代理（例如 Traefik）时，请先阅读部署与安全边界说明：[`docs/deployment.md`](docs/deployment.md)。
+
 构建镜像：
 
 ```bash
