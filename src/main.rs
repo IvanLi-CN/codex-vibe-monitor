@@ -3823,22 +3823,29 @@ fn estimate_proxy_cost(
     let Some(pricing) = catalog.models.get(model) else {
         return (None, false, price_version);
     };
-    let input_tokens = usage.input_tokens.unwrap_or(0) as f64;
-    let output_tokens = usage.output_tokens.unwrap_or(0) as f64;
-    let cache_input_tokens = usage.cache_input_tokens.unwrap_or(0) as f64;
-    let reasoning_tokens = usage.reasoning_tokens.unwrap_or(0) as f64;
-    if input_tokens == 0.0
+    let input_tokens = usage.input_tokens.unwrap_or(0).max(0);
+    let output_tokens = usage.output_tokens.unwrap_or(0).max(0) as f64;
+    let cache_input_tokens = usage.cache_input_tokens.unwrap_or(0).max(0);
+    let reasoning_tokens = usage.reasoning_tokens.unwrap_or(0).max(0) as f64;
+    if input_tokens == 0
         && output_tokens == 0.0
-        && cache_input_tokens == 0.0
+        && cache_input_tokens == 0
         && reasoning_tokens == 0.0
     {
         return (None, false, price_version);
     }
 
-    let mut cost = (input_tokens / 1_000_000.0) * pricing.input_per_1m
+    let billable_cache_tokens = if pricing.cache_input_per_1m.is_some() {
+        cache_input_tokens
+    } else {
+        0
+    };
+    let non_cached_input_tokens = input_tokens.saturating_sub(billable_cache_tokens);
+
+    let mut cost = (non_cached_input_tokens as f64 / 1_000_000.0) * pricing.input_per_1m
         + (output_tokens / 1_000_000.0) * pricing.output_per_1m;
     if let Some(cache_price) = pricing.cache_input_per_1m {
-        cost += (cache_input_tokens / 1_000_000.0) * cache_price;
+        cost += (billable_cache_tokens as f64 / 1_000_000.0) * cache_price;
     }
     if let Some(reasoning_price) = pricing.reasoning_per_1m {
         cost += (reasoning_tokens / 1_000_000.0) * reasoning_price;
@@ -7983,6 +7990,70 @@ mod tests {
         assert_eq!(parsed.usage.output_tokens, Some(7));
         assert_eq!(parsed.usage.total_tokens, Some(18));
         assert!(parsed.usage_missing_reason.is_none());
+    }
+
+    #[test]
+    fn estimate_proxy_cost_subtracts_cached_tokens_from_base_input_rate() {
+        let catalog = PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([(
+                "gpt-test".to_string(),
+                ModelPricing {
+                    input_per_1m: 1.0,
+                    output_per_1m: 2.0,
+                    cache_input_per_1m: Some(0.5),
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+        let usage = ParsedUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cache_input_tokens: Some(400),
+            reasoning_tokens: None,
+            total_tokens: Some(1_200),
+        };
+
+        let (cost, estimated, price_version) =
+            estimate_proxy_cost(&catalog, Some("gpt-test"), &usage);
+
+        let expected = ((600.0 * 1.0) + (200.0 * 2.0) + (400.0 * 0.5)) / 1_000_000.0;
+        let computed = cost.expect("cost should be present");
+        assert!((computed - expected).abs() < 1e-12);
+        assert!(estimated);
+        assert_eq!(price_version.as_deref(), Some("unit-test"));
+    }
+
+    #[test]
+    fn estimate_proxy_cost_keeps_full_input_when_cache_price_missing() {
+        let catalog = PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([(
+                "gpt-test".to_string(),
+                ModelPricing {
+                    input_per_1m: 1.0,
+                    output_per_1m: 2.0,
+                    cache_input_per_1m: None,
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+        let usage = ParsedUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cache_input_tokens: Some(400),
+            reasoning_tokens: None,
+            total_tokens: Some(1_200),
+        };
+
+        let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-test"), &usage);
+
+        let expected = ((1_000.0 * 1.0) + (200.0 * 2.0)) / 1_000_000.0;
+        let computed = cost.expect("cost should be present");
+        assert!((computed - expected).abs() < 1e-12);
+        assert!(estimated);
     }
 
     #[tokio::test]
