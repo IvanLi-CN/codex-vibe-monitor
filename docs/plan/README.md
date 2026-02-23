@@ -61,4 +61,4 @@
 | 0005 | OpenAI 反向代理透传         | 已完成 | `0005:openai-reverse-proxy/PLAN.md`           | 2026-02-22 | PR #40 |
 | 0006 | 代理模型列表劫持与合并      | 已完成 | `0006:proxy-model-list-hijack/PLAN.md`        | 2026-02-22 | PR #41 |
 | 0007 | MITM 请求级计费与性能采集   | 已完成 | `0007:proxy-mitm-usage-billing/PLAN.md`       | 2026-02-22 | PR #42 |
-| 0008 | 代理流式稳定性修复          | 待实现 | `0008:proxy-stream-stability/PLAN.md`         | 2026-02-23 | -      |
+| 0008 | 代理流式稳定性修复          | 已完成 | `0008:proxy-stream-stability/PLAN.md`         | 2026-02-23 | PR #43 |

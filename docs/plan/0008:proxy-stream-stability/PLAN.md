@@ -39,7 +39,13 @@
 
 ## Milestones
 
-- [ ] M1 日志语义修正与首包失败处理
-- [ ] M2 HTTP 传输配置优化（HTTP/2 keepalive）
-- [ ] M3 回归测试补齐并通过
-- [ ] M4 Codex 端到端联调完成并留存结果
+- [x] M1 日志语义修正与首包失败处理
+- [x] M2 HTTP 传输配置优化（HTTP/2 keepalive）
+- [x] M3 回归测试补齐并通过
+- [x] M4 Codex 端到端联调完成并留存结果
+
+## Execution Notes
+
+- PR: #43
+- Automated: `cargo fmt`, `cargo test`（55 passed, 0 failed）
+- Codex 联调：`codex exec` 走 `http://127.0.0.1:8080/v1`，连续 5 次稳定性验证通过（`pass=5, mismatch=0, fail=0`）
