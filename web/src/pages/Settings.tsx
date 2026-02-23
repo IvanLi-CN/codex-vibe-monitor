@@ -431,7 +431,7 @@ export default function SettingsPage() {
               </thead>
               <tbody>
                 {pricingDraft.entries.map((entry, index) => (
-                  <tr key={`${entry.model}-${index}`}>
+                  <tr key={index}>
                     <td>
                       <input
                         type="text"

@@ -15,6 +15,8 @@ export function useSettings() {
   const [isPricingSaving, setIsPricingSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const serverSnapshotRef = useRef<SettingsPayload | null>(null)
+  const pendingPricingRef = useRef<PricingSettings | null>(null)
+  const pricingSaveInFlightRef = useRef(false)
 
   const load = useCallback(async () => {
     setIsLoading(true)
@@ -91,25 +93,50 @@ export function useSettings() {
           pricing: nextPricing,
         }
       })
-      setIsPricingSaving(true)
-      try {
-        const savedPricing = await updatePricingSettings(nextPricing)
-        setSettings((current) => {
-          if (!current) return current
-          const merged: SettingsPayload = {
-            ...current,
-            pricing: savedPricing,
-          }
-          serverSnapshotRef.current = merged
-          return merged
-        })
-        setError(null)
-      } catch (err) {
-        rollback()
-        setError(err instanceof Error ? err.message : String(err))
-      } finally {
-        setIsPricingSaving(false)
+      pendingPricingRef.current = nextPricing
+
+      if (pricingSaveInFlightRef.current) {
+        return
       }
+
+      pricingSaveInFlightRef.current = true
+      setIsPricingSaving(true)
+      while (pendingPricingRef.current) {
+        const candidate = pendingPricingRef.current
+        pendingPricingRef.current = null
+
+        try {
+          const savedPricing = await updatePricingSettings(candidate)
+
+          // Ignore stale response payloads when a newer draft is already queued.
+          if (pendingPricingRef.current == null) {
+            setSettings((current) => {
+              if (!current) return current
+              const merged: SettingsPayload = {
+                ...current,
+                pricing: savedPricing,
+              }
+              serverSnapshotRef.current = merged
+              return merged
+            })
+          } else if (serverSnapshotRef.current) {
+            serverSnapshotRef.current = {
+              ...serverSnapshotRef.current,
+              pricing: savedPricing,
+            }
+          }
+
+          setError(null)
+        } catch (err) {
+          if (pendingPricingRef.current == null) {
+            rollback()
+          }
+          setError(err instanceof Error ? err.message : String(err))
+        }
+      }
+
+      pricingSaveInFlightRef.current = false
+      setIsPricingSaving(false)
     },
     [rollback],
   )
