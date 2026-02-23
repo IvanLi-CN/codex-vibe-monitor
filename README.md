@@ -104,6 +104,7 @@ OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=268435456  # (256MiB)
 PROXY_RAW_MAX_BYTES=0                          # (0=unlimited, set >0 to cap)
 PROXY_RAW_RETENTION_DAYS=7                     # (7)
 PROXY_ENFORCE_STREAM_INCLUDE_USAGE=true        # (true)
+PROXY_USAGE_BACKFILL_ON_STARTUP=true           # (true，启动时回填历史 proxy 空 token 记录)
 PROXY_PRICING_CATALOG_PATH=config/model-pricing.json  # (config/model-pricing.json)
 XY_LEGACY_POLL_ENABLED=false                   # (false，true 时启用 legacy 轮询写入)
 XY_MAX_PARALLEL_POLLS=6                        # (6)
@@ -134,7 +135,7 @@ cargo run -- \
 
 ## HTTP API 与 SSE
 
-- 统计相关接口默认以代理采集记录（`source=proxy`）为主；启用 legacy 轮询（如 `XY_LEGACY_POLL_ENABLED=true`）后会合并旧来源增量。
+- 统计相关接口默认合并全部来源（`xy + proxy`）；若开启 legacy 轮询（`XY_LEGACY_POLL_ENABLED=true`）会继续写入并参与聚合。
 - `GET /health`：健康检查，返回 `ok`。
 - `GET /api/version`：返回 `{ backend, frontend }`。
 - `GET /api/settings/proxy-models`：获取 `/v1/models` 劫持与上游合并开关状态。
