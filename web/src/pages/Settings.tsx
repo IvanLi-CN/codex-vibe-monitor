@@ -81,6 +81,9 @@ function parsePricingDraft(draft: PricingDraft): { value?: PricingSettings; erro
     if (inputPer1m == null || outputPer1m == null) {
       return { error: 'settings.pricing.errors.numberInvalid' }
     }
+    if (cacheInputPer1m === undefined || reasoningPer1m === undefined) {
+      return { error: 'settings.pricing.errors.numberInvalid' }
+    }
     if (
       inputPer1m < 0 ||
       outputPer1m < 0 ||
@@ -332,11 +335,20 @@ export default function SettingsPage() {
     )
   }
 
-  if (!settings || !currentProxy || !pricingDraft) {
+  if (!settings || !currentProxy) {
     return (
       <section className="mx-auto max-w-6xl space-y-4">
         <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
         <p className="text-sm text-error">{t('settings.loadError', { error: error ?? 'unknown' })}</p>
+      </section>
+    )
+  }
+
+  if (!pricingDraft) {
+    return (
+      <section className="mx-auto max-w-6xl space-y-4">
+        <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
+        <p className="text-sm text-base-content/70">{t('settings.loading')}</p>
       </section>
     )
   }
