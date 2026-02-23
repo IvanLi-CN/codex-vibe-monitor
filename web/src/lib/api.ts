@@ -183,12 +183,31 @@ export interface VersionResponse {
   frontend: string
 }
 
-export interface ProxyModelSettings {
+export interface ProxySettings {
   hijackEnabled: boolean
   mergeUpstreamEnabled: boolean
-  defaultHijackEnabled: boolean
   models: string[]
   enabledModels: string[]
+  defaultHijackEnabled: boolean
+}
+
+export interface PricingEntry {
+  model: string
+  inputPer1m: number
+  outputPer1m: number
+  cacheInputPer1m?: number | null
+  reasoningPer1m?: number | null
+  source: string
+}
+
+export interface PricingSettings {
+  catalogVersion: string
+  entries: PricingEntry[]
+}
+
+export interface SettingsPayload {
+  proxy: ProxySettings
+  pricing: PricingSettings
 }
 
 function normalizeStringArray(value: unknown): string[] {
@@ -196,7 +215,12 @@ function normalizeStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string')
 }
 
-function normalizeProxyModelSettings(raw: unknown): ProxyModelSettings {
+function normalizeFiniteNumber(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  return value
+}
+
+function normalizeProxySettings(raw: unknown): ProxySettings {
   const payload = (raw ?? {}) as Record<string, unknown>
   const models = normalizeStringArray(payload.models)
   const hasEnabledModelsField = Object.prototype.hasOwnProperty.call(payload, 'enabledModels')
@@ -207,9 +231,51 @@ function normalizeProxyModelSettings(raw: unknown): ProxyModelSettings {
   return {
     hijackEnabled: Boolean(payload.hijackEnabled),
     mergeUpstreamEnabled: Boolean(payload.mergeUpstreamEnabled),
-    defaultHijackEnabled: Boolean(payload.defaultHijackEnabled),
     models,
     enabledModels,
+    defaultHijackEnabled: Boolean(payload.defaultHijackEnabled),
+  }
+}
+
+function normalizePricingEntry(raw: unknown): PricingEntry | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const model = typeof payload.model === 'string' ? payload.model.trim() : ''
+  const inputPer1m = normalizeFiniteNumber(payload.inputPer1m)
+  const outputPer1m = normalizeFiniteNumber(payload.outputPer1m)
+  if (!model || inputPer1m === undefined || outputPer1m === undefined) return null
+  const cacheInputPer1m = normalizeFiniteNumber(payload.cacheInputPer1m)
+  const reasoningPer1m = normalizeFiniteNumber(payload.reasoningPer1m)
+  return {
+    model,
+    inputPer1m,
+    outputPer1m,
+    cacheInputPer1m: cacheInputPer1m ?? null,
+    reasoningPer1m: reasoningPer1m ?? null,
+    source: typeof payload.source === 'string' && payload.source.trim() ? payload.source.trim() : 'custom',
+  }
+}
+
+function normalizePricingSettings(raw: unknown): PricingSettings {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const entriesRaw = Array.isArray(payload.entries) ? payload.entries : []
+  const entries = entriesRaw
+    .map(normalizePricingEntry)
+    .filter((entry): entry is PricingEntry => entry != null)
+    .sort((a, b) => a.model.localeCompare(b.model))
+  return {
+    catalogVersion:
+      typeof payload.catalogVersion === 'string' && payload.catalogVersion.trim()
+        ? payload.catalogVersion.trim()
+        : 'custom',
+    entries,
+  }
+}
+
+function normalizeSettingsPayload(raw: unknown): SettingsPayload {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  return {
+    proxy: normalizeProxySettings(payload.proxy),
+    pricing: normalizePricingSettings(payload.pricing),
   }
 }
 
@@ -217,21 +283,29 @@ export async function fetchVersion(): Promise<VersionResponse> {
   return fetchJson<VersionResponse>('/api/version')
 }
 
-export async function fetchProxyModelSettings(): Promise<ProxyModelSettings> {
-  const response = await fetchJson<unknown>('/api/settings/proxy-models')
-  return normalizeProxyModelSettings(response)
+export async function fetchSettings(): Promise<SettingsPayload> {
+  const response = await fetchJson<unknown>('/api/settings')
+  return normalizeSettingsPayload(response)
 }
 
-export async function updateProxyModelSettings(payload: {
+export async function updateProxySettings(payload: {
   hijackEnabled: boolean
   mergeUpstreamEnabled: boolean
   enabledModels: string[]
-}): Promise<ProxyModelSettings> {
-  const response = await fetchJson<unknown>('/api/settings/proxy-models', {
+}): Promise<ProxySettings> {
+  const response = await fetchJson<unknown>('/api/settings/proxy', {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
-  return normalizeProxyModelSettings(response)
+  return normalizeProxySettings(response)
+}
+
+export async function updatePricingSettings(payload: PricingSettings): Promise<PricingSettings> {
+  const response = await fetchJson<unknown>('/api/settings/pricing', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+  return normalizePricingSettings(response)
 }
 
 export async function fetchSummary(window: string, options?: { limit?: number; timeZone?: string }) {

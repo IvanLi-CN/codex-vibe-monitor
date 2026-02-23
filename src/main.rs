@@ -22,7 +22,7 @@ use axum::{
     extract::{OriginalUri, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
     response::{IntoResponse, Json, Response, Sse},
-    routing::{any, get},
+    routing::{any, get, put},
 };
 use chrono::{
     DateTime, Datelike, Duration as ChronoDuration, LocalResult, NaiveDate, NaiveDateTime,
@@ -88,6 +88,8 @@ const PROXY_STREAM_TERMINAL_COMPLETED: &str = "stream_completed";
 const PROXY_STREAM_TERMINAL_ERROR: &str = "stream_error";
 const PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED: &str = "downstream_closed";
 const PROXY_MODEL_SETTINGS_SINGLETON_ID: i64 = 1;
+const PRICING_SETTINGS_SINGLETON_ID: i64 = 1;
+const DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-02-23";
 const DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE: bool = true;
 const DEFAULT_XY_LEGACY_POLL_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
@@ -196,14 +198,7 @@ async fn main() -> Result<()> {
             config.proxy_raw_dir.display()
         )
     })?;
-    let pricing_catalog = Arc::new(
-        load_pricing_catalog(&config.proxy_pricing_catalog_path).with_context(|| {
-            format!(
-                "failed to load pricing catalog: {}",
-                config.proxy_pricing_catalog_path.display()
-            )
-        })?,
-    );
+    let pricing_catalog = Arc::new(RwLock::new(load_pricing_catalog(&pool).await?));
 
     let http_clients = HttpClients::build(&config)?;
     let (tx, _rx) = broadcast::channel(128);
@@ -217,6 +212,7 @@ async fn main() -> Result<()> {
         semaphore: semaphore.clone(),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+        pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog,
     });
 
@@ -376,10 +372,13 @@ async fn spawn_http_server(
     let mut router = Router::new()
         .route("/health", get(health_check))
         .route("/api/version", get(get_versions))
+        .route("/api/settings", get(get_settings))
         .route(
             "/api/settings/proxy-models",
-            get(get_proxy_model_settings).put(put_proxy_model_settings),
+            any(removed_proxy_model_settings_endpoint),
         )
+        .route("/api/settings/proxy", put(put_proxy_settings))
+        .route("/api/settings/pricing", put(put_pricing_settings))
         .route("/api/invocations", get(list_invocations))
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
@@ -1221,6 +1220,38 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure default proxy_model_settings row")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pricing_settings_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            catalog_version TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pricing_settings_meta table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pricing_settings_models (
+            model TEXT PRIMARY KEY,
+            input_per_1m REAL NOT NULL,
+            output_per_1m REAL NOT NULL,
+            cache_input_per_1m REAL,
+            reasoning_per_1m REAL,
+            source TEXT NOT NULL DEFAULT 'custom',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pricing_settings_models table existence")?;
+
+    seed_default_pricing_catalog(pool).await?;
+
     Ok(())
 }
 
@@ -1269,6 +1300,435 @@ async fn save_proxy_model_settings(
     .context("failed to persist proxy_model_settings row")?;
 
     Ok(())
+}
+
+#[derive(Debug, FromRow)]
+struct PricingSettingsMetaRow {
+    catalog_version: String,
+}
+
+#[derive(Debug, FromRow)]
+struct PricingSettingsModelRow {
+    model: String,
+    input_per_1m: f64,
+    output_per_1m: f64,
+    cache_input_per_1m: Option<f64>,
+    reasoning_per_1m: Option<f64>,
+    source: String,
+}
+
+async fn seed_default_pricing_catalog(pool: &Pool<Sqlite>) -> Result<()> {
+    let legacy_path = resolve_legacy_pricing_catalog_path();
+    seed_default_pricing_catalog_with_legacy_path(pool, Some(&legacy_path)).await
+}
+
+async fn seed_default_pricing_catalog_with_legacy_path(
+    pool: &Pool<Sqlite>,
+    legacy_path: Option<&Path>,
+) -> Result<()> {
+    let meta_exists = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pricing_settings_meta
+        WHERE id = ?1
+        "#,
+    )
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .fetch_one(pool)
+    .await
+    .context("failed to count pricing_settings_meta rows")?;
+    if meta_exists > 0 {
+        return Ok(());
+    }
+
+    let existing_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pricing_settings_models
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .context("failed to count pricing_settings_models rows")?;
+
+    if existing_count > 0 {
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO pricing_settings_meta (id, catalog_version)
+            VALUES (?1, ?2)
+            "#,
+        )
+        .bind(PRICING_SETTINGS_SINGLETON_ID)
+        .bind(DEFAULT_PRICING_CATALOG_VERSION)
+        .execute(pool)
+        .await
+        .context("failed to ensure default pricing_settings_meta row")?;
+        return Ok(());
+    }
+
+    if let Some(path) = legacy_path {
+        match load_legacy_pricing_catalog(path) {
+            Ok(Some(catalog)) => {
+                info!(
+                    path = %path.display(),
+                    version = %catalog.version,
+                    model_count = catalog.models.len(),
+                    "migrating legacy pricing catalog into sqlite"
+                );
+                save_pricing_catalog(pool, &catalog).await?;
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!(
+                    path = %path.display(),
+                    ?err,
+                    "failed to migrate legacy pricing catalog; falling back to defaults"
+                );
+            }
+        }
+    }
+
+    save_pricing_catalog(pool, &default_pricing_catalog()).await
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyPricingCatalogFile {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    models: HashMap<String, LegacyModelPricing>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyModelPricing {
+    input_per_1m: f64,
+    output_per_1m: f64,
+    #[serde(default)]
+    cache_input_per_1m: Option<f64>,
+    #[serde(default)]
+    reasoning_per_1m: Option<f64>,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+fn resolve_legacy_pricing_catalog_path() -> PathBuf {
+    env::var("PROXY_PRICING_CATALOG_PATH")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_PROXY_PRICING_CATALOG_PATH))
+}
+
+fn load_legacy_pricing_catalog(path: &Path) -> Result<Option<PricingCatalog>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read legacy pricing catalog: {}", path.display()))?;
+    let parsed: LegacyPricingCatalogFile = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse legacy pricing catalog: {}", path.display()))?;
+    if parsed.models.is_empty() {
+        return Ok(None);
+    }
+
+    let version = parsed
+        .version
+        .and_then(normalize_pricing_catalog_version)
+        .unwrap_or_else(|| DEFAULT_PRICING_CATALOG_VERSION.to_string());
+    let models = parsed
+        .models
+        .into_iter()
+        .map(|(model, pricing)| {
+            (
+                model,
+                ModelPricing {
+                    input_per_1m: pricing.input_per_1m,
+                    output_per_1m: pricing.output_per_1m,
+                    cache_input_per_1m: pricing.cache_input_per_1m,
+                    reasoning_per_1m: pricing.reasoning_per_1m,
+                    source: pricing
+                        .source
+                        .map(normalize_pricing_source)
+                        .unwrap_or_else(default_pricing_source_custom),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    Ok(Some(PricingCatalog { version, models }))
+}
+
+async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingCatalog> {
+    seed_default_pricing_catalog(pool).await?;
+
+    let meta = sqlx::query_as::<_, PricingSettingsMetaRow>(
+        r#"
+        SELECT catalog_version
+        FROM pricing_settings_meta
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .fetch_optional(pool)
+    .await
+    .context("failed to load pricing_settings_meta row")?;
+    let version = meta
+        .map(|row| row.catalog_version)
+        .unwrap_or_else(|| DEFAULT_PRICING_CATALOG_VERSION.to_string());
+
+    let rows = sqlx::query_as::<_, PricingSettingsModelRow>(
+        r#"
+        SELECT model, input_per_1m, output_per_1m, cache_input_per_1m, reasoning_per_1m, source
+        FROM pricing_settings_models
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to load pricing_settings_models rows")?;
+
+    let mut models = HashMap::new();
+    for row in rows {
+        models.insert(
+            row.model,
+            ModelPricing {
+                input_per_1m: row.input_per_1m,
+                output_per_1m: row.output_per_1m,
+                cache_input_per_1m: row.cache_input_per_1m,
+                reasoning_per_1m: row.reasoning_per_1m,
+                source: normalize_pricing_source(row.source),
+            },
+        );
+    }
+
+    Ok(PricingCatalog { version, models })
+}
+
+async fn save_pricing_catalog(pool: &Pool<Sqlite>, catalog: &PricingCatalog) -> Result<()> {
+    let mut tx = pool
+        .begin()
+        .await
+        .context("failed to begin pricing transaction")?;
+    sqlx::query("DELETE FROM pricing_settings_models")
+        .execute(&mut *tx)
+        .await
+        .context("failed to clear pricing_settings_models rows")?;
+
+    let mut keys = catalog.models.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    for model in keys {
+        let pricing = catalog
+            .models
+            .get(&model)
+            .with_context(|| format!("missing pricing entry while saving: {model}"))?;
+        sqlx::query(
+            r#"
+            INSERT INTO pricing_settings_models (
+                model,
+                input_per_1m,
+                output_per_1m,
+                cache_input_per_1m,
+                reasoning_per_1m,
+                source,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+            "#,
+        )
+        .bind(model)
+        .bind(pricing.input_per_1m)
+        .bind(pricing.output_per_1m)
+        .bind(pricing.cache_input_per_1m)
+        .bind(pricing.reasoning_per_1m)
+        .bind(&pricing.source)
+        .execute(&mut *tx)
+        .await
+        .context("failed to insert pricing_settings_models row")?;
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO pricing_settings_meta (id, catalog_version, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+            catalog_version = excluded.catalog_version,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .bind(&catalog.version)
+    .execute(&mut *tx)
+    .await
+    .context("failed to upsert pricing_settings_meta row")?;
+
+    tx.commit()
+        .await
+        .context("failed to commit pricing transaction")?;
+    Ok(())
+}
+
+fn default_pricing_catalog() -> PricingCatalog {
+    let models = [
+        (
+            "gpt-5.3-codex",
+            ModelPricing {
+                input_per_1m: 1.75,
+                output_per_1m: 14.0,
+                cache_input_per_1m: Some(0.175),
+                reasoning_per_1m: None,
+                source: "temporary".to_string(),
+            },
+        ),
+        (
+            "gpt-5.2-codex",
+            ModelPricing {
+                input_per_1m: 1.75,
+                output_per_1m: 14.0,
+                cache_input_per_1m: Some(0.175),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.1-codex-max",
+            ModelPricing {
+                input_per_1m: 1.25,
+                output_per_1m: 10.0,
+                cache_input_per_1m: Some(0.125),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.1-codex-mini",
+            ModelPricing {
+                input_per_1m: 0.25,
+                output_per_1m: 2.0,
+                cache_input_per_1m: Some(0.025),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.2",
+            ModelPricing {
+                input_per_1m: 1.75,
+                output_per_1m: 14.0,
+                cache_input_per_1m: Some(0.175),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5",
+            ModelPricing {
+                input_per_1m: 1.25,
+                output_per_1m: 10.0,
+                cache_input_per_1m: Some(0.125),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5-mini",
+            ModelPricing {
+                input_per_1m: 0.25,
+                output_per_1m: 2.0,
+                cache_input_per_1m: Some(0.025),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5-nano",
+            ModelPricing {
+                input_per_1m: 0.05,
+                output_per_1m: 0.4,
+                cache_input_per_1m: Some(0.005),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.2-chat-latest",
+            ModelPricing {
+                input_per_1m: 1.75,
+                output_per_1m: 14.0,
+                cache_input_per_1m: Some(0.175),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.1-chat-latest",
+            ModelPricing {
+                input_per_1m: 1.25,
+                output_per_1m: 10.0,
+                cache_input_per_1m: Some(0.125),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5-chat-latest",
+            ModelPricing {
+                input_per_1m: 1.25,
+                output_per_1m: 10.0,
+                cache_input_per_1m: Some(0.125),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.1-codex",
+            ModelPricing {
+                input_per_1m: 1.25,
+                output_per_1m: 10.0,
+                cache_input_per_1m: Some(0.125),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5-codex",
+            ModelPricing {
+                input_per_1m: 1.25,
+                output_per_1m: 10.0,
+                cache_input_per_1m: Some(0.125),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.2-pro",
+            ModelPricing {
+                input_per_1m: 21.0,
+                output_per_1m: 168.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5-pro",
+            ModelPricing {
+                input_per_1m: 15.0,
+                output_per_1m: 120.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(model, pricing)| (model.to_string(), pricing))
+    .collect::<HashMap<_, _>>();
+
+    PricingCatalog {
+        version: DEFAULT_PRICING_CATALOG_VERSION.to_string(),
+        models,
+    }
 }
 
 async fn persist_records(
@@ -2794,7 +3254,7 @@ async fn proxy_openai_v1_capture_target(
             );
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) =
-                estimate_proxy_cost(&state.pricing_catalog, None, &usage);
+                estimate_proxy_cost_from_shared_catalog(&state.pricing_catalog, None, &usage).await;
             let error_message = format!("[{}] {}", read_err.failure_kind, read_err.message);
 
             warn!(
@@ -2903,11 +3363,12 @@ async fn proxy_openai_v1_capture_target(
         Ok(Err(err)) => {
             let (status, message, failure_kind) = map_upstream_error(err);
             let usage = ParsedUsage::default();
-            let (cost, cost_estimated, price_version) = estimate_proxy_cost(
+            let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
                 request_info.model.as_deref(),
                 &usage,
-            );
+            )
+            .await;
             let error_message = format!("[{failure_kind}] {message}");
             let record = ProxyCaptureRecord {
                 invoke_id,
@@ -2962,11 +3423,12 @@ async fn proxy_openai_v1_capture_target(
             );
             let failure_kind = PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT;
             let usage = ParsedUsage::default();
-            let (cost, cost_estimated, price_version) = estimate_proxy_cost(
+            let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
                 request_info.model.as_deref(),
                 &usage,
-            );
+            )
+            .await;
             let error_message = format!("[{failure_kind}] {message}");
             let record = ProxyCaptureRecord {
                 invoke_id,
@@ -3023,11 +3485,12 @@ async fn proxy_openai_v1_capture_target(
         Err(err) => {
             let message = format!("failed to process upstream redirect: {err}");
             let usage = ParsedUsage::default();
-            let (cost, cost_estimated, price_version) = estimate_proxy_cost(
+            let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
                 request_info.model.as_deref(),
                 &usage,
-            );
+            )
+            .await;
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -3208,11 +3671,12 @@ async fn proxy_openai_v1_capture_target(
         } else {
             format!("http_{}", upstream_status.as_u16())
         };
-        let (cost, cost_estimated, price_version) = estimate_proxy_cost(
+        let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
             &state_for_task.pricing_catalog,
             response_info.model.as_deref(),
             &response_info.usage,
-        );
+        )
+        .await;
         let resp_raw = store_raw_payload_file(
             &state_for_task.config,
             &invoke_id_for_task,
@@ -3751,6 +4215,15 @@ fn extract_error_message_from_response(bytes: &[u8]) -> Option<String> {
         })
 }
 
+async fn estimate_proxy_cost_from_shared_catalog(
+    catalog: &Arc<RwLock<PricingCatalog>>,
+    model: Option<&str>,
+    usage: &ParsedUsage,
+) -> (Option<f64>, bool, Option<String>) {
+    let guard = catalog.read().await;
+    estimate_proxy_cost(&guard, model, usage)
+}
+
 fn estimate_proxy_cost(
     catalog: &PricingCatalog,
     model: Option<&str>,
@@ -3763,22 +4236,29 @@ fn estimate_proxy_cost(
     let Some(pricing) = catalog.models.get(model) else {
         return (None, false, price_version);
     };
-    let input_tokens = usage.input_tokens.unwrap_or(0) as f64;
-    let output_tokens = usage.output_tokens.unwrap_or(0) as f64;
-    let cache_input_tokens = usage.cache_input_tokens.unwrap_or(0) as f64;
-    let reasoning_tokens = usage.reasoning_tokens.unwrap_or(0) as f64;
-    if input_tokens == 0.0
+    let input_tokens = usage.input_tokens.unwrap_or(0).max(0);
+    let output_tokens = usage.output_tokens.unwrap_or(0).max(0) as f64;
+    let cache_input_tokens = usage.cache_input_tokens.unwrap_or(0).max(0);
+    let reasoning_tokens = usage.reasoning_tokens.unwrap_or(0).max(0) as f64;
+    if input_tokens == 0
         && output_tokens == 0.0
-        && cache_input_tokens == 0.0
+        && cache_input_tokens == 0
         && reasoning_tokens == 0.0
     {
         return (None, false, price_version);
     }
 
-    let mut cost = (input_tokens / 1_000_000.0) * pricing.input_per_1m
+    let billable_cache_tokens = if pricing.cache_input_per_1m.is_some() {
+        cache_input_tokens
+    } else {
+        0
+    };
+    let non_cached_input_tokens = input_tokens.saturating_sub(billable_cache_tokens);
+
+    let mut cost = (non_cached_input_tokens as f64 / 1_000_000.0) * pricing.input_per_1m
         + (output_tokens / 1_000_000.0) * pricing.output_per_1m;
     if let Some(cache_price) = pricing.cache_input_per_1m {
-        cost += (cache_input_tokens / 1_000_000.0) * cache_price;
+        cost += (billable_cache_tokens as f64 / 1_000_000.0) * cache_price;
     }
     if let Some(reasoning_price) = pricing.reasoning_per_1m {
         cost += (reasoning_tokens / 1_000_000.0) * reasoning_price;
@@ -4402,14 +4882,25 @@ struct VersionResponse {
     frontend: String,
 }
 
-async fn get_proxy_model_settings(
+async fn get_settings(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<ProxyModelSettingsResponse>, ApiError> {
-    let current = state.proxy_model_settings.read().await.clone();
-    Ok(Json(current.into()))
+) -> Result<Json<SettingsResponse>, ApiError> {
+    let proxy = state.proxy_model_settings.read().await.clone();
+    let pricing = state.pricing_catalog.read().await.clone();
+    Ok(Json(SettingsResponse {
+        proxy: proxy.into(),
+        pricing: PricingSettingsResponse::from_catalog(&pricing),
+    }))
 }
 
-async fn put_proxy_model_settings(
+async fn removed_proxy_model_settings_endpoint() -> (StatusCode, &'static str) {
+    (
+        StatusCode::NOT_FOUND,
+        "endpoint removed; use /api/settings and /api/settings/proxy",
+    )
+}
+
+async fn put_proxy_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<ProxyModelSettingsUpdateRequest>,
@@ -4434,6 +4925,29 @@ async fn put_proxy_model_settings(
     let mut guard = state.proxy_model_settings.write().await;
     *guard = next.clone();
     Ok(Json(next.into()))
+}
+
+async fn put_pricing_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<PricingSettingsUpdateRequest>,
+) -> Result<Json<PricingSettingsResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin settings writes are forbidden".to_string(),
+        ));
+    }
+
+    let next = payload.normalized()?;
+    let _update_guard = state.pricing_settings_update_lock.lock().await;
+    save_pricing_catalog(&state.pool, &next)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    let mut guard = state.pricing_catalog.write().await;
+    *guard = next.clone();
+    Ok(Json(PricingSettingsResponse::from_catalog(&next)))
 }
 
 async fn get_versions(
@@ -4756,7 +5270,8 @@ struct AppState {
     semaphore: Arc<Semaphore>,
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,
-    pricing_catalog: Arc<PricingCatalog>,
+    pricing_settings_update_lock: Arc<Mutex<()>>,
+    pricing_catalog: Arc<RwLock<PricingCatalog>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5068,15 +5583,7 @@ impl Default for PricingCatalog {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct PricingCatalogFile {
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    models: HashMap<String, ModelPricing>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ModelPricing {
     input_per_1m: f64,
     output_per_1m: f64,
@@ -5084,6 +5591,124 @@ struct ModelPricing {
     cache_input_per_1m: Option<f64>,
     #[serde(default)]
     reasoning_per_1m: Option<f64>,
+    #[serde(default = "default_pricing_source_custom")]
+    source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PricingEntry {
+    model: String,
+    input_per_1m: f64,
+    output_per_1m: f64,
+    #[serde(default)]
+    cache_input_per_1m: Option<f64>,
+    #[serde(default)]
+    reasoning_per_1m: Option<f64>,
+    #[serde(default = "default_pricing_source_custom")]
+    source: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PricingSettingsUpdateRequest {
+    catalog_version: String,
+    #[serde(default)]
+    entries: Vec<PricingEntry>,
+}
+
+impl PricingSettingsUpdateRequest {
+    fn normalized(self) -> Result<PricingCatalog, (StatusCode, String)> {
+        let version = normalize_pricing_catalog_version(self.catalog_version).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "catalogVersion must be a non-empty string".to_string(),
+            )
+        })?;
+        let mut models = HashMap::new();
+        for entry in self.entries {
+            let model_id = entry.model.trim();
+            if model_id.is_empty() || model_id.len() > 128 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid model id: {}", entry.model),
+                ));
+            }
+            if !entry.input_per_1m.is_finite()
+                || !entry.output_per_1m.is_finite()
+                || entry.input_per_1m < 0.0
+                || entry.output_per_1m < 0.0
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid pricing values for model: {model_id}"),
+                ));
+            }
+            if let Some(cache) = entry.cache_input_per_1m
+                && (!cache.is_finite() || cache < 0.0)
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid cacheInputPer1m for model: {model_id}"),
+                ));
+            }
+            if let Some(reasoning) = entry.reasoning_per_1m
+                && (!reasoning.is_finite() || reasoning < 0.0)
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid reasoningPer1m for model: {model_id}"),
+                ));
+            }
+
+            let inserted = models.insert(
+                model_id.to_string(),
+                ModelPricing {
+                    input_per_1m: entry.input_per_1m,
+                    output_per_1m: entry.output_per_1m,
+                    cache_input_per_1m: entry.cache_input_per_1m,
+                    reasoning_per_1m: entry.reasoning_per_1m,
+                    source: normalize_pricing_source(entry.source),
+                },
+            );
+            if inserted.is_some() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("duplicate model id: {model_id}"),
+                ));
+            }
+        }
+        Ok(PricingCatalog { version, models })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PricingSettingsResponse {
+    catalog_version: String,
+    entries: Vec<PricingEntry>,
+}
+
+impl PricingSettingsResponse {
+    fn from_catalog(catalog: &PricingCatalog) -> Self {
+        let mut entries = catalog
+            .models
+            .iter()
+            .map(|(model, pricing)| PricingEntry {
+                model: model.clone(),
+                input_per_1m: pricing.input_per_1m,
+                output_per_1m: pricing.output_per_1m,
+                cache_input_per_1m: pricing.cache_input_per_1m,
+                reasoning_per_1m: pricing.reasoning_per_1m,
+                source: pricing.source.clone(),
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|a, b| a.model.cmp(&b.model));
+        Self {
+            catalog_version: catalog.version.clone(),
+            entries,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5279,6 +5904,13 @@ impl From<ProxyModelSettings> for ProxyModelSettingsResponse {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsResponse {
+    proxy: ProxyModelSettingsResponse,
+    pricing: PricingSettingsResponse,
+}
+
 fn default_enabled_preset_models() -> Vec<String> {
     PROXY_PRESET_MODEL_IDS
         .iter()
@@ -5301,6 +5933,28 @@ fn decode_enabled_preset_models(raw: Option<&str>) -> Vec<String> {
             .map(normalize_enabled_preset_models)
             .unwrap_or_else(|_| default_enabled_preset_models()),
         None => default_enabled_preset_models(),
+    }
+}
+
+fn default_pricing_source_custom() -> String {
+    "custom".to_string()
+}
+
+fn normalize_pricing_catalog_version(raw: String) -> Option<String> {
+    let normalized = raw.trim().to_string();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn normalize_pricing_source(raw: String) -> String {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        default_pricing_source_custom()
+    } else {
+        normalized
     }
 }
 
@@ -5476,7 +6130,6 @@ struct AppConfig {
     proxy_raw_max_bytes: Option<usize>,
     proxy_raw_retention: Duration,
     proxy_raw_dir: PathBuf,
-    proxy_pricing_catalog_path: PathBuf,
     max_parallel_polls: usize,
     shared_connection_parallelism: usize,
     http_bind: SocketAddr,
@@ -5610,10 +6263,6 @@ impl AppConfig {
             .ok()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_PROXY_RAW_DIR));
-        let proxy_pricing_catalog_path = env::var("PROXY_PRICING_CATALOG_PATH")
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_PROXY_PRICING_CATALOG_PATH));
         let max_parallel_polls = overrides
             .max_parallel_polls
             .or_else(|| {
@@ -5726,7 +6375,6 @@ impl AppConfig {
             proxy_raw_max_bytes,
             proxy_raw_retention,
             proxy_raw_dir,
-            proxy_pricing_catalog_path,
             max_parallel_polls,
             shared_connection_parallelism,
             http_bind,
@@ -5767,25 +6415,6 @@ fn parse_bool_string(raw: &str) -> Option<bool> {
         "0" | "false" | "no" | "n" | "off" => Some(false),
         _ => None,
     }
-}
-
-fn load_pricing_catalog(path: &Path) -> Result<PricingCatalog> {
-    if !path.exists() {
-        warn!(path = %path.display(), "pricing catalog file not found; cost estimation disabled");
-        return Ok(PricingCatalog::default());
-    }
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read pricing catalog: {}", path.display()))?;
-    let parsed: PricingCatalogFile = serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse pricing catalog: {}", path.display()))?;
-    let version = parsed
-        .version
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "unversioned".to_string());
-    Ok(PricingCatalog {
-        version,
-        models: parsed.models,
-    })
 }
 
 #[cfg(test)]
@@ -5891,7 +6520,6 @@ mod tests {
             proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
             proxy_raw_retention: Duration::from_secs(DEFAULT_PROXY_RAW_RETENTION_DAYS * 86_400),
             proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
-            proxy_pricing_catalog_path: PathBuf::from(DEFAULT_PROXY_PRICING_CATALOG_PATH),
             max_parallel_polls: 2,
             shared_connection_parallelism: 1,
             http_bind: "127.0.0.1:38080".parse().expect("valid socket address"),
@@ -5942,6 +6570,9 @@ mod tests {
         let http_clients = HttpClients::build(&config).expect("http clients");
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
+        let pricing_catalog = load_pricing_catalog(&pool)
+            .await
+            .expect("pricing catalog should initialize");
 
         Arc::new(AppState {
             config,
@@ -5951,7 +6582,8 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
-            pricing_catalog: Arc::new(PricingCatalog::default()),
+            pricing_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
         })
     }
 
@@ -6722,21 +7354,21 @@ mod tests {
         )
         .await;
 
-        let Json(initial) = get_proxy_model_settings(State(state.clone()))
+        let Json(initial) = get_settings(State(state.clone()))
             .await
             .expect("get settings should succeed");
-        assert!(!initial.hijack_enabled);
-        assert!(!initial.merge_upstream_enabled);
-        assert_eq!(initial.models.len(), PROXY_PRESET_MODEL_IDS.len());
+        assert!(!initial.proxy.hijack_enabled);
+        assert!(!initial.proxy.merge_upstream_enabled);
+        assert_eq!(initial.proxy.models.len(), PROXY_PRESET_MODEL_IDS.len());
         assert_eq!(
-            initial.enabled_models,
+            initial.proxy.enabled_models,
             PROXY_PRESET_MODEL_IDS
                 .iter()
                 .map(|id| id.to_string())
                 .collect::<Vec<_>>()
         );
 
-        let Json(updated) = put_proxy_model_settings(
+        let Json(updated) = put_proxy_settings(
             State(state.clone()),
             HeaderMap::new(),
             Json(ProxyModelSettingsUpdateRequest {
@@ -6761,7 +7393,7 @@ mod tests {
             vec!["gpt-5.2-codex".to_string()]
         );
 
-        let Json(normalized) = put_proxy_model_settings(
+        let Json(normalized) = put_proxy_settings(
             State(state.clone()),
             HeaderMap::new(),
             Json(ProxyModelSettingsUpdateRequest {
@@ -6794,7 +7426,7 @@ mod tests {
             HeaderValue::from_static("https://evil.example.com"),
         );
 
-        let err = put_proxy_model_settings(
+        let err = put_proxy_settings(
             State(state),
             headers,
             Json(ProxyModelSettingsUpdateRequest {
@@ -6830,7 +7462,7 @@ mod tests {
             HeaderValue::from_static("cross-site"),
         );
 
-        let err = put_proxy_model_settings(
+        let err = put_proxy_settings(
             State(state),
             headers,
             Json(ProxyModelSettingsUpdateRequest {
@@ -6862,7 +7494,7 @@ mod tests {
             HeaderValue::from_static("http://127.0.0.1:60080"),
         );
 
-        let Json(updated) = put_proxy_model_settings(
+        let Json(updated) = put_proxy_settings(
             State(state),
             headers,
             Json(ProxyModelSettingsUpdateRequest {
@@ -6908,7 +7540,7 @@ mod tests {
             HeaderValue::from_static("same-origin"),
         );
 
-        let Json(updated) = put_proxy_model_settings(
+        let Json(updated) = put_proxy_settings(
             State(state),
             headers,
             Json(ProxyModelSettingsUpdateRequest {
@@ -6958,7 +7590,7 @@ mod tests {
             HeaderValue::from_static("same-origin"),
         );
 
-        let Json(updated) = put_proxy_model_settings(
+        let Json(updated) = put_proxy_settings(
             State(state),
             headers,
             Json(ProxyModelSettingsUpdateRequest {
@@ -6992,7 +7624,7 @@ mod tests {
             HeaderValue::from_static("https://proxy.example.com"),
         );
 
-        let Json(updated) = put_proxy_model_settings(
+        let Json(updated) = put_proxy_settings(
             State(state),
             headers,
             Json(ProxyModelSettingsUpdateRequest {
@@ -7007,6 +7639,216 @@ mod tests {
         assert!(updated.hijack_enabled);
         assert!(!updated.merge_upstream_enabled);
         assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn pricing_settings_api_reads_and_persists_updates() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let Json(initial) = get_settings(State(state.clone()))
+            .await
+            .expect("get settings should succeed");
+        assert!(!initial.pricing.entries.is_empty());
+        assert!(
+            initial
+                .pricing
+                .entries
+                .iter()
+                .any(|entry| entry.model == "gpt-5.2-codex")
+        );
+
+        let Json(updated) = put_pricing_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(PricingSettingsUpdateRequest {
+                catalog_version: "custom-ci".to_string(),
+                entries: vec![PricingEntry {
+                    model: "gpt-5.2-codex".to_string(),
+                    input_per_1m: 8.8,
+                    output_per_1m: 18.8,
+                    cache_input_per_1m: Some(0.88),
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                }],
+            }),
+        )
+        .await
+        .expect("put pricing settings should succeed");
+
+        assert_eq!(updated.catalog_version, "custom-ci");
+        assert_eq!(updated.entries.len(), 1);
+        assert_eq!(updated.entries[0].model, "gpt-5.2-codex");
+        assert_eq!(updated.entries[0].input_per_1m, 8.8);
+
+        let persisted = load_pricing_catalog(&state.pool)
+            .await
+            .expect("pricing settings should persist");
+        assert_eq!(persisted.version, "custom-ci");
+        assert_eq!(persisted.models.len(), 1);
+        let pricing = persisted
+            .models
+            .get("gpt-5.2-codex")
+            .expect("gpt-5.2-codex should persist");
+        assert_eq!(pricing.input_per_1m, 8.8);
+        assert_eq!(pricing.output_per_1m, 18.8);
+    }
+
+    #[tokio::test]
+    async fn pricing_settings_api_keeps_empty_catalog_after_reload() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let Json(updated) = put_pricing_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(PricingSettingsUpdateRequest {
+                catalog_version: "custom-empty".to_string(),
+                entries: vec![],
+            }),
+        )
+        .await
+        .expect("put pricing settings should allow empty catalog");
+
+        assert_eq!(updated.catalog_version, "custom-empty");
+        assert!(updated.entries.is_empty());
+
+        let first_reload = load_pricing_catalog(&state.pool)
+            .await
+            .expect("pricing catalog should load after update");
+        assert_eq!(first_reload.version, "custom-empty");
+        assert!(first_reload.models.is_empty());
+
+        let second_reload = load_pricing_catalog(&state.pool)
+            .await
+            .expect("pricing catalog should stay empty across reloads");
+        assert_eq!(second_reload.version, "custom-empty");
+        assert!(second_reload.models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pricing_settings_api_rejects_invalid_payload() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let err = put_pricing_settings(
+            State(state),
+            HeaderMap::new(),
+            Json(PricingSettingsUpdateRequest {
+                catalog_version: "   ".to_string(),
+                entries: vec![],
+            }),
+        )
+        .await
+        .expect_err("blank catalog version should be rejected");
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn seed_default_pricing_catalog_migrates_legacy_file_when_present() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("in-memory sqlite");
+        ensure_schema(&pool).await.expect("ensure schema");
+        sqlx::query("DELETE FROM pricing_settings_meta")
+            .execute(&pool)
+            .await
+            .expect("clear pricing meta");
+        sqlx::query("DELETE FROM pricing_settings_models")
+            .execute(&pool)
+            .await
+            .expect("clear pricing models");
+
+        let legacy_path = env::temp_dir().join(format!(
+            "codex-vibe-monitor-pricing-legacy-{}.json",
+            NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(
+            &legacy_path,
+            r#"{
+  "version": "legacy-custom-v1",
+  "models": {
+    "gpt-legacy": {
+      "input_per_1m": 9.9,
+      "output_per_1m": 19.9,
+      "cache_input_per_1m": 0.99,
+      "reasoning_per_1m": null
+    }
+  }
+}"#,
+        )
+        .expect("write legacy pricing catalog");
+
+        seed_default_pricing_catalog_with_legacy_path(&pool, Some(&legacy_path))
+            .await
+            .expect("seed pricing catalog from legacy file");
+
+        let _ = fs::remove_file(&legacy_path);
+
+        let migrated = load_pricing_catalog(&pool)
+            .await
+            .expect("load migrated pricing catalog");
+        assert_eq!(migrated.version, "legacy-custom-v1");
+        assert_eq!(migrated.models.len(), 1);
+        let model = migrated
+            .models
+            .get("gpt-legacy")
+            .expect("legacy model should be migrated");
+        assert_eq!(model.input_per_1m, 9.9);
+        assert_eq!(model.output_per_1m, 19.9);
+        assert_eq!(model.cache_input_per_1m, Some(0.99));
+        assert_eq!(model.source, "custom");
+    }
+
+    #[tokio::test]
+    async fn seed_default_pricing_catalog_falls_back_when_legacy_file_empty() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("in-memory sqlite");
+        ensure_schema(&pool).await.expect("ensure schema");
+        sqlx::query("DELETE FROM pricing_settings_meta")
+            .execute(&pool)
+            .await
+            .expect("clear pricing meta");
+        sqlx::query("DELETE FROM pricing_settings_models")
+            .execute(&pool)
+            .await
+            .expect("clear pricing models");
+
+        let legacy_path = env::temp_dir().join(format!(
+            "codex-vibe-monitor-pricing-legacy-empty-{}.json",
+            NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(
+            &legacy_path,
+            r#"{
+  "version": "legacy-empty",
+  "models": {}
+}"#,
+        )
+        .expect("write empty legacy pricing catalog");
+
+        seed_default_pricing_catalog_with_legacy_path(&pool, Some(&legacy_path))
+            .await
+            .expect("seed pricing catalog should fall back to defaults");
+
+        let _ = fs::remove_file(&legacy_path);
+
+        let seeded = load_pricing_catalog(&pool)
+            .await
+            .expect("load seeded pricing catalog");
+        assert_eq!(seeded.version, DEFAULT_PRICING_CATALOG_VERSION);
+        assert!(
+            seeded.models.contains_key("gpt-5.2-codex"),
+            "default pricing catalog should be seeded"
+        );
     }
 
     #[tokio::test]
@@ -7207,7 +8049,8 @@ mod tests {
                 enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
             })),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
-            pricing_catalog: Arc::new(PricingCatalog::default()),
+            pricing_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
 
         let started = Instant::now();
@@ -7719,7 +8562,8 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
-            pricing_catalog: Arc::new(PricingCatalog::default()),
+            pricing_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
 
         let slow_chunks = stream::unfold(0u8, |state| async move {
@@ -7830,7 +8674,8 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
-            pricing_catalog: Arc::new(PricingCatalog::default()),
+            pricing_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
 
         let app = Router::new()
@@ -7983,7 +8828,8 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
-            pricing_catalog: Arc::new(PricingCatalog::default()),
+            pricing_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
 
         let response = proxy_openai_v1(
@@ -8035,7 +8881,8 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
-            pricing_catalog: Arc::new(PricingCatalog::default()),
+            pricing_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
 
         let response = proxy_openai_v1(
@@ -8098,6 +8945,70 @@ mod tests {
         assert_eq!(parsed.usage.output_tokens, Some(7));
         assert_eq!(parsed.usage.total_tokens, Some(18));
         assert!(parsed.usage_missing_reason.is_none());
+    }
+
+    #[test]
+    fn estimate_proxy_cost_subtracts_cached_tokens_from_base_input_rate() {
+        let catalog = PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([(
+                "gpt-test".to_string(),
+                ModelPricing {
+                    input_per_1m: 1.0,
+                    output_per_1m: 2.0,
+                    cache_input_per_1m: Some(0.5),
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+        let usage = ParsedUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cache_input_tokens: Some(400),
+            reasoning_tokens: None,
+            total_tokens: Some(1_200),
+        };
+
+        let (cost, estimated, price_version) =
+            estimate_proxy_cost(&catalog, Some("gpt-test"), &usage);
+
+        let expected = ((600.0 * 1.0) + (200.0 * 2.0) + (400.0 * 0.5)) / 1_000_000.0;
+        let computed = cost.expect("cost should be present");
+        assert!((computed - expected).abs() < 1e-12);
+        assert!(estimated);
+        assert_eq!(price_version.as_deref(), Some("unit-test"));
+    }
+
+    #[test]
+    fn estimate_proxy_cost_keeps_full_input_when_cache_price_missing() {
+        let catalog = PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([(
+                "gpt-test".to_string(),
+                ModelPricing {
+                    input_per_1m: 1.0,
+                    output_per_1m: 2.0,
+                    cache_input_per_1m: None,
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+        let usage = ParsedUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cache_input_tokens: Some(400),
+            reasoning_tokens: None,
+            total_tokens: Some(1_200),
+        };
+
+        let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-test"), &usage);
+
+        let expected = ((1_000.0 * 1.0) + (200.0 * 2.0)) / 1_000_000.0;
+        let computed = cost.expect("cost should be present");
+        assert!((computed - expected).abs() < 1e-12);
+        assert!(estimated);
     }
 
     #[test]
@@ -8449,7 +9360,8 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
-            pricing_catalog: Arc::new(PricingCatalog::default()),
+            pricing_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
 
         let Json(snapshot) = latest_quota_snapshot(State(state))

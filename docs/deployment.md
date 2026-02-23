@@ -1,6 +1,6 @@
 # Deployment Guide
 
-本文档说明 `codex-vibe-monitor` 在生产环境的推荐部署方式，以及 `/api/settings/proxy-models` 写接口的安全边界。
+本文档说明 `codex-vibe-monitor` 在生产环境的推荐部署方式，以及设置写接口（`/api/settings/proxy` 与 `/api/settings/pricing`）的安全边界。
 
 ## Recommended Topology
 
@@ -16,7 +16,7 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 
 ## Security Boundary For Settings Writes
 
-`PUT /api/settings/proxy-models` 会修改全局代理行为，属于状态变更接口。
+`PUT /api/settings/proxy` 与 `PUT /api/settings/pricing` 会修改全局运行配置，属于状态变更接口。
 
 服务端会执行来源校验：
 
@@ -49,10 +49,14 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 - `PROXY_RAW_RETENTION_DAYS`：原文留存天数（到期清理原文字段/文件，不影响结构化统计）。
 - `PROXY_ENFORCE_STREAM_INCLUDE_USAGE`：是否在 `chat.completions` 流式请求中强制注入 `stream_options.include_usage=true`。
 - `PROXY_USAGE_BACKFILL_ON_STARTUP`：启动时是否回填历史 `proxy` 空 token 记录（默认开启，建议保留）。
-- `PROXY_PRICING_CATALOG_PATH`：本地价目表文件路径（用于成本估算）。
 - `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：上游握手超时（默认 `300` 秒，建议内网链路可降到 `120` 秒）。
 - `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`：请求体读取总超时（默认 `180` 秒；超时返回 `408`）。
 - `XY_LEGACY_POLL_ENABLED`：legacy 轮询写入开关（默认关闭；开启后会并行写入旧来源统计）。
+
+价格配置说明：
+
+- 价格目录由 SQLite 持久化，不再依赖本地 JSON 文件路径。
+- 可通过 `/settings` 页面或 `PUT /api/settings/pricing` 在线更新，并实时影响新请求的成本估算。
 
 统计接口行为：
 
