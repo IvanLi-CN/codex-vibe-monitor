@@ -32,7 +32,7 @@ use chrono_tz::{Asia::Shanghai, Tz};
 use clap::Parser;
 use dotenvy::dotenv;
 use flate2::read::GzDecoder;
-use futures_util::{StreamExt, stream};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Url, header};
@@ -3693,7 +3693,7 @@ async fn persist_proxy_capture_record(
 }
 
 async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfillSummary> {
-    let candidates = sqlx::query_as::<_, ProxyUsageBackfillCandidate>(
+    let mut candidates = sqlx::query_as::<_, ProxyUsageBackfillCandidate>(
         r#"
         SELECT id, response_raw_path, payload
         FROM codex_invocations
@@ -3705,11 +3705,10 @@ async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBa
         "#,
     )
     .bind(SOURCE_PROXY)
-    .fetch_all(pool)
-    .await?;
+    .fetch(pool);
 
     let mut summary = ProxyUsageBackfillSummary::default();
-    for candidate in candidates {
+    while let Some(candidate) = candidates.try_next().await? {
         summary.scanned += 1;
         let raw_response = match fs::read(&candidate.response_raw_path) {
             Ok(content) => content,
