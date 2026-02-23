@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
     env,
@@ -30,7 +31,8 @@ use chrono::{
 use chrono_tz::{Asia::Shanghai, Tz};
 use clap::Parser;
 use dotenvy::dotenv;
-use futures_util::{StreamExt, stream};
+use flate2::read::GzDecoder;
+use futures_util::{StreamExt, TryStreamExt, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Url, header};
@@ -90,6 +92,7 @@ const DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE: bool = true;
 const DEFAULT_XY_LEGACY_POLL_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
+const DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP: bool = true;
 const PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.3-codex",
     "gpt-5.2-codex",
@@ -173,6 +176,19 @@ async fn main() -> Result<()> {
         .context("failed to open sqlite database")?;
 
     ensure_schema(&pool).await?;
+    if config.proxy_usage_backfill_on_startup {
+        let summary = backfill_proxy_usage_tokens(&pool).await?;
+        info!(
+            scanned = summary.scanned,
+            updated = summary.updated,
+            skipped_missing_file = summary.skipped_missing_file,
+            skipped_without_usage = summary.skipped_without_usage,
+            skipped_decode_error = summary.skipped_decode_error,
+            "proxy usage startup backfill finished"
+        );
+    } else {
+        info!("proxy usage startup backfill is disabled");
+    }
     let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
     fs::create_dir_all(&config.proxy_raw_dir).with_context(|| {
         format!(
@@ -3057,6 +3073,11 @@ async fn proxy_openai_v1_capture_target(
     };
 
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
+    let response_content_encoding = upstream_response
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
     let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
         if should_forward_proxy_header(name, &upstream_connection_scoped) {
@@ -3076,6 +3097,7 @@ async fn proxy_openai_v1_capture_target(
     let invoke_id_for_task = invoke_id.clone();
     let occurred_at_for_task = occurred_at.clone();
     let raw_expires_at_for_task = raw_expires_at.clone();
+    let response_content_encoding_for_task = response_content_encoding.clone();
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
 
     tokio::spawn(async move {
@@ -3146,15 +3168,22 @@ async fn proxy_openai_v1_capture_target(
 
         let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
         let resp_parse_started = Instant::now();
+        let (response_payload_for_parse, decode_error) = decode_response_payload_for_usage(
+            &response_bytes,
+            response_content_encoding_for_task.as_deref(),
+        );
         let mut response_info = parse_target_response_payload(
             capture_target,
-            &response_bytes,
+            response_payload_for_parse.as_ref(),
             request_info_for_task.is_stream,
         );
         let t_resp_parse_ms = elapsed_ms(resp_parse_started);
 
         if response_info.model.is_none() {
             response_info.model = request_info_for_task.model.clone();
+        }
+        if response_info.usage_missing_reason.is_none() {
+            response_info.usage_missing_reason = decode_error;
         }
         if response_info.usage_missing_reason.is_none() && stream_error.is_some() {
             response_info.usage_missing_reason = Some("upstream_stream_error".to_string());
@@ -3498,6 +3527,36 @@ fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
     }
 }
 
+fn decode_response_payload_for_usage<'a>(
+    bytes: &'a [u8],
+    content_encoding: Option<&str>,
+) -> (Cow<'a, [u8]>, Option<String>) {
+    if !response_payload_looks_gzip(content_encoding, bytes) {
+        return (Cow::Borrowed(bytes), None);
+    }
+
+    let mut decoder = GzDecoder::new(bytes);
+    let mut decoded = Vec::new();
+    match decoder.read_to_end(&mut decoded) {
+        Ok(_) => (Cow::Owned(decoded), None),
+        Err(err) => (
+            Cow::Borrowed(bytes),
+            Some(format!("response_gzip_decode_error:{err}")),
+        ),
+    }
+}
+
+fn response_payload_looks_gzip(content_encoding: Option<&str>, bytes: &[u8]) -> bool {
+    if let Some(encoding) = content_encoding {
+        for item in encoding.split(',') {
+            if item.trim().eq_ignore_ascii_case("gzip") {
+                return true;
+            }
+        }
+    }
+    bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b
+}
+
 fn extract_model_from_payload(value: &Value) -> Option<String> {
     value
         .get("model")
@@ -3836,6 +3895,115 @@ async fn persist_proxy_capture_record(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfillSummary> {
+    let mut candidates = sqlx::query_as::<_, ProxyUsageBackfillCandidate>(
+        r#"
+        SELECT id, response_raw_path, payload
+        FROM codex_invocations
+        WHERE source = ?1
+          AND status = 'success'
+          AND total_tokens IS NULL
+          AND response_raw_path IS NOT NULL
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch(pool);
+
+    let mut summary = ProxyUsageBackfillSummary::default();
+    while let Some(candidate) = candidates.try_next().await? {
+        summary.scanned += 1;
+        let raw_response = match fs::read(&candidate.response_raw_path) {
+            Ok(content) => content,
+            Err(err) => {
+                summary.skipped_missing_file += 1;
+                warn!(
+                    id = candidate.id,
+                    path = %candidate.response_raw_path,
+                    error = %err,
+                    "proxy usage backfill skipped because response raw file is unavailable"
+                );
+                continue;
+            }
+        };
+
+        let (target, is_stream) = parse_proxy_capture_summary(candidate.payload.as_deref());
+        let (payload_for_parse, decode_error) =
+            decode_response_payload_for_usage(&raw_response, None);
+        let response_info =
+            parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream);
+        let usage = response_info.usage;
+        let has_usage = usage.total_tokens.is_some()
+            || usage.input_tokens.is_some()
+            || usage.output_tokens.is_some()
+            || usage.cache_input_tokens.is_some()
+            || usage.reasoning_tokens.is_some();
+        if !has_usage {
+            if decode_error.is_some() {
+                summary.skipped_decode_error += 1;
+            } else {
+                summary.skipped_without_usage += 1;
+            }
+            continue;
+        }
+
+        let affected = sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET input_tokens = ?1,
+                output_tokens = ?2,
+                cache_input_tokens = ?3,
+                reasoning_tokens = ?4,
+                total_tokens = ?5
+            WHERE id = ?6
+              AND source = ?7
+              AND total_tokens IS NULL
+            "#,
+        )
+        .bind(usage.input_tokens)
+        .bind(usage.output_tokens)
+        .bind(usage.cache_input_tokens)
+        .bind(usage.reasoning_tokens)
+        .bind(usage.total_tokens)
+        .bind(candidate.id)
+        .bind(SOURCE_PROXY)
+        .execute(pool)
+        .await?
+        .rows_affected();
+
+        if affected > 0 {
+            summary.updated += 1;
+        }
+    }
+
+    Ok(summary)
+}
+
+fn parse_proxy_capture_summary(payload: Option<&str>) -> (ProxyCaptureTarget, bool) {
+    let mut target = ProxyCaptureTarget::Responses;
+    let mut is_stream = false;
+
+    let Some(raw) = payload else {
+        return (target, is_stream);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return (target, is_stream);
+    };
+
+    if let Some(endpoint) = value.get("endpoint").and_then(|v| v.as_str()) {
+        target = match endpoint {
+            "/v1/chat/completions" => ProxyCaptureTarget::ChatCompletions,
+            "/v1/responses" => ProxyCaptureTarget::Responses,
+            _ => ProxyCaptureTarget::Responses,
+        };
+    }
+    if let Some(stream) = value.get("isStream").and_then(|v| v.as_bool()) {
+        is_stream = stream;
+    }
+
+    (target, is_stream)
 }
 
 fn elapsed_ms(started: Instant) -> f64 {
@@ -4949,6 +5117,22 @@ enum InvocationSourceScope {
     All,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct ProxyUsageBackfillSummary {
+    scanned: u64,
+    updated: u64,
+    skipped_missing_file: u64,
+    skipped_without_usage: u64,
+    skipped_decode_error: u64,
+}
+
+#[derive(Debug, FromRow)]
+struct ProxyUsageBackfillCandidate {
+    id: i64,
+    response_raw_path: String,
+    payload: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListQuery {
@@ -5237,6 +5421,7 @@ struct AppConfig {
     openai_proxy_request_read_timeout: Duration,
     openai_proxy_max_request_body_bytes: usize,
     proxy_enforce_stream_include_usage: bool,
+    proxy_usage_backfill_on_startup: bool,
     proxy_raw_max_bytes: Option<usize>,
     proxy_raw_retention: Duration,
     proxy_raw_dir: PathBuf,
@@ -5341,6 +5526,10 @@ impl AppConfig {
         let proxy_enforce_stream_include_usage = parse_bool_env_var(
             "PROXY_ENFORCE_STREAM_INCLUDE_USAGE",
             DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
+        )?;
+        let proxy_usage_backfill_on_startup = parse_bool_env_var(
+            "PROXY_USAGE_BACKFILL_ON_STARTUP",
+            DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
         )?;
         let proxy_raw_max_bytes = match env::var("PROXY_RAW_MAX_BYTES") {
             Ok(value) => {
@@ -5482,6 +5671,7 @@ impl AppConfig {
             openai_proxy_request_read_timeout,
             openai_proxy_max_request_body_bytes,
             proxy_enforce_stream_include_usage,
+            proxy_usage_backfill_on_startup,
             proxy_raw_max_bytes,
             proxy_raw_retention,
             proxy_raw_dir,
@@ -5559,9 +5749,10 @@ mod tests {
         routing::{any, get},
     };
     use chrono::Timelike;
+    use flate2::{Compression, write::GzEncoder};
     use serde_json::Value;
     use sqlx::SqlitePool;
-    use std::{path::PathBuf, sync::Arc, time::Duration};
+    use std::{fs, path::PathBuf, sync::Arc, time::Duration};
     use tokio::net::TcpListener;
     use tokio::sync::{Semaphore, broadcast};
     use tokio::task::JoinHandle;
@@ -5645,6 +5836,7 @@ mod tests {
             ),
             openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
             proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
+            proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
             proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
             proxy_raw_retention: Duration::from_secs(DEFAULT_PROXY_RAW_RETENTION_DAYS * 86_400),
             proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
@@ -7819,7 +8011,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_default_source_scope_prefers_proxy_when_available() {
+    async fn resolve_default_source_scope_always_all() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
             .expect("connect in-memory sqlite");
@@ -7851,7 +8043,134 @@ mod tests {
         let scope_after = resolve_default_source_scope(&pool)
             .await
             .expect("scope after insert");
-        assert_eq!(scope_after, InvocationSourceScope::ProxyOnly);
+        assert_eq!(scope_after, InvocationSourceScope::All);
+    }
+
+    #[test]
+    fn decode_response_payload_for_usage_decompresses_gzip_stream() {
+        let raw = [
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":123,\"output_tokens\":45,\"total_tokens\":168,\"input_tokens_details\":{\"cached_tokens\":7},\"output_tokens_details\":{\"reasoning_tokens\":4}}}}",
+        ]
+        .join("\n");
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(raw.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+
+        let (decoded, decode_error) = decode_response_payload_for_usage(&compressed, Some("gzip"));
+        assert!(decode_error.is_none());
+
+        let parsed =
+            parse_target_response_payload(ProxyCaptureTarget::Responses, decoded.as_ref(), true);
+        assert_eq!(parsed.usage.input_tokens, Some(123));
+        assert_eq!(parsed.usage.output_tokens, Some(45));
+        assert_eq!(parsed.usage.total_tokens, Some(168));
+        assert_eq!(parsed.usage.cache_input_tokens, Some(7));
+        assert_eq!(parsed.usage.reasoning_tokens, Some(4));
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_usage_tokens_updates_missing_tokens_idempotently() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "proxy-usage-backfill-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let response_path = temp_dir.join("response.bin");
+        let raw = [
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":88,\"output_tokens\":22,\"total_tokens\":110,\"input_tokens_details\":{\"cached_tokens\":9},\"output_tokens_details\":{\"reasoning_tokens\":3}}}}",
+        ]
+        .join("\n");
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(raw.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+        fs::write(&response_path, compressed).expect("write response payload");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response, response_raw_path
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind("proxy-backfill-test")
+        .bind("2026-02-23 00:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(
+            "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":true,\"requestModel\":null,\"responseModel\":null,\"usageMissingReason\":null,\"requestParseError\":null}",
+        )
+        .bind("{}")
+        .bind(response_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("insert proxy row");
+
+        let summary_first = backfill_proxy_usage_tokens(&pool)
+            .await
+            .expect("first backfill should succeed");
+        assert_eq!(summary_first.scanned, 1);
+        assert_eq!(summary_first.updated, 1);
+
+        let row = sqlx::query(
+            r#"
+            SELECT input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens
+            FROM codex_invocations
+            WHERE invoke_id = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind("proxy-backfill-test")
+        .fetch_one(&pool)
+        .await
+        .expect("fetch backfilled row");
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("input_tokens")
+                .expect("read input_tokens"),
+            Some(88)
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("output_tokens")
+                .expect("read output_tokens"),
+            Some(22)
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("cache_input_tokens")
+                .expect("read cache_input_tokens"),
+            Some(9)
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("reasoning_tokens")
+                .expect("read reasoning_tokens"),
+            Some(3)
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("total_tokens")
+                .expect("read total_tokens"),
+            Some(110)
+        );
+
+        let summary_second = backfill_proxy_usage_tokens(&pool)
+            .await
+            .expect("second backfill should succeed");
+        assert_eq!(summary_second.scanned, 0);
+        assert_eq!(summary_second.updated, 0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[tokio::test]
@@ -8310,23 +8629,8 @@ async fn query_combined_totals(
     Ok(base.add(relay_totals))
 }
 
-async fn resolve_default_source_scope(pool: &Pool<Sqlite>) -> Result<InvocationSourceScope> {
-    let has_proxy = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT 1
-        FROM codex_invocations
-        WHERE source = ?1
-        LIMIT 1
-        "#,
-    )
-    .bind(SOURCE_PROXY)
-    .fetch_optional(pool)
-    .await?;
-    Ok(if has_proxy.is_some() {
-        InvocationSourceScope::ProxyOnly
-    } else {
-        InvocationSourceScope::All
-    })
+async fn resolve_default_source_scope(_pool: &Pool<Sqlite>) -> Result<InvocationSourceScope> {
+    Ok(InvocationSourceScope::All)
 }
 
 async fn query_crs_deltas(
