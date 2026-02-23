@@ -45,11 +45,13 @@
 
 ## Milestones
 
-- [ ] M1 requirements freeze 与 docs/plan 索引更新
-- [ ] M2 后端新 settings API + pricing DB 持久化
-- [ ] M3 前端 `/settings` 页面与自动保存
-- [ ] M4 测试通过、PR 创建并完成 checks 跟踪
+- [x] M1 requirements freeze 与 docs/plan 索引更新
+- [x] M2 后端新 settings API + pricing DB 持久化
+- [x] M3 前端 `/settings` 页面与自动保存
+- [x] M4 测试通过、PR 创建并完成 checks 跟踪
 
 ## 变更记录 / Change log
 
 - 2026-02-23: 初始化计划并冻结范围与验收标准。
+- 2026-02-23: 完成旧方案替换（`/api/settings/proxy-models` 下线、`/settings` 上线、价目表改为 SQLite 持久化并可在线编辑）。
+- 2026-02-23: 创建 PR #47，完成本地验证（cargo test / web lint+build / settings e2e）并跟踪 CI Pipeline #142 通过。
