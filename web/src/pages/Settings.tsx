@@ -181,10 +181,15 @@ export default function SettingsPage() {
   )
 
   const remotePricingKey = useMemo(() => stablePricingKey(settings?.pricing ?? null), [settings?.pricing])
+  const remotePricingKeyRef = useRef(remotePricingKey)
+
+  useEffect(() => {
+    remotePricingKeyRef.current = remotePricingKey
+  }, [remotePricingKey])
 
   const triggerPricingSave = useCallback(
     (forceImmediate: boolean) => {
-      if (!settings || !pricingDraft) return
+      if (!pricingDraft) return
       const parsed = parsePricingDraft(pricingDraft)
       if (!parsed.value) {
         if (debounceTimerRef.current) {
@@ -195,7 +200,7 @@ export default function SettingsPage() {
         return
       }
       const draftKey = stablePricingKey(parsed.value)
-      if (draftKey === remotePricingKey) {
+      if (draftKey === remotePricingKeyRef.current) {
         if (debounceTimerRef.current) {
           clearTimeout(debounceTimerRef.current)
           debounceTimerRef.current = null
@@ -219,7 +224,7 @@ export default function SettingsPage() {
         debounceTimerRef.current = setTimeout(runSave, AUTO_SAVE_DEBOUNCE_MS)
       }
     },
-    [pricingDraft, remotePricingKey, savePricing, settings],
+    [pricingDraft, savePricing],
   )
 
   useEffect(() => {
