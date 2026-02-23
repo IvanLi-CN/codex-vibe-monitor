@@ -138,10 +138,37 @@ export default function SettingsPage() {
   const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null)
   const [pricingErrorKey, setPricingErrorKey] = useState<string | null>(null)
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastSyncedPricingKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!settings?.pricing) return
-    setPricingDraft(toPricingDraft(settings.pricing))
+    const nextPricing = settings.pricing
+    const nextPricingKey = stablePricingKey(nextPricing)
+
+    setPricingDraft((current) => {
+      if (!current) {
+        lastSyncedPricingKeyRef.current = nextPricingKey
+        return toPricingDraft(nextPricing)
+      }
+
+      const parsedCurrent = parsePricingDraft(current)
+      if (!parsedCurrent.value) {
+        return current
+      }
+
+      const currentDraftKey = stablePricingKey(parsedCurrent.value)
+      if (currentDraftKey === nextPricingKey) {
+        lastSyncedPricingKeyRef.current = nextPricingKey
+        return current
+      }
+
+      if (lastSyncedPricingKeyRef.current == null || currentDraftKey === lastSyncedPricingKeyRef.current) {
+        lastSyncedPricingKeyRef.current = nextPricingKey
+        return toPricingDraft(nextPricing)
+      }
+
+      return current
+    })
   }, [settings?.pricing])
 
   const currentProxy = settings?.proxy ?? null
@@ -157,11 +184,19 @@ export default function SettingsPage() {
       if (!settings || !pricingDraft) return
       const parsed = parsePricingDraft(pricingDraft)
       if (!parsed.value) {
+        if (debounceTimerRef.current) {
+          clearTimeout(debounceTimerRef.current)
+          debounceTimerRef.current = null
+        }
         setPricingErrorKey(parsed.error ?? 'settings.pricing.errors.numberInvalid')
         return
       }
       const draftKey = stablePricingKey(parsed.value)
       if (draftKey === remotePricingKey) {
+        if (debounceTimerRef.current) {
+          clearTimeout(debounceTimerRef.current)
+          debounceTimerRef.current = null
+        }
         setPricingErrorKey(null)
         return
       }

@@ -8,6 +8,26 @@ import {
   type SettingsPayload,
 } from '../lib/api'
 
+function toPricingKey(pricing: PricingSettings): string {
+  return JSON.stringify({
+    catalogVersion: pricing.catalogVersion,
+    entries: [...pricing.entries]
+      .sort((a, b) => a.model.localeCompare(b.model))
+      .map((entry) => ({
+        model: entry.model,
+        inputPer1m: entry.inputPer1m,
+        outputPer1m: entry.outputPer1m,
+        cacheInputPer1m: entry.cacheInputPer1m ?? null,
+        reasoningPer1m: entry.reasoningPer1m ?? null,
+        source: entry.source,
+      })),
+  })
+}
+
+function isSamePricingSettings(lhs: PricingSettings, rhs: PricingSettings): boolean {
+  return toPricingKey(lhs) === toPricingKey(rhs)
+}
+
 export function useSettings() {
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -128,6 +148,9 @@ export function useSettings() {
             }
             setSettings((current) => {
               if (!current) return confirmedSnapshot ?? current
+              if (isSamePricingSettings(current.pricing, savedPricing)) {
+                return current
+              }
               return {
                 ...current,
                 pricing: savedPricing,
