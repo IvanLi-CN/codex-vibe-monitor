@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
     env,
     error::Error as StdError,
@@ -17,7 +17,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
-    body::Body,
+    body::{Body, Bytes},
     extract::{OriginalUri, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
     response::{IntoResponse, Json, Response, Sse},
@@ -41,14 +41,14 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use tokio::{
     net::TcpListener,
-    sync::{Mutex, RwLock, Semaphore, broadcast},
+    sync::{Mutex, RwLock, Semaphore, broadcast, mpsc},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, timeout},
 };
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_util::sync::CancellationToken;
 use tower_http::{
     cors::CorsLayer,
@@ -59,9 +59,14 @@ use tracing::{error, info, warn};
 
 const SOURCE_XY: &str = "xy";
 const SOURCE_CRS: &str = "crs";
+const SOURCE_PROXY: &str = "proxy";
 const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
+const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
+const DEFAULT_PROXY_RAW_RETENTION_DAYS: u64 = 7;
+const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
+const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
 const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit exceeded";
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
 const PROXY_INVALID_REQUEST_TARGET: &str = "proxy request target is malformed";
@@ -70,6 +75,8 @@ const PROXY_MODEL_MERGE_STATUS_HEADER: &str = "x-proxy-model-merge-upstream";
 const PROXY_MODEL_MERGE_STATUS_SUCCESS: &str = "success";
 const PROXY_MODEL_MERGE_STATUS_FAILED: &str = "failed";
 const PROXY_MODEL_SETTINGS_SINGLETON_ID: i64 = 1;
+const DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE: bool = true;
+const DEFAULT_XY_LEGACY_POLL_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
 const PROXY_PRESET_MODEL_IDS: &[&str] = &[
@@ -156,6 +163,20 @@ async fn main() -> Result<()> {
 
     ensure_schema(&pool).await?;
     let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
+    fs::create_dir_all(&config.proxy_raw_dir).with_context(|| {
+        format!(
+            "failed to create proxy raw payload directory: {}",
+            config.proxy_raw_dir.display()
+        )
+    })?;
+    let pricing_catalog = Arc::new(
+        load_pricing_catalog(&config.proxy_pricing_catalog_path).with_context(|| {
+            format!(
+                "failed to load pricing catalog: {}",
+                config.proxy_pricing_catalog_path.display()
+            )
+        })?,
+    );
 
     let http_clients = HttpClients::build(&config)?;
     let (tx, _rx) = broadcast::channel(128);
@@ -169,6 +190,7 @@ async fn main() -> Result<()> {
         semaphore: semaphore.clone(),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+        pricing_catalog,
     });
 
     // Shared cancellation token for graceful shutdown
@@ -182,7 +204,12 @@ async fn main() -> Result<()> {
         info!("shutdown signal received; beginning graceful shutdown");
     });
 
-    let poller_handle = spawn_scheduler(state.clone(), cancel.clone());
+    let poller_handle = if state.config.legacy_poll_enabled || state.config.crs_stats.is_some() {
+        Some(spawn_scheduler(state.clone(), cancel.clone()))
+    } else {
+        info!("legacy poller is disabled; scheduler will not start");
+        None
+    };
     let server_handle = spawn_http_server(state.clone(), cancel.clone()).await?;
 
     // Wait until a shutdown signal is received, then wait for tasks to finish
@@ -191,7 +218,9 @@ async fn main() -> Result<()> {
     if let Err(err) = server_handle.await {
         error!(?err, "http server terminated unexpectedly");
     }
-    if let Err(err) = poller_handle.await {
+    if let Some(poller_handle) = poller_handle
+        && let Err(err) = poller_handle.await
+    {
         error!(?err, "poller task terminated unexpectedly");
     }
 
@@ -328,6 +357,7 @@ async fn spawn_http_server(
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
         .route("/api/stats/timeseries", get(fetch_timeseries))
+        .route("/api/stats/perf", get(fetch_perf_stats))
         .route("/api/stats/errors", get(fetch_error_distribution))
         .route("/api/stats/errors/others", get(fetch_other_errors))
         .route("/api/quota/latest", get(latest_quota_snapshot))
@@ -403,25 +433,27 @@ async fn fetch_and_store(state: &AppState, force_new_connection: bool) -> Result
         .http_clients
         .client_for_parallelism(force_new_connection)?;
     let relay_config = state.config.crs_stats.clone();
-    let QuotaFetch {
-        records,
-        usage,
-        subscription,
-    } = fetch_quota(&client, &state.config).await?;
+    let mut inserted = Vec::new();
 
-    maybe_persist_snapshot(
-        &state.pool,
-        usage,
-        subscription,
-        state.config.snapshot_min_interval,
-    )
-    .await?;
+    if state.config.legacy_poll_enabled {
+        let QuotaFetch {
+            records,
+            usage,
+            subscription,
+        } = fetch_quota(&client, &state.config).await?;
 
-    let inserted = if records.is_empty() {
-        Vec::new()
-    } else {
-        persist_records(&state.pool, &records).await?
-    };
+        maybe_persist_snapshot(
+            &state.pool,
+            usage,
+            subscription,
+            state.config.snapshot_min_interval,
+        )
+        .await?;
+
+        if !records.is_empty() {
+            inserted = persist_records(&state.pool, &records).await?;
+        }
+    }
 
     if let Some(relay) = relay_config.as_ref()
         && should_poll_crs_stats(&state.pool, relay).await?
@@ -489,6 +521,7 @@ async fn collect_summary_snapshots(
     let mut summaries = Vec::new();
     let mut cached_all: Option<StatsResponse> = None;
     let now = Utc::now();
+    let source_scope = resolve_default_source_scope(pool).await?;
 
     for spec in summary_broadcast_specs() {
         let summary = match spec.duration {
@@ -496,7 +529,7 @@ async fn collect_summary_snapshots(
                 if let Some(existing) = &cached_all {
                     existing.clone()
                 } else {
-                    let stats = query_combined_totals(pool, relay, StatsFilter::All)
+                    let stats = query_combined_totals(pool, relay, StatsFilter::All, source_scope)
                         .await?
                         .into_response();
                     cached_all = Some(stats.clone());
@@ -505,7 +538,7 @@ async fn collect_summary_snapshots(
             }
             Some(duration) => {
                 let start = now - duration;
-                query_combined_totals(pool, relay, StatsFilter::Since(start))
+                query_combined_totals(pool, relay, StatsFilter::Since(start), source_scope)
                     .await?
                     .into_response()
             }
@@ -890,6 +923,25 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             error_message TEXT,
             payload TEXT,
             raw_response TEXT NOT NULL,
+            cost_estimated INTEGER NOT NULL DEFAULT 0,
+            price_version TEXT,
+            request_raw_path TEXT,
+            request_raw_size INTEGER,
+            request_raw_truncated INTEGER NOT NULL DEFAULT 0,
+            request_raw_truncated_reason TEXT,
+            response_raw_path TEXT,
+            response_raw_size INTEGER,
+            response_raw_truncated INTEGER NOT NULL DEFAULT 0,
+            response_raw_truncated_reason TEXT,
+            raw_expires_at TEXT,
+            t_total_ms REAL,
+            t_req_read_ms REAL,
+            t_req_parse_ms REAL,
+            t_upstream_connect_ms REAL,
+            t_upstream_ttfb_ms REAL,
+            t_upstream_stream_ms REAL,
+            t_resp_parse_ms REAL,
+            t_persist_ms REAL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(invoke_id, occurred_at)
         )
@@ -919,6 +971,25 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("status", "TEXT"),
         ("error_message", "TEXT"),
         ("payload", "TEXT"),
+        ("cost_estimated", "INTEGER NOT NULL DEFAULT 0"),
+        ("price_version", "TEXT"),
+        ("request_raw_path", "TEXT"),
+        ("request_raw_size", "INTEGER"),
+        ("request_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
+        ("request_raw_truncated_reason", "TEXT"),
+        ("response_raw_path", "TEXT"),
+        ("response_raw_size", "INTEGER"),
+        ("response_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
+        ("response_raw_truncated_reason", "TEXT"),
+        ("raw_expires_at", "TEXT"),
+        ("t_total_ms", "REAL"),
+        ("t_req_read_ms", "REAL"),
+        ("t_req_parse_ms", "REAL"),
+        ("t_upstream_connect_ms", "REAL"),
+        ("t_upstream_ttfb_ms", "REAL"),
+        ("t_upstream_stream_ms", "REAL"),
+        ("t_resp_parse_ms", "REAL"),
+        ("t_persist_ms", "REAL"),
     ] {
         if !existing.contains(column) {
             let statement = format!("ALTER TABLE codex_invocations ADD COLUMN {column} {ty}");
@@ -1413,9 +1484,20 @@ async fn list_invocations(
 
     let mut query = QueryBuilder::new(
         "SELECT id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, \
-         cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, created_at \
+         cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, \
+         cost_estimated, price_version, \
+         request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
+         response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
+         raw_expires_at, \
+         t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
+         t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, \
+         created_at \
          FROM codex_invocations WHERE 1 = 1",
     );
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
 
     if let Some(model) = params.model.as_ref() {
         query.push(" AND model = ").push_bind(model);
@@ -1438,10 +1520,12 @@ async fn list_invocations(
 }
 
 async fn fetch_stats(State(state): State<Arc<AppState>>) -> Result<Json<StatsResponse>, ApiError> {
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
     let totals = query_combined_totals(
         &state.pool,
         state.config.crs_stats.as_ref(),
         StatsFilter::All,
+        source_scope,
     )
     .await?;
     Ok(Json(totals.into_response()))
@@ -1454,6 +1538,7 @@ async fn fetch_summary(
     let default_limit = state.config.list_limit_max as i64;
     let window = parse_summary_window(&params, default_limit)?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
 
     let totals = match window {
         SummaryWindow::All => {
@@ -1461,6 +1546,7 @@ async fn fetch_summary(
                 &state.pool,
                 state.config.crs_stats.as_ref(),
                 StatsFilter::All,
+                source_scope,
             )
             .await?
         }
@@ -1469,6 +1555,7 @@ async fn fetch_summary(
                 &state.pool,
                 state.config.crs_stats.as_ref(),
                 StatsFilter::RecentLimit(limit),
+                source_scope,
             )
             .await?
         }
@@ -1478,6 +1565,7 @@ async fn fetch_summary(
                 &state.pool,
                 state.config.crs_stats.as_ref(),
                 StatsFilter::Since(start),
+                source_scope,
             )
             .await?
         }
@@ -1489,6 +1577,7 @@ async fn fetch_summary(
                 &state.pool,
                 state.config.crs_stats.as_ref(),
                 StatsFilter::Since(start),
+                source_scope,
             )
             .await?
         }
@@ -1502,6 +1591,7 @@ async fn fetch_timeseries(
     Query(params): Query<TimeseriesQuery>,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let mut bucket_seconds = if let Some(spec) = params.bucket.as_deref() {
         bucket_seconds_from_spec(spec)
@@ -1531,17 +1621,18 @@ async fn fetch_timeseries(
     let start_dt = range_window.start;
     let start_str_iso = format_utc_iso(start_dt);
 
-    let records = sqlx::query_as::<_, TimeseriesRecord>(
-        r#"
-        SELECT occurred_at, status, total_tokens, cost
-        FROM codex_invocations
-        WHERE occurred_at >= ?1
-        ORDER BY occurred_at ASC
-        "#,
-    )
-    .bind(db_occurred_at_lower_bound(start_dt))
-    .fetch_all(&state.pool)
-    .await?;
+    let mut records_query = QueryBuilder::new(
+        "SELECT occurred_at, status, total_tokens, cost FROM codex_invocations WHERE occurred_at >= ",
+    );
+    records_query.push_bind(db_occurred_at_lower_bound(start_dt));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        records_query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    records_query.push(" ORDER BY occurred_at ASC");
+    let records = records_query
+        .build_query_as::<TimeseriesRecord>()
+        .fetch_all(&state.pool)
+        .await?;
 
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
 
@@ -1575,7 +1666,9 @@ async fn fetch_timeseries(
         entry.total_cost += record.cost.unwrap_or(0.0);
     }
 
-    let relay_deltas = if let Some(relay) = state.config.crs_stats.as_ref() {
+    let relay_deltas = if source_scope == InvocationSourceScope::All
+        && let Some(relay) = state.config.crs_stats.as_ref()
+    {
         query_crs_deltas(&state.pool, relay, start_epoch, end_dt.timestamp()).await?
     } else {
         Vec::new()
@@ -1684,6 +1777,7 @@ async fn fetch_timeseries_daily(
     reporting_tz: Tz,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
     let now = Utc::now();
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
     let (start_date, end_date) = resolve_daily_date_range(&params.range, now, reporting_tz)?;
 
     let start_naive = start_date
@@ -1700,17 +1794,18 @@ async fn fetch_timeseries_daily(
             .unwrap_or(cursor + ChronoDuration::days(1));
     }
 
-    let records = sqlx::query_as::<_, TimeseriesRecord>(
-        r#"
-        SELECT occurred_at, status, total_tokens, cost
-        FROM codex_invocations
-        WHERE occurred_at >= ?1
-        ORDER BY occurred_at ASC
-        "#,
-    )
-    .bind(db_occurred_at_lower_bound(start_dt))
-    .fetch_all(&state.pool)
-    .await?;
+    let mut records_query = QueryBuilder::new(
+        "SELECT occurred_at, status, total_tokens, cost FROM codex_invocations WHERE occurred_at >= ",
+    );
+    records_query.push_bind(db_occurred_at_lower_bound(start_dt));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        records_query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    records_query.push(" ORDER BY occurred_at ASC");
+    let records = records_query
+        .build_query_as::<TimeseriesRecord>()
+        .fetch_all(&state.pool)
+        .await?;
 
     for record in records {
         let occurred_utc = match parse_to_utc_datetime(&record.occurred_at) {
@@ -1731,7 +1826,9 @@ async fn fetch_timeseries_daily(
         entry.total_cost += record.cost.unwrap_or(0.0);
     }
 
-    if let Some(relay) = state.config.crs_stats.as_ref() {
+    if source_scope == InvocationSourceScope::All
+        && let Some(relay) = state.config.crs_stats.as_ref()
+    {
         let deltas =
             query_crs_deltas(&state.pool, relay, start_dt.timestamp(), now.timestamp()).await?;
 
@@ -1849,22 +1946,21 @@ async fn fetch_error_distribution(
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
     let display_end = range_window.display_end;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
 
     #[derive(sqlx::FromRow)]
     struct RawErr {
         error_message: Option<String>,
     }
 
-    let rows: Vec<RawErr> = sqlx::query_as(
-        r#"
-        SELECT error_message
-        FROM codex_invocations
-        WHERE occurred_at >= ?1 AND (status IS NULL OR status != 'success')
-        "#,
-    )
-    .bind(db_occurred_at_lower_bound(start_dt))
-    .fetch_all(&state.pool)
-    .await?;
+    let mut query =
+        QueryBuilder::new("SELECT error_message FROM codex_invocations WHERE occurred_at >= ");
+    query.push_bind(db_occurred_at_lower_bound(start_dt));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" AND (status IS NULL OR status != 'success')");
+    let rows: Vec<RawErr> = query.build_query_as().fetch_all(&state.pool).await?;
 
     let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for r in rows {
@@ -2054,6 +2150,7 @@ async fn fetch_other_errors(
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
 
     #[derive(sqlx::FromRow)]
     struct RowItem {
@@ -2061,17 +2158,15 @@ async fn fetch_other_errors(
         occurred_at: String,
         error_message: Option<String>,
     }
-    let rows: Vec<RowItem> = sqlx::query_as(
-        r#"
-        SELECT id, occurred_at, error_message
-        FROM codex_invocations
-        WHERE occurred_at >= ?1 AND (status IS NULL OR status != 'success')
-        ORDER BY occurred_at DESC
-        "#,
-    )
-    .bind(db_occurred_at_lower_bound(start_dt))
-    .fetch_all(&state.pool)
-    .await?;
+    let mut query = QueryBuilder::new(
+        "SELECT id, occurred_at, error_message FROM codex_invocations WHERE occurred_at >= ",
+    );
+    query.push_bind(db_occurred_at_lower_bound(start_dt));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" AND (status IS NULL OR status != 'success') ORDER BY occurred_at DESC");
+    let rows: Vec<RowItem> = query.build_query_as().fetch_all(&state.pool).await?;
 
     let mut others: Vec<RowItem> = Vec::new();
     for r in rows.into_iter() {
@@ -2107,6 +2202,119 @@ async fn fetch_other_errors(
         page,
         limit,
         items,
+    }))
+}
+
+async fn fetch_perf_stats(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PerfQuery>,
+) -> Result<Json<PerfStatsResponse>, ApiError> {
+    #[derive(sqlx::FromRow)]
+    struct PerfTimingRow {
+        t_total_ms: Option<f64>,
+        t_req_read_ms: Option<f64>,
+        t_req_parse_ms: Option<f64>,
+        t_upstream_connect_ms: Option<f64>,
+        t_upstream_ttfb_ms: Option<f64>,
+        t_upstream_stream_ms: Option<f64>,
+        t_resp_parse_ms: Option<f64>,
+        t_persist_ms: Option<f64>,
+    }
+
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let range_window = resolve_range_window(&params.range, reporting_tz)?;
+    let mut query = QueryBuilder::new(
+        "SELECT \
+            t_total_ms, t_req_read_ms, t_req_parse_ms, \
+            t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
+            t_resp_parse_ms, t_persist_ms \
+         FROM codex_invocations \
+         WHERE source = ",
+    );
+    query
+        .push_bind(SOURCE_PROXY)
+        .push(" AND occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range_window.start))
+        .push(" AND occurred_at <= ")
+        .push_bind(db_occurred_at_lower_bound(range_window.display_end));
+    let rows: Vec<PerfTimingRow> = query.build_query_as().fetch_all(&state.pool).await?;
+
+    let stage_series: Vec<(&str, Vec<f64>)> = vec![
+        (
+            "total",
+            rows.iter()
+                .filter_map(|row| row.t_total_ms)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "requestRead",
+            rows.iter()
+                .filter_map(|row| row.t_req_read_ms)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "requestParse",
+            rows.iter()
+                .filter_map(|row| row.t_req_parse_ms)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "upstreamConnect",
+            rows.iter()
+                .filter_map(|row| row.t_upstream_connect_ms)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "upstreamFirstByte",
+            rows.iter()
+                .filter_map(|row| row.t_upstream_ttfb_ms)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "upstreamStream",
+            rows.iter()
+                .filter_map(|row| row.t_upstream_stream_ms)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "responseParse",
+            rows.iter()
+                .filter_map(|row| row.t_resp_parse_ms)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "persistence",
+            rows.iter()
+                .filter_map(|row| row.t_persist_ms)
+                .collect::<Vec<_>>(),
+        ),
+    ];
+
+    let mut stages = Vec::new();
+    for (stage, mut values) in stage_series {
+        if values.is_empty() {
+            continue;
+        }
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let count = values.len() as i64;
+        let sum = values.iter().copied().sum::<f64>();
+        let max_ms = values.last().copied().unwrap_or(0.0);
+        stages.push(PerfStageStats {
+            stage: stage.to_string(),
+            count,
+            avg_ms: sum / count as f64,
+            p50_ms: percentile_sorted_f64(&values, 0.50),
+            p90_ms: percentile_sorted_f64(&values, 0.90),
+            p99_ms: percentile_sorted_f64(&values, 0.99),
+            max_ms,
+        });
+    }
+
+    Ok(Json(PerfStatsResponse {
+        range_start: format_utc_iso(range_window.start),
+        range_end: format_utc_iso(range_window.display_end),
+        source: SOURCE_PROXY.to_string(),
+        stages,
     }))
 }
 
@@ -2284,6 +2492,19 @@ async fn proxy_openai_v1_inner(
         }
     }
 
+    if let Some(target) = capture_target_for_request(original_uri.path(), &method) {
+        return proxy_openai_v1_capture_target(
+            state,
+            proxy_request_id,
+            method,
+            headers,
+            body,
+            target,
+            target_url,
+        )
+        .await;
+    }
+
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     if let Some(content_length) = headers
         .get(header::CONTENT_LENGTH)
@@ -2401,6 +2622,945 @@ async fn proxy_openai_v1_inner(
                 format!("failed to build proxy response: {err}"),
             )
         })
+}
+
+fn capture_target_for_request(path: &str, method: &Method) -> Option<ProxyCaptureTarget> {
+    if *method != Method::POST {
+        return None;
+    }
+    match path {
+        "/v1/chat/completions" => Some(ProxyCaptureTarget::ChatCompletions),
+        "/v1/responses" => Some(ProxyCaptureTarget::Responses),
+        _ => None,
+    }
+}
+
+async fn proxy_openai_v1_capture_target(
+    state: Arc<AppState>,
+    proxy_request_id: u64,
+    method: Method,
+    headers: HeaderMap,
+    body: Body,
+    capture_target: ProxyCaptureTarget,
+    target_url: Url,
+) -> Result<Response, (StatusCode, String)> {
+    let capture_started = Instant::now();
+    let occurred_at_utc = Utc::now();
+    let occurred_at = format_naive(occurred_at_utc.with_timezone(&Shanghai).naive_local());
+    let invoke_id = format!(
+        "proxy-{proxy_request_id}-{}",
+        occurred_at_utc.timestamp_millis()
+    );
+    let raw_expires_at = compute_raw_expires_at(occurred_at_utc, state.config.proxy_raw_retention);
+    let body_limit = state.config.openai_proxy_max_request_body_bytes;
+
+    let req_read_started = Instant::now();
+    let request_body_bytes =
+        read_request_body_with_limit(body, body_limit, proxy_request_id).await?;
+    let t_req_read_ms = elapsed_ms(req_read_started);
+
+    let req_parse_started = Instant::now();
+    let (upstream_body, request_info, body_rewritten) = prepare_target_request_body(
+        capture_target,
+        request_body_bytes,
+        state.config.proxy_enforce_stream_include_usage,
+    );
+    let t_req_parse_ms = elapsed_ms(req_parse_started);
+    let req_raw = store_raw_payload_file(&state.config, &invoke_id, "request", &upstream_body);
+
+    let mut upstream_request = state
+        .http_clients
+        .proxy
+        .request(method, target_url)
+        .body(upstream_body.clone());
+    let request_connection_scoped = connection_scoped_header_names(&headers);
+    for (name, value) in &headers {
+        if !should_forward_proxy_header(name, &request_connection_scoped) {
+            continue;
+        }
+        if name == header::CONTENT_LENGTH && body_rewritten {
+            continue;
+        }
+        upstream_request = upstream_request.header(name, value);
+    }
+
+    let map_upstream_error = |err: reqwest::Error| {
+        if is_body_too_large_error(&err) {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("request body exceeds {body_limit} bytes"),
+            )
+        } else {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to contact upstream: {err}"),
+            )
+        }
+    };
+
+    let connect_started = Instant::now();
+    let handshake_timeout = state.config.openai_proxy_handshake_timeout;
+    let upstream_response = match timeout(handshake_timeout, upstream_request.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => {
+            let (status, message) = map_upstream_error(err);
+            let usage = ParsedUsage::default();
+            let (cost, cost_estimated, price_version) = estimate_proxy_cost(
+                &state.pricing_catalog,
+                request_info.model.as_deref(),
+                &usage,
+            );
+            let record = ProxyCaptureRecord {
+                invoke_id,
+                occurred_at,
+                model: request_info.model,
+                usage,
+                cost,
+                cost_estimated,
+                price_version,
+                status: if status.is_server_error() {
+                    format!("http_{}", status.as_u16())
+                } else {
+                    "failed".to_string()
+                },
+                error_message: Some(message.clone()),
+                payload: Some(build_proxy_payload_summary(
+                    capture_target,
+                    status,
+                    request_info.is_stream,
+                    None,
+                    None,
+                    None,
+                    request_info.parse_error.as_deref(),
+                )),
+                raw_response: "{}".to_string(),
+                req_raw,
+                resp_raw: RawPayloadMeta::default(),
+                raw_expires_at,
+                timings: StageTimings {
+                    t_total_ms: 0.0,
+                    t_req_read_ms,
+                    t_req_parse_ms,
+                    t_upstream_connect_ms: elapsed_ms(connect_started),
+                    t_upstream_ttfb_ms: 0.0,
+                    t_upstream_stream_ms: 0.0,
+                    t_resp_parse_ms: 0.0,
+                    t_persist_ms: 0.0,
+                },
+            };
+            if let Err(err) =
+                persist_proxy_capture_record(&state.pool, capture_started, record).await
+            {
+                warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
+            }
+            return Err((status, message));
+        }
+        Err(_) => {
+            let message = format!(
+                "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
+                handshake_timeout.as_millis()
+            );
+            let usage = ParsedUsage::default();
+            let (cost, cost_estimated, price_version) = estimate_proxy_cost(
+                &state.pricing_catalog,
+                request_info.model.as_deref(),
+                &usage,
+            );
+            let record = ProxyCaptureRecord {
+                invoke_id,
+                occurred_at,
+                model: request_info.model,
+                usage,
+                cost,
+                cost_estimated,
+                price_version,
+                status: "http_502".to_string(),
+                error_message: Some(message.clone()),
+                payload: Some(build_proxy_payload_summary(
+                    capture_target,
+                    StatusCode::BAD_GATEWAY,
+                    request_info.is_stream,
+                    None,
+                    None,
+                    None,
+                    request_info.parse_error.as_deref(),
+                )),
+                raw_response: "{}".to_string(),
+                req_raw,
+                resp_raw: RawPayloadMeta::default(),
+                raw_expires_at,
+                timings: StageTimings {
+                    t_total_ms: 0.0,
+                    t_req_read_ms,
+                    t_req_parse_ms,
+                    t_upstream_connect_ms: elapsed_ms(connect_started),
+                    t_upstream_ttfb_ms: 0.0,
+                    t_upstream_stream_ms: 0.0,
+                    t_resp_parse_ms: 0.0,
+                    t_persist_ms: 0.0,
+                },
+            };
+            if let Err(err) =
+                persist_proxy_capture_record(&state.pool, capture_started, record).await
+            {
+                warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
+            }
+            return Err((StatusCode::BAD_GATEWAY, message));
+        }
+    };
+    let t_upstream_connect_ms = elapsed_ms(connect_started);
+
+    let upstream_status = upstream_response.status();
+    let rewritten_location = match normalize_proxy_location_header(
+        upstream_status,
+        upstream_response.headers(),
+        &state.config.openai_upstream_base_url,
+    ) {
+        Ok(location) => location,
+        Err(err) => {
+            let message = format!("failed to process upstream redirect: {err}");
+            let usage = ParsedUsage::default();
+            let (cost, cost_estimated, price_version) = estimate_proxy_cost(
+                &state.pricing_catalog,
+                request_info.model.as_deref(),
+                &usage,
+            );
+            let record = ProxyCaptureRecord {
+                invoke_id,
+                occurred_at,
+                model: request_info.model,
+                usage,
+                cost,
+                cost_estimated,
+                price_version,
+                status: "http_502".to_string(),
+                error_message: Some(message.clone()),
+                payload: Some(build_proxy_payload_summary(
+                    capture_target,
+                    StatusCode::BAD_GATEWAY,
+                    request_info.is_stream,
+                    None,
+                    None,
+                    None,
+                    request_info.parse_error.as_deref(),
+                )),
+                raw_response: "{}".to_string(),
+                req_raw,
+                resp_raw: RawPayloadMeta::default(),
+                raw_expires_at,
+                timings: StageTimings {
+                    t_total_ms: 0.0,
+                    t_req_read_ms,
+                    t_req_parse_ms,
+                    t_upstream_connect_ms,
+                    t_upstream_ttfb_ms: 0.0,
+                    t_upstream_stream_ms: 0.0,
+                    t_resp_parse_ms: 0.0,
+                    t_persist_ms: 0.0,
+                },
+            };
+            if let Err(err) =
+                persist_proxy_capture_record(&state.pool, capture_started, record).await
+            {
+                warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
+            }
+            return Err((StatusCode::BAD_GATEWAY, message));
+        }
+    };
+
+    let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
+    let mut response_builder = Response::builder().status(upstream_status);
+    for (name, value) in upstream_response.headers() {
+        if should_forward_proxy_header(name, &upstream_connection_scoped) {
+            if name == header::LOCATION {
+                if let Some(rewritten) = rewritten_location.as_deref() {
+                    response_builder = response_builder.header(name, rewritten);
+                }
+            } else {
+                response_builder = response_builder.header(name, value);
+            }
+        }
+    }
+
+    let state_for_task = state.clone();
+    let request_info_for_task = request_info.clone();
+    let req_raw_for_task = req_raw.clone();
+    let invoke_id_for_task = invoke_id.clone();
+    let occurred_at_for_task = occurred_at.clone();
+    let raw_expires_at_for_task = raw_expires_at.clone();
+    let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
+
+    tokio::spawn(async move {
+        let mut stream = upstream_response.bytes_stream();
+        let ttfb_started = Instant::now();
+        let mut t_upstream_ttfb_ms = 0.0;
+        let mut stream_started_at: Option<Instant> = None;
+        let mut response_bytes: Vec<u8> = Vec::new();
+        let mut stream_error: Option<String> = None;
+        let mut downstream_closed = false;
+
+        while let Some(next_chunk) = stream.next().await {
+            match next_chunk {
+                Ok(chunk) => {
+                    if stream_started_at.is_none() {
+                        t_upstream_ttfb_ms = elapsed_ms(ttfb_started);
+                        stream_started_at = Some(Instant::now());
+                    }
+                    response_bytes.extend_from_slice(&chunk);
+                    if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
+                        downstream_closed = true;
+                    }
+                }
+                Err(err) => {
+                    let msg = format!("upstream stream error: {err}");
+                    stream_error = Some(msg.clone());
+                    if !downstream_closed {
+                        let _ = tx.send(Err(io::Error::other(msg))).await;
+                    }
+                    break;
+                }
+            }
+        }
+        drop(tx);
+
+        let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
+        let resp_parse_started = Instant::now();
+        let mut response_info = parse_target_response_payload(
+            capture_target,
+            &response_bytes,
+            request_info_for_task.is_stream,
+        );
+        let t_resp_parse_ms = elapsed_ms(resp_parse_started);
+
+        if response_info.model.is_none() {
+            response_info.model = request_info_for_task.model.clone();
+        }
+        if response_info.usage_missing_reason.is_none() && stream_error.is_some() {
+            response_info.usage_missing_reason = Some("upstream_stream_error".to_string());
+        }
+
+        let error_message = if let Some(err) = stream_error {
+            Some(err)
+        } else if !upstream_status.is_success() {
+            extract_error_message_from_response(&response_bytes)
+        } else {
+            None
+        };
+        let status = if upstream_status.is_success() && error_message.is_none() {
+            "success".to_string()
+        } else {
+            format!("http_{}", upstream_status.as_u16())
+        };
+        let (cost, cost_estimated, price_version) = estimate_proxy_cost(
+            &state_for_task.pricing_catalog,
+            response_info.model.as_deref(),
+            &response_info.usage,
+        );
+        let resp_raw = store_raw_payload_file(
+            &state_for_task.config,
+            &invoke_id_for_task,
+            "response",
+            &response_bytes,
+        );
+        let payload = build_proxy_payload_summary(
+            capture_target,
+            upstream_status,
+            request_info_for_task.is_stream,
+            request_info_for_task.model.as_deref(),
+            response_info.model.as_deref(),
+            response_info.usage_missing_reason.as_deref(),
+            request_info_for_task.parse_error.as_deref(),
+        );
+
+        let record = ProxyCaptureRecord {
+            invoke_id: invoke_id_for_task,
+            occurred_at: occurred_at_for_task,
+            model: response_info.model,
+            usage: response_info.usage,
+            cost,
+            cost_estimated,
+            price_version,
+            status,
+            error_message,
+            payload: Some(payload),
+            raw_response: build_raw_response_preview(&response_bytes),
+            req_raw: req_raw_for_task,
+            resp_raw,
+            raw_expires_at: raw_expires_at_for_task,
+            timings: StageTimings {
+                t_total_ms: 0.0,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
+                t_upstream_ttfb_ms,
+                t_upstream_stream_ms,
+                t_resp_parse_ms,
+                t_persist_ms: 0.0,
+            },
+        };
+
+        if let Err(err) =
+            persist_proxy_capture_record(&state_for_task.pool, capture_started, record).await
+        {
+            warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
+        }
+    });
+
+    response_builder
+        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to build proxy response: {err}"),
+            )
+        })
+}
+
+async fn read_request_body_with_limit(
+    body: Body,
+    body_limit: usize,
+    proxy_request_id: u64,
+) -> Result<Vec<u8>, (StatusCode, String)> {
+    let mut data = Vec::new();
+    let mut seen = 0usize;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|err| {
+            warn!(
+                proxy_request_id,
+                error = %err,
+                "openai proxy request body stream error"
+            );
+            (
+                StatusCode::BAD_REQUEST,
+                format!("failed to read request body stream: {err}"),
+            )
+        })?;
+        seen = seen.saturating_add(chunk.len());
+        if seen > body_limit {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("request body exceeds {body_limit} bytes"),
+            ));
+        }
+        data.extend_from_slice(&chunk);
+    }
+    Ok(data)
+}
+
+fn prepare_target_request_body(
+    target: ProxyCaptureTarget,
+    body: Vec<u8>,
+    auto_include_usage: bool,
+) -> (Vec<u8>, RequestCaptureInfo, bool) {
+    let mut info = RequestCaptureInfo {
+        model: None,
+        is_stream: false,
+        parse_error: None,
+    };
+
+    if body.is_empty() {
+        return (body, info, false);
+    }
+
+    let mut value: Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(err) => {
+            info.parse_error = Some(format!("request_json_parse_error:{err}"));
+            return (body, info, false);
+        }
+    };
+
+    info.model = value
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    info.is_stream = value
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let mut rewritten = false;
+    if target == ProxyCaptureTarget::ChatCompletions
+        && info.is_stream
+        && auto_include_usage
+        && let Some(object) = value.as_object_mut()
+    {
+        let stream_options = object
+            .entry("stream_options".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(stream_options_obj) = stream_options.as_object_mut() {
+            stream_options_obj.insert("include_usage".to_string(), Value::Bool(true));
+            rewritten = true;
+        } else {
+            object.insert(
+                "stream_options".to_string(),
+                json!({ "include_usage": true }),
+            );
+            rewritten = true;
+        }
+    }
+
+    if rewritten {
+        match serde_json::to_vec(&value) {
+            Ok(rewritten_body) => (rewritten_body, info, true),
+            Err(err) => {
+                let mut fallback = info;
+                fallback.parse_error = Some(format!("request_json_rewrite_error:{err}"));
+                (body, fallback, false)
+            }
+        }
+    } else {
+        (body, info, false)
+    }
+}
+
+fn parse_target_response_payload(
+    _target: ProxyCaptureTarget,
+    bytes: &[u8],
+    request_is_stream: bool,
+) -> ResponseCaptureInfo {
+    if bytes.is_empty() {
+        return ResponseCaptureInfo {
+            model: None,
+            usage: ParsedUsage::default(),
+            usage_missing_reason: Some("empty_response".to_string()),
+        };
+    }
+
+    let looks_like_stream = request_is_stream || bytes.starts_with(b"data:");
+    if looks_like_stream {
+        return parse_stream_response_payload(bytes);
+    }
+
+    match serde_json::from_slice::<Value>(bytes) {
+        Ok(value) => {
+            let model = extract_model_from_payload(&value);
+            let usage = extract_usage_from_payload(&value).unwrap_or_default();
+            let usage_missing_reason = if usage.total_tokens.is_none()
+                && usage.input_tokens.is_none()
+                && usage.output_tokens.is_none()
+            {
+                Some("usage_missing_in_response".to_string())
+            } else {
+                None
+            };
+            ResponseCaptureInfo {
+                model,
+                usage,
+                usage_missing_reason,
+            }
+        }
+        Err(_) => ResponseCaptureInfo {
+            model: None,
+            usage: ParsedUsage::default(),
+            usage_missing_reason: Some("response_not_json".to_string()),
+        },
+    }
+}
+
+fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
+    let text = String::from_utf8_lossy(bytes);
+    let mut model: Option<String> = None;
+    let mut usage = ParsedUsage::default();
+    let mut usage_found = false;
+    let mut parse_error_seen = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("data:") {
+            continue;
+        }
+        let payload = trimmed.trim_start_matches("data:").trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        match serde_json::from_str::<Value>(payload) {
+            Ok(value) => {
+                if model.is_none() {
+                    model = extract_model_from_payload(&value);
+                }
+                if let Some(parsed_usage) = extract_usage_from_payload(&value) {
+                    usage = parsed_usage;
+                    usage_found = true;
+                }
+            }
+            Err(_) => {
+                parse_error_seen = true;
+            }
+        }
+    }
+
+    ResponseCaptureInfo {
+        model,
+        usage,
+        usage_missing_reason: if usage_found {
+            None
+        } else if parse_error_seen {
+            Some("stream_event_parse_error".to_string())
+        } else {
+            Some("usage_missing_in_stream".to_string())
+        },
+    }
+}
+
+fn extract_model_from_payload(value: &Value) -> Option<String> {
+    value
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
+        .or_else(|| {
+            value
+                .pointer("/response/model")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string())
+        })
+}
+
+fn extract_usage_from_payload(value: &Value) -> Option<ParsedUsage> {
+    if let Some(usage) = value.get("usage") {
+        let parsed = parse_usage_value(usage);
+        if parsed.total_tokens.is_some()
+            || parsed.input_tokens.is_some()
+            || parsed.output_tokens.is_some()
+        {
+            return Some(parsed);
+        }
+    }
+    if let Some(usage) = value.pointer("/response/usage") {
+        let parsed = parse_usage_value(usage);
+        if parsed.total_tokens.is_some()
+            || parsed.input_tokens.is_some()
+            || parsed.output_tokens.is_some()
+        {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
+fn parse_usage_value(value: &Value) -> ParsedUsage {
+    let input_tokens = value
+        .get("input_tokens")
+        .and_then(json_value_to_i64)
+        .or_else(|| value.get("prompt_tokens").and_then(json_value_to_i64));
+    let output_tokens = value
+        .get("output_tokens")
+        .and_then(json_value_to_i64)
+        .or_else(|| value.get("completion_tokens").and_then(json_value_to_i64));
+    let cache_input_tokens = value
+        .pointer("/input_tokens_details/cached_tokens")
+        .and_then(json_value_to_i64)
+        .or_else(|| {
+            value
+                .pointer("/prompt_tokens_details/cached_tokens")
+                .and_then(json_value_to_i64)
+        });
+    let reasoning_tokens = value
+        .pointer("/output_tokens_details/reasoning_tokens")
+        .and_then(json_value_to_i64)
+        .or_else(|| {
+            value
+                .pointer("/completion_tokens_details/reasoning_tokens")
+                .and_then(json_value_to_i64)
+        });
+
+    let mut parsed = ParsedUsage {
+        input_tokens,
+        output_tokens,
+        cache_input_tokens,
+        reasoning_tokens,
+        total_tokens: value.get("total_tokens").and_then(json_value_to_i64),
+    };
+
+    if parsed.total_tokens.is_none() {
+        parsed.total_tokens = match (parsed.input_tokens, parsed.output_tokens) {
+            (Some(input), Some(output)) => Some(input + output),
+            _ => None,
+        };
+    }
+
+    parsed
+}
+
+fn json_value_to_i64(value: &Value) -> Option<i64> {
+    if let Some(v) = value.as_i64() {
+        return Some(v);
+    }
+    if let Some(v) = value.as_u64() {
+        return i64::try_from(v).ok();
+    }
+    value.as_str().and_then(|v| v.parse::<i64>().ok())
+}
+
+fn build_proxy_payload_summary(
+    target: ProxyCaptureTarget,
+    status: StatusCode,
+    is_stream: bool,
+    request_model: Option<&str>,
+    response_model: Option<&str>,
+    usage_missing_reason: Option<&str>,
+    request_parse_error: Option<&str>,
+) -> String {
+    let endpoint = match target {
+        ProxyCaptureTarget::ChatCompletions => "/v1/chat/completions",
+        ProxyCaptureTarget::Responses => "/v1/responses",
+    };
+    let payload = json!({
+        "endpoint": endpoint,
+        "statusCode": status.as_u16(),
+        "isStream": is_stream,
+        "requestModel": request_model,
+        "responseModel": response_model,
+        "usageMissingReason": usage_missing_reason,
+        "requestParseError": request_parse_error,
+    });
+    serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn build_raw_response_preview(bytes: &[u8]) -> String {
+    const PREVIEW_LIMIT: usize = 16 * 1024;
+    if bytes.is_empty() {
+        return "{}".to_string();
+    }
+    let preview = if bytes.len() > PREVIEW_LIMIT {
+        &bytes[..PREVIEW_LIMIT]
+    } else {
+        bytes
+    };
+    String::from_utf8_lossy(preview).to_string()
+}
+
+fn extract_error_message_from_response(bytes: &[u8]) -> Option<String> {
+    let value = serde_json::from_slice::<Value>(bytes).ok()?;
+    value
+        .pointer("/error/message")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
+        .or_else(|| {
+            value
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string())
+        })
+}
+
+fn estimate_proxy_cost(
+    catalog: &PricingCatalog,
+    model: Option<&str>,
+    usage: &ParsedUsage,
+) -> (Option<f64>, bool, Option<String>) {
+    let price_version = Some(catalog.version.clone());
+    let Some(model) = model else {
+        return (None, false, price_version);
+    };
+    let Some(pricing) = catalog.models.get(model) else {
+        return (None, false, price_version);
+    };
+    let input_tokens = usage.input_tokens.unwrap_or(0) as f64;
+    let output_tokens = usage.output_tokens.unwrap_or(0) as f64;
+    let cache_input_tokens = usage.cache_input_tokens.unwrap_or(0) as f64;
+    let reasoning_tokens = usage.reasoning_tokens.unwrap_or(0) as f64;
+    if input_tokens == 0.0
+        && output_tokens == 0.0
+        && cache_input_tokens == 0.0
+        && reasoning_tokens == 0.0
+    {
+        return (None, false, price_version);
+    }
+
+    let mut cost = (input_tokens / 1_000_000.0) * pricing.input_per_1m
+        + (output_tokens / 1_000_000.0) * pricing.output_per_1m;
+    if let Some(cache_price) = pricing.cache_input_per_1m {
+        cost += (cache_input_tokens / 1_000_000.0) * cache_price;
+    }
+    if let Some(reasoning_price) = pricing.reasoning_per_1m {
+        cost += (reasoning_tokens / 1_000_000.0) * reasoning_price;
+    }
+
+    (Some(cost), true, price_version)
+}
+
+fn store_raw_payload_file(
+    config: &AppConfig,
+    invoke_id: &str,
+    kind: &str,
+    bytes: &[u8],
+) -> RawPayloadMeta {
+    let mut meta = RawPayloadMeta {
+        path: None,
+        size_bytes: bytes.len() as i64,
+        truncated: false,
+        truncated_reason: None,
+    };
+
+    if bytes.is_empty() {
+        return meta;
+    }
+
+    let mut write_len = bytes.len();
+    if let Some(limit) = config.proxy_raw_max_bytes
+        && write_len > limit
+    {
+        write_len = limit;
+        meta.truncated = true;
+        meta.truncated_reason = Some("max_bytes_exceeded".to_string());
+    }
+    let content = &bytes[..write_len];
+
+    if let Err(err) = fs::create_dir_all(&config.proxy_raw_dir) {
+        meta.truncated = true;
+        meta.truncated_reason = Some(format!("write_failed:{err}"));
+        return meta;
+    }
+
+    let filename = format!("{invoke_id}-{kind}.bin");
+    let path = config.proxy_raw_dir.join(filename);
+    match fs::File::create(&path).and_then(|mut f| f.write_all(content)) {
+        Ok(_) => {
+            meta.path = Some(path.to_string_lossy().to_string());
+        }
+        Err(err) => {
+            meta.truncated = true;
+            meta.truncated_reason = Some(format!("write_failed:{err}"));
+        }
+    }
+    meta
+}
+
+fn compute_raw_expires_at(now_utc: DateTime<Utc>, retention: Duration) -> Option<String> {
+    ChronoDuration::from_std(retention)
+        .ok()
+        .map(|d| format_naive((now_utc + d).naive_utc()))
+}
+
+async fn persist_proxy_capture_record(
+    pool: &Pool<Sqlite>,
+    capture_started: Instant,
+    mut record: ProxyCaptureRecord,
+) -> Result<()> {
+    let persist_started = Instant::now();
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            reasoning_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            status,
+            error_message,
+            payload,
+            raw_response,
+            request_raw_path,
+            request_raw_size,
+            request_raw_truncated,
+            request_raw_truncated_reason,
+            response_raw_path,
+            response_raw_size,
+            response_raw_truncated,
+            response_raw_truncated_reason,
+            raw_expires_at,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms
+        )
+        VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+            ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33
+        )
+        "#,
+    )
+    .bind(&record.invoke_id)
+    .bind(&record.occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(&record.model)
+    .bind(record.usage.input_tokens)
+    .bind(record.usage.output_tokens)
+    .bind(record.usage.cache_input_tokens)
+    .bind(record.usage.reasoning_tokens)
+    .bind(record.usage.total_tokens)
+    .bind(record.cost)
+    .bind(record.cost_estimated as i64)
+    .bind(record.price_version.as_deref())
+    .bind(&record.status)
+    .bind(record.error_message.as_deref())
+    .bind(record.payload.as_deref())
+    .bind(&record.raw_response)
+    .bind(record.req_raw.path.as_deref())
+    .bind(record.req_raw.size_bytes)
+    .bind(record.req_raw.truncated as i64)
+    .bind(record.req_raw.truncated_reason.as_deref())
+    .bind(record.resp_raw.path.as_deref())
+    .bind(record.resp_raw.size_bytes)
+    .bind(record.resp_raw.truncated as i64)
+    .bind(record.resp_raw.truncated_reason.as_deref())
+    .bind(record.raw_expires_at.as_deref())
+    .bind(record.timings.t_total_ms)
+    .bind(record.timings.t_req_read_ms)
+    .bind(record.timings.t_req_parse_ms)
+    .bind(record.timings.t_upstream_connect_ms)
+    .bind(record.timings.t_upstream_ttfb_ms)
+    .bind(record.timings.t_upstream_stream_ms)
+    .bind(record.timings.t_resp_parse_ms)
+    .bind(record.timings.t_persist_ms)
+    .execute(pool)
+    .await?;
+
+    let t_persist_ms = elapsed_ms(persist_started);
+    let t_total_ms = elapsed_ms(capture_started);
+    record.timings.t_persist_ms = t_persist_ms;
+    record.timings.t_total_ms = t_total_ms;
+
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET t_total_ms = ?1,
+            t_persist_ms = ?2
+        WHERE invoke_id = ?3 AND occurred_at = ?4
+        "#,
+    )
+    .bind(record.timings.t_total_ms)
+    .bind(record.timings.t_persist_ms)
+    .bind(&record.invoke_id)
+    .bind(&record.occurred_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
+fn percentile_sorted_f64(sorted_values: &[f64], p: f64) -> f64 {
+    if sorted_values.is_empty() {
+        return 0.0;
+    }
+    if sorted_values.len() == 1 {
+        return sorted_values[0];
+    }
+    let clamped = p.clamp(0.0, 1.0);
+    let rank = clamped * (sorted_values.len() - 1) as f64;
+    let lower = rank.floor() as usize;
+    let upper = rank.ceil() as usize;
+    if lower == upper {
+        return sorted_values[lower];
+    }
+    let weight = rank - lower as f64;
+    sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * weight
 }
 
 fn next_proxy_request_id() -> u64 {
@@ -3080,6 +4240,7 @@ struct AppState {
     semaphore: Arc<Semaphore>,
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,
+    pricing_catalog: Arc<PricingCatalog>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3117,6 +4278,44 @@ struct ApiInvocation {
     cost: Option<f64>,
     status: Option<String>,
     error_message: Option<String>,
+    #[sqlx(default)]
+    cost_estimated: Option<i64>,
+    #[sqlx(default)]
+    price_version: Option<String>,
+    #[sqlx(default)]
+    request_raw_path: Option<String>,
+    #[sqlx(default)]
+    request_raw_size: Option<i64>,
+    #[sqlx(default)]
+    request_raw_truncated: Option<i64>,
+    #[sqlx(default)]
+    request_raw_truncated_reason: Option<String>,
+    #[sqlx(default)]
+    response_raw_path: Option<String>,
+    #[sqlx(default)]
+    response_raw_size: Option<i64>,
+    #[sqlx(default)]
+    response_raw_truncated: Option<i64>,
+    #[sqlx(default)]
+    response_raw_truncated_reason: Option<String>,
+    #[sqlx(default)]
+    raw_expires_at: Option<String>,
+    #[sqlx(default)]
+    t_total_ms: Option<f64>,
+    #[sqlx(default)]
+    t_req_read_ms: Option<f64>,
+    #[sqlx(default)]
+    t_req_parse_ms: Option<f64>,
+    #[sqlx(default)]
+    t_upstream_connect_ms: Option<f64>,
+    #[sqlx(default)]
+    t_upstream_ttfb_ms: Option<f64>,
+    #[sqlx(default)]
+    t_upstream_stream_ms: Option<f64>,
+    #[sqlx(default)]
+    t_resp_parse_ms: Option<f64>,
+    #[sqlx(default)]
+    t_persist_ms: Option<f64>,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     created_at: String,
 }
@@ -3338,6 +4537,113 @@ impl QuotaSnapshotResponse {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PricingCatalog {
+    version: String,
+    models: HashMap<String, ModelPricing>,
+}
+
+impl Default for PricingCatalog {
+    fn default() -> Self {
+        Self {
+            version: "unavailable".to_string(),
+            models: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PricingCatalogFile {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    models: HashMap<String, ModelPricing>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ModelPricing {
+    input_per_1m: f64,
+    output_per_1m: f64,
+    #[serde(default)]
+    cache_input_per_1m: Option<f64>,
+    #[serde(default)]
+    reasoning_per_1m: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ParsedUsage {
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RawPayloadMeta {
+    path: Option<String>,
+    size_bytes: i64,
+    truncated: bool,
+    truncated_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RequestCaptureInfo {
+    model: Option<String>,
+    is_stream: bool,
+    parse_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResponseCaptureInfo {
+    model: Option<String>,
+    usage: ParsedUsage,
+    usage_missing_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StageTimings {
+    t_total_ms: f64,
+    t_req_read_ms: f64,
+    t_req_parse_ms: f64,
+    t_upstream_connect_ms: f64,
+    t_upstream_ttfb_ms: f64,
+    t_upstream_stream_ms: f64,
+    t_resp_parse_ms: f64,
+    t_persist_ms: f64,
+}
+
+#[derive(Debug, Clone)]
+struct ProxyCaptureRecord {
+    invoke_id: String,
+    occurred_at: String,
+    model: Option<String>,
+    usage: ParsedUsage,
+    cost: Option<f64>,
+    cost_estimated: bool,
+    price_version: Option<String>,
+    status: String,
+    error_message: Option<String>,
+    payload: Option<String>,
+    raw_response: String,
+    req_raw: RawPayloadMeta,
+    resp_raw: RawPayloadMeta,
+    raw_expires_at: Option<String>,
+    timings: StageTimings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyCaptureTarget {
+    ChatCompletions,
+    Responses,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InvocationSourceScope {
+    ProxyOnly,
+    All,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListQuery {
@@ -3477,6 +4783,35 @@ struct TimeseriesQuery {
     time_zone: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PerfQuery {
+    #[serde(default = "default_range")]
+    range: String,
+    time_zone: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PerfStatsResponse {
+    range_start: String,
+    range_end: String,
+    source: String,
+    stages: Vec<PerfStageStats>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PerfStageStats {
+    stage: String,
+    count: i64,
+    avg_ms: f64,
+    p50_ms: f64,
+    p90_ms: f64,
+    p99_ms: f64,
+    max_ms: f64,
+}
+
 #[derive(Debug)]
 enum SummaryWindow {
     All,
@@ -3581,6 +4916,7 @@ impl HttpClients {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppConfig {
+    legacy_poll_enabled: bool,
     base_url: Url,
     openai_upstream_base_url: Url,
     quota_endpoint: String,
@@ -3591,6 +4927,11 @@ struct AppConfig {
     request_timeout: Duration,
     openai_proxy_handshake_timeout: Duration,
     openai_proxy_max_request_body_bytes: usize,
+    proxy_enforce_stream_include_usage: bool,
+    proxy_raw_max_bytes: Option<usize>,
+    proxy_raw_retention: Duration,
+    proxy_raw_dir: PathBuf,
+    proxy_pricing_catalog_path: PathBuf,
     max_parallel_polls: usize,
     shared_connection_parallelism: usize,
     http_bind: SocketAddr,
@@ -3612,11 +4953,17 @@ struct CrsStatsConfig {
 
 impl AppConfig {
     fn from_sources(overrides: &CliArgs) -> Result<Self> {
-        let base_url_raw = overrides
+        let legacy_poll_enabled =
+            parse_bool_env_var("XY_LEGACY_POLL_ENABLED", DEFAULT_XY_LEGACY_POLL_ENABLED)?;
+        let base_url_raw_opt = overrides
             .base_url
             .clone()
-            .or_else(|| env::var("XY_BASE_URL").ok())
-            .ok_or_else(|| anyhow!("XY_BASE_URL is not set"))?;
+            .or_else(|| env::var("XY_BASE_URL").ok());
+        let base_url_raw = if legacy_poll_enabled {
+            base_url_raw_opt.ok_or_else(|| anyhow!("XY_BASE_URL is not set"))?
+        } else {
+            base_url_raw_opt.unwrap_or_else(|| "http://127.0.0.1/".to_string())
+        };
         let openai_upstream_base_url = env::var("OPENAI_UPSTREAM_BASE_URL")
             .unwrap_or_else(|_| DEFAULT_OPENAI_UPSTREAM_BASE_URL.to_string());
         let quota_endpoint = overrides
@@ -3624,16 +4971,24 @@ impl AppConfig {
             .clone()
             .or_else(|| env::var("XY_VIBE_QUOTA_ENDPOINT").ok())
             .unwrap_or_else(|| "/frontend-api/vibe-code/quota".to_string());
-        let cookie_name = overrides
+        let cookie_name_opt = overrides
             .session_cookie_name
             .clone()
-            .or_else(|| env::var("XY_SESSION_COOKIE_NAME").ok())
-            .ok_or_else(|| anyhow!("XY_SESSION_COOKIE_NAME is not set"))?;
-        let cookie_value = overrides
+            .or_else(|| env::var("XY_SESSION_COOKIE_NAME").ok());
+        let cookie_value_opt = overrides
             .session_cookie_value
             .clone()
-            .or_else(|| env::var("XY_SESSION_COOKIE_VALUE").ok())
-            .ok_or_else(|| anyhow!("XY_SESSION_COOKIE_VALUE is not set"))?;
+            .or_else(|| env::var("XY_SESSION_COOKIE_VALUE").ok());
+        let cookie_name = if legacy_poll_enabled {
+            cookie_name_opt.ok_or_else(|| anyhow!("XY_SESSION_COOKIE_NAME is not set"))?
+        } else {
+            cookie_name_opt.unwrap_or_else(|| "xy_session".to_string())
+        };
+        let cookie_value = if legacy_poll_enabled {
+            cookie_value_opt.ok_or_else(|| anyhow!("XY_SESSION_COOKIE_VALUE is not set"))?
+        } else {
+            cookie_value_opt.unwrap_or_default()
+        };
         let database_path = overrides
             .database_path
             .clone()
@@ -3668,6 +5023,42 @@ impl AppConfig {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
             .unwrap_or(DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES);
+        let proxy_enforce_stream_include_usage = parse_bool_env_var(
+            "PROXY_ENFORCE_STREAM_INCLUDE_USAGE",
+            DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
+        )?;
+        let proxy_raw_max_bytes = match env::var("PROXY_RAW_MAX_BYTES") {
+            Ok(value) => {
+                let parsed = value
+                    .parse::<usize>()
+                    .with_context(|| format!("invalid PROXY_RAW_MAX_BYTES: {value}"))?;
+                if parsed == 0 { None } else { Some(parsed) }
+            }
+            Err(env::VarError::NotPresent) => DEFAULT_PROXY_RAW_MAX_BYTES,
+            Err(err) => {
+                return Err(anyhow!("failed to read PROXY_RAW_MAX_BYTES: {err}"));
+            }
+        };
+        let proxy_raw_retention_days = env::var("PROXY_RAW_RETENTION_DAYS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .or_else(|| {
+                env::var("PROXY_RAW_RETENTION_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .map(|secs| secs / 86_400)
+            })
+            .unwrap_or(DEFAULT_PROXY_RAW_RETENTION_DAYS);
+        let proxy_raw_retention =
+            Duration::from_secs(proxy_raw_retention_days.saturating_mul(86_400));
+        let proxy_raw_dir = env::var("PROXY_RAW_DIR")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_PROXY_RAW_DIR));
+        let proxy_pricing_catalog_path = env::var("PROXY_PRICING_CATALOG_PATH")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_PROXY_PRICING_CATALOG_PATH));
         let max_parallel_polls = overrides
             .max_parallel_polls
             .or_else(|| {
@@ -3762,6 +5153,7 @@ impl AppConfig {
         };
 
         Ok(Self {
+            legacy_poll_enabled,
             base_url: Url::parse(&base_url_raw).context("invalid XY_BASE_URL")?,
             openai_upstream_base_url: Url::parse(&openai_upstream_base_url)
                 .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
@@ -3773,6 +5165,11 @@ impl AppConfig {
             request_timeout,
             openai_proxy_handshake_timeout,
             openai_proxy_max_request_body_bytes,
+            proxy_enforce_stream_include_usage,
+            proxy_raw_max_bytes,
+            proxy_raw_retention,
+            proxy_raw_dir,
+            proxy_pricing_catalog_path,
             max_parallel_polls,
             shared_connection_parallelism,
             http_bind,
@@ -3797,6 +5194,41 @@ impl AppConfig {
     fn database_url(&self) -> String {
         format!("sqlite://{}", self.database_path.to_string_lossy())
     }
+}
+
+fn parse_bool_env_var(name: &str, default_value: bool) -> Result<bool> {
+    match env::var(name) {
+        Ok(raw) => parse_bool_string(&raw).ok_or_else(|| anyhow!("invalid {name}: {raw}")),
+        Err(env::VarError::NotPresent) => Ok(default_value),
+        Err(err) => Err(anyhow!("failed to read {name}: {err}")),
+    }
+}
+
+fn parse_bool_string(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn load_pricing_catalog(path: &Path) -> Result<PricingCatalog> {
+    if !path.exists() {
+        warn!(path = %path.display(), "pricing catalog file not found; cost estimation disabled");
+        return Ok(PricingCatalog::default());
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read pricing catalog: {}", path.display()))?;
+    let parsed: PricingCatalogFile = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse pricing catalog: {}", path.display()))?;
+    let version = parsed
+        .version
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "unversioned".to_string());
+    Ok(PricingCatalog {
+        version,
+        models: parsed.models,
+    })
 }
 
 #[cfg(test)]
@@ -3880,6 +5312,7 @@ mod tests {
 
     fn test_config() -> AppConfig {
         AppConfig {
+            legacy_poll_enabled: false,
             base_url: Url::parse("https://example.com/").expect("valid url"),
             openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
             quota_endpoint: "/quota".to_string(),
@@ -3892,6 +5325,11 @@ mod tests {
                 DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
             ),
             openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+            proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
+            proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
+            proxy_raw_retention: Duration::from_secs(DEFAULT_PROXY_RAW_RETENTION_DAYS * 86_400),
+            proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
+            proxy_pricing_catalog_path: PathBuf::from(DEFAULT_PROXY_PRICING_CATALOG_PATH),
             max_parallel_polls: 2,
             shared_connection_parallelism: 1,
             http_bind: "127.0.0.1:38080".parse().expect("valid socket address"),
@@ -3937,6 +5375,7 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(PricingCatalog::default()),
         })
     }
 
@@ -4067,6 +5506,17 @@ mod tests {
         )
     }
 
+    async fn test_upstream_chat_external_redirect() -> impl IntoResponse {
+        (
+            StatusCode::TEMPORARY_REDIRECT,
+            [(
+                http_header::LOCATION,
+                HeaderValue::from_static("https://example.org/outside"),
+            )],
+            Body::empty(),
+        )
+    }
+
     async fn test_upstream_models(uri: Uri) -> impl IntoResponse {
         if uri
             .query()
@@ -4150,6 +5600,10 @@ mod tests {
             .route(
                 "/v1/redirect-external",
                 any(test_upstream_external_redirect),
+            )
+            .route(
+                "/v1/chat/completions",
+                any(test_upstream_chat_external_redirect),
             );
 
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -5085,6 +6539,7 @@ mod tests {
                 enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
             })),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(PricingCatalog::default()),
         });
 
         let started = Instant::now();
@@ -5206,6 +6661,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_capture_target_persists_record_on_redirect_rewrite_error() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedRow {
+            source: String,
+            status: Option<String>,
+            error_message: Option<String>,
+            t_total_ms: Option<f64>,
+            t_req_read_ms: Option<f64>,
+            t_req_parse_ms: Option<f64>,
+            t_upstream_connect_ms: Option<f64>,
+        }
+
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from(
+                r#"{"model":"gpt-5.2","stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains("cross-origin redirect is not allowed")
+        );
+
+        let row = sqlx::query_as::<_, PersistedRow>(
+            r#"
+            SELECT source, status, error_message, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query capture record")
+        .expect("capture record should be persisted");
+
+        assert_eq!(row.source, SOURCE_PROXY);
+        assert_eq!(row.status.as_deref(), Some("http_502"));
+        assert!(
+            row.error_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("cross-origin redirect is not allowed"))
+        );
+        assert!(row.t_total_ms.is_some_and(|v| v > 0.0));
+        assert!(row.t_req_read_ms.is_some_and(|v| v >= 0.0));
+        assert!(row.t_req_parse_ms.is_some_and(|v| v >= 0.0));
+        assert!(row.t_upstream_connect_ms.is_some_and(|v| v >= 0.0));
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
     async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         let (upstream_base, upstream_handle) = spawn_test_upstream().await;
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -5230,6 +6755,7 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(PricingCatalog::default()),
         });
 
         let slow_chunks = stream::unfold(0u8, |state| async move {
@@ -5340,6 +6866,7 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(PricingCatalog::default()),
         });
 
         let app = Router::new()
@@ -5492,6 +7019,7 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(PricingCatalog::default()),
         });
 
         let response = proxy_openai_v1(
@@ -5543,6 +7071,7 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(PricingCatalog::default()),
         });
 
         let response = proxy_openai_v1(
@@ -5569,6 +7098,80 @@ mod tests {
         upstream_handle.abort();
     }
 
+    #[test]
+    fn prepare_target_request_body_injects_include_usage_for_chat_stream() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-4o-mini",
+            "stream": true,
+            "messages": [{"role":"user","content":"hi"}]
+        }))
+        .expect("serialize request body");
+        let (rewritten, info, did_rewrite) =
+            prepare_target_request_body(ProxyCaptureTarget::ChatCompletions, body, true);
+        assert!(did_rewrite);
+        assert!(info.is_stream);
+        assert_eq!(info.model.as_deref(), Some("gpt-4o-mini"));
+        let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
+        assert_eq!(
+            payload
+                .pointer("/stream_options/include_usage")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn parse_stream_response_payload_extracts_usage_and_model() {
+        let raw = [
+            "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}],\"usage\":null}",
+            "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}",
+            "data: [DONE]",
+        ]
+        .join("\n");
+        let parsed = parse_stream_response_payload(raw.as_bytes());
+        assert_eq!(parsed.model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(parsed.usage.input_tokens, Some(11));
+        assert_eq!(parsed.usage.output_tokens, Some(7));
+        assert_eq!(parsed.usage.total_tokens, Some(18));
+        assert!(parsed.usage_missing_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_default_source_scope_prefers_proxy_when_available() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let scope_before = resolve_default_source_scope(&pool)
+            .await
+            .expect("scope before insert");
+        assert_eq!(scope_before, InvocationSourceScope::All);
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+        )
+        .bind("proxy-test-1")
+        .bind("2026-02-22 00:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("{}")
+        .execute(&pool)
+        .await
+        .expect("insert proxy invocation");
+
+        let scope_after = resolve_default_source_scope(&pool)
+            .await
+            .expect("scope after insert");
+        assert_eq!(scope_after, InvocationSourceScope::ProxyOnly);
+    }
+
     #[tokio::test]
     async fn quota_latest_returns_degraded_when_empty() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -5590,6 +7193,7 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(PricingCatalog::default()),
         });
 
         let Json(snapshot) = latest_quota_snapshot(State(state))
@@ -5836,9 +7440,29 @@ fn parse_summary_window(query: &SummaryQuery, default_limit: i64) -> Result<Summ
     }
 }
 
-async fn query_stats_row(pool: &Pool<Sqlite>, filter: StatsFilter) -> Result<StatsRow> {
-    match filter {
-        StatsFilter::All => sqlx::query_as::<_, StatsRow>(
+async fn query_stats_row(
+    pool: &Pool<Sqlite>,
+    filter: StatsFilter,
+    source_scope: InvocationSourceScope,
+) -> Result<StatsRow> {
+    match (filter, source_scope) {
+        (StatsFilter::All, InvocationSourceScope::ProxyOnly) => sqlx::query_as::<_, StatsRow>(
+            r#"
+                SELECT
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
+                    COALESCE(SUM(cost), 0.0) AS total_cost,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM codex_invocations
+                WHERE source = ?1
+                "#,
+        )
+        .bind(SOURCE_PROXY)
+        .fetch_one(pool)
+        .await
+        .map_err(Into::into),
+        (StatsFilter::All, InvocationSourceScope::All) => sqlx::query_as::<_, StatsRow>(
             r#"
                 SELECT
                     COUNT(*) AS total_count,
@@ -5852,7 +7476,26 @@ async fn query_stats_row(pool: &Pool<Sqlite>, filter: StatsFilter) -> Result<Sta
         .fetch_one(pool)
         .await
         .map_err(Into::into),
-        StatsFilter::Since(start) => sqlx::query_as::<_, StatsRow>(
+        (StatsFilter::Since(start), InvocationSourceScope::ProxyOnly) => {
+            sqlx::query_as::<_, StatsRow>(
+                r#"
+                SELECT
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
+                    COALESCE(SUM(cost), 0.0) AS total_cost,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM codex_invocations
+                WHERE source = ?1 AND occurred_at >= ?2
+                "#,
+            )
+            .bind(SOURCE_PROXY)
+            .bind(db_occurred_at_lower_bound(start))
+            .fetch_one(pool)
+            .await
+            .map_err(Into::into)
+        }
+        (StatsFilter::Since(start), InvocationSourceScope::All) => sqlx::query_as::<_, StatsRow>(
             r#"
                 SELECT
                     COUNT(*) AS total_count,
@@ -5868,8 +7511,34 @@ async fn query_stats_row(pool: &Pool<Sqlite>, filter: StatsFilter) -> Result<Sta
         .fetch_one(pool)
         .await
         .map_err(Into::into),
-        StatsFilter::RecentLimit(limit) => sqlx::query_as::<_, StatsRow>(
-            r#"
+        (StatsFilter::RecentLimit(limit), InvocationSourceScope::ProxyOnly) => {
+            sqlx::query_as::<_, StatsRow>(
+                r#"
+                WITH recent AS (
+                    SELECT *
+                    FROM codex_invocations
+                    WHERE source = ?1
+                    ORDER BY occurred_at DESC
+                    LIMIT ?2
+                )
+                SELECT
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
+                    COALESCE(SUM(cost), 0.0) AS total_cost,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM recent
+                "#,
+            )
+            .bind(SOURCE_PROXY)
+            .bind(limit)
+            .fetch_one(pool)
+            .await
+            .map_err(Into::into)
+        }
+        (StatsFilter::RecentLimit(limit), InvocationSourceScope::All) => {
+            sqlx::query_as::<_, StatsRow>(
+                r#"
                 WITH recent AS (
                     SELECT *
                     FROM codex_invocations
@@ -5884,16 +7553,21 @@ async fn query_stats_row(pool: &Pool<Sqlite>, filter: StatsFilter) -> Result<Sta
                     COALESCE(SUM(total_tokens), 0) AS total_tokens
                 FROM recent
                 "#,
-        )
-        .bind(limit)
-        .fetch_one(pool)
-        .await
-        .map_err(Into::into),
+            )
+            .bind(limit)
+            .fetch_one(pool)
+            .await
+            .map_err(Into::into)
+        }
     }
 }
 
-async fn query_invocation_totals(pool: &Pool<Sqlite>, filter: StatsFilter) -> Result<StatsTotals> {
-    let row = query_stats_row(pool, filter).await?;
+async fn query_invocation_totals(
+    pool: &Pool<Sqlite>,
+    filter: StatsFilter,
+    source_scope: InvocationSourceScope,
+) -> Result<StatsTotals> {
+    let row = query_stats_row(pool, filter, source_scope).await?;
     Ok(StatsTotals::from(row))
 }
 
@@ -5901,7 +7575,11 @@ async fn query_crs_totals(
     pool: &Pool<Sqlite>,
     relay: Option<&CrsStatsConfig>,
     filter: &StatsFilter,
+    source_scope: InvocationSourceScope,
 ) -> Result<StatsTotals> {
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        return Ok(StatsTotals::default());
+    }
     let relay = match relay {
         Some(relay) => relay,
         None => return Ok(StatsTotals::default()),
@@ -5943,10 +7621,30 @@ async fn query_combined_totals(
     pool: &Pool<Sqlite>,
     relay: Option<&CrsStatsConfig>,
     filter: StatsFilter,
+    source_scope: InvocationSourceScope,
 ) -> Result<StatsTotals> {
-    let base = query_invocation_totals(pool, filter.clone()).await?;
-    let relay_totals = query_crs_totals(pool, relay, &filter).await?;
+    let base = query_invocation_totals(pool, filter.clone(), source_scope).await?;
+    let relay_totals = query_crs_totals(pool, relay, &filter, source_scope).await?;
     Ok(base.add(relay_totals))
+}
+
+async fn resolve_default_source_scope(pool: &Pool<Sqlite>) -> Result<InvocationSourceScope> {
+    let has_proxy = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT 1
+        FROM codex_invocations
+        WHERE source = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_optional(pool)
+    .await?;
+    Ok(if has_proxy.is_some() {
+        InvocationSourceScope::ProxyOnly
+    } else {
+        InvocationSourceScope::All
+    })
 }
 
 async fn query_crs_deltas(

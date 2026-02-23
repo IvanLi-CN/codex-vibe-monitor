@@ -101,6 +101,11 @@ XY_POLL_INTERVAL_SECS=10                       # (10)
 XY_REQUEST_TIMEOUT_SECS=60                     # (60)
 OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=300        # (300)
 OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=268435456  # (256MiB)
+PROXY_RAW_MAX_BYTES=0                          # (0=unlimited, set >0 to cap)
+PROXY_RAW_RETENTION_DAYS=7                     # (7)
+PROXY_ENFORCE_STREAM_INCLUDE_USAGE=true        # (true)
+PROXY_PRICING_CATALOG_PATH=config/model-pricing.json  # (config/model-pricing.json)
+XY_LEGACY_POLL_ENABLED=false                   # (false，true 时启用 legacy 轮询写入)
 XY_MAX_PARALLEL_POLLS=6                        # (6)
 XY_SHARED_CONNECTION_PARALLELISM=2             # (2)
 XY_HTTP_BIND=127.0.0.1:8080                    # (127.0.0.1:8080)
@@ -116,6 +121,8 @@ CRS_STATS_PERIOD=daily                         # (daily)
 CRS_STATS_POLL_INTERVAL_SECS=10                # (10，默认跟随 XY_POLL_INTERVAL_SECS)
 ```
 
+`config/model-pricing.json` 默认提供模板（`models` 为空）。如需成本估算，请按实际模型补充每百万 token 单价。
+
 上述大部分变量均可使用 CLI 覆盖，例如：
 
 ```bash
@@ -127,6 +134,7 @@ cargo run -- \
 
 ## HTTP API 与 SSE
 
+- 统计相关接口默认以代理采集记录（`source=proxy`）为主；启用 legacy 轮询（如 `XY_LEGACY_POLL_ENABLED=true`）后会合并旧来源增量。
 - `GET /health`：健康检查，返回 `ok`。
 - `GET /api/version`：返回 `{ backend, frontend }`。
 - `GET /api/settings/proxy-models`：获取 `/v1/models` 劫持与上游合并开关状态。
@@ -135,6 +143,7 @@ cargo run -- \
 - `GET /api/stats`：全量聚合统计。
 - `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计。
 - `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）。
+- `GET /api/stats/perf`：代理链路阶段耗时统计（count/avg/P50/P90/P99/max）。
 - `GET /api/quota/latest`：最近一次配额快照。
 - `ANY /v1/*`：OpenAI 兼容反向代理（请求头/请求体/状态码/响应头/响应体透明透传，包含流式响应）；`GET /v1/models` 可按设置切换为预置列表或预置+上游实时合并。
 - `GET /events`：SSE 推送，事件类型：

@@ -35,7 +35,29 @@ export interface ApiInvocation {
   cost?: number
   status?: string
   errorMessage?: string
+  timings?: ApiInvocationTimings
+  rawMetadata?: ApiInvocationRawMetadata
+  proxyTimings?: ApiInvocationTimings
+  proxyRawMetadata?: ApiInvocationRawMetadata
   createdAt: string
+}
+
+export interface ApiInvocationTimings {
+  requestReadMs?: number | null
+  requestParseMs?: number | null
+  upstreamConnectMs?: number | null
+  upstreamFirstByteMs?: number | null
+  upstreamStreamMs?: number | null
+  responseParseMs?: number | null
+  persistenceMs?: number | null
+  totalMs?: number | null
+  [stage: string]: number | null | undefined
+}
+
+export interface ApiInvocationRawMetadata {
+  request?: Record<string, unknown>
+  response?: Record<string, unknown>
+  [key: string]: unknown
 }
 
 export interface ListResponse {
@@ -76,6 +98,33 @@ export interface ErrorDistributionResponse {
   rangeStart: string
   rangeEnd: string
   items: ErrorDistributionItem[]
+}
+
+export interface PerfStageStats {
+  stage: string
+  count: number
+  avgMs: number
+  p50Ms: number
+  p90Ms: number
+  p99Ms: number
+  maxMs: number
+}
+
+export interface PerfStatsResponse {
+  rangeStart: string
+  rangeEnd: string
+  items?: PerfStageStats[]
+  stages?: PerfStageStats[]
+}
+
+export interface PerfStatsQuery {
+  range?: string
+  bucket?: string
+  settlementHour?: number
+  timeZone?: string
+  source?: string
+  model?: string
+  endpoint?: string
 }
 
 export interface QuotaSnapshot {
@@ -210,6 +259,20 @@ export async function fetchErrorDistribution(range: string, params?: { top?: num
   search.set('timeZone', params?.timeZone ?? getBrowserTimeZone())
   if (params?.top != null) search.set('top', String(params.top))
   return fetchJson<ErrorDistributionResponse>(`/api/stats/errors?${search.toString()}`)
+}
+
+export async function fetchPerfStats(params?: PerfStatsQuery) {
+  const search = new URLSearchParams()
+  if (params?.range) search.set('range', params.range)
+  if (params?.bucket) search.set('bucket', params.bucket)
+  if (params?.settlementHour !== undefined) search.set('settlementHour', String(params.settlementHour))
+  search.set('timeZone', params?.timeZone ?? getBrowserTimeZone())
+  if (params?.source) search.set('source', params.source)
+  if (params?.model) search.set('model', params.model)
+  if (params?.endpoint) search.set('endpoint', params.endpoint)
+
+  const query = search.toString()
+  return fetchJson<PerfStatsResponse>(query ? `/api/stats/perf?${query}` : '/api/stats/perf')
 }
 
 export async function fetchQuotaSnapshot() {
