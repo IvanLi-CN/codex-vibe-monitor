@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
     env,
@@ -30,7 +31,8 @@ use chrono::{
 use chrono_tz::{Asia::Shanghai, Tz};
 use clap::Parser;
 use dotenvy::dotenv;
-use futures_util::{StreamExt, stream};
+use flate2::read::GzDecoder;
+use futures_util::{StreamExt, TryStreamExt, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Url, header};
@@ -63,6 +65,7 @@ const SOURCE_PROXY: &str = "proxy";
 const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
+const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
 const DEFAULT_PROXY_RAW_RETENTION_DAYS: u64 = 7;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
@@ -74,6 +77,16 @@ const PROXY_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream handshake timed out";
 const PROXY_MODEL_MERGE_STATUS_HEADER: &str = "x-proxy-model-merge-upstream";
 const PROXY_MODEL_MERGE_STATUS_SUCCESS: &str = "success";
 const PROXY_MODEL_MERGE_STATUS_FAILED: &str = "failed";
+const PROXY_FAILURE_BODY_TOO_LARGE: &str = "body_too_large";
+const PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT: &str = "request_body_read_timeout";
+const PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED: &str =
+    "request_body_stream_error_client_closed";
+const PROXY_FAILURE_FAILED_CONTACT_UPSTREAM: &str = "failed_contact_upstream";
+const PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream_handshake_timeout";
+const PROXY_FAILURE_UPSTREAM_STREAM_ERROR: &str = "upstream_stream_error";
+const PROXY_STREAM_TERMINAL_COMPLETED: &str = "stream_completed";
+const PROXY_STREAM_TERMINAL_ERROR: &str = "stream_error";
+const PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED: &str = "downstream_closed";
 const PROXY_MODEL_SETTINGS_SINGLETON_ID: i64 = 1;
 const PRICING_SETTINGS_SINGLETON_ID: i64 = 1;
 const DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-02-23";
@@ -81,6 +94,7 @@ const DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE: bool = true;
 const DEFAULT_XY_LEGACY_POLL_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
+const DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP: bool = true;
 const PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.3-codex",
     "gpt-5.2-codex",
@@ -164,6 +178,19 @@ async fn main() -> Result<()> {
         .context("failed to open sqlite database")?;
 
     ensure_schema(&pool).await?;
+    if config.proxy_usage_backfill_on_startup {
+        let summary = backfill_proxy_usage_tokens(&pool).await?;
+        info!(
+            scanned = summary.scanned,
+            updated = summary.updated,
+            skipped_missing_file = summary.skipped_missing_file,
+            skipped_without_usage = summary.skipped_without_usage,
+            skipped_decode_error = summary.skipped_decode_error,
+            "proxy usage startup backfill finished"
+        );
+    } else {
+        info!("proxy usage startup backfill is disabled");
+    }
     let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
     fs::create_dir_all(&config.proxy_raw_dir).with_context(|| {
         format!(
@@ -3207,8 +3234,85 @@ async fn proxy_openai_v1_capture_target(
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
 
     let req_read_started = Instant::now();
-    let request_body_bytes =
-        read_request_body_with_limit(body, body_limit, proxy_request_id).await?;
+    let request_body_bytes = match read_request_body_with_limit(
+        body,
+        body_limit,
+        state.config.openai_proxy_request_read_timeout,
+        proxy_request_id,
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(read_err) => {
+            let t_req_read_ms = elapsed_ms(req_read_started);
+            let request_info = RequestCaptureInfo::default();
+            let req_raw = store_raw_payload_file(
+                &state.config,
+                &invoke_id,
+                "request",
+                &read_err.partial_body,
+            );
+            let usage = ParsedUsage::default();
+            let (cost, cost_estimated, price_version) =
+                estimate_proxy_cost_from_shared_catalog(&state.pricing_catalog, None, &usage).await;
+            let error_message = format!("[{}] {}", read_err.failure_kind, read_err.message);
+
+            warn!(
+                proxy_request_id,
+                status = %read_err.status,
+                failure_kind = read_err.failure_kind,
+                error = %read_err.message,
+                elapsed_ms = t_req_read_ms,
+                "openai proxy request body read failed"
+            );
+
+            let record = ProxyCaptureRecord {
+                invoke_id,
+                occurred_at,
+                model: None,
+                usage,
+                cost,
+                cost_estimated,
+                price_version,
+                status: if read_err.status.is_server_error() {
+                    format!("http_{}", read_err.status.as_u16())
+                } else {
+                    "failed".to_string()
+                },
+                error_message: Some(error_message),
+                payload: Some(build_proxy_payload_summary(
+                    capture_target,
+                    read_err.status,
+                    request_info.is_stream,
+                    None,
+                    None,
+                    None,
+                    request_info.parse_error.as_deref(),
+                    Some(read_err.failure_kind),
+                )),
+                raw_response: "{}".to_string(),
+                req_raw,
+                resp_raw: RawPayloadMeta::default(),
+                raw_expires_at,
+                timings: StageTimings {
+                    t_total_ms: 0.0,
+                    t_req_read_ms,
+                    t_req_parse_ms: 0.0,
+                    t_upstream_connect_ms: 0.0,
+                    t_upstream_ttfb_ms: 0.0,
+                    t_upstream_stream_ms: 0.0,
+                    t_resp_parse_ms: 0.0,
+                    t_persist_ms: 0.0,
+                },
+            };
+            if let Err(err) =
+                persist_proxy_capture_record(&state.pool, capture_started, record).await
+            {
+                warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
+            }
+            return Err((read_err.status, read_err.message));
+        }
+    };
     let t_req_read_ms = elapsed_ms(req_read_started);
 
     let req_parse_started = Instant::now();
@@ -3241,11 +3345,13 @@ async fn proxy_openai_v1_capture_target(
             (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("request body exceeds {body_limit} bytes"),
+                PROXY_FAILURE_BODY_TOO_LARGE,
             )
         } else {
             (
                 StatusCode::BAD_GATEWAY,
                 format!("failed to contact upstream: {err}"),
+                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
             )
         }
     };
@@ -3255,7 +3361,7 @@ async fn proxy_openai_v1_capture_target(
     let upstream_response = match timeout(handshake_timeout, upstream_request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
-            let (status, message) = map_upstream_error(err);
+            let (status, message, failure_kind) = map_upstream_error(err);
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
@@ -3263,6 +3369,7 @@ async fn proxy_openai_v1_capture_target(
                 &usage,
             )
             .await;
+            let error_message = format!("[{failure_kind}] {message}");
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -3276,7 +3383,7 @@ async fn proxy_openai_v1_capture_target(
                 } else {
                     "failed".to_string()
                 },
-                error_message: Some(message.clone()),
+                error_message: Some(error_message),
                 payload: Some(build_proxy_payload_summary(
                     capture_target,
                     status,
@@ -3285,6 +3392,7 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     request_info.parse_error.as_deref(),
+                    Some(failure_kind),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3313,6 +3421,7 @@ async fn proxy_openai_v1_capture_target(
                 "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
                 handshake_timeout.as_millis()
             );
+            let failure_kind = PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT;
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
@@ -3320,6 +3429,7 @@ async fn proxy_openai_v1_capture_target(
                 &usage,
             )
             .await;
+            let error_message = format!("[{failure_kind}] {message}");
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -3329,7 +3439,7 @@ async fn proxy_openai_v1_capture_target(
                 cost_estimated,
                 price_version,
                 status: "http_502".to_string(),
-                error_message: Some(message.clone()),
+                error_message: Some(error_message),
                 payload: Some(build_proxy_payload_summary(
                     capture_target,
                     StatusCode::BAD_GATEWAY,
@@ -3338,6 +3448,7 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     request_info.parse_error.as_deref(),
+                    Some(failure_kind),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3398,6 +3509,7 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     request_info.parse_error.as_deref(),
+                    None,
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3424,6 +3536,11 @@ async fn proxy_openai_v1_capture_target(
     };
 
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
+    let upstream_content_encoding = upstream_response
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
         if should_forward_proxy_header(name, &upstream_connection_scoped) {
@@ -3443,16 +3560,20 @@ async fn proxy_openai_v1_capture_target(
     let invoke_id_for_task = invoke_id.clone();
     let occurred_at_for_task = occurred_at.clone();
     let raw_expires_at_for_task = raw_expires_at.clone();
+    let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
 
     tokio::spawn(async move {
         let mut stream = upstream_response.bytes_stream();
         let ttfb_started = Instant::now();
+        let stream_started = Instant::now();
         let mut t_upstream_ttfb_ms = 0.0;
         let mut stream_started_at: Option<Instant> = None;
         let mut response_bytes: Vec<u8> = Vec::new();
         let mut stream_error: Option<String> = None;
         let mut downstream_closed = false;
+        let mut forwarded_chunks = 0usize;
+        let mut forwarded_bytes = 0usize;
 
         while let Some(next_chunk) = stream.next().await {
             match next_chunk {
@@ -3462,6 +3583,8 @@ async fn proxy_openai_v1_capture_target(
                         stream_started_at = Some(Instant::now());
                     }
                     response_bytes.extend_from_slice(&chunk);
+                    forwarded_chunks = forwarded_chunks.saturating_add(1);
+                    forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                         downstream_closed = true;
                     }
@@ -3478,12 +3601,41 @@ async fn proxy_openai_v1_capture_target(
         }
         drop(tx);
 
+        let terminal_state = if stream_error.is_some() {
+            PROXY_STREAM_TERMINAL_ERROR
+        } else if downstream_closed {
+            PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
+        } else {
+            PROXY_STREAM_TERMINAL_COMPLETED
+        };
+        if let Some(err) = stream_error.as_deref() {
+            warn!(
+                proxy_request_id,
+                terminal_state,
+                error = err,
+                forwarded_chunks,
+                forwarded_bytes,
+                elapsed_ms = stream_started.elapsed().as_millis(),
+                "openai proxy capture stream finished with upstream error"
+            );
+        } else {
+            info!(
+                proxy_request_id,
+                terminal_state,
+                forwarded_chunks,
+                forwarded_bytes,
+                elapsed_ms = stream_started.elapsed().as_millis(),
+                "openai proxy capture stream finished"
+            );
+        }
+
         let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
         let resp_parse_started = Instant::now();
         let mut response_info = parse_target_response_payload(
             capture_target,
             &response_bytes,
             request_info_for_task.is_stream,
+            upstream_content_encoding_for_task.as_deref(),
         );
         let t_resp_parse_ms = elapsed_ms(resp_parse_started);
 
@@ -3494,8 +3646,21 @@ async fn proxy_openai_v1_capture_target(
             response_info.usage_missing_reason = Some("upstream_stream_error".to_string());
         }
 
+        let failure_kind = if stream_error.is_some() {
+            Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+        } else if downstream_closed {
+            Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+        } else {
+            None
+        };
+
         let error_message = if let Some(err) = stream_error {
-            Some(err)
+            Some(format!("[{}] {err}", PROXY_FAILURE_UPSTREAM_STREAM_ERROR))
+        } else if downstream_closed {
+            Some(format!(
+                "[{}] downstream closed while streaming upstream response",
+                PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
+            ))
         } else if !upstream_status.is_success() {
             extract_error_message_from_response(&response_bytes)
         } else {
@@ -3526,6 +3691,7 @@ async fn proxy_openai_v1_capture_target(
             response_info.model.as_deref(),
             response_info.usage_missing_reason.as_deref(),
             request_info_for_task.parse_error.as_deref(),
+            failure_kind,
         );
 
         let record = ProxyCaptureRecord {
@@ -3575,32 +3741,91 @@ async fn proxy_openai_v1_capture_target(
 async fn read_request_body_with_limit(
     body: Body,
     body_limit: usize,
+    request_read_timeout: Duration,
     proxy_request_id: u64,
-) -> Result<Vec<u8>, (StatusCode, String)> {
+) -> Result<Vec<u8>, RequestBodyReadError> {
     let mut data = Vec::new();
-    let mut seen = 0usize;
     let mut stream = body.into_data_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|err| {
+    let read_deadline = Instant::now() + request_read_timeout;
+
+    loop {
+        let remaining = read_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             warn!(
                 proxy_request_id,
-                error = %err,
-                "openai proxy request body stream error"
+                timeout_ms = request_read_timeout.as_millis(),
+                read_bytes = data.len(),
+                "openai proxy request body read timed out"
             );
-            (
-                StatusCode::BAD_REQUEST,
-                format!("failed to read request body stream: {err}"),
-            )
-        })?;
-        seen = seen.saturating_add(chunk.len());
-        if seen > body_limit {
-            return Err((
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("request body exceeds {body_limit} bytes"),
-            ));
+            return Err(RequestBodyReadError {
+                status: StatusCode::REQUEST_TIMEOUT,
+                message: format!(
+                    "request body read timed out after {}ms",
+                    request_read_timeout.as_millis()
+                ),
+                failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                partial_body: data,
+            });
         }
+
+        let next_chunk = match timeout(remaining, stream.next()).await {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                warn!(
+                    proxy_request_id,
+                    timeout_ms = request_read_timeout.as_millis(),
+                    read_bytes = data.len(),
+                    "openai proxy request body read timed out"
+                );
+                return Err(RequestBodyReadError {
+                    status: StatusCode::REQUEST_TIMEOUT,
+                    message: format!(
+                        "request body read timed out after {}ms",
+                        request_read_timeout.as_millis()
+                    ),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    partial_body: data,
+                });
+            }
+        };
+
+        let Some(chunk) = next_chunk else {
+            break;
+        };
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    read_bytes = data.len(),
+                    "openai proxy request body stream error"
+                );
+                return Err(RequestBodyReadError {
+                    status: StatusCode::BAD_REQUEST,
+                    message: format!("failed to read request body stream: {err}"),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
+                    partial_body: data,
+                });
+            }
+        };
+
+        if data.len().saturating_add(chunk.len()) > body_limit {
+            let allowed = body_limit.saturating_sub(data.len());
+            if allowed > 0 {
+                data.extend_from_slice(&chunk[..allowed.min(chunk.len())]);
+            }
+            return Err(RequestBodyReadError {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                message: format!("request body exceeds {body_limit} bytes"),
+                failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
+                partial_body: data,
+            });
+        }
+
         data.extend_from_slice(&chunk);
     }
+
     Ok(data)
 }
 
@@ -3675,6 +3900,7 @@ fn parse_target_response_payload(
     _target: ProxyCaptureTarget,
     bytes: &[u8],
     request_is_stream: bool,
+    content_encoding: Option<&str>,
 ) -> ResponseCaptureInfo {
     if bytes.is_empty() {
         return ResponseCaptureInfo {
@@ -3684,35 +3910,90 @@ fn parse_target_response_payload(
         };
     }
 
-    let looks_like_stream = request_is_stream || bytes.starts_with(b"data:");
-    if looks_like_stream {
-        return parse_stream_response_payload(bytes);
+    let (decoded_bytes, decode_failure_reason) =
+        decode_response_payload_for_parse(bytes, content_encoding);
+    let parse_bytes = decoded_bytes.as_ref();
+    let looks_like_stream = request_is_stream || parse_bytes.starts_with(b"data:");
+    let mut response_info = if looks_like_stream {
+        parse_stream_response_payload(parse_bytes)
+    } else {
+        match serde_json::from_slice::<Value>(parse_bytes) {
+            Ok(value) => {
+                let model = extract_model_from_payload(&value);
+                let usage = extract_usage_from_payload(&value).unwrap_or_default();
+                let usage_missing_reason = if usage.total_tokens.is_none()
+                    && usage.input_tokens.is_none()
+                    && usage.output_tokens.is_none()
+                {
+                    Some("usage_missing_in_response".to_string())
+                } else {
+                    None
+                };
+                ResponseCaptureInfo {
+                    model,
+                    usage,
+                    usage_missing_reason,
+                }
+            }
+            Err(_) => ResponseCaptureInfo {
+                model: None,
+                usage: ParsedUsage::default(),
+                usage_missing_reason: Some("response_not_json".to_string()),
+            },
+        }
+    };
+
+    if let Some(reason) = decode_failure_reason {
+        let combined_reason = if let Some(existing) = response_info.usage_missing_reason.take() {
+            format!("response_decode_failed:{reason};{existing}")
+        } else {
+            format!("response_decode_failed:{reason}")
+        };
+        response_info.usage_missing_reason = Some(combined_reason);
     }
 
-    match serde_json::from_slice::<Value>(bytes) {
-        Ok(value) => {
-            let model = extract_model_from_payload(&value);
-            let usage = extract_usage_from_payload(&value).unwrap_or_default();
-            let usage_missing_reason = if usage.total_tokens.is_none()
-                && usage.input_tokens.is_none()
-                && usage.output_tokens.is_none()
-            {
-                Some("usage_missing_in_response".to_string())
-            } else {
-                None
-            };
-            ResponseCaptureInfo {
-                model,
-                usage,
-                usage_missing_reason,
+    response_info
+}
+
+fn decode_response_payload_for_parse<'a>(
+    bytes: &'a [u8],
+    content_encoding: Option<&str>,
+) -> (Cow<'a, [u8]>, Option<String>) {
+    let Some(content_encoding) = content_encoding else {
+        return (Cow::Borrowed(bytes), None);
+    };
+
+    let encodings: Vec<String> = content_encoding
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .collect();
+    if encodings.is_empty() {
+        return (Cow::Borrowed(bytes), None);
+    }
+
+    let mut decoded: Cow<'a, [u8]> = Cow::Borrowed(bytes);
+    for encoding in encodings.iter().rev() {
+        match encoding.as_str() {
+            "identity" => {}
+            "gzip" | "x-gzip" => {
+                let mut decoder = GzDecoder::new(decoded.as_ref());
+                let mut next = Vec::new();
+                match decoder.read_to_end(&mut next) {
+                    Ok(_) => decoded = Cow::Owned(next),
+                    Err(err) => return (Cow::Borrowed(bytes), Some(format!("gzip:{err}"))),
+                }
+            }
+            _ => {
+                return (
+                    Cow::Borrowed(bytes),
+                    Some(format!("unsupported_content_encoding:{encoding}")),
+                );
             }
         }
-        Err(_) => ResponseCaptureInfo {
-            model: None,
-            usage: ParsedUsage::default(),
-            usage_missing_reason: Some("response_not_json".to_string()),
-        },
     }
+    (decoded, None)
 }
 
 fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
@@ -3758,6 +4039,36 @@ fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
             Some("usage_missing_in_stream".to_string())
         },
     }
+}
+
+fn decode_response_payload_for_usage<'a>(
+    bytes: &'a [u8],
+    content_encoding: Option<&str>,
+) -> (Cow<'a, [u8]>, Option<String>) {
+    if !response_payload_looks_gzip(content_encoding, bytes) {
+        return (Cow::Borrowed(bytes), None);
+    }
+
+    let mut decoder = GzDecoder::new(bytes);
+    let mut decoded = Vec::new();
+    match decoder.read_to_end(&mut decoded) {
+        Ok(_) => (Cow::Owned(decoded), None),
+        Err(err) => (
+            Cow::Borrowed(bytes),
+            Some(format!("response_gzip_decode_error:{err}")),
+        ),
+    }
+}
+
+fn response_payload_looks_gzip(content_encoding: Option<&str>, bytes: &[u8]) -> bool {
+    if let Some(encoding) = content_encoding {
+        for item in encoding.split(',') {
+            if item.trim().eq_ignore_ascii_case("gzip") {
+                return true;
+            }
+        }
+    }
+    bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b
 }
 
 fn extract_model_from_payload(value: &Value) -> Option<String> {
@@ -3849,6 +4160,7 @@ fn json_value_to_i64(value: &Value) -> Option<i64> {
     value.as_str().and_then(|v| v.parse::<i64>().ok())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_proxy_payload_summary(
     target: ProxyCaptureTarget,
     status: StatusCode,
@@ -3857,6 +4169,7 @@ fn build_proxy_payload_summary(
     response_model: Option<&str>,
     usage_missing_reason: Option<&str>,
     request_parse_error: Option<&str>,
+    failure_kind: Option<&str>,
 ) -> String {
     let endpoint = match target {
         ProxyCaptureTarget::ChatCompletions => "/v1/chat/completions",
@@ -3870,6 +4183,7 @@ fn build_proxy_payload_summary(
         "responseModel": response_model,
         "usageMissingReason": usage_missing_reason,
         "requestParseError": request_parse_error,
+        "failureKind": failure_kind,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
@@ -4111,6 +4425,115 @@ async fn persist_proxy_capture_record(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfillSummary> {
+    let mut candidates = sqlx::query_as::<_, ProxyUsageBackfillCandidate>(
+        r#"
+        SELECT id, response_raw_path, payload
+        FROM codex_invocations
+        WHERE source = ?1
+          AND status = 'success'
+          AND total_tokens IS NULL
+          AND response_raw_path IS NOT NULL
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch(pool);
+
+    let mut summary = ProxyUsageBackfillSummary::default();
+    while let Some(candidate) = candidates.try_next().await? {
+        summary.scanned += 1;
+        let raw_response = match fs::read(&candidate.response_raw_path) {
+            Ok(content) => content,
+            Err(err) => {
+                summary.skipped_missing_file += 1;
+                warn!(
+                    id = candidate.id,
+                    path = %candidate.response_raw_path,
+                    error = %err,
+                    "proxy usage backfill skipped because response raw file is unavailable"
+                );
+                continue;
+            }
+        };
+
+        let (target, is_stream) = parse_proxy_capture_summary(candidate.payload.as_deref());
+        let (payload_for_parse, decode_error) =
+            decode_response_payload_for_usage(&raw_response, None);
+        let response_info =
+            parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream, None);
+        let usage = response_info.usage;
+        let has_usage = usage.total_tokens.is_some()
+            || usage.input_tokens.is_some()
+            || usage.output_tokens.is_some()
+            || usage.cache_input_tokens.is_some()
+            || usage.reasoning_tokens.is_some();
+        if !has_usage {
+            if decode_error.is_some() {
+                summary.skipped_decode_error += 1;
+            } else {
+                summary.skipped_without_usage += 1;
+            }
+            continue;
+        }
+
+        let affected = sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET input_tokens = ?1,
+                output_tokens = ?2,
+                cache_input_tokens = ?3,
+                reasoning_tokens = ?4,
+                total_tokens = ?5
+            WHERE id = ?6
+              AND source = ?7
+              AND total_tokens IS NULL
+            "#,
+        )
+        .bind(usage.input_tokens)
+        .bind(usage.output_tokens)
+        .bind(usage.cache_input_tokens)
+        .bind(usage.reasoning_tokens)
+        .bind(usage.total_tokens)
+        .bind(candidate.id)
+        .bind(SOURCE_PROXY)
+        .execute(pool)
+        .await?
+        .rows_affected();
+
+        if affected > 0 {
+            summary.updated += 1;
+        }
+    }
+
+    Ok(summary)
+}
+
+fn parse_proxy_capture_summary(payload: Option<&str>) -> (ProxyCaptureTarget, bool) {
+    let mut target = ProxyCaptureTarget::Responses;
+    let mut is_stream = false;
+
+    let Some(raw) = payload else {
+        return (target, is_stream);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return (target, is_stream);
+    };
+
+    if let Some(endpoint) = value.get("endpoint").and_then(|v| v.as_str()) {
+        target = match endpoint {
+            "/v1/chat/completions" => ProxyCaptureTarget::ChatCompletions,
+            "/v1/responses" => ProxyCaptureTarget::Responses,
+            _ => ProxyCaptureTarget::Responses,
+        };
+    }
+    if let Some(stream) = value.get("isStream").and_then(|v| v.as_bool()) {
+        is_stream = stream;
+    }
+
+    (target, is_stream)
 }
 
 fn elapsed_ms(started: Instant) -> f64 {
@@ -4439,6 +4862,7 @@ fn should_proxy_header(name: &HeaderName) -> bool {
             | "te"
             | "trailer"
             | "transfer-encoding"
+            | "accept-encoding"
             | "upgrade"
             | "forwarded"
             | "via"
@@ -5304,7 +5728,7 @@ struct RawPayloadMeta {
     truncated_reason: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct RequestCaptureInfo {
     model: Option<String>,
     is_stream: bool,
@@ -5349,6 +5773,14 @@ struct ProxyCaptureRecord {
     timings: StageTimings,
 }
 
+#[derive(Debug)]
+struct RequestBodyReadError {
+    status: StatusCode,
+    message: String,
+    failure_kind: &'static str,
+    partial_body: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProxyCaptureTarget {
     ChatCompletions,
@@ -5359,6 +5791,22 @@ enum ProxyCaptureTarget {
 enum InvocationSourceScope {
     ProxyOnly,
     All,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ProxyUsageBackfillSummary {
+    scanned: u64,
+    updated: u64,
+    skipped_missing_file: u64,
+    skipped_without_usage: u64,
+    skipped_decode_error: u64,
+}
+
+#[derive(Debug, FromRow)]
+struct ProxyUsageBackfillCandidate {
+    id: i64,
+    response_raw_path: String,
+    payload: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -5675,8 +6123,10 @@ struct AppConfig {
     poll_interval: Duration,
     request_timeout: Duration,
     openai_proxy_handshake_timeout: Duration,
+    openai_proxy_request_read_timeout: Duration,
     openai_proxy_max_request_body_bytes: usize,
     proxy_enforce_stream_include_usage: bool,
+    proxy_usage_backfill_on_startup: bool,
     proxy_raw_max_bytes: Option<usize>,
     proxy_raw_retention: Duration,
     proxy_raw_dir: PathBuf,
@@ -5766,6 +6216,12 @@ impl AppConfig {
             .filter(|&v| v > 0)
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS));
+        let openai_proxy_request_read_timeout = env::var("OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&v| v > 0)
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| Duration::from_secs(DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS));
         let openai_proxy_max_request_body_bytes = env::var("OPENAI_PROXY_MAX_REQUEST_BODY_BYTES")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -5774,6 +6230,10 @@ impl AppConfig {
         let proxy_enforce_stream_include_usage = parse_bool_env_var(
             "PROXY_ENFORCE_STREAM_INCLUDE_USAGE",
             DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
+        )?;
+        let proxy_usage_backfill_on_startup = parse_bool_env_var(
+            "PROXY_USAGE_BACKFILL_ON_STARTUP",
+            DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
         )?;
         let proxy_raw_max_bytes = match env::var("PROXY_RAW_MAX_BYTES") {
             Ok(value) => {
@@ -5908,8 +6368,10 @@ impl AppConfig {
             poll_interval,
             request_timeout,
             openai_proxy_handshake_timeout,
+            openai_proxy_request_read_timeout,
             openai_proxy_max_request_body_bytes,
             proxy_enforce_stream_include_usage,
+            proxy_usage_backfill_on_startup,
             proxy_raw_max_bytes,
             proxy_raw_retention,
             proxy_raw_dir,
@@ -5967,9 +6429,10 @@ mod tests {
         routing::{any, get},
     };
     use chrono::Timelike;
+    use flate2::{Compression, write::GzEncoder};
     use serde_json::Value;
     use sqlx::SqlitePool;
-    use std::{path::PathBuf, sync::Arc, time::Duration};
+    use std::{fs, path::PathBuf, sync::Arc, time::Duration};
     use tokio::net::TcpListener;
     use tokio::sync::{Semaphore, broadcast};
     use tokio::task::JoinHandle;
@@ -6048,8 +6511,12 @@ mod tests {
             openai_proxy_handshake_timeout: Duration::from_secs(
                 DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
             ),
+            openai_proxy_request_read_timeout: Duration::from_secs(
+                DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
+            ),
             openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
             proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
+            proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
             proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
             proxy_raw_retention: Duration::from_secs(DEFAULT_PROXY_RAW_RETENTION_DAYS * 86_400),
             proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
@@ -6076,6 +6543,19 @@ mod tests {
         openai_base: Url,
         body_limit: usize,
     ) -> Arc<AppState> {
+        test_state_with_openai_base_body_limit_and_read_timeout(
+            openai_base,
+            body_limit,
+            Duration::from_secs(DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS),
+        )
+        .await
+    }
+
+    async fn test_state_with_openai_base_body_limit_and_read_timeout(
+        openai_base: Url,
+        body_limit: usize,
+        request_read_timeout: Duration,
+    ) -> Arc<AppState> {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
             .expect("connect in-memory sqlite");
@@ -6086,6 +6566,7 @@ mod tests {
         let mut config = test_config();
         config.openai_upstream_base_url = openai_base;
         config.openai_proxy_max_request_body_bytes = body_limit;
+        config.openai_proxy_request_read_timeout = request_read_timeout;
         let http_clients = HttpClients::build(&config).expect("http clients");
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
@@ -6291,6 +6772,44 @@ mod tests {
         )
     }
 
+    async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
+        let payload = [
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":2}}}}\n\n",
+        ]
+        .concat();
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(payload.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+
+        (
+            StatusCode::OK,
+            [
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/event-stream"),
+                ),
+                (
+                    http_header::CONTENT_ENCODING,
+                    HeaderValue::from_static("gzip"),
+                ),
+            ],
+            Body::from(compressed),
+        )
+    }
+
+    async fn test_upstream_responses(uri: Uri) -> Response {
+        if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
+            test_upstream_responses_gzip_stream().await.into_response()
+        } else {
+            test_upstream_stream_mid_error().await.into_response()
+        }
+    }
     async fn test_upstream_models(uri: Uri) -> impl IntoResponse {
         if uri
             .query()
@@ -6383,7 +6902,8 @@ mod tests {
             .route(
                 "/v1/chat/completions",
                 any(test_upstream_chat_external_redirect),
-            );
+            )
+            .route("/v1/responses", any(test_upstream_responses));
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -6472,6 +6992,7 @@ mod tests {
         assert!(!should_proxy_header(&http_header::HOST));
         assert!(!should_proxy_header(&http_header::CONNECTION));
         assert!(!should_proxy_header(&http_header::TRANSFER_ENCODING));
+        assert!(!should_proxy_header(&http_header::ACCEPT_ENCODING));
         assert!(!should_proxy_header(&HeaderName::from_static("forwarded")));
         assert!(!should_proxy_header(&HeaderName::from_static("via")));
         assert!(!should_proxy_header(&HeaderName::from_static(
@@ -7782,6 +8303,241 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_request_body_timeout_returns_408() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedRow {
+            status: Option<String>,
+            error_message: Option<String>,
+            payload: Option<String>,
+        }
+
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base_body_limit_and_read_timeout(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+            Duration::from_millis(50),
+        )
+        .await;
+
+        let slow_body = stream::unfold(0u8, |state| async move {
+            match state {
+                0 => {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    Some((Ok::<Bytes, Infallible>(Bytes::from_static(br#"{}"#)), 1))
+                }
+                _ => None,
+            }
+        });
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from_stream(slow_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains("request body read timed out")
+        );
+
+        let row = sqlx::query_as::<_, PersistedRow>(
+            r#"
+            SELECT status, error_message, payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query capture record")
+        .expect("capture record should be persisted");
+
+        assert_eq!(row.status.as_deref(), Some("failed"));
+        assert!(
+            row.error_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("[request_body_read_timeout]"))
+        );
+        let payload_json: Value = serde_json::from_str(
+            row.payload
+                .as_deref()
+                .expect("capture payload should be present"),
+        )
+        .expect("decode capture payload");
+        assert_eq!(
+            payload_json["failureKind"].as_str(),
+            Some("request_body_read_timeout")
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn capture_target_client_body_disconnect_returns_400_with_failure_kind() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedRow {
+            status: Option<String>,
+            error_message: Option<String>,
+            payload: Option<String>,
+        }
+
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let disconnected_body = stream::iter(vec![Err::<Bytes, io::Error>(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "client disconnected",
+        ))]);
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from_stream(disconnected_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains("failed to read request body stream")
+        );
+
+        let row = sqlx::query_as::<_, PersistedRow>(
+            r#"
+            SELECT status, error_message, payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query capture record")
+        .expect("capture record should be persisted");
+
+        assert_eq!(row.status.as_deref(), Some("failed"));
+        assert!(
+            row.error_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("[request_body_stream_error_client_closed]"))
+        );
+        let payload_json: Value = serde_json::from_str(
+            row.payload
+                .as_deref()
+                .expect("capture payload should be present"),
+        )
+        .expect("decode capture payload");
+        assert_eq!(
+            payload_json["failureKind"].as_str(),
+            Some("request_body_stream_error_client_closed")
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn capture_target_stream_error_emits_failure_kind_and_persists() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedRow {
+            status: Option<String>,
+            error_message: Option<String>,
+            payload: Option<String>,
+        }
+
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let request_body = serde_json::to_vec(&json!({
+            "model": "gpt-5.2-codex",
+            "stream": true,
+            "input": "hello"
+        }))
+        .expect("serialize request body");
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from(request_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let err = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect_err("mid-stream upstream failure should surface to downstream");
+        assert!(
+            err.to_string().contains("upstream stream error"),
+            "unexpected stream error text: {err}"
+        );
+
+        let mut row: Option<PersistedRow> = None;
+        for _ in 0..20 {
+            row = sqlx::query_as::<_, PersistedRow>(
+                r#"
+                SELECT status, error_message, payload
+                FROM codex_invocations
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query capture record");
+            if row.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let row = row.expect("capture record should be persisted");
+
+        assert_eq!(row.status.as_deref(), Some("http_200"));
+        assert!(
+            row.error_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("[upstream_stream_error]"))
+        );
+        let payload_json: Value = serde_json::from_str(
+            row.payload
+                .as_deref()
+                .expect("capture payload should be present"),
+        )
+        .expect("decode capture payload");
+        assert_eq!(
+            payload_json["failureKind"].as_str(),
+            Some("upstream_stream_error")
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
     async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         let (upstream_base, upstream_handle) = spawn_test_upstream().await;
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -8255,8 +9011,169 @@ mod tests {
         assert!(estimated);
     }
 
+    #[test]
+    fn parse_target_response_payload_decodes_gzip_stream_usage() {
+        let raw = [
+            "event: response.created",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}",
+            "",
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":2}}}}",
+            "",
+        ]
+        .join("\n");
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(raw.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+
+        let parsed = parse_target_response_payload(
+            ProxyCaptureTarget::Responses,
+            &compressed,
+            true,
+            Some("gzip"),
+        );
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(parsed.usage.input_tokens, Some(12));
+        assert_eq!(parsed.usage.output_tokens, Some(3));
+        assert_eq!(parsed.usage.cache_input_tokens, Some(2));
+        assert_eq!(parsed.usage.total_tokens, Some(15));
+        assert!(parsed.usage_missing_reason.is_none());
+    }
+
+    #[test]
+    fn parse_target_response_payload_decodes_multi_value_content_encoding() {
+        let raw = [
+            "event: response.created",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}",
+            "",
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":2}}}}",
+            "",
+        ]
+        .join("\n");
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(raw.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+
+        let parsed = parse_target_response_payload(
+            ProxyCaptureTarget::Responses,
+            &compressed,
+            true,
+            Some("identity, gzip"),
+        );
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(parsed.usage.input_tokens, Some(12));
+        assert_eq!(parsed.usage.output_tokens, Some(3));
+        assert_eq!(parsed.usage.cache_input_tokens, Some(2));
+        assert_eq!(parsed.usage.total_tokens, Some(15));
+        assert!(parsed.usage_missing_reason.is_none());
+    }
+
+    #[test]
+    fn parse_target_response_payload_records_decode_failure_reason() {
+        let raw = [
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}",
+            "data: [DONE]",
+        ]
+        .join("\n");
+
+        let parsed = parse_target_response_payload(
+            ProxyCaptureTarget::Responses,
+            raw.as_bytes(),
+            true,
+            Some("gzip"),
+        );
+
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(parsed.usage.total_tokens, Some(12));
+        assert!(
+            parsed
+                .usage_missing_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("response_decode_failed:gzip:"))
+        );
+    }
+
     #[tokio::test]
-    async fn resolve_default_source_scope_prefers_proxy_when_available() {
+    async fn proxy_capture_target_extracts_usage_from_gzip_response_stream() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedUsageRow {
+            source: String,
+            status: Option<String>,
+            input_tokens: Option<i64>,
+            output_tokens: Option<i64>,
+            cache_input_tokens: Option<i64>,
+            total_tokens: Option<i64>,
+            payload: Option<String>,
+        }
+
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses?mode=gzip".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from(r#"{"model":"gpt-5.3-codex","stream":true,"input":"hello"}"#),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+
+        let mut row: Option<PersistedUsageRow> = None;
+        for _ in 0..50 {
+            row = sqlx::query_as::<_, PersistedUsageRow>(
+                r#"
+                SELECT source, status, input_tokens, output_tokens, cache_input_tokens, total_tokens, payload
+                FROM codex_invocations
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query capture record");
+
+            if row
+                .as_ref()
+                .is_some_and(|record| record.input_tokens.is_some())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let row = row.expect("capture record should exist");
+        assert_eq!(row.source, SOURCE_PROXY);
+        assert_eq!(row.status.as_deref(), Some("success"));
+        assert_eq!(row.input_tokens, Some(12));
+        assert_eq!(row.output_tokens, Some(3));
+        assert_eq!(row.cache_input_tokens, Some(2));
+        assert_eq!(row.total_tokens, Some(15));
+
+        let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+            .expect("decode payload summary");
+        assert_eq!(payload["endpoint"], "/v1/responses");
+        assert!(payload["usageMissingReason"].is_null());
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn resolve_default_source_scope_always_all() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
             .expect("connect in-memory sqlite");
@@ -8288,7 +9205,138 @@ mod tests {
         let scope_after = resolve_default_source_scope(&pool)
             .await
             .expect("scope after insert");
-        assert_eq!(scope_after, InvocationSourceScope::ProxyOnly);
+        assert_eq!(scope_after, InvocationSourceScope::All);
+    }
+
+    #[test]
+    fn decode_response_payload_for_usage_decompresses_gzip_stream() {
+        let raw = [
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":123,\"output_tokens\":45,\"total_tokens\":168,\"input_tokens_details\":{\"cached_tokens\":7},\"output_tokens_details\":{\"reasoning_tokens\":4}}}}",
+        ]
+        .join("\n");
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(raw.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+
+        let (decoded, decode_error) = decode_response_payload_for_usage(&compressed, Some("gzip"));
+        assert!(decode_error.is_none());
+
+        let parsed = parse_target_response_payload(
+            ProxyCaptureTarget::Responses,
+            decoded.as_ref(),
+            true,
+            None,
+        );
+        assert_eq!(parsed.usage.input_tokens, Some(123));
+        assert_eq!(parsed.usage.output_tokens, Some(45));
+        assert_eq!(parsed.usage.total_tokens, Some(168));
+        assert_eq!(parsed.usage.cache_input_tokens, Some(7));
+        assert_eq!(parsed.usage.reasoning_tokens, Some(4));
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_usage_tokens_updates_missing_tokens_idempotently() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "proxy-usage-backfill-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let response_path = temp_dir.join("response.bin");
+        let raw = [
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":88,\"output_tokens\":22,\"total_tokens\":110,\"input_tokens_details\":{\"cached_tokens\":9},\"output_tokens_details\":{\"reasoning_tokens\":3}}}}",
+        ]
+        .join("\n");
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(raw.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+        fs::write(&response_path, compressed).expect("write response payload");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response, response_raw_path
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind("proxy-backfill-test")
+        .bind("2026-02-23 00:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(
+            "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":true,\"requestModel\":null,\"responseModel\":null,\"usageMissingReason\":null,\"requestParseError\":null}",
+        )
+        .bind("{}")
+        .bind(response_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("insert proxy row");
+
+        let summary_first = backfill_proxy_usage_tokens(&pool)
+            .await
+            .expect("first backfill should succeed");
+        assert_eq!(summary_first.scanned, 1);
+        assert_eq!(summary_first.updated, 1);
+
+        let row = sqlx::query(
+            r#"
+            SELECT input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens
+            FROM codex_invocations
+            WHERE invoke_id = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind("proxy-backfill-test")
+        .fetch_one(&pool)
+        .await
+        .expect("fetch backfilled row");
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("input_tokens")
+                .expect("read input_tokens"),
+            Some(88)
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("output_tokens")
+                .expect("read output_tokens"),
+            Some(22)
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("cache_input_tokens")
+                .expect("read cache_input_tokens"),
+            Some(9)
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("reasoning_tokens")
+                .expect("read reasoning_tokens"),
+            Some(3)
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("total_tokens")
+                .expect("read total_tokens"),
+            Some(110)
+        );
+
+        let summary_second = backfill_proxy_usage_tokens(&pool)
+            .await
+            .expect("second backfill should succeed");
+        assert_eq!(summary_second.scanned, 0);
+        assert_eq!(summary_second.updated, 0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[tokio::test]
@@ -8748,23 +9796,8 @@ async fn query_combined_totals(
     Ok(base.add(relay_totals))
 }
 
-async fn resolve_default_source_scope(pool: &Pool<Sqlite>) -> Result<InvocationSourceScope> {
-    let has_proxy = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT 1
-        FROM codex_invocations
-        WHERE source = ?1
-        LIMIT 1
-        "#,
-    )
-    .bind(SOURCE_PROXY)
-    .fetch_optional(pool)
-    .await?;
-    Ok(if has_proxy.is_some() {
-        InvocationSourceScope::ProxyOnly
-    } else {
-        InvocationSourceScope::All
-    })
+async fn resolve_default_source_scope(_pool: &Pool<Sqlite>) -> Result<InvocationSourceScope> {
+    Ok(InvocationSourceScope::All)
 }
 
 async fn query_crs_deltas(

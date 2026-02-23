@@ -100,10 +100,12 @@ XY_DATABASE_PATH=codex_vibe_monitor.db         # (默认)
 XY_POLL_INTERVAL_SECS=10                       # (10)
 XY_REQUEST_TIMEOUT_SECS=60                     # (60)
 OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=300        # (300)
+OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180     # (180，请求体读取总超时)
 OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=268435456  # (256MiB)
 PROXY_RAW_MAX_BYTES=0                          # (0=unlimited, set >0 to cap)
 PROXY_RAW_RETENTION_DAYS=7                     # (7)
 PROXY_ENFORCE_STREAM_INCLUDE_USAGE=true        # (true)
+PROXY_USAGE_BACKFILL_ON_STARTUP=true           # (true，启动时回填历史 proxy 空 token 记录)
 XY_LEGACY_POLL_ENABLED=false                   # (false，true 时启用 legacy 轮询写入)
 XY_MAX_PARALLEL_POLLS=6                        # (6)
 XY_SHARED_CONNECTION_PARALLELISM=2             # (2)
@@ -133,7 +135,7 @@ cargo run -- \
 
 ## HTTP API 与 SSE
 
-- 统计相关接口默认以代理采集记录（`source=proxy`）为主；启用 legacy 轮询（如 `XY_LEGACY_POLL_ENABLED=true`）后会合并旧来源增量。
+- 统计相关接口默认合并全部来源（`xy + proxy`）；若开启 legacy 轮询（`XY_LEGACY_POLL_ENABLED=true`）会继续写入并参与聚合。
 - `GET /health`：健康检查，返回 `ok`。
 - `GET /api/version`：返回 `{ backend, frontend }`。
 - `GET /api/settings`：获取统一设置（`proxy + pricing`）。
@@ -189,6 +191,15 @@ docker run --rm \
   curl "http://127.0.0.1:8080/api/quota/latest"
   ```
 - SSE 观察：浏览器打开 `http://127.0.0.1:8080/events` 或使用 `curl`/`sse-cat`。
+- 代理失败分型（近 30 分钟）：
+  ```bash
+  sqlite3 codex_vibe_monitor.db \
+    "SELECT json_extract(payload, '$.failureKind') AS kind, COUNT(*) \
+     FROM codex_invocations \
+     WHERE source='proxy' AND occurred_at >= datetime('now','-30 minutes','localtime') \
+     GROUP BY kind ORDER BY COUNT(*) DESC;"
+  ```
+  常见 kind：`request_body_read_timeout`、`request_body_stream_error_client_closed`、`failed_contact_upstream`、`upstream_handshake_timeout`、`upstream_stream_error`。
 
 ## CI / CD
 
