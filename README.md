@@ -104,7 +104,6 @@ OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=268435456  # (256MiB)
 PROXY_RAW_MAX_BYTES=0                          # (0=unlimited, set >0 to cap)
 PROXY_RAW_RETENTION_DAYS=7                     # (7)
 PROXY_ENFORCE_STREAM_INCLUDE_USAGE=true        # (true)
-PROXY_PRICING_CATALOG_PATH=config/model-pricing.json  # (config/model-pricing.json)
 XY_LEGACY_POLL_ENABLED=false                   # (false，true 时启用 legacy 轮询写入)
 XY_MAX_PARALLEL_POLLS=6                        # (6)
 XY_SHARED_CONNECTION_PARALLELISM=2             # (2)
@@ -121,7 +120,7 @@ CRS_STATS_PERIOD=daily                         # (daily)
 CRS_STATS_POLL_INTERVAL_SECS=10                # (10，默认跟随 XY_POLL_INTERVAL_SECS)
 ```
 
-`config/model-pricing.json` 默认提供模板（`models` 为空）。如需成本估算，请按实际模型补充每百万 token 单价。
+价格配置已迁移到数据库持久化（可在 Web 设置页 `/settings` 在线编辑）；服务启动会自动写入默认模型价格模板。
 
 上述大部分变量均可使用 CLI 覆盖，例如：
 
@@ -137,8 +136,9 @@ cargo run -- \
 - 统计相关接口默认以代理采集记录（`source=proxy`）为主；启用 legacy 轮询（如 `XY_LEGACY_POLL_ENABLED=true`）后会合并旧来源增量。
 - `GET /health`：健康检查，返回 `ok`。
 - `GET /api/version`：返回 `{ backend, frontend }`。
-- `GET /api/settings/proxy-models`：获取 `/v1/models` 劫持与上游合并开关状态。
-- `PUT /api/settings/proxy-models`：更新 `/v1/models` 劫持与上游合并开关状态（全局持久化）。
+- `GET /api/settings`：获取统一设置（`proxy + pricing`）。
+- `PUT /api/settings/proxy`：更新 `/v1/models` 劫持与上游合并开关状态（全局持久化）。
+- `PUT /api/settings/pricing`：更新价格目录（全量覆盖、全局持久化、实时生效于新请求成本估算）。
 - `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `XY_LIST_LIMIT_MAX` 控制）。
 - `GET /api/stats`：全量聚合统计。
 - `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计。
