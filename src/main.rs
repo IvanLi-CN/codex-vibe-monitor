@@ -1286,6 +1286,21 @@ struct PricingSettingsModelRow {
 }
 
 async fn seed_default_pricing_catalog(pool: &Pool<Sqlite>) -> Result<()> {
+    let meta_exists = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pricing_settings_meta
+        WHERE id = ?1
+        "#,
+    )
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .fetch_one(pool)
+    .await
+    .context("failed to count pricing_settings_meta rows")?;
+    if meta_exists > 0 {
+        return Ok(());
+    }
+
     let existing_count = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
@@ -7041,6 +7056,40 @@ mod tests {
             .expect("gpt-5.2-codex should persist");
         assert_eq!(pricing.input_per_1m, 8.8);
         assert_eq!(pricing.output_per_1m, 18.8);
+    }
+
+    #[tokio::test]
+    async fn pricing_settings_api_keeps_empty_catalog_after_reload() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let Json(updated) = put_pricing_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(PricingSettingsUpdateRequest {
+                catalog_version: "custom-empty".to_string(),
+                entries: vec![],
+            }),
+        )
+        .await
+        .expect("put pricing settings should allow empty catalog");
+
+        assert_eq!(updated.catalog_version, "custom-empty");
+        assert!(updated.entries.is_empty());
+
+        let first_reload = load_pricing_catalog(&state.pool)
+            .await
+            .expect("pricing catalog should load after update");
+        assert_eq!(first_reload.version, "custom-empty");
+        assert!(first_reload.models.is_empty());
+
+        let second_reload = load_pricing_catalog(&state.pool)
+            .await
+            .expect("pricing catalog should stay empty across reloads");
+        assert_eq!(second_reload.version, "custom-empty");
+        assert!(second_reload.models.is_empty());
     }
 
     #[tokio::test]

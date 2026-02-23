@@ -140,9 +140,9 @@ export default function SettingsPage() {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    if (!settings) return
+    if (!settings?.pricing) return
     setPricingDraft(toPricingDraft(settings.pricing))
-  }, [settings])
+  }, [settings?.pricing])
 
   const currentProxy = settings?.proxy ?? null
   const enabledPresetModelSet = useMemo(
