@@ -133,6 +133,7 @@ export default function SettingsPage() {
     isLoading,
     isProxySaving,
     isPricingSaving,
+    pricingRollbackVersion,
     error,
     saveProxy,
     savePricing,
@@ -142,6 +143,7 @@ export default function SettingsPage() {
   const [pricingErrorKey, setPricingErrorKey] = useState<string | null>(null)
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSyncedPricingKeyRef = useRef<string | null>(null)
+  const lastHandledRollbackVersionRef = useRef(pricingRollbackVersion)
 
   useEffect(() => {
     if (!settings?.pricing) return
@@ -159,6 +161,12 @@ export default function SettingsPage() {
         return current
       }
 
+      if (pricingRollbackVersion !== lastHandledRollbackVersionRef.current) {
+        lastHandledRollbackVersionRef.current = pricingRollbackVersion
+        lastSyncedPricingKeyRef.current = nextPricingKey
+        return toPricingDraft(nextPricing)
+      }
+
       const currentDraftKey = stablePricingKey(parsedCurrent.value)
       if (currentDraftKey === nextPricingKey) {
         lastSyncedPricingKeyRef.current = nextPricingKey
@@ -172,7 +180,7 @@ export default function SettingsPage() {
 
       return current
     })
-  }, [settings?.pricing])
+  }, [pricingRollbackVersion, settings?.pricing])
 
   const currentProxy = settings?.proxy ?? null
   const enabledPresetModelSet = useMemo(

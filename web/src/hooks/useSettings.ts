@@ -33,6 +33,7 @@ export function useSettings() {
   const [isLoading, setIsLoading] = useState(true)
   const [isProxySaving, setIsProxySaving] = useState(false)
   const [isPricingSaving, setIsPricingSaving] = useState(false)
+  const [pricingRollbackVersion, setPricingRollbackVersion] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const serverSnapshotRef = useRef<SettingsPayload | null>(null)
   const pendingPricingRef = useRef<PricingSettings | null>(null)
@@ -167,6 +168,7 @@ export function useSettings() {
         } catch (err) {
           if (pendingPricingRef.current == null) {
             rollback()
+            setPricingRollbackVersion((version) => version + 1)
           }
           setError(err instanceof Error ? err.message : String(err))
         }
@@ -183,6 +185,7 @@ export function useSettings() {
     isLoading,
     isProxySaving,
     isPricingSaving,
+    pricingRollbackVersion,
     error,
     refresh: load,
     saveProxy,
