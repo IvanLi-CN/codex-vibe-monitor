@@ -65,6 +65,7 @@ const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
 const DEFAULT_PROXY_RAW_RETENTION_DAYS: u64 = 7;
+const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
 const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
 const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit exceeded";
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
@@ -1290,6 +1291,14 @@ struct PricingSettingsModelRow {
 }
 
 async fn seed_default_pricing_catalog(pool: &Pool<Sqlite>) -> Result<()> {
+    let legacy_path = resolve_legacy_pricing_catalog_path();
+    seed_default_pricing_catalog_with_legacy_path(pool, Some(&legacy_path)).await
+}
+
+async fn seed_default_pricing_catalog_with_legacy_path(
+    pool: &Pool<Sqlite>,
+    legacy_path: Option<&Path>,
+) -> Result<()> {
     let meta_exists = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
@@ -1330,7 +1339,97 @@ async fn seed_default_pricing_catalog(pool: &Pool<Sqlite>) -> Result<()> {
         return Ok(());
     }
 
+    if let Some(path) = legacy_path {
+        match load_legacy_pricing_catalog(path) {
+            Ok(Some(catalog)) => {
+                info!(
+                    path = %path.display(),
+                    version = %catalog.version,
+                    model_count = catalog.models.len(),
+                    "migrating legacy pricing catalog into sqlite"
+                );
+                save_pricing_catalog(pool, &catalog).await?;
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!(
+                    path = %path.display(),
+                    ?err,
+                    "failed to migrate legacy pricing catalog; falling back to defaults"
+                );
+            }
+        }
+    }
+
     save_pricing_catalog(pool, &default_pricing_catalog()).await
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyPricingCatalogFile {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    models: HashMap<String, LegacyModelPricing>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyModelPricing {
+    input_per_1m: f64,
+    output_per_1m: f64,
+    #[serde(default)]
+    cache_input_per_1m: Option<f64>,
+    #[serde(default)]
+    reasoning_per_1m: Option<f64>,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+fn resolve_legacy_pricing_catalog_path() -> PathBuf {
+    env::var("PROXY_PRICING_CATALOG_PATH")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_PROXY_PRICING_CATALOG_PATH))
+}
+
+fn load_legacy_pricing_catalog(path: &Path) -> Result<Option<PricingCatalog>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read legacy pricing catalog: {}", path.display()))?;
+    let parsed: LegacyPricingCatalogFile = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse legacy pricing catalog: {}", path.display()))?;
+    if parsed.models.is_empty() {
+        return Ok(None);
+    }
+
+    let version = parsed
+        .version
+        .and_then(normalize_pricing_catalog_version)
+        .unwrap_or_else(|| DEFAULT_PRICING_CATALOG_VERSION.to_string());
+    let models = parsed
+        .models
+        .into_iter()
+        .map(|(model, pricing)| {
+            (
+                model,
+                ModelPricing {
+                    input_per_1m: pricing.input_per_1m,
+                    output_per_1m: pricing.output_per_1m,
+                    cache_input_per_1m: pricing.cache_input_per_1m,
+                    reasoning_per_1m: pricing.reasoning_per_1m,
+                    source: pricing
+                        .source
+                        .map(normalize_pricing_source)
+                        .unwrap_or_else(default_pricing_source_custom),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    Ok(Some(PricingCatalog { version, models }))
 }
 
 async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingCatalog> {
@@ -7129,6 +7228,106 @@ mod tests {
         .expect_err("blank catalog version should be rejected");
 
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn seed_default_pricing_catalog_migrates_legacy_file_when_present() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("in-memory sqlite");
+        ensure_schema(&pool).await.expect("ensure schema");
+        sqlx::query("DELETE FROM pricing_settings_meta")
+            .execute(&pool)
+            .await
+            .expect("clear pricing meta");
+        sqlx::query("DELETE FROM pricing_settings_models")
+            .execute(&pool)
+            .await
+            .expect("clear pricing models");
+
+        let legacy_path = env::temp_dir().join(format!(
+            "codex-vibe-monitor-pricing-legacy-{}.json",
+            NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(
+            &legacy_path,
+            r#"{
+  "version": "legacy-custom-v1",
+  "models": {
+    "gpt-legacy": {
+      "input_per_1m": 9.9,
+      "output_per_1m": 19.9,
+      "cache_input_per_1m": 0.99,
+      "reasoning_per_1m": null
+    }
+  }
+}"#,
+        )
+        .expect("write legacy pricing catalog");
+
+        seed_default_pricing_catalog_with_legacy_path(&pool, Some(&legacy_path))
+            .await
+            .expect("seed pricing catalog from legacy file");
+
+        let _ = fs::remove_file(&legacy_path);
+
+        let migrated = load_pricing_catalog(&pool)
+            .await
+            .expect("load migrated pricing catalog");
+        assert_eq!(migrated.version, "legacy-custom-v1");
+        assert_eq!(migrated.models.len(), 1);
+        let model = migrated
+            .models
+            .get("gpt-legacy")
+            .expect("legacy model should be migrated");
+        assert_eq!(model.input_per_1m, 9.9);
+        assert_eq!(model.output_per_1m, 19.9);
+        assert_eq!(model.cache_input_per_1m, Some(0.99));
+        assert_eq!(model.source, "custom");
+    }
+
+    #[tokio::test]
+    async fn seed_default_pricing_catalog_falls_back_when_legacy_file_empty() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("in-memory sqlite");
+        ensure_schema(&pool).await.expect("ensure schema");
+        sqlx::query("DELETE FROM pricing_settings_meta")
+            .execute(&pool)
+            .await
+            .expect("clear pricing meta");
+        sqlx::query("DELETE FROM pricing_settings_models")
+            .execute(&pool)
+            .await
+            .expect("clear pricing models");
+
+        let legacy_path = env::temp_dir().join(format!(
+            "codex-vibe-monitor-pricing-legacy-empty-{}.json",
+            NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(
+            &legacy_path,
+            r#"{
+  "version": "legacy-empty",
+  "models": {}
+}"#,
+        )
+        .expect("write empty legacy pricing catalog");
+
+        seed_default_pricing_catalog_with_legacy_path(&pool, Some(&legacy_path))
+            .await
+            .expect("seed pricing catalog should fall back to defaults");
+
+        let _ = fs::remove_file(&legacy_path);
+
+        let seeded = load_pricing_catalog(&pool)
+            .await
+            .expect("load seeded pricing catalog");
+        assert_eq!(seeded.version, DEFAULT_PRICING_CATALOG_VERSION);
+        assert!(
+            seeded.models.contains_key("gpt-5.2-codex"),
+            "default pricing catalog should be seeded"
+        );
     }
 
     #[tokio::test]
