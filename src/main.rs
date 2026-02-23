@@ -5994,6 +5994,14 @@ mod tests {
         )
     }
 
+    async fn test_upstream_responses(uri: Uri) -> Response {
+        if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
+            test_upstream_responses_gzip_stream().await.into_response()
+        } else {
+            test_upstream_stream_mid_error().await.into_response()
+        }
+    }
+
     async fn test_upstream_models(uri: Uri) -> impl IntoResponse {
         if uri
             .query()
@@ -6087,11 +6095,7 @@ mod tests {
                 "/v1/chat/completions",
                 any(test_upstream_chat_external_redirect),
             )
-            .route("/v1/responses", any(test_upstream_stream_mid_error))
-            .route(
-                "/v1/responses-gzip",
-                any(test_upstream_responses_gzip_stream),
-            );
+            .route("/v1/responses", any(test_upstream_responses));
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -8030,7 +8034,7 @@ mod tests {
 
         let response = proxy_openai_v1(
             State(state.clone()),
-            OriginalUri("/v1/responses-gzip".parse().expect("valid uri")),
+            OriginalUri("/v1/responses?mode=gzip".parse().expect("valid uri")),
             Method::POST,
             HeaderMap::new(),
             Body::from(r#"{"model":"gpt-5.3-codex","stream":true,"input":"hello"}"#),
@@ -8075,7 +8079,7 @@ mod tests {
 
         let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
             .expect("decode payload summary");
-        assert_eq!(payload["endpoint"], "/v1/responses-gzip");
+        assert_eq!(payload["endpoint"], "/v1/responses");
         assert!(payload["usageMissingReason"].is_null());
 
         upstream_handle.abort();
