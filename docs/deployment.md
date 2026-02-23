@@ -49,6 +49,8 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 - `PROXY_RAW_RETENTION_DAYS`：原文留存天数（到期清理原文字段/文件，不影响结构化统计）。
 - `PROXY_ENFORCE_STREAM_INCLUDE_USAGE`：是否在 `chat.completions` 流式请求中强制注入 `stream_options.include_usage=true`。
 - `PROXY_PRICING_CATALOG_PATH`：本地价目表文件路径（用于成本估算）。
+- `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：上游握手超时（默认 `300` 秒，建议内网链路可降到 `120` 秒）。
+- `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`：请求体读取总超时（默认 `180` 秒；超时返回 `408`）。
 - `XY_LEGACY_POLL_ENABLED`：legacy 轮询写入开关（默认关闭；开启后会并行写入旧来源统计）。
 
 统计接口行为：
@@ -82,3 +84,21 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 2. 通过网关域名访问应用页面和 API 正常。
 3. 正常同源写入（页面设置保存）返回成功。
 4. 非同源 `Origin` 请求写入返回 `403`。
+
+## Runtime Troubleshooting（代理断流）
+
+遇到 Codex 端 `stream disconnected before completion` / `error decoding response body` 时，优先按以下口径排查：
+
+1. **看失败分型（30 分钟窗口）**
+   - `request_body_read_timeout`：客户端上传过慢或代理前置链路阻塞（对应 `408`）。
+   - `request_body_stream_error_client_closed`：客户端在上传阶段断开（对应 `400`）。
+   - `failed_contact_upstream`：代理到上游连接失败（对应 `502`）。
+   - `upstream_handshake_timeout`：上游握手超时（对应 `502`）。
+   - `upstream_stream_error`：上游流式响应中途失败（通常表现为下游读流报错）。
+
+2. **确认上游地址是否走内网**
+   - Docker Compose 推荐优先使用同网络服务名（例如 `http://ai-claude-relay-service:3000/openai`），避免公网握手放大抖动。
+
+3. **检查超时参数是否合理**
+   - 建议起始值：`OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=120`、`OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180`。
+   - 若慢上传请求合法且频繁超时，可逐步上调 `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`。

@@ -100,6 +100,7 @@ XY_DATABASE_PATH=codex_vibe_monitor.db         # (默认)
 XY_POLL_INTERVAL_SECS=10                       # (10)
 XY_REQUEST_TIMEOUT_SECS=60                     # (60)
 OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=300        # (300)
+OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180     # (180，请求体读取总超时)
 OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=268435456  # (256MiB)
 PROXY_RAW_MAX_BYTES=0                          # (0=unlimited, set >0 to cap)
 PROXY_RAW_RETENTION_DAYS=7                     # (7)
@@ -189,6 +190,15 @@ docker run --rm \
   curl "http://127.0.0.1:8080/api/quota/latest"
   ```
 - SSE 观察：浏览器打开 `http://127.0.0.1:8080/events` 或使用 `curl`/`sse-cat`。
+- 代理失败分型（近 30 分钟）：
+  ```bash
+  sqlite3 codex_vibe_monitor.db \
+    "SELECT json_extract(payload, '$.failureKind') AS kind, COUNT(*) \
+     FROM codex_invocations \
+     WHERE source='proxy' AND occurred_at >= datetime('now','-30 minutes','localtime') \
+     GROUP BY kind ORDER BY COUNT(*) DESC;"
+  ```
+  常见 kind：`request_body_read_timeout`、`request_body_stream_error_client_closed`、`failed_contact_upstream`、`upstream_handshake_timeout`、`upstream_stream_error`。
 
 ## CI / CD
 

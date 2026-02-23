@@ -63,6 +63,7 @@ const SOURCE_PROXY: &str = "proxy";
 const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
+const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
 const DEFAULT_PROXY_RAW_RETENTION_DAYS: u64 = 7;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
@@ -74,6 +75,16 @@ const PROXY_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream handshake timed out";
 const PROXY_MODEL_MERGE_STATUS_HEADER: &str = "x-proxy-model-merge-upstream";
 const PROXY_MODEL_MERGE_STATUS_SUCCESS: &str = "success";
 const PROXY_MODEL_MERGE_STATUS_FAILED: &str = "failed";
+const PROXY_FAILURE_BODY_TOO_LARGE: &str = "body_too_large";
+const PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT: &str = "request_body_read_timeout";
+const PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED: &str =
+    "request_body_stream_error_client_closed";
+const PROXY_FAILURE_FAILED_CONTACT_UPSTREAM: &str = "failed_contact_upstream";
+const PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream_handshake_timeout";
+const PROXY_FAILURE_UPSTREAM_STREAM_ERROR: &str = "upstream_stream_error";
+const PROXY_STREAM_TERMINAL_COMPLETED: &str = "stream_completed";
+const PROXY_STREAM_TERMINAL_ERROR: &str = "stream_error";
+const PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED: &str = "downstream_closed";
 const PROXY_MODEL_SETTINGS_SINGLETON_ID: i64 = 1;
 const DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE: bool = true;
 const DEFAULT_XY_LEGACY_POLL_ENABLED: bool = false;
@@ -2747,8 +2758,85 @@ async fn proxy_openai_v1_capture_target(
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
 
     let req_read_started = Instant::now();
-    let request_body_bytes =
-        read_request_body_with_limit(body, body_limit, proxy_request_id).await?;
+    let request_body_bytes = match read_request_body_with_limit(
+        body,
+        body_limit,
+        state.config.openai_proxy_request_read_timeout,
+        proxy_request_id,
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(read_err) => {
+            let t_req_read_ms = elapsed_ms(req_read_started);
+            let request_info = RequestCaptureInfo::default();
+            let req_raw = store_raw_payload_file(
+                &state.config,
+                &invoke_id,
+                "request",
+                &read_err.partial_body,
+            );
+            let usage = ParsedUsage::default();
+            let (cost, cost_estimated, price_version) =
+                estimate_proxy_cost(&state.pricing_catalog, None, &usage);
+            let error_message = format!("[{}] {}", read_err.failure_kind, read_err.message);
+
+            warn!(
+                proxy_request_id,
+                status = %read_err.status,
+                failure_kind = read_err.failure_kind,
+                error = %read_err.message,
+                elapsed_ms = t_req_read_ms,
+                "openai proxy request body read failed"
+            );
+
+            let record = ProxyCaptureRecord {
+                invoke_id,
+                occurred_at,
+                model: None,
+                usage,
+                cost,
+                cost_estimated,
+                price_version,
+                status: if read_err.status.is_server_error() {
+                    format!("http_{}", read_err.status.as_u16())
+                } else {
+                    "failed".to_string()
+                },
+                error_message: Some(error_message),
+                payload: Some(build_proxy_payload_summary(
+                    capture_target,
+                    read_err.status,
+                    request_info.is_stream,
+                    None,
+                    None,
+                    None,
+                    request_info.parse_error.as_deref(),
+                    Some(read_err.failure_kind),
+                )),
+                raw_response: "{}".to_string(),
+                req_raw,
+                resp_raw: RawPayloadMeta::default(),
+                raw_expires_at,
+                timings: StageTimings {
+                    t_total_ms: 0.0,
+                    t_req_read_ms,
+                    t_req_parse_ms: 0.0,
+                    t_upstream_connect_ms: 0.0,
+                    t_upstream_ttfb_ms: 0.0,
+                    t_upstream_stream_ms: 0.0,
+                    t_resp_parse_ms: 0.0,
+                    t_persist_ms: 0.0,
+                },
+            };
+            if let Err(err) =
+                persist_proxy_capture_record(&state.pool, capture_started, record).await
+            {
+                warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
+            }
+            return Err((read_err.status, read_err.message));
+        }
+    };
     let t_req_read_ms = elapsed_ms(req_read_started);
 
     let req_parse_started = Instant::now();
@@ -2781,11 +2869,13 @@ async fn proxy_openai_v1_capture_target(
             (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("request body exceeds {body_limit} bytes"),
+                PROXY_FAILURE_BODY_TOO_LARGE,
             )
         } else {
             (
                 StatusCode::BAD_GATEWAY,
                 format!("failed to contact upstream: {err}"),
+                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
             )
         }
     };
@@ -2795,13 +2885,14 @@ async fn proxy_openai_v1_capture_target(
     let upstream_response = match timeout(handshake_timeout, upstream_request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
-            let (status, message) = map_upstream_error(err);
+            let (status, message, failure_kind) = map_upstream_error(err);
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost(
                 &state.pricing_catalog,
                 request_info.model.as_deref(),
                 &usage,
             );
+            let error_message = format!("[{failure_kind}] {message}");
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -2815,7 +2906,7 @@ async fn proxy_openai_v1_capture_target(
                 } else {
                     "failed".to_string()
                 },
-                error_message: Some(message.clone()),
+                error_message: Some(error_message),
                 payload: Some(build_proxy_payload_summary(
                     capture_target,
                     status,
@@ -2824,6 +2915,7 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     request_info.parse_error.as_deref(),
+                    Some(failure_kind),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -2852,12 +2944,14 @@ async fn proxy_openai_v1_capture_target(
                 "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
                 handshake_timeout.as_millis()
             );
+            let failure_kind = PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT;
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost(
                 &state.pricing_catalog,
                 request_info.model.as_deref(),
                 &usage,
             );
+            let error_message = format!("[{failure_kind}] {message}");
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -2867,7 +2961,7 @@ async fn proxy_openai_v1_capture_target(
                 cost_estimated,
                 price_version,
                 status: "http_502".to_string(),
-                error_message: Some(message.clone()),
+                error_message: Some(error_message),
                 payload: Some(build_proxy_payload_summary(
                     capture_target,
                     StatusCode::BAD_GATEWAY,
@@ -2876,6 +2970,7 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     request_info.parse_error.as_deref(),
+                    Some(failure_kind),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -2935,6 +3030,7 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     request_info.parse_error.as_deref(),
+                    None,
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -2985,11 +3081,14 @@ async fn proxy_openai_v1_capture_target(
     tokio::spawn(async move {
         let mut stream = upstream_response.bytes_stream();
         let ttfb_started = Instant::now();
+        let stream_started = Instant::now();
         let mut t_upstream_ttfb_ms = 0.0;
         let mut stream_started_at: Option<Instant> = None;
         let mut response_bytes: Vec<u8> = Vec::new();
         let mut stream_error: Option<String> = None;
         let mut downstream_closed = false;
+        let mut forwarded_chunks = 0usize;
+        let mut forwarded_bytes = 0usize;
 
         while let Some(next_chunk) = stream.next().await {
             match next_chunk {
@@ -2999,6 +3098,8 @@ async fn proxy_openai_v1_capture_target(
                         stream_started_at = Some(Instant::now());
                     }
                     response_bytes.extend_from_slice(&chunk);
+                    forwarded_chunks = forwarded_chunks.saturating_add(1);
+                    forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                         downstream_closed = true;
                     }
@@ -3014,6 +3115,34 @@ async fn proxy_openai_v1_capture_target(
             }
         }
         drop(tx);
+
+        let terminal_state = if stream_error.is_some() {
+            PROXY_STREAM_TERMINAL_ERROR
+        } else if downstream_closed {
+            PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
+        } else {
+            PROXY_STREAM_TERMINAL_COMPLETED
+        };
+        if let Some(err) = stream_error.as_deref() {
+            warn!(
+                proxy_request_id,
+                terminal_state,
+                error = err,
+                forwarded_chunks,
+                forwarded_bytes,
+                elapsed_ms = stream_started.elapsed().as_millis(),
+                "openai proxy capture stream finished with upstream error"
+            );
+        } else {
+            info!(
+                proxy_request_id,
+                terminal_state,
+                forwarded_chunks,
+                forwarded_bytes,
+                elapsed_ms = stream_started.elapsed().as_millis(),
+                "openai proxy capture stream finished"
+            );
+        }
 
         let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
         let resp_parse_started = Instant::now();
@@ -3031,8 +3160,21 @@ async fn proxy_openai_v1_capture_target(
             response_info.usage_missing_reason = Some("upstream_stream_error".to_string());
         }
 
+        let failure_kind = if stream_error.is_some() {
+            Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+        } else if downstream_closed {
+            Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+        } else {
+            None
+        };
+
         let error_message = if let Some(err) = stream_error {
-            Some(err)
+            Some(format!("[{}] {err}", PROXY_FAILURE_UPSTREAM_STREAM_ERROR))
+        } else if downstream_closed {
+            Some(format!(
+                "[{}] downstream closed while streaming upstream response",
+                PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
+            ))
         } else if !upstream_status.is_success() {
             extract_error_message_from_response(&response_bytes)
         } else {
@@ -3062,6 +3204,7 @@ async fn proxy_openai_v1_capture_target(
             response_info.model.as_deref(),
             response_info.usage_missing_reason.as_deref(),
             request_info_for_task.parse_error.as_deref(),
+            failure_kind,
         );
 
         let record = ProxyCaptureRecord {
@@ -3111,32 +3254,91 @@ async fn proxy_openai_v1_capture_target(
 async fn read_request_body_with_limit(
     body: Body,
     body_limit: usize,
+    request_read_timeout: Duration,
     proxy_request_id: u64,
-) -> Result<Vec<u8>, (StatusCode, String)> {
+) -> Result<Vec<u8>, RequestBodyReadError> {
     let mut data = Vec::new();
-    let mut seen = 0usize;
     let mut stream = body.into_data_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|err| {
+    let read_deadline = Instant::now() + request_read_timeout;
+
+    loop {
+        let remaining = read_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             warn!(
                 proxy_request_id,
-                error = %err,
-                "openai proxy request body stream error"
+                timeout_ms = request_read_timeout.as_millis(),
+                read_bytes = data.len(),
+                "openai proxy request body read timed out"
             );
-            (
-                StatusCode::BAD_REQUEST,
-                format!("failed to read request body stream: {err}"),
-            )
-        })?;
-        seen = seen.saturating_add(chunk.len());
-        if seen > body_limit {
-            return Err((
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("request body exceeds {body_limit} bytes"),
-            ));
+            return Err(RequestBodyReadError {
+                status: StatusCode::REQUEST_TIMEOUT,
+                message: format!(
+                    "request body read timed out after {}ms",
+                    request_read_timeout.as_millis()
+                ),
+                failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                partial_body: data,
+            });
         }
+
+        let next_chunk = match timeout(remaining, stream.next()).await {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                warn!(
+                    proxy_request_id,
+                    timeout_ms = request_read_timeout.as_millis(),
+                    read_bytes = data.len(),
+                    "openai proxy request body read timed out"
+                );
+                return Err(RequestBodyReadError {
+                    status: StatusCode::REQUEST_TIMEOUT,
+                    message: format!(
+                        "request body read timed out after {}ms",
+                        request_read_timeout.as_millis()
+                    ),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    partial_body: data,
+                });
+            }
+        };
+
+        let Some(chunk) = next_chunk else {
+            break;
+        };
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    read_bytes = data.len(),
+                    "openai proxy request body stream error"
+                );
+                return Err(RequestBodyReadError {
+                    status: StatusCode::BAD_REQUEST,
+                    message: format!("failed to read request body stream: {err}"),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
+                    partial_body: data,
+                });
+            }
+        };
+
+        if data.len().saturating_add(chunk.len()) > body_limit {
+            let allowed = body_limit.saturating_sub(data.len());
+            if allowed > 0 {
+                data.extend_from_slice(&chunk[..allowed.min(chunk.len())]);
+            }
+            return Err(RequestBodyReadError {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                message: format!("request body exceeds {body_limit} bytes"),
+                failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
+                partial_body: data,
+            });
+        }
+
         data.extend_from_slice(&chunk);
     }
+
     Ok(data)
 }
 
@@ -3385,6 +3587,7 @@ fn json_value_to_i64(value: &Value) -> Option<i64> {
     value.as_str().and_then(|v| v.parse::<i64>().ok())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_proxy_payload_summary(
     target: ProxyCaptureTarget,
     status: StatusCode,
@@ -3393,6 +3596,7 @@ fn build_proxy_payload_summary(
     response_model: Option<&str>,
     usage_missing_reason: Option<&str>,
     request_parse_error: Option<&str>,
+    failure_kind: Option<&str>,
 ) -> String {
     let endpoint = match target {
         ProxyCaptureTarget::ChatCompletions => "/v1/chat/completions",
@@ -3406,6 +3610,7 @@ fn build_proxy_payload_summary(
         "responseModel": response_model,
         "usageMissingReason": usage_missing_reason,
         "requestParseError": request_parse_error,
+        "failureKind": failure_kind,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
@@ -4679,7 +4884,7 @@ struct RawPayloadMeta {
     truncated_reason: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct RequestCaptureInfo {
     model: Option<String>,
     is_stream: bool,
@@ -4722,6 +4927,14 @@ struct ProxyCaptureRecord {
     resp_raw: RawPayloadMeta,
     raw_expires_at: Option<String>,
     timings: StageTimings,
+}
+
+#[derive(Debug)]
+struct RequestBodyReadError {
+    status: StatusCode,
+    message: String,
+    failure_kind: &'static str,
+    partial_body: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5021,6 +5234,7 @@ struct AppConfig {
     poll_interval: Duration,
     request_timeout: Duration,
     openai_proxy_handshake_timeout: Duration,
+    openai_proxy_request_read_timeout: Duration,
     openai_proxy_max_request_body_bytes: usize,
     proxy_enforce_stream_include_usage: bool,
     proxy_raw_max_bytes: Option<usize>,
@@ -5113,6 +5327,12 @@ impl AppConfig {
             .filter(|&v| v > 0)
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS));
+        let openai_proxy_request_read_timeout = env::var("OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&v| v > 0)
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| Duration::from_secs(DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS));
         let openai_proxy_max_request_body_bytes = env::var("OPENAI_PROXY_MAX_REQUEST_BODY_BYTES")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -5259,6 +5479,7 @@ impl AppConfig {
             poll_interval,
             request_timeout,
             openai_proxy_handshake_timeout,
+            openai_proxy_request_read_timeout,
             openai_proxy_max_request_body_bytes,
             proxy_enforce_stream_include_usage,
             proxy_raw_max_bytes,
@@ -5419,6 +5640,9 @@ mod tests {
             openai_proxy_handshake_timeout: Duration::from_secs(
                 DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
             ),
+            openai_proxy_request_read_timeout: Duration::from_secs(
+                DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
+            ),
             openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
             proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
             proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
@@ -5448,6 +5672,19 @@ mod tests {
         openai_base: Url,
         body_limit: usize,
     ) -> Arc<AppState> {
+        test_state_with_openai_base_body_limit_and_read_timeout(
+            openai_base,
+            body_limit,
+            Duration::from_secs(DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS),
+        )
+        .await
+    }
+
+    async fn test_state_with_openai_base_body_limit_and_read_timeout(
+        openai_base: Url,
+        body_limit: usize,
+        request_read_timeout: Duration,
+    ) -> Arc<AppState> {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
             .expect("connect in-memory sqlite");
@@ -5458,6 +5695,7 @@ mod tests {
         let mut config = test_config();
         config.openai_upstream_base_url = openai_base;
         config.openai_proxy_max_request_body_bytes = body_limit;
+        config.openai_proxy_request_read_timeout = request_read_timeout;
         let http_clients = HttpClients::build(&config).expect("http clients");
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
@@ -5751,7 +5989,8 @@ mod tests {
             .route(
                 "/v1/chat/completions",
                 any(test_upstream_chat_external_redirect),
-            );
+            )
+            .route("/v1/responses", any(test_upstream_stream_mid_error));
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -6934,6 +7173,241 @@ mod tests {
         assert!(row.t_req_read_ms.is_some_and(|v| v >= 0.0));
         assert!(row.t_req_parse_ms.is_some_and(|v| v >= 0.0));
         assert!(row.t_upstream_connect_ms.is_some_and(|v| v >= 0.0));
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn read_request_body_timeout_returns_408() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedRow {
+            status: Option<String>,
+            error_message: Option<String>,
+            payload: Option<String>,
+        }
+
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base_body_limit_and_read_timeout(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+            DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+            Duration::from_millis(50),
+        )
+        .await;
+
+        let slow_body = stream::unfold(0u8, |state| async move {
+            match state {
+                0 => {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    Some((Ok::<Bytes, Infallible>(Bytes::from_static(br#"{}"#)), 1))
+                }
+                _ => None,
+            }
+        });
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from_stream(slow_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains("request body read timed out")
+        );
+
+        let row = sqlx::query_as::<_, PersistedRow>(
+            r#"
+            SELECT status, error_message, payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query capture record")
+        .expect("capture record should be persisted");
+
+        assert_eq!(row.status.as_deref(), Some("failed"));
+        assert!(
+            row.error_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("[request_body_read_timeout]"))
+        );
+        let payload_json: Value = serde_json::from_str(
+            row.payload
+                .as_deref()
+                .expect("capture payload should be present"),
+        )
+        .expect("decode capture payload");
+        assert_eq!(
+            payload_json["failureKind"].as_str(),
+            Some("request_body_read_timeout")
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn capture_target_client_body_disconnect_returns_400_with_failure_kind() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedRow {
+            status: Option<String>,
+            error_message: Option<String>,
+            payload: Option<String>,
+        }
+
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let disconnected_body = stream::iter(vec![Err::<Bytes, io::Error>(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "client disconnected",
+        ))]);
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from_stream(disconnected_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains("failed to read request body stream")
+        );
+
+        let row = sqlx::query_as::<_, PersistedRow>(
+            r#"
+            SELECT status, error_message, payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query capture record")
+        .expect("capture record should be persisted");
+
+        assert_eq!(row.status.as_deref(), Some("failed"));
+        assert!(
+            row.error_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("[request_body_stream_error_client_closed]"))
+        );
+        let payload_json: Value = serde_json::from_str(
+            row.payload
+                .as_deref()
+                .expect("capture payload should be present"),
+        )
+        .expect("decode capture payload");
+        assert_eq!(
+            payload_json["failureKind"].as_str(),
+            Some("request_body_stream_error_client_closed")
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn capture_target_stream_error_emits_failure_kind_and_persists() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedRow {
+            status: Option<String>,
+            error_message: Option<String>,
+            payload: Option<String>,
+        }
+
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let request_body = serde_json::to_vec(&json!({
+            "model": "gpt-5.2-codex",
+            "stream": true,
+            "input": "hello"
+        }))
+        .expect("serialize request body");
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from(request_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let err = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect_err("mid-stream upstream failure should surface to downstream");
+        assert!(
+            err.to_string().contains("upstream stream error"),
+            "unexpected stream error text: {err}"
+        );
+
+        let mut row: Option<PersistedRow> = None;
+        for _ in 0..20 {
+            row = sqlx::query_as::<_, PersistedRow>(
+                r#"
+                SELECT status, error_message, payload
+                FROM codex_invocations
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query capture record");
+            if row.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let row = row.expect("capture record should be persisted");
+
+        assert_eq!(row.status.as_deref(), Some("http_200"));
+        assert!(
+            row.error_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("[upstream_stream_error]"))
+        );
+        let payload_json: Value = serde_json::from_str(
+            row.payload
+                .as_deref()
+                .expect("capture payload should be present"),
+        )
+        .expect("decode capture payload");
+        assert_eq!(
+            payload_json["failureKind"].as_str(),
+            Some("upstream_stream_error")
+        );
 
         upstream_handle.abort();
     }
