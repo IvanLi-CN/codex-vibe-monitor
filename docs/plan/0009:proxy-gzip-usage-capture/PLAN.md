@@ -39,7 +39,13 @@
 
 ## Milestones
 
-- [ ] M1 响应解析链路增加按 `Content-Encoding` 解码能力
-- [ ] M2 请求头透传策略屏蔽 `accept-encoding`
-- [ ] M3 单元/集成测试补齐并通过
-- [ ] M4 共享测试环境端到端验证通过
+- [x] M1 响应解析链路增加按 `Content-Encoding` 解码能力
+- [x] M2 请求头透传策略屏蔽 `accept-encoding`
+- [x] M3 单元/集成测试补齐并通过
+- [x] M4 共享测试环境端到端验证通过
+
+## Execution Notes
+
+- PR: #48
+- Automated: `cargo fmt -- --check`, `cargo test`（62 passed, 0 failed）
+- Shared testbox: 在 `codex-testbox` 复现 gzip SSE 上游，验证 `/api/stats` 的 `totalTokens` 增长，且 `/api/invocations` 成功记录含非空 `inputTokens`/`outputTokens`/`cacheInputTokens`/`totalTokens`。
