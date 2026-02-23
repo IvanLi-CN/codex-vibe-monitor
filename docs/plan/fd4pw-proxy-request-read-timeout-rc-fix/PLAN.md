@@ -40,7 +40,20 @@
 
 ## Milestones
 
-- [ ] M1 配置与读体超时/分型落地
-- [ ] M2 捕获路径失败持久化与流终态日志对齐
-- [ ] M3 回归测试补齐并通过
-- [ ] M4 RC 发布并替换测试线验证
+- [x] M1 配置与读体超时/分型落地
+- [x] M2 捕获路径失败持久化与流终态日志对齐
+- [x] M3 回归测试补齐并通过
+- [x] M4 RC 发布并替换测试线验证
+- [ ] M5 30 分钟观测窗口与客户端侧报错复核
+
+## Execution Notes
+
+- PR: [#45](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/45) 已合并到 `main`（2026-02-23）。
+- RC: [`v0.5.2-rc.54932bc`](https://github.com/IvanLi-CN/codex-vibe-monitor/releases/tag/v0.5.2-rc.54932bc) 已产出并替换测试线容器镜像。
+- 测试线（`192.168.31.11`）已切换到内网上游：`OPENAI_UPSTREAM_BASE_URL=http://ai-claude-relay-service:3000/openai`，并启用 `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=120` 与 `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180`。
+- 截止 2026-02-23 18:10 CST，部署后窗口（18:01:32 起）观测到 `request_body_read_timeout=1`，`failed_contact_upstream=0`，`upstream_handshake_timeout=0`；完整 30 分钟窗口仍待补齐。
+
+## Change log
+
+- 2026-02-23: 完成实现与测试提交，PR #45 合并，发布 RC `v0.5.2-rc.54932bc` 并替换测试线部署。
+- 2026-02-23: 补充部署后初步观测数据，里程碑推进至 `部分完成（4/5）`。
