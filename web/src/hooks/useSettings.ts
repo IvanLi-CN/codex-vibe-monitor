@@ -63,14 +63,21 @@ export function useSettings() {
       setIsProxySaving(true)
       try {
         const savedProxy = await updateProxySettings(normalizedProxy)
+        const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
+          ? {
+              ...serverSnapshotRef.current,
+              proxy: savedProxy,
+            }
+          : null
+        if (confirmedSnapshot) {
+          serverSnapshotRef.current = confirmedSnapshot
+        }
         setSettings((current) => {
-          if (!current) return current
-          const merged: SettingsPayload = {
+          if (!current) return confirmedSnapshot ?? current
+          return {
             ...current,
             proxy: savedProxy,
           }
-          serverSnapshotRef.current = merged
-          return merged
         })
         setError(null)
       } catch (err) {
@@ -110,14 +117,21 @@ export function useSettings() {
 
           // Ignore stale response payloads when a newer draft is already queued.
           if (pendingPricingRef.current == null) {
+            const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
+              ? {
+                  ...serverSnapshotRef.current,
+                  pricing: savedPricing,
+                }
+              : null
+            if (confirmedSnapshot) {
+              serverSnapshotRef.current = confirmedSnapshot
+            }
             setSettings((current) => {
-              if (!current) return current
-              const merged: SettingsPayload = {
+              if (!current) return confirmedSnapshot ?? current
+              return {
                 ...current,
                 pricing: savedPricing,
               }
-              serverSnapshotRef.current = merged
-              return merged
             })
           } else if (serverSnapshotRef.current) {
             serverSnapshotRef.current = {
