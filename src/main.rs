@@ -3073,11 +3073,11 @@ async fn proxy_openai_v1_capture_target(
     };
 
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
-    let response_content_encoding = upstream_response
+    let upstream_content_encoding = upstream_response
         .headers()
         .get(header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_string());
+        .map(str::to_string);
     let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
         if should_forward_proxy_header(name, &upstream_connection_scoped) {
@@ -3097,7 +3097,7 @@ async fn proxy_openai_v1_capture_target(
     let invoke_id_for_task = invoke_id.clone();
     let occurred_at_for_task = occurred_at.clone();
     let raw_expires_at_for_task = raw_expires_at.clone();
-    let response_content_encoding_for_task = response_content_encoding.clone();
+    let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
 
     tokio::spawn(async move {
@@ -3168,22 +3168,16 @@ async fn proxy_openai_v1_capture_target(
 
         let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
         let resp_parse_started = Instant::now();
-        let (response_payload_for_parse, decode_error) = decode_response_payload_for_usage(
-            &response_bytes,
-            response_content_encoding_for_task.as_deref(),
-        );
         let mut response_info = parse_target_response_payload(
             capture_target,
-            response_payload_for_parse.as_ref(),
+            &response_bytes,
             request_info_for_task.is_stream,
+            upstream_content_encoding_for_task.as_deref(),
         );
         let t_resp_parse_ms = elapsed_ms(resp_parse_started);
 
         if response_info.model.is_none() {
             response_info.model = request_info_for_task.model.clone();
-        }
-        if response_info.usage_missing_reason.is_none() {
-            response_info.usage_missing_reason = decode_error;
         }
         if response_info.usage_missing_reason.is_none() && stream_error.is_some() {
             response_info.usage_missing_reason = Some("upstream_stream_error".to_string());
@@ -3442,6 +3436,7 @@ fn parse_target_response_payload(
     _target: ProxyCaptureTarget,
     bytes: &[u8],
     request_is_stream: bool,
+    content_encoding: Option<&str>,
 ) -> ResponseCaptureInfo {
     if bytes.is_empty() {
         return ResponseCaptureInfo {
@@ -3451,35 +3446,90 @@ fn parse_target_response_payload(
         };
     }
 
-    let looks_like_stream = request_is_stream || bytes.starts_with(b"data:");
-    if looks_like_stream {
-        return parse_stream_response_payload(bytes);
+    let (decoded_bytes, decode_failure_reason) =
+        decode_response_payload_for_parse(bytes, content_encoding);
+    let parse_bytes = decoded_bytes.as_ref();
+    let looks_like_stream = request_is_stream || parse_bytes.starts_with(b"data:");
+    let mut response_info = if looks_like_stream {
+        parse_stream_response_payload(parse_bytes)
+    } else {
+        match serde_json::from_slice::<Value>(parse_bytes) {
+            Ok(value) => {
+                let model = extract_model_from_payload(&value);
+                let usage = extract_usage_from_payload(&value).unwrap_or_default();
+                let usage_missing_reason = if usage.total_tokens.is_none()
+                    && usage.input_tokens.is_none()
+                    && usage.output_tokens.is_none()
+                {
+                    Some("usage_missing_in_response".to_string())
+                } else {
+                    None
+                };
+                ResponseCaptureInfo {
+                    model,
+                    usage,
+                    usage_missing_reason,
+                }
+            }
+            Err(_) => ResponseCaptureInfo {
+                model: None,
+                usage: ParsedUsage::default(),
+                usage_missing_reason: Some("response_not_json".to_string()),
+            },
+        }
+    };
+
+    if let Some(reason) = decode_failure_reason {
+        let combined_reason = if let Some(existing) = response_info.usage_missing_reason.take() {
+            format!("response_decode_failed:{reason};{existing}")
+        } else {
+            format!("response_decode_failed:{reason}")
+        };
+        response_info.usage_missing_reason = Some(combined_reason);
     }
 
-    match serde_json::from_slice::<Value>(bytes) {
-        Ok(value) => {
-            let model = extract_model_from_payload(&value);
-            let usage = extract_usage_from_payload(&value).unwrap_or_default();
-            let usage_missing_reason = if usage.total_tokens.is_none()
-                && usage.input_tokens.is_none()
-                && usage.output_tokens.is_none()
-            {
-                Some("usage_missing_in_response".to_string())
-            } else {
-                None
-            };
-            ResponseCaptureInfo {
-                model,
-                usage,
-                usage_missing_reason,
+    response_info
+}
+
+fn decode_response_payload_for_parse<'a>(
+    bytes: &'a [u8],
+    content_encoding: Option<&str>,
+) -> (Cow<'a, [u8]>, Option<String>) {
+    let Some(content_encoding) = content_encoding else {
+        return (Cow::Borrowed(bytes), None);
+    };
+
+    let encodings: Vec<String> = content_encoding
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .collect();
+    if encodings.is_empty() {
+        return (Cow::Borrowed(bytes), None);
+    }
+
+    let mut decoded: Cow<'a, [u8]> = Cow::Borrowed(bytes);
+    for encoding in encodings.iter().rev() {
+        match encoding.as_str() {
+            "identity" => {}
+            "gzip" | "x-gzip" => {
+                let mut decoder = GzDecoder::new(decoded.as_ref());
+                let mut next = Vec::new();
+                match decoder.read_to_end(&mut next) {
+                    Ok(_) => decoded = Cow::Owned(next),
+                    Err(err) => return (Cow::Borrowed(bytes), Some(format!("gzip:{err}"))),
+                }
+            }
+            _ => {
+                return (
+                    Cow::Borrowed(bytes),
+                    Some(format!("unsupported_content_encoding:{encoding}")),
+                );
             }
         }
-        Err(_) => ResponseCaptureInfo {
-            model: None,
-            usage: ParsedUsage::default(),
-            usage_missing_reason: Some("response_not_json".to_string()),
-        },
     }
+    (decoded, None)
 }
 
 fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
@@ -3933,7 +3983,7 @@ async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBa
         let (payload_for_parse, decode_error) =
             decode_response_payload_for_usage(&raw_response, None);
         let response_info =
-            parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream);
+            parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream, None);
         let usage = response_info.usage;
         let has_usage = usage.total_tokens.is_some()
             || usage.input_tokens.is_some()
@@ -4332,6 +4382,7 @@ fn should_proxy_header(name: &HeaderName) -> bool {
             | "te"
             | "trailer"
             | "transfer-encoding"
+            | "accept-encoding"
             | "upgrade"
             | "forwarded"
             | "via"
@@ -6089,6 +6140,44 @@ mod tests {
         )
     }
 
+    async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
+        let payload = [
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":2}}}}\n\n",
+        ]
+        .concat();
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(payload.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+
+        (
+            StatusCode::OK,
+            [
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/event-stream"),
+                ),
+                (
+                    http_header::CONTENT_ENCODING,
+                    HeaderValue::from_static("gzip"),
+                ),
+            ],
+            Body::from(compressed),
+        )
+    }
+
+    async fn test_upstream_responses(uri: Uri) -> Response {
+        if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
+            test_upstream_responses_gzip_stream().await.into_response()
+        } else {
+            test_upstream_stream_mid_error().await.into_response()
+        }
+    }
     async fn test_upstream_models(uri: Uri) -> impl IntoResponse {
         if uri
             .query()
@@ -6182,7 +6271,7 @@ mod tests {
                 "/v1/chat/completions",
                 any(test_upstream_chat_external_redirect),
             )
-            .route("/v1/responses", any(test_upstream_stream_mid_error));
+            .route("/v1/responses", any(test_upstream_responses));
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -6271,6 +6360,7 @@ mod tests {
         assert!(!should_proxy_header(&http_header::HOST));
         assert!(!should_proxy_header(&http_header::CONNECTION));
         assert!(!should_proxy_header(&http_header::TRANSFER_ENCODING));
+        assert!(!should_proxy_header(&http_header::ACCEPT_ENCODING));
         assert!(!should_proxy_header(&HeaderName::from_static("forwarded")));
         assert!(!should_proxy_header(&HeaderName::from_static("via")));
         assert!(!should_proxy_header(&HeaderName::from_static(
@@ -8010,6 +8100,167 @@ mod tests {
         assert!(parsed.usage_missing_reason.is_none());
     }
 
+    #[test]
+    fn parse_target_response_payload_decodes_gzip_stream_usage() {
+        let raw = [
+            "event: response.created",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}",
+            "",
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":2}}}}",
+            "",
+        ]
+        .join("\n");
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(raw.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+
+        let parsed = parse_target_response_payload(
+            ProxyCaptureTarget::Responses,
+            &compressed,
+            true,
+            Some("gzip"),
+        );
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(parsed.usage.input_tokens, Some(12));
+        assert_eq!(parsed.usage.output_tokens, Some(3));
+        assert_eq!(parsed.usage.cache_input_tokens, Some(2));
+        assert_eq!(parsed.usage.total_tokens, Some(15));
+        assert!(parsed.usage_missing_reason.is_none());
+    }
+
+    #[test]
+    fn parse_target_response_payload_decodes_multi_value_content_encoding() {
+        let raw = [
+            "event: response.created",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}",
+            "",
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":2}}}}",
+            "",
+        ]
+        .join("\n");
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(raw.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+
+        let parsed = parse_target_response_payload(
+            ProxyCaptureTarget::Responses,
+            &compressed,
+            true,
+            Some("identity, gzip"),
+        );
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(parsed.usage.input_tokens, Some(12));
+        assert_eq!(parsed.usage.output_tokens, Some(3));
+        assert_eq!(parsed.usage.cache_input_tokens, Some(2));
+        assert_eq!(parsed.usage.total_tokens, Some(15));
+        assert!(parsed.usage_missing_reason.is_none());
+    }
+
+    #[test]
+    fn parse_target_response_payload_records_decode_failure_reason() {
+        let raw = [
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}",
+            "data: [DONE]",
+        ]
+        .join("\n");
+
+        let parsed = parse_target_response_payload(
+            ProxyCaptureTarget::Responses,
+            raw.as_bytes(),
+            true,
+            Some("gzip"),
+        );
+
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(parsed.usage.total_tokens, Some(12));
+        assert!(
+            parsed
+                .usage_missing_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("response_decode_failed:gzip:"))
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_capture_target_extracts_usage_from_gzip_response_stream() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedUsageRow {
+            source: String,
+            status: Option<String>,
+            input_tokens: Option<i64>,
+            output_tokens: Option<i64>,
+            cache_input_tokens: Option<i64>,
+            total_tokens: Option<i64>,
+            payload: Option<String>,
+        }
+
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses?mode=gzip".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from(r#"{"model":"gpt-5.3-codex","stream":true,"input":"hello"}"#),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+
+        let mut row: Option<PersistedUsageRow> = None;
+        for _ in 0..50 {
+            row = sqlx::query_as::<_, PersistedUsageRow>(
+                r#"
+                SELECT source, status, input_tokens, output_tokens, cache_input_tokens, total_tokens, payload
+                FROM codex_invocations
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query capture record");
+
+            if row
+                .as_ref()
+                .is_some_and(|record| record.input_tokens.is_some())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let row = row.expect("capture record should exist");
+        assert_eq!(row.source, SOURCE_PROXY);
+        assert_eq!(row.status.as_deref(), Some("success"));
+        assert_eq!(row.input_tokens, Some(12));
+        assert_eq!(row.output_tokens, Some(3));
+        assert_eq!(row.cache_input_tokens, Some(2));
+        assert_eq!(row.total_tokens, Some(15));
+
+        let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+            .expect("decode payload summary");
+        assert_eq!(payload["endpoint"], "/v1/responses");
+        assert!(payload["usageMissingReason"].is_null());
+
+        upstream_handle.abort();
+    }
+
     #[tokio::test]
     async fn resolve_default_source_scope_always_all() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -8062,8 +8313,12 @@ mod tests {
         let (decoded, decode_error) = decode_response_payload_for_usage(&compressed, Some("gzip"));
         assert!(decode_error.is_none());
 
-        let parsed =
-            parse_target_response_payload(ProxyCaptureTarget::Responses, decoded.as_ref(), true);
+        let parsed = parse_target_response_payload(
+            ProxyCaptureTarget::Responses,
+            decoded.as_ref(),
+            true,
+            None,
+        );
         assert_eq!(parsed.usage.input_tokens, Some(123));
         assert_eq!(parsed.usage.output_tokens, Some(45));
         assert_eq!(parsed.usage.total_tokens, Some(168));
