@@ -6001,7 +6001,6 @@ mod tests {
             test_upstream_stream_mid_error().await.into_response()
         }
     }
-
     async fn test_upstream_models(uri: Uri) -> impl IntoResponse {
         if uri
             .query()
