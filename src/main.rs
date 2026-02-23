@@ -2400,7 +2400,7 @@ async fn proxy_openai_v1(
                 uri = %uri_for_log,
                 status = %status,
                 elapsed_ms = started_at.elapsed().as_millis(),
-                "openai proxy response finished"
+                "openai proxy response headers ready"
             );
             response
         }
@@ -2603,19 +2603,111 @@ async fn proxy_openai_v1_inner(
         }
     }
 
-    let body_stream = upstream_response.bytes_stream().map(move |chunk| {
-        chunk.map_err(|err| {
+    let mut upstream_stream = upstream_response.bytes_stream();
+    let stream_ttfb_started = Instant::now();
+    let first_chunk = match upstream_stream.next().await {
+        Some(Ok(chunk)) => {
+            info!(
+                proxy_request_id,
+                ttfb_ms = stream_ttfb_started.elapsed().as_millis(),
+                first_chunk_bytes = chunk.len(),
+                "openai proxy upstream response first chunk ready"
+            );
+            Some(chunk)
+        }
+        Some(Err(err)) => {
             warn!(
                 proxy_request_id,
                 error = %err,
-                "openai proxy upstream response stream error"
+                "openai proxy upstream response stream failed before first chunk"
             );
-            io::Error::other(format!("upstream stream error: {err}"))
-        })
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!("upstream stream error before first chunk: {err}"),
+            ));
+        }
+        None => {
+            info!(
+                proxy_request_id,
+                ttfb_ms = stream_ttfb_started.elapsed().as_millis(),
+                "openai proxy upstream response stream completed without body"
+            );
+            return response_builder.body(Body::empty()).map_err(|err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to build proxy response: {err}"),
+                )
+            });
+        }
+    };
+
+    let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let mut forwarded_chunks = 0usize;
+        let mut forwarded_bytes = 0usize;
+        let stream_started_at = Instant::now();
+
+        if let Some(chunk) = first_chunk {
+            forwarded_chunks = forwarded_chunks.saturating_add(1);
+            forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+            if tx.send(Ok(chunk)).await.is_err() {
+                info!(
+                    proxy_request_id,
+                    forwarded_chunks,
+                    forwarded_bytes,
+                    elapsed_ms = stream_started_at.elapsed().as_millis(),
+                    "openai proxy downstream closed before first streamed chunk"
+                );
+                return;
+            }
+        }
+
+        while let Some(next_chunk) = upstream_stream.next().await {
+            match next_chunk {
+                Ok(chunk) => {
+                    forwarded_chunks = forwarded_chunks.saturating_add(1);
+                    forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
+                    if tx.send(Ok(chunk)).await.is_err() {
+                        info!(
+                            proxy_request_id,
+                            forwarded_chunks,
+                            forwarded_bytes,
+                            elapsed_ms = stream_started_at.elapsed().as_millis(),
+                            "openai proxy downstream closed while streaming upstream response"
+                        );
+                        return;
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        proxy_request_id,
+                        error = %err,
+                        forwarded_chunks,
+                        forwarded_bytes,
+                        elapsed_ms = stream_started_at.elapsed().as_millis(),
+                        "openai proxy upstream response stream error"
+                    );
+                    let _ = tx
+                        .send(Err(io::Error::other(format!(
+                            "upstream stream error: {err}"
+                        ))))
+                        .await;
+                    return;
+                }
+            }
+        }
+
+        info!(
+            proxy_request_id,
+            forwarded_chunks,
+            forwarded_bytes,
+            elapsed_ms = stream_started_at.elapsed().as_millis(),
+            "openai proxy upstream response stream completed"
+        );
     });
 
     response_builder
-        .body(Body::from_stream(body_stream))
+        .body(Body::from_stream(ReceiverStream::new(rx)))
         .map_err(|err| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -4903,7 +4995,10 @@ impl HttpClients {
         let builder = Client::builder()
             .user_agent(user_agent)
             .pool_idle_timeout(Duration::from_secs(90))
-            .tcp_keepalive(Duration::from_secs(90));
+            .tcp_keepalive(Duration::from_secs(90))
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .http2_keep_alive_timeout(Duration::from_secs(30))
+            .http2_keep_alive_while_idle(true);
 
         if let Some(timeout) = timeout {
             builder.timeout(timeout)
@@ -5458,6 +5553,53 @@ mod tests {
         )
     }
 
+    async fn test_upstream_stream_first_error() -> impl IntoResponse {
+        let chunks = stream::unfold(0usize, |state| async move {
+            match state {
+                0 => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Some((
+                        Err::<Bytes, io::Error>(io::Error::other("upstream-first-chunk-error")),
+                        1,
+                    ))
+                }
+                _ => None,
+            }
+        });
+        (
+            StatusCode::OK,
+            [(
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            )],
+            Body::from_stream(chunks),
+        )
+    }
+
+    async fn test_upstream_stream_mid_error() -> impl IntoResponse {
+        let chunks = stream::unfold(0usize, |state| async move {
+            match state {
+                0 => Some((Ok::<Bytes, io::Error>(Bytes::from_static(b"chunk-a")), 1)),
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Some((
+                        Err::<Bytes, io::Error>(io::Error::other("upstream-mid-stream-error")),
+                        2,
+                    ))
+                }
+                _ => None,
+            }
+        });
+        (
+            StatusCode::OK,
+            [(
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            )],
+            Body::from_stream(chunks),
+        )
+    }
+
     async fn test_upstream_slow_stream() -> impl IntoResponse {
         let chunks = stream::unfold(0usize, |state| async move {
             match state {
@@ -5593,6 +5735,11 @@ mod tests {
         let app = Router::new()
             .route("/v1/echo", any(test_upstream_echo))
             .route("/v1/stream", any(test_upstream_stream))
+            .route(
+                "/v1/stream-first-error",
+                any(test_upstream_stream_first_error),
+            )
+            .route("/v1/stream-mid-error", any(test_upstream_stream_mid_error))
             .route("/v1/slow-stream", any(test_upstream_slow_stream))
             .route("/v1/hang", any(test_upstream_hang))
             .route("/v1/models", get(test_upstream_models))
@@ -6598,6 +6745,67 @@ mod tests {
             .await
             .expect("read stream body");
         assert_eq!(&body[..], b"chunk-achunk-b");
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_returns_bad_gateway_when_first_stream_chunk_fails() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/stream-first-error".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        assert!(
+            payload["error"]
+                .as_str()
+                .expect("error message should be present")
+                .contains("upstream stream error before first chunk")
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_propagates_stream_error_after_first_chunk() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/stream-mid-error".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let err = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect_err("mid-stream upstream failure should surface to downstream");
+        assert!(
+            err.to_string().contains("upstream stream error"),
+            "unexpected stream error text: {err}"
+        );
 
         upstream_handle.abort();
     }
