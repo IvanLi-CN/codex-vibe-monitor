@@ -4434,6 +4434,19 @@ async fn persist_proxy_capture_record(
 
 async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfillSummary> {
     let mut summary = ProxyUsageBackfillSummary::default();
+    let snapshot_max_id: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(MAX(id), 0)
+        FROM codex_invocations
+        WHERE source = ?1
+          AND status = 'success'
+          AND total_tokens IS NULL
+          AND response_raw_path IS NOT NULL
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(pool)
+    .await?;
     let mut last_seen_id = 0_i64;
     loop {
         let candidates = sqlx::query_as::<_, ProxyUsageBackfillCandidate>(
@@ -4445,12 +4458,14 @@ async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBa
               AND total_tokens IS NULL
               AND response_raw_path IS NOT NULL
               AND id > ?2
+              AND id <= ?3
             ORDER BY id ASC
-            LIMIT ?3
+            LIMIT ?4
             "#,
         )
         .bind(SOURCE_PROXY)
         .bind(last_seen_id)
+        .bind(snapshot_max_id)
         .bind(BACKFILL_BATCH_SIZE)
         .fetch_all(pool)
         .await?;
