@@ -4589,6 +4589,21 @@ async fn run_backfill_with_retry(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfi
 }
 
 fn is_sqlite_lock_error(err: &anyhow::Error) -> bool {
+    if err.chain().any(|cause| {
+        let Some(sqlx_err) = cause.downcast_ref::<sqlx::Error>() else {
+            return false;
+        };
+        let sqlx::Error::Database(db_err) = sqlx_err else {
+            return false;
+        };
+        matches!(
+            db_err.code().as_deref(),
+            Some("5") | Some("6") | Some("SQLITE_BUSY") | Some("SQLITE_LOCKED")
+        )
+    }) {
+        return true;
+    }
+
     err.chain().any(|cause| {
         let message = cause.to_string().to_ascii_lowercase();
         message.contains("database is locked")
