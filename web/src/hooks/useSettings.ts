@@ -42,30 +42,34 @@ export function useSettings() {
 
   const saveProxy = useCallback(
     async (nextProxy: ProxySettings) => {
-      if (!settings) return
-      const optimistic: SettingsPayload = {
-        ...settings,
-        proxy: {
-          ...settings.proxy,
-          hijackEnabled: nextProxy.hijackEnabled,
-          mergeUpstreamEnabled: nextProxy.hijackEnabled ? nextProxy.mergeUpstreamEnabled : false,
-          enabledModels: nextProxy.enabledModels,
-        },
+      if (!serverSnapshotRef.current) return
+      const normalizedProxy = {
+        hijackEnabled: nextProxy.hijackEnabled,
+        mergeUpstreamEnabled: nextProxy.hijackEnabled ? nextProxy.mergeUpstreamEnabled : false,
+        enabledModels: nextProxy.enabledModels,
       }
-      setSettings(optimistic)
+      setSettings((current) => {
+        if (!current) return current
+        return {
+          ...current,
+          proxy: {
+            ...current.proxy,
+            ...normalizedProxy,
+          },
+        }
+      })
       setIsProxySaving(true)
       try {
-        const savedProxy = await updateProxySettings({
-          hijackEnabled: optimistic.proxy.hijackEnabled,
-          mergeUpstreamEnabled: optimistic.proxy.mergeUpstreamEnabled,
-          enabledModels: optimistic.proxy.enabledModels,
+        const savedProxy = await updateProxySettings(normalizedProxy)
+        setSettings((current) => {
+          if (!current) return current
+          const merged: SettingsPayload = {
+            ...current,
+            proxy: savedProxy,
+          }
+          serverSnapshotRef.current = merged
+          return merged
         })
-        const merged: SettingsPayload = {
-          ...optimistic,
-          proxy: savedProxy,
-        }
-        setSettings(merged)
-        serverSnapshotRef.current = merged
         setError(null)
       } catch (err) {
         rollback()
@@ -74,26 +78,31 @@ export function useSettings() {
         setIsProxySaving(false)
       }
     },
-    [rollback, settings],
+    [rollback],
   )
 
   const savePricing = useCallback(
     async (nextPricing: PricingSettings) => {
-      if (!settings) return
-      const optimistic: SettingsPayload = {
-        ...settings,
-        pricing: nextPricing,
-      }
-      setSettings(optimistic)
+      if (!serverSnapshotRef.current) return
+      setSettings((current) => {
+        if (!current) return current
+        return {
+          ...current,
+          pricing: nextPricing,
+        }
+      })
       setIsPricingSaving(true)
       try {
         const savedPricing = await updatePricingSettings(nextPricing)
-        const merged: SettingsPayload = {
-          ...optimistic,
-          pricing: savedPricing,
-        }
-        setSettings(merged)
-        serverSnapshotRef.current = merged
+        setSettings((current) => {
+          if (!current) return current
+          const merged: SettingsPayload = {
+            ...current,
+            pricing: savedPricing,
+          }
+          serverSnapshotRef.current = merged
+          return merged
+        })
         setError(null)
       } catch (err) {
         rollback()
@@ -102,7 +111,7 @@ export function useSettings() {
         setIsPricingSaving(false)
       }
     },
-    [rollback, settings],
+    [rollback],
   )
 
   return {

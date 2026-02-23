@@ -345,6 +345,10 @@ async fn spawn_http_server(
         .route("/health", get(health_check))
         .route("/api/version", get(get_versions))
         .route("/api/settings", get(get_settings))
+        .route(
+            "/api/settings/proxy-models",
+            any(removed_proxy_model_settings_endpoint),
+        )
         .route("/api/settings/proxy", put(put_proxy_settings))
         .route("/api/settings/pricing", put(put_pricing_settings))
         .route("/api/invocations", get(list_invocations))
@@ -4357,6 +4361,13 @@ async fn get_settings(
         proxy: proxy.into(),
         pricing: PricingSettingsResponse::from_catalog(&pricing),
     }))
+}
+
+async fn removed_proxy_model_settings_endpoint() -> (StatusCode, &'static str) {
+    (
+        StatusCode::NOT_FOUND,
+        "endpoint removed; use /api/settings and /api/settings/proxy",
+    )
 }
 
 async fn put_proxy_settings(
