@@ -9835,6 +9835,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_backfill_with_retry_does_not_retry_non_lock_errors() {
+        let temp_dir = make_temp_test_dir("proxy-backfill-retry-non-lock");
+        let db_path = temp_dir.join("non-lock.db");
+        let db_url = sqlite_url_for_path(&db_path);
+        let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
+            .expect("build sqlite options");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(connect_options)
+            .await
+            .expect("connect sqlite pool");
+
+        // Intentionally skip schema initialization to force a deterministic non-lock error.
+        let started = Instant::now();
+        let err = run_backfill_with_retry(&pool)
+            .await
+            .expect_err("backfill should fail immediately on non-lock errors");
+        assert!(
+            started.elapsed() < Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
+            "non-lock errors should not wait for retry delay"
+        );
+        assert!(
+            err.to_string().contains("failed after 1/2 attempt(s)"),
+            "expected single-attempt context in error: {err:?}"
+        );
+        assert!(!is_sqlite_lock_error(&err));
+        assert!(err.chain().any(|cause| {
+            cause
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("no such table")
+        }));
+
+        pool.close().await;
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
     async fn quota_latest_returns_degraded_when_empty() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
