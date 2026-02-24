@@ -5,9 +5,11 @@ import { SuccessFailureChart } from '../components/SuccessFailureChart'
 import { useSummary } from '../hooks/useStats'
 import { useTimeseries } from '../hooks/useTimeseries'
 import { useErrorDistribution } from '../hooks/useErrorDistribution'
+import { useFailureSummary } from '../hooks/useFailureSummary'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { ErrorReasonPieChart } from '../components/ErrorReasonPieChart'
+import type { FailureScope } from '../lib/api'
 
 const RANGE_OPTIONS = [
   { value: '1h', labelKey: 'stats.range.lastHour' },
@@ -63,6 +65,7 @@ const BUCKET_OPTION_KEYS: Record<string, { value: string; labelKey: TranslationK
 export default function StatsPage() {
   const { t } = useTranslation()
   const [range, setRange] = useState<typeof RANGE_OPTIONS[number]['value']>('today')
+  const [errorScope, setErrorScope] = useState<FailureScope>('service')
   const rawBucketOptions = useMemo(() => BUCKET_OPTION_KEYS[range] ?? BUCKET_OPTION_KEYS['1d'], [range])
   const [bucket, setBucket] = useState<string>(rawBucketOptions[0]?.value ?? '1h')
 
@@ -103,7 +106,23 @@ export default function StatsPage() {
     bucket: effectiveBucket,
   })
 
-  const { data: errors, isLoading: errorsLoading, error: errorsError } = useErrorDistribution(range, 8)
+  const { data: errors, isLoading: errorsLoading, error: errorsError } = useErrorDistribution(range, 8, errorScope)
+  const {
+    data: failureSummary,
+    isLoading: failureSummaryLoading,
+    error: failureSummaryError,
+  } = useFailureSummary(range)
+
+  const scopeOptions = useMemo(
+    () =>
+      [
+        { value: 'service', label: t('stats.errors.scope.service') },
+        { value: 'client', label: t('stats.errors.scope.client') },
+        { value: 'abort', label: t('stats.errors.scope.abort') },
+        { value: 'all', label: t('stats.errors.scope.all') },
+      ] as const,
+    [t],
+  )
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
@@ -180,8 +199,59 @@ export default function StatsPage() {
 
       <section className="card bg-base-100 shadow-sm">
         <div className="card-body gap-4">
-          <div className="card-heading">
-            <h3 className="card-title">{t('stats.errors.title')}</h3>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="card-heading">
+              <h3 className="card-title">{t('stats.errors.title')}</h3>
+              {failureSummaryError ? (
+                <p className="card-description text-error">{failureSummaryError}</p>
+              ) : (
+                <p className="card-description">
+                  {t('stats.errors.actionableRate', {
+                    rate: `${((failureSummary?.actionableFailureRate ?? 0) * 100).toFixed(1)}%`,
+                  })}
+                </p>
+              )}
+            </div>
+            <label className="form-control w-full max-w-[14rem]">
+              <span className="label-text text-sm">{t('stats.errors.scope.label')}</span>
+              <select
+                className="select select-bordered select-sm"
+                value={errorScope}
+                onChange={(event) => setErrorScope(event.target.value as FailureScope)}
+              >
+                {scopeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="stats stats-vertical sm:stats-horizontal w-full border border-base-300 bg-base-100">
+            <div className="stat">
+              <div className="stat-title">{t('stats.errors.summary.service')}</div>
+              <div className="stat-value text-error text-2xl">
+                {failureSummaryLoading ? '—' : failureSummary?.serviceFailureCount ?? 0}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="stat-title">{t('stats.errors.summary.client')}</div>
+              <div className="stat-value text-warning text-2xl">
+                {failureSummaryLoading ? '—' : failureSummary?.clientFailureCount ?? 0}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="stat-title">{t('stats.errors.summary.abort')}</div>
+              <div className="stat-value text-info text-2xl">
+                {failureSummaryLoading ? '—' : failureSummary?.clientAbortCount ?? 0}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="stat-title">{t('stats.errors.summary.actionable')}</div>
+              <div className="stat-value text-secondary text-2xl">
+                {failureSummaryLoading ? '—' : failureSummary?.actionableFailureCount ?? 0}
+              </div>
+            </div>
           </div>
           {errorsError ? (
             <div className="alert alert-error">{errorsError}</div>

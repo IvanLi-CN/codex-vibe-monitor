@@ -35,6 +35,9 @@ export interface ApiInvocation {
   cost?: number
   status?: string
   errorMessage?: string
+  failureKind?: string
+  failureClass?: 'service_failure' | 'client_failure' | 'client_abort' | 'none'
+  isActionable?: boolean
   timings?: ApiInvocationTimings
   rawMetadata?: ApiInvocationRawMetadata
   proxyTimings?: ApiInvocationTimings
@@ -98,6 +101,19 @@ export interface ErrorDistributionResponse {
   rangeStart: string
   rangeEnd: string
   items: ErrorDistributionItem[]
+}
+
+export type FailureScope = 'all' | 'service' | 'client' | 'abort'
+
+export interface FailureSummaryResponse {
+  rangeStart: string
+  rangeEnd: string
+  totalFailures: number
+  serviceFailureCount: number
+  clientFailureCount: number
+  clientAbortCount: number
+  actionableFailureCount: number
+  actionableFailureRate: number
 }
 
 export interface PerfStageStats {
@@ -327,12 +343,23 @@ export async function fetchTimeseries(range: string, params?: { bucket?: string;
   return fetchJson<TimeseriesResponse>(`/api/stats/timeseries?${search.toString()}`)
 }
 
-export async function fetchErrorDistribution(range: string, params?: { top?: number; timeZone?: string }) {
+export async function fetchErrorDistribution(
+  range: string,
+  params?: { top?: number; scope?: FailureScope; timeZone?: string },
+) {
   const search = new URLSearchParams()
   search.set('range', range)
   search.set('timeZone', params?.timeZone ?? getBrowserTimeZone())
   if (params?.top != null) search.set('top', String(params.top))
+  if (params?.scope) search.set('scope', params.scope)
   return fetchJson<ErrorDistributionResponse>(`/api/stats/errors?${search.toString()}`)
+}
+
+export async function fetchFailureSummary(range: string, params?: { timeZone?: string }) {
+  const search = new URLSearchParams()
+  search.set('range', range)
+  search.set('timeZone', params?.timeZone ?? getBrowserTimeZone())
+  return fetchJson<FailureSummaryResponse>(`/api/stats/failures/summary?${search.toString()}`)
 }
 
 export async function fetchPerfStats(params?: PerfStatsQuery) {

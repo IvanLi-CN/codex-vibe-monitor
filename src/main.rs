@@ -64,8 +64,8 @@ const SOURCE_CRS: &str = "crs";
 const SOURCE_PROXY: &str = "proxy";
 const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
-const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
-const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
+const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 45;
+const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 90;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
 const BACKFILL_BATCH_SIZE: i64 = 200;
 const BACKFILL_LOCK_RETRY_MAX_ATTEMPTS: u32 = 2;
@@ -91,6 +91,10 @@ const PROXY_FAILURE_UPSTREAM_STREAM_ERROR: &str = "upstream_stream_error";
 const PROXY_STREAM_TERMINAL_COMPLETED: &str = "stream_completed";
 const PROXY_STREAM_TERMINAL_ERROR: &str = "stream_error";
 const PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED: &str = "downstream_closed";
+const FAILURE_CLASS_NONE: &str = "none";
+const FAILURE_CLASS_SERVICE: &str = "service_failure";
+const FAILURE_CLASS_CLIENT: &str = "client_failure";
+const FAILURE_CLASS_ABORT: &str = "client_abort";
 const PROXY_MODEL_SETTINGS_SINGLETON_ID: i64 = 1;
 const PRICING_SETTINGS_SINGLETON_ID: i64 = 1;
 const DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-02-23";
@@ -196,6 +200,12 @@ async fn main() -> Result<()> {
     } else {
         info!("proxy usage startup backfill is disabled");
     }
+    let failure_summary = backfill_failure_classification(&pool).await?;
+    info!(
+        scanned = failure_summary.scanned,
+        updated = failure_summary.updated,
+        "invocation failure classification startup backfill finished"
+    );
     let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
     fs::create_dir_all(&config.proxy_raw_dir).with_context(|| {
         format!(
@@ -390,6 +400,7 @@ async fn spawn_http_server(
         .route("/api/stats/timeseries", get(fetch_timeseries))
         .route("/api/stats/perf", get(fetch_perf_stats))
         .route("/api/stats/errors", get(fetch_error_distribution))
+        .route("/api/stats/failures/summary", get(fetch_failure_summary))
         .route("/api/stats/errors/others", get(fetch_other_errors))
         .route("/api/quota/latest", get(latest_quota_snapshot))
         .route("/events", get(sse_stream))
@@ -952,6 +963,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             cost REAL,
             status TEXT,
             error_message TEXT,
+            failure_kind TEXT,
+            failure_class TEXT,
+            is_actionable INTEGER NOT NULL DEFAULT 0,
             payload TEXT,
             raw_response TEXT NOT NULL,
             cost_estimated INTEGER NOT NULL DEFAULT 0,
@@ -1001,6 +1015,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("cost", "REAL"),
         ("status", "TEXT"),
         ("error_message", "TEXT"),
+        ("failure_kind", "TEXT"),
+        ("failure_class", "TEXT"),
+        ("is_actionable", "INTEGER NOT NULL DEFAULT 0"),
         ("payload", "TEXT"),
         ("cost_estimated", "INTEGER NOT NULL DEFAULT 0"),
         ("price_version", "TEXT"),
@@ -1062,6 +1079,16 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_codex_invocations_source_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_failure_class_occurred_at
+        ON codex_invocations (failure_class, occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_failure_class_occurred_at")?;
 
     sqlx::query(
         r#"
@@ -1744,6 +1771,10 @@ async fn persist_records(
     let mut inserted = Vec::new();
 
     for record in records {
+        let failure = classify_invocation_failure(
+            Some(record.status.as_str()),
+            Some(record.error_message.as_str()),
+        );
         let payload_json = json!({
             "model": record.model,
             "inputTokens": record.input_tokens,
@@ -1774,10 +1805,13 @@ async fn persist_records(
                 cost,
                 status,
                 error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
                 payload,
                 raw_response
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
             "#,
         )
         .bind(&record.request_id)
@@ -1792,6 +1826,9 @@ async fn persist_records(
         .bind(record.cost)
         .bind(&record.status)
         .bind(&record.error_message)
+        .bind(failure.failure_kind.as_deref())
+        .bind(failure.failure_class.as_str())
+        .bind(failure.is_actionable as i64)
         .bind(payload_text)
         .bind(raw_text)
         .execute(&mut *tx)
@@ -1814,6 +1851,9 @@ async fn persist_records(
                     cost,
                     status,
                     error_message,
+                    failure_kind,
+                    failure_class,
+                    is_actionable,
                     created_at
                 FROM codex_invocations
                 WHERE invoke_id = ?1 AND occurred_at = ?2
@@ -1977,6 +2017,7 @@ async fn list_invocations(
     let mut query = QueryBuilder::new(
         "SELECT id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, \
          cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, \
+         failure_kind, failure_class, is_actionable, \
          cost_estimated, price_version, \
          request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
          response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
@@ -2385,11 +2426,202 @@ async fn fetch_timeseries_daily(
     }))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureScope {
+    All,
+    Service,
+    Client,
+    Abort,
+}
+
+impl FailureScope {
+    fn parse(raw: Option<&str>) -> Result<Self, ApiError> {
+        let Some(scope) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+            return Ok(FailureScope::Service);
+        };
+        match scope.to_ascii_lowercase().as_str() {
+            "all" => Ok(FailureScope::All),
+            "service" => Ok(FailureScope::Service),
+            "client" => Ok(FailureScope::Client),
+            "abort" => Ok(FailureScope::Abort),
+            _ => Err(ApiError(anyhow!(
+                "unsupported failure scope: {scope}; expected one of all|service|client|abort"
+            ))),
+        }
+    }
+}
+
+fn failure_scope_matches(scope: FailureScope, class: FailureClass) -> bool {
+    match scope {
+        FailureScope::All => class != FailureClass::None,
+        FailureScope::Service => class == FailureClass::ServiceFailure,
+        FailureScope::Client => class == FailureClass::ClientFailure,
+        FailureScope::Abort => class == FailureClass::ClientAbort,
+    }
+}
+
+fn extract_failure_kind_prefix(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with('[') {
+        return None;
+    }
+    let closing = trimmed.find(']')?;
+    if closing <= 1 {
+        return None;
+    }
+    Some(trimmed[1..closing].trim().to_string())
+}
+
+fn derive_failure_kind(status_norm: &str, err: &str, err_lower: &str) -> Option<String> {
+    if err_lower.contains("downstream closed while streaming upstream response") {
+        return Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string());
+    }
+    if err_lower.contains("upstream stream error") {
+        return Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR.to_string());
+    }
+    if err_lower.contains("failed to contact upstream") {
+        return Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string());
+    }
+    if err_lower.contains("upstream handshake timed out") {
+        return Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string());
+    }
+    if err_lower.contains("request body read timed out") {
+        return Some(PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT.to_string());
+    }
+    if err_lower.contains("failed to read request body stream") {
+        return Some(PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED.to_string());
+    }
+    if err_lower.contains("invalid api key format")
+        || err_lower.contains("api key format is invalid")
+        || err_lower.contains("incorrect api key provided")
+    {
+        return Some("invalid_api_key".to_string());
+    }
+    if err_lower.contains("api key not found") {
+        return Some("api_key_not_found".to_string());
+    }
+    if err_lower.contains("please provide an api key") {
+        return Some("api_key_missing".to_string());
+    }
+    if status_norm.starts_with("http_") {
+        return Some(status_norm.to_string());
+    }
+    if !err.is_empty() {
+        return Some("untyped_failure".to_string());
+    }
+    None
+}
+
+fn classify_invocation_failure(
+    status: Option<&str>,
+    error_message: Option<&str>,
+) -> FailureClassification {
+    let status_norm = status.unwrap_or_default().trim().to_ascii_lowercase();
+    let err = error_message.unwrap_or_default().trim();
+    let err_lower = err.to_ascii_lowercase();
+
+    if status_norm == "success" && err.is_empty() {
+        return FailureClassification {
+            failure_kind: None,
+            failure_class: FailureClass::None,
+            is_actionable: false,
+        };
+    }
+
+    let failure_kind = extract_failure_kind_prefix(err)
+        .or_else(|| derive_failure_kind(&status_norm, err, &err_lower));
+
+    let failure_kind_lower = failure_kind
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let is_http_4xx =
+        status_norm.starts_with("http_4") || status_norm == "http_401" || status_norm == "http_403";
+    let is_http_5xx = status_norm.starts_with("http_5");
+
+    let failure_class = if failure_kind_lower == PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
+        || err_lower.contains("downstream closed while streaming upstream response")
+    {
+        FailureClass::ClientAbort
+    } else if failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
+        || err_lower.contains("invalid api key format")
+        || err_lower.contains("api key format is invalid")
+        || err_lower.contains("incorrect api key provided")
+        || err_lower.contains("api key not found")
+        || err_lower.contains("please provide an api key")
+        || is_http_4xx
+    {
+        FailureClass::ClientFailure
+    } else if failure_kind_lower == PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+        || failure_kind_lower == PROXY_FAILURE_UPSTREAM_STREAM_ERROR
+        || failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
+        || failure_kind_lower == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+        || err_lower.contains("failed to contact upstream")
+        || err_lower.contains("upstream stream error")
+        || err_lower.contains("request body read timed out")
+        || err_lower.contains("upstream handshake timed out")
+        || is_http_5xx
+    {
+        FailureClass::ServiceFailure
+    } else if status_norm == "success" {
+        FailureClass::None
+    } else {
+        // Conservative fallback: unknown non-success records are treated as service-impacting.
+        FailureClass::ServiceFailure
+    };
+
+    FailureClassification {
+        failure_kind: if failure_class == FailureClass::None {
+            None
+        } else {
+            failure_kind
+        },
+        failure_class,
+        is_actionable: failure_class == FailureClass::ServiceFailure,
+    }
+}
+
+fn resolve_failure_classification(
+    status: Option<&str>,
+    error_message: Option<&str>,
+    failure_kind: Option<&str>,
+    failure_class: Option<&str>,
+    is_actionable: Option<i64>,
+) -> FailureClassification {
+    let derived = classify_invocation_failure(status, error_message);
+    let stored_class = failure_class.and_then(FailureClass::from_db_str);
+    let resolved_class = match stored_class {
+        // Legacy rows can carry migration defaults (`none`/`0`) for non-success records.
+        Some(FailureClass::None) if derived.failure_class != FailureClass::None => {
+            derived.failure_class
+        }
+        Some(value) => value,
+        None => derived.failure_class,
+    };
+    let resolved_kind = failure_kind
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
+        .or(derived.failure_kind);
+    let expected_actionable = resolved_class == FailureClass::ServiceFailure;
+    let resolved_actionable = is_actionable
+        .map(|value| value != 0)
+        .filter(|value| *value == expected_actionable)
+        .unwrap_or(expected_actionable);
+
+    FailureClassification {
+        failure_kind: resolved_kind,
+        failure_class: resolved_class,
+        is_actionable: resolved_actionable,
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorQuery {
     range: String,
     top: Option<i64>,
+    scope: Option<String>,
     time_zone: Option<String>,
 }
 
@@ -2412,6 +2644,7 @@ struct OtherErrorsQuery {
     range: String,
     page: Option<i64>,
     limit: Option<i64>,
+    scope: Option<String>,
     time_zone: Option<String>,
 }
 
@@ -2430,6 +2663,26 @@ struct OtherErrorsResponse {
     items: Vec<OtherErrorItem>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FailureSummaryQuery {
+    range: String,
+    time_zone: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FailureSummaryResponse {
+    range_start: String,
+    range_end: String,
+    total_failures: i64,
+    service_failure_count: i64,
+    client_failure_count: i64,
+    client_abort_count: i64,
+    actionable_failure_count: i64,
+    actionable_failure_rate: f64,
+}
+
 async fn fetch_error_distribution(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ErrorQuery>,
@@ -2438,15 +2691,21 @@ async fn fetch_error_distribution(
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
     let display_end = range_window.display_end;
+    let scope = FailureScope::parse(params.scope.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
 
     #[derive(sqlx::FromRow)]
     struct RawErr {
+        status: Option<String>,
         error_message: Option<String>,
+        failure_kind: Option<String>,
+        failure_class: Option<String>,
+        is_actionable: Option<i64>,
     }
 
-    let mut query =
-        QueryBuilder::new("SELECT error_message FROM codex_invocations WHERE occurred_at >= ");
+    let mut query = QueryBuilder::new(
+        "SELECT status, error_message, failure_kind, failure_class, is_actionable FROM codex_invocations WHERE occurred_at >= ",
+    );
     query.push_bind(db_occurred_at_lower_bound(start_dt));
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
@@ -2456,6 +2715,16 @@ async fn fetch_error_distribution(
 
     let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for r in rows {
+        let classification = resolve_failure_classification(
+            r.status.as_deref(),
+            r.error_message.as_deref(),
+            r.failure_kind.as_deref(),
+            r.failure_class.as_deref(),
+            r.is_actionable,
+        );
+        if !failure_scope_matches(scope, classification.failure_class) {
+            continue;
+        }
         let raw = r.error_message.unwrap_or_default();
         let key = categorize_error(&raw);
         *counts.entry(key).or_insert(0) += 1;
@@ -2642,16 +2911,21 @@ async fn fetch_other_errors(
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
+    let scope = FailureScope::parse(params.scope.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
 
     #[derive(sqlx::FromRow)]
     struct RowItem {
         id: i64,
         occurred_at: String,
+        status: Option<String>,
         error_message: Option<String>,
+        failure_kind: Option<String>,
+        failure_class: Option<String>,
+        is_actionable: Option<i64>,
     }
     let mut query = QueryBuilder::new(
-        "SELECT id, occurred_at, error_message FROM codex_invocations WHERE occurred_at >= ",
+        "SELECT id, occurred_at, status, error_message, failure_kind, failure_class, is_actionable FROM codex_invocations WHERE occurred_at >= ",
     );
     query.push_bind(db_occurred_at_lower_bound(start_dt));
     if source_scope == InvocationSourceScope::ProxyOnly {
@@ -2662,6 +2936,16 @@ async fn fetch_other_errors(
 
     let mut others: Vec<RowItem> = Vec::new();
     for r in rows.into_iter() {
+        let classification = resolve_failure_classification(
+            r.status.as_deref(),
+            r.error_message.as_deref(),
+            r.failure_kind.as_deref(),
+            r.failure_class.as_deref(),
+            r.is_actionable,
+        );
+        if !failure_scope_matches(scope, classification.failure_class) {
+            continue;
+        }
         let msg = r.error_message.clone().unwrap_or_default();
         let cat = categorize_error(&msg);
         if cat == "Other" {
@@ -2694,6 +2978,79 @@ async fn fetch_other_errors(
         page,
         limit,
         items,
+    }))
+}
+
+async fn fetch_failure_summary(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<FailureSummaryQuery>,
+) -> Result<Json<FailureSummaryResponse>, ApiError> {
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let range_window = resolve_range_window(&params.range, reporting_tz)?;
+    let start_dt = range_window.start;
+    let display_end = range_window.display_end;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        status: Option<String>,
+        error_message: Option<String>,
+        failure_kind: Option<String>,
+        failure_class: Option<String>,
+        is_actionable: Option<i64>,
+    }
+
+    let mut query = QueryBuilder::new(
+        "SELECT status, error_message, failure_kind, failure_class, is_actionable FROM codex_invocations WHERE occurred_at >= ",
+    );
+    query.push_bind(db_occurred_at_lower_bound(start_dt));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" AND (status IS NULL OR status != 'success')");
+
+    let rows: Vec<Row> = query.build_query_as().fetch_all(&state.pool).await?;
+    let total_failures = rows.len() as i64;
+
+    let mut service_failure_count = 0_i64;
+    let mut client_failure_count = 0_i64;
+    let mut client_abort_count = 0_i64;
+    let mut actionable_failure_count = 0_i64;
+
+    for row in rows {
+        let classification = resolve_failure_classification(
+            row.status.as_deref(),
+            row.error_message.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+            row.is_actionable,
+        );
+        match classification.failure_class {
+            FailureClass::ServiceFailure => service_failure_count += 1,
+            FailureClass::ClientFailure => client_failure_count += 1,
+            FailureClass::ClientAbort => client_abort_count += 1,
+            FailureClass::None => {}
+        }
+        if classification.is_actionable {
+            actionable_failure_count += 1;
+        }
+    }
+
+    let actionable_failure_rate = if total_failures > 0 {
+        actionable_failure_count as f64 / total_failures as f64
+    } else {
+        0.0
+    };
+
+    Ok(Json(FailureSummaryResponse {
+        range_start: format_utc_iso(start_dt),
+        range_end: format_utc_iso(display_end),
+        total_failures,
+        service_failure_count,
+        client_failure_count,
+        client_abort_count,
+        actionable_failure_count,
+        actionable_failure_rate,
     }))
 }
 
@@ -4330,6 +4687,10 @@ async fn persist_proxy_capture_record(
     capture_started: Instant,
     mut record: ProxyCaptureRecord,
 ) -> Result<()> {
+    let failure = classify_invocation_failure(
+        Some(record.status.as_str()),
+        record.error_message.as_deref(),
+    );
     let persist_started = Instant::now();
     sqlx::query(
         r#"
@@ -4348,6 +4709,9 @@ async fn persist_proxy_capture_record(
             price_version,
             status,
             error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
             payload,
             raw_response,
             request_raw_path,
@@ -4369,8 +4733,8 @@ async fn persist_proxy_capture_record(
             t_persist_ms
         )
         VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-            ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
         )
         "#,
     )
@@ -4388,6 +4752,9 @@ async fn persist_proxy_capture_record(
     .bind(record.price_version.as_deref())
     .bind(&record.status)
     .bind(record.error_message.as_deref())
+    .bind(failure.failure_kind.as_deref())
+    .bind(failure.failure_class.as_str())
+    .bind(failure.is_actionable as i64)
     .bind(record.payload.as_deref())
     .bind(&record.raw_response)
     .bind(record.req_raw.path.as_deref())
@@ -4594,6 +4961,101 @@ async fn run_backfill_with_retry(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfi
             }
         }
     }
+}
+
+#[derive(Debug, FromRow)]
+struct FailureClassificationBackfillRow {
+    id: i64,
+    status: Option<String>,
+    error_message: Option<String>,
+    failure_kind: Option<String>,
+    failure_class: Option<String>,
+    is_actionable: Option<i64>,
+}
+
+async fn backfill_failure_classification(
+    pool: &Pool<Sqlite>,
+) -> Result<FailureClassificationBackfillSummary> {
+    let mut summary = FailureClassificationBackfillSummary::default();
+    let mut last_seen_id = 0_i64;
+
+    loop {
+        let rows = sqlx::query_as::<_, FailureClassificationBackfillRow>(
+            r#"
+            SELECT id, status, error_message, failure_kind, failure_class, is_actionable
+            FROM codex_invocations
+            WHERE id > ?1
+            ORDER BY id ASC
+            LIMIT ?2
+            "#,
+        )
+        .bind(last_seen_id)
+        .bind(BACKFILL_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?;
+
+        if rows.is_empty() {
+            break;
+        }
+
+        if let Some(last) = rows.last() {
+            last_seen_id = last.id;
+        }
+        summary.scanned += rows.len() as u64;
+
+        let mut tx = pool.begin().await?;
+        for row in rows {
+            let resolved = resolve_failure_classification(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+                row.failure_kind.as_deref(),
+                row.failure_class.as_deref(),
+                row.is_actionable,
+            );
+
+            let existing_kind = row
+                .failure_kind
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(ToOwned::to_owned);
+            let existing_class = row
+                .failure_class
+                .as_deref()
+                .and_then(FailureClass::from_db_str);
+            let existing_actionable = row.is_actionable.map(|v| v != 0);
+
+            let next_kind = existing_kind.clone().or(resolved.failure_kind.clone());
+            let should_update = existing_class != Some(resolved.failure_class)
+                || existing_actionable != Some(resolved.is_actionable)
+                || existing_kind != next_kind;
+
+            if !should_update {
+                continue;
+            }
+
+            let affected = sqlx::query(
+                r#"
+                UPDATE codex_invocations
+                SET failure_kind = ?1,
+                    failure_class = ?2,
+                    is_actionable = ?3
+                WHERE id = ?4
+                "#,
+            )
+            .bind(next_kind.as_deref())
+            .bind(resolved.failure_class.as_str())
+            .bind(resolved.is_actionable as i64)
+            .bind(row.id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            summary.updated += affected;
+        }
+        tx.commit().await?;
+    }
+
+    Ok(summary)
 }
 
 fn is_sqlite_lock_error(err: &anyhow::Error) -> bool {
@@ -5434,6 +5896,12 @@ struct ApiInvocation {
     status: Option<String>,
     error_message: Option<String>,
     #[sqlx(default)]
+    failure_kind: Option<String>,
+    #[sqlx(default)]
+    failure_class: Option<String>,
+    #[sqlx(default)]
+    is_actionable: Option<bool>,
+    #[sqlx(default)]
     cost_estimated: Option<i64>,
     #[sqlx(default)]
     price_version: Option<String>,
@@ -5924,6 +6392,48 @@ struct ProxyUsageBackfillSummary {
     skipped_missing_file: u64,
     skipped_without_usage: u64,
     skipped_decode_error: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct FailureClassificationBackfillSummary {
+    scanned: u64,
+    updated: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureClass {
+    None,
+    ServiceFailure,
+    ClientFailure,
+    ClientAbort,
+}
+
+impl FailureClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            FailureClass::None => FAILURE_CLASS_NONE,
+            FailureClass::ServiceFailure => FAILURE_CLASS_SERVICE,
+            FailureClass::ClientFailure => FAILURE_CLASS_CLIENT,
+            FailureClass::ClientAbort => FAILURE_CLASS_ABORT,
+        }
+    }
+
+    fn from_db_str(raw: &str) -> Option<Self> {
+        match raw {
+            FAILURE_CLASS_NONE => Some(FailureClass::None),
+            FAILURE_CLASS_SERVICE => Some(FailureClass::ServiceFailure),
+            FAILURE_CLASS_CLIENT => Some(FailureClass::ClientFailure),
+            FAILURE_CLASS_ABORT => Some(FailureClass::ClientAbort),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FailureClassification {
+    failure_kind: Option<String>,
+    failure_class: FailureClass,
+    is_actionable: bool,
 }
 
 #[derive(Debug, FromRow)]
@@ -6632,6 +7142,90 @@ mod tests {
         assert_eq!(local.hour(), 3);
         assert_eq!(local.minute(), 0);
         assert_eq!(local.second(), 0);
+    }
+
+    #[test]
+    fn classify_invocation_failure_marks_downstream_closed_as_client_abort() {
+        let result = classify_invocation_failure(
+            Some("http_200"),
+            Some("[downstream_closed] downstream closed while streaming upstream response"),
+        );
+        assert_eq!(result.failure_class, FailureClass::ClientAbort);
+        assert!(!result.is_actionable);
+        assert_eq!(result.failure_kind.as_deref(), Some("downstream_closed"));
+    }
+
+    #[test]
+    fn classify_invocation_failure_marks_invalid_key_as_client_failure() {
+        let result = classify_invocation_failure(Some("http_401"), Some("Invalid API key format"));
+        assert_eq!(result.failure_class, FailureClass::ClientFailure);
+        assert!(!result.is_actionable);
+        assert_eq!(result.failure_kind.as_deref(), Some("invalid_api_key"));
+    }
+
+    #[test]
+    fn classify_invocation_failure_marks_upstream_errors_as_service_failure() {
+        let result = classify_invocation_failure(
+            Some("http_502"),
+            Some(
+                "[failed_contact_upstream] failed to contact upstream: error sending request for url (https://example.com/v1/responses)",
+            ),
+        );
+        assert_eq!(result.failure_class, FailureClass::ServiceFailure);
+        assert!(result.is_actionable);
+        assert_eq!(
+            result.failure_kind.as_deref(),
+            Some("failed_contact_upstream")
+        );
+    }
+
+    #[test]
+    fn resolve_failure_classification_recomputes_actionable_for_missing_legacy_class() {
+        let result = resolve_failure_classification(
+            Some("http_502"),
+            Some("[failed_contact_upstream] upstream unavailable"),
+            None,
+            None,
+            Some(0),
+        );
+        assert_eq!(result.failure_class, FailureClass::ServiceFailure);
+        assert!(result.is_actionable);
+    }
+
+    #[test]
+    fn resolve_failure_classification_overrides_legacy_default_none_for_failures() {
+        let result = resolve_failure_classification(
+            Some("http_502"),
+            Some("[failed_contact_upstream] upstream unavailable"),
+            None,
+            Some(FailureClass::None.as_str()),
+            Some(0),
+        );
+        assert_eq!(result.failure_class, FailureClass::ServiceFailure);
+        assert!(result.is_actionable);
+        assert_eq!(
+            result.failure_kind.as_deref(),
+            Some("failed_contact_upstream")
+        );
+    }
+
+    #[test]
+    fn failure_scope_parse_defaults_to_service() {
+        assert_eq!(
+            FailureScope::parse(None).expect("default scope"),
+            FailureScope::Service
+        );
+    }
+
+    #[test]
+    fn failure_scope_parse_rejects_unknown_value() {
+        let err = FailureScope::parse(Some("unexpected")).expect_err("invalid scope should fail");
+        assert!(
+            err.0
+                .to_string()
+                .contains("unsupported failure scope: unexpected"),
+            "error should mention rejected scope"
+        );
     }
 
     fn test_config() -> AppConfig {
