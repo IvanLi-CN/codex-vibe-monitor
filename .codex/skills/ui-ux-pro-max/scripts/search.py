@@ -17,6 +17,7 @@ Persistence (Master + Overrides pattern):
 import argparse
 import sys
 import io
+import signal
 from pathlib import Path
 from core import CSV_CONFIG, AVAILABLE_STACKS, MAX_RESULTS, search, search_stack
 from design_system import generate_design_system, _slugify_path_segment
@@ -49,6 +50,10 @@ def _ensure_utf8_stream(stream):
 sys.stdout = _ensure_utf8_stream(sys.stdout)
 sys.stderr = _ensure_utf8_stream(sys.stderr)
 
+# Avoid noisy BrokenPipe traceback when piping output to tools like `head`.
+if hasattr(signal, "SIGPIPE"):
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
 
 def format_output(result):
     """Format results for Claude consumption (token-optimized)"""
@@ -74,6 +79,16 @@ def format_output(result):
         output.append("")
 
     return "\n".join(output)
+
+
+def _safe_print(*args, **kwargs):
+    """Exit quietly when downstream closes stdout early (e.g. piping to head)."""
+    if "flush" not in kwargs:
+        kwargs["flush"] = True
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        raise SystemExit(0)
 
 
 if __name__ == "__main__":
@@ -114,7 +129,7 @@ if __name__ == "__main__":
             page=args.page,
             output_dir=args.output_dir
         )
-        print(result)
+        _safe_print(result)
 
         # Print persistence confirmation
         if args.persist:
@@ -122,29 +137,29 @@ if __name__ == "__main__":
             project_slug = _slugify_path_segment(project_name, "default")
             base_output_dir = Path(args.output_dir).resolve() if args.output_dir else Path.cwd()
             design_system_dir = base_output_dir / "design-system" / project_slug
-            print("\n" + "=" * 60)
-            print(f"✅ Design system persisted to {design_system_dir}/")
-            print(f"   📄 {design_system_dir / 'MASTER.md'} (Global Source of Truth)")
+            _safe_print("\n" + "=" * 60)
+            _safe_print(f"✅ Design system persisted to {design_system_dir}/")
+            _safe_print(f"   📄 {design_system_dir / 'MASTER.md'} (Global Source of Truth)")
             if args.page:
                 page_filename = _slugify_path_segment(args.page, "page")
-                print(f"   📄 {design_system_dir / 'pages' / f'{page_filename}.md'} (Page Overrides)")
-            print("")
-            print(f"📖 Usage: When building a page, check {design_system_dir / 'pages' / '[page].md'} first.")
-            print(f"   If exists, its rules override MASTER.md. Otherwise, use MASTER.md.")
-            print("=" * 60)
+                _safe_print(f"   📄 {design_system_dir / 'pages' / f'{page_filename}.md'} (Page Overrides)")
+            _safe_print("")
+            _safe_print(f"📖 Usage: When building a page, check {design_system_dir / 'pages' / '[page].md'} first.")
+            _safe_print(f"   If exists, its rules override MASTER.md. Otherwise, use MASTER.md.")
+            _safe_print("=" * 60)
     # Stack search
     elif args.stack:
         result = search_stack(args.query, args.stack, args.max_results)
         if args.json:
             import json
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            _safe_print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
-            print(format_output(result))
+            _safe_print(format_output(result))
     # Domain search
     else:
         result = search(args.query, args.domain, args.max_results)
         if args.json:
             import json
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            _safe_print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
-            print(format_output(result))
+            _safe_print(format_output(result))
