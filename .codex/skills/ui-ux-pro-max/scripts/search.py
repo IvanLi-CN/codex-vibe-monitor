@@ -21,11 +21,33 @@ from pathlib import Path
 from core import CSV_CONFIG, AVAILABLE_STACKS, MAX_RESULTS, search, search_stack
 from design_system import generate_design_system, _slugify_path_segment
 
+def _ensure_utf8_stream(stream):
+    """Best-effort UTF-8 output without assuming buffer-backed streams."""
+    encoding = getattr(stream, "encoding", None)
+    if not encoding or encoding.lower() == "utf-8":
+        return stream
+
+    # Prefer in-place reconfigure for text streams that support it.
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        try:
+            reconfigure(encoding="utf-8")
+            return stream
+        except Exception:
+            pass
+
+    # Fall back to wrapping the underlying buffer when available.
+    buffer = getattr(stream, "buffer", None)
+    if buffer is not None:
+        return io.TextIOWrapper(buffer, encoding="utf-8")
+
+    # Streams like StringIO have no buffer; leave them as-is.
+    return stream
+
+
 # Force UTF-8 for stdout/stderr to handle emojis on Windows (cp1252 default)
-if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+sys.stdout = _ensure_utf8_stream(sys.stdout)
+sys.stderr = _ensure_utf8_stream(sys.stderr)
 
 
 def format_output(result):

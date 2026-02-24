@@ -1049,6 +1049,16 @@ def _generate_intelligent_overrides(page_name: str, page_query: str, design_syst
 def _detect_page_type(context: str, style_results: list) -> str:
     """Detect page type from context and search results."""
     context_lower = context.lower()
+    context_tokens = set(re.findall(r"[a-z0-9]+", context_lower))
+
+    def _matches_keyword(keyword: str) -> bool:
+        keyword_tokens = re.findall(r"[a-z0-9]+", keyword.lower())
+        if not keyword_tokens:
+            return False
+        if len(keyword_tokens) == 1:
+            return keyword_tokens[0] in context_tokens
+        pattern = r"\\b" + r"\\s+".join(re.escape(tok) for tok in keyword_tokens) + r"\\b"
+        return re.search(pattern, context_lower) is not None
     
     # Check for common page type patterns
     page_patterns = [
@@ -1065,7 +1075,7 @@ def _detect_page_type(context: str, style_results: list) -> str:
     ]
     
     for keywords, page_type in page_patterns:
-        if any(kw in context_lower for kw in keywords):
+        if any(_matches_keyword(kw) for kw in keywords):
             return page_type
     
     # Fallback: try to infer from style results
