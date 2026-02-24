@@ -6,6 +6,12 @@
 /web/node_modules
 /web/dist
 /web/.vite
-.codex/
+.codex/*
+!.codex/skills/
+!.codex/skills/**
+.codex/skills/**/__pycache__/
+.codex/skills/**/*.pyc
+.codex/logs/
+.codex/evidence/
 logs/
 .serena
