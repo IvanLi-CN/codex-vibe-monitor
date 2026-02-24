@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchErrorDistribution } from '../lib/api'
-import type { ErrorDistributionResponse } from '../lib/api'
+import type { ErrorDistributionResponse, FailureScope } from '../lib/api'
 
-export function useErrorDistribution(range: string, top?: number) {
+export function useErrorDistribution(range: string, top?: number, scope: FailureScope = 'service') {
   const [data, setData] = useState<ErrorDistributionResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -11,7 +11,7 @@ export function useErrorDistribution(range: string, top?: number) {
     setIsLoading(true)
     // console.debug('[useErrorDistribution] load start', { range, top })
     try {
-      const res = await fetchErrorDistribution(range, top != null ? { top } : undefined)
+      const res = await fetchErrorDistribution(range, top != null ? { top, scope } : { scope })
       setData(res)
       setError(null)
       // console.debug('[useErrorDistribution] load ok', res.items?.length)
@@ -21,7 +21,7 @@ export function useErrorDistribution(range: string, top?: number) {
     } finally {
       setIsLoading(false)
     }
-  }, [range, top])
+  }, [range, scope, top])
 
   useEffect(() => {
     void load()
