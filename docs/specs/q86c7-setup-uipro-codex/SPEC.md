@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-02-24
 - Last: 2026-02-24
 
@@ -106,9 +106,9 @@ None
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: 完成 `docs/specs` 初始化与规格建档。
-- [ ] M2: 完成 Codex skill 安装与 `.gitignore` 调整。
-- [ ] M3: 完成验证、提交、PR、checks 与 review-loop 收敛。
+- [x] M1: 完成 `docs/specs` 初始化与规格建档。
+- [x] M2: 完成 Codex skill 安装与 `.gitignore` 调整。
+- [x] M3: 完成验证、提交、PR、checks 与 review-loop 收敛。
 
 ## 方案概述（Approach, high-level）
 
@@ -125,3 +125,4 @@ None
 ## 变更记录（Change log）
 
 - 2026-02-24: 初始化规格并冻结实现口径。
+- 2026-02-24: 完成 skill 接入、PR #50、CI 通过与 review 轮次收敛记录。
