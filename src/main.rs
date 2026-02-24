@@ -4433,7 +4433,6 @@ async fn persist_proxy_capture_record(
 }
 
 async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfillSummary> {
-    let mut summary = ProxyUsageBackfillSummary::default();
     let snapshot_max_id: i64 = sqlx::query_scalar(
         r#"
         SELECT COALESCE(MAX(id), 0)
@@ -4447,6 +4446,15 @@ async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBa
     .bind(SOURCE_PROXY)
     .fetch_one(pool)
     .await?;
+
+    backfill_proxy_usage_tokens_up_to_id(pool, snapshot_max_id).await
+}
+
+async fn backfill_proxy_usage_tokens_up_to_id(
+    pool: &Pool<Sqlite>,
+    snapshot_max_id: i64,
+) -> Result<ProxyUsageBackfillSummary> {
+    let mut summary = ProxyUsageBackfillSummary::default();
     let mut last_seen_id = 0_i64;
     loop {
         let candidates = sqlx::query_as::<_, ProxyUsageBackfillCandidate>(
@@ -6553,8 +6561,10 @@ mod tests {
     use chrono::Timelike;
     use flate2::{Compression, write::GzEncoder};
     use serde_json::Value;
+    use sqlx::error::{DatabaseError, ErrorKind};
     use sqlx::{Connection, SqliteConnection, SqlitePool};
     use std::{
+        borrow::Cow,
         fs,
         path::{Path, PathBuf},
         sync::Arc,
@@ -6670,6 +6680,46 @@ mod tests {
 
     fn sqlite_url_for_path(path: &Path) -> String {
         format!("sqlite://{}", path.to_string_lossy())
+    }
+
+    #[derive(Debug)]
+    struct FakeSqliteCodeDatabaseError {
+        message: &'static str,
+        code: &'static str,
+    }
+
+    impl std::fmt::Display for FakeSqliteCodeDatabaseError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.message)
+        }
+    }
+
+    impl std::error::Error for FakeSqliteCodeDatabaseError {}
+
+    impl DatabaseError for FakeSqliteCodeDatabaseError {
+        fn message(&self) -> &str {
+            self.message
+        }
+
+        fn code(&self) -> Option<Cow<'_, str>> {
+            Some(Cow::Borrowed(self.code))
+        }
+
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+
+        fn kind(&self) -> ErrorKind {
+            ErrorKind::Other
+        }
     }
 
     fn write_backfill_response_payload(path: &Path) {
@@ -9528,6 +9578,102 @@ mod tests {
         assert_eq!(summary_second.updated, 0);
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_usage_tokens_respects_snapshot_upper_bound() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("proxy-usage-backfill-snapshot");
+        let response_path = temp_dir.join("response.bin");
+        write_backfill_response_payload(&response_path);
+
+        let first_invoke_id = "proxy-backfill-snapshot-first";
+        let second_invoke_id = "proxy-backfill-snapshot-second";
+        insert_proxy_backfill_row(&pool, first_invoke_id, &response_path).await;
+        insert_proxy_backfill_row(&pool, second_invoke_id, &response_path).await;
+
+        let first_id: i64 =
+            sqlx::query_scalar("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(first_invoke_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query first id");
+        let second_id: i64 =
+            sqlx::query_scalar("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(second_invoke_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query second id");
+
+        let summary_first = backfill_proxy_usage_tokens_up_to_id(&pool, first_id)
+            .await
+            .expect("backfill up to first id should succeed");
+        assert_eq!(summary_first.scanned, 1);
+        assert_eq!(summary_first.updated, 1);
+
+        let first_total_tokens: Option<i64> =
+            sqlx::query_scalar("SELECT total_tokens FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(first_invoke_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query first row tokens");
+        let second_total_tokens: Option<i64> =
+            sqlx::query_scalar("SELECT total_tokens FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(second_invoke_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query second row tokens");
+        assert_eq!(first_total_tokens, Some(110));
+        assert_eq!(second_total_tokens, None);
+
+        let summary_second = backfill_proxy_usage_tokens_up_to_id(&pool, second_id)
+            .await
+            .expect("backfill up to second id should succeed");
+        assert_eq!(summary_second.scanned, 1);
+        assert_eq!(summary_second.updated, 1);
+
+        let second_total_tokens_after: Option<i64> =
+            sqlx::query_scalar("SELECT total_tokens FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(second_invoke_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query second row tokens after second backfill");
+        assert_eq!(second_total_tokens_after, Some(110));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn is_sqlite_lock_error_detects_structured_sqlite_codes() {
+        let busy_code_error = anyhow::Error::new(sqlx::Error::Database(Box::new(
+            FakeSqliteCodeDatabaseError {
+                message: "simulated sqlite driver failure",
+                code: "5",
+            },
+        )));
+        assert!(is_sqlite_lock_error(&busy_code_error));
+
+        let sqlite_busy_name_error = anyhow::Error::new(sqlx::Error::Database(Box::new(
+            FakeSqliteCodeDatabaseError {
+                message: "simulated sqlite driver failure",
+                code: "SQLITE_BUSY",
+            },
+        )));
+        assert!(is_sqlite_lock_error(&sqlite_busy_name_error));
+
+        let non_lock_error = anyhow::Error::new(sqlx::Error::Database(Box::new(
+            FakeSqliteCodeDatabaseError {
+                message: "simulated sqlite driver failure",
+                code: "SQLITE_CONSTRAINT",
+            },
+        )));
+        assert!(!is_sqlite_lock_error(&non_lock_error));
     }
 
     #[tokio::test]
