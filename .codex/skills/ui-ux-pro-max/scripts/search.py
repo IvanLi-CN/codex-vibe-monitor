@@ -17,6 +17,7 @@ Persistence (Master + Overrides pattern):
 import argparse
 import sys
 import io
+from pathlib import Path
 from core import CSV_CONFIG, AVAILABLE_STACKS, MAX_RESULTS, search, search_stack
 from design_system import generate_design_system, _slugify_path_segment
 
@@ -71,6 +72,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    if args.page and not args.persist:
+        parser.error("--page requires --persist")
+
+    if (args.persist or args.page or args.output_dir) and not args.design_system:
+        parser.error("--persist/--page/--output-dir can only be used with --design-system")
+
     # Design system takes priority
     if args.design_system:
         result = generate_design_system(
@@ -87,14 +94,16 @@ if __name__ == "__main__":
         if args.persist:
             project_name = args.project_name if args.project_name else args.query.upper()
             project_slug = _slugify_path_segment(project_name, "default")
+            base_output_dir = Path(args.output_dir).resolve() if args.output_dir else Path.cwd()
+            design_system_dir = base_output_dir / "design-system" / project_slug
             print("\n" + "=" * 60)
-            print(f"✅ Design system persisted to design-system/{project_slug}/")
-            print(f"   📄 design-system/{project_slug}/MASTER.md (Global Source of Truth)")
+            print(f"✅ Design system persisted to {design_system_dir}/")
+            print(f"   📄 {design_system_dir / 'MASTER.md'} (Global Source of Truth)")
             if args.page:
                 page_filename = _slugify_path_segment(args.page, "page")
-                print(f"   📄 design-system/{project_slug}/pages/{page_filename}.md (Page Overrides)")
+                print(f"   📄 {design_system_dir / 'pages' / f'{page_filename}.md'} (Page Overrides)")
             print("")
-            print(f"📖 Usage: When building a page, check design-system/{project_slug}/pages/[page].md first.")
+            print(f"📖 Usage: When building a page, check {design_system_dir / 'pages' / '[page].md'} first.")
             print(f"   If exists, its rules override MASTER.md. Otherwise, use MASTER.md.")
             print("=" * 60)
     # Stack search
