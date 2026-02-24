@@ -16,6 +16,7 @@ Usage:
 import csv
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from core import search, DATA_DIR
@@ -234,6 +235,16 @@ class DesignSystemGenerator:
             "decision_rules": reasoning.get("decision_rules", {}),
             "severity": reasoning.get("severity", "MEDIUM")
         }
+
+
+# ============ HELPERS ============
+def _slugify_path_segment(value: str, default: str) -> str:
+    """Normalize user-provided names into a safe single path segment."""
+    slug = value.strip().lower().replace(" ", "-").replace("_", "-")
+    slug = re.sub(r"[^a-z0-9-]+", "-", slug)
+    slug = re.sub(r"-{2,}", "-", slug)
+    slug = slug.strip("-.")
+    return slug or default
 
 
 # ============ OUTPUT FORMATTERS ============
@@ -505,7 +516,7 @@ def persist_design_system(design_system: dict, page: str = None, output_dir: str
     
     # Use project name for project-specific folder
     project_name = design_system.get("project_name", "default")
-    project_slug = project_name.lower().replace(' ', '-')
+    project_slug = _slugify_path_segment(project_name, "default")
     
     design_system_dir = base_dir / "design-system" / project_slug
     pages_dir = design_system_dir / "pages"
@@ -526,7 +537,8 @@ def persist_design_system(design_system: dict, page: str = None, output_dir: str
     
     # If page is specified, create page override file with intelligent content
     if page:
-        page_file = pages_dir / f"{page.lower().replace(' ', '-')}.md"
+        page_slug = _slugify_path_segment(page, "page")
+        page_file = pages_dir / f"{page_slug}.md"
         page_content = format_page_override_md(design_system, page, page_query)
         with open(page_file, 'w', encoding='utf-8') as f:
             f.write(page_content)
