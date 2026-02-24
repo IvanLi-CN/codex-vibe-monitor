@@ -276,7 +276,14 @@ def format_ascii_box(design_system: dict) -> str:
         words = text.split()
         lines = []
         current_line = prefix
+        max_content = max(1, width - 2 - len(prefix))
         for word in words:
+            while len(word) > max_content:
+                if current_line != prefix:
+                    lines.append(current_line)
+                    current_line = prefix
+                lines.append(prefix + word[:max_content])
+                word = word[max_content:]
             if len(current_line) + len(word) + 1 <= width - 2:
                 current_line += (" " if current_line != prefix else "") + word
             else:
@@ -345,7 +352,8 @@ def format_ascii_box(design_system: dict) -> str:
         for line in wrap_text(f"Best For: {typography.get('best_for', '')}", "|     ", BOX_WIDTH):
             lines.append(line.ljust(BOX_WIDTH) + "|")
     if typography.get("google_fonts_url"):
-        lines.append(f"|     Google Fonts: {typography.get('google_fonts_url', '')}".ljust(BOX_WIDTH) + "|")
+        for line in wrap_text(f"Google Fonts: {typography.get('google_fonts_url', '')}", "|     ", BOX_WIDTH):
+            lines.append(line.ljust(BOX_WIDTH) + "|")
     if typography.get("css_import"):
         lines.append(f"|     CSS Import: {typography.get('css_import', '')[:70]}...".ljust(BOX_WIDTH) + "|")
     lines.append("|" + " " * BOX_WIDTH + "|")
