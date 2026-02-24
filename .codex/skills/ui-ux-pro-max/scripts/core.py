@@ -90,6 +90,12 @@ _STACK_COLS = {
 }
 
 AVAILABLE_STACKS = list(STACK_CONFIG.keys())
+SHORT_TOKEN_ALLOWLIST = {"ui", "ux", "ai", "ar", "vr", "2d", "3d"}
+SHORT_QUERY_ALIASES = {
+    "ux": "usability accessibility navigation",
+    "ui": "interface layout design",
+    "ai": "artificial intelligence assistant",
+}
 
 
 # ============ BM25 IMPLEMENTATION ============
@@ -109,7 +115,7 @@ class BM25:
     def tokenize(self, text):
         """Lowercase, split, remove punctuation, filter short words"""
         text = re.sub(r'[^\w\s]', ' ', str(text).lower())
-        return [w for w in text.split() if len(w) > 2]
+        return [w for w in text.split() if len(w) > 2 or w in SHORT_TOKEN_ALLOWLIST]
 
     def fit(self, documents):
         """Build BM25 index from documents"""
@@ -190,6 +196,9 @@ def _search_csv(filepath, search_cols, output_cols, query, max_results):
 def detect_domain(query):
     """Auto-detect the most relevant domain from query"""
     query_lower = query.lower()
+    query_tokens = re.findall(r"[a-z0-9]+", query_lower)
+    query_token_set = set(query_tokens)
+    query_norm = " ".join(query_tokens)
 
     domain_keywords = {
         "color": ["color", "palette", "hex", "#", "rgb"],
@@ -204,7 +213,28 @@ def detect_domain(query):
         "web": ["aria", "focus", "outline", "semantic", "virtualize", "autocomplete", "form", "input type", "preconnect"]
     }
 
-    scores = {domain: sum(1 for kw in keywords if kw in query_lower) for domain, keywords in domain_keywords.items()}
+    scores = {}
+    for domain, keywords in domain_keywords.items():
+        score = 0
+        for kw in keywords:
+            if kw == "#" and "#" in query_lower:
+                score += 1
+                continue
+
+            kw_tokens = re.findall(r"[a-z0-9]+", kw.lower())
+            if not kw_tokens:
+                continue
+            if len(kw_tokens) == 1:
+                if kw_tokens[0] in query_token_set:
+                    score += 1
+                continue
+
+            phrase = " ".join(kw_tokens)
+            if phrase in query_norm:
+                score += 1
+
+        scores[domain] = score
+
     best = max(scores, key=scores.get)
     return best if scores[best] > 0 else "style"
 
@@ -221,6 +251,10 @@ def search(query, domain=None, max_results=MAX_RESULTS):
         return {"error": f"File not found: {filepath}", "domain": domain}
 
     results = _search_csv(filepath, config["search_cols"], config["output_cols"], query, max_results)
+    normalized_query = " ".join(re.findall(r"[a-z0-9]+", str(query).lower()))
+    if not results and normalized_query in SHORT_QUERY_ALIASES:
+        alias_query = SHORT_QUERY_ALIASES[normalized_query]
+        results = _search_csv(filepath, config["search_cols"], config["output_cols"], alias_query, max_results)
 
     return {
         "domain": domain,
