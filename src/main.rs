@@ -32,7 +32,7 @@ use chrono_tz::{Asia::Shanghai, Tz};
 use clap::Parser;
 use dotenvy::dotenv;
 use flate2::read::GzDecoder;
-use futures_util::{StreamExt, TryStreamExt, stream};
+use futures_util::{StreamExt, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Url, header};
@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{
     FromRow, Pool, QueryBuilder, Row, Sqlite,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::fs;
 use std::io::{self, Read, Write};
@@ -48,7 +48,7 @@ use tokio::{
     net::TcpListener,
     sync::{Mutex, RwLock, Semaphore, broadcast, mpsc},
     task::JoinHandle,
-    time::{MissedTickBehavior, interval, timeout},
+    time::{MissedTickBehavior, interval, sleep, timeout},
 };
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_util::sync::CancellationToken;
@@ -66,6 +66,10 @@ const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
+const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
+const BACKFILL_BATCH_SIZE: i64 = 200;
+const BACKFILL_LOCK_RETRY_MAX_ATTEMPTS: u32 = 2;
+const BACKFILL_LOCK_RETRY_DELAY_SECS: u64 = 3;
 const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
 const DEFAULT_PROXY_RAW_RETENTION_DAYS: u64 = 7;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
@@ -168,9 +172,10 @@ async fn main() -> Result<()> {
 
     let database_url = config.database_url();
     ensure_db_directory(&config.database_path)?;
-    let connect_opts = SqliteConnectOptions::from_str(&database_url)
-        .context("invalid sqlite database url")?
-        .create_if_missing(true);
+    let connect_opts = build_sqlite_connect_options(
+        &database_url,
+        Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+    )?;
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(connect_opts)
@@ -179,7 +184,7 @@ async fn main() -> Result<()> {
 
     ensure_schema(&pool).await?;
     if config.proxy_usage_backfill_on_startup {
-        let summary = backfill_proxy_usage_tokens(&pool).await?;
+        let summary = run_backfill_with_retry(&pool).await?;
         info!(
             scanned = summary.scanned,
             updated = summary.updated,
@@ -4428,87 +4433,194 @@ async fn persist_proxy_capture_record(
 }
 
 async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfillSummary> {
-    let mut candidates = sqlx::query_as::<_, ProxyUsageBackfillCandidate>(
+    let snapshot_max_id: i64 = sqlx::query_scalar(
         r#"
-        SELECT id, response_raw_path, payload
+        SELECT COALESCE(MAX(id), 0)
         FROM codex_invocations
         WHERE source = ?1
           AND status = 'success'
           AND total_tokens IS NULL
           AND response_raw_path IS NOT NULL
-        ORDER BY id ASC
         "#,
     )
     .bind(SOURCE_PROXY)
-    .fetch(pool);
+    .fetch_one(pool)
+    .await?;
 
+    backfill_proxy_usage_tokens_up_to_id(pool, snapshot_max_id).await
+}
+
+async fn backfill_proxy_usage_tokens_up_to_id(
+    pool: &Pool<Sqlite>,
+    snapshot_max_id: i64,
+) -> Result<ProxyUsageBackfillSummary> {
     let mut summary = ProxyUsageBackfillSummary::default();
-    while let Some(candidate) = candidates.try_next().await? {
-        summary.scanned += 1;
-        let raw_response = match fs::read(&candidate.response_raw_path) {
-            Ok(content) => content,
-            Err(err) => {
-                summary.skipped_missing_file += 1;
-                warn!(
-                    id = candidate.id,
-                    path = %candidate.response_raw_path,
-                    error = %err,
-                    "proxy usage backfill skipped because response raw file is unavailable"
-                );
+    let mut last_seen_id = 0_i64;
+    loop {
+        let candidates = sqlx::query_as::<_, ProxyUsageBackfillCandidate>(
+            r#"
+            SELECT id, response_raw_path, payload
+            FROM codex_invocations
+            WHERE source = ?1
+              AND status = 'success'
+              AND total_tokens IS NULL
+              AND response_raw_path IS NOT NULL
+              AND id > ?2
+              AND id <= ?3
+            ORDER BY id ASC
+            LIMIT ?4
+            "#,
+        )
+        .bind(SOURCE_PROXY)
+        .bind(last_seen_id)
+        .bind(snapshot_max_id)
+        .bind(BACKFILL_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        let mut updates = Vec::new();
+        for candidate in candidates {
+            last_seen_id = candidate.id;
+            summary.scanned += 1;
+
+            let raw_response = match fs::read(&candidate.response_raw_path) {
+                Ok(content) => content,
+                Err(err) => {
+                    summary.skipped_missing_file += 1;
+                    warn!(
+                        id = candidate.id,
+                        path = %candidate.response_raw_path,
+                        error = %err,
+                        "proxy usage backfill skipped because response raw file is unavailable"
+                    );
+                    continue;
+                }
+            };
+
+            let (target, is_stream) = parse_proxy_capture_summary(candidate.payload.as_deref());
+            let (payload_for_parse, decode_error) =
+                decode_response_payload_for_usage(&raw_response, None);
+            let response_info =
+                parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream, None);
+            let usage = response_info.usage;
+            let has_usage = usage.total_tokens.is_some()
+                || usage.input_tokens.is_some()
+                || usage.output_tokens.is_some()
+                || usage.cache_input_tokens.is_some()
+                || usage.reasoning_tokens.is_some();
+            if !has_usage {
+                if decode_error.is_some() {
+                    summary.skipped_decode_error += 1;
+                } else {
+                    summary.skipped_without_usage += 1;
+                }
                 continue;
             }
-        };
 
-        let (target, is_stream) = parse_proxy_capture_summary(candidate.payload.as_deref());
-        let (payload_for_parse, decode_error) =
-            decode_response_payload_for_usage(&raw_response, None);
-        let response_info =
-            parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream, None);
-        let usage = response_info.usage;
-        let has_usage = usage.total_tokens.is_some()
-            || usage.input_tokens.is_some()
-            || usage.output_tokens.is_some()
-            || usage.cache_input_tokens.is_some()
-            || usage.reasoning_tokens.is_some();
-        if !has_usage {
-            if decode_error.is_some() {
-                summary.skipped_decode_error += 1;
-            } else {
-                summary.skipped_without_usage += 1;
-            }
+            updates.push(ProxyUsageBackfillUpdate {
+                id: candidate.id,
+                usage,
+            });
+        }
+
+        if updates.is_empty() {
             continue;
         }
 
-        let affected = sqlx::query(
-            r#"
-            UPDATE codex_invocations
-            SET input_tokens = ?1,
-                output_tokens = ?2,
-                cache_input_tokens = ?3,
-                reasoning_tokens = ?4,
-                total_tokens = ?5
-            WHERE id = ?6
-              AND source = ?7
-              AND total_tokens IS NULL
-            "#,
-        )
-        .bind(usage.input_tokens)
-        .bind(usage.output_tokens)
-        .bind(usage.cache_input_tokens)
-        .bind(usage.reasoning_tokens)
-        .bind(usage.total_tokens)
-        .bind(candidate.id)
-        .bind(SOURCE_PROXY)
-        .execute(pool)
-        .await?
-        .rows_affected();
-
-        if affected > 0 {
-            summary.updated += 1;
+        let mut tx = pool.begin().await?;
+        let mut updated_this_batch = 0_u64;
+        for update in updates {
+            let affected = sqlx::query(
+                r#"
+                UPDATE codex_invocations
+                SET input_tokens = ?1,
+                    output_tokens = ?2,
+                    cache_input_tokens = ?3,
+                    reasoning_tokens = ?4,
+                    total_tokens = ?5
+                WHERE id = ?6
+                  AND source = ?7
+                  AND total_tokens IS NULL
+                "#,
+            )
+            .bind(update.usage.input_tokens)
+            .bind(update.usage.output_tokens)
+            .bind(update.usage.cache_input_tokens)
+            .bind(update.usage.reasoning_tokens)
+            .bind(update.usage.total_tokens)
+            .bind(update.id)
+            .bind(SOURCE_PROXY)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            updated_this_batch += affected;
         }
+        tx.commit().await?;
+        summary.updated += updated_this_batch;
     }
 
     Ok(summary)
+}
+
+async fn run_backfill_with_retry(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfillSummary> {
+    let mut attempt = 1_u32;
+    loop {
+        match backfill_proxy_usage_tokens(pool).await {
+            Ok(summary) => return Ok(summary),
+            Err(err)
+                if attempt < BACKFILL_LOCK_RETRY_MAX_ATTEMPTS && is_sqlite_lock_error(&err) =>
+            {
+                warn!(
+                    attempt,
+                    max_attempts = BACKFILL_LOCK_RETRY_MAX_ATTEMPTS,
+                    retry_delay_secs = BACKFILL_LOCK_RETRY_DELAY_SECS,
+                    error = %err,
+                    "proxy usage startup backfill hit sqlite lock; retrying"
+                );
+                attempt += 1;
+                sleep(Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS)).await;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "proxy usage startup backfill failed after {attempt}/{} attempt(s)",
+                        BACKFILL_LOCK_RETRY_MAX_ATTEMPTS
+                    )
+                });
+            }
+        }
+    }
+}
+
+fn is_sqlite_lock_error(err: &anyhow::Error) -> bool {
+    if err.chain().any(|cause| {
+        let Some(sqlx_err) = cause.downcast_ref::<sqlx::Error>() else {
+            return false;
+        };
+        let sqlx::Error::Database(db_err) = sqlx_err else {
+            return false;
+        };
+        matches!(
+            db_err.code().as_deref(),
+            Some("5") | Some("6") | Some("SQLITE_BUSY") | Some("SQLITE_LOCKED")
+        )
+    }) {
+        return true;
+    }
+
+    err.chain().any(|cause| {
+        let message = cause.to_string().to_ascii_lowercase();
+        message.contains("database is locked")
+            || message.contains("database table is locked")
+            || message.contains("sqlite_busy")
+            || message.contains("sqlite_locked")
+            || message.contains("(code: 5)")
+            || message.contains("(code: 6)")
+    })
 }
 
 fn parse_proxy_capture_summary(payload: Option<&str>) -> (ProxyCaptureTarget, bool) {
@@ -5261,6 +5373,18 @@ fn ensure_db_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn build_sqlite_connect_options(
+    database_url: &str,
+    busy_timeout: Duration,
+) -> Result<SqliteConnectOptions> {
+    let options = SqliteConnectOptions::from_str(database_url)
+        .context("invalid sqlite database url")?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(busy_timeout);
+    Ok(options)
+}
+
 #[derive(Debug, Clone)]
 struct AppState {
     config: AppConfig,
@@ -5807,6 +5931,12 @@ struct ProxyUsageBackfillCandidate {
     id: i64,
     response_raw_path: String,
     payload: Option<String>,
+}
+
+#[derive(Debug)]
+struct ProxyUsageBackfillUpdate {
+    id: i64,
+    usage: ParsedUsage,
 }
 
 #[derive(Debug, Deserialize)]
@@ -6431,8 +6561,15 @@ mod tests {
     use chrono::Timelike;
     use flate2::{Compression, write::GzEncoder};
     use serde_json::Value;
-    use sqlx::SqlitePool;
-    use std::{fs, path::PathBuf, sync::Arc, time::Duration};
+    use sqlx::error::{DatabaseError, ErrorKind};
+    use sqlx::{Connection, SqliteConnection, SqlitePool};
+    use std::{
+        borrow::Cow,
+        fs,
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::Duration,
+    };
     use tokio::net::TcpListener;
     use tokio::sync::{Semaphore, broadcast};
     use tokio::task::JoinHandle;
@@ -6529,6 +6666,97 @@ mod tests {
             snapshot_min_interval: Duration::from_secs(60),
             crs_stats: None,
         }
+    }
+
+    fn make_temp_test_dir(prefix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).expect("create temp test dir");
+        dir
+    }
+
+    fn sqlite_url_for_path(path: &Path) -> String {
+        format!("sqlite://{}", path.to_string_lossy())
+    }
+
+    #[derive(Debug)]
+    struct FakeSqliteCodeDatabaseError {
+        message: &'static str,
+        code: &'static str,
+    }
+
+    impl std::fmt::Display for FakeSqliteCodeDatabaseError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.message)
+        }
+    }
+
+    impl std::error::Error for FakeSqliteCodeDatabaseError {}
+
+    impl DatabaseError for FakeSqliteCodeDatabaseError {
+        fn message(&self) -> &str {
+            self.message
+        }
+
+        fn code(&self) -> Option<Cow<'_, str>> {
+            Some(Cow::Borrowed(self.code))
+        }
+
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+
+        fn kind(&self) -> ErrorKind {
+            ErrorKind::Other
+        }
+    }
+
+    fn write_backfill_response_payload(path: &Path) {
+        let raw = [
+            "event: response.completed",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":88,\"output_tokens\":22,\"total_tokens\":110,\"input_tokens_details\":{\"cached_tokens\":9},\"output_tokens_details\":{\"reasoning_tokens\":3}}}}",
+        ]
+        .join("\n");
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(raw.as_bytes())
+            .expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+        fs::write(path, compressed).expect("write response payload");
+    }
+
+    async fn insert_proxy_backfill_row(pool: &SqlitePool, invoke_id: &str, response_path: &Path) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response, response_raw_path
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-02-23 00:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(
+            "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":true,\"requestModel\":null,\"responseModel\":null,\"usageMissingReason\":null,\"requestParseError\":null}",
+        )
+        .bind("{}")
+        .bind(response_path.to_string_lossy().to_string())
+        .execute(pool)
+        .await
+        .expect("insert proxy row");
     }
 
     async fn test_state_with_openai_base(openai_base: Url) -> Arc<AppState> {
@@ -9265,69 +9493,82 @@ mod tests {
         let compressed = encoder.finish().expect("finish gzip payload");
         fs::write(&response_path, compressed).expect("write response payload");
 
-        sqlx::query(
-            r#"
-            INSERT INTO codex_invocations (
-                invoke_id, occurred_at, source, status, payload, raw_response, response_raw_path
+        let row_count = BACKFILL_BATCH_SIZE as usize + 5;
+        for index in 0..row_count {
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    invoke_id, occurred_at, source, status, payload, raw_response, response_raw_path
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "#,
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            "#,
-        )
-        .bind("proxy-backfill-test")
-        .bind("2026-02-23 00:00:00")
-        .bind(SOURCE_PROXY)
-        .bind("success")
-        .bind(
-            "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":true,\"requestModel\":null,\"responseModel\":null,\"usageMissingReason\":null,\"requestParseError\":null}",
-        )
-        .bind("{}")
-        .bind(response_path.to_string_lossy().to_string())
-        .execute(&pool)
-        .await
-        .expect("insert proxy row");
+            .bind(format!("proxy-backfill-test-{index}"))
+            .bind("2026-02-23 00:00:00")
+            .bind(SOURCE_PROXY)
+            .bind("success")
+            .bind(
+                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":true,\"requestModel\":null,\"responseModel\":null,\"usageMissingReason\":null,\"requestParseError\":null}",
+            )
+            .bind("{}")
+            .bind(response_path.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .expect("insert proxy row");
+        }
 
         let summary_first = backfill_proxy_usage_tokens(&pool)
             .await
             .expect("first backfill should succeed");
-        assert_eq!(summary_first.scanned, 1);
-        assert_eq!(summary_first.updated, 1);
+        assert_eq!(summary_first.scanned, row_count as u64);
+        assert_eq!(summary_first.updated, row_count as u64);
 
         let row = sqlx::query(
             r#"
-            SELECT input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens
+            SELECT
+              COUNT(*) AS total_rows,
+              SUM(CASE WHEN input_tokens = 88 THEN 1 ELSE 0 END) AS input_tokens_88,
+              SUM(CASE WHEN output_tokens = 22 THEN 1 ELSE 0 END) AS output_tokens_22,
+              SUM(CASE WHEN cache_input_tokens = 9 THEN 1 ELSE 0 END) AS cache_input_tokens_9,
+              SUM(CASE WHEN reasoning_tokens = 3 THEN 1 ELSE 0 END) AS reasoning_tokens_3,
+              SUM(CASE WHEN total_tokens = 110 THEN 1 ELSE 0 END) AS total_tokens_110
             FROM codex_invocations
-            WHERE invoke_id = ?1
-            LIMIT 1
+            WHERE source = ?1
             "#,
         )
-        .bind("proxy-backfill-test")
+        .bind(SOURCE_PROXY)
         .fetch_one(&pool)
         .await
-        .expect("fetch backfilled row");
+        .expect("fetch backfilled rows");
         assert_eq!(
-            row.try_get::<Option<i64>, _>("input_tokens")
-                .expect("read input_tokens"),
-            Some(88)
+            row.try_get::<i64, _>("total_rows")
+                .expect("read total_rows"),
+            row_count as i64
         );
         assert_eq!(
-            row.try_get::<Option<i64>, _>("output_tokens")
-                .expect("read output_tokens"),
-            Some(22)
+            row.try_get::<Option<i64>, _>("input_tokens_88")
+                .expect("read input_tokens_88"),
+            Some(row_count as i64)
         );
         assert_eq!(
-            row.try_get::<Option<i64>, _>("cache_input_tokens")
-                .expect("read cache_input_tokens"),
-            Some(9)
+            row.try_get::<Option<i64>, _>("output_tokens_22")
+                .expect("read output_tokens_22"),
+            Some(row_count as i64)
         );
         assert_eq!(
-            row.try_get::<Option<i64>, _>("reasoning_tokens")
-                .expect("read reasoning_tokens"),
-            Some(3)
+            row.try_get::<Option<i64>, _>("cache_input_tokens_9")
+                .expect("read cache_input_tokens_9"),
+            Some(row_count as i64)
         );
         assert_eq!(
-            row.try_get::<Option<i64>, _>("total_tokens")
-                .expect("read total_tokens"),
-            Some(110)
+            row.try_get::<Option<i64>, _>("reasoning_tokens_3")
+                .expect("read reasoning_tokens_3"),
+            Some(row_count as i64)
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("total_tokens_110")
+                .expect("read total_tokens_110"),
+            Some(row_count as i64)
         );
 
         let summary_second = backfill_proxy_usage_tokens(&pool)
@@ -9336,6 +9577,298 @@ mod tests {
         assert_eq!(summary_second.scanned, 0);
         assert_eq!(summary_second.updated, 0);
 
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_usage_tokens_respects_snapshot_upper_bound() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("proxy-usage-backfill-snapshot");
+        let response_path = temp_dir.join("response.bin");
+        write_backfill_response_payload(&response_path);
+
+        let first_invoke_id = "proxy-backfill-snapshot-first";
+        let second_invoke_id = "proxy-backfill-snapshot-second";
+        insert_proxy_backfill_row(&pool, first_invoke_id, &response_path).await;
+        insert_proxy_backfill_row(&pool, second_invoke_id, &response_path).await;
+
+        let first_id: i64 =
+            sqlx::query_scalar("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(first_invoke_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query first id");
+        let second_id: i64 =
+            sqlx::query_scalar("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(second_invoke_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query second id");
+
+        let summary_first = backfill_proxy_usage_tokens_up_to_id(&pool, first_id)
+            .await
+            .expect("backfill up to first id should succeed");
+        assert_eq!(summary_first.scanned, 1);
+        assert_eq!(summary_first.updated, 1);
+
+        let first_total_tokens: Option<i64> =
+            sqlx::query_scalar("SELECT total_tokens FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(first_invoke_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query first row tokens");
+        let second_total_tokens: Option<i64> =
+            sqlx::query_scalar("SELECT total_tokens FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(second_invoke_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query second row tokens");
+        assert_eq!(first_total_tokens, Some(110));
+        assert_eq!(second_total_tokens, None);
+
+        let summary_second = backfill_proxy_usage_tokens_up_to_id(&pool, second_id)
+            .await
+            .expect("backfill up to second id should succeed");
+        assert_eq!(summary_second.scanned, 1);
+        assert_eq!(summary_second.updated, 1);
+
+        let second_total_tokens_after: Option<i64> =
+            sqlx::query_scalar("SELECT total_tokens FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(second_invoke_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query second row tokens after second backfill");
+        assert_eq!(second_total_tokens_after, Some(110));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn is_sqlite_lock_error_detects_structured_sqlite_codes() {
+        let busy_code_error = anyhow::Error::new(sqlx::Error::Database(Box::new(
+            FakeSqliteCodeDatabaseError {
+                message: "simulated sqlite driver failure",
+                code: "5",
+            },
+        )));
+        assert!(is_sqlite_lock_error(&busy_code_error));
+
+        let sqlite_busy_name_error = anyhow::Error::new(sqlx::Error::Database(Box::new(
+            FakeSqliteCodeDatabaseError {
+                message: "simulated sqlite driver failure",
+                code: "SQLITE_BUSY",
+            },
+        )));
+        assert!(is_sqlite_lock_error(&sqlite_busy_name_error));
+
+        let non_lock_error = anyhow::Error::new(sqlx::Error::Database(Box::new(
+            FakeSqliteCodeDatabaseError {
+                message: "simulated sqlite driver failure",
+                code: "SQLITE_CONSTRAINT",
+            },
+        )));
+        assert!(!is_sqlite_lock_error(&non_lock_error));
+    }
+
+    #[tokio::test]
+    async fn build_sqlite_connect_options_enforces_wal_and_busy_timeout_defaults() {
+        let temp_dir = make_temp_test_dir("sqlite-connect-options");
+        let db_path = temp_dir.join("options.db");
+        let db_url = sqlite_url_for_path(&db_path);
+
+        let options = build_sqlite_connect_options(
+            &db_url,
+            Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+        )
+        .expect("build sqlite connect options");
+        let mut conn = SqliteConnection::connect_with(&options)
+            .await
+            .expect("connect sqlite with options");
+
+        let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode;")
+            .fetch_one(&mut conn)
+            .await
+            .expect("read pragma journal_mode");
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+
+        let busy_timeout_ms: i64 = sqlx::query_scalar("PRAGMA busy_timeout;")
+            .fetch_one(&mut conn)
+            .await
+            .expect("read pragma busy_timeout");
+        assert_eq!(
+            busy_timeout_ms,
+            (DEFAULT_SQLITE_BUSY_TIMEOUT_SECS * 1_000) as i64
+        );
+
+        conn.close().await.expect("close sqlite connection");
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn run_backfill_with_retry_succeeds_after_lock_release() {
+        let temp_dir = make_temp_test_dir("proxy-backfill-retry-success");
+        let db_path = temp_dir.join("lock-success.db");
+        let db_url = sqlite_url_for_path(&db_path);
+        let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
+            .expect("build sqlite options");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(connect_options)
+            .await
+            .expect("connect sqlite pool");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let response_path = temp_dir.join("response.bin");
+        write_backfill_response_payload(&response_path);
+        insert_proxy_backfill_row(&pool, "proxy-lock-retry-success", &response_path).await;
+
+        let mut lock_conn = SqliteConnection::connect(&db_url)
+            .await
+            .expect("connect lock holder");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut lock_conn)
+            .await
+            .expect("acquire sqlite write lock");
+
+        let started = Instant::now();
+        let pool_for_task = pool.clone();
+        let backfill_task =
+            tokio::spawn(async move { run_backfill_with_retry(&pool_for_task).await });
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        sqlx::query("COMMIT")
+            .execute(&mut lock_conn)
+            .await
+            .expect("release sqlite write lock");
+
+        let summary = backfill_task
+            .await
+            .expect("join backfill task")
+            .expect("backfill should succeed after retry");
+        assert!(
+            started.elapsed() >= Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
+            "expected retry delay to be applied"
+        );
+        assert_eq!(summary.scanned, 1);
+        assert_eq!(summary.updated, 1);
+
+        let total_tokens: Option<i64> =
+            sqlx::query_scalar("SELECT total_tokens FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-lock-retry-success")
+                .fetch_one(&pool)
+                .await
+                .expect("query backfilled row");
+        assert_eq!(total_tokens, Some(110));
+
+        pool.close().await;
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn run_backfill_with_retry_fails_when_lock_persists() {
+        let temp_dir = make_temp_test_dir("proxy-backfill-retry-fail");
+        let db_path = temp_dir.join("lock-fail.db");
+        let db_url = sqlite_url_for_path(&db_path);
+        let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
+            .expect("build sqlite options");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(connect_options)
+            .await
+            .expect("connect sqlite pool");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let response_path = temp_dir.join("response.bin");
+        write_backfill_response_payload(&response_path);
+        insert_proxy_backfill_row(&pool, "proxy-lock-retry-fail", &response_path).await;
+
+        let mut lock_conn = SqliteConnection::connect(&db_url)
+            .await
+            .expect("connect lock holder");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut lock_conn)
+            .await
+            .expect("acquire sqlite write lock");
+
+        let started = Instant::now();
+        let pool_for_task = pool.clone();
+        let backfill_task =
+            tokio::spawn(async move { run_backfill_with_retry(&pool_for_task).await });
+        let err = backfill_task
+            .await
+            .expect("join backfill task")
+            .expect_err("backfill should fail after lock retry exhaustion");
+        assert!(
+            started.elapsed() >= Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
+            "expected retry delay before final failure"
+        );
+        assert!(
+            err.to_string().contains("failed after 2/2 attempt(s)"),
+            "expected retry exhaustion context in error: {err:?}"
+        );
+        assert!(is_sqlite_lock_error(&err));
+
+        let total_tokens: Option<i64> =
+            sqlx::query_scalar("SELECT total_tokens FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-lock-retry-fail")
+                .fetch_one(&pool)
+                .await
+                .expect("query locked row");
+        assert_eq!(total_tokens, None);
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut lock_conn)
+            .await
+            .expect("rollback lock holder");
+        pool.close().await;
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn run_backfill_with_retry_does_not_retry_non_lock_errors() {
+        let temp_dir = make_temp_test_dir("proxy-backfill-retry-non-lock");
+        let db_path = temp_dir.join("non-lock.db");
+        let db_url = sqlite_url_for_path(&db_path);
+        let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
+            .expect("build sqlite options");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(connect_options)
+            .await
+            .expect("connect sqlite pool");
+
+        // Intentionally skip schema initialization to force a deterministic non-lock error.
+        let started = Instant::now();
+        let err = run_backfill_with_retry(&pool)
+            .await
+            .expect_err("backfill should fail immediately on non-lock errors");
+        assert!(
+            started.elapsed() < Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
+            "non-lock errors should not wait for retry delay"
+        );
+        assert!(
+            err.to_string().contains("failed after 1/2 attempt(s)"),
+            "expected single-attempt context in error: {err:?}"
+        );
+        assert!(!is_sqlite_lock_error(&err));
+        assert!(err.chain().any(|cause| {
+            cause
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("no such table")
+        }));
+
+        pool.close().await;
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
