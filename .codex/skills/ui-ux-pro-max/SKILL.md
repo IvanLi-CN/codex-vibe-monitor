@@ -83,6 +83,7 @@ This creates:
 
 - `design-system/<project-slug>/MASTER.md` — Global Source of Truth with all design rules
 - `design-system/<project-slug>/pages/` — Folder for page-specific overrides
+- `design-system/` is treated as local generated output in this repo and is ignored by default
 
 **With page-specific override:**
 

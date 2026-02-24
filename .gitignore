@@ -6,6 +6,7 @@
 /web/node_modules
 /web/dist
 /web/.vite
+design-system/
 .codex/*
 !.codex/skills/
 !.codex/skills/**
