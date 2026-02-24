@@ -8,5 +8,5 @@
 
 | ID    | Title                                                 | Status | Spec                                    | Last       | Notes  |
 | ----- | ----------------------------------------------------- | ------ | --------------------------------------- | ---------- | ------ |
-| gwpsb | 线上失败请求分类治理与可观测性增强                    | 待实现 | `gwpsb-proxy-failure-hardening/SPEC.md` | 2026-02-24 |        |
+| gwpsb | 线上失败请求分类治理与可观测性增强                    | 已完成 | `gwpsb-proxy-failure-hardening/SPEC.md` | 2026-02-24 | PR #51 |
 | q86c7 | 接入 ui-ux-pro-max（Codex）并修正 .gitignore 追踪策略 | 已完成 | `q86c7-setup-uipro-codex/SPEC.md`       | 2026-02-24 | PR #50 |

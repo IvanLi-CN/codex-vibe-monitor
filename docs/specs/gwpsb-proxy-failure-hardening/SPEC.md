@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-02-24
 - Last: 2026-02-24
 
@@ -102,10 +102,10 @@
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: schema 与分类逻辑落地，新增 backfill。
-- [ ] M2: 错误分布 scope 与失败摘要接口落地。
-- [ ] M3: 前端统计页接入 scope 与失败摘要。
-- [ ] M4: 测试、验证、提交、PR 与收敛。
+- [x] M1: schema 与分类逻辑落地，新增 backfill。
+- [x] M2: 错误分布 scope 与失败摘要接口落地。
+- [x] M3: 前端统计页接入 scope 与失败摘要。
+- [x] M4: 测试、验证、提交、PR 与收敛。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -117,3 +117,5 @@
 ## 变更记录（Change log）
 
 - 2026-02-24: 初始化规格并冻结实现范围与验收标准。
+- 2026-02-24: 完成失败分类与统计口径改造，PR #51 进入收敛。
+- 2026-02-24: 修复历史回填 `is_actionable` 误判与 Label Gate 读取陈旧标签上下文问题。
