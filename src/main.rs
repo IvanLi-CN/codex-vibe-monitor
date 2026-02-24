@@ -2589,17 +2589,25 @@ fn resolve_failure_classification(
     is_actionable: Option<i64>,
 ) -> FailureClassification {
     let derived = classify_invocation_failure(status, error_message);
-    let resolved_class = failure_class
-        .and_then(FailureClass::from_db_str)
-        .unwrap_or(derived.failure_class);
+    let stored_class = failure_class.and_then(FailureClass::from_db_str);
+    let resolved_class = match stored_class {
+        // Legacy rows can carry migration defaults (`none`/`0`) for non-success records.
+        Some(FailureClass::None) if derived.failure_class != FailureClass::None => {
+            derived.failure_class
+        }
+        Some(value) => value,
+        None => derived.failure_class,
+    };
     let resolved_kind = failure_kind
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(ToOwned::to_owned)
         .or(derived.failure_kind);
+    let expected_actionable = resolved_class == FailureClass::ServiceFailure;
     let resolved_actionable = is_actionable
         .map(|value| value != 0)
-        .unwrap_or(resolved_class == FailureClass::ServiceFailure);
+        .filter(|value| *value == expected_actionable)
+        .unwrap_or(expected_actionable);
 
     FailureClassification {
         failure_kind: resolved_kind,
@@ -7162,6 +7170,36 @@ mod tests {
             Some(
                 "[failed_contact_upstream] failed to contact upstream: error sending request for url (https://example.com/v1/responses)",
             ),
+        );
+        assert_eq!(result.failure_class, FailureClass::ServiceFailure);
+        assert!(result.is_actionable);
+        assert_eq!(
+            result.failure_kind.as_deref(),
+            Some("failed_contact_upstream")
+        );
+    }
+
+    #[test]
+    fn resolve_failure_classification_recomputes_actionable_for_missing_legacy_class() {
+        let result = resolve_failure_classification(
+            Some("http_502"),
+            Some("[failed_contact_upstream] upstream unavailable"),
+            None,
+            None,
+            Some(0),
+        );
+        assert_eq!(result.failure_class, FailureClass::ServiceFailure);
+        assert!(result.is_actionable);
+    }
+
+    #[test]
+    fn resolve_failure_classification_overrides_legacy_default_none_for_failures() {
+        let result = resolve_failure_classification(
+            Some("http_502"),
+            Some("[failed_contact_upstream] upstream unavailable"),
+            None,
+            Some(FailureClass::None.as_str()),
+            Some(0),
         );
         assert_eq!(result.failure_class, FailureClass::ServiceFailure);
         assert!(result.is_actionable);
