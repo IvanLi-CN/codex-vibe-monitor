@@ -14,6 +14,7 @@ Usage:
 """
 
 import csv
+import hashlib
 import json
 import os
 import re
@@ -240,11 +241,19 @@ class DesignSystemGenerator:
 # ============ HELPERS ============
 def _slugify_path_segment(value: str, default: str) -> str:
     """Normalize user-provided names into a safe single path segment."""
-    slug = value.strip().lower().replace(" ", "-").replace("_", "-")
+    raw_value = str(value or "")
+    slug = raw_value.strip().lower().replace(" ", "-").replace("_", "-")
     slug = re.sub(r"[^a-z0-9-]+", "-", slug)
     slug = re.sub(r"-{2,}", "-", slug)
     slug = slug.strip("-.")
-    return slug or default
+    if slug:
+        return slug
+
+    if raw_value.strip():
+        digest = hashlib.sha256(raw_value.encode("utf-8")).hexdigest()[:8]
+        return f"{default}-{digest}"
+
+    return default
 
 
 # ============ OUTPUT FORMATTERS ============
@@ -568,7 +577,7 @@ def format_master_md(design_system: dict) -> str:
     # Logic header
     lines.append("# Design System Master File")
     lines.append("")
-    lines.append("> **LOGIC:** When building a specific page, first check `design-system/pages/[page-name].md`.")
+    lines.append("> **LOGIC:** When building a specific page, first check `./pages/[page-name].md`.")
     lines.append("> If that file exists, its rules **override** this Master file.")
     lines.append("> If not, strictly follow the rules below.")
     lines.append("")
@@ -831,7 +840,7 @@ def format_page_override_md(design_system: dict, page_name: str, page_query: str
     lines.append(f"> **Generated:** {timestamp}")
     lines.append(f"> **Page Type:** {page_overrides.get('page_type', 'General')}")
     lines.append("")
-    lines.append("> ⚠️ **IMPORTANT:** Rules in this file **override** the Master file (`design-system/MASTER.md`).")
+    lines.append("> ⚠️ **IMPORTANT:** Rules in this file **override** the Master file (`../MASTER.md`).")
     lines.append("> Only deviations from the Master are documented here. For all other rules, refer to the Master.")
     lines.append("")
     lines.append("---")
