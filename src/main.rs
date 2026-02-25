@@ -53,7 +53,7 @@ use tokio::{
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_util::sync::CancellationToken;
 use tower_http::{
-    cors::CorsLayer,
+    cors::{AllowOrigin, Any, CorsLayer},
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
@@ -103,6 +103,7 @@ const DEFAULT_XY_LEGACY_POLL_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
 const DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP: bool = true;
+const ENV_CORS_ALLOWED_ORIGINS: &str = "XY_CORS_ALLOWED_ORIGINS";
 const PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.3-codex",
     "gpt-5.2-codex",
@@ -386,6 +387,7 @@ async fn spawn_http_server(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> Result<JoinHandle<()>> {
+    let cors_layer = build_cors_layer(&state.config);
     let mut router = Router::new()
         .route("/health", get(health_check))
         .route("/api/version", get(get_versions))
@@ -409,7 +411,7 @@ async fn spawn_http_server(
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
         .with_state(state.clone())
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive());
+        .layer(cors_layer);
 
     // Optionally attach headers in the future; standard EventSource cannot read headers
 
@@ -2022,11 +2024,11 @@ async fn list_invocations(
     let mut query = QueryBuilder::new(
         "SELECT id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, \
          cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, \
-         COALESCE(json_extract(payload, '$.failureKind'), failure_kind) AS failure_kind, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
+         COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind, \
          failure_class, is_actionable, \
-         json_extract(payload, '$.endpoint') AS endpoint, \
-         json_extract(payload, '$.requesterIp') AS requester_ip, \
-         json_extract(payload, '$.codexSessionId') AS codex_session_id, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.codexSessionId') END AS codex_session_id, \
          cost_estimated, price_version, \
          request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
          response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
@@ -5802,6 +5804,102 @@ async fn get_versions(
     Ok(Json(VersionResponse { backend, frontend }))
 }
 
+fn build_cors_layer(config: &AppConfig) -> CorsLayer {
+    let allowed = config
+        .cors_allowed_origins
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let allow_origin = AllowOrigin::predicate(move |origin, _request| {
+        let Ok(origin_raw) = origin.to_str() else {
+            return false;
+        };
+        origin_allowed(origin_raw, &allowed)
+    });
+    CorsLayer::new()
+        .allow_origin(allow_origin)
+        .allow_methods(Any)
+        .allow_headers(Any)
+}
+
+fn origin_allowed(origin_raw: &str, configured: &HashSet<String>) -> bool {
+    let Some(origin) = normalize_cors_origin(origin_raw) else {
+        return false;
+    };
+    if configured.contains(&origin) {
+        return true;
+    }
+    is_loopback_origin(origin_raw)
+}
+
+fn is_loopback_origin(origin_raw: &str) -> bool {
+    let Ok(origin) = Url::parse(origin_raw) else {
+        return false;
+    };
+    if !matches!(origin.scheme(), "http" | "https") {
+        return false;
+    }
+    origin
+        .host_str()
+        .map(is_loopback_authority_host)
+        .unwrap_or(false)
+}
+
+fn parse_cors_allowed_origins_env(name: &str) -> Result<Vec<String>> {
+    match env::var(name) {
+        Ok(raw) => parse_cors_allowed_origins(&raw),
+        Err(env::VarError::NotPresent) => Ok(Vec::new()),
+        Err(err) => Err(anyhow!("failed to read {name}: {err}")),
+    }
+}
+
+fn parse_cors_allowed_origins(raw: &str) -> Result<Vec<String>> {
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+    for candidate in raw.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+        let normalized = normalize_cors_origin(candidate)
+            .ok_or_else(|| anyhow!("invalid {ENV_CORS_ALLOWED_ORIGINS} entry: {candidate}"))?;
+        if seen.insert(normalized.clone()) {
+            entries.push(normalized);
+        }
+    }
+    Ok(entries)
+}
+
+fn normalize_cors_origin(origin_raw: &str) -> Option<String> {
+    let origin = Url::parse(origin_raw).ok()?;
+    if !matches!(origin.scheme(), "http" | "https") {
+        return None;
+    }
+    if origin.cannot_be_a_base()
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+    {
+        return None;
+    }
+    if origin.path() != "/" {
+        return None;
+    }
+
+    let host = origin.host_str()?;
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_ascii_lowercase()
+    };
+    let scheme = origin.scheme().to_ascii_lowercase();
+    let port = origin.port();
+    let default_port = default_port_for_scheme(&scheme);
+
+    if port.is_none() || port == default_port {
+        Some(format!("{scheme}://{host}"))
+    } else {
+        Some(format!("{scheme}://{host}:{}", port?))
+    }
+}
+
 fn is_models_list_path(path: &str) -> bool {
     path == "/v1/models"
 }
@@ -7151,6 +7249,7 @@ struct AppConfig {
     max_parallel_polls: usize,
     shared_connection_parallelism: usize,
     http_bind: SocketAddr,
+    cors_allowed_origins: Vec<String>,
     list_limit_max: usize,
     user_agent: String,
     static_dir: Option<PathBuf>,
@@ -7308,6 +7407,7 @@ impl AppConfig {
                 .context("invalid XY_HTTP_BIND socket address")?
                 .unwrap_or_else(|| "127.0.0.1:8080".parse().expect("valid default address"))
         };
+        let cors_allowed_origins = parse_cors_allowed_origins_env(ENV_CORS_ALLOWED_ORIGINS)?;
         let list_limit_max = overrides
             .list_limit_max
             .or_else(|| {
@@ -7396,6 +7496,7 @@ impl AppConfig {
             max_parallel_polls,
             shared_connection_parallelism,
             http_bind,
+            cors_allowed_origins,
             list_limit_max,
             user_agent,
             static_dir,
@@ -7633,6 +7734,7 @@ mod tests {
             max_parallel_polls: 2,
             shared_connection_parallelism: 1,
             http_bind: "127.0.0.1:38080".parse().expect("valid socket address"),
+            cors_allowed_origins: Vec::new(),
             list_limit_max: 100,
             user_agent: "codex-test".to_string(),
             static_dir: None,
@@ -8336,6 +8438,29 @@ mod tests {
         assert!(!request_may_have_body(&Method::GET, &with_length));
         with_length.insert(http_header::CONTENT_LENGTH, HeaderValue::from_static("10"));
         assert!(request_may_have_body(&Method::GET, &with_length));
+    }
+
+    #[test]
+    fn parse_cors_allowed_origins_normalizes_and_deduplicates() {
+        let parsed = parse_cors_allowed_origins(
+            "https://EXAMPLE.com:443, http://127.0.0.1:8080, https://example.com",
+        )
+        .expect("parse should succeed");
+        assert_eq!(
+            parsed,
+            vec![
+                "https://example.com".to_string(),
+                "http://127.0.0.1:8080".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn origin_allowed_accepts_loopback_and_configured_origins() {
+        let configured = HashSet::from(["https://api.example.com".to_string()]);
+        assert!(origin_allowed("http://127.0.0.1:60080", &configured));
+        assert!(origin_allowed("https://api.example.com", &configured));
+        assert!(!origin_allowed("https://evil.example.com", &configured));
     }
 
     #[test]
@@ -10757,6 +10882,58 @@ mod tests {
         );
         assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
         assert_eq!(record.codex_session_id.as_deref(), Some("sess-list-1"));
+    }
+
+    #[tokio::test]
+    async fn list_invocations_tolerates_malformed_payload_json() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind("proxy-context-malformed")
+        .bind("2026-02-25 10:01:00")
+        .bind(SOURCE_PROXY)
+        .bind("failed")
+        .bind("not-json")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert malformed payload invocation");
+
+        let Json(response) = list_invocations(
+            State(state),
+            Query(ListQuery {
+                limit: Some(10),
+                model: None,
+                status: None,
+            }),
+        )
+        .await
+        .expect("list invocations should tolerate malformed payload");
+
+        let record = response
+            .records
+            .into_iter()
+            .find(|item| item.invoke_id == "proxy-context-malformed")
+            .expect("inserted invocation should be present");
+        assert_eq!(record.endpoint, None);
+        assert_eq!(record.failure_kind, None);
+        assert_eq!(record.requester_ip, None);
+        assert_eq!(record.codex_session_id, None);
     }
 
     #[test]

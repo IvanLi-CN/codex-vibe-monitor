@@ -128,7 +128,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                 <span className="text-xs text-base-content/60">{t('table.column.latency')}</span>
               </div>
             </th>
-            <th className="w-22 whitespace-nowrap sm:w-28">
+            <th className="w-24 whitespace-nowrap sm:w-28">
               <div className="flex flex-col leading-tight">
                 <span>{t('table.column.model')}</span>
                 <span className="text-xs text-base-content/60">{t('table.column.costUsd')}</span>
