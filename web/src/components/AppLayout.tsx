@@ -225,14 +225,14 @@ export function AppLayout() {
 
             <button
               type="button"
-              className="btn btn-sm btn-ghost gap-2 border border-base-300/70 bg-base-100/75 hover:bg-base-200/75"
+              className="control-pill"
               onClick={toggleTheme}
               aria-label={t('app.theme.switcherAria')}
               title={themeSwitcherLabel}
             >
               <Icon
                 icon={isDarkTheme ? 'mdi:weather-night' : 'mdi:white-balance-sunny'}
-                className="h-4 w-4 text-primary"
+                className="h-[18px] w-[18px] text-primary"
                 aria-hidden
               />
               <span className="hidden md:inline">{themeLabel}</span>
@@ -244,13 +244,13 @@ export function AppLayout() {
             >
               <button
                 type="button"
-                className="btn btn-sm btn-ghost gap-2 border border-base-300/70 bg-base-100/75 hover:bg-base-200/75"
+                className="control-pill min-w-[6.75rem] justify-between"
                 aria-haspopup="listbox"
                 aria-expanded={languageMenuOpen}
                 aria-label={t('app.language.switcherAria')}
                 onClick={toggleLanguageMenu}
               >
-                <Icon icon="mdi:earth" className="h-5 w-5 text-base-content/70" aria-hidden />
+                <Icon icon="mdi:earth" className="h-[18px] w-[18px] text-base-content/75" aria-hidden />
                 <span className="hidden sm:inline">{activeChoice?.label}</span>
                 <Icon icon="mdi:chevron-down" className="h-4 w-4 text-base-content/60" aria-hidden />
               </button>

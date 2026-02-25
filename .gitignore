@@ -2,6 +2,9 @@
 .env
 .env.local
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 /node_modules
 /web/node_modules
 /web/dist
