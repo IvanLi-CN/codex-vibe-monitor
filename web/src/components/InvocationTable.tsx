@@ -166,7 +166,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                   </td>
                   <td>{record.model ?? FALLBACK_CELL}</td>
                   <td>
-                    <span className={`badge ${meta.className}`}>
+                    <span className={`badge whitespace-nowrap ${meta.className}`}>
                       {t(meta.key)}
                     </span>
                   </td>
