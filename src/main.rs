@@ -201,6 +201,15 @@ async fn main() -> Result<()> {
     } else {
         info!("proxy usage startup backfill is disabled");
     }
+    let prompt_cache_summary = backfill_proxy_prompt_cache_keys(&pool).await?;
+    info!(
+        scanned = prompt_cache_summary.scanned,
+        updated = prompt_cache_summary.updated,
+        skipped_missing_file = prompt_cache_summary.skipped_missing_file,
+        skipped_invalid_json = prompt_cache_summary.skipped_invalid_json,
+        skipped_missing_key = prompt_cache_summary.skipped_missing_key,
+        "proxy prompt cache key startup backfill finished"
+    );
     let failure_summary = backfill_failure_classification(&pool).await?;
     info!(
         scanned = failure_summary.scanned,
@@ -2028,7 +2037,7 @@ async fn list_invocations(
          COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind, \
          failure_class, is_actionable, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.codexSessionId') END AS codex_session_id, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
          cost_estimated, price_version, \
          request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
          response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
@@ -3648,7 +3657,7 @@ async fn proxy_openai_v1_capture_target(
     let raw_expires_at = compute_raw_expires_at(occurred_at_utc, state.config.proxy_raw_retention);
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let requester_ip = extract_requester_ip(&headers, peer_ip);
-    let header_codex_session_id = extract_codex_session_id_from_headers(&headers);
+    let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
 
     let req_read_started = Instant::now();
     let request_body_bytes = match read_request_body_with_limit(
@@ -3707,7 +3716,7 @@ async fn proxy_openai_v1_capture_target(
                     request_info.parse_error.as_deref(),
                     Some(read_err.failure_kind),
                     requester_ip.as_deref(),
-                    header_codex_session_id.as_deref(),
+                    header_prompt_cache_key.as_deref(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3740,10 +3749,10 @@ async fn proxy_openai_v1_capture_target(
         request_body_bytes,
         state.config.proxy_enforce_stream_include_usage,
     );
-    let codex_session_id = request_info
-        .codex_session_id
+    let prompt_cache_key = request_info
+        .prompt_cache_key
         .clone()
-        .or_else(|| header_codex_session_id.clone());
+        .or_else(|| header_prompt_cache_key.clone());
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let req_raw = store_raw_payload_file(&state.config, &invoke_id, "request", &upstream_body);
 
@@ -3817,7 +3826,7 @@ async fn proxy_openai_v1_capture_target(
                     request_info.parse_error.as_deref(),
                     Some(failure_kind),
                     requester_ip.as_deref(),
-                    codex_session_id.as_deref(),
+                    prompt_cache_key.as_deref(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3875,7 +3884,7 @@ async fn proxy_openai_v1_capture_target(
                     request_info.parse_error.as_deref(),
                     Some(failure_kind),
                     requester_ip.as_deref(),
-                    codex_session_id.as_deref(),
+                    prompt_cache_key.as_deref(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3938,7 +3947,7 @@ async fn proxy_openai_v1_capture_target(
                     request_info.parse_error.as_deref(),
                     None,
                     requester_ip.as_deref(),
-                    codex_session_id.as_deref(),
+                    prompt_cache_key.as_deref(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3991,7 +4000,7 @@ async fn proxy_openai_v1_capture_target(
     let raw_expires_at_for_task = raw_expires_at.clone();
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let requester_ip_for_task = requester_ip.clone();
-    let codex_session_id_for_task = codex_session_id.clone();
+    let prompt_cache_key_for_task = prompt_cache_key.clone();
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
 
     tokio::spawn(async move {
@@ -4124,7 +4133,7 @@ async fn proxy_openai_v1_capture_target(
             request_info_for_task.parse_error.as_deref(),
             failure_kind,
             requester_ip_for_task.as_deref(),
-            codex_session_id_for_task.as_deref(),
+            prompt_cache_key_for_task.as_deref(),
         );
 
         let record = ProxyCaptureRecord {
@@ -4270,7 +4279,7 @@ fn prepare_target_request_body(
 ) -> (Vec<u8>, RequestCaptureInfo, bool) {
     let mut info = RequestCaptureInfo {
         model: None,
-        codex_session_id: None,
+        prompt_cache_key: None,
         is_stream: false,
         parse_error: None,
     };
@@ -4291,7 +4300,7 @@ fn prepare_target_request_body(
         .get("model")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    info.codex_session_id = extract_codex_session_id_from_request_body(&value);
+    info.prompt_cache_key = extract_prompt_cache_key_from_request_body(&value);
     info.is_stream = value
         .get("stream")
         .and_then(|v| v.as_bool())
@@ -4332,21 +4341,17 @@ fn prepare_target_request_body(
     }
 }
 
-fn extract_codex_session_id_from_request_body(value: &Value) -> Option<String> {
-    const SESSION_POINTERS: &[&str] = &[
-        "/metadata/codex_session_id",
-        "/metadata/codexSessionId",
-        "/codex_session_id",
-        "/codexSessionId",
-        "/metadata/session_id",
-        "/metadata/sessionId",
-        "/session_id",
-        "/sessionId",
+fn extract_prompt_cache_key_from_request_body(value: &Value) -> Option<String> {
+    const PROMPT_CACHE_KEY_POINTERS: &[&str] = &[
+        "/metadata/prompt_cache_key",
+        "/metadata/promptCacheKey",
+        "/prompt_cache_key",
+        "/promptCacheKey",
     ];
 
-    for pointer in SESSION_POINTERS {
-        if let Some(session_id) = value.pointer(pointer).and_then(|v| v.as_str()) {
-            let normalized = session_id.trim();
+    for pointer in PROMPT_CACHE_KEY_POINTERS {
+        if let Some(prompt_cache_key) = value.pointer(pointer).and_then(|v| v.as_str()) {
+            let normalized = prompt_cache_key.trim();
             if !normalized.is_empty() {
                 return Some(normalized.to_string());
             }
@@ -4630,7 +4635,7 @@ fn build_proxy_payload_summary(
     request_parse_error: Option<&str>,
     failure_kind: Option<&str>,
     requester_ip: Option<&str>,
-    codex_session_id: Option<&str>,
+    prompt_cache_key: Option<&str>,
 ) -> String {
     let endpoint = match target {
         ProxyCaptureTarget::ChatCompletions => "/v1/chat/completions",
@@ -4646,7 +4651,7 @@ fn build_proxy_payload_summary(
         "requestParseError": request_parse_error,
         "failureKind": failure_kind,
         "requesterIp": requester_ip,
-        "codexSessionId": codex_session_id,
+        "promptCacheKey": prompt_cache_key,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
@@ -5040,7 +5045,7 @@ async fn persist_proxy_capture_record(
             failure_class,
             is_actionable,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.codexSessionId') END AS codex_session_id,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key,
             cost_estimated,
             price_version,
             request_raw_path,
@@ -5237,6 +5242,114 @@ async fn run_backfill_with_retry(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfi
             }
         }
     }
+}
+
+async fn backfill_proxy_prompt_cache_keys(
+    pool: &Pool<Sqlite>,
+) -> Result<ProxyPromptCacheKeyBackfillSummary> {
+    let mut summary = ProxyPromptCacheKeyBackfillSummary::default();
+    let mut last_seen_id = 0_i64;
+
+    loop {
+        let candidates = sqlx::query_as::<_, ProxyPromptCacheKeyBackfillCandidate>(
+            r#"
+            SELECT id, request_raw_path
+            FROM codex_invocations
+            WHERE source = ?1
+              AND request_raw_path IS NOT NULL
+              AND id > ?2
+              AND (
+                payload IS NULL
+                OR NOT json_valid(payload)
+                OR json_extract(payload, '$.promptCacheKey') IS NULL
+                OR TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) = ''
+              )
+            ORDER BY id ASC
+            LIMIT ?3
+            "#,
+        )
+        .bind(SOURCE_PROXY)
+        .bind(last_seen_id)
+        .bind(BACKFILL_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        for candidate in candidates {
+            last_seen_id = candidate.id;
+            summary.scanned += 1;
+
+            let raw_request = match fs::read(&candidate.request_raw_path) {
+                Ok(content) => content,
+                Err(err) => {
+                    summary.skipped_missing_file += 1;
+                    warn!(
+                        id = candidate.id,
+                        path = %candidate.request_raw_path,
+                        error = %err,
+                        "proxy prompt cache key backfill skipped because request raw file is unavailable"
+                    );
+                    continue;
+                }
+            };
+
+            let request_payload = match serde_json::from_slice::<Value>(&raw_request) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    summary.skipped_invalid_json += 1;
+                    warn!(
+                        id = candidate.id,
+                        path = %candidate.request_raw_path,
+                        error = %err,
+                        "proxy prompt cache key backfill skipped because request raw file is not valid JSON"
+                    );
+                    continue;
+                }
+            };
+
+            let Some(prompt_cache_key) =
+                extract_prompt_cache_key_from_request_body(&request_payload)
+            else {
+                summary.skipped_missing_key += 1;
+                continue;
+            };
+
+            let affected = sqlx::query(
+                r#"
+                UPDATE codex_invocations
+                SET payload = json_remove(
+                    json_set(
+                        CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+                        '$.promptCacheKey',
+                        ?1
+                    ),
+                    '$.codexSessionId'
+                )
+                WHERE id = ?2
+                  AND source = ?3
+                  AND request_raw_path IS NOT NULL
+                  AND (
+                    payload IS NULL
+                    OR NOT json_valid(payload)
+                    OR json_extract(payload, '$.promptCacheKey') IS NULL
+                    OR TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) = ''
+                  )
+                "#,
+            )
+            .bind(prompt_cache_key)
+            .bind(candidate.id)
+            .bind(SOURCE_PROXY)
+            .execute(pool)
+            .await?
+            .rows_affected();
+            summary.updated += affected;
+        }
+    }
+
+    Ok(summary)
 }
 
 #[derive(Debug, FromRow)]
@@ -6054,12 +6167,11 @@ fn extract_requester_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>) -> Option<
     peer_ip.map(|ip| ip.to_string())
 }
 
-fn extract_codex_session_id_from_headers(headers: &HeaderMap) -> Option<String> {
+fn extract_prompt_cache_key_from_headers(headers: &HeaderMap) -> Option<String> {
     for header_name in [
-        "x-codex-session-id",
-        "x-session-id",
-        "session-id",
-        "x-openai-session-id",
+        "x-prompt-cache-key",
+        "prompt-cache-key",
+        "x-openai-prompt-cache-key",
     ] {
         if let Some(raw_value) = header_value_as_str(headers, header_name) {
             let candidate = raw_value
@@ -6379,7 +6491,7 @@ struct ApiInvocation {
     #[sqlx(default)]
     requester_ip: Option<String>,
     #[sqlx(default)]
-    codex_session_id: Option<String>,
+    prompt_cache_key: Option<String>,
     #[sqlx(default)]
     cost_estimated: Option<i64>,
     #[sqlx(default)]
@@ -6802,7 +6914,7 @@ struct RawPayloadMeta {
 #[derive(Debug, Clone, Default)]
 struct RequestCaptureInfo {
     model: Option<String>,
-    codex_session_id: Option<String>,
+    prompt_cache_key: Option<String>,
     is_stream: bool,
     parse_error: Option<String>,
 }
@@ -6875,6 +6987,15 @@ struct ProxyUsageBackfillSummary {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
+struct ProxyPromptCacheKeyBackfillSummary {
+    scanned: u64,
+    updated: u64,
+    skipped_missing_file: u64,
+    skipped_invalid_json: u64,
+    skipped_missing_key: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
 struct FailureClassificationBackfillSummary {
     scanned: u64,
     updated: u64,
@@ -6921,6 +7042,12 @@ struct ProxyUsageBackfillCandidate {
     id: i64,
     response_raw_path: String,
     payload: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct ProxyPromptCacheKeyBackfillCandidate {
+    id: i64,
+    request_raw_path: String,
 }
 
 #[derive(Debug)]
@@ -7815,6 +7942,26 @@ mod tests {
         fs::write(path, compressed).expect("write response payload");
     }
 
+    fn write_backfill_request_payload(path: &Path, prompt_cache_key: Option<&str>) {
+        let payload = if let Some(key) = prompt_cache_key {
+            json!({
+                "model": "gpt-5.3-codex",
+                "stream": true,
+                "metadata": {
+                    "prompt_cache_key": key
+                }
+            })
+        } else {
+            json!({
+                "model": "gpt-5.3-codex",
+                "stream": true,
+                "metadata": {}
+            })
+        };
+        let encoded = serde_json::to_vec(&payload).expect("serialize request payload");
+        fs::write(path, encoded).expect("write request payload");
+    }
+
     async fn insert_proxy_backfill_row(pool: &SqlitePool, invoke_id: &str, response_path: &Path) {
         sqlx::query(
             r#"
@@ -7836,6 +7983,32 @@ mod tests {
         .execute(pool)
         .await
         .expect("insert proxy row");
+    }
+
+    async fn insert_proxy_prompt_cache_backfill_row(
+        pool: &SqlitePool,
+        invoke_id: &str,
+        request_path: &Path,
+        payload: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response, request_raw_path
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-02-23 00:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(payload)
+        .bind("{}")
+        .bind(request_path.to_string_lossy().to_string())
+        .execute(pool)
+        .await
+        .expect("insert proxy prompt cache key row");
     }
 
     async fn test_state_with_openai_base(openai_base: Url) -> Arc<AppState> {
@@ -7927,7 +8100,7 @@ mod tests {
             status: "success".to_string(),
             error_message: None,
             payload: Some(
-                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"codexSessionId\":\"sess-broadcast-1\"}"
+                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\"}"
                     .to_string(),
             ),
             raw_response: "{}".to_string(),
@@ -9801,7 +9974,7 @@ mod tests {
         let record = captured_record.expect("target records payload should include invoke id");
         assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
         assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
-        assert_eq!(record.codex_session_id.as_deref(), Some("sess-broadcast-1"));
+        assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-broadcast-1"));
         assert!(record.failure_kind.is_none());
     }
 
@@ -10488,12 +10661,12 @@ mod tests {
     }
 
     #[test]
-    fn prepare_target_request_body_extracts_codex_session_id_from_metadata() {
+    fn prepare_target_request_body_extracts_prompt_cache_key_from_metadata() {
         let body = serde_json::to_vec(&json!({
             "model": "gpt-5.3-codex",
             "stream": true,
             "metadata": {
-                "codex_session_id": "sess-from-body"
+                "prompt_cache_key": "pck-from-body"
             }
         }))
         .expect("serialize request body");
@@ -10501,7 +10674,7 @@ mod tests {
         let (_rewritten, info, _did_rewrite) =
             prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
 
-        assert_eq!(info.codex_session_id.as_deref(), Some("sess-from-body"));
+        assert_eq!(info.prompt_cache_key.as_deref(), Some("pck-from-body"));
     }
 
     #[test]
@@ -10543,15 +10716,15 @@ mod tests {
     }
 
     #[test]
-    fn extract_codex_session_id_from_headers_reads_whitelist_keys() {
+    fn extract_prompt_cache_key_from_headers_reads_whitelist_keys() {
         let mut headers = HeaderMap::new();
         headers.insert(
-            HeaderName::from_static("x-session-id"),
-            HeaderValue::from_static("sess-from-header"),
+            HeaderName::from_static("x-prompt-cache-key"),
+            HeaderValue::from_static("pck-from-header"),
         );
         assert_eq!(
-            extract_codex_session_id_from_headers(&headers).as_deref(),
-            Some("sess-from-header")
+            extract_prompt_cache_key_from_headers(&headers).as_deref(),
+            Some("pck-from-header")
         );
     }
 
@@ -10754,7 +10927,7 @@ mod tests {
             Method::POST,
             headers,
             Body::from(
-                r#"{"model":"gpt-5.3-codex","stream":true,"metadata":{"codex_session_id":"sess-gzip-1"},"input":"hello"}"#,
+                r#"{"model":"gpt-5.3-codex","stream":true,"metadata":{"prompt_cache_key":"pck-gzip-1"},"input":"hello"}"#,
             ),
         )
         .await;
@@ -10800,7 +10973,7 @@ mod tests {
         assert_eq!(payload["endpoint"], "/v1/responses");
         assert!(payload["usageMissingReason"].is_null());
         assert_eq!(payload["requesterIp"], "198.51.100.42");
-        assert_eq!(payload["codexSessionId"], "sess-gzip-1");
+        assert_eq!(payload["promptCacheKey"], "pck-gzip-1");
 
         upstream_handle.abort();
     }
@@ -10866,7 +11039,7 @@ mod tests {
         .bind(SOURCE_PROXY)
         .bind("failed")
         .bind(
-            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"codexSessionId\":\"sess-list-1\"}",
+            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-list-1\"}",
         )
         .bind("{}")
         .execute(&state.pool)
@@ -10895,7 +11068,7 @@ mod tests {
             Some("upstream_stream_error")
         );
         assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
-        assert_eq!(record.codex_session_id.as_deref(), Some("sess-list-1"));
+        assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-list-1"));
     }
 
     #[tokio::test]
@@ -10947,7 +11120,7 @@ mod tests {
         assert_eq!(record.endpoint, None);
         assert_eq!(record.failure_kind, None);
         assert_eq!(record.requester_ip, None);
-        assert_eq!(record.codex_session_id, None);
+        assert_eq!(record.prompt_cache_key, None);
     }
 
     #[test]
@@ -10977,6 +11150,135 @@ mod tests {
         assert_eq!(parsed.usage.total_tokens, Some(168));
         assert_eq!(parsed.usage.cache_input_tokens, Some(7));
         assert_eq!(parsed.usage.reasoning_tokens, Some(4));
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_prompt_cache_keys_updates_payload_and_is_idempotent() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("proxy-prompt-cache-key-backfill");
+        let request_path = temp_dir.join("request.json");
+        write_backfill_request_payload(&request_path, Some("pck-backfill-1"));
+
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-pck-backfill-1",
+            &request_path,
+            "{\"endpoint\":\"/v1/responses\",\"requesterIp\":\"198.51.100.77\",\"codexSessionId\":\"legacy-session-1\"}",
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-pck-backfill-ready",
+            &request_path,
+            "{\"endpoint\":\"/v1/responses\",\"promptCacheKey\":\"already-present\"}",
+        )
+        .await;
+
+        let summary_first = backfill_proxy_prompt_cache_keys(&pool)
+            .await
+            .expect("first prompt cache key backfill should succeed");
+        assert_eq!(summary_first.scanned, 1);
+        assert_eq!(summary_first.updated, 1);
+        assert_eq!(summary_first.skipped_missing_file, 0);
+        assert_eq!(summary_first.skipped_invalid_json, 0);
+        assert_eq!(summary_first.skipped_missing_key, 0);
+
+        let payload: String =
+            sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-pck-backfill-1")
+                .fetch_one(&pool)
+                .await
+                .expect("query backfilled payload");
+        let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
+        assert_eq!(payload_json["promptCacheKey"], "pck-backfill-1");
+        assert!(
+            payload_json.get("codexSessionId").is_none(),
+            "legacy codexSessionId key should be removed during backfill"
+        );
+
+        let summary_second = backfill_proxy_prompt_cache_keys(&pool)
+            .await
+            .expect("second prompt cache key backfill should succeed");
+        assert_eq!(summary_second.scanned, 0);
+        assert_eq!(summary_second.updated, 0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_prompt_cache_keys_tracks_skip_counters() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("proxy-prompt-cache-key-backfill-skips");
+        let ok_request_path = temp_dir.join("request-ok.json");
+        let missing_key_request_path = temp_dir.join("request-missing-key.json");
+        let invalid_json_request_path = temp_dir.join("request-invalid-json.json");
+        let missing_file_request_path = temp_dir.join("request-missing.json");
+
+        write_backfill_request_payload(&ok_request_path, Some("pck-backfill-ok"));
+        write_backfill_request_payload(&missing_key_request_path, None);
+        fs::write(&invalid_json_request_path, b"not-json").expect("write invalid request payload");
+
+        let base_payload = "{\"endpoint\":\"/v1/responses\",\"requesterIp\":\"198.51.100.77\"}";
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-pck-backfill-ok",
+            &ok_request_path,
+            base_payload,
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-pck-backfill-missing-file",
+            &missing_file_request_path,
+            base_payload,
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-pck-backfill-invalid-json",
+            &invalid_json_request_path,
+            base_payload,
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-pck-backfill-missing-key",
+            &missing_key_request_path,
+            base_payload,
+        )
+        .await;
+
+        let summary = backfill_proxy_prompt_cache_keys(&pool)
+            .await
+            .expect("prompt cache key backfill should succeed");
+        assert_eq!(summary.scanned, 4);
+        assert_eq!(summary.updated, 1);
+        assert_eq!(summary.skipped_missing_file, 1);
+        assert_eq!(summary.skipped_invalid_json, 1);
+        assert_eq!(summary.skipped_missing_key, 1);
+
+        let payload: String =
+            sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-pck-backfill-ok")
+                .fetch_one(&pool)
+                .await
+                .expect("query backfilled payload");
+        let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
+        assert_eq!(payload_json["promptCacheKey"], "pck-backfill-ok");
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[tokio::test]
