@@ -367,7 +367,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <section className="mx-auto max-w-6xl space-y-6">
+    <section className="settings-page mx-auto max-w-6xl space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
         <p className="mt-1 text-sm text-base-content/70">{t('settings.description')}</p>
@@ -378,32 +378,32 @@ export default function SettingsPage() {
           <h2 className="text-lg font-medium">{t('settings.proxy.title')}</h2>
           <p className="mt-1 text-sm text-base-content/70">{t('settings.proxy.description')}</p>
 
-          <div className="mt-4 space-y-3">
-            <label className="flex items-start justify-between gap-3 rounded-lg border border-base-300 p-3">
-              <div>
-                <div className="font-medium">{t('settings.proxy.hijackLabel')}</div>
-                <div className="text-sm text-base-content/70">{t('settings.proxy.hijackHint')}</div>
+          <div className="mt-4 space-y-3.5">
+            <label className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 rounded-lg border border-base-300 bg-base-100/45 px-4 py-3.5">
+              <div className="space-y-1">
+                <div className="font-medium leading-snug">{t('settings.proxy.hijackLabel')}</div>
+                <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.hijackHint')}</div>
               </div>
               <input
                 type="checkbox"
-                className="toggle toggle-primary"
+                className="toggle toggle-primary toggle-md mt-0 shrink-0"
                 checked={currentProxy.hijackEnabled}
                 disabled={isProxySaving}
                 onChange={handleToggleHijack}
               />
             </label>
 
-            <label className="flex items-start justify-between gap-3 rounded-lg border border-base-300 p-3">
-              <div>
-                <div className="font-medium">{t('settings.proxy.mergeLabel')}</div>
-                <div className="text-sm text-base-content/70">{t('settings.proxy.mergeHint')}</div>
+            <label className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 rounded-lg border border-base-300 bg-base-100/45 px-4 py-3.5">
+              <div className="space-y-1">
+                <div className="font-medium leading-snug">{t('settings.proxy.mergeLabel')}</div>
+                <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.mergeHint')}</div>
                 {!currentProxy.hijackEnabled && (
                   <div className="mt-1 text-xs text-warning">{t('settings.proxy.mergeDisabledHint')}</div>
                 )}
               </div>
               <input
                 type="checkbox"
-                className="toggle toggle-primary"
+                className="toggle toggle-primary toggle-md mt-0 shrink-0"
                 checked={currentProxy.mergeUpstreamEnabled}
                 disabled={isProxySaving || !currentProxy.hijackEnabled}
                 onChange={handleToggleMergeUpstream}
@@ -420,20 +420,20 @@ export default function SettingsPage() {
                   })}
                 </span>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 {currentProxy.models.map((modelId) => {
                   const enabled = enabledPresetModelSet.has(modelId)
                   return (
                     <label
                       key={modelId}
-                      className={`flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2 ${
+                      className={`flex min-h-10 cursor-pointer items-center justify-between rounded-lg border px-3.5 py-2.5 ${
                         enabled ? 'border-primary/50 bg-primary/5' : 'border-base-300 bg-base-100'
                       } ${isProxySaving ? 'cursor-not-allowed opacity-70' : ''}`}
                     >
-                      <span className="truncate font-mono text-sm">{modelId}</span>
+                      <span className="truncate pr-3 font-mono text-sm">{modelId}</span>
                       <input
                         type="checkbox"
-                        className="checkbox checkbox-sm checkbox-primary"
+                        className="checkbox checkbox-sm checkbox-primary shrink-0 rounded-[0.55rem]"
                         checked={enabled}
                         disabled={isProxySaving}
                         onChange={() => handleTogglePresetModel(modelId)}
@@ -452,102 +452,103 @@ export default function SettingsPage() {
         </article>
 
         <article className="rounded-box border border-base-300 bg-base-100 p-4 shadow-sm">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-lg font-medium">{t('settings.pricing.title')}</h2>
               <p className="mt-1 text-sm text-base-content/70">{t('settings.pricing.description')}</p>
             </div>
-            <button type="button" className="btn btn-sm btn-primary" onClick={handleAddPricingEntry}>
-              <Icon icon="mdi:plus" className="h-4 w-4" aria-hidden />
+            <button type="button" className="btn btn-sm btn-primary h-9 min-h-9 gap-1.5 px-3.5" onClick={handleAddPricingEntry}>
+              <Icon icon="mdi:plus" className="h-[18px] w-[18px]" aria-hidden />
               {t('settings.pricing.add')}
             </button>
           </div>
 
-          <label className="form-control mt-4">
-            <div className="label py-1">
-              <span className="label-text">{t('settings.pricing.catalogVersion')}</span>
-            </div>
+          <div className="mt-4 space-y-2">
+            <label htmlFor="pricing-catalog-version" className="block pl-0.5 text-sm font-medium text-base-content/75">
+              {t('settings.pricing.catalogVersion')}
+            </label>
             <input
+              id="pricing-catalog-version"
               type="text"
-              className="input input-bordered input-sm"
+              className="input input-bordered input-sm h-9 w-full max-w-md px-3"
               value={pricingDraft.catalogVersion}
               onChange={(event) => handleCatalogVersionChange(event.target.value)}
               onBlur={() => triggerPricingSave(true)}
             />
-          </label>
+          </div>
 
-          <div className="mt-4 overflow-x-auto">
-            <table className="table table-zebra table-sm">
+          <div className="mt-4 overflow-x-auto pb-1">
+            <table className="table table-zebra table-auto min-w-[48rem]">
               <thead>
                 <tr>
-                  <th>{t('settings.pricing.columns.model')}</th>
-                  <th>{t('settings.pricing.columns.input')}</th>
-                  <th>{t('settings.pricing.columns.output')}</th>
-                  <th>{t('settings.pricing.columns.cacheInput')}</th>
-                  <th>{t('settings.pricing.columns.reasoning')}</th>
-                  <th>{t('settings.pricing.columns.source')}</th>
-                  <th>{t('settings.pricing.columns.actions')}</th>
+                  <th className="w-44 px-3 py-3">{t('settings.pricing.columns.model')}</th>
+                  <th className="w-24 px-3 py-3">{t('settings.pricing.columns.input')}</th>
+                  <th className="w-24 px-3 py-3">{t('settings.pricing.columns.output')}</th>
+                  <th className="w-24 px-3 py-3">{t('settings.pricing.columns.cacheInput')}</th>
+                  <th className="w-24 px-3 py-3">{t('settings.pricing.columns.reasoning')}</th>
+                  <th className="w-28 px-3 py-3 whitespace-nowrap">{t('settings.pricing.columns.source')}</th>
+                  <th className="w-24 px-3 py-3 text-right whitespace-nowrap">{t('settings.pricing.columns.actions')}</th>
                 </tr>
               </thead>
               <tbody>
                 {pricingDraft.entries.map((entry, index) => (
                   <tr key={index}>
-                    <td>
+                    <td className="align-middle px-3 py-3">
                       <input
                         type="text"
-                        className="input input-bordered input-xs w-44"
+                        className="input input-bordered input-sm h-9 w-full min-w-0 px-2.5"
                         value={entry.model}
                         onChange={(event) => handlePricingFieldChange(index, 'model', event.target.value)}
                         onBlur={() => triggerPricingSave(true)}
                       />
                     </td>
-                    <td>
+                    <td className="align-middle px-3 py-3">
                       <input
                         type="number"
                         step="any"
-                        className="input input-bordered input-xs w-28"
+                        className="input input-bordered input-sm h-9 w-full min-w-0 px-2.5"
                         value={entry.inputPer1m}
                         onChange={(event) => handlePricingFieldChange(index, 'inputPer1m', event.target.value)}
                         onBlur={() => triggerPricingSave(true)}
                       />
                     </td>
-                    <td>
+                    <td className="align-middle px-3 py-3">
                       <input
                         type="number"
                         step="any"
-                        className="input input-bordered input-xs w-28"
+                        className="input input-bordered input-sm h-9 w-full min-w-0 px-2.5"
                         value={entry.outputPer1m}
                         onChange={(event) => handlePricingFieldChange(index, 'outputPer1m', event.target.value)}
                         onBlur={() => triggerPricingSave(true)}
                       />
                     </td>
-                    <td>
+                    <td className="align-middle px-3 py-3">
                       <input
                         type="number"
                         step="any"
-                        className="input input-bordered input-xs w-28"
+                        className="input input-bordered input-sm h-9 w-full min-w-0 px-2.5"
                         value={entry.cacheInputPer1m}
                         onChange={(event) => handlePricingFieldChange(index, 'cacheInputPer1m', event.target.value)}
                         onBlur={() => triggerPricingSave(true)}
                       />
                     </td>
-                    <td>
+                    <td className="align-middle px-3 py-3">
                       <input
                         type="number"
                         step="any"
-                        className="input input-bordered input-xs w-28"
+                        className="input input-bordered input-sm h-9 w-full min-w-0 px-2.5"
                         value={entry.reasoningPer1m}
                         onChange={(event) => handlePricingFieldChange(index, 'reasoningPer1m', event.target.value)}
                         onBlur={() => triggerPricingSave(true)}
                       />
                     </td>
-                    <td>
+                    <td className="align-middle px-3 py-3 whitespace-nowrap">
                       <span className={`badge badge-sm ${sourceBadgeClass(entry.source)}`}>{entry.source}</span>
                     </td>
-                    <td>
+                    <td className="align-middle px-3 py-3 text-right whitespace-nowrap">
                       <button
                         type="button"
-                        className="btn btn-ghost btn-xs text-error"
+                        className="btn btn-ghost btn-sm h-8 min-h-8 whitespace-nowrap px-2.5 text-error"
                         onClick={() => handleRemovePricingEntry(index)}
                       >
                         {t('settings.pricing.remove')}
