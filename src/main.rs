@@ -188,8 +188,9 @@ async fn main() -> Result<()> {
         .context("failed to open sqlite database")?;
 
     ensure_schema(&pool).await?;
+    let raw_path_fallback_root = config.database_path.parent();
     if config.proxy_usage_backfill_on_startup {
-        let summary = run_backfill_with_retry(&pool).await?;
+        let summary = run_backfill_with_retry(&pool, raw_path_fallback_root).await?;
         info!(
             scanned = summary.scanned,
             updated = summary.updated,
@@ -201,7 +202,8 @@ async fn main() -> Result<()> {
     } else {
         info!("proxy usage startup backfill is disabled");
     }
-    let prompt_cache_summary = backfill_proxy_prompt_cache_keys(&pool).await?;
+    let prompt_cache_summary =
+        backfill_proxy_prompt_cache_keys(&pool, raw_path_fallback_root).await?;
     info!(
         scanned = prompt_cache_summary.scanned,
         updated = prompt_cache_summary.updated,
@@ -5080,7 +5082,33 @@ async fn persist_proxy_capture_record(
     Ok(Some(inserted))
 }
 
-async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfillSummary> {
+fn read_proxy_raw_bytes(path: &str, fallback_root: Option<&Path>) -> io::Result<Vec<u8>> {
+    let primary_path = Path::new(path);
+    match fs::read(primary_path) {
+        Ok(content) => Ok(content),
+        Err(primary_err) => {
+            if primary_path.is_absolute() {
+                return Err(primary_err);
+            }
+
+            if let Some(root) = fallback_root {
+                let fallback_path = root.join(primary_path);
+                if fallback_path != primary_path
+                    && let Ok(content) = fs::read(&fallback_path)
+                {
+                    return Ok(content);
+                }
+            }
+
+            Err(primary_err)
+        }
+    }
+}
+
+async fn backfill_proxy_usage_tokens(
+    pool: &Pool<Sqlite>,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<ProxyUsageBackfillSummary> {
     let snapshot_max_id: i64 = sqlx::query_scalar(
         r#"
         SELECT COALESCE(MAX(id), 0)
@@ -5095,12 +5123,13 @@ async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBa
     .fetch_one(pool)
     .await?;
 
-    backfill_proxy_usage_tokens_up_to_id(pool, snapshot_max_id).await
+    backfill_proxy_usage_tokens_up_to_id(pool, snapshot_max_id, raw_path_fallback_root).await
 }
 
 async fn backfill_proxy_usage_tokens_up_to_id(
     pool: &Pool<Sqlite>,
     snapshot_max_id: i64,
+    raw_path_fallback_root: Option<&Path>,
 ) -> Result<ProxyUsageBackfillSummary> {
     let mut summary = ProxyUsageBackfillSummary::default();
     let mut last_seen_id = 0_i64;
@@ -5135,19 +5164,20 @@ async fn backfill_proxy_usage_tokens_up_to_id(
             last_seen_id = candidate.id;
             summary.scanned += 1;
 
-            let raw_response = match fs::read(&candidate.response_raw_path) {
-                Ok(content) => content,
-                Err(err) => {
-                    summary.skipped_missing_file += 1;
-                    warn!(
-                        id = candidate.id,
-                        path = %candidate.response_raw_path,
-                        error = %err,
-                        "proxy usage backfill skipped because response raw file is unavailable"
-                    );
-                    continue;
-                }
-            };
+            let raw_response =
+                match read_proxy_raw_bytes(&candidate.response_raw_path, raw_path_fallback_root) {
+                    Ok(content) => content,
+                    Err(err) => {
+                        summary.skipped_missing_file += 1;
+                        warn!(
+                            id = candidate.id,
+                            path = %candidate.response_raw_path,
+                            error = %err,
+                            "proxy usage backfill skipped because response raw file is unavailable"
+                        );
+                        continue;
+                    }
+                };
 
             let (target, is_stream) = parse_proxy_capture_summary(candidate.payload.as_deref());
             let (payload_for_parse, decode_error) =
@@ -5214,10 +5244,13 @@ async fn backfill_proxy_usage_tokens_up_to_id(
     Ok(summary)
 }
 
-async fn run_backfill_with_retry(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfillSummary> {
+async fn run_backfill_with_retry(
+    pool: &Pool<Sqlite>,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<ProxyUsageBackfillSummary> {
     let mut attempt = 1_u32;
     loop {
-        match backfill_proxy_usage_tokens(pool).await {
+        match backfill_proxy_usage_tokens(pool, raw_path_fallback_root).await {
             Ok(summary) => return Ok(summary),
             Err(err)
                 if attempt < BACKFILL_LOCK_RETRY_MAX_ATTEMPTS && is_sqlite_lock_error(&err) =>
@@ -5246,6 +5279,7 @@ async fn run_backfill_with_retry(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfi
 
 async fn backfill_proxy_prompt_cache_keys(
     pool: &Pool<Sqlite>,
+    raw_path_fallback_root: Option<&Path>,
 ) -> Result<ProxyPromptCacheKeyBackfillSummary> {
     let mut summary = ProxyPromptCacheKeyBackfillSummary::default();
     let mut last_seen_id = 0_i64;
@@ -5282,7 +5316,10 @@ async fn backfill_proxy_prompt_cache_keys(
             last_seen_id = candidate.id;
             summary.scanned += 1;
 
-            let raw_request = match fs::read(&candidate.request_raw_path) {
+            let raw_request = match read_proxy_raw_bytes(
+                &candidate.request_raw_path,
+                raw_path_fallback_root,
+            ) {
                 Ok(content) => content,
                 Err(err) => {
                     summary.skipped_missing_file += 1;
@@ -11180,7 +11217,7 @@ mod tests {
         )
         .await;
 
-        let summary_first = backfill_proxy_prompt_cache_keys(&pool)
+        let summary_first = backfill_proxy_prompt_cache_keys(&pool, None)
             .await
             .expect("first prompt cache key backfill should succeed");
         assert_eq!(summary_first.scanned, 1);
@@ -11202,7 +11239,7 @@ mod tests {
             "legacy codexSessionId key should be removed during backfill"
         );
 
-        let summary_second = backfill_proxy_prompt_cache_keys(&pool)
+        let summary_second = backfill_proxy_prompt_cache_keys(&pool, None)
             .await
             .expect("second prompt cache key backfill should succeed");
         assert_eq!(summary_second.scanned, 0);
@@ -11260,7 +11297,7 @@ mod tests {
         )
         .await;
 
-        let summary = backfill_proxy_prompt_cache_keys(&pool)
+        let summary = backfill_proxy_prompt_cache_keys(&pool, None)
             .await
             .expect("prompt cache key backfill should succeed");
         assert_eq!(summary.scanned, 4);
@@ -11277,6 +11314,52 @@ mod tests {
                 .expect("query backfilled payload");
         let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
         assert_eq!(payload_json["promptCacheKey"], "pck-backfill-ok");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_prompt_cache_keys_reads_from_fallback_root_for_relative_paths() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("proxy-prompt-cache-key-backfill-fallback");
+        let fallback_root = temp_dir.join("legacy-root");
+        let relative_path = PathBuf::from("proxy_raw_payloads/request-fallback.json");
+        let request_path = fallback_root.join(&relative_path);
+        let request_dir = request_path.parent().expect("request parent dir");
+        fs::create_dir_all(request_dir).expect("create fallback request dir");
+        write_backfill_request_payload(&request_path, Some("pck-fallback-1"));
+
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-pck-backfill-fallback",
+            &relative_path,
+            "{\"endpoint\":\"/v1/responses\",\"requesterIp\":\"198.51.100.77\"}",
+        )
+        .await;
+
+        let summary = backfill_proxy_prompt_cache_keys(&pool, Some(&fallback_root))
+            .await
+            .expect("prompt cache key backfill with fallback root should succeed");
+        assert_eq!(summary.scanned, 1);
+        assert_eq!(summary.updated, 1);
+        assert_eq!(summary.skipped_missing_file, 0);
+        assert_eq!(summary.skipped_invalid_json, 0);
+        assert_eq!(summary.skipped_missing_key, 0);
+
+        let payload: String =
+            sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-pck-backfill-fallback")
+                .fetch_one(&pool)
+                .await
+                .expect("query fallback-backfilled payload");
+        let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
+        assert_eq!(payload_json["promptCacheKey"], "pck-fallback-1");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -11333,7 +11416,7 @@ mod tests {
             .expect("insert proxy row");
         }
 
-        let summary_first = backfill_proxy_usage_tokens(&pool)
+        let summary_first = backfill_proxy_usage_tokens(&pool, None)
             .await
             .expect("first backfill should succeed");
         assert_eq!(summary_first.scanned, row_count as u64);
@@ -11387,11 +11470,56 @@ mod tests {
             Some(row_count as i64)
         );
 
-        let summary_second = backfill_proxy_usage_tokens(&pool)
+        let summary_second = backfill_proxy_usage_tokens(&pool, None)
             .await
             .expect("second backfill should succeed");
         assert_eq!(summary_second.scanned, 0);
         assert_eq!(summary_second.updated, 0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_usage_tokens_reads_from_fallback_root_for_relative_paths() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("proxy-usage-backfill-fallback");
+        let fallback_root = temp_dir.join("legacy-root");
+        let relative_path = PathBuf::from("proxy_raw_payloads/response-fallback.bin");
+        let response_path = fallback_root.join(&relative_path);
+        let response_dir = response_path.parent().expect("response parent dir");
+        fs::create_dir_all(response_dir).expect("create fallback response dir");
+        write_backfill_response_payload(&response_path);
+
+        insert_proxy_backfill_row(&pool, "proxy-usage-backfill-fallback", &relative_path).await;
+        let row_id: i64 =
+            sqlx::query_scalar("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-usage-backfill-fallback")
+                .fetch_one(&pool)
+                .await
+                .expect("query fallback row id");
+
+        let summary = backfill_proxy_usage_tokens_up_to_id(&pool, row_id, Some(&fallback_root))
+            .await
+            .expect("usage backfill with fallback root should succeed");
+        assert_eq!(summary.scanned, 1);
+        assert_eq!(summary.updated, 1);
+        assert_eq!(summary.skipped_missing_file, 0);
+        assert_eq!(summary.skipped_without_usage, 0);
+        assert_eq!(summary.skipped_decode_error, 0);
+
+        let total_tokens: Option<i64> =
+            sqlx::query_scalar("SELECT total_tokens FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-usage-backfill-fallback")
+                .fetch_one(&pool)
+                .await
+                .expect("query fallback usage row");
+        assert_eq!(total_tokens, Some(110));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -11427,7 +11555,7 @@ mod tests {
                 .await
                 .expect("query second id");
 
-        let summary_first = backfill_proxy_usage_tokens_up_to_id(&pool, first_id)
+        let summary_first = backfill_proxy_usage_tokens_up_to_id(&pool, first_id, None)
             .await
             .expect("backfill up to first id should succeed");
         assert_eq!(summary_first.scanned, 1);
@@ -11448,7 +11576,7 @@ mod tests {
         assert_eq!(first_total_tokens, Some(110));
         assert_eq!(second_total_tokens, None);
 
-        let summary_second = backfill_proxy_usage_tokens_up_to_id(&pool, second_id)
+        let summary_second = backfill_proxy_usage_tokens_up_to_id(&pool, second_id, None)
             .await
             .expect("backfill up to second id should succeed");
         assert_eq!(summary_second.scanned, 1);
@@ -11557,7 +11685,7 @@ mod tests {
         let started = Instant::now();
         let pool_for_task = pool.clone();
         let backfill_task =
-            tokio::spawn(async move { run_backfill_with_retry(&pool_for_task).await });
+            tokio::spawn(async move { run_backfill_with_retry(&pool_for_task, None).await });
 
         tokio::time::sleep(Duration::from_millis(400)).await;
         sqlx::query("COMMIT")
@@ -11619,7 +11747,7 @@ mod tests {
         let started = Instant::now();
         let pool_for_task = pool.clone();
         let backfill_task =
-            tokio::spawn(async move { run_backfill_with_retry(&pool_for_task).await });
+            tokio::spawn(async move { run_backfill_with_retry(&pool_for_task, None).await });
         let err = backfill_task
             .await
             .expect("join backfill task")
@@ -11665,7 +11793,7 @@ mod tests {
 
         // Intentionally skip schema initialization to force a deterministic non-lock error.
         let started = Instant::now();
-        let err = run_backfill_with_retry(&pool)
+        let err = run_backfill_with_retry(&pool, None)
             .await
             .expect_err("backfill should fail immediately on non-lock errors");
         assert!(
