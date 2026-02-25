@@ -1,16 +1,20 @@
+import { useMemo } from 'react'
 import { Pie, PieChart, Cell, Legend, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ErrorDistributionItem } from '../lib/api'
 import { useTranslation } from '../i18n'
+import { chartBaseTokens, piePalette } from '../lib/chartTheme'
+import { useTheme } from '../theme'
 
 interface ErrorReasonPieChartProps {
   items: ErrorDistributionItem[]
   isLoading: boolean
 }
 
-const COLORS = ['#ef4444', '#f97316', '#f59e0b', '#eab308', '#22c55e', '#10b981', '#06b6d4', '#3b82f6', '#8b5cf6']
-
 export function ErrorReasonPieChart({ items, isLoading }: ErrorReasonPieChartProps) {
   const { t } = useTranslation()
+  const { themeMode } = useTheme()
+  const chartColors = useMemo(() => chartBaseTokens(themeMode), [themeMode])
+  const colors = useMemo(() => piePalette(themeMode), [themeMode])
 
   const hasData = Array.isArray(items) && items.length > 0
 
@@ -31,11 +35,19 @@ export function ErrorReasonPieChart({ items, isLoading }: ErrorReasonPieChartPro
     <div className="h-96 w-full">
       <ResponsiveContainer>
         <PieChart>
-          <Tooltip />
-          <Legend />
+          <Tooltip
+            contentStyle={{
+              backgroundColor: chartColors.tooltipBg,
+              borderColor: chartColors.tooltipBorder,
+              borderRadius: 10,
+            }}
+            labelStyle={{ color: chartColors.axisText, fontWeight: 600 }}
+            itemStyle={{ color: chartColors.axisText }}
+          />
+          <Legend wrapperStyle={{ color: chartColors.axisText }} />
           <Pie data={data} dataKey="value" nameKey="name" outerRadius={120} label>
             {data.map((_, index) => (
-              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+              <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
             ))}
           </Pie>
         </PieChart>

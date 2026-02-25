@@ -36,7 +36,7 @@ export default {
   },
   plugins: [daisyui],
   daisyui: {
-    themes: ['light', 'dark', 'cupcake'],
+    themes: ['light --default', 'dark --prefersdark'],
     styled: true,
     base: true,
     utils: true,

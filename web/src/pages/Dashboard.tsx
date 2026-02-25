@@ -4,16 +4,19 @@ import { QuotaOverview } from '../components/QuotaOverview'
 import { StatsCards } from '../components/StatsCards'
 import { UsageCalendar } from '../components/UsageCalendar'
 import { WeeklyHourlyHeatmap } from '../components/WeeklyHourlyHeatmap'
-import { Last24hTenMinuteHeatmap, type MetricKey, ACCENT_BY_METRIC } from '../components/Last24hTenMinuteHeatmap'
+import { Last24hTenMinuteHeatmap, type MetricKey } from '../components/Last24hTenMinuteHeatmap'
 import { useInvocationStream } from '../hooks/useInvocations'
 import { useQuotaSnapshot } from '../hooks/useQuotaSnapshot'
 import { useSummary } from '../hooks/useStats'
 import { useTranslation } from '../i18n'
+import { metricAccent } from '../lib/chartTheme'
+import { useTheme } from '../theme'
 
 const RECENT_LIMIT = 20
 
 export default function DashboardPage() {
   const { t } = useTranslation()
+  const { themeMode } = useTheme()
   // Metric selector moved to the card top-right
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const {
@@ -67,7 +70,7 @@ export default function DashboardPage() {
                     className={`tab whitespace-nowrap px-2 sm:px-3 ${
                       active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
                     }`}
-                    style={active ? { color: ACCENT_BY_METRIC[o.key as MetricKey] } : undefined}
+                    style={active ? { color: metricAccent(o.key as MetricKey, themeMode) } : undefined}
                     onClick={() => setMetric(o.key as MetricKey)}
                   >
                     {o.label}

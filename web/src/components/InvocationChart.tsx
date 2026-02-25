@@ -11,6 +11,8 @@ import {
 } from 'recharts'
 import type { ApiInvocation } from '../lib/api'
 import { useTranslation } from '../i18n'
+import { chartBaseTokens, metricAccent, withOpacity } from '../lib/chartTheme'
+import { useTheme } from '../theme'
 
 interface InvocationChartProps {
   records: ApiInvocation[]
@@ -19,6 +21,7 @@ interface InvocationChartProps {
 
 export function InvocationChart({ records, isLoading }: InvocationChartProps) {
   const { t, locale } = useTranslation()
+  const { themeMode } = useTheme()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
 
   const numberFormatter = useMemo(
@@ -69,6 +72,19 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
     [t],
   )
 
+  const chartColors = useMemo(() => {
+    const base = chartBaseTokens(themeMode)
+    const tokenColor = metricAccent('totalTokens', themeMode)
+    const costColor = metricAccent('totalCost', themeMode)
+    return {
+      ...base,
+      tokenColor,
+      tokenFill: withOpacity(tokenColor, 0.24),
+      costColor,
+      costFill: withOpacity(costColor, 0.2),
+    }
+  }, [themeMode])
+
   const tooltipFormatter = useCallback(
     (value: number, key: string | number) => {
       if (key === 'cost') {
@@ -98,12 +114,15 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
     <div className="h-96 w-full">
       <ResponsiveContainer>
         <AreaChart data={data} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" />
+          <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
           <XAxis
             dataKey="i"
             type="number"
             domain={[0, Math.max(0, data.length - 1)]}
             minTickGap={24}
+            axisLine={{ stroke: chartColors.gridLine }}
+            tickLine={{ stroke: chartColors.gridLine }}
+            tick={{ fill: chartColors.axisText, fontSize: 12 }}
             tickFormatter={(value: number) => {
               const idx = Math.max(0, Math.min(data.length - 1, Math.round(value)))
               const label = data[idx]?.timeLabel
@@ -114,12 +133,18 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
             yAxisId="tokens"
             orientation="left"
             tickFormatter={(value) => numberFormatter.format(value as number)}
+            axisLine={{ stroke: chartColors.gridLine }}
+            tickLine={{ stroke: chartColors.gridLine }}
+            tick={{ fill: chartColors.axisText, fontSize: 12 }}
           />
           <YAxis
             yAxisId="cost"
             orientation="right"
             tickFormatter={(value) => currencyFormatter.format(value as number)}
             width={80}
+            axisLine={{ stroke: chartColors.gridLine }}
+            tickLine={{ stroke: chartColors.gridLine }}
+            tick={{ fill: chartColors.axisText, fontSize: 12 }}
           />
           <Tooltip
             labelFormatter={(value) => {
@@ -127,16 +152,23 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
               return data[idx]?.timeLabel ?? String(idx)
             }}
             formatter={tooltipFormatter}
+            contentStyle={{
+              backgroundColor: chartColors.tooltipBg,
+              borderColor: chartColors.tooltipBorder,
+              borderRadius: 10,
+            }}
+            labelStyle={{ color: chartColors.axisText, fontWeight: 600 }}
+            itemStyle={{ color: chartColors.axisText }}
           />
-          <Legend />
+          <Legend wrapperStyle={{ color: chartColors.axisText }} />
           <Area
             type="monotone"
             dataKey="totalTokens"
             name={seriesNames.totalTokens}
             yAxisId="tokens"
-            stroke="#8b5cf6"
-            fill="#a78bfa"
-            fillOpacity={0.25}
+            stroke={chartColors.tokenColor}
+            fill={chartColors.tokenFill}
+            fillOpacity={1}
             strokeWidth={2}
             isAnimationActive={false}
           />
@@ -145,9 +177,9 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
             dataKey="cost"
             name={seriesNames.cost}
             yAxisId="cost"
-            stroke="#f97316"
-            fill="#fb923c"
-            fillOpacity={0.2}
+            stroke={chartColors.costColor}
+            fill={chartColors.costFill}
+            fillOpacity={1}
             strokeWidth={2}
             isAnimationActive={false}
           />

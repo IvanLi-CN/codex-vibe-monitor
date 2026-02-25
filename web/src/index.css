@@ -8,20 +8,157 @@ body,
   height: 100%;
 }
 
-body {
-  @apply bg-base-200 text-base-content antialiased;
-  /* Ensure all numeric glyphs render with equal width across the app */
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1;
+:root,
+[data-theme='vibe-light'] {
+  color-scheme: light;
+  --color-base-100: oklch(98.7% 0.006 255);
+  --color-base-200: oklch(95.2% 0.01 255);
+  --color-base-300: oklch(90.1% 0.015 257);
+  --color-base-content: oklch(27.2% 0.02 260);
+  --color-primary: oklch(57.5% 0.195 258);
+  --color-primary-content: oklch(97.4% 0.011 258);
+  --color-secondary: oklch(61.5% 0.118 188);
+  --color-secondary-content: oklch(96.2% 0.014 188);
+  --color-accent: oklch(67.7% 0.154 68);
+  --color-accent-content: oklch(24.6% 0.052 58);
+  --color-neutral: oklch(30.8% 0.02 258);
+  --color-neutral-content: oklch(94.8% 0.006 258);
+  --color-info: oklch(69.5% 0.152 236);
+  --color-info-content: oklch(97% 0.014 236);
+  --color-success: oklch(70.2% 0.167 154);
+  --color-success-content: oklch(24.6% 0.046 154);
+  --color-warning: oklch(80.4% 0.167 82);
+  --color-warning-content: oklch(29.8% 0.061 58);
+  --color-error: oklch(66.2% 0.218 26);
+  --color-error-content: oklch(96.4% 0.013 26);
+  --radius-selector: 1.9rem;
+  --radius-field: 0.75rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+  --app-bg-top: #f3f7ff;
+  --app-bg-bottom: #e8eef6;
+  --app-bg-orb-1: rgba(37, 99, 235, 0.22);
+  --app-bg-orb-2: rgba(20, 184, 166, 0.2);
+  --app-grid-color: rgba(100, 116, 139, 0.15);
+  --app-surface-bg: rgba(248, 250, 252, 0.82);
+  --app-surface-border: rgba(148, 163, 184, 0.34);
+  --app-surface-shadow: 0 18px 40px rgba(15, 23, 42, 0.09);
 }
 
-/* Unified card typography */
+[data-theme='vibe-dark'] {
+  color-scheme: dark;
+  --color-base-100: oklch(24.5% 0.019 258);
+  --color-base-200: oklch(18.4% 0.016 258);
+  --color-base-300: oklch(32.1% 0.019 258);
+  --color-base-content: oklch(93.6% 0.013 258);
+  --color-primary: oklch(76.3% 0.133 232);
+  --color-primary-content: oklch(20.8% 0.04 232);
+  --color-secondary: oklch(79.1% 0.113 189);
+  --color-secondary-content: oklch(22.6% 0.04 189);
+  --color-accent: oklch(81.4% 0.149 84);
+  --color-accent-content: oklch(25.3% 0.051 68);
+  --color-neutral: oklch(29.2% 0.025 259);
+  --color-neutral-content: oklch(91.8% 0.01 259);
+  --color-info: oklch(77.1% 0.125 234);
+  --color-info-content: oklch(21.9% 0.032 234);
+  --color-success: oklch(78.4% 0.16 155);
+  --color-success-content: oklch(23.1% 0.043 155);
+  --color-warning: oklch(84.9% 0.163 83);
+  --color-warning-content: oklch(26.4% 0.054 62);
+  --color-error: oklch(75.5% 0.176 24);
+  --color-error-content: oklch(23.4% 0.048 24);
+  --radius-selector: 1.9rem;
+  --radius-field: 0.75rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+  --app-bg-top: #081428;
+  --app-bg-bottom: #10213a;
+  --app-bg-orb-1: rgba(56, 189, 248, 0.22);
+  --app-bg-orb-2: rgba(45, 212, 191, 0.18);
+  --app-grid-color: rgba(148, 163, 184, 0.18);
+  --app-surface-bg: rgba(16, 25, 41, 0.8);
+  --app-surface-border: rgba(148, 163, 184, 0.38);
+  --app-surface-shadow: 0 20px 54px rgba(2, 6, 23, 0.55);
+}
+
+body {
+  @apply bg-base-200 text-base-content antialiased;
+  font-family: 'IBM Plex Sans', 'Avenir Next', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  background-image:
+    radial-gradient(circle at 12% -8%, var(--app-bg-orb-1), transparent 45%),
+    radial-gradient(circle at 88% 4%, var(--app-bg-orb-2), transparent 40%),
+    linear-gradient(180deg, var(--app-bg-top) 0%, var(--app-bg-bottom) 62%),
+    linear-gradient(var(--app-grid-color) 1px, transparent 1px),
+    linear-gradient(90deg, var(--app-grid-color) 1px, transparent 1px);
+  background-size: auto, auto, auto, 28px 28px, 28px 28px;
+  background-position: center, center, center, 0 0, 0 0;
+  background-attachment: fixed;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+* {
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 220ms ease;
+}
+
+.app-shell .card,
+.app-shell .stats,
+.app-shell .table,
+.app-shell .alert,
+.app-shell .dropdown-content {
+  backdrop-filter: blur(10px);
+}
+
+.app-shell .card,
+.app-shell .stats,
+.app-shell .dropdown-content,
+.app-shell .table :where(thead tr, tbody tr:last-child),
+.app-shell .table :where(tfoot tr) {
+  border-color: var(--app-surface-border);
+}
+
+.app-shell .card,
+.app-shell .stats {
+  background-color: var(--app-surface-bg);
+  box-shadow: var(--app-surface-shadow);
+}
+
+.app-shell .table {
+  border-radius: 0.9rem;
+  overflow: hidden;
+}
+
+.app-shell .table :where(thead th) {
+  @apply text-xs font-semibold uppercase tracking-[0.13em] text-base-content opacity-70;
+}
+
+.app-shell .table :where(tbody tr:hover) {
+  background-color: oklch(var(--p) / 0.08);
+}
+
+.app-shell .tabs .tab {
+  border-radius: 9999px;
+}
+
 .card-heading {
   @apply flex flex-col gap-1;
 }
 
 .card-title {
-  @apply text-lg sm:text-xl font-semibold leading-tight tracking-tight text-base-content;
+  @apply text-lg font-semibold leading-tight tracking-tight text-base-content sm:text-xl;
 }
 
 .card-subtitle,
@@ -34,17 +171,15 @@ body {
   @apply text-sm leading-relaxed text-base-content opacity-70;
 }
 
-/* Align stat tiles with the card heading tone */
 .stats .stat-title {
   @apply text-xs font-semibold uppercase text-base-content opacity-70 tracking-[0.14em];
 }
 
-/* Utility to hide scrollbars while preserving scroll behavior */
 .no-scrollbar {
-  -ms-overflow-style: none; /* IE and Edge */
-  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 
 .no-scrollbar::-webkit-scrollbar {
-  display: none; /* Chrome, Safari, Opera */
+  display: none;
 }

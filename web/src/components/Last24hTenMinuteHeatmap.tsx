@@ -4,6 +4,8 @@ import type { TimeseriesPoint } from '../lib/api'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { formatTokensShort } from '../lib/numberFormatters'
+import { heatmapLevels, metricAccent } from '../lib/chartTheme'
+import { useTheme } from '../theme'
 
 export type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
@@ -17,20 +19,6 @@ const METRIC_OPTIONS: MetricOption[] = [
   { key: 'totalCost', labelKey: 'metric.totalCost' },
   { key: 'totalTokens', labelKey: 'metric.totalTokens' },
 ]
-
-// Match palettes used by WeeklyHourlyHeatmap for consistency
-const LEVEL_COLORS_BY_METRIC: Record<MetricKey, string[]> = {
-  totalCount: ['bg-base-300', 'bg-blue-200', 'bg-blue-300', 'bg-blue-400', 'bg-blue-500'],
-  totalCost: ['bg-base-300', 'bg-amber-200', 'bg-amber-300', 'bg-amber-400', 'bg-amber-500'],
-  totalTokens: ['bg-base-300', 'bg-violet-200', 'bg-violet-300', 'bg-violet-400', 'bg-violet-500'],
-}
-
-// eslint-disable-next-line react-refresh/only-export-components
-export const ACCENT_BY_METRIC: Record<MetricKey, string> = {
-  totalCount: '#3B82F6',
-  totalCost: '#F59E0B',
-  totalTokens: '#8B5CF6',
-}
 
 const COLUMN_COUNT = 25
 const HOUR_MS = 3_600_000
@@ -110,6 +98,7 @@ export interface Last24hTenMinuteHeatmapProps {
 
 export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetric, showHeader = true }: Last24hTenMinuteHeatmapProps) {
   const { t, locale } = useTranslation()
+  const { themeMode } = useTheme()
   const [uncontrolledMetric, setUncontrolledMetric] = useState<MetricKey>('totalCount')
   const metric = controlledMetric ?? uncontrolledMetric
   // Force 1-day range with 1-minute buckets, aggregate to 10-minute cells
@@ -129,6 +118,7 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
   )
 
   const grid = useMemo(() => compute24h6(data?.points ?? [], metric), [data?.points, metric])
+  const levelPalette = useMemo(() => heatmapLevels(metric, themeMode), [metric, themeMode])
 
   const formatValue = (value: number) => {
     if (metric === 'totalCost') return currencyFormatter.format(value)
@@ -166,10 +156,10 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
                     type="button"
                     role="tab"
                     aria-selected={active}
-                    className={`tab whitespace-nowrap px-2 sm:px-3 ${
-                      active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
-                    }`}
-                    style={active ? { color: ACCENT_BY_METRIC[o.key] } : undefined}
+                  className={`tab whitespace-nowrap px-2 sm:px-3 ${
+                    active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
+                  }`}
+                    style={active ? { color: metricAccent(o.key, themeMode) } : undefined}
                     onClick={() => setMetric(o.key)}
                   >
                     {o.label}
@@ -217,8 +207,7 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
                         >
                           {row.map((cell, ci) => {
                             const lvl = levelFor(cell.value, grid.max)
-                            const palette = LEVEL_COLORS_BY_METRIC[metric]
-                            const cls = palette[lvl] ?? palette[0]
+                            const color = levelPalette[lvl] ?? levelPalette[0]
                             const formatted = formatValue(cell.value)
                             const slotStart = cell.columnStart + cell.slot * SLOT_MS
                             const slotEnd = Math.min(cell.columnEnd, slotStart + SLOT_MS - 1)
@@ -242,7 +231,7 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
                                 aria-label={title}
                                 title={title}
                               >
-                                <div className={`${cls} h-5 w-5 sm:h-6 sm:w-6 rounded-sm`} />
+                                <div className="h-5 w-5 rounded-sm sm:h-6 sm:w-6" style={{ backgroundColor: color }} />
                                 <div
                                   className={`pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] sm:text-xs leading-tight text-base-content shadow-md opacity-0 group-hover:opacity-100 ${verticalClass}`}
                                 >

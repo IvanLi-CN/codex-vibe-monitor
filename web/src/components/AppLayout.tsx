@@ -9,6 +9,7 @@ import type { VersionResponse } from '../lib/api'
 import { frontendVersion, normalizeVersion } from '../lib/version'
 import { useTranslation } from '../i18n'
 import { supportedLocales, type Locale } from '../i18n'
+import { useTheme } from '../theme'
 
 const navItems = [
   { to: '/dashboard', labelKey: 'app.nav.dashboard' },
@@ -26,6 +27,7 @@ const OFFLINE_NOTICE_THRESHOLD_MS = 2 * 60 * 1000
 
 export function AppLayout() {
   const { t, locale, setLocale } = useTranslation()
+  const { themeMode, toggleTheme } = useTheme()
   const [pulse, setPulse] = useState(false)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const animationDurationMs = 1400
@@ -125,7 +127,7 @@ export function AppLayout() {
       document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('keydown', handleKeyDown)
     }
-    }, [languageMenuOpen])
+  }, [languageMenuOpen])
 
   const normalizedFrontendVersion = normalizeVersion(frontendVersion)
   const normalizedBackendVersion = versionInfo?.backend ? normalizeVersion(versionInfo.backend) : null
@@ -144,7 +146,7 @@ export function AppLayout() {
         <span className="font-mono text-base-content/60">
           <del style={{ textDecorationColor: 'currentColor' }}>{oldV}</del>
         </span>
-        <span aria-hidden>{' '}										{' 		'}→{' '}</span>
+        <span aria-hidden>{' '}→{' '}</span>
         <a
           className="link font-mono"
           href={releaseLink ?? undefined}
@@ -167,68 +169,93 @@ export function AppLayout() {
     isSseDisabled ? 'border-warning/80' : 'border-primary/70'
   } ${isReconnecting ? 'opacity-95 animate-orbit-spin' : 'opacity-0'}`
 
+  const isDarkTheme = themeMode === 'dark'
+  const themeLabel = t(isDarkTheme ? 'app.theme.currentDark' : 'app.theme.currentLight')
+  const themeSwitcherLabel = t(isDarkTheme ? 'app.theme.switchToLight' : 'app.theme.switchToDark')
+
   return (
-    <div className="min-h-screen bg-base-200 text-base-content">
-      <header className="navbar bg-base-100 border-b border-base-300 sticky top-0 z-50">
-        <div className="flex flex-1 items-center gap-2 px-4">
-          <span className="relative inline-flex items-center justify-center">
-            <span
-              className={`pointer-events-none absolute inline-flex h-16 w-16 rounded-full bg-gradient-to-r from-primary/30 via-primary/5 to-primary/30 opacity-0 transition-opacity ${
-                pulse ? 'opacity-95 animate-pulse-glow' : ''
-              }`}
-              aria-hidden
-            />
-            <span className={reconnectRingClass} aria-hidden />
-            <span
-              className={`pointer-events-none absolute inline-flex h-12 w-12 rounded-full border-2 border-primary/70 transition-opacity ${
-                pulse ? 'opacity-100 animate-pulse-ring' : 'opacity-0'
-              }`}
-              aria-hidden
-            />
-            <span
-              className={`pointer-events-none absolute inline-flex h-10 w-10 rounded-full bg-primary/30 blur-md transition-opacity ${
-                pulse ? 'opacity-80' : 'opacity-0'
-              }`}
-              aria-hidden
-            />
-            <img src="/favicon.svg" alt={t('app.logoAlt')} className={logoImageClass} />
-          </span>
-          <span className="text-xl font-semibold">{t('app.brand')}</span>
-        </div>
-        <nav className="flex-none flex items-center gap-4">
-          <ul className="menu menu-horizontal px-1">
-            {navItems.map((item) => (
-              <li key={item.to}>
-                <NavLink
-                  to={item.to}
-                  className={({ isActive }) =>
-                    isActive ? 'active font-semibold text-primary' : 'font-medium'
-                  }
-                >
-                  {t(item.labelKey)}
-                </NavLink>
-              </li>
-            ))}
-          </ul>
-          <div className="flex items-center">
+    <div className="app-shell min-h-screen text-base-content">
+      <header className="navbar sticky top-0 z-50 border-b border-base-300/75 bg-base-100/80 backdrop-blur-md">
+        <div className="mx-auto flex w-full max-w-[1200px] items-center gap-2 px-4 py-2">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <span className="relative inline-flex items-center justify-center">
+              <span
+                className={`pointer-events-none absolute inline-flex h-16 w-16 rounded-full bg-gradient-to-r from-primary/30 via-primary/5 to-primary/30 opacity-0 transition-opacity ${
+                  pulse ? 'opacity-95 animate-pulse-glow' : ''
+                }`}
+                aria-hidden
+              />
+              <span className={reconnectRingClass} aria-hidden />
+              <span
+                className={`pointer-events-none absolute inline-flex h-12 w-12 rounded-full border-2 border-primary/70 transition-opacity ${
+                  pulse ? 'opacity-100 animate-pulse-ring' : 'opacity-0'
+                }`}
+                aria-hidden
+              />
+              <span
+                className={`pointer-events-none absolute inline-flex h-10 w-10 rounded-full bg-primary/30 blur-md transition-opacity ${
+                  pulse ? 'opacity-80' : 'opacity-0'
+                }`}
+                aria-hidden
+              />
+              <img src="/favicon.svg" alt={t('app.logoAlt')} className={logoImageClass} />
+            </span>
+            <span className="truncate text-lg font-semibold tracking-tight sm:text-xl">{t('app.brand')}</span>
+          </div>
+
+          <nav className="flex shrink-0 items-center gap-2 sm:gap-3">
+            <div className="max-w-[40vw] overflow-x-auto no-scrollbar sm:max-w-none">
+              <ul className="menu menu-horizontal rounded-full border border-base-300/70 bg-base-100/70 px-1 py-1">
+                {navItems.map((item) => (
+                  <li key={item.to}>
+                    <NavLink
+                      to={item.to}
+                      className={({ isActive }) =>
+                        isActive
+                          ? 'active rounded-full bg-primary/15 font-semibold text-primary'
+                          : 'rounded-full font-medium text-base-content/75 hover:bg-base-200/70 hover:text-base-content'
+                      }
+                    >
+                      {t(item.labelKey)}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost gap-2 border border-base-300/70 bg-base-100/75 hover:bg-base-200/75"
+              onClick={toggleTheme}
+              aria-label={t('app.theme.switcherAria')}
+              title={themeSwitcherLabel}
+            >
+              <Icon
+                icon={isDarkTheme ? 'mdi:weather-night' : 'mdi:white-balance-sunny'}
+                className="h-4 w-4 text-primary"
+                aria-hidden
+              />
+              <span className="hidden md:inline">{themeLabel}</span>
+            </button>
+
             <div
               ref={languageMenuRef}
               className={`dropdown dropdown-end dropdown-bottom ${languageMenuOpen ? 'dropdown-open' : ''}`}
             >
               <button
                 type="button"
-                className="btn btn-sm btn-ghost gap-2"
+                className="btn btn-sm btn-ghost gap-2 border border-base-300/70 bg-base-100/75 hover:bg-base-200/75"
                 aria-haspopup="listbox"
                 aria-expanded={languageMenuOpen}
                 aria-label={t('app.language.switcherAria')}
                 onClick={toggleLanguageMenu}
               >
                 <Icon icon="mdi:earth" className="h-5 w-5 text-base-content/70" aria-hidden />
-                <span>{activeChoice?.label}</span>
+                <span className="hidden sm:inline">{activeChoice?.label}</span>
                 <Icon icon="mdi:chevron-down" className="h-4 w-4 text-base-content/60" aria-hidden />
               </button>
               <ul
-                className="dropdown-content menu menu-sm rounded-box bg-base-100 p-2 mt-2 shadow border border-base-200"
+                className="dropdown-content menu menu-sm mt-2 rounded-box border border-base-300 bg-base-100/95 p-2 shadow-lg backdrop-blur"
                 role="listbox"
                 aria-label={t('app.language.switcherAria')}
               >
@@ -236,8 +263,8 @@ export function AppLayout() {
                   <li key={choice.code} role="presentation">
                     <button
                       type="button"
-                      className={`flex items-center gap-2 px-2 py-1 rounded-btn ${
-                        choice.code === locale ? 'bg-base-200 text-primary font-medium' : 'hover:bg-base-200'
+                      className={`flex items-center gap-2 rounded-btn px-2 py-1 ${
+                        choice.code === locale ? 'bg-primary/15 font-medium text-primary' : 'hover:bg-base-200'
                       }`}
                       onClick={() => {
                         handleLocaleChange(choice.code)
@@ -253,11 +280,11 @@ export function AppLayout() {
                 ))}
               </ul>
             </div>
-          </div>
-        </nav>
+          </nav>
+        </div>
       </header>
       {showOfflineBanner && (
-        <div className="fixed top-[72px] left-1/2 z-[60] w-full max-w-3xl -translate-x-1/2 px-4">
+        <div className="fixed left-1/2 top-[78px] z-[60] w-full max-w-3xl -translate-x-1/2 px-4">
           <div
             className="alert w-full flex flex-col gap-3 bg-warning/90 text-warning-content shadow-lg border border-warning/60 sm:flex-row sm:items-center"
             role="status"
@@ -288,72 +315,74 @@ export function AppLayout() {
         </div>
       )}
       {update.visible && (
-        <div className="alert alert-info rounded-none sticky top-[64px] z-40">
-          <div className="flex flex-1 flex-wrap items-center gap-3">
+        <div className="alert alert-info sticky top-[70px] z-40 mx-auto mt-2 w-[calc(100%-2rem)] max-w-[1200px] rounded-box border border-info/40 shadow">
+          <div className="flex flex-1 flex-wrap items-center gap-3 text-info-content">
             <span>
               {t('app.update.available')}{' '}
               <span className="font-mono">{versionInfo?.backend ?? t('app.update.current')}</span>
               {' → '}
               <span className="font-mono">{update.availableVersion}</span>
             </span>
-            <div className="flex gap-2 ml-auto">
+            <div className="ml-auto flex gap-2">
               <button className="btn btn-sm btn-primary" onClick={update.reload}>{t('app.update.refresh')}</button>
               <button className="btn btn-sm" onClick={update.dismiss}>{t('app.update.later')}</button>
             </div>
           </div>
         </div>
       )}
-      <main className="px-4 py-6 pb-16">
+      <main className="mx-auto w-full max-w-[1200px] px-4 py-6 pb-8">
         <Outlet />
       </main>
-      <footer className="bt border-base-300 bg-base-100 text-sm text-base-content/70 w-full py-2 px-4 fixed bottom-0 left-0 flex items-center justify-between">
-        <span>{t('app.footer.copyright')}</span>
-        <div className="flex items-center gap-4">
-          <a
-            className="link flex items-center gap-1"
-            href={repositoryUrl}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={t('app.footer.githubAria')}
-          >
-            <Icon icon="mdi:github" className="h-4 w-4" aria-hidden />
-            <span>GitHub</span>
-          </a>
-          <div className="flex items-center gap-2">
-            {sameVersion && normalizedBackendVersion ? (
-              releaseLink ? (
-                <a
-                  className="link font-mono"
-                  href={releaseLink}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {normalizedBackendVersion}
-                </a>
+      <footer className="border-t border-base-300/75 bg-base-100/80 text-sm text-base-content/70 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-[1200px] flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <span>{t('app.footer.copyright')}</span>
+          <div className="flex flex-wrap items-center gap-4">
+            <a
+              className="link flex items-center gap-1"
+              href={repositoryUrl}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={t('app.footer.githubAria')}
+            >
+              <Icon icon="mdi:github" className="h-4 w-4" aria-hidden />
+              <span>GitHub</span>
+            </a>
+            <div className="flex items-center gap-2">
+              {sameVersion && normalizedBackendVersion ? (
+                releaseLink ? (
+                  <a
+                    className="link font-mono"
+                    href={releaseLink}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {normalizedBackendVersion}
+                  </a>
+                ) : (
+                  <span className="font-mono">{normalizedFrontendVersion}</span>
+                )
+              ) : normalizedBackendVersion ? (
+                <span className="inline-flex items-center gap-2">
+                  {renderDiffVersion(normalizedFrontendVersion, normalizedBackendVersion)}
+                  {backendLoading && (
+                    <span className="flex items-center gap-1 text-base-content/60" aria-live="polite">
+                      <Icon icon="mdi:loading" className="h-3 w-3 animate-spin" aria-hidden />
+                      <span className="sr-only">{t('app.footer.loadingVersion')}</span>
+                    </span>
+                  )}
+                </span>
               ) : (
-                <span className="font-mono">{normalizedFrontendVersion}</span>
-              )
-            ) : normalizedBackendVersion ? (
-              <span className="inline-flex items-center gap-2">
-                {renderDiffVersion(normalizedFrontendVersion, normalizedBackendVersion)}
-                {backendLoading && (
-                  <span className="flex items-center gap-1 text-base-content/60" aria-live="polite">
-                    <Icon icon="mdi:loading" className="h-3 w-3 animate-spin" aria-hidden />
-                    <span className="sr-only">{t('app.footer.loadingVersion')}</span>
-                  </span>
-                )}
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-2">
-                <span className="font-mono">{normalizedFrontendVersion}</span>
-                {backendLoading && (
-                  <span className="flex items-center gap-1 text-base-content/60" aria-live="polite">
-                    <Icon icon="mdi:loading" className="h-3 w-3 animate-spin" aria-hidden />
-                    <span className="sr-only">{t('app.footer.loadingVersion')}</span>
-                  </span>
-                )}
-              </span>
-            )}
+                <span className="inline-flex items-center gap-2">
+                  <span className="font-mono">{normalizedFrontendVersion}</span>
+                  {backendLoading && (
+                    <span className="flex items-center gap-1 text-base-content/60" aria-live="polite">
+                      <Icon icon="mdi:loading" className="h-3 w-3 animate-spin" aria-hidden />
+                      <span className="sr-only">{t('app.footer.loadingVersion')}</span>
+                    </span>
+                  )}
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </footer>

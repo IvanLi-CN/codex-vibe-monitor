@@ -7,6 +7,8 @@ import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { formatTokensShort } from '../lib/numberFormatters'
 import { getBrowserTimeZone } from '../lib/timeZone'
+import { calendarPalette, metricAccent } from '../lib/chartTheme'
+import { useTheme } from '../theme'
 
 type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
@@ -38,38 +40,6 @@ const MIN_BLOCK_SIZE = 8
 const MAX_BLOCK_SIZE = 20
 const WEEKDAY_LABEL_SPACE = 16
 
-// Use DaisyUI/Tailwind aligned palette so it visually matches
-// the 7-day heatmap (WeeklyHourlyHeatmap.tsx).
-// Level0 uses base-300 token rendered through color function; DaisyUI exports
-// `--b3` as OKLCH components, so we must wrap it with `oklch(...)` (directly
-// using `var(--b3)` would resolve to "black").
-// Use explicit HEX for zero level to avoid SVG var()/oklch() incompatibilities
-// in presentation attributes. This matches DaisyUI base-300 in light theme.
-const BASE_ZERO = { light: '#E5E7EB', dark: '#374151' }
-const THEME_BY_METRIC: Record<MetricKey, { light: string[]; dark: string[] }> = {
-// Counts palette: blue family (200..500)
-  totalCount: {
-    light: [BASE_ZERO.light, '#BFDBFE', '#93C5FD', '#60A5FA', '#3B82F6'],
-    dark: [BASE_ZERO.dark, '#93C5FD', '#60A5FA', '#3B82F6', '#1D4ED8'],
-  },
-  // Cost palette: amber/orange family (200..500)
-  totalCost: {
-    light: [BASE_ZERO.light, '#FDE68A', '#FCD34D', '#F59E0B', '#D97706'],
-    dark: [BASE_ZERO.dark, '#FCD34D', '#F59E0B', '#D97706', '#B45309'],
-  },
-  // Tokens palette: violet family (200..500)
-  totalTokens: {
-    light: [BASE_ZERO.light, '#DDD6FE', '#C4B5FD', '#A78BFA', '#8B5CF6'],
-    dark: [BASE_ZERO.dark, '#C4B5FD', '#A78BFA', '#8B5CF6', '#7C3AED'],
-  },
-}
-
-const ACCENT_BY_METRIC: Record<MetricKey, string> = {
-  totalCount: '#3B82F6',
-  totalCost: '#F59E0B',
-  totalTokens: '#8B5CF6',
-}
-
 interface CalendarTooltipState {
   x: number
   y: number
@@ -79,6 +49,7 @@ interface CalendarTooltipState {
 
 export function UsageCalendar() {
   const { t, locale } = useTranslation()
+  const { themeMode } = useTheme()
   const timeZone = getBrowserTimeZone()
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const { data, isLoading, error } = useTimeseries('90d', { bucket: '1d' })
@@ -87,8 +58,6 @@ export function UsageCalendar() {
   const [tooltip, setTooltip] = useState<CalendarTooltipState | null>(null)
   // tabs width measurement removed (no longer needed for sizing)
   const [leftOffset, setLeftOffset] = useState(0) // svg.marginLeft introduced by weekday labels
-  const colorProbeRef = useRef<HTMLSpanElement>(null)
-  const [baseZeroColor, setBaseZeroColor] = useState<string>(BASE_ZERO.light)
 
   const legendLabels = useMemo(
     () => ({
@@ -160,20 +129,6 @@ export function UsageCalendar() {
     [locale, t],
   )
 
-  // Probe actual theme color for base-300 to match 7-day heatmap exactly
-  useLayoutEffect(() => {
-    const el = colorProbeRef.current
-    if (!el) return
-    const read = () => {
-      const bg = getComputedStyle(el).backgroundColor
-      if (bg && bg !== baseZeroColor) setBaseZeroColor(bg)
-    }
-    read()
-    const ro = new ResizeObserver(read)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [baseZeroColor])
-
   useLayoutEffect(() => {
     if (!containerRef.current || calendarData.weekCount === 0) return
     const node = containerRef.current
@@ -240,14 +195,13 @@ export function UsageCalendar() {
 
   const calendarLoading = isLoading || calendarData.activities.length === 0
 
-  // Build theme palette with runtime-resolved zero level color
-  const themeForMetric = useMemo(() => {
-    const base = THEME_BY_METRIC[metric]
-    return {
-      light: [baseZeroColor, ...base.light.slice(1)],
-      dark: [baseZeroColor, ...base.dark.slice(1)],
-    }
-  }, [metric, baseZeroColor])
+  const themeForMetric = useMemo(
+    () => ({
+      light: calendarPalette(metric, 'light'),
+      dark: calendarPalette(metric, 'dark'),
+    }),
+    [metric],
+  )
 
   return (
     <section
@@ -280,7 +234,7 @@ export function UsageCalendar() {
                     className={`tab whitespace-nowrap px-2 sm:px-3 ${
                       active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
                     }`}
-                    style={active ? { color: ACCENT_BY_METRIC[option.key] } : undefined}
+                    style={active ? { color: metricAccent(option.key, themeMode) } : undefined}
                     onClick={() => setMetric(option.key)}
                   >
                     {option.label}
@@ -303,8 +257,6 @@ export function UsageCalendar() {
                 style={minContainerWidth ? { minWidth: `${minContainerWidth}px` } : undefined}
                 data-testid="usage-calendar-wrapper"
               >
-                {/* Theme color probe to fetch exact bg-base-300 value */}
-                <span ref={colorProbeRef} className="invisible absolute h-0 w-0 bg-base-300" aria-hidden />
                 <MonthLabelOverlay
                   markers={calendarData.monthMarkers}
                   blockSize={blockSize}
@@ -322,7 +274,7 @@ export function UsageCalendar() {
                   weekStart={1}
                   maxLevel={MAX_LEVEL}
                   theme={themeForMetric}
-                  colorScheme="light"
+                  colorScheme={themeMode}
                   hideTotalCount
                   hideColorLegend
                   hideMonthLabels
