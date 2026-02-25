@@ -2,11 +2,11 @@ import { useCallback, useMemo, useState } from 'react'
 import { InvocationChart } from '../components/InvocationChart'
 import { InvocationTable } from '../components/InvocationTable'
 import { StatsCards } from '../components/StatsCards'
-import { Button } from '../components/ui/button'
 import { useInvocationStream } from '../hooks/useInvocations'
 import { useSummary } from '../hooks/useStats'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
+import { cn } from '../lib/utils'
 
 const LIMIT_OPTIONS = [20, 50, 100]
 const SUMMARY_WINDOWS: { value: string; labelKey: TranslationKey }[] = [
@@ -51,22 +51,20 @@ export default function LivePage() {
             <div className="section-heading">
               <h2 className="section-title">{t('live.summary.title')}</h2>
             </div>
-            <div className="inline-flex items-center gap-1 rounded-full border border-base-300/75 bg-base-100/75 p-1">
+            <div className="segment-group" role="tablist" aria-label={t('live.summary.title')}>
               {summaryWindows.map((option) => (
-                <Button
+                <button
                   key={option.value}
                   type="button"
-                  size="sm"
+                  role="tab"
+                  aria-selected={summaryWindow === option.value}
                   aria-pressed={summaryWindow === option.value}
                   onClick={() => setSummaryWindow(option.value)}
-                  className={
-                    summaryWindow === option.value
-                      ? 'h-8 rounded-full bg-primary/15 px-3 text-primary hover:bg-primary/20'
-                      : 'h-8 rounded-full px-3 text-base-content/75 hover:bg-base-200/70 hover:text-base-content'
-                  }
+                  className={cn('segment-button px-3', summaryWindow === option.value && 'font-semibold')}
+                  data-active={summaryWindow === option.value}
                 >
                   {option.label}
-                </Button>
+                </button>
               ))}
             </div>
           </div>
