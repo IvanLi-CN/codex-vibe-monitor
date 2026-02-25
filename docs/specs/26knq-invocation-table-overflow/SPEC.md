@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（3/4）
+- Status: 已完成
 - Created: 2026-02-26
 - Last: 2026-02-26
 
@@ -125,7 +125,7 @@
 - [x] M1: InvocationTable 去除固定最小宽度导致的伪横向溢出，并保持现有展示行为。
 - [x] M2: 新增 Dashboard + Live 共享表格布局 E2E 回归用例。
 - [x] M3: 完成 `npm run build` 与 E2E 验证。
-- [ ] M4: 完成快车道交付（commit/push/PR/checks/review-loop）。
+- [x] M4: 完成快车道交付（commit/push/PR/checks/review-loop）。
 
 ## 方案概述（Approach, high-level）
 
@@ -142,6 +142,7 @@
 
 - 2026-02-26: 创建规格并记录线上复现基线（Dashboard: `clientWidth=1108`、`scrollWidth=1152`、`maxScrollLeft=44`；首行展开按钮默认被裁剪约 `31px`）。
 - 2026-02-26: 完成组件宽度修复与 E2E 回归（新增 `web/tests/e2e/invocation-table-layout.spec.ts`），本地验证 `npm run build` 与新增 E2E 均通过。
+- 2026-02-26: 完成快车道收敛：PR #56 已创建并打上 `type:patch` + `channel:stable`，CI/checks 通过；review-loop 第 1 轮发现的 HashRouter 路径问题已修复并回归通过。
 
 ## 参考（References）
 
