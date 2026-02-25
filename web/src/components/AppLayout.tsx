@@ -11,6 +11,7 @@ import { useTranslation } from '../i18n'
 import { supportedLocales, type Locale } from '../i18n'
 import { useTheme } from '../theme'
 import { Button } from './ui/button'
+import { cn } from '../lib/utils'
 
 const navItems = [
   { to: '/dashboard', labelKey: 'app.nav.dashboard' },
@@ -206,15 +207,13 @@ export function AppLayout() {
 
           <nav className="flex shrink-0 items-center gap-2 sm:gap-3">
             <div className="max-w-[40vw] overflow-x-auto no-scrollbar sm:max-w-none">
-              <ul className="flex items-center gap-1 rounded-full border border-base-300/70 bg-base-100/70 px-1 py-1">
+              <ul className="segment-group">
                 {navItems.map((item) => (
                   <li key={item.to}>
                     <NavLink
                       to={item.to}
                       className={({ isActive }) =>
-                        isActive
-                          ? 'inline-flex rounded-full bg-primary/15 px-3.5 py-2 text-sm font-semibold text-primary'
-                          : 'inline-flex rounded-full px-3.5 py-2 text-sm font-medium text-base-content/75 hover:bg-base-200/70 hover:text-base-content'
+                        cn('app-nav-item', isActive && 'app-nav-item-active')
                       }
                     >
                       {t(item.labelKey)}
