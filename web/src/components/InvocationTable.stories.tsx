@@ -22,7 +22,7 @@ const records: ApiInvocation[] = [
     totalTokens: 1930,
     cost: 0.0037,
     requesterIp: '203.0.113.42',
-    codexSessionId: 'cxs_6f35b9b20f0348af',
+    promptCacheKey: 'pck_6f35b9b20f0348af',
     tReqReadMs: 1.8,
     tReqParseMs: 3.2,
     tUpstreamConnectMs: 26.1,
