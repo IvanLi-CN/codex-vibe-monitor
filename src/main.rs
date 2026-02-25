@@ -6371,6 +6371,7 @@ struct ApiInvocation {
     failure_class: Option<String>,
     #[sqlx(default)]
     is_actionable: Option<bool>,
+    #[sqlx(default)]
     endpoint: Option<String>,
     #[sqlx(default)]
     requester_ip: Option<String>,
