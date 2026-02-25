@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchInvocations } from '../lib/api'
 import type { ApiInvocation, BroadcastPayload } from '../lib/api'
-import { subscribeToSse } from '../lib/sse'
+import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 
 export interface InvocationFilters {
   model?: string
@@ -57,44 +57,53 @@ export function useInvocationStream(
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const enableStream = options?.enableStream ?? true
+  const hasHydratedRef = useRef(false)
+  const lastResyncAtRef = useRef(0)
+
+  const load = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const shouldShowLoading = !(opts?.silent && hasHydratedRef.current)
+      if (shouldShowLoading) {
+        setIsLoading(true)
+      }
+      try {
+        const response = await fetchInvocations(limit, filters)
+        setRecords((current) =>
+          mergeRecords(response.records, opts?.silent ? current : [], limit, filters),
+        )
+        hasHydratedRef.current = true
+        setError(null)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [filters, limit],
+  )
 
   useEffect(() => {
-    let isMounted = true
-    setIsLoading(true)
-    fetchInvocations(limit, filters)
-      .then((response) => {
-        if (!isMounted) return
-        const next = mergeRecords(response.records, [], limit, filters)
-        setRecords(next)
-        setError(null)
-      })
-      .catch((err) => {
-        if (!isMounted) return
-        setError(err.message)
-      })
-      .finally(() => {
-        if (isMounted) setIsLoading(false)
-      })
-
-    return () => {
-      isMounted = false
-    }
-  }, [filters, limit])
+    hasHydratedRef.current = false
+    lastResyncAtRef.current = 0
+    void load()
+  }, [load])
 
   // Auto-retry if initial load failed (e.g., backend temporarily unavailable)
   useEffect(() => {
     if (!error || records.length > 0) return
     const id = setTimeout(() => {
-      fetchInvocations(limit, filters)
-        .then((response) => {
-          const next = mergeRecords(response.records, [], limit, filters)
-          setRecords(next)
-          setError(null)
-        })
-        .catch((err) => setError(err.message))
+      void load()
     }, 2000)
     return () => clearTimeout(id)
-  }, [error, filters, limit, records.length])
+  }, [error, load, records.length])
+
+  const requestResync = useCallback(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+    const now = Date.now()
+    if (now - lastResyncAtRef.current < 3000) return
+    lastResyncAtRef.current = now
+    void load({ silent: true })
+  }, [load])
 
   useEffect(() => {
     if (!enableStream) {
@@ -126,6 +135,16 @@ export function useInvocationStream(
 
     return unsubscribe
   }, [enableStream, filters, limit, onNewRecords])
+
+  useEffect(() => {
+    if (!enableStream) {
+      return
+    }
+    const unsubscribe = subscribeToSseOpen(() => {
+      requestResync()
+    })
+    return unsubscribe
+  }, [enableStream, requestResync])
 
   const hasData = useMemo(() => records.length > 0, [records])
 
