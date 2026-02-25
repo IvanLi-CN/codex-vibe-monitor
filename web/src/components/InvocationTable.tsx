@@ -191,7 +191,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
               { label: 'table.details.source', value: record.source || FALLBACK_CELL },
               { label: 'table.details.endpoint', value: record.endpoint || FALLBACK_CELL },
               { label: 'table.details.requesterIp', value: record.requesterIp || FALLBACK_CELL },
-              { label: 'table.details.codexSessionId', value: record.codexSessionId || FALLBACK_CELL },
+              { label: 'table.details.promptCacheKey', value: record.promptCacheKey || FALLBACK_CELL },
               { label: 'table.details.failureKind', value: record.failureKind || FALLBACK_CELL },
             ]
             const timingPairs: Array<{ label: TranslationKey; value: string }> = [
