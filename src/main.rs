@@ -9,7 +9,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -224,6 +224,8 @@ async fn main() -> Result<()> {
         pool,
         http_clients,
         broadcaster: tx.clone(),
+        proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+        proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         semaphore: semaphore.clone(),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -3668,7 +3670,7 @@ async fn proxy_openai_v1_capture_target(
                 },
             };
             if let Err(err) =
-                persist_proxy_capture_record(&state.pool, capture_started, record).await
+                persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record).await
             {
                 warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
             }
@@ -3772,7 +3774,7 @@ async fn proxy_openai_v1_capture_target(
                 },
             };
             if let Err(err) =
-                persist_proxy_capture_record(&state.pool, capture_started, record).await
+                persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record).await
             {
                 warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
             }
@@ -3828,7 +3830,7 @@ async fn proxy_openai_v1_capture_target(
                 },
             };
             if let Err(err) =
-                persist_proxy_capture_record(&state.pool, capture_started, record).await
+                persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record).await
             {
                 warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
             }
@@ -3889,7 +3891,7 @@ async fn proxy_openai_v1_capture_target(
                 },
             };
             if let Err(err) =
-                persist_proxy_capture_record(&state.pool, capture_started, record).await
+                persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record).await
             {
                 warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
             }
@@ -4084,7 +4086,8 @@ async fn proxy_openai_v1_capture_target(
         };
 
         if let Err(err) =
-            persist_proxy_capture_record(&state_for_task.pool, capture_started, record).await
+            persist_and_broadcast_proxy_capture(state_for_task.as_ref(), capture_started, record)
+                .await
         {
             warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
         }
@@ -4682,17 +4685,134 @@ fn compute_raw_expires_at(now_utc: DateTime<Utc>, retention: Duration) -> Option
         .map(|d| format_naive((now_utc + d).naive_utc()))
 }
 
+async fn persist_and_broadcast_proxy_capture(
+    state: &AppState,
+    capture_started: Instant,
+    record: ProxyCaptureRecord,
+) -> Result<()> {
+    let inserted = persist_proxy_capture_record(&state.pool, capture_started, record).await?;
+    let Some(inserted_record) = inserted else {
+        return Ok(());
+    };
+    if state.broadcaster.receiver_count() == 0 {
+        return Ok(());
+    }
+
+    let invoke_id = inserted_record.invoke_id.clone();
+    if let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
+        records: vec![inserted_record],
+    }) {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast new proxy capture record"
+        );
+    }
+
+    state
+        .proxy_summary_quota_broadcast_seq
+        .fetch_add(1, Ordering::Relaxed);
+    if state
+        .proxy_summary_quota_broadcast_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    let latest_broadcast_seq = state.proxy_summary_quota_broadcast_seq.clone();
+    let broadcast_running = state.proxy_summary_quota_broadcast_running.clone();
+    let pool = state.pool.clone();
+    let broadcaster = state.broadcaster.clone();
+    let relay_config = state.config.crs_stats.clone();
+    tokio::spawn(async move {
+        let mut synced_seq = 0_u64;
+        loop {
+            let target_seq = latest_broadcast_seq.load(Ordering::Acquire);
+            if target_seq == synced_seq {
+                broadcast_running.store(false, Ordering::Release);
+                if latest_broadcast_seq.load(Ordering::Acquire) != synced_seq
+                    && broadcast_running
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
+                    continue;
+                }
+                break;
+            }
+            synced_seq = target_seq;
+
+            if broadcaster.receiver_count() == 0 {
+                continue;
+            }
+
+            match collect_summary_snapshots(&pool, relay_config.as_ref()).await {
+                Ok(summaries) => {
+                    for summary in summaries {
+                        if let Err(err) = broadcaster.send(BroadcastPayload::Summary {
+                            window: summary.window.clone(),
+                            summary: summary.summary,
+                        }) {
+                            warn!(
+                                ?err,
+                                invoke_id = %invoke_id,
+                                window = %summary.window,
+                                "failed to broadcast proxy summary payload"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        invoke_id = %invoke_id,
+                        "failed to collect summary snapshots after proxy capture persistence"
+                    );
+                }
+            }
+
+            if broadcaster.receiver_count() == 0 {
+                continue;
+            }
+
+            match QuotaSnapshotResponse::fetch_latest(&pool).await {
+                Ok(Some(snapshot)) => {
+                    if let Err(err) = broadcaster.send(BroadcastPayload::Quota {
+                        snapshot: Box::new(snapshot),
+                    }) {
+                        warn!(
+                            ?err,
+                            invoke_id = %invoke_id,
+                            "failed to broadcast proxy quota snapshot"
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        invoke_id = %invoke_id,
+                        "failed to fetch latest quota snapshot after proxy capture persistence"
+                    );
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
 async fn persist_proxy_capture_record(
     pool: &Pool<Sqlite>,
     capture_started: Instant,
     mut record: ProxyCaptureRecord,
-) -> Result<()> {
+) -> Result<Option<ApiInvocation>> {
     let failure = classify_invocation_failure(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
     );
     let persist_started = Instant::now();
-    sqlx::query(
+    let insert_result = sqlx::query(
         r#"
         INSERT OR IGNORE INTO codex_invocations (
             invoke_id,
@@ -4796,7 +4916,62 @@ async fn persist_proxy_capture_record(
     .bind(&record.occurred_at)
     .execute(pool)
     .await?;
-    Ok(())
+
+    if insert_result.rows_affected() == 0 {
+        return Ok(None);
+    }
+
+    let inserted = sqlx::query_as::<_, ApiInvocation>(
+        r#"
+        SELECT
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            reasoning_tokens,
+            total_tokens,
+            cost,
+            status,
+            error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
+            cost_estimated,
+            price_version,
+            request_raw_path,
+            request_raw_size,
+            request_raw_truncated,
+            request_raw_truncated_reason,
+            response_raw_path,
+            response_raw_size,
+            response_raw_truncated,
+            response_raw_truncated_reason,
+            raw_expires_at,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms,
+            created_at
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&record.invoke_id)
+    .bind(&record.occurred_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(Some(inserted))
 }
 
 async fn backfill_proxy_usage_tokens(pool: &Pool<Sqlite>) -> Result<ProxyUsageBackfillSummary> {
@@ -5853,6 +6028,8 @@ struct AppState {
     pool: Pool<Sqlite>,
     http_clients: HttpClients,
     broadcaster: broadcast::Sender<BroadcastPayload>,
+    proxy_summary_quota_broadcast_seq: Arc<AtomicU64>,
+    proxy_summary_quota_broadcast_running: Arc<AtomicBool>,
     semaphore: Arc<Semaphore>,
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,
@@ -7075,6 +7252,7 @@ mod tests {
     use sqlx::{Connection, SqliteConnection, SqlitePool};
     use std::{
         borrow::Cow,
+        collections::HashSet,
         fs,
         path::{Path, PathBuf},
         sync::Arc,
@@ -7401,12 +7579,112 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
         })
+    }
+
+    fn test_stage_timings() -> StageTimings {
+        StageTimings {
+            t_total_ms: 0.0,
+            t_req_read_ms: 0.0,
+            t_req_parse_ms: 0.0,
+            t_upstream_connect_ms: 0.0,
+            t_upstream_ttfb_ms: 0.0,
+            t_upstream_stream_ms: 0.0,
+            t_resp_parse_ms: 0.0,
+            t_persist_ms: 0.0,
+        }
+    }
+
+    fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCaptureRecord {
+        ProxyCaptureRecord {
+            invoke_id: invoke_id.to_string(),
+            occurred_at: occurred_at.to_string(),
+            model: Some("gpt-5.2-codex".to_string()),
+            usage: ParsedUsage {
+                input_tokens: Some(12),
+                output_tokens: Some(3),
+                cache_input_tokens: Some(2),
+                reasoning_tokens: Some(0),
+                total_tokens: Some(15),
+            },
+            cost: Some(0.0123),
+            cost_estimated: true,
+            price_version: Some("unit-test".to_string()),
+            status: "success".to_string(),
+            error_message: None,
+            payload: Some(
+                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false}"
+                    .to_string(),
+            ),
+            raw_response: "{}".to_string(),
+            req_raw: RawPayloadMeta::default(),
+            resp_raw: RawPayloadMeta::default(),
+            raw_expires_at: None,
+            timings: test_stage_timings(),
+        }
+    }
+
+    async fn seed_quota_snapshot(pool: &SqlitePool, captured_at: &str) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_quota_snapshots (
+                captured_at,
+                amount_limit,
+                used_amount,
+                remaining_amount,
+                period,
+                period_reset_time,
+                expire_time,
+                is_active,
+                total_cost,
+                total_requests,
+                total_tokens,
+                last_request_time,
+                billing_type,
+                remaining_count,
+                used_count,
+                sub_type_name
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            "#,
+        )
+        .bind(captured_at)
+        .bind(Some(100.0))
+        .bind(Some(10.0))
+        .bind(Some(90.0))
+        .bind(Some("monthly"))
+        .bind(Some("2026-03-01 00:00:00"))
+        .bind(None::<String>)
+        .bind(1_i64)
+        .bind(10.0)
+        .bind(9_i64)
+        .bind(150_i64)
+        .bind(Some(captured_at))
+        .bind(Some("prepaid"))
+        .bind(Some(91_i64))
+        .bind(Some(9_i64))
+        .bind(Some("unit"))
+        .execute(pool)
+        .await
+        .expect("seed quota snapshot");
+    }
+
+    async fn drain_broadcast_messages(rx: &mut broadcast::Receiver<BroadcastPayload>) {
+        loop {
+            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(_)) => continue,
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(broadcast::error::RecvError::Closed)) => break,
+                Err(_) => break,
+            }
+        }
     }
 
     async fn test_upstream_echo(
@@ -8864,6 +9142,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
                 hijack_enabled: true,
@@ -9125,6 +9405,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
+        )
+        .await;
+        let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        seed_quota_snapshot(&state.pool, &now_local).await;
+
+        let mut rx = state.broadcaster.subscribe();
+        let invoke_id = "proxy-sse-broadcast-success";
+        persist_and_broadcast_proxy_capture(
+            state.as_ref(),
+            Instant::now(),
+            test_proxy_capture_record(invoke_id, &now_local),
+        )
+        .await
+        .expect("persist+broadcast should succeed");
+
+        let mut saw_record = false;
+        let mut saw_quota = false;
+        let mut summary_windows = HashSet::new();
+        let expected_summary_windows = summary_broadcast_specs().len();
+        for _ in 0..16 {
+            let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("timed out waiting for proxy broadcast event")
+                .expect("broadcast channel should stay open");
+            match payload {
+                BroadcastPayload::Records { records } => {
+                    if records.len() == 1 && records[0].invoke_id == invoke_id {
+                        saw_record = true;
+                    }
+                }
+                BroadcastPayload::Summary { window, summary } => {
+                    summary_windows.insert(window.clone());
+                    if window == "all" {
+                        assert_eq!(summary.total_count, 1);
+                    }
+                }
+                BroadcastPayload::Quota { snapshot } => {
+                    saw_quota = true;
+                    assert_eq!(snapshot.total_requests, 9);
+                }
+                BroadcastPayload::Version { .. } => {}
+            }
+
+            if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
+                break;
+            }
+        }
+
+        assert!(saw_record, "records payload should be broadcast");
+        assert!(saw_quota, "quota payload should be broadcast");
+        assert_eq!(
+            summary_windows.len(),
+            expected_summary_windows,
+            "all summary windows should be broadcast"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_capture_persist_and_broadcast_skips_duplicate_records() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let invoke_id = "proxy-sse-broadcast-duplicate";
+        let mut rx = state.broadcaster.subscribe();
+
+        persist_and_broadcast_proxy_capture(
+            state.as_ref(),
+            Instant::now(),
+            test_proxy_capture_record(invoke_id, &occurred_at),
+        )
+        .await
+        .expect("initial persist+broadcast should succeed");
+
+        drain_broadcast_messages(&mut rx).await;
+
+        persist_and_broadcast_proxy_capture(
+            state.as_ref(),
+            Instant::now(),
+            test_proxy_capture_record(invoke_id, &occurred_at),
+        )
+        .await
+        .expect("duplicate persist should not fail");
+
+        let deadline = Instant::now() + Duration::from_millis(400);
+        while Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                Ok(Ok(BroadcastPayload::Records { records })) => {
+                    assert!(
+                        records.iter().all(|record| record.invoke_id != invoke_id),
+                        "duplicate insert should not emit records payload for the same invoke_id"
+                    );
+                }
+                Ok(Ok(_)) => continue,
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(broadcast::error::RecvError::Closed)) => break,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn read_request_body_timeout_returns_408() {
         #[derive(sqlx::FromRow)]
         struct PersistedRow {
@@ -9381,6 +9767,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -9493,6 +9881,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -9647,6 +10037,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -9700,6 +10092,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -10484,6 +10878,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
