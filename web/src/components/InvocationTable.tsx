@@ -98,26 +98,26 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto rounded-box border border-base-300/60 bg-base-100">
       <table className="table table-zebra">
         <thead>
           <tr>
-            <th>{t('table.column.time')}</th>
-            <th>{t('table.column.model')}</th>
-            <th>{t('table.column.status')}</th>
-            <th>{t('table.column.inputTokens')}</th>
-            <th>{t('table.column.outputTokens')}</th>
-            <th>{t('table.column.cacheInputTokens')}</th>
-            <th>{t('table.column.totalTokens')}</th>
-            <th>{t('table.column.costUsd')}</th>
-            <th>
+            <th className="whitespace-nowrap">{t('table.column.time')}</th>
+            <th className="whitespace-nowrap">{t('table.column.model')}</th>
+            <th className="whitespace-nowrap">{t('table.column.status')}</th>
+            <th className="whitespace-nowrap">{t('table.column.inputTokens')}</th>
+            <th className="whitespace-nowrap">{t('table.column.outputTokens')}</th>
+            <th className="whitespace-nowrap">{t('table.column.cacheInputTokens')}</th>
+            <th className="whitespace-nowrap">{t('table.column.totalTokens')}</th>
+            <th className="whitespace-nowrap">{t('table.column.costUsd')}</th>
+            <th className="whitespace-nowrap">
               <div className="flex flex-col leading-tight">
                 <span>{t('table.column.latency')}</span>
                 <span className="text-xs text-base-content/60">{t('table.latency.firstByteTotal')}</span>
               </div>
             </th>
             <th>{t('table.column.error')}</th>
-            <th className="w-12 text-right">
+            <th className="sticky right-0 z-20 w-12 bg-base-100 text-right">
               <span className="sr-only">{toggleLabels.header}</span>
             </th>
           </tr>
@@ -173,8 +173,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                   <td>{formatOptionalNumber(record.inputTokens, numberFormatter)}</td>
                   <td>{formatOptionalNumber(record.outputTokens, numberFormatter)}</td>
                   <td>{formatOptionalNumber(record.cacheInputTokens, numberFormatter)}</td>
-                  <td>{formatOptionalNumber(record.totalTokens, numberFormatter)}</td>
-                  <td>{typeof record.cost === 'number' ? currencyFormatter.format(record.cost) : FALLBACK_CELL}</td>
+                  <td className="whitespace-nowrap">{formatOptionalNumber(record.totalTokens, numberFormatter)}</td>
+                  <td className="whitespace-nowrap">{typeof record.cost === 'number' ? currencyFormatter.format(record.cost) : FALLBACK_CELL}</td>
                   <td className="whitespace-nowrap">{latencySummary}</td>
                   <td className="max-w-xs">
                     {errorMessage ? (
@@ -185,7 +185,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       FALLBACK_CELL
                     )}
                   </td>
-                  <td className="text-right">
+                  <td className="sticky right-0 z-10 bg-base-100/95 text-right backdrop-blur">
                     <button
                       type="button"
                       className="inline-flex items-center justify-end gap-1 text-lg leading-none text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
