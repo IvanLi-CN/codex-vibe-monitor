@@ -8,7 +8,7 @@
 
 | ID    | Title                                                               | Status | Spec                                         | Last       | Notes                |
 | ----- | ------------------------------------------------------------------- | ------ | -------------------------------------------- | ---------- | -------------------- |
-| s8d2w | Dashboard 顶部替换“配额概览”为“今日统计信息”（Bento）               | 已完成 | `s8d2w-dashboard-today-stats-bento/SPEC.md`  | 2026-02-26 | local (PR pending)   |
+| s8d2w | Dashboard 顶部替换“配额概览”为“今日统计信息”（Bento）               | 已完成 | `s8d2w-dashboard-today-stats-bento/SPEC.md`  | 2026-02-26 | PR #58               |
 | 5932d | SSE 驱动的请求记录与统计实时更新                                    | 已完成 | `5932d-sse-proxy-live-sync/SPEC.md`          | 2026-02-25 | PR #52               |
 | jpg66 | 设置页切换为 shadcn 风格并优化亮/暗主题可读性                       | 已完成 | `jpg66-settings-shadcn-refresh/SPEC.md`      | 2026-02-25 | 已完成并通过视觉确认 |
 | q86c7 | 接入 ui-ux-pro-max（Codex）并修正 .gitignore 追踪策略               | 已完成 | `q86c7-setup-uipro-codex/SPEC.md`            | 2026-02-24 | PR #50               |
