@@ -7,8 +7,8 @@ const VIEWPORTS = [
 ]
 
 const TARGET_PAGES = [
-  { path: '/dashboard', label: 'dashboard' },
-  { path: '/live', label: 'live' },
+  { path: '/#/dashboard', label: 'dashboard', hashPath: '#/dashboard' },
+  { path: '/#/live', label: 'live', hashPath: '#/live' },
 ]
 
 const INVOCATION_FIXTURE = {
@@ -99,6 +99,7 @@ test.describe('InvocationTable layout regression', () => {
         await page.setViewportSize(viewport)
         await mockInvocations(page)
         await page.goto(target.path)
+        await expect(page).toHaveURL(new RegExp(`${target.hashPath}$`))
 
         const metrics = await readTableMetrics(page)
         test.info().annotations.push({
