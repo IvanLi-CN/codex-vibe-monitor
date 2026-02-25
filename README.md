@@ -110,6 +110,7 @@ XY_LEGACY_POLL_ENABLED=false                   # (false，true 时启用 legacy 
 XY_MAX_PARALLEL_POLLS=6                        # (6)
 XY_SHARED_CONNECTION_PARALLELISM=2             # (2)
 XY_HTTP_BIND=127.0.0.1:8080                    # (127.0.0.1:8080)
+XY_CORS_ALLOWED_ORIGINS=                        # (可选，逗号分隔，允许跨域 Origin 白名单)
 XY_LIST_LIMIT_MAX=200                          # (200)
 XY_USER_AGENT=codex-vibe-monitor/0.2.0         # (自动)
 XY_STATIC_DIR=web/dist                         # (存在时自动使用)
