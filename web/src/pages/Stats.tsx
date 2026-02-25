@@ -9,6 +9,7 @@ import { useFailureSummary } from '../hooks/useFailureSummary'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { ErrorReasonPieChart } from '../components/ErrorReasonPieChart'
+import { Alert } from '../components/ui/alert'
 import type { FailureScope } from '../lib/api'
 
 const RANGE_OPTIONS = [
@@ -126,16 +127,16 @@ export default function StatsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-      <section className="card bg-base-100 shadow-sm">
-        <div className="card-body gap-4">
+      <section className="surface-panel">
+        <div className="surface-panel-body gap-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="card-heading">
-              <h2 className="card-title">{t('stats.title')}</h2>
-              <p className="card-description">{t('stats.subtitle')}</p>
+            <div className="section-heading">
+              <h2 className="section-title">{t('stats.title')}</h2>
+              <p className="section-description">{t('stats.subtitle')}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <select
-                className="select select-bordered select-sm min-w-[8.5rem]"
+                className="field-select field-select-sm min-w-[8.5rem]"
                 value={range}
                 onChange={(event) => setRange(event.target.value as typeof range)}
               >
@@ -146,7 +147,7 @@ export default function StatsPage() {
                 ))}
               </select>
               <select
-                className="select select-bordered select-sm min-w-[7rem]"
+                className="field-select field-select-sm min-w-[7rem]"
                 value={effectiveBucket}
                 onChange={(event) => setBucket(event.target.value)}
               >
@@ -163,13 +164,13 @@ export default function StatsPage() {
       </section>
 
 
-      <section className="card bg-base-100 shadow-sm">
-        <div className="card-body gap-4">
-          <div className="card-heading">
-            <h3 className="card-title">{t('stats.trendTitle')}</h3>
+      <section className="surface-panel">
+        <div className="surface-panel-body gap-4">
+          <div className="section-heading">
+            <h3 className="section-title">{t('stats.trendTitle')}</h3>
           </div>
           {timeseriesError ? (
-            <div className="alert alert-error">{timeseriesError}</div>
+            <Alert variant="error">{timeseriesError}</Alert>
           ) : (
             <TimeseriesChart
               points={timeseries?.points ?? []}
@@ -180,13 +181,13 @@ export default function StatsPage() {
         </div>
       </section>
 
-      <section className="card bg-base-100 shadow-sm">
-        <div className="card-body gap-4">
-          <div className="card-heading">
-            <h3 className="card-title">{t('stats.successFailureTitle')}</h3>
+      <section className="surface-panel">
+        <div className="surface-panel-body gap-4">
+          <div className="section-heading">
+            <h3 className="section-title">{t('stats.successFailureTitle')}</h3>
           </div>
           {timeseriesError ? (
-            <div className="alert alert-error">{timeseriesError}</div>
+            <Alert variant="error">{timeseriesError}</Alert>
           ) : (
             <SuccessFailureChart
               points={timeseries?.points ?? []}
@@ -197,25 +198,25 @@ export default function StatsPage() {
         </div>
       </section>
 
-      <section className="card bg-base-100 shadow-sm">
-        <div className="card-body gap-4">
+      <section className="surface-panel">
+        <div className="surface-panel-body gap-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="card-heading">
-              <h3 className="card-title">{t('stats.errors.title')}</h3>
+            <div className="section-heading">
+              <h3 className="section-title">{t('stats.errors.title')}</h3>
               {failureSummaryError ? (
-                <p className="card-description text-error">{failureSummaryError}</p>
+                <p className="section-description text-error">{failureSummaryError}</p>
               ) : (
-                <p className="card-description">
+                <p className="section-description">
                   {t('stats.errors.actionableRate', {
                     rate: `${((failureSummary?.actionableFailureRate ?? 0) * 100).toFixed(1)}%`,
                   })}
                 </p>
               )}
             </div>
-            <label className="form-control w-full max-w-[14rem]">
-              <span className="label-text text-sm">{t('stats.errors.scope.label')}</span>
+            <label className="field w-full max-w-[14rem]">
+              <span className="field-label text-sm">{t('stats.errors.scope.label')}</span>
               <select
-                className="select select-bordered select-sm"
+                className="field-select field-select-sm"
                 value={errorScope}
                 onChange={(event) => setErrorScope(event.target.value as FailureScope)}
               >
@@ -227,34 +228,34 @@ export default function StatsPage() {
               </select>
             </label>
           </div>
-          <div className="stats stats-vertical sm:stats-horizontal w-full border border-base-300 bg-base-100">
-            <div className="stat">
-              <div className="stat-title">{t('stats.errors.summary.service')}</div>
-              <div className="stat-value text-error text-2xl">
+          <div className="metric-grid w-full grid-cols-1 sm:grid-cols-4">
+            <div className="metric-cell">
+              <div className="metric-label">{t('stats.errors.summary.service')}</div>
+              <div className="metric-value text-error text-2xl">
                 {failureSummaryLoading ? '—' : failureSummary?.serviceFailureCount ?? 0}
               </div>
             </div>
-            <div className="stat">
-              <div className="stat-title">{t('stats.errors.summary.client')}</div>
-              <div className="stat-value text-warning text-2xl">
+            <div className="metric-cell">
+              <div className="metric-label">{t('stats.errors.summary.client')}</div>
+              <div className="metric-value text-warning text-2xl">
                 {failureSummaryLoading ? '—' : failureSummary?.clientFailureCount ?? 0}
               </div>
             </div>
-            <div className="stat">
-              <div className="stat-title">{t('stats.errors.summary.abort')}</div>
-              <div className="stat-value text-info text-2xl">
+            <div className="metric-cell">
+              <div className="metric-label">{t('stats.errors.summary.abort')}</div>
+              <div className="metric-value text-info text-2xl">
                 {failureSummaryLoading ? '—' : failureSummary?.clientAbortCount ?? 0}
               </div>
             </div>
-            <div className="stat">
-              <div className="stat-title">{t('stats.errors.summary.actionable')}</div>
-              <div className="stat-value text-secondary text-2xl">
+            <div className="metric-cell">
+              <div className="metric-label">{t('stats.errors.summary.actionable')}</div>
+              <div className="metric-value text-secondary text-2xl">
                 {failureSummaryLoading ? '—' : failureSummary?.actionableFailureCount ?? 0}
               </div>
             </div>
           </div>
           {errorsError ? (
-            <div className="alert alert-error">{errorsError}</div>
+            <Alert variant="error">{errorsError}</Alert>
           ) : (
             <ErrorReasonPieChart items={errors?.items ?? []} isLoading={errorsLoading} />
           )}

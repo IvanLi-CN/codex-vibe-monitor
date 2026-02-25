@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@iconify/react'
+import { Badge } from '../components/ui/badge'
+import { Alert } from '../components/ui/alert'
+import { Button } from '../components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { Input } from '../components/ui/input'
+import { Switch } from '../components/ui/switch'
 import { useSettings } from '../hooks/useSettings'
 import type { PricingEntry, PricingSettings } from '../lib/api'
+import { cn } from '../lib/utils'
 import { useTranslation } from '../i18n'
 
 type PricingDraftEntry = {
@@ -19,6 +26,9 @@ type PricingDraft = {
 }
 
 const AUTO_SAVE_DEBOUNCE_MS = 600
+const pricingTableHeaderCellClass =
+  'px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/65'
+const pricingTableBodyCellClass = 'align-middle px-4 py-3'
 
 function normalizeDraftEntry(entry: PricingDraftEntry): PricingDraftEntry {
   return {
@@ -120,10 +130,10 @@ function stablePricingKey(value: PricingSettings | null): string {
   })
 }
 
-function sourceBadgeClass(source: string): string {
-  if (source === 'official') return 'badge-success'
-  if (source === 'temporary') return 'badge-warning'
-  return 'badge-ghost'
+function sourceBadgeVariant(source: string): 'success' | 'warning' | 'secondary' {
+  if (source === 'official') return 'success'
+  if (source === 'temporary') return 'warning'
+  return 'secondary'
 }
 
 export default function SettingsPage() {
@@ -367,51 +377,53 @@ export default function SettingsPage() {
   }
 
   return (
-    <section className="mx-auto max-w-6xl space-y-6">
+    <section className="settings-page mx-auto max-w-6xl space-y-6 pb-2">
       <div>
         <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
         <p className="mt-1 text-sm text-base-content/70">{t('settings.description')}</p>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <article className="rounded-box border border-base-300 bg-base-100 p-4 shadow-sm">
-          <h2 className="text-lg font-medium">{t('settings.proxy.title')}</h2>
-          <p className="mt-1 text-sm text-base-content/70">{t('settings.proxy.description')}</p>
+      <div className="grid items-start gap-6 lg:grid-cols-2">
+        <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+          <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
+            <CardTitle>{t('settings.proxy.title')}</CardTitle>
+            <CardDescription>{t('settings.proxy.description')}</CardDescription>
+          </CardHeader>
 
-          <div className="mt-4 space-y-3">
-            <label className="flex items-start justify-between gap-3 rounded-lg border border-base-300 p-3">
-              <div>
-                <div className="font-medium">{t('settings.proxy.hijackLabel')}</div>
-                <div className="text-sm text-base-content/70">{t('settings.proxy.hijackHint')}</div>
+          <CardContent className="space-y-4 pt-4">
+            <label className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 rounded-xl border border-base-300/75 bg-base-100/72 px-4 py-4">
+              <div className="space-y-1">
+                <div className="font-medium leading-snug">{t('settings.proxy.hijackLabel')}</div>
+                <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.hijackHint')}</div>
               </div>
-              <input
-                type="checkbox"
-                className="toggle toggle-primary"
-                checked={currentProxy.hijackEnabled}
-                disabled={isProxySaving}
-                onChange={handleToggleHijack}
-              />
+              <div className="pt-0.5">
+                <Switch
+                  checked={currentProxy.hijackEnabled}
+                  disabled={isProxySaving}
+                  onCheckedChange={() => handleToggleHijack()}
+                />
+              </div>
             </label>
 
-            <label className="flex items-start justify-between gap-3 rounded-lg border border-base-300 p-3">
-              <div>
-                <div className="font-medium">{t('settings.proxy.mergeLabel')}</div>
-                <div className="text-sm text-base-content/70">{t('settings.proxy.mergeHint')}</div>
+            <label className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 rounded-xl border border-base-300/75 bg-base-100/72 px-4 py-4">
+              <div className="space-y-1">
+                <div className="font-medium leading-snug">{t('settings.proxy.mergeLabel')}</div>
+                <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.mergeHint')}</div>
                 {!currentProxy.hijackEnabled && (
                   <div className="mt-1 text-xs text-warning">{t('settings.proxy.mergeDisabledHint')}</div>
                 )}
               </div>
-              <input
-                type="checkbox"
-                className="toggle toggle-primary"
-                checked={currentProxy.mergeUpstreamEnabled}
-                disabled={isProxySaving || !currentProxy.hijackEnabled}
-                onChange={handleToggleMergeUpstream}
-              />
+              <div className="pt-0.5">
+                <Switch
+                  checked={currentProxy.mergeUpstreamEnabled}
+                  disabled={isProxySaving || !currentProxy.hijackEnabled}
+                  onCheckedChange={() => handleToggleMergeUpstream()}
+                />
+              </div>
             </label>
 
-            <div className="rounded-lg border border-base-300 p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+              <div className="mb-3 flex items-center justify-between gap-2">
                 <div className="font-medium">{t('settings.proxy.presetModels')}</div>
                 <span className="text-xs text-base-content/70">
                   {t('settings.proxy.enabledCount', {
@@ -426,18 +438,21 @@ export default function SettingsPage() {
                   return (
                     <label
                       key={modelId}
-                      className={`flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2 ${
-                        enabled ? 'border-primary/50 bg-primary/5' : 'border-base-300 bg-base-100'
-                      } ${isProxySaving ? 'cursor-not-allowed opacity-70' : ''}`}
+                      className={cn(
+                        'flex min-h-12 items-center gap-3 rounded-lg border px-3.5 py-2.5',
+                        enabled ? 'border-primary/45 bg-primary/10' : 'border-base-300/85 bg-base-100/68',
+                        isProxySaving ? 'opacity-70' : 'hover:border-primary/40',
+                      )}
                     >
-                      <span className="truncate font-mono text-sm">{modelId}</span>
-                      <input
-                        type="checkbox"
-                        className="checkbox checkbox-sm checkbox-primary"
-                        checked={enabled}
-                        disabled={isProxySaving}
-                        onChange={() => handleTogglePresetModel(modelId)}
-                      />
+                      <span className="truncate pr-2 font-mono text-sm">{modelId}</span>
+                      <div className="ml-auto shrink-0">
+                        <Switch
+                          checked={enabled}
+                          disabled={isProxySaving}
+                          aria-label={modelId}
+                          onCheckedChange={() => handleTogglePresetModel(modelId)}
+                        />
+                      </div>
                     </label>
                   )
                 })}
@@ -448,127 +463,141 @@ export default function SettingsPage() {
             </div>
 
             <div className="text-xs text-base-content/70">{isProxySaving ? t('settings.saving') : t('settings.autoSaved')}</div>
-          </div>
-        </article>
+          </CardContent>
+        </Card>
 
-        <article className="rounded-box border border-base-300 bg-base-100 p-4 shadow-sm">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-medium">{t('settings.pricing.title')}</h2>
-              <p className="mt-1 text-sm text-base-content/70">{t('settings.pricing.description')}</p>
+        <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+          <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
+            <div className="space-y-1.5">
+              <CardTitle>{t('settings.pricing.title')}</CardTitle>
+              <CardDescription>{t('settings.pricing.description')}</CardDescription>
             </div>
-            <button type="button" className="btn btn-sm btn-primary" onClick={handleAddPricingEntry}>
-              <Icon icon="mdi:plus" className="h-4 w-4" aria-hidden />
+            <Button type="button" size="sm" className="h-9 gap-1.5 px-3.5" onClick={handleAddPricingEntry}>
+              <Icon icon="mdi:plus" className="h-[18px] w-[18px]" aria-hidden />
               {t('settings.pricing.add')}
-            </button>
-          </div>
+            </Button>
+          </CardHeader>
 
-          <label className="form-control mt-4">
-            <div className="label py-1">
-              <span className="label-text">{t('settings.pricing.catalogVersion')}</span>
+          <CardContent className="space-y-5 pt-4">
+            <div className="space-y-2">
+              <label htmlFor="pricing-catalog-version" className="block text-sm font-medium text-base-content/75">
+                {t('settings.pricing.catalogVersion')}
+              </label>
+              <Input
+                id="pricing-catalog-version"
+                type="text"
+                className="max-w-md"
+                value={pricingDraft.catalogVersion}
+                onChange={(event) => handleCatalogVersionChange(event.target.value)}
+                onBlur={() => triggerPricingSave(true)}
+              />
             </div>
-            <input
-              type="text"
-              className="input input-bordered input-sm"
-              value={pricingDraft.catalogVersion}
-              onChange={(event) => handleCatalogVersionChange(event.target.value)}
-              onBlur={() => triggerPricingSave(true)}
-            />
-          </label>
 
-          <div className="mt-4 overflow-x-auto">
-            <table className="table table-zebra table-sm">
-              <thead>
-                <tr>
-                  <th>{t('settings.pricing.columns.model')}</th>
-                  <th>{t('settings.pricing.columns.input')}</th>
-                  <th>{t('settings.pricing.columns.output')}</th>
-                  <th>{t('settings.pricing.columns.cacheInput')}</th>
-                  <th>{t('settings.pricing.columns.reasoning')}</th>
-                  <th>{t('settings.pricing.columns.source')}</th>
-                  <th>{t('settings.pricing.columns.actions')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pricingDraft.entries.map((entry, index) => (
-                  <tr key={index}>
-                    <td>
-                      <input
-                        type="text"
-                        className="input input-bordered input-xs w-44"
-                        value={entry.model}
-                        onChange={(event) => handlePricingFieldChange(index, 'model', event.target.value)}
-                        onBlur={() => triggerPricingSave(true)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        step="any"
-                        className="input input-bordered input-xs w-28"
-                        value={entry.inputPer1m}
-                        onChange={(event) => handlePricingFieldChange(index, 'inputPer1m', event.target.value)}
-                        onBlur={() => triggerPricingSave(true)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        step="any"
-                        className="input input-bordered input-xs w-28"
-                        value={entry.outputPer1m}
-                        onChange={(event) => handlePricingFieldChange(index, 'outputPer1m', event.target.value)}
-                        onBlur={() => triggerPricingSave(true)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        step="any"
-                        className="input input-bordered input-xs w-28"
-                        value={entry.cacheInputPer1m}
-                        onChange={(event) => handlePricingFieldChange(index, 'cacheInputPer1m', event.target.value)}
-                        onBlur={() => triggerPricingSave(true)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        step="any"
-                        className="input input-bordered input-xs w-28"
-                        value={entry.reasoningPer1m}
-                        onChange={(event) => handlePricingFieldChange(index, 'reasoningPer1m', event.target.value)}
-                        onBlur={() => triggerPricingSave(true)}
-                      />
-                    </td>
-                    <td>
-                      <span className={`badge badge-sm ${sourceBadgeClass(entry.source)}`}>{entry.source}</span>
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-xs text-error"
-                        onClick={() => handleRemovePricingEntry(index)}
-                      >
-                        {t('settings.pricing.remove')}
-                      </button>
-                    </td>
+            <div className="overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72">
+              <table className="w-full min-w-[56rem] table-fixed text-sm">
+                <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
+                  <tr>
+                    <th className={cn('w-44', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.model')}</th>
+                    <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.input')}</th>
+                    <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.output')}</th>
+                    <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.cacheInput')}</th>
+                    <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.reasoning')}</th>
+                    <th className={cn('w-28 whitespace-nowrap', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.source')}</th>
+                    <th className={cn('w-24 whitespace-nowrap text-right', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.actions')}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-base-300/65">
+                  {pricingDraft.entries.map((entry, index) => (
+                    <tr
+                      key={index}
+                      className={cn(
+                        'transition-colors',
+                        index % 2 === 0 ? 'bg-base-100/38' : 'bg-base-200/22',
+                        'hover:bg-primary/6',
+                      )}
+                    >
+                      <td className={pricingTableBodyCellClass}>
+                        <Input
+                          type="text"
+                          className="h-9 px-3"
+                          value={entry.model}
+                          onChange={(event) => handlePricingFieldChange(index, 'model', event.target.value)}
+                          onBlur={() => triggerPricingSave(true)}
+                        />
+                      </td>
+                      <td className={pricingTableBodyCellClass}>
+                        <Input
+                          type="number"
+                          step="any"
+                          className="h-9 px-3"
+                          value={entry.inputPer1m}
+                          onChange={(event) => handlePricingFieldChange(index, 'inputPer1m', event.target.value)}
+                          onBlur={() => triggerPricingSave(true)}
+                        />
+                      </td>
+                      <td className={pricingTableBodyCellClass}>
+                        <Input
+                          type="number"
+                          step="any"
+                          className="h-9 px-3"
+                          value={entry.outputPer1m}
+                          onChange={(event) => handlePricingFieldChange(index, 'outputPer1m', event.target.value)}
+                          onBlur={() => triggerPricingSave(true)}
+                        />
+                      </td>
+                      <td className={pricingTableBodyCellClass}>
+                        <Input
+                          type="number"
+                          step="any"
+                          className="h-9 px-3"
+                          value={entry.cacheInputPer1m}
+                          onChange={(event) => handlePricingFieldChange(index, 'cacheInputPer1m', event.target.value)}
+                          onBlur={() => triggerPricingSave(true)}
+                        />
+                      </td>
+                      <td className={pricingTableBodyCellClass}>
+                        <Input
+                          type="number"
+                          step="any"
+                          className="h-9 px-3"
+                          value={entry.reasoningPer1m}
+                          onChange={(event) => handlePricingFieldChange(index, 'reasoningPer1m', event.target.value)}
+                          onBlur={() => triggerPricingSave(true)}
+                        />
+                      </td>
+                      <td className={cn(pricingTableBodyCellClass, 'whitespace-nowrap')}>
+                        <Badge variant={sourceBadgeVariant(entry.source)} className="inline-flex min-w-[5rem] justify-center">
+                          {entry.source}
+                        </Badge>
+                      </td>
+                      <td className={cn(pricingTableBodyCellClass, 'text-right whitespace-nowrap')}>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 px-2.5 text-error hover:bg-error/10"
+                          onClick={() => handleRemovePricingEntry(index)}
+                        >
+                          {t('settings.pricing.remove')}
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-base-content/70">
-              {isPricingSaving ? t('settings.saving') : t('settings.autoSaved')}
-            </span>
-            {pricingErrorKey && <span className="text-error">{t(pricingErrorKey)}</span>}
-          </div>
-        </article>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-base-content/70">
+                {isPricingSaving ? t('settings.saving') : t('settings.autoSaved')}
+              </span>
+              {pricingErrorKey && <span className="text-error">{t(pricingErrorKey)}</span>}
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
-      {error && <div className="alert alert-error text-sm">{t('settings.loadError', { error })}</div>}
+      {error && <Alert variant="error" className="text-sm">{t('settings.loadError', { error })}</Alert>}
     </section>
   )
 }

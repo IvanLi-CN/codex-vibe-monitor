@@ -4,16 +4,20 @@ import { QuotaOverview } from '../components/QuotaOverview'
 import { StatsCards } from '../components/StatsCards'
 import { UsageCalendar } from '../components/UsageCalendar'
 import { WeeklyHourlyHeatmap } from '../components/WeeklyHourlyHeatmap'
-import { Last24hTenMinuteHeatmap, type MetricKey, ACCENT_BY_METRIC } from '../components/Last24hTenMinuteHeatmap'
+import { Last24hTenMinuteHeatmap, type MetricKey } from '../components/Last24hTenMinuteHeatmap'
 import { useInvocationStream } from '../hooks/useInvocations'
 import { useQuotaSnapshot } from '../hooks/useQuotaSnapshot'
 import { useSummary } from '../hooks/useStats'
 import { useTranslation } from '../i18n'
+import { metricAccent } from '../lib/chartTheme'
+import { cn } from '../lib/utils'
+import { useTheme } from '../theme'
 
 const RECENT_LIMIT = 20
 
 export default function DashboardPage() {
   const { t } = useTranslation()
+  const { themeMode } = useTheme()
   // Metric selector moved to the card top-right
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const {
@@ -45,13 +49,13 @@ export default function DashboardPage() {
 
       <WeeklyHourlyHeatmap />
 
-      <section className="card bg-base-100 shadow-sm overflow-visible">
-        <div className="card-body gap-6">
+      <section className="surface-panel overflow-visible">
+        <div className="surface-panel-body gap-6">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="card-heading">
-              <h2 className="card-title">{t('dashboard.section.summaryTitle')}</h2>
+            <div className="section-heading">
+              <h2 className="section-title">{t('dashboard.section.summaryTitle')}</h2>
             </div>
-            <div className="tabs tabs-sm tabs-border" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
+            <div className="segment-group" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
               {[
                 { key: 'totalCount', label: t('metric.totalCount') },
                 { key: 'totalCost', label: t('metric.totalCost') },
@@ -64,10 +68,9 @@ export default function DashboardPage() {
                     type="button"
                     role="tab"
                     aria-selected={active}
-                    className={`tab whitespace-nowrap px-2 sm:px-3 ${
-                      active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
-                    }`}
-                    style={active ? { color: ACCENT_BY_METRIC[o.key as MetricKey] } : undefined}
+                    className={cn('segment-button px-2 sm:px-3', active && 'font-semibold')}
+                    data-active={active}
+                    style={active ? { color: metricAccent(o.key as MetricKey, themeMode) } : undefined}
                     onClick={() => setMetric(o.key as MetricKey)}
                   >
                     {o.label}
@@ -82,11 +85,11 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      <section className="card bg-base-100 shadow-sm">
-        <div className="card-body gap-4">
+      <section className="surface-panel">
+        <div className="surface-panel-body gap-4">
           <div className="flex items-center justify-between">
-            <div className="card-heading">
-              <h2 className="card-title">{t('dashboard.section.recentLiveTitle', { count: RECENT_LIMIT })}</h2>
+            <div className="section-heading">
+              <h2 className="section-title">{t('dashboard.section.recentLiveTitle', { count: RECENT_LIMIT })}</h2>
             </div>
           </div>
           <InvocationTable records={records} isLoading={tableLoading} error={tableError} />

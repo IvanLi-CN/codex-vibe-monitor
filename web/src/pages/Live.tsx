@@ -6,6 +6,7 @@ import { useInvocationStream } from '../hooks/useInvocations'
 import { useSummary } from '../hooks/useStats'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
+import { cn } from '../lib/utils'
 
 const LIMIT_OPTIONS = [20, 50, 100]
 const SUMMARY_WINDOWS: { value: string; labelKey: TranslationKey }[] = [
@@ -44,24 +45,26 @@ export default function LivePage() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-      <section className="card bg-base-100 shadow-sm">
-        <div className="card-body gap-4">
+      <section className="surface-panel">
+        <div className="surface-panel-body gap-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="card-heading">
-              <h2 className="card-title">{t('live.summary.title')}</h2>
+            <div className="section-heading">
+              <h2 className="section-title">{t('live.summary.title')}</h2>
             </div>
-            <div className="join">
+            <div className="segment-group" role="tablist" aria-label={t('live.summary.title')}>
               {summaryWindows.map((option) => (
-                <input
+                <button
                   key={option.value}
-                  type="radio"
-                  name="summary-window"
-                  aria-label={option.label}
-                  className="btn join-item"
-                  value={option.value}
-                  checked={summaryWindow === option.value}
-                  onChange={() => setSummaryWindow(option.value)}
-                />
+                  type="button"
+                  role="tab"
+                  aria-selected={summaryWindow === option.value}
+                  aria-pressed={summaryWindow === option.value}
+                  onClick={() => setSummaryWindow(option.value)}
+                  className={cn('segment-button px-3', summaryWindow === option.value && 'font-semibold')}
+                  data-active={summaryWindow === option.value}
+                >
+                  {option.label}
+                </button>
               ))}
             </div>
           </div>
@@ -69,18 +72,16 @@ export default function LivePage() {
         </div>
       </section>
 
-      <section className="card bg-base-100 shadow-sm">
-        <div className="card-body gap-6">
+      <section className="surface-panel">
+        <div className="surface-panel-body gap-6">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="card-heading">
-              <h2 className="card-title">{t('live.chart.title')}</h2>
+            <div className="section-heading">
+              <h2 className="section-title">{t('live.chart.title')}</h2>
             </div>
-            <label className="form-control w-36">
-              <div className="label py-0">
-                <span className="label-text text-xs uppercase tracking-wide">{t('live.window.label')}</span>
-              </div>
+            <label className="field w-36">
+              <span className="field-label">{t('live.window.label')}</span>
               <select
-                className="select select-bordered select-sm"
+                className="field-select field-select-sm"
                 value={limit}
                 onChange={(event) => setLimit(Number(event.target.value))}
               >
@@ -96,10 +97,10 @@ export default function LivePage() {
         </div>
       </section>
 
-      <section className="card bg-base-100 shadow-sm">
-        <div className="card-body gap-4">
-          <div className="card-heading">
-            <h2 className="card-title">{t('live.latest.title')}</h2>
+      <section className="surface-panel">
+        <div className="surface-panel-body gap-4">
+          <div className="section-heading">
+            <h2 className="section-title">{t('live.latest.title')}</h2>
           </div>
           <InvocationTable records={records} isLoading={isLoading} error={error} />
         </div>

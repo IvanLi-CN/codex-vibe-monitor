@@ -3,6 +3,9 @@ import type { CSSProperties } from 'react'
 import type { QuotaSnapshot } from '../lib/api'
 import { AnimatedDigits } from './AnimatedDigits'
 import { useTranslation } from '../i18n'
+import { Alert } from './ui/alert'
+import { Badge } from './ui/badge'
+import { Spinner } from './ui/spinner'
 
 type RadialProgressStyle = CSSProperties & {
   '--value': number
@@ -44,7 +47,7 @@ export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps
   const { t } = useTranslation()
 
   if (error) {
-    return <div className="alert alert-error">{error}</div>
+    return <Alert variant="error">{error}</Alert>
   }
 
   const amountLimit = snapshot?.amountLimit ?? snapshot?.usedAmount ?? 0
@@ -60,21 +63,21 @@ export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps
   }
 
   return (
-    <div className="card h-full bg-base-100 shadow-sm">
-      <div className="card-body gap-6">
+    <div className="surface-panel h-full">
+      <div className="surface-panel-body gap-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="card-heading">
-            <h2 className="card-title">{t('quota.title')}</h2>
-            <p className="card-description flex items-center gap-2">
+          <div className="section-heading">
+            <h2 className="section-title">{t('quota.title')}</h2>
+            <p className="section-description flex items-center gap-2">
               <span>{t('quota.subscription', { name: snapshot?.subTypeName ?? '—' })}</span>
               <CountdownUntil expireISO={snapshot?.expireTime} />
             </p>
           </div>
           <div className="flex items-center gap-4">
             <div className="text-sm text-base-content/60">
-              <span className="badge badge-success badge-sm" hidden={!snapshot?.isActive}>
+              <Badge variant="success" className="px-2 py-[0.18rem] text-[11px]" hidden={!snapshot?.isActive}>
                 {t('quota.status.active')}
-              </span>
+              </Badge>
             </div>
           </div>
         </div>
@@ -83,7 +86,7 @@ export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps
           <OverviewTile label={t('quota.labels.usageRate')} compact padClass="px-4 py-2" overlayLabel>
             {/* Center the radial progress; minimize vertical gap to ~py-2 via tile padding */}
             <div className="flex items-center justify-center h-full">
-              <div className="radial-progress text-primary" style={radialProgressStyle}>
+              <div className="progress-ring text-primary" style={radialProgressStyle}>
                 {isLoading ? '…' : <AnimatedDigits value={`${Math.round(usagePercent)}%`} />}
               </div>
             </div>
@@ -122,13 +125,13 @@ function OverviewTile({ label, value, caption, loading, compact, children, padCl
     ? 'text-xl font-semibold whitespace-nowrap overflow-hidden text-ellipsis'
     : 'text-2xl font-semibold whitespace-nowrap overflow-hidden text-ellipsis'
   return (
-    <div className={`rounded-box border border-base-300 bg-base-200/60 ${overlayLabel ? 'relative' : ''} ${padClass ?? 'p-4'}`}>
+    <div className={`rounded-xl border border-base-300/75 bg-base-200/60 ${overlayLabel ? 'relative' : ''} ${padClass ?? 'p-4'}`}>
       {overlayLabel ? (
         <div className="absolute top-2 left-2 text-sm text-base-content/60">{label}</div>
       ) : (
         <div className="text-sm text-base-content/60">{label}</div>
       )}
-      <div className={valueClass}>{loading ? <span className="loading loading-dots loading-md" /> : (children ?? value)}</div>
+      <div className={valueClass}>{loading ? <Spinner size="md" /> : (children ?? value)}</div>
       {caption ? <div className="text-xs text-base-content/50">{caption}</div> : null}
     </div>
   )

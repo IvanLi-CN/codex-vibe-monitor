@@ -4,6 +4,10 @@ import type { TimeseriesPoint } from '../lib/api'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { formatTokensShort } from '../lib/numberFormatters'
+import { heatmapLevels, metricAccent } from '../lib/chartTheme'
+import { cn } from '../lib/utils'
+import { useTheme } from '../theme'
+import { Alert } from './ui/alert'
 
 type Cell = { date: string; hour: number; value: number }
 
@@ -19,18 +23,6 @@ const METRIC_OPTIONS: MetricOption[] = [
   { key: 'totalCost', labelKey: 'metric.totalCost' },
   { key: 'totalTokens', labelKey: 'metric.totalTokens' },
 ]
-
-const LEVEL_COLORS_BY_METRIC: Record<MetricKey, string[]> = {
-  totalCount: ['bg-base-300', 'bg-blue-200', 'bg-blue-300', 'bg-blue-400', 'bg-blue-500'],
-  totalCost: ['bg-base-300', 'bg-amber-200', 'bg-amber-300', 'bg-amber-400', 'bg-amber-500'],
-  totalTokens: ['bg-base-300', 'bg-violet-200', 'bg-violet-300', 'bg-violet-400', 'bg-violet-500'],
-}
-
-const ACCENT_BY_METRIC: Record<MetricKey, string> = {
-  totalCount: '#3B82F6',
-  totalCost: '#F59E0B',
-  totalTokens: '#8B5CF6',
-}
 
 function parseDateTimeParts(value: string) {
   if (value.includes('T')) {
@@ -97,6 +89,7 @@ function levelFor(value: number, max: number) {
 
 export function WeeklyHourlyHeatmap() {
   const { t, locale } = useTranslation()
+  const { themeMode } = useTheme()
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const { data, isLoading, error } = useTimeseries('7d', { bucket: '1h' })
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
@@ -110,6 +103,7 @@ export function WeeklyHourlyHeatmap() {
   )
 
   const grid = useMemo(() => compute7x24(data?.points ?? [], metric), [data?.points, metric])
+  const levelPalette = useMemo(() => heatmapLevels(metric, themeMode), [metric, themeMode])
 
   const formatValue = (value: number) => {
     if (metric === 'totalCost') return currencyFormatter.format(value)
@@ -124,13 +118,13 @@ export function WeeklyHourlyHeatmap() {
   const noDataText = t('heatmap.noData')
 
   return (
-    <section className="card bg-base-100 shadow-sm overflow-visible" data-testid="weekly-hourly-heatmap">
-      <div className="card-body gap-4">
+    <section className="surface-panel overflow-visible" data-testid="weekly-hourly-heatmap">
+      <div className="surface-panel-body gap-4">
         <div className="flex items-center justify-between gap-3">
-          <div className="card-heading">
-            <h2 className="card-title">{t('heatmap.title')}</h2>
+          <div className="section-heading">
+            <h2 className="section-title">{t('heatmap.title')}</h2>
           </div>
-          <div className="tabs tabs-sm tabs-border" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
+          <div className="segment-group" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
             {metricOptions.map((o) => {
               const active = o.key === metric
               return (
@@ -139,10 +133,9 @@ export function WeeklyHourlyHeatmap() {
                   type="button"
                   role="tab"
                   aria-selected={active}
-                  className={`tab whitespace-nowrap px-2 sm:px-3 ${
-                    active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
-                  }`}
-                  style={active ? { color: ACCENT_BY_METRIC[o.key] } : undefined}
+                  className={cn('segment-button px-2 sm:px-3', active && 'font-semibold')}
+                  data-active={active}
+                  style={active ? { color: metricAccent(o.key, themeMode) } : undefined}
                   onClick={() => setMetric(o.key)}
                 >
                   {o.label}
@@ -153,7 +146,7 @@ export function WeeklyHourlyHeatmap() {
         </div>
 
         {error ? (
-          <div className="alert alert-error">{error}</div>
+          <Alert variant="error">{error}</Alert>
         ) : grid.days.length > 0 ? (
           <div className="w-full overflow-x-auto no-scrollbar">
             <div className="flex justify-center">
@@ -177,8 +170,7 @@ export function WeeklyHourlyHeatmap() {
                         <div className="grid gap-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
                           {row.map((cell, ci) => {
                             const lvl = levelFor(cell.value, grid.max)
-                            const palette = LEVEL_COLORS_BY_METRIC[metric]
-                            const cls = palette[lvl] ?? palette[0]
+                            const color = levelPalette[lvl] ?? levelPalette[0]
                             const formatted = formatValue(cell.value)
                             const hourLabel = String(ci).padStart(2, '0')
                             const dateTimeLabel = `${cell.date || grid.days[idx]} ${hourLabel}:00`
@@ -191,7 +183,7 @@ export function WeeklyHourlyHeatmap() {
                                 aria-label={title}
                                 title={title}
                               >
-                                <div className={`${cls} h-5 w-5 sm:h-6 sm:w-6 rounded-sm`} />
+                                <div className="h-5 w-5 rounded-sm sm:h-6 sm:w-6" style={{ backgroundColor: color }} />
                                 <div
                                   className={`pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] sm:text-xs leading-tight text-base-content shadow-md opacity-0 group-hover:opacity-100 ${verticalClass}`}
                                 >
@@ -212,7 +204,7 @@ export function WeeklyHourlyHeatmap() {
             </div>
           </div>
         ) : isLoading ? (
-          <div className="skeleton h-40 w-full" />
+          <div className="h-40 w-full animate-pulse rounded-xl border border-base-300/70 bg-base-200/55" />
         ) : (
           <div className="text-base-content/70">{noDataText}</div>
         )}

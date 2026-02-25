@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS stats_source_deltas (...);
 ## 6. Web SPA 界面
 
 - 在仓库根目录新增 `web/`，使用 `Vite + React + TypeScript` 组合构建支持 hash 路由的单页应用。
-- UI 基于 `Tailwind CSS + DaisyUI`，提供一致的主题与组件库；打包时保留 `PostCSS` 配置以支持按需裁剪样式。
+- UI 基于 `Tailwind CSS + shadcn 风格基础组件`，提供一致的主题与组件库；打包时保留 `PostCSS` 配置以支持按需裁剪样式。
 - 界面包含两种视图：
   - **图表模式**：折线/柱状展示调用频次、费用趋势，首选 `Recharts`，如需更复杂图表可平滑切换至 `ECharts`。
   - **列表模式**：以表格展现最新记录，包含状态标签、错误信息、搜索过滤。

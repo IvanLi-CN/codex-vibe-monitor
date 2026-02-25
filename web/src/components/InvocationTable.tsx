@@ -3,6 +3,9 @@ import { Icon } from '@iconify/react'
 import type { ApiInvocation } from '../lib/api'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
+import { Alert } from './ui/alert'
+import { Badge } from './ui/badge'
+import { Spinner } from './ui/spinner'
 
 interface InvocationTableProps {
   records: ApiInvocation[]
@@ -10,14 +13,17 @@ interface InvocationTableProps {
   error?: string | null
 }
 
-const STATUS_META: Record<string, { className: string; key: TranslationKey }> = {
-  success: { className: 'badge-success', key: 'table.status.success' },
-  failed: { className: 'badge-error', key: 'table.status.failed' },
-  running: { className: 'badge-info', key: 'table.status.running' },
-  pending: { className: 'badge-warning', key: 'table.status.pending' },
+const STATUS_META: Record<
+  string,
+  { variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'; key: TranslationKey }
+> = {
+  success: { variant: 'success', key: 'table.status.success' },
+  failed: { variant: 'error', key: 'table.status.failed' },
+  running: { variant: 'default', key: 'table.status.running' },
+  pending: { variant: 'warning', key: 'table.status.pending' },
 }
 
-const FALLBACK_STATUS_META = { className: 'badge-neutral', key: 'table.status.unknown' as TranslationKey }
+const FALLBACK_STATUS_META = { variant: 'secondary', key: 'table.status.unknown' as TranslationKey }
 const FALLBACK_CELL = '—'
 
 function formatMilliseconds(value: number | null | undefined) {
@@ -98,63 +104,71 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
   if (error) {
     return (
-      <div className="alert alert-error">
+      <Alert variant="error">
         <span>{t('table.loadError', { error })}</span>
-      </div>
+      </Alert>
     )
   }
 
   if (isLoading) {
     return (
       <div className="flex justify-center py-10">
-        <span className="loading loading-bars loading-lg" aria-label={t('table.loadingRecordsAria')} />
+        <Spinner size="lg" aria-label={t('table.loadingRecordsAria')} />
       </div>
     )
   }
 
   if (records.length === 0) {
-    return <div className="alert">{t('table.noRecords')}</div>
+    return <Alert>{t('table.noRecords')}</Alert>
   }
 
   return (
-    <div className="overflow-x-auto rounded-box border border-base-300/60 bg-base-100">
-      <table className="table table-zebra table-auto table-xs text-xs [&_td]:align-middle [&_td]:px-1.5 [&_th]:align-middle [&_th]:px-1.5 sm:table-sm sm:text-sm sm:[&_td]:px-3 sm:[&_th]:px-3 md:table-fixed">
-        <thead>
+    <div className="overflow-x-auto rounded-xl border border-base-300/70 bg-base-100/52 backdrop-blur">
+      <table className="w-full min-w-[72rem] border-separate border-spacing-0 text-sm">
+        <thead className="bg-base-200/65 text-[11px] uppercase tracking-[0.08em] text-base-content/70">
           <tr>
-            <th className="w-24 whitespace-nowrap sm:w-28">{t('table.column.time')}</th>
-            <th className="w-24 whitespace-nowrap text-center sm:w-36">
+            <th className="w-28 px-3 py-2.5 text-left font-semibold whitespace-nowrap">{t('table.column.time')}</th>
+            <th className="w-28 px-3 py-2.5 text-center font-semibold whitespace-nowrap">
               <div className="flex flex-col leading-tight">
                 <span>{t('table.column.status')}</span>
-                <span className="text-xs text-base-content/60">{t('table.column.latency')}</span>
+                <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
+                  {t('table.column.latency')}
+                </span>
               </div>
             </th>
-            <th className="w-24 whitespace-nowrap sm:w-28">
+            <th className="w-36 px-3 py-2.5 text-right font-semibold whitespace-nowrap">
               <div className="flex flex-col leading-tight">
                 <span>{t('table.column.model')}</span>
-                <span className="text-xs text-base-content/60">{t('table.column.costUsd')}</span>
+                <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
+                  {t('table.column.costUsd')}
+                </span>
               </div>
             </th>
-            <th className="w-24 whitespace-nowrap sm:w-28">
+            <th className="w-32 px-3 py-2.5 text-right font-semibold whitespace-nowrap">
               <div className="flex flex-col leading-tight">
                 <span>{t('table.column.inputTokens')}</span>
-                <span className="text-xs text-base-content/60">{t('table.column.cacheInputTokens')}</span>
+                <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
+                  {t('table.column.cacheInputTokens')}
+                </span>
               </div>
             </th>
-            <th className="w-16 whitespace-nowrap sm:w-20">{t('table.column.outputTokens')}</th>
-            <th className="w-16 whitespace-nowrap sm:w-20">{t('table.column.totalTokens')}</th>
-            <th className="hidden min-w-64 xl:table-cell">
+            <th className="w-24 px-3 py-2.5 text-right font-semibold whitespace-nowrap">{t('table.column.outputTokens')}</th>
+            <th className="w-24 px-3 py-2.5 text-right font-semibold whitespace-nowrap">{t('table.column.totalTokens')}</th>
+            <th className="hidden min-w-64 px-3 py-2.5 text-left font-semibold xl:table-cell">
               <div className="flex flex-col leading-tight">
                 <span>{t('table.column.error')}</span>
-                <span className="text-xs text-base-content/60">{t('table.details.endpoint')}</span>
+                <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
+                  {t('table.details.endpoint')}
+                </span>
               </div>
             </th>
-            <th className="sticky right-0 z-20 w-6 bg-base-100 text-right sm:w-10">
+            <th className="w-12 px-3 py-2.5 text-right">
               <span className="sr-only">{toggleLabels.header}</span>
             </th>
           </tr>
         </thead>
-        <tbody>
-          {records.map((record) => {
+        <tbody className="divide-y divide-base-300/65">
+          {records.map((record, rowIndex) => {
             const occurred = new Date(record.occurredAt)
             const normalizedStatus = (record.status ?? 'unknown').toLowerCase()
             const meta = STATUS_META[normalizedStatus] ?? FALLBACK_STATUS_META
@@ -194,29 +208,29 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
             return (
               <Fragment key={recordId}>
-                <tr>
-                  <td className="align-middle">
+                <tr className={`${rowIndex % 2 === 0 ? 'bg-base-100/38' : 'bg-base-200/22'} hover:bg-primary/6`}>
+                  <td className="border-t border-base-300/65 px-3 py-2.5 align-middle">
                     <div className="flex flex-col justify-center gap-1 leading-tight">
                       <span className="block truncate whitespace-nowrap font-medium">{occurredTime}</span>
                       <span className="block truncate whitespace-nowrap text-base-content/70">{occurredDate}</span>
                     </div>
                   </td>
-                  <td className="align-middle text-center">
+                  <td className="border-t border-base-300/65 px-3 py-2.5 align-middle text-center">
                     <div className="flex flex-col items-center justify-center gap-1 leading-tight">
-                      <span className={`badge whitespace-nowrap ${meta.className}`}>
+                      <Badge variant={meta.variant} className="justify-center whitespace-nowrap">
                         {t(meta.key)}
-                      </span>
-                      <span className="block whitespace-nowrap font-mono text-base-content/70 sm:hidden" title={latencySummary}>
+                      </Badge>
+                      <span className="block whitespace-nowrap font-mono text-xs text-base-content/70 sm:hidden" title={latencySummary}>
                         {latencyCompactSummary}
                       </span>
-                      <span className="hidden whitespace-nowrap font-mono text-base-content/70 sm:block" title={latencySummary}>
+                      <span className="hidden whitespace-nowrap font-mono text-xs text-base-content/70 sm:block" title={latencySummary}>
                         {latencySummary}
                       </span>
                     </div>
                   </td>
-                  <td className="align-middle">
+                  <td className="border-t border-base-300/65 px-3 py-2.5 align-middle">
                     <div className="flex flex-col items-end justify-center gap-1 leading-tight text-right">
-                      <span className="block truncate whitespace-nowrap text-base-content/80" title={record.model ?? FALLBACK_CELL}>
+                      <span className="block truncate whitespace-nowrap text-base-content/85" title={record.model ?? FALLBACK_CELL}>
                         {record.model ?? FALLBACK_CELL}
                       </span>
                       <span className="block truncate whitespace-nowrap font-mono tabular-nums text-base-content/70">
@@ -224,7 +238,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </span>
                     </div>
                   </td>
-                  <td className="align-middle">
+                  <td className="border-t border-base-300/65 px-3 py-2.5 align-middle">
                     <div className="flex flex-col items-end justify-center gap-1 leading-tight text-right">
                       <span className="block truncate whitespace-nowrap font-mono tabular-nums">
                         {formatOptionalNumber(record.inputTokens, numberFormatter)}
@@ -234,17 +248,17 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </span>
                     </div>
                   </td>
-                  <td className="align-middle text-right font-mono tabular-nums">
+                  <td className="border-t border-base-300/65 px-3 py-2.5 align-middle text-right font-mono tabular-nums">
                     <span className="block truncate whitespace-nowrap">
                       {formatOptionalNumber(record.outputTokens, numberFormatter)}
                     </span>
                   </td>
-                  <td className="align-middle text-right font-mono tabular-nums">
+                  <td className="border-t border-base-300/65 px-3 py-2.5 align-middle text-right font-mono tabular-nums">
                     <span className="block truncate whitespace-nowrap">
                       {formatOptionalNumber(record.totalTokens, numberFormatter)}
                     </span>
                   </td>
-                  <td className="hidden align-middle xl:table-cell">
+                  <td className="hidden border-t border-base-300/65 px-3 py-2.5 align-middle xl:table-cell">
                     <div className="flex flex-col justify-center gap-1 leading-tight">
                       <span className="block truncate whitespace-nowrap text-base-content/70" title={endpointValue}>
                         {endpointValue}
@@ -254,7 +268,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </span>
                     </div>
                   </td>
-                  <td className="sticky right-0 z-10 bg-base-100/95 text-right backdrop-blur">
+                  <td className="border-t border-base-300/65 px-3 py-2.5 align-middle text-right">
                     <button
                       type="button"
                       className="inline-flex items-center justify-end gap-1 text-lg leading-none text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
@@ -273,8 +287,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                   </td>
                 </tr>
                 {isExpanded && (
-                  <tr className="bg-base-200">
-                    <td colSpan={8}>
+                  <tr className="bg-base-200/68">
+                    <td colSpan={8} className="border-t border-base-300/65 px-3 py-2.5">
                       <div id={detailId} className="flex flex-col gap-4 p-4">
                         <div className="flex flex-col gap-2">
                           <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
@@ -309,9 +323,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                             <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
                               {t('table.errorDetailsTitle')}
                             </span>
-                            <pre className="whitespace-pre-wrap break-words font-mono text-sm">
-                              {errorMessage}
-                            </pre>
+                            <pre className="whitespace-pre-wrap break-words font-mono text-sm">{errorMessage}</pre>
                           </div>
                         )}
                       </div>

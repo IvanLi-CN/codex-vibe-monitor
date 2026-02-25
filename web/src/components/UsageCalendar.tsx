@@ -7,6 +7,10 @@ import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { formatTokensShort } from '../lib/numberFormatters'
 import { getBrowserTimeZone } from '../lib/timeZone'
+import { calendarPalette, metricAccent } from '../lib/chartTheme'
+import { cn } from '../lib/utils'
+import { useTheme } from '../theme'
+import { Alert } from './ui/alert'
 
 type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
@@ -38,38 +42,6 @@ const MIN_BLOCK_SIZE = 8
 const MAX_BLOCK_SIZE = 20
 const WEEKDAY_LABEL_SPACE = 16
 
-// Use DaisyUI/Tailwind aligned palette so it visually matches
-// the 7-day heatmap (WeeklyHourlyHeatmap.tsx).
-// Level0 uses base-300 token rendered through color function; DaisyUI exports
-// `--b3` as OKLCH components, so we must wrap it with `oklch(...)` (directly
-// using `var(--b3)` would resolve to "black").
-// Use explicit HEX for zero level to avoid SVG var()/oklch() incompatibilities
-// in presentation attributes. This matches DaisyUI base-300 in light theme.
-const BASE_ZERO = { light: '#E5E7EB', dark: '#374151' }
-const THEME_BY_METRIC: Record<MetricKey, { light: string[]; dark: string[] }> = {
-// Counts palette: blue family (200..500)
-  totalCount: {
-    light: [BASE_ZERO.light, '#BFDBFE', '#93C5FD', '#60A5FA', '#3B82F6'],
-    dark: [BASE_ZERO.dark, '#93C5FD', '#60A5FA', '#3B82F6', '#1D4ED8'],
-  },
-  // Cost palette: amber/orange family (200..500)
-  totalCost: {
-    light: [BASE_ZERO.light, '#FDE68A', '#FCD34D', '#F59E0B', '#D97706'],
-    dark: [BASE_ZERO.dark, '#FCD34D', '#F59E0B', '#D97706', '#B45309'],
-  },
-  // Tokens palette: violet family (200..500)
-  totalTokens: {
-    light: [BASE_ZERO.light, '#DDD6FE', '#C4B5FD', '#A78BFA', '#8B5CF6'],
-    dark: [BASE_ZERO.dark, '#C4B5FD', '#A78BFA', '#8B5CF6', '#7C3AED'],
-  },
-}
-
-const ACCENT_BY_METRIC: Record<MetricKey, string> = {
-  totalCount: '#3B82F6',
-  totalCost: '#F59E0B',
-  totalTokens: '#8B5CF6',
-}
-
 interface CalendarTooltipState {
   x: number
   y: number
@@ -79,6 +51,7 @@ interface CalendarTooltipState {
 
 export function UsageCalendar() {
   const { t, locale } = useTranslation()
+  const { themeMode } = useTheme()
   const timeZone = getBrowserTimeZone()
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const { data, isLoading, error } = useTimeseries('90d', { bucket: '1d' })
@@ -87,8 +60,6 @@ export function UsageCalendar() {
   const [tooltip, setTooltip] = useState<CalendarTooltipState | null>(null)
   // tabs width measurement removed (no longer needed for sizing)
   const [leftOffset, setLeftOffset] = useState(0) // svg.marginLeft introduced by weekday labels
-  const colorProbeRef = useRef<HTMLSpanElement>(null)
-  const [baseZeroColor, setBaseZeroColor] = useState<string>(BASE_ZERO.light)
 
   const legendLabels = useMemo(
     () => ({
@@ -160,20 +131,6 @@ export function UsageCalendar() {
     [locale, t],
   )
 
-  // Probe actual theme color for base-300 to match 7-day heatmap exactly
-  useLayoutEffect(() => {
-    const el = colorProbeRef.current
-    if (!el) return
-    const read = () => {
-      const bg = getComputedStyle(el).backgroundColor
-      if (bg && bg !== baseZeroColor) setBaseZeroColor(bg)
-    }
-    read()
-    const ro = new ResizeObserver(read)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [baseZeroColor])
-
   useLayoutEffect(() => {
     if (!containerRef.current || calendarData.weekCount === 0) return
     const node = containerRef.current
@@ -240,34 +197,29 @@ export function UsageCalendar() {
 
   const calendarLoading = isLoading || calendarData.activities.length === 0
 
-  // Build theme palette with runtime-resolved zero level color
-  const themeForMetric = useMemo(() => {
-    const base = THEME_BY_METRIC[metric]
-    return {
-      light: [baseZeroColor, ...base.light.slice(1)],
-      dark: [baseZeroColor, ...base.dark.slice(1)],
-    }
-  }, [metric, baseZeroColor])
+  const themeForMetric = useMemo(
+    () => ({
+      light: calendarPalette(metric, 'light'),
+      dark: calendarPalette(metric, 'dark'),
+    }),
+    [metric],
+  )
 
   return (
     <section
-      className="card h-full w-full max-w-full overflow-visible bg-base-100 shadow-sm lg:w-fit"
+      className="surface-panel h-full w-full max-w-full overflow-visible lg:w-fit"
       data-testid="usage-calendar-card"
     >
-        <div className="card-body gap-4 lg:w-auto">
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="card-heading">
-                <h2 className="card-title">{t('calendar.title')}</h2>
-                <p className="card-description">
-                  {t('calendar.timeZoneLabel')}{valueSeparator}{timeZone}
-                </p>
-              </div>
-              <div
-                className="tabs tabs-sm tabs-border"
-                role="tablist"
-              aria-label={t('calendar.metricsToggleAria')}
-            >
+      <div className="surface-panel-body gap-4 lg:w-auto">
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="section-heading">
+              <h2 className="section-title">{t('calendar.title')}</h2>
+              <p className="section-description">
+                {t('calendar.timeZoneLabel')}{valueSeparator}{timeZone}
+              </p>
+            </div>
+            <div className="segment-group" role="tablist" aria-label={t('calendar.metricsToggleAria')}>
               {metricOptions.map((option) => {
                 const active = metric === option.key
                 return (
@@ -277,10 +229,9 @@ export function UsageCalendar() {
                     role="tab"
                     aria-selected={active}
                     aria-current={active ? 'true' : undefined}
-                    className={`tab whitespace-nowrap px-2 sm:px-3 ${
-                      active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
-                    }`}
-                    style={active ? { color: ACCENT_BY_METRIC[option.key] } : undefined}
+                    className={cn('segment-button px-2 sm:px-3', active && 'font-semibold')}
+                    data-active={active}
+                    style={active ? { color: metricAccent(option.key, themeMode) } : undefined}
                     onClick={() => setMetric(option.key)}
                   >
                     {option.label}
@@ -290,115 +241,111 @@ export function UsageCalendar() {
             </div>
           </div>
 
-          <div className="divider my-1 opacity-40" />
+          <div className="panel-divider my-1 opacity-40" />
 
           {error ? (
-            <div className="alert alert-error">{error}</div>
+            <Alert variant="error">{error}</Alert>
           ) : (
-          <div className="grid gap-3">
-            <div className="min-w-0">
-              <div
-                ref={containerRef}
-                className="relative flex w-full justify-center overflow-visible pt-4 [&>svg]:h-auto"
-                style={minContainerWidth ? { minWidth: `${minContainerWidth}px` } : undefined}
-                data-testid="usage-calendar-wrapper"
-              >
-                {/* Theme color probe to fetch exact bg-base-300 value */}
-                <span ref={colorProbeRef} className="invisible absolute h-0 w-0 bg-base-300" aria-hidden />
-                <MonthLabelOverlay
-                  markers={calendarData.monthMarkers}
-                  blockSize={blockSize}
-                  blockMargin={BLOCK_MARGIN}
-                  offset={leftOffset || WEEKDAY_LABEL_SPACE}
-                  formatLabel={formatMonthLabel}
-                />
-                <ActivityCalendar
-                  data={calendarData.activities}
-                  loading={calendarLoading}
-                  blockSize={blockSize}
-                  // Match the subtle rounding used by the 7-day heatmap
-                  blockRadius={2}
-                  blockMargin={BLOCK_MARGIN}
-                  weekStart={1}
-                  maxLevel={MAX_LEVEL}
-                  theme={themeForMetric}
-                  colorScheme="light"
-                  hideTotalCount
-                  hideColorLegend
-                  hideMonthLabels
-                  labels={{ legend: { less: legendLabels.low, more: legendLabels.high }, weekdays: weekdayLabels }}
-                  showWeekdayLabels={WEEKDAY_LABELS}
-                  renderBlock={(block, activity) => {
-                    const accessibleBlock = block as AccessibleBlock
-                    const formatted = formatMetricValue(activity.count)
-                    const title = `${activity.date}${valueSeparator}${formatted}`
-                    const handleEnter = (event: ReactMouseEvent<SVGElement>) => {
-                      if (!containerRef.current) return
-                      const target = event.currentTarget as Element
-                      const rect = target.getBoundingClientRect()
-                      const containerRect = containerRef.current.getBoundingClientRect()
-                      const centerXRaw = rect.left + rect.width / 2 - containerRect.left
-                      const y = rect.top - containerRect.top
-                      // Clamp the tooltip center so that even on the first/last column
-                      // the bubble stays fully inside the card.
-                      const margin = 80 // px, wider than half typical tooltip width
-                      const minCenter = margin
-                      const maxCenter = Math.max(margin, containerRect.width - margin)
-                      const x = Math.max(minCenter, Math.min(maxCenter, centerXRaw))
-                      setTooltip({
-                        x,
-                        y,
-                        dateLabel: activity.date,
-                        valueLabel: formatted,
-                      })
-                    }
-                    const handleLeave = () => setTooltip(null)
-                    return cloneElement(accessibleBlock, {
-                      title,
-                      'aria-label': title,
-                      onMouseEnter: handleEnter,
-                      onMouseLeave: handleLeave,
-                      // Remove default stroke from react-activity-calendar to
-                      // match WeeklyHourlyHeatmap appearance exactly
-                      style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
-                    })
-                  }}
-                  renderColorLegend={(block, level) => {
-                    const accessibleBlock = block as AccessibleBlock
-                    if (level === 0)
+            <div className="grid gap-3">
+              <div className="min-w-0">
+                <div
+                  ref={containerRef}
+                  className="relative flex w-full justify-center overflow-visible pt-4 [&>svg]:h-auto"
+                  style={minContainerWidth ? { minWidth: `${minContainerWidth}px` } : undefined}
+                  data-testid="usage-calendar-wrapper"
+                >
+                  <MonthLabelOverlay
+                    markers={calendarData.monthMarkers}
+                    blockSize={blockSize}
+                    blockMargin={BLOCK_MARGIN}
+                    offset={leftOffset || WEEKDAY_LABEL_SPACE}
+                    formatLabel={formatMonthLabel}
+                  />
+                  <ActivityCalendar
+                    data={calendarData.activities}
+                    loading={calendarLoading}
+                    blockSize={blockSize}
+                    // Match the subtle rounding used by the 7-day heatmap.
+                    blockRadius={2}
+                    blockMargin={BLOCK_MARGIN}
+                    weekStart={1}
+                    maxLevel={MAX_LEVEL}
+                    theme={themeForMetric}
+                    colorScheme={themeMode}
+                    hideTotalCount
+                    hideColorLegend
+                    hideMonthLabels
+                    labels={{ legend: { less: legendLabels.low, more: legendLabels.high }, weekdays: weekdayLabels }}
+                    showWeekdayLabels={WEEKDAY_LABELS}
+                    renderBlock={(block, activity) => {
+                      const accessibleBlock = block as AccessibleBlock
+                      const formatted = formatMetricValue(activity.count)
+                      const title = `${activity.date}${valueSeparator}${formatted}`
+                      const handleEnter = (event: ReactMouseEvent<SVGElement>) => {
+                        if (!containerRef.current) return
+                        const target = event.currentTarget as Element
+                        const rect = target.getBoundingClientRect()
+                        const containerRect = containerRef.current.getBoundingClientRect()
+                        const centerXRaw = rect.left + rect.width / 2 - containerRect.left
+                        const y = rect.top - containerRect.top
+                        // Clamp the tooltip center so that even on the first/last column
+                        // the bubble stays fully inside the card.
+                        const margin = 80
+                        const minCenter = margin
+                        const maxCenter = Math.max(margin, containerRect.width - margin)
+                        const x = Math.max(minCenter, Math.min(maxCenter, centerXRaw))
+                        setTooltip({
+                          x,
+                          y,
+                          dateLabel: activity.date,
+                          valueLabel: formatted,
+                        })
+                      }
+                      const handleLeave = () => setTooltip(null)
                       return cloneElement(accessibleBlock, {
-                        title: legendLabels.low,
-                        'aria-label': legendLabels.low,
+                        title,
+                        'aria-label': title,
+                        onMouseEnter: handleEnter,
+                        onMouseLeave: handleLeave,
+                        // Remove default stroke from react-activity-calendar to align
+                        // with the weekly heatmap appearance.
                         style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
                       })
-                    const threshold = calendarData.thresholds[level] ?? calendarData.maxValue
-                    const formatted = formatMetricValue(threshold ?? 0)
-                    const title = `≤ ${formatted}`
-                    return cloneElement(accessibleBlock, {
-                      title,
-                      'aria-label': title,
-                      style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
-                    })
-                  }}
-                />
-                {tooltip && (
-                  <div
-                    className="pointer-events-none absolute z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] sm:text-xs leading-tight text-base-content shadow-md"
-                    style={{ left: tooltip.x, top: tooltip.y - 8 }}
-                  >
-                    <div className="text-[10px] sm:text-xs text-base-content/80">
-                      {tooltip.dateLabel}
+                    }}
+                    renderColorLegend={(block, level) => {
+                      const accessibleBlock = block as AccessibleBlock
+                      if (level === 0)
+                        return cloneElement(accessibleBlock, {
+                          title: legendLabels.low,
+                          'aria-label': legendLabels.low,
+                          style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
+                        })
+                      const threshold = calendarData.thresholds[level] ?? calendarData.maxValue
+                      const formatted = formatMetricValue(threshold ?? 0)
+                      const title = `≤ ${formatted}`
+                      return cloneElement(accessibleBlock, {
+                        title,
+                        'aria-label': title,
+                        style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
+                      })
+                    }}
+                  />
+                  {tooltip && (
+                    <div
+                      className="pointer-events-none absolute z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] leading-tight text-base-content shadow-md sm:text-xs"
+                      style={{ left: tooltip.x, top: tooltip.y - 8 }}
+                    >
+                      <div className="text-[10px] text-base-content/80 sm:text-xs">
+                        {tooltip.dateLabel}
+                      </div>
+                      <div className="mt-0.5 text-center font-mono text-sm font-semibold tracking-tight sm:text-base">
+                        {tooltip.valueLabel}
+                      </div>
                     </div>
-                    <div className="mt-0.5 font-mono font-semibold text-sm sm:text-base tracking-tight text-center">
-                      {tooltip.valueLabel}
-                    </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </div>
-
-            {/* tabs moved to header */}
-          </div>
           )}
         </div>
       </div>
