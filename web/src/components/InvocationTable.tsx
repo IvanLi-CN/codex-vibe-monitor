@@ -25,6 +25,11 @@ function formatMilliseconds(value: number | null | undefined) {
   return `${value.toFixed(1)} ms`
 }
 
+function formatMillisecondsCompact(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
+  return Math.round(value).toString()
+}
+
 function formatOptionalNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
   return formatter.format(value)
@@ -62,7 +67,21 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   }, [records])
 
   const dateFormatter = useMemo(
-    () => new Intl.DateTimeFormat(localeTag, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
+    () =>
+      new Intl.DateTimeFormat(localeTag, {
+        month: '2-digit',
+        day: '2-digit',
+      }),
+    [localeTag],
+  )
+  const timeFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(localeTag, {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }),
     [localeTag],
   )
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
@@ -99,25 +118,37 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
   return (
     <div className="overflow-x-auto rounded-box border border-base-300/60 bg-base-100">
-      <table className="table table-zebra">
+      <table className="table table-zebra table-auto table-xs text-xs [&_td]:align-middle [&_td]:px-1.5 [&_th]:align-middle [&_th]:px-1.5 sm:table-sm sm:text-sm sm:[&_td]:px-3 sm:[&_th]:px-3 md:table-fixed">
         <thead>
           <tr>
-            <th className="whitespace-nowrap">{t('table.column.time')}</th>
-            <th className="whitespace-nowrap">{t('table.column.model')}</th>
-            <th className="whitespace-nowrap">{t('table.column.status')}</th>
-            <th className="whitespace-nowrap">{t('table.column.inputTokens')}</th>
-            <th className="whitespace-nowrap">{t('table.column.outputTokens')}</th>
-            <th className="whitespace-nowrap">{t('table.column.cacheInputTokens')}</th>
-            <th className="whitespace-nowrap">{t('table.column.totalTokens')}</th>
-            <th className="whitespace-nowrap">{t('table.column.costUsd')}</th>
-            <th className="whitespace-nowrap">
+            <th className="w-24 whitespace-nowrap sm:w-28">{t('table.column.time')}</th>
+            <th className="w-24 whitespace-nowrap text-center sm:w-36">
               <div className="flex flex-col leading-tight">
-                <span>{t('table.column.latency')}</span>
-                <span className="text-xs text-base-content/60">{t('table.latency.firstByteTotal')}</span>
+                <span>{t('table.column.status')}</span>
+                <span className="text-xs text-base-content/60">{t('table.column.latency')}</span>
               </div>
             </th>
-            <th>{t('table.column.error')}</th>
-            <th className="sticky right-0 z-20 w-12 bg-base-100 text-right">
+            <th className="w-22 whitespace-nowrap sm:w-28">
+              <div className="flex flex-col leading-tight">
+                <span>{t('table.column.model')}</span>
+                <span className="text-xs text-base-content/60">{t('table.column.costUsd')}</span>
+              </div>
+            </th>
+            <th className="w-24 whitespace-nowrap sm:w-28">
+              <div className="flex flex-col leading-tight">
+                <span>{t('table.column.inputTokens')}</span>
+                <span className="text-xs text-base-content/60">{t('table.column.cacheInputTokens')}</span>
+              </div>
+            </th>
+            <th className="w-16 whitespace-nowrap sm:w-20">{t('table.column.outputTokens')}</th>
+            <th className="w-16 whitespace-nowrap sm:w-20">{t('table.column.totalTokens')}</th>
+            <th className="hidden min-w-64 xl:table-cell">
+              <div className="flex flex-col leading-tight">
+                <span>{t('table.column.error')}</span>
+                <span className="text-xs text-base-content/60">{t('table.details.endpoint')}</span>
+              </div>
+            </th>
+            <th className="sticky right-0 z-20 w-6 bg-base-100 text-right sm:w-10">
               <span className="sr-only">{toggleLabels.header}</span>
             </th>
           </tr>
@@ -131,7 +162,12 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
             const detailId = `invocation-details-${recordId}`
             const isExpanded = expandedId === recordId
             const errorMessage = record.errorMessage?.trim() ?? ''
+            const endpointValue = record.endpoint?.trim() || FALLBACK_CELL
             const latencySummary = `${formatMilliseconds(record.tUpstreamTtfbMs)} / ${formatMilliseconds(record.tTotalMs)}`
+            const latencyCompactSummary = `${formatMillisecondsCompact(record.tUpstreamTtfbMs)}/${formatMillisecondsCompact(record.tTotalMs)}`
+            const occurredValid = !Number.isNaN(occurred.getTime())
+            const occurredTime = occurredValid ? timeFormatter.format(occurred) : record.occurredAt
+            const occurredDate = occurredValid ? dateFormatter.format(occurred) : FALLBACK_CELL
 
             const detailPairs: Array<{ label: TranslationKey; value: string }> = [
               { label: 'table.details.invokeId', value: record.invokeId || FALLBACK_CELL },
@@ -159,31 +195,64 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
             return (
               <Fragment key={recordId}>
                 <tr>
-                  <td>
-                    {Number.isNaN(occurred.getTime())
-                      ? record.occurredAt
-                      : dateFormatter.format(occurred)}
+                  <td className="align-middle">
+                    <div className="flex flex-col justify-center gap-1 leading-tight">
+                      <span className="block truncate whitespace-nowrap font-medium">{occurredTime}</span>
+                      <span className="block truncate whitespace-nowrap text-base-content/70">{occurredDate}</span>
+                    </div>
                   </td>
-                  <td>{record.model ?? FALLBACK_CELL}</td>
-                  <td>
-                    <span className={`badge whitespace-nowrap ${meta.className}`}>
-                      {t(meta.key)}
+                  <td className="align-middle text-center">
+                    <div className="flex flex-col items-center justify-center gap-1 leading-tight">
+                      <span className={`badge whitespace-nowrap ${meta.className}`}>
+                        {t(meta.key)}
+                      </span>
+                      <span className="block whitespace-nowrap font-mono text-base-content/70 sm:hidden" title={latencySummary}>
+                        {latencyCompactSummary}
+                      </span>
+                      <span className="hidden whitespace-nowrap font-mono text-base-content/70 sm:block" title={latencySummary}>
+                        {latencySummary}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="align-middle">
+                    <div className="flex flex-col items-end justify-center gap-1 leading-tight text-right">
+                      <span className="block truncate whitespace-nowrap text-base-content/80" title={record.model ?? FALLBACK_CELL}>
+                        {record.model ?? FALLBACK_CELL}
+                      </span>
+                      <span className="block truncate whitespace-nowrap font-mono tabular-nums text-base-content/70">
+                        {typeof record.cost === 'number' ? currencyFormatter.format(record.cost) : FALLBACK_CELL}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="align-middle">
+                    <div className="flex flex-col items-end justify-center gap-1 leading-tight text-right">
+                      <span className="block truncate whitespace-nowrap font-mono tabular-nums">
+                        {formatOptionalNumber(record.inputTokens, numberFormatter)}
+                      </span>
+                      <span className="block truncate whitespace-nowrap font-mono tabular-nums text-base-content/70">
+                        {formatOptionalNumber(record.cacheInputTokens, numberFormatter)}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="align-middle text-right font-mono tabular-nums">
+                    <span className="block truncate whitespace-nowrap">
+                      {formatOptionalNumber(record.outputTokens, numberFormatter)}
                     </span>
                   </td>
-                  <td>{formatOptionalNumber(record.inputTokens, numberFormatter)}</td>
-                  <td>{formatOptionalNumber(record.outputTokens, numberFormatter)}</td>
-                  <td>{formatOptionalNumber(record.cacheInputTokens, numberFormatter)}</td>
-                  <td className="whitespace-nowrap">{formatOptionalNumber(record.totalTokens, numberFormatter)}</td>
-                  <td className="whitespace-nowrap">{typeof record.cost === 'number' ? currencyFormatter.format(record.cost) : FALLBACK_CELL}</td>
-                  <td className="whitespace-nowrap">{latencySummary}</td>
-                  <td className="max-w-xs">
-                    {errorMessage ? (
-                      <span className="block max-w-xs truncate" title={errorMessage}>
-                        {errorMessage}
+                  <td className="align-middle text-right font-mono tabular-nums">
+                    <span className="block truncate whitespace-nowrap">
+                      {formatOptionalNumber(record.totalTokens, numberFormatter)}
+                    </span>
+                  </td>
+                  <td className="hidden align-middle xl:table-cell">
+                    <div className="flex flex-col justify-center gap-1 leading-tight">
+                      <span className="block truncate whitespace-nowrap text-base-content/70" title={endpointValue}>
+                        {endpointValue}
                       </span>
-                    ) : (
-                      FALLBACK_CELL
-                    )}
+                      <span className="block truncate whitespace-nowrap" title={errorMessage || undefined}>
+                        {errorMessage || FALLBACK_CELL}
+                      </span>
+                    </div>
                   </td>
                   <td className="sticky right-0 z-10 bg-base-100/95 text-right backdrop-blur">
                     <button
@@ -205,7 +274,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                 </tr>
                 {isExpanded && (
                   <tr className="bg-base-200">
-                    <td colSpan={11}>
+                    <td colSpan={8}>
                       <div id={detailId} className="flex flex-col gap-4 p-4">
                         <div className="flex flex-col gap-2">
                           <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">

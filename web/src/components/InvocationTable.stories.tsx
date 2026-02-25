@@ -86,12 +86,14 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
+const defaultArgs: Story['args'] = {
+  records,
+  isLoading: false,
+  error: null,
+}
+
 export const Default: Story = {
-  args: {
-    records,
-    isLoading: false,
-    error: null,
-  },
+  args: defaultArgs,
 }
 
 export const Empty: Story = {
