@@ -13,6 +13,8 @@ import type { ApiInvocation } from '../lib/api'
 import { useTranslation } from '../i18n'
 import { chartBaseTokens, metricAccent, withOpacity } from '../lib/chartTheme'
 import { useTheme } from '../theme'
+import { Alert } from './ui/alert'
+import { Spinner } from './ui/spinner'
 
 interface InvocationChartProps {
   records: ApiInvocation[]
@@ -101,13 +103,13 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
   if (isLoading) {
     return (
       <div className="flex justify-center py-10">
-        <span className="loading loading-bars loading-lg" aria-label={t('chart.loadingDetailed')} />
+        <Spinner size="lg" aria-label={t('chart.loadingDetailed')} />
       </div>
     )
   }
 
   if (data.length === 0) {
-    return <div className="alert">{t('chart.noDataPoints')}</div>
+    return <Alert>{t('chart.noDataPoints')}</Alert>
   }
 
   return (

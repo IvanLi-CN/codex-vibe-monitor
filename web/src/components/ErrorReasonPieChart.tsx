@@ -4,6 +4,8 @@ import type { ErrorDistributionItem } from '../lib/api'
 import { useTranslation } from '../i18n'
 import { chartBaseTokens, piePalette } from '../lib/chartTheme'
 import { useTheme } from '../theme'
+import { Alert } from './ui/alert'
+import { Spinner } from './ui/spinner'
 
 interface ErrorReasonPieChartProps {
   items: ErrorDistributionItem[]
@@ -22,11 +24,11 @@ export function ErrorReasonPieChart({ items, isLoading }: ErrorReasonPieChartPro
     if (isLoading) {
       return (
         <div className="flex justify-center py-10">
-          <span className="loading loading-bars loading-lg" aria-label={t('chart.loadingDetailed')} />
+          <Spinner size="lg" aria-label={t('chart.loadingDetailed')} />
         </div>
       )
     }
-    return <div className="alert">{t('chart.noDataRange')}</div>
+    return <Alert>{t('chart.noDataRange')}</Alert>
   }
 
   const data = items.map((it) => ({ name: it.reason, value: it.count }))

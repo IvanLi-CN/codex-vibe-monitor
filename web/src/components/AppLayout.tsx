@@ -10,6 +10,7 @@ import { frontendVersion, normalizeVersion } from '../lib/version'
 import { useTranslation } from '../i18n'
 import { supportedLocales, type Locale } from '../i18n'
 import { useTheme } from '../theme'
+import { Button } from './ui/button'
 
 const navItems = [
   { to: '/dashboard', labelKey: 'app.nav.dashboard' },
@@ -148,7 +149,7 @@ export function AppLayout() {
         </span>
         <span aria-hidden>{' '}→{' '}</span>
         <a
-          className="link font-mono"
+          className="app-link font-mono"
           href={releaseLink ?? undefined}
           target="_blank"
           rel="noreferrer"
@@ -175,7 +176,7 @@ export function AppLayout() {
 
   return (
     <div className="app-shell min-h-screen text-base-content">
-      <header className="navbar sticky top-0 z-50 border-b border-base-300/75 bg-base-100/80 backdrop-blur-md">
+      <header className="sticky top-0 z-50 border-b border-base-300/75 bg-base-100/80 backdrop-blur-md">
         <div className="mx-auto flex w-full max-w-[1200px] items-center gap-2 px-4 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <span className="relative inline-flex items-center justify-center">
@@ -205,15 +206,15 @@ export function AppLayout() {
 
           <nav className="flex shrink-0 items-center gap-2 sm:gap-3">
             <div className="max-w-[40vw] overflow-x-auto no-scrollbar sm:max-w-none">
-              <ul className="menu menu-horizontal rounded-full border border-base-300/70 bg-base-100/70 px-1 py-1">
+              <ul className="flex items-center gap-1 rounded-full border border-base-300/70 bg-base-100/70 px-1 py-1">
                 {navItems.map((item) => (
                   <li key={item.to}>
                     <NavLink
                       to={item.to}
                       className={({ isActive }) =>
                         isActive
-                          ? 'active rounded-full bg-primary/15 font-semibold text-primary'
-                          : 'rounded-full font-medium text-base-content/75 hover:bg-base-200/70 hover:text-base-content'
+                          ? 'inline-flex rounded-full bg-primary/15 px-3.5 py-2 text-sm font-semibold text-primary'
+                          : 'inline-flex rounded-full px-3.5 py-2 text-sm font-medium text-base-content/75 hover:bg-base-200/70 hover:text-base-content'
                       }
                     >
                       {t(item.labelKey)}
@@ -240,7 +241,7 @@ export function AppLayout() {
 
             <div
               ref={languageMenuRef}
-              className={`dropdown dropdown-end dropdown-bottom ${languageMenuOpen ? 'dropdown-open' : ''}`}
+              className="relative"
             >
               <button
                 type="button"
@@ -255,7 +256,9 @@ export function AppLayout() {
                 <Icon icon="mdi:chevron-down" className="h-4 w-4 text-base-content/60" aria-hidden />
               </button>
               <ul
-                className="dropdown-content menu menu-sm mt-2 rounded-box border border-base-300 bg-base-100/95 p-2 shadow-lg backdrop-blur"
+                className={`absolute right-0 top-[calc(100%+0.4rem)] z-50 mt-2 min-w-[10.5rem] rounded-xl border border-base-300 bg-base-100/95 p-2 shadow-lg backdrop-blur ${
+                  languageMenuOpen ? 'block' : 'hidden'
+                }`}
                 role="listbox"
                 aria-label={t('app.language.switcherAria')}
               >
@@ -263,7 +266,7 @@ export function AppLayout() {
                   <li key={choice.code} role="presentation">
                     <button
                       type="button"
-                      className={`flex items-center gap-2 rounded-btn px-2 py-1 ${
+                      className={`flex items-center gap-2 rounded-md px-2 py-1 ${
                         choice.code === locale ? 'bg-primary/15 font-medium text-primary' : 'hover:bg-base-200'
                       }`}
                       onClick={() => {
@@ -286,7 +289,7 @@ export function AppLayout() {
       {showOfflineBanner && (
         <div className="fixed left-1/2 top-[78px] z-[60] w-full max-w-3xl -translate-x-1/2 px-4">
           <div
-            className="alert w-full flex flex-col gap-3 bg-warning/90 text-warning-content shadow-lg border border-warning/60 sm:flex-row sm:items-center"
+            className="flex w-full flex-col gap-3 rounded-xl border border-warning/60 bg-warning/90 p-4 text-warning-content shadow-lg sm:flex-row sm:items-center"
             role="status"
             aria-live="assertive"
           >
@@ -304,18 +307,19 @@ export function AppLayout() {
                 </p>
               </div>
             </div>
-            <button
+            <Button
               type="button"
-              className="btn btn-sm btn-primary w-full sm:w-auto sm:ml-auto"
+              size="sm"
+              className="w-full sm:ml-auto sm:w-auto"
               onClick={handleManualReconnect}
             >
               {t('app.sse.banner.reconnectButton')}
-            </button>
+            </Button>
           </div>
         </div>
       )}
       {update.visible && (
-        <div className="alert alert-info sticky top-[70px] z-40 mx-auto mt-2 w-[calc(100%-2rem)] max-w-[1200px] rounded-box border border-info/40 shadow">
+        <div className="sticky top-[70px] z-40 mx-auto mt-2 flex w-[calc(100%-2rem)] max-w-[1200px] items-start gap-2 rounded-xl border border-info/40 bg-info/12 px-4 py-3 text-info shadow">
           <div className="flex flex-1 flex-wrap items-center gap-3 text-info-content">
             <span>
               {t('app.update.available')}{' '}
@@ -324,8 +328,8 @@ export function AppLayout() {
               <span className="font-mono">{update.availableVersion}</span>
             </span>
             <div className="ml-auto flex gap-2">
-              <button className="btn btn-sm btn-primary" onClick={update.reload}>{t('app.update.refresh')}</button>
-              <button className="btn btn-sm" onClick={update.dismiss}>{t('app.update.later')}</button>
+              <Button size="sm" onClick={update.reload}>{t('app.update.refresh')}</Button>
+              <Button size="sm" variant="secondary" onClick={update.dismiss}>{t('app.update.later')}</Button>
             </div>
           </div>
         </div>
@@ -338,7 +342,7 @@ export function AppLayout() {
           <span>{t('app.footer.copyright')}</span>
           <div className="flex flex-wrap items-center gap-4">
             <a
-              className="link flex items-center gap-1"
+              className="app-link flex items-center gap-1"
               href={repositoryUrl}
               target="_blank"
               rel="noreferrer"
@@ -351,7 +355,7 @@ export function AppLayout() {
               {sameVersion && normalizedBackendVersion ? (
                 releaseLink ? (
                   <a
-                    className="link font-mono"
+                    className="app-link font-mono"
                     href={releaseLink}
                     target="_blank"
                     rel="noreferrer"

@@ -5,7 +5,9 @@ import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { formatTokensShort } from '../lib/numberFormatters'
 import { heatmapLevels, metricAccent } from '../lib/chartTheme'
+import { cn } from '../lib/utils'
 import { useTheme } from '../theme'
+import { Alert } from './ui/alert'
 
 export type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
@@ -144,10 +146,10 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
       <div className="gap-4">
         {showHeader && (
           <div className="flex items-center justify-between gap-3">
-            <div className="card-heading">
-              <h3 className="card-title">{t('heatmap24h.title')}</h3>
+            <div className="section-heading">
+              <h3 className="section-title">{t('heatmap24h.title')}</h3>
             </div>
-            <div className="tabs tabs-sm tabs-border" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
+            <div className="segment-group" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
               {metricOptions.map((o) => {
                 const active = o.key === metric
                 return (
@@ -156,9 +158,8 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
                     type="button"
                     role="tab"
                     aria-selected={active}
-                  className={`tab whitespace-nowrap px-2 sm:px-3 ${
-                    active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
-                  }`}
+                    className={cn('segment-button px-2 sm:px-3', active && 'font-semibold')}
+                    data-active={active}
                     style={active ? { color: metricAccent(o.key, themeMode) } : undefined}
                     onClick={() => setMetric(o.key)}
                   >
@@ -171,7 +172,7 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
         )}
 
         {error ? (
-          <div className="alert alert-error">{error}</div>
+          <Alert variant="error">{error}</Alert>
         ) : grid.hasData ? (
           <div className="w-full overflow-x-auto no-scrollbar">
             <div className="flex justify-center">
@@ -252,7 +253,7 @@ export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetr
             </div>
           </div>
         ) : isLoading ? (
-          <div className="skeleton h-40 w-full" />
+          <div className="h-40 w-full animate-pulse rounded-xl border border-base-300/70 bg-base-200/55" />
         ) : (
           <div className="text-base-content/70">{noDataText}</div>
         )}

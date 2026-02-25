@@ -5,7 +5,9 @@ import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { formatTokensShort } from '../lib/numberFormatters'
 import { heatmapLevels, metricAccent } from '../lib/chartTheme'
+import { cn } from '../lib/utils'
 import { useTheme } from '../theme'
+import { Alert } from './ui/alert'
 
 type Cell = { date: string; hour: number; value: number }
 
@@ -116,13 +118,13 @@ export function WeeklyHourlyHeatmap() {
   const noDataText = t('heatmap.noData')
 
   return (
-    <section className="card bg-base-100 shadow-sm overflow-visible" data-testid="weekly-hourly-heatmap">
-      <div className="card-body gap-4">
+    <section className="surface-panel overflow-visible" data-testid="weekly-hourly-heatmap">
+      <div className="surface-panel-body gap-4">
         <div className="flex items-center justify-between gap-3">
-          <div className="card-heading">
-            <h2 className="card-title">{t('heatmap.title')}</h2>
+          <div className="section-heading">
+            <h2 className="section-title">{t('heatmap.title')}</h2>
           </div>
-          <div className="tabs tabs-sm tabs-border" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
+          <div className="segment-group" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
             {metricOptions.map((o) => {
               const active = o.key === metric
               return (
@@ -131,9 +133,8 @@ export function WeeklyHourlyHeatmap() {
                   type="button"
                   role="tab"
                   aria-selected={active}
-                  className={`tab whitespace-nowrap px-2 sm:px-3 ${
-                    active ? 'tab-active text-primary font-medium' : 'text-base-content/70 hover:text-base-content'
-                  }`}
+                  className={cn('segment-button px-2 sm:px-3', active && 'font-semibold')}
+                  data-active={active}
                   style={active ? { color: metricAccent(o.key, themeMode) } : undefined}
                   onClick={() => setMetric(o.key)}
                 >
@@ -145,7 +146,7 @@ export function WeeklyHourlyHeatmap() {
         </div>
 
         {error ? (
-          <div className="alert alert-error">{error}</div>
+          <Alert variant="error">{error}</Alert>
         ) : grid.days.length > 0 ? (
           <div className="w-full overflow-x-auto no-scrollbar">
             <div className="flex justify-center">
@@ -203,7 +204,7 @@ export function WeeklyHourlyHeatmap() {
             </div>
           </div>
         ) : isLoading ? (
-          <div className="skeleton h-40 w-full" />
+          <div className="h-40 w-full animate-pulse rounded-xl border border-base-300/70 bg-base-200/55" />
         ) : (
           <div className="text-base-content/70">{noDataText}</div>
         )}

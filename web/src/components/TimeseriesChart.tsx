@@ -15,6 +15,8 @@ import type { TimeseriesPoint } from '../lib/api'
 import { useTranslation } from '../i18n'
 import { chartBaseTokens, metricAccent, withOpacity } from '../lib/chartTheme'
 import { useTheme } from '../theme'
+import { Alert } from './ui/alert'
+import { Spinner } from './ui/spinner'
 
 const LINE_CHART_POINT_THRESHOLD = 48
 
@@ -61,13 +63,13 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
   if (isLoading) {
     return (
       <div className="flex justify-center py-10">
-        <span className="loading loading-bars loading-lg" aria-label={t('chart.loadingDetailed')} />
+        <Spinner size="lg" aria-label={t('chart.loadingDetailed')} />
       </div>
     )
   }
 
   if (points.length === 0) {
-    return <div className="alert">{t('chart.noDataRange')}</div>
+    return <Alert>{t('chart.noDataRange')}</Alert>
   }
 
   const chartData: ChartDatum[] = points.map((point) => {

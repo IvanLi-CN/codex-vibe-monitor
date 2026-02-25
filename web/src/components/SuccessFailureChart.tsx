@@ -5,6 +5,8 @@ import { useTranslation } from '../i18n'
 import type { TranslationValues } from '../i18n/translations'
 import { chartBaseTokens, chartStatusTokens } from '../lib/chartTheme'
 import { useTheme } from '../theme'
+import { Alert } from './ui/alert'
+import { Spinner } from './ui/spinner'
 
 interface SuccessFailureChartProps {
   points: TimeseriesPoint[]
@@ -34,13 +36,13 @@ export function SuccessFailureChart({ points, isLoading, bucketSeconds }: Succes
   if (isLoading) {
     return (
       <div className="flex justify-center py-10">
-        <span className="loading loading-bars loading-lg" aria-label={t('chart.loadingDetailed')} />
+        <Spinner size="lg" aria-label={t('chart.loadingDetailed')} />
       </div>
     )
   }
 
   if (!points || points.length === 0) {
-    return <div className="alert">{t('chart.noDataRange')}</div>
+    return <Alert>{t('chart.noDataRange')}</Alert>
   }
 
   const chartData: ChartDatum[] = points.map((p) => ({

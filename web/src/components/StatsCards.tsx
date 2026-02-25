@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import type { StatsResponse } from '../lib/api'
 import { AnimatedDigits } from './AnimatedDigits'
 import { useTranslation } from '../i18n'
+import { Alert } from './ui/alert'
 
 interface StatsCardsProps {
   stats: StatsResponse | null
@@ -18,9 +19,9 @@ export function StatsCards({ stats, loading, error }: StatsCardsProps) {
 
   if (error) {
     return (
-      <div className="alert alert-error">
+      <Alert variant="error">
         <span>{t('stats.cards.loadError', { error })}</span>
-      </div>
+      </Alert>
     )
   }
 
@@ -31,28 +32,28 @@ export function StatsCards({ stats, loading, error }: StatsCardsProps) {
   const totalTokens = stats?.totalTokens ?? 0
 
   return (
-    <div className="stats shadow bg-base-100">
-      <div className="stat">
-        <div className="stat-title">{t('stats.cards.totalCalls')}</div>
-        <div className="stat-value text-primary">
+    <div className="metric-grid">
+      <div className="metric-cell">
+        <div className="metric-label">{t('stats.cards.totalCalls')}</div>
+        <div className="metric-value text-primary">
           {loading ? '…' : <AnimatedDigits value={numberFormatter.format(totalCalls)} />}
         </div>
       </div>
-      <div className="stat">
-        <div className="stat-title">{t('stats.cards.success')}</div>
-        <div className="stat-value text-success">
+      <div className="metric-cell">
+        <div className="metric-label">{t('stats.cards.success')}</div>
+        <div className="metric-value text-success">
           {loading ? '…' : <AnimatedDigits value={numberFormatter.format(successCount)} />}
         </div>
       </div>
-      <div className="stat">
-        <div className="stat-title">{t('stats.cards.failures')}</div>
-        <div className="stat-value text-error">
+      <div className="metric-cell">
+        <div className="metric-label">{t('stats.cards.failures')}</div>
+        <div className="metric-value text-error">
           {loading ? '…' : <AnimatedDigits value={numberFormatter.format(failureCount)} />}
         </div>
       </div>
-      <div className="stat">
-        <div className="stat-title">{t('stats.cards.totalCost')}</div>
-        <div className="stat-value">
+      <div className="metric-cell">
+        <div className="metric-label">{t('stats.cards.totalCost')}</div>
+        <div className="metric-value">
           {loading ? '…' : (
             <span>
               $
@@ -61,9 +62,9 @@ export function StatsCards({ stats, loading, error }: StatsCardsProps) {
           )}
         </div>
       </div>
-      <div className="stat">
-        <div className="stat-title">{t('stats.cards.totalTokens')}</div>
-        <div className="stat-value">
+      <div className="metric-cell">
+        <div className="metric-label">{t('stats.cards.totalTokens')}</div>
+        <div className="metric-value">
           {loading ? '…' : <AnimatedDigits value={numberFormatter.format(totalTokens)} />}
         </div>
       </div>
