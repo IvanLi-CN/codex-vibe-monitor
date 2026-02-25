@@ -9,7 +9,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -224,6 +224,8 @@ async fn main() -> Result<()> {
         pool,
         http_clients,
         broadcaster: tx.clone(),
+        proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+        proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         semaphore: semaphore.clone(),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -4692,6 +4694,9 @@ async fn persist_and_broadcast_proxy_capture(
     let Some(inserted_record) = inserted else {
         return Ok(());
     };
+    if state.broadcaster.receiver_count() == 0 {
+        return Ok(());
+    }
 
     let invoke_id = inserted_record.invoke_id.clone();
     if let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
@@ -4704,52 +4709,95 @@ async fn persist_and_broadcast_proxy_capture(
         );
     }
 
-    match collect_summary_snapshots(&state.pool, state.config.crs_stats.as_ref()).await {
-        Ok(summaries) => {
-            for summary in summaries {
-                if let Err(err) = state.broadcaster.send(BroadcastPayload::Summary {
-                    window: summary.window.clone(),
-                    summary: summary.summary,
-                }) {
+    state
+        .proxy_summary_quota_broadcast_seq
+        .fetch_add(1, Ordering::Relaxed);
+    if state
+        .proxy_summary_quota_broadcast_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    let latest_broadcast_seq = state.proxy_summary_quota_broadcast_seq.clone();
+    let broadcast_running = state.proxy_summary_quota_broadcast_running.clone();
+    let pool = state.pool.clone();
+    let broadcaster = state.broadcaster.clone();
+    let relay_config = state.config.crs_stats.clone();
+    tokio::spawn(async move {
+        let mut synced_seq = 0_u64;
+        loop {
+            let target_seq = latest_broadcast_seq.load(Ordering::Acquire);
+            if target_seq == synced_seq {
+                broadcast_running.store(false, Ordering::Release);
+                if latest_broadcast_seq.load(Ordering::Acquire) != synced_seq
+                    && broadcast_running
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
+                    continue;
+                }
+                break;
+            }
+            synced_seq = target_seq;
+
+            if broadcaster.receiver_count() == 0 {
+                continue;
+            }
+
+            match collect_summary_snapshots(&pool, relay_config.as_ref()).await {
+                Ok(summaries) => {
+                    for summary in summaries {
+                        if let Err(err) = broadcaster.send(BroadcastPayload::Summary {
+                            window: summary.window.clone(),
+                            summary: summary.summary,
+                        }) {
+                            warn!(
+                                ?err,
+                                invoke_id = %invoke_id,
+                                window = %summary.window,
+                                "failed to broadcast proxy summary payload"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
                     warn!(
                         ?err,
                         invoke_id = %invoke_id,
-                        window = %summary.window,
-                        "failed to broadcast proxy summary payload"
+                        "failed to collect summary snapshots after proxy capture persistence"
+                    );
+                }
+            }
+
+            if broadcaster.receiver_count() == 0 {
+                continue;
+            }
+
+            match QuotaSnapshotResponse::fetch_latest(&pool).await {
+                Ok(Some(snapshot)) => {
+                    if let Err(err) = broadcaster.send(BroadcastPayload::Quota {
+                        snapshot: Box::new(snapshot),
+                    }) {
+                        warn!(
+                            ?err,
+                            invoke_id = %invoke_id,
+                            "failed to broadcast proxy quota snapshot"
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        invoke_id = %invoke_id,
+                        "failed to fetch latest quota snapshot after proxy capture persistence"
                     );
                 }
             }
         }
-        Err(err) => {
-            warn!(
-                ?err,
-                invoke_id = %invoke_id,
-                "failed to collect summary snapshots after proxy capture persistence"
-            );
-        }
-    }
-
-    match QuotaSnapshotResponse::fetch_latest(&state.pool).await {
-        Ok(Some(snapshot)) => {
-            if let Err(err) = state.broadcaster.send(BroadcastPayload::Quota {
-                snapshot: Box::new(snapshot),
-            }) {
-                warn!(
-                    ?err,
-                    invoke_id = %invoke_id,
-                    "failed to broadcast proxy quota snapshot"
-                );
-            }
-        }
-        Ok(None) => {}
-        Err(err) => {
-            warn!(
-                ?err,
-                invoke_id = %invoke_id,
-                "failed to fetch latest quota snapshot after proxy capture persistence"
-            );
-        }
-    }
+    });
 
     Ok(())
 }
@@ -5980,6 +6028,8 @@ struct AppState {
     pool: Pool<Sqlite>,
     http_clients: HttpClients,
     broadcaster: broadcast::Sender<BroadcastPayload>,
+    proxy_summary_quota_broadcast_seq: Arc<AtomicU64>,
+    proxy_summary_quota_broadcast_running: Arc<AtomicBool>,
     semaphore: Arc<Semaphore>,
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,
@@ -7529,6 +7579,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -7626,7 +7678,7 @@ mod tests {
 
     async fn drain_broadcast_messages(rx: &mut broadcast::Receiver<BroadcastPayload>) {
         loop {
-            match tokio::time::timeout(Duration::from_millis(30), rx.recv()).await {
+            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
                 Ok(Ok(_)) => continue,
                 Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
                 Ok(Err(broadcast::error::RecvError::Closed)) => break,
@@ -9090,6 +9142,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
                 hijack_enabled: true,
@@ -9439,12 +9493,21 @@ mod tests {
         .await
         .expect("duplicate persist should not fail");
 
-        assert!(
-            tokio::time::timeout(Duration::from_millis(250), rx.recv())
-                .await
-                .is_err(),
-            "duplicate insert should not emit extra broadcast payloads"
-        );
+        let deadline = Instant::now() + Duration::from_millis(400);
+        while Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                Ok(Ok(BroadcastPayload::Records { records })) => {
+                    assert!(
+                        records.iter().all(|record| record.invoke_id != invoke_id),
+                        "duplicate insert should not emit records payload for the same invoke_id"
+                    );
+                }
+                Ok(Ok(_)) => continue,
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(broadcast::error::RecvError::Closed)) => break,
+                Err(_) => continue,
+            }
+        }
     }
 
     #[tokio::test]
@@ -9704,6 +9767,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -9816,6 +9881,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -9970,6 +10037,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -10023,6 +10092,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -10807,6 +10878,8 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),

@@ -8,6 +8,22 @@ export interface InvocationFilters {
   status?: string
 }
 
+function recordKey(record: ApiInvocation) {
+  return `${record.invokeId}-${record.occurredAt}`
+}
+
+function recordsChanged(next: ApiInvocation[], current: ApiInvocation[]) {
+  return (
+    next.length !== current.length ||
+    next.some((record, index) => {
+      const existing = current[index]
+      return (
+        !existing || existing.invokeId !== record.invokeId || existing.occurredAt !== record.occurredAt
+      )
+    })
+  )
+}
+
 function matchesFilters(record: ApiInvocation, filters?: InvocationFilters) {
   if (!filters) return true
   if (filters.model && record.model !== filters.model) return false
@@ -31,13 +47,13 @@ function mergeRecords(
 
   for (const record of incoming) {
     if (!matchesFilters(record, filters)) continue
-    const key = `${record.invokeId}-${record.occurredAt}`
+    const key = recordKey(record)
     dedupe.set(key, record)
   }
 
   for (const record of current) {
     if (!matchesFilters(record, filters)) continue
-    const key = `${record.invokeId}-${record.occurredAt}`
+    const key = recordKey(record)
     if (!dedupe.has(key)) {
       dedupe.set(key, record)
     }
@@ -59,28 +75,77 @@ export function useInvocationStream(
   const enableStream = options?.enableStream ?? true
   const hasHydratedRef = useRef(false)
   const lastResyncAtRef = useRef(0)
+  const requestSeqRef = useRef(0)
+  const recordsRef = useRef<ApiInvocation[]>([])
+  const onNewRecordsRef = useRef(onNewRecords)
+
+  useEffect(() => {
+    onNewRecordsRef.current = onNewRecords
+  }, [onNewRecords])
+
+  useEffect(() => {
+    recordsRef.current = records
+  }, [records])
 
   const load = useCallback(
     async (opts?: { silent?: boolean }) => {
+      const requestSeq = requestSeqRef.current + 1
+      requestSeqRef.current = requestSeq
+      const suppressError = Boolean(opts?.silent && hasHydratedRef.current)
       const shouldShowLoading = !(opts?.silent && hasHydratedRef.current)
+      const silentBaselineKeys = opts?.silent
+        ? new Set(recordsRef.current.map((record) => recordKey(record)))
+        : null
       if (shouldShowLoading) {
         setIsLoading(true)
       }
       try {
         const response = await fetchInvocations(limit, filters)
-        setRecords((current) =>
-          mergeRecords(response.records, opts?.silent ? current : [], limit, filters),
-        )
+        if (requestSeq !== requestSeqRef.current) {
+          return
+        }
+        setRecords((current) => {
+          const next = (() => {
+            if (!silentBaselineKeys) {
+              return mergeRecords(response.records, [], limit, filters)
+            }
+            const authoritative = mergeRecords(response.records, [], limit, filters)
+            const concurrent = current.filter(
+              (record) =>
+                matchesFilters(record, filters) && !silentBaselineKeys.has(recordKey(record)),
+            )
+            return mergeRecords(authoritative, concurrent, limit, filters)
+          })()
+          recordsRef.current = next
+          if (onNewRecordsRef.current && recordsChanged(next, current)) {
+            onNewRecordsRef.current(next)
+          }
+          return next
+        })
         hasHydratedRef.current = true
+        lastResyncAtRef.current = Date.now()
         setError(null)
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        if (requestSeq !== requestSeqRef.current) {
+          return
+        }
+        if (!suppressError) {
+          setError(err instanceof Error ? err.message : String(err))
+        }
       } finally {
-        setIsLoading(false)
+        if (requestSeq === requestSeqRef.current) {
+          setIsLoading(false)
+        }
       }
     },
     [filters, limit],
   )
+
+  useEffect(() => {
+    return () => {
+      requestSeqRef.current += 1
+    }
+  }, [])
 
   useEffect(() => {
     hasHydratedRef.current = false
@@ -97,13 +162,17 @@ export function useInvocationStream(
     return () => clearTimeout(id)
   }, [error, load, records.length])
 
-  const requestResync = useCallback(() => {
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
-    const now = Date.now()
-    if (now - lastResyncAtRef.current < 3000) return
-    lastResyncAtRef.current = now
-    void load({ silent: true })
-  }, [load])
+  const requestResync = useCallback(
+    (opts?: { force?: boolean }) => {
+      const force = opts?.force ?? false
+      if (!force && typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+      const now = Date.now()
+      if (!force && now - lastResyncAtRef.current < 3000) return
+      lastResyncAtRef.current = now
+      void load({ silent: true })
+    },
+    [load],
+  )
 
   useEffect(() => {
     if (!enableStream) {
@@ -114,19 +183,10 @@ export function useInvocationStream(
       if (payload.type !== 'records') return
       setRecords((current) => {
         const next = mergeRecords(payload.records, current, limit, filters)
-        if (onNewRecords) {
-          const changed =
-            next.length !== current.length ||
-            next.some((record, index) => {
-              const existing = current[index]
-              return (
-                !existing ||
-                existing.invokeId !== record.invokeId ||
-                existing.occurredAt !== record.occurredAt
-              )
-            })
-          if (changed) {
-            onNewRecords(next)
+        recordsRef.current = next
+        if (onNewRecordsRef.current) {
+          if (recordsChanged(next, current)) {
+            onNewRecordsRef.current(next)
           }
         }
         return next
@@ -134,16 +194,29 @@ export function useInvocationStream(
     })
 
     return unsubscribe
-  }, [enableStream, filters, limit, onNewRecords])
+  }, [enableStream, filters, limit])
 
   useEffect(() => {
     if (!enableStream) {
       return
     }
     const unsubscribe = subscribeToSseOpen(() => {
-      requestResync()
+      if (!hasHydratedRef.current) return
+      requestResync({ force: true })
     })
     return unsubscribe
+  }, [enableStream, requestResync])
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || !enableStream) {
+      return
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      requestResync()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
   }, [enableStream, requestResync])
 
   const hasData = useMemo(() => records.length > 0, [records])
