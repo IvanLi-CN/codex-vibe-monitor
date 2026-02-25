@@ -119,7 +119,9 @@ export function useInvocationStream(
         lastResyncAtRef.current = Date.now()
         if (pendingOpenResyncRef.current) {
           pendingOpenResyncRef.current = false
-          void load({ silent: true })
+          queueMicrotask(() => {
+            void load({ silent: true })
+          })
         }
         setError(null)
       } catch (err) {
