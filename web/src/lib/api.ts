@@ -38,6 +38,19 @@ export interface ApiInvocation {
   failureKind?: string
   failureClass?: 'service_failure' | 'client_failure' | 'client_abort' | 'none'
   isActionable?: boolean
+  endpoint?: string
+  requesterIp?: string
+  codexSessionId?: string
+  costEstimated?: number
+  priceVersion?: string
+  tTotalMs?: number | null
+  tReqReadMs?: number | null
+  tReqParseMs?: number | null
+  tUpstreamConnectMs?: number | null
+  tUpstreamTtfbMs?: number | null
+  tUpstreamStreamMs?: number | null
+  tRespParseMs?: number | null
+  tPersistMs?: number | null
   timings?: ApiInvocationTimings
   rawMetadata?: ApiInvocationRawMetadata
   proxyTimings?: ApiInvocationTimings

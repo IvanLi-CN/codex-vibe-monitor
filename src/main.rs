@@ -19,7 +19,7 @@ use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::{OriginalUri, Query, State},
+    extract::{ConnectInfo, OriginalUri, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
     response::{IntoResponse, Json, Response, Sse},
     routing::{any, get, put},
@@ -53,7 +53,7 @@ use tokio::{
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_util::sync::CancellationToken;
 use tower_http::{
-    cors::CorsLayer,
+    cors::{AllowOrigin, Any, CorsLayer},
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
@@ -103,6 +103,7 @@ const DEFAULT_XY_LEGACY_POLL_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
 const DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP: bool = true;
+const ENV_CORS_ALLOWED_ORIGINS: &str = "XY_CORS_ALLOWED_ORIGINS";
 const PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.3-codex",
     "gpt-5.2-codex",
@@ -386,6 +387,7 @@ async fn spawn_http_server(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> Result<JoinHandle<()>> {
+    let cors_layer = build_cors_layer(&state.config);
     let mut router = Router::new()
         .route("/health", get(health_check))
         .route("/api/version", get(get_versions))
@@ -406,10 +408,10 @@ async fn spawn_http_server(
         .route("/api/stats/errors/others", get(fetch_other_errors))
         .route("/api/quota/latest", get(latest_quota_snapshot))
         .route("/events", get(sse_stream))
-        .route("/v1/*path", any(proxy_openai_v1))
+        .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
         .with_state(state.clone())
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive());
+        .layer(cors_layer);
 
     // Optionally attach headers in the future; standard EventSource cannot read headers
 
@@ -432,9 +434,12 @@ async fn spawn_http_server(
     info!(%addr, "http server listening");
 
     let handle = tokio::spawn(async move {
-        if let Err(err) = axum::serve(listener, router)
-            .with_graceful_shutdown(async move { cancel.cancelled().await })
-            .await
+        if let Err(err) = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move { cancel.cancelled().await })
+        .await
         {
             error!(?err, "http server exited with error");
         }
@@ -2019,7 +2024,11 @@ async fn list_invocations(
     let mut query = QueryBuilder::new(
         "SELECT id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, \
          cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, \
-         failure_kind, failure_class, is_actionable, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
+         COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind, \
+         failure_class, is_actionable, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.codexSessionId') END AS codex_session_id, \
          cost_estimated, price_version, \
          request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
          response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
@@ -3215,12 +3224,43 @@ async fn health_check() -> &'static str {
     "ok"
 }
 
+#[cfg(test)]
 async fn proxy_openai_v1(
     State(state): State<Arc<AppState>>,
     OriginalUri(original_uri): OriginalUri,
     method: Method,
     headers: HeaderMap,
     body: Body,
+) -> Response {
+    proxy_openai_v1_common(state, original_uri, method, headers, body, None).await
+}
+
+async fn proxy_openai_v1_with_connect_info(
+    State(state): State<Arc<AppState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    OriginalUri(original_uri): OriginalUri,
+    method: Method,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    proxy_openai_v1_common(
+        state,
+        original_uri,
+        method,
+        headers,
+        body,
+        connect_info.map(|info| info.0.ip()),
+    )
+    .await
+}
+
+async fn proxy_openai_v1_common(
+    state: Arc<AppState>,
+    original_uri: Uri,
+    method: Method,
+    headers: HeaderMap,
+    body: Body,
+    peer_ip: Option<IpAddr>,
 ) -> Response {
     let proxy_request_id = next_proxy_request_id();
     let started_at = Instant::now();
@@ -3238,10 +3278,20 @@ async fn proxy_openai_v1(
         uri = %uri_for_log,
         has_body = request_may_have_body,
         content_length = ?request_content_length,
+        peer_ip = ?peer_ip,
         "openai proxy request started"
     );
 
-    match proxy_openai_v1_inner(state, proxy_request_id, original_uri, method, headers, body).await
+    match proxy_openai_v1_inner(
+        state,
+        proxy_request_id,
+        original_uri,
+        method,
+        headers,
+        body,
+        peer_ip,
+    )
+    .await
     {
         Ok(response) => {
             let status = response.status();
@@ -3277,6 +3327,7 @@ async fn proxy_openai_v1_inner(
     method: Method,
     headers: HeaderMap,
     body: Body,
+    peer_ip: Option<IpAddr>,
 ) -> Result<Response, (StatusCode, String)> {
     let target_url =
         build_proxy_upstream_url(&state.config.openai_upstream_base_url, &original_uri).map_err(
@@ -3347,11 +3398,11 @@ async fn proxy_openai_v1_inner(
         return proxy_openai_v1_capture_target(
             state,
             proxy_request_id,
-            method,
             headers,
             body,
             target,
             target_url,
+            peer_ip,
         )
         .await;
     }
@@ -3581,11 +3632,11 @@ fn capture_target_for_request(path: &str, method: &Method) -> Option<ProxyCaptur
 async fn proxy_openai_v1_capture_target(
     state: Arc<AppState>,
     proxy_request_id: u64,
-    method: Method,
     headers: HeaderMap,
     body: Body,
     capture_target: ProxyCaptureTarget,
     target_url: Url,
+    peer_ip: Option<IpAddr>,
 ) -> Result<Response, (StatusCode, String)> {
     let capture_started = Instant::now();
     let occurred_at_utc = Utc::now();
@@ -3596,6 +3647,8 @@ async fn proxy_openai_v1_capture_target(
     );
     let raw_expires_at = compute_raw_expires_at(occurred_at_utc, state.config.proxy_raw_retention);
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
+    let requester_ip = extract_requester_ip(&headers, peer_ip);
+    let header_codex_session_id = extract_codex_session_id_from_headers(&headers);
 
     let req_read_started = Instant::now();
     let request_body_bytes = match read_request_body_with_limit(
@@ -3653,6 +3706,8 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     request_info.parse_error.as_deref(),
                     Some(read_err.failure_kind),
+                    requester_ip.as_deref(),
+                    header_codex_session_id.as_deref(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3685,13 +3740,17 @@ async fn proxy_openai_v1_capture_target(
         request_body_bytes,
         state.config.proxy_enforce_stream_include_usage,
     );
+    let codex_session_id = request_info
+        .codex_session_id
+        .clone()
+        .or_else(|| header_codex_session_id.clone());
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let req_raw = store_raw_payload_file(&state.config, &invoke_id, "request", &upstream_body);
 
     let mut upstream_request = state
         .http_clients
         .proxy
-        .request(method, target_url)
+        .request(Method::POST, target_url)
         .body(upstream_body.clone());
     let request_connection_scoped = connection_scoped_header_names(&headers);
     for (name, value) in &headers {
@@ -3757,6 +3816,8 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     request_info.parse_error.as_deref(),
                     Some(failure_kind),
+                    requester_ip.as_deref(),
+                    codex_session_id.as_deref(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3813,6 +3874,8 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     request_info.parse_error.as_deref(),
                     Some(failure_kind),
+                    requester_ip.as_deref(),
+                    codex_session_id.as_deref(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3874,6 +3937,8 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     request_info.parse_error.as_deref(),
                     None,
+                    requester_ip.as_deref(),
+                    codex_session_id.as_deref(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -3925,6 +3990,8 @@ async fn proxy_openai_v1_capture_target(
     let occurred_at_for_task = occurred_at.clone();
     let raw_expires_at_for_task = raw_expires_at.clone();
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
+    let requester_ip_for_task = requester_ip.clone();
+    let codex_session_id_for_task = codex_session_id.clone();
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
 
     tokio::spawn(async move {
@@ -4056,6 +4123,8 @@ async fn proxy_openai_v1_capture_target(
             response_info.usage_missing_reason.as_deref(),
             request_info_for_task.parse_error.as_deref(),
             failure_kind,
+            requester_ip_for_task.as_deref(),
+            codex_session_id_for_task.as_deref(),
         );
 
         let record = ProxyCaptureRecord {
@@ -4201,6 +4270,7 @@ fn prepare_target_request_body(
 ) -> (Vec<u8>, RequestCaptureInfo, bool) {
     let mut info = RequestCaptureInfo {
         model: None,
+        codex_session_id: None,
         is_stream: false,
         parse_error: None,
     };
@@ -4221,6 +4291,7 @@ fn prepare_target_request_body(
         .get("model")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    info.codex_session_id = extract_codex_session_id_from_request_body(&value);
     info.is_stream = value
         .get("stream")
         .and_then(|v| v.as_bool())
@@ -4259,6 +4330,29 @@ fn prepare_target_request_body(
     } else {
         (body, info, false)
     }
+}
+
+fn extract_codex_session_id_from_request_body(value: &Value) -> Option<String> {
+    const SESSION_POINTERS: &[&str] = &[
+        "/metadata/codex_session_id",
+        "/metadata/codexSessionId",
+        "/codex_session_id",
+        "/codexSessionId",
+        "/metadata/session_id",
+        "/metadata/sessionId",
+        "/session_id",
+        "/sessionId",
+    ];
+
+    for pointer in SESSION_POINTERS {
+        if let Some(session_id) = value.pointer(pointer).and_then(|v| v.as_str()) {
+            let normalized = session_id.trim();
+            if !normalized.is_empty() {
+                return Some(normalized.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn parse_target_response_payload(
@@ -4535,6 +4629,8 @@ fn build_proxy_payload_summary(
     usage_missing_reason: Option<&str>,
     request_parse_error: Option<&str>,
     failure_kind: Option<&str>,
+    requester_ip: Option<&str>,
+    codex_session_id: Option<&str>,
 ) -> String {
     let endpoint = match target {
         ProxyCaptureTarget::ChatCompletions => "/v1/chat/completions",
@@ -4549,6 +4645,8 @@ fn build_proxy_payload_summary(
         "usageMissingReason": usage_missing_reason,
         "requestParseError": request_parse_error,
         "failureKind": failure_kind,
+        "requesterIp": requester_ip,
+        "codexSessionId": codex_session_id,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
@@ -5706,6 +5804,102 @@ async fn get_versions(
     Ok(Json(VersionResponse { backend, frontend }))
 }
 
+fn build_cors_layer(config: &AppConfig) -> CorsLayer {
+    let allowed = config
+        .cors_allowed_origins
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let allow_origin = AllowOrigin::predicate(move |origin, _request| {
+        let Ok(origin_raw) = origin.to_str() else {
+            return false;
+        };
+        origin_allowed(origin_raw, &allowed)
+    });
+    CorsLayer::new()
+        .allow_origin(allow_origin)
+        .allow_methods(Any)
+        .allow_headers(Any)
+}
+
+fn origin_allowed(origin_raw: &str, configured: &HashSet<String>) -> bool {
+    let Some(origin) = normalize_cors_origin(origin_raw) else {
+        return false;
+    };
+    if configured.contains(&origin) {
+        return true;
+    }
+    is_loopback_origin(origin_raw)
+}
+
+fn is_loopback_origin(origin_raw: &str) -> bool {
+    let Ok(origin) = Url::parse(origin_raw) else {
+        return false;
+    };
+    if !matches!(origin.scheme(), "http" | "https") {
+        return false;
+    }
+    origin
+        .host_str()
+        .map(is_loopback_authority_host)
+        .unwrap_or(false)
+}
+
+fn parse_cors_allowed_origins_env(name: &str) -> Result<Vec<String>> {
+    match env::var(name) {
+        Ok(raw) => parse_cors_allowed_origins(&raw),
+        Err(env::VarError::NotPresent) => Ok(Vec::new()),
+        Err(err) => Err(anyhow!("failed to read {name}: {err}")),
+    }
+}
+
+fn parse_cors_allowed_origins(raw: &str) -> Result<Vec<String>> {
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+    for candidate in raw.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+        let normalized = normalize_cors_origin(candidate)
+            .ok_or_else(|| anyhow!("invalid {ENV_CORS_ALLOWED_ORIGINS} entry: {candidate}"))?;
+        if seen.insert(normalized.clone()) {
+            entries.push(normalized);
+        }
+    }
+    Ok(entries)
+}
+
+fn normalize_cors_origin(origin_raw: &str) -> Option<String> {
+    let origin = Url::parse(origin_raw).ok()?;
+    if !matches!(origin.scheme(), "http" | "https") {
+        return None;
+    }
+    if origin.cannot_be_a_base()
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+    {
+        return None;
+    }
+    if origin.path() != "/" {
+        return None;
+    }
+
+    let host = origin.host_str()?;
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_ascii_lowercase()
+    };
+    let scheme = origin.scheme().to_ascii_lowercase();
+    let port = origin.port();
+    let default_port = default_port_for_scheme(&scheme);
+
+    if port.is_none() || port == default_port {
+        Some(format!("{scheme}://{host}"))
+    } else {
+        Some(format!("{scheme}://{host}:{}", port?))
+    }
+}
+
 fn is_models_list_path(path: &str) -> bool {
     path == "/v1/models"
 }
@@ -5833,6 +6027,105 @@ fn header_value_as_str<'a>(headers: &'a HeaderMap, name: &'static str) -> Option
     headers
         .get(HeaderName::from_static(name))
         .and_then(|value| value.to_str().ok())
+}
+
+fn extract_requester_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>) -> Option<String> {
+    if let Some(x_forwarded_for) = header_value_as_str(headers, "x-forwarded-for")
+        && let Some(ip) = extract_first_ip_from_x_forwarded_for(x_forwarded_for)
+    {
+        return Some(ip);
+    }
+
+    if let Some(x_real_ip) = header_value_as_str(headers, "x-real-ip")
+        && let Some(ip) = extract_ip_from_header_value(x_real_ip)
+    {
+        return Some(ip);
+    }
+
+    if let Some(forwarded) = header_value_as_str(headers, "forwarded")
+        && let Some(ip) = extract_ip_from_forwarded_header(forwarded)
+    {
+        return Some(ip);
+    }
+
+    peer_ip.map(|ip| ip.to_string())
+}
+
+fn extract_codex_session_id_from_headers(headers: &HeaderMap) -> Option<String> {
+    for header_name in [
+        "x-codex-session-id",
+        "x-session-id",
+        "session-id",
+        "x-openai-session-id",
+    ] {
+        if let Some(raw_value) = header_value_as_str(headers, header_name) {
+            let candidate = raw_value
+                .split(',')
+                .next()
+                .map(str::trim)
+                .unwrap_or(raw_value.trim())
+                .trim_matches('"');
+            if !candidate.is_empty() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_first_ip_from_x_forwarded_for(raw: &str) -> Option<String> {
+    let first = raw.split(',').next()?.trim();
+    extract_ip_from_header_value(first)
+}
+
+fn extract_ip_from_forwarded_header(raw: &str) -> Option<String> {
+    for entry in raw.split(',') {
+        for segment in entry.split(';') {
+            let pair = segment.trim();
+            if pair.len() >= 4 && pair[..4].eq_ignore_ascii_case("for=") {
+                let value = &pair[4..];
+                if let Some(ip) = extract_ip_from_header_value(value) {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_ip_from_header_value(raw: &str) -> Option<String> {
+    let normalized = raw.trim().trim_matches('"');
+    if normalized.is_empty()
+        || normalized.eq_ignore_ascii_case("unknown")
+        || normalized.starts_with('_')
+    {
+        return None;
+    }
+
+    if let Some(value) = normalized.strip_prefix("for=") {
+        return extract_ip_from_header_value(value);
+    }
+
+    if normalized.starts_with('[')
+        && let Some(end) = normalized.find(']')
+        && let Ok(ip) = normalized[1..end].parse::<IpAddr>()
+    {
+        return Some(ip.to_string());
+    }
+
+    if let Ok(ip) = normalized.parse::<IpAddr>() {
+        return Some(ip.to_string());
+    }
+
+    if let Some((host, port)) = normalized.rsplit_once(':')
+        && !host.contains(':')
+        && port.parse::<u16>().is_ok()
+        && let Ok(ip) = host.parse::<IpAddr>()
+    {
+        return Some(ip.to_string());
+    }
+
+    None
 }
 
 fn is_loopback_authority_host(host: &str) -> bool {
@@ -6078,6 +6371,12 @@ struct ApiInvocation {
     failure_class: Option<String>,
     #[sqlx(default)]
     is_actionable: Option<bool>,
+    #[sqlx(default)]
+    endpoint: Option<String>,
+    #[sqlx(default)]
+    requester_ip: Option<String>,
+    #[sqlx(default)]
+    codex_session_id: Option<String>,
     #[sqlx(default)]
     cost_estimated: Option<i64>,
     #[sqlx(default)]
@@ -6500,6 +6799,7 @@ struct RawPayloadMeta {
 #[derive(Debug, Clone, Default)]
 struct RequestCaptureInfo {
     model: Option<String>,
+    codex_session_id: Option<String>,
     is_stream: bool,
     parse_error: Option<String>,
 }
@@ -6950,6 +7250,7 @@ struct AppConfig {
     max_parallel_polls: usize,
     shared_connection_parallelism: usize,
     http_bind: SocketAddr,
+    cors_allowed_origins: Vec<String>,
     list_limit_max: usize,
     user_agent: String,
     static_dir: Option<PathBuf>,
@@ -7107,6 +7408,7 @@ impl AppConfig {
                 .context("invalid XY_HTTP_BIND socket address")?
                 .unwrap_or_else(|| "127.0.0.1:8080".parse().expect("valid default address"))
         };
+        let cors_allowed_origins = parse_cors_allowed_origins_env(ENV_CORS_ALLOWED_ORIGINS)?;
         let list_limit_max = overrides
             .list_limit_max
             .or_else(|| {
@@ -7195,6 +7497,7 @@ impl AppConfig {
             max_parallel_polls,
             shared_connection_parallelism,
             http_bind,
+            cors_allowed_origins,
             list_limit_max,
             user_agent,
             static_dir,
@@ -7240,7 +7543,7 @@ mod tests {
     use axum::{
         Json, Router,
         body::{Body, Bytes, to_bytes},
-        extract::State,
+        extract::{Query, State},
         http::{HeaderValue, Method, StatusCode, Uri, header as http_header},
         response::IntoResponse,
         routing::{any, get},
@@ -7432,6 +7735,7 @@ mod tests {
             max_parallel_polls: 2,
             shared_connection_parallelism: 1,
             http_bind: "127.0.0.1:38080".parse().expect("valid socket address"),
+            cors_allowed_origins: Vec::new(),
             list_limit_max: 100,
             user_agent: "codex-test".to_string(),
             static_dir: None,
@@ -8135,6 +8439,29 @@ mod tests {
         assert!(!request_may_have_body(&Method::GET, &with_length));
         with_length.insert(http_header::CONTENT_LENGTH, HeaderValue::from_static("10"));
         assert!(request_may_have_body(&Method::GET, &with_length));
+    }
+
+    #[test]
+    fn parse_cors_allowed_origins_normalizes_and_deduplicates() {
+        let parsed = parse_cors_allowed_origins(
+            "https://EXAMPLE.com:443, http://127.0.0.1:8080, https://example.com",
+        )
+        .expect("parse should succeed");
+        assert_eq!(
+            parsed,
+            vec![
+                "https://example.com".to_string(),
+                "http://127.0.0.1:8080".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn origin_allowed_accepts_loopback_and_configured_origins() {
+        let configured = HashSet::from(["https://api.example.com".to_string()]);
+        assert!(origin_allowed("http://127.0.0.1:60080", &configured));
+        assert!(origin_allowed("https://api.example.com", &configured));
+        assert!(!origin_allowed("https://evil.example.com", &configured));
     }
 
     #[test]
@@ -10148,6 +10475,74 @@ mod tests {
     }
 
     #[test]
+    fn prepare_target_request_body_extracts_codex_session_id_from_metadata() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "stream": true,
+            "metadata": {
+                "codex_session_id": "sess-from-body"
+            }
+        }))
+        .expect("serialize request body");
+
+        let (_rewritten, info, _did_rewrite) =
+            prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
+
+        assert_eq!(info.codex_session_id.as_deref(), Some("sess-from-body"));
+    }
+
+    #[test]
+    fn extract_requester_ip_uses_expected_header_priority() {
+        let mut preferred = HeaderMap::new();
+        preferred.insert(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_static("198.51.100.10, 203.0.113.9"),
+        );
+        preferred.insert(
+            HeaderName::from_static("x-real-ip"),
+            HeaderValue::from_static("203.0.113.5"),
+        );
+        preferred.insert(
+            HeaderName::from_static("forwarded"),
+            HeaderValue::from_static("for=192.0.2.60;proto=https"),
+        );
+        assert_eq!(
+            extract_requester_ip(&preferred, Some(IpAddr::from([127, 0, 0, 1]))).as_deref(),
+            Some("198.51.100.10")
+        );
+
+        let mut fallback_forwarded = HeaderMap::new();
+        fallback_forwarded.insert(
+            HeaderName::from_static("forwarded"),
+            HeaderValue::from_static("for=\"[2001:db8::1]:443\";proto=https"),
+        );
+        assert_eq!(
+            extract_requester_ip(&fallback_forwarded, Some(IpAddr::from([127, 0, 0, 1])))
+                .as_deref(),
+            Some("2001:db8::1")
+        );
+
+        let no_headers = HeaderMap::new();
+        assert_eq!(
+            extract_requester_ip(&no_headers, Some(IpAddr::from([127, 0, 0, 1]))).as_deref(),
+            Some("127.0.0.1")
+        );
+    }
+
+    #[test]
+    fn extract_codex_session_id_from_headers_reads_whitelist_keys() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-session-id"),
+            HeaderValue::from_static("sess-from-header"),
+        );
+        assert_eq!(
+            extract_codex_session_id_from_headers(&headers).as_deref(),
+            Some("sess-from-header")
+        );
+    }
+
+    #[test]
     fn parse_stream_response_payload_extracts_usage_and_model() {
         let raw = [
             "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}],\"usage\":null}",
@@ -10335,12 +10730,19 @@ mod tests {
         )
         .await;
 
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_static("198.51.100.42, 203.0.113.10"),
+        );
         let response = proxy_openai_v1(
             State(state.clone()),
             OriginalUri("/v1/responses?mode=gzip".parse().expect("valid uri")),
             Method::POST,
-            HeaderMap::new(),
-            Body::from(r#"{"model":"gpt-5.3-codex","stream":true,"input":"hello"}"#),
+            headers,
+            Body::from(
+                r#"{"model":"gpt-5.3-codex","stream":true,"metadata":{"codex_session_id":"sess-gzip-1"},"input":"hello"}"#,
+            ),
         )
         .await;
 
@@ -10384,6 +10786,8 @@ mod tests {
             .expect("decode payload summary");
         assert_eq!(payload["endpoint"], "/v1/responses");
         assert!(payload["usageMissingReason"].is_null());
+        assert_eq!(payload["requesterIp"], "198.51.100.42");
+        assert_eq!(payload["codexSessionId"], "sess-gzip-1");
 
         upstream_handle.abort();
     }
@@ -10422,6 +10826,115 @@ mod tests {
             .await
             .expect("scope after insert");
         assert_eq!(scope_after, InvocationSourceScope::All);
+    }
+
+    #[tokio::test]
+    async fn list_invocations_projects_payload_context_fields() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind("proxy-context-1")
+        .bind("2026-02-25 10:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("failed")
+        .bind(
+            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"codexSessionId\":\"sess-list-1\"}",
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert proxy invocation");
+
+        let Json(response) = list_invocations(
+            State(state),
+            Query(ListQuery {
+                limit: Some(10),
+                model: None,
+                status: None,
+            }),
+        )
+        .await
+        .expect("list invocations should succeed");
+
+        let record = response
+            .records
+            .into_iter()
+            .find(|item| item.invoke_id == "proxy-context-1")
+            .expect("inserted invocation should be present");
+        assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
+        assert_eq!(
+            record.failure_kind.as_deref(),
+            Some("upstream_stream_error")
+        );
+        assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
+        assert_eq!(record.codex_session_id.as_deref(), Some("sess-list-1"));
+    }
+
+    #[tokio::test]
+    async fn list_invocations_tolerates_malformed_payload_json() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind("proxy-context-malformed")
+        .bind("2026-02-25 10:01:00")
+        .bind(SOURCE_PROXY)
+        .bind("failed")
+        .bind("not-json")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert malformed payload invocation");
+
+        let Json(response) = list_invocations(
+            State(state),
+            Query(ListQuery {
+                limit: Some(10),
+                model: None,
+                status: None,
+            }),
+        )
+        .await
+        .expect("list invocations should tolerate malformed payload");
+
+        let record = response
+            .records
+            .into_iter()
+            .find(|item| item.invoke_id == "proxy-context-malformed")
+            .expect("inserted invocation should be present");
+        assert_eq!(record.endpoint, None);
+        assert_eq!(record.failure_kind, None);
+        assert_eq!(record.requester_ip, None);
+        assert_eq!(record.codex_session_id, None);
     }
 
     #[test]
