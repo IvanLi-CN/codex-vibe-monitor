@@ -74,6 +74,7 @@ export function useInvocationStream(
   const [error, setError] = useState<string | null>(null)
   const enableStream = options?.enableStream ?? true
   const hasHydratedRef = useRef(false)
+  const pendingOpenResyncRef = useRef(false)
   const lastResyncAtRef = useRef(0)
   const requestSeqRef = useRef(0)
   const recordsRef = useRef<ApiInvocation[]>([])
@@ -93,9 +94,7 @@ export function useInvocationStream(
       requestSeqRef.current = requestSeq
       const suppressError = Boolean(opts?.silent && hasHydratedRef.current)
       const shouldShowLoading = !(opts?.silent && hasHydratedRef.current)
-      const silentBaselineKeys = opts?.silent
-        ? new Set(recordsRef.current.map((record) => recordKey(record)))
-        : null
+      const baselineKeys = new Set(recordsRef.current.map((record) => recordKey(record)))
       if (shouldShowLoading) {
         setIsLoading(true)
       }
@@ -105,17 +104,11 @@ export function useInvocationStream(
           return
         }
         setRecords((current) => {
-          const next = (() => {
-            if (!silentBaselineKeys) {
-              return mergeRecords(response.records, [], limit, filters)
-            }
-            const authoritative = mergeRecords(response.records, [], limit, filters)
-            const concurrent = current.filter(
-              (record) =>
-                matchesFilters(record, filters) && !silentBaselineKeys.has(recordKey(record)),
-            )
-            return mergeRecords(authoritative, concurrent, limit, filters)
-          })()
+          const authoritative = mergeRecords(response.records, [], limit, filters)
+          const concurrent = current.filter(
+            (record) => matchesFilters(record, filters) && !baselineKeys.has(recordKey(record)),
+          )
+          const next = mergeRecords(authoritative, concurrent, limit, filters)
           recordsRef.current = next
           if (onNewRecordsRef.current && recordsChanged(next, current)) {
             onNewRecordsRef.current(next)
@@ -124,6 +117,10 @@ export function useInvocationStream(
         })
         hasHydratedRef.current = true
         lastResyncAtRef.current = Date.now()
+        if (pendingOpenResyncRef.current) {
+          pendingOpenResyncRef.current = false
+          void load({ silent: true })
+        }
         setError(null)
       } catch (err) {
         if (requestSeq !== requestSeqRef.current) {
@@ -149,6 +146,7 @@ export function useInvocationStream(
 
   useEffect(() => {
     hasHydratedRef.current = false
+    pendingOpenResyncRef.current = false
     lastResyncAtRef.current = 0
     void load()
   }, [load])
@@ -201,7 +199,10 @@ export function useInvocationStream(
       return
     }
     const unsubscribe = subscribeToSseOpen(() => {
-      if (!hasHydratedRef.current) return
+      if (!hasHydratedRef.current) {
+        pendingOpenResyncRef.current = true
+        return
+      }
       requestResync({ force: true })
     })
     return unsubscribe
