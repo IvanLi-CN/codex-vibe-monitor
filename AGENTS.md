@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 
 - `src/` — Rust backend (polling scheduler, Axum HTTP API, SSE fan-out, SQLite persistence). Start with `main.rs`. Configuration lives in `AppConfig` and reads `.env.local`.
-- `web/` — Vite + React + TypeScript SPA. `src/components/` hosts UI atoms (DaisyUI/Tailwind), `src/hooks/` encapsulates API + SSE integration, and `vite.config.ts` wires the proxy to the Rust server.
+- `web/` — Vite + React + TypeScript SPA. `src/components/` hosts UI atoms (Tailwind + shadcn 风格基础组件), `src/hooks/` encapsulates API + SSE integration, and `vite.config.ts` wires the proxy to the Rust server.
 - `Dockerfile` — multi-stage build assembling the Rust binary and front-end assets.
 - Generated artifacts (`target/`, `web/dist/`, SQLite DBs) stay untracked.
 

@@ -21,7 +21,7 @@
 - 数据持久化：SQLx/SQLite，包含唯一性约束（`invoke_id` + `occurred_at`）。
 - 多源统计：支持合并外部日统计源（无明细）与本地调用记录。
 - 接口与事件：Axum 提供 REST API、SSE 推送；可选托管静态 SPA。
-- 前端应用：DaisyUI/Tailwind 组件化 UI，实时图表与统计概览，SSE 自动更新。
+- 前端应用：Tailwind + shadcn 风格组件化 UI，实时图表与统计概览，SSE 自动更新。
 - 容器镜像：多阶段 Dockerfile，产出轻量运行时；CI 自动推送 GHCR。
 
 ## 目录结构
