@@ -123,3 +123,4 @@
 
 - 2026-02-25: 初始化规格，冻结实现边界与验收口径。
 - 2026-02-25: 完成后端字段采集、`/api/invocations` 投影扩展与前端表格升级，并通过 `cargo test`、`cargo check`、`web npm run build` 验证。
+- 2026-02-25: 修复 SSE `records` 广播回查 SQL 投影不全问题，确保 `endpoint/requesterIp/codexSessionId/failureKind` 与 `/api/invocations` 一致，并补充回归测试。

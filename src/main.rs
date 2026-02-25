@@ -5035,9 +5035,12 @@ async fn persist_proxy_capture_record(
             cost,
             status,
             error_message,
-            failure_kind,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint,
+            COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind,
             failure_class,
             is_actionable,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.codexSessionId') END AS codex_session_id,
             cost_estimated,
             price_version,
             request_raw_path,
@@ -7924,7 +7927,7 @@ mod tests {
             status: "success".to_string(),
             error_message: None,
             payload: Some(
-                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false}"
+                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"codexSessionId\":\"sess-broadcast-1\"}"
                     .to_string(),
             ),
             raw_response: "{}".to_string(),
@@ -9751,6 +9754,7 @@ mod tests {
         .expect("persist+broadcast should succeed");
 
         let mut saw_record = false;
+        let mut captured_record: Option<ApiInvocation> = None;
         let mut saw_quota = false;
         let mut summary_windows = HashSet::new();
         let expected_summary_windows = summary_broadcast_specs().len();
@@ -9761,8 +9765,12 @@ mod tests {
                 .expect("broadcast channel should stay open");
             match payload {
                 BroadcastPayload::Records { records } => {
-                    if records.len() == 1 && records[0].invoke_id == invoke_id {
+                    if let Some(record) = records
+                        .into_iter()
+                        .find(|record| record.invoke_id == invoke_id)
+                    {
                         saw_record = true;
+                        captured_record = Some(record);
                     }
                 }
                 BroadcastPayload::Summary { window, summary } => {
@@ -9790,6 +9798,11 @@ mod tests {
             expected_summary_windows,
             "all summary windows should be broadcast"
         );
+        let record = captured_record.expect("target records payload should include invoke id");
+        assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
+        assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
+        assert_eq!(record.codex_session_id.as_deref(), Some("sess-broadcast-1"));
+        assert!(record.failure_kind.is_none());
     }
 
     #[tokio::test]
