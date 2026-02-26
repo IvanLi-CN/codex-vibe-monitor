@@ -45,7 +45,7 @@ describe('UpdateAvailableBanner', () => {
     expect(html).toContain('aria-live="polite"')
   })
 
-  it('uses readable info styles and avoids info-content text token', () => {
+  it('uses readable primary styles and avoids low-contrast info-content token', () => {
     const html = renderToStaticMarkup(
       <UpdateAvailableBanner
         currentVersion="0.10.2"
@@ -60,8 +60,8 @@ describe('UpdateAvailableBanner', () => {
       />,
     )
 
-    expect(html).toContain('bg-info/15')
-    expect(html).toContain('border-info/45')
+    expect(html).toContain('bg-primary/10')
+    expect(html).toContain('border-primary/35')
     expect(html).toContain('text-base-content')
     expect(html).not.toContain('text-info-content')
   })

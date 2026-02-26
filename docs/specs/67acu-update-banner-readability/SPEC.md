@@ -64,7 +64,7 @@
 
 ## 进度备注
 
-- 已完成更新横幅抽离与可读性修复：容器改为 `bg-info/15 + text-base-content`，版本号高亮 `text-info`，并增加 `role="status" aria-live="polite"`。
+- 已完成更新横幅抽离与可读性修复：容器改为 `bg-primary/10 + text-base-content`，版本号高亮 `text-primary`，并增加 `role="status" aria-live="polite"`。
 - 已修复同类透明度写法：`alert.tsx` warning/error 分别统一为 `/15`，`TodayStatsOverview` 主卡渐变 `from-primary/15`。
 - 已通过 `npm run lint`、`npm run test`、`npm run build`、`cargo fmt --all -- --check`。
 - 已完成 Playwright 视觉核验：桌面浅色中文、桌面深色中文、桌面浅色英文、移动端浅色中文，横幅文本与操作按钮均可读可点。
