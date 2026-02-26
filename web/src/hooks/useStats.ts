@@ -8,17 +8,51 @@ interface UseSummaryOptions {
 }
 
 const SUPPORTED_SSE_WINDOWS = new Set(['all', '30m', '1h', '1d', '1mo'])
-const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000
+export const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000
 
 interface LoadOptions {
   silent?: boolean
+}
+
+export interface UnsupportedRefreshGate {
+  inFlight: boolean
+  lastTriggerAt: number
+}
+
+export function createUnsupportedRefreshGate(): UnsupportedRefreshGate {
+  return { inFlight: false, lastTriggerAt: 0 }
+}
+
+export function shouldHandleUnsupportedSummaryRefresh(payloadWindow: string, currentWindow: string, supportsSse: boolean): boolean {
+  return payloadWindow !== currentWindow && !supportsSse && currentWindow !== 'current'
+}
+
+export async function runUnsupportedSummaryRefresh(
+  gate: UnsupportedRefreshGate,
+  now: number,
+  refresh: () => Promise<void>,
+): Promise<boolean> {
+  if (gate.inFlight || now - gate.lastTriggerAt < UNSUPPORTED_SSE_REFRESH_INTERVAL_MS) {
+    return false
+  }
+
+  gate.inFlight = true
+  gate.lastTriggerAt = now
+  try {
+    await refresh()
+  } catch {
+    // Keep fallback refresh best-effort; hook state already records request errors.
+  } finally {
+    gate.inFlight = false
+  }
+  return true
 }
 
 export function useSummary(window: string, options?: UseSummaryOptions) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const unsupportedRefreshRef = useRef({ inFlight: false, lastTriggerAt: 0 })
+  const unsupportedRefreshRef = useRef<UnsupportedRefreshGate>(createUnsupportedRefreshGate())
 
   const load = useCallback(async ({ silent = false }: LoadOptions = {}) => {
     if (!silent) {
@@ -50,18 +84,9 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
           setStats(payload.summary)
           setError(null)
           setIsLoading(false)
-        } else if (!supportsSse && window !== 'current') {
-          const now = Date.now()
-          const gate = unsupportedRefreshRef.current
+        } else if (shouldHandleUnsupportedSummaryRefresh(payload.window, window, supportsSse)) {
           // Unsupported windows (e.g. today) are refreshed at a fixed cadence to avoid request storms.
-          if (gate.inFlight || now - gate.lastTriggerAt < UNSUPPORTED_SSE_REFRESH_INTERVAL_MS) {
-            return
-          }
-          gate.inFlight = true
-          gate.lastTriggerAt = now
-          void load({ silent: true }).finally(() => {
-            gate.inFlight = false
-          })
+          void runUnsupportedSummaryRefresh(unsupportedRefreshRef.current, Date.now(), () => load({ silent: true }))
         }
       } else if (payload.type === 'records' && window === 'current') {
         // current 窗口基于前端缓存，直接刷新
