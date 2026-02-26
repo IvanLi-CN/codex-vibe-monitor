@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                     | Status | Spec                                         | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | ------ | -------------------------------------------- | ---------- | -------------------- |
+| 67acu | 修复更新提示可读性（更新横幅 + 同类透明度语义 + 可访问性回归）            | 已完成 | `67acu-update-banner-readability/SPEC.md`    | 2026-02-26 | 横幅可读性收敛       |
 | 26knq | 修复 InvocationTable 异常横向滚动并补 E2E 回归                            | 已完成 | `26knq-invocation-table-overflow/SPEC.md`    | 2026-02-26 | PR #56 / fast-track  |
 | s8d2w | Dashboard 顶部替换“配额概览”为“今日统计信息”（Bento）                     | 已完成 | `s8d2w-dashboard-today-stats-bento/SPEC.md`  | 2026-02-26 | PR #58               |
 | 5932d | SSE 驱动的请求记录与统计实时更新                                          | 已完成 | `5932d-sse-proxy-live-sync/SPEC.md`          | 2026-02-25 | PR #52               |

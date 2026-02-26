@@ -8,8 +8,8 @@ const alertVariants = cva('flex items-start gap-2 rounded-xl border px-4 py-3 te
       default: 'border-base-300/75 bg-base-200/55 text-base-content',
       info: 'border-info/45 bg-info/10 text-info',
       success: 'border-success/45 bg-success/10 text-success',
-      warning: 'border-warning/45 bg-warning/14 text-warning',
-      error: 'border-error/45 bg-error/12 text-error',
+      warning: 'border-warning/45 bg-warning/15 text-warning',
+      error: 'border-error/45 bg-error/15 text-error',
     },
   },
   defaultVariants: {
