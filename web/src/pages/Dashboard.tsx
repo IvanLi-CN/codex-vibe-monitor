@@ -1,12 +1,11 @@
 import { InvocationTable } from '../components/InvocationTable'
 import { useState } from 'react'
-import { QuotaOverview } from '../components/QuotaOverview'
 import { StatsCards } from '../components/StatsCards'
+import { TodayStatsOverview } from '../components/TodayStatsOverview'
 import { UsageCalendar } from '../components/UsageCalendar'
 import { WeeklyHourlyHeatmap } from '../components/WeeklyHourlyHeatmap'
 import { Last24hTenMinuteHeatmap, type MetricKey } from '../components/Last24hTenMinuteHeatmap'
 import { useInvocationStream } from '../hooks/useInvocations'
-import { useQuotaSnapshot } from '../hooks/useQuotaSnapshot'
 import { useSummary } from '../hooks/useStats'
 import { useTranslation } from '../i18n'
 import { metricAccent } from '../lib/chartTheme'
@@ -21,14 +20,14 @@ export default function DashboardPage() {
   // Metric selector moved to the card top-right
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const {
-    snapshot,
-    isLoading: snapshotLoading,
-    error: snapshotError,
-  } = useQuotaSnapshot()
+    summary: todaySummary,
+    isLoading: todaySummaryLoading,
+    error: todaySummaryError,
+  } = useSummary('today')
   const {
-    summary,
-    isLoading: summaryLoading,
-    error: summaryError,
+    summary: summary24h,
+    isLoading: summary24hLoading,
+    error: summary24hError,
   } = useSummary('1d')
   const {
     records,
@@ -39,11 +38,7 @@ export default function DashboardPage() {
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_max-content] items-start">
-        <QuotaOverview
-          snapshot={snapshot}
-          isLoading={snapshotLoading}
-          error={snapshotError}
-        />
+        <TodayStatsOverview stats={todaySummary} loading={todaySummaryLoading} error={todaySummaryError} />
         <UsageCalendar />
       </div>
 
@@ -79,7 +74,7 @@ export default function DashboardPage() {
               })}
             </div>
           </div>
-          <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />
+          <StatsCards stats={summary24h} loading={summary24hLoading} error={summary24hError} />
           {/* 24x6 heatmap (each cell = 10 minutes) under last 24h stats */}
           <Last24hTenMinuteHeatmap metric={metric} onChangeMetric={setMetric} showHeader={false} />
         </div>
