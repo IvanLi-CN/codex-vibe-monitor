@@ -40,7 +40,7 @@ export interface ApiInvocation {
   isActionable?: boolean
   endpoint?: string
   requesterIp?: string
-  codexSessionId?: string
+  promptCacheKey?: string
   costEstimated?: number
   priceVersion?: string
   tTotalMs?: number | null

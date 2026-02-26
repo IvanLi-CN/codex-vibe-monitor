@@ -123,8 +123,11 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-base-300/70 bg-base-100/52 backdrop-blur">
-      <table className="w-full min-w-[72rem] border-separate border-spacing-0 text-sm">
+    <div
+      className="overflow-x-auto rounded-xl border border-base-300/70 bg-base-100/52 backdrop-blur"
+      data-testid="invocation-table-scroll"
+    >
+      <table className="w-full min-w-full border-separate border-spacing-0 text-sm">
         <thead className="bg-base-200/65 text-[11px] uppercase tracking-[0.08em] text-base-content/70">
           <tr>
             <th className="w-28 px-3 py-2.5 text-left font-semibold whitespace-nowrap">{t('table.column.time')}</th>
@@ -188,7 +191,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
               { label: 'table.details.source', value: record.source || FALLBACK_CELL },
               { label: 'table.details.endpoint', value: record.endpoint || FALLBACK_CELL },
               { label: 'table.details.requesterIp', value: record.requesterIp || FALLBACK_CELL },
-              { label: 'table.details.codexSessionId', value: record.codexSessionId || FALLBACK_CELL },
+              { label: 'table.details.promptCacheKey', value: record.promptCacheKey || FALLBACK_CELL },
               { label: 'table.details.failureKind', value: record.failureKind || FALLBACK_CELL },
             ]
             const timingPairs: Array<{ label: TranslationKey; value: string }> = [
