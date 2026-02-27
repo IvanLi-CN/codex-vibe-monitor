@@ -25,7 +25,7 @@ use axum::{
     extract::{ConnectInfo, OriginalUri, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
     response::{IntoResponse, Json, Response, Sse},
-    routing::{any, get, put},
+    routing::{any, get, post, put},
 };
 use base64::Engine;
 use chrono::{
@@ -495,6 +495,10 @@ async fn spawn_http_server(
         .route(
             "/api/settings/forward-proxy",
             put(put_forward_proxy_settings),
+        )
+        .route(
+            "/api/settings/forward-proxy/validate",
+            post(post_forward_proxy_candidate_validation),
         )
         .route("/api/settings/pricing", put(put_pricing_settings))
         .route("/api/invocations", get(list_invocations))
@@ -6595,6 +6599,189 @@ async fn put_forward_proxy_settings(
     Ok(Json(response))
 }
 
+async fn post_forward_proxy_candidate_validation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ForwardProxyCandidateValidationRequest>,
+) -> Result<Json<ForwardProxyCandidateValidationResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin settings writes are forbidden".to_string(),
+        ));
+    }
+
+    let result = match payload.kind {
+        ForwardProxyValidationKind::ProxyUrl => {
+            validate_single_forward_proxy_candidate(state.as_ref(), payload.value).await
+        }
+        ForwardProxyValidationKind::SubscriptionUrl => {
+            validate_subscription_candidate(state.as_ref(), payload.value).await
+        }
+    };
+
+    let response = match result {
+        Ok(response) => response,
+        Err(err) => {
+            warn!(error = %err, "forward proxy candidate validation failed");
+            ForwardProxyCandidateValidationResponse::failed(err.to_string())
+        }
+    };
+
+    Ok(Json(response))
+}
+
+async fn validate_single_forward_proxy_candidate(
+    state: &AppState,
+    value: String,
+) -> Result<ForwardProxyCandidateValidationResponse> {
+    let parsed = parse_forward_proxy_entry(value.trim())
+        .ok_or_else(|| anyhow!("unsupported proxy url or unsupported scheme"))?;
+    let endpoint = ForwardProxyEndpoint {
+        key: format!(
+            "__validate_proxy__{:016x}",
+            stable_hash_u64(&parsed.normalized)
+        ),
+        source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+        display_name: parsed.display_name,
+        protocol: parsed.protocol,
+        endpoint_url: parsed.endpoint_url,
+        raw_url: Some(parsed.normalized.clone()),
+    };
+    let latency_ms = probe_forward_proxy_endpoint(state, &endpoint).await?;
+    Ok(ForwardProxyCandidateValidationResponse::success(
+        "proxy validation succeeded",
+        Some(parsed.normalized),
+        Some(1),
+        Some(latency_ms),
+    ))
+}
+
+async fn validate_subscription_candidate(
+    state: &AppState,
+    value: String,
+) -> Result<ForwardProxyCandidateValidationResponse> {
+    let normalized_subscription = normalize_subscription_entries(vec![value])
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("subscription url must be a valid http/https url"))?;
+    let urls = fetch_subscription_proxy_urls(
+        &state.http_clients.shared,
+        &normalized_subscription,
+        state.config.request_timeout,
+    )
+    .await
+    .context("failed to fetch or decode subscription payload")?;
+    if urls.is_empty() {
+        bail!("subscription resolved zero proxy entries");
+    }
+    let endpoints = normalize_proxy_endpoints_from_urls(&urls, FORWARD_PROXY_SOURCE_SUBSCRIPTION);
+    if endpoints.is_empty() {
+        bail!("subscription contains no supported proxy entries");
+    }
+
+    let mut last_error: Option<anyhow::Error> = None;
+    let mut best_latency_ms: Option<f64> = None;
+    for endpoint in endpoints.iter().take(3) {
+        match probe_forward_proxy_endpoint(state, endpoint).await {
+            Ok(latency_ms) => {
+                best_latency_ms = Some(latency_ms);
+                break;
+            }
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+    }
+
+    let Some(latency_ms) = best_latency_ms else {
+        if let Some(err) = last_error {
+            return Err(anyhow!(
+                "subscription proxy probe failed: {err}; no entry passed validation"
+            ));
+        }
+        bail!("no subscription proxy entry passed validation");
+    };
+
+    Ok(ForwardProxyCandidateValidationResponse::success(
+        "subscription validation succeeded",
+        Some(normalized_subscription),
+        Some(endpoints.len()),
+        Some(latency_ms),
+    ))
+}
+
+async fn probe_forward_proxy_endpoint(
+    state: &AppState,
+    endpoint: &ForwardProxyEndpoint,
+) -> Result<f64> {
+    let probe_target = state
+        .config
+        .openai_upstream_base_url
+        .join("v1/models")
+        .context("failed to build validation probe target")?;
+    let (endpoint_url, temporary_xray_key) =
+        resolve_forward_proxy_probe_endpoint_url(state, endpoint).await?;
+
+    let started = Instant::now();
+    let probe_result = async {
+        let client = state
+            .http_clients
+            .client_for_forward_proxy(endpoint_url.as_ref())?;
+        let response = timeout(
+            state.config.openai_proxy_handshake_timeout,
+            client.get(probe_target).send(),
+        )
+        .await
+        .map_err(|_| anyhow!("validation request timed out"))?
+        .context("validation request failed")?;
+        if !response.status().is_success() {
+            bail!("validation probe returned status {}", response.status());
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if let Some(temp_key) = temporary_xray_key {
+        let mut supervisor = state.xray_supervisor.lock().await;
+        supervisor.remove_instance(&temp_key).await;
+    }
+
+    probe_result?;
+    Ok(elapsed_ms(started))
+}
+
+async fn resolve_forward_proxy_probe_endpoint_url(
+    state: &AppState,
+    endpoint: &ForwardProxyEndpoint,
+) -> Result<(Option<Url>, Option<String>)> {
+    if !endpoint.requires_xray() {
+        return Ok((endpoint.endpoint_url.clone(), None));
+    }
+    let raw_url = endpoint
+        .raw_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("xray proxy validation requires raw proxy url"))?;
+    let temporary_key = format!(
+        "__validate_xray__{:016x}_{}",
+        stable_hash_u64(raw_url),
+        Utc::now().timestamp_millis()
+    );
+    let probe_endpoint = ForwardProxyEndpoint {
+        key: temporary_key.clone(),
+        source: endpoint.source.clone(),
+        display_name: endpoint.display_name.clone(),
+        protocol: endpoint.protocol,
+        endpoint_url: None,
+        raw_url: Some(raw_url.to_string()),
+    };
+    let route_url = {
+        let mut supervisor = state.xray_supervisor.lock().await;
+        supervisor.ensure_instance(&probe_endpoint).await?
+    };
+    Ok((Some(route_url), Some(temporary_key)))
+}
+
 async fn put_pricing_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -7970,6 +8157,57 @@ impl From<ForwardProxySettingsUpdateRequest> for ForwardProxySettings {
             insert_direct: value.insert_direct,
         }
         .normalized()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ForwardProxyValidationKind {
+    ProxyUrl,
+    SubscriptionUrl,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyCandidateValidationRequest {
+    kind: ForwardProxyValidationKind,
+    value: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyCandidateValidationResponse {
+    ok: bool,
+    message: String,
+    normalized_value: Option<String>,
+    discovered_nodes: Option<usize>,
+    latency_ms: Option<f64>,
+}
+
+impl ForwardProxyCandidateValidationResponse {
+    fn success(
+        message: impl Into<String>,
+        normalized_value: Option<String>,
+        discovered_nodes: Option<usize>,
+        latency_ms: Option<f64>,
+    ) -> Self {
+        Self {
+            ok: true,
+            message: message.into(),
+            normalized_value,
+            discovered_nodes,
+            latency_ms,
+        }
+    }
+
+    fn failed(message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            message: message.into(),
+            normalized_value: None,
+            discovered_nodes: None,
+            latency_ms: None,
+        }
     }
 }
 

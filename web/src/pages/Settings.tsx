@@ -7,7 +7,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { useSettings } from '../hooks/useSettings'
-import type { ForwardProxySettings, PricingEntry, PricingSettings } from '../lib/api'
+import {
+  validateForwardProxyCandidate,
+  type ForwardProxySettings,
+  type ForwardProxyValidationKind,
+  type PricingEntry,
+  type PricingSettings,
+} from '../lib/api'
 import { cn } from '../lib/utils'
 import { useTranslation } from '../i18n'
 
@@ -24,6 +30,12 @@ type PricingDraft = {
   catalogVersion: string
   entries: PricingDraftEntry[]
 }
+
+type ForwardProxyValidationState =
+  | { status: 'idle' }
+  | { status: 'validating' }
+  | { status: 'failed'; message: string }
+  | { status: 'passed'; message: string; normalizedValue: string; discoveredNodes?: number; latencyMs?: number }
 
 const AUTO_SAVE_DEBOUNCE_MS = 600
 const pricingTableHeaderCellClass =
@@ -136,15 +148,11 @@ function sourceBadgeVariant(source: string): 'success' | 'warning' | 'secondary'
   return 'secondary'
 }
 
-function toTextAreaValue(items: string[]): string {
-  return items.join('\n')
-}
-
-function parseTextAreaValues(raw: string): string[] {
-  return raw
-    .split('\n')
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0)
+function appendUniqueItem(list: string[], value: string): string[] {
+  const trimmed = value.trim()
+  if (!trimmed) return list
+  if (list.includes(trimmed)) return list
+  return [...list, trimmed]
 }
 
 function formatSuccessRate(value?: number): string {
@@ -174,11 +182,14 @@ export default function SettingsPage() {
 
   const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null)
   const [pricingErrorKey, setPricingErrorKey] = useState<string | null>(null)
-  const [forwardProxyUrlsText, setForwardProxyUrlsText] = useState('')
-  const [forwardProxySubscriptionText, setForwardProxySubscriptionText] = useState('')
+  const [forwardProxyUrls, setForwardProxyUrls] = useState<string[]>([])
+  const [forwardProxySubscriptionUrls, setForwardProxySubscriptionUrls] = useState<string[]>([])
   const [forwardProxyIntervalSecs, setForwardProxyIntervalSecs] = useState('3600')
   const [forwardProxyInsertDirect, setForwardProxyInsertDirect] = useState(true)
   const [forwardProxyDirty, setForwardProxyDirty] = useState(false)
+  const [forwardProxyModalKind, setForwardProxyModalKind] = useState<ForwardProxyValidationKind | null>(null)
+  const [forwardProxyModalInput, setForwardProxyModalInput] = useState('')
+  const [forwardProxyValidation, setForwardProxyValidation] = useState<ForwardProxyValidationState>({ status: 'idle' })
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSyncedPricingKeyRef = useRef<string | null>(null)
   const lastHandledRollbackVersionRef = useRef(pricingRollbackVersion)
@@ -223,8 +234,8 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!settings?.forwardProxy) return
     if (forwardProxyDirty && !isForwardProxySaving) return
-    setForwardProxyUrlsText(toTextAreaValue(settings.forwardProxy.proxyUrls))
-    setForwardProxySubscriptionText(toTextAreaValue(settings.forwardProxy.subscriptionUrls))
+    setForwardProxyUrls(settings.forwardProxy.proxyUrls)
+    setForwardProxySubscriptionUrls(settings.forwardProxy.subscriptionUrls)
     setForwardProxyIntervalSecs(String(settings.forwardProxy.subscriptionUpdateIntervalSecs))
     setForwardProxyInsertDirect(settings.forwardProxy.insertDirect)
     setForwardProxyDirty(false)
@@ -405,8 +416,8 @@ export default function SettingsPage() {
     const intervalSecs = Number.isFinite(parsedInterval) ? Math.max(60, Math.floor(parsedInterval)) : 3600
     const nextForwardProxy: ForwardProxySettings = {
       ...currentForwardProxy,
-      proxyUrls: parseTextAreaValues(forwardProxyUrlsText),
-      subscriptionUrls: parseTextAreaValues(forwardProxySubscriptionText),
+      proxyUrls: forwardProxyUrls,
+      subscriptionUrls: forwardProxySubscriptionUrls,
       subscriptionUpdateIntervalSecs: intervalSecs,
       insertDirect: forwardProxyInsertDirect,
     }
@@ -416,10 +427,110 @@ export default function SettingsPage() {
     currentForwardProxy,
     forwardProxyInsertDirect,
     forwardProxyIntervalSecs,
-    forwardProxySubscriptionText,
-    forwardProxyUrlsText,
+    forwardProxySubscriptionUrls,
+    forwardProxyUrls,
     saveForwardProxy,
   ])
+
+  const openForwardProxyAddModal = useCallback((kind: ForwardProxyValidationKind) => {
+    setForwardProxyModalKind(kind)
+    setForwardProxyModalInput('')
+    setForwardProxyValidation({ status: 'idle' })
+  }, [])
+
+  const closeForwardProxyAddModal = useCallback(() => {
+    setForwardProxyModalKind(null)
+    setForwardProxyModalInput('')
+    setForwardProxyValidation({ status: 'idle' })
+  }, [])
+
+  const handleValidateForwardProxyCandidate = useCallback(async () => {
+    if (!forwardProxyModalKind) return
+    const candidate = forwardProxyModalInput.trim()
+    if (!candidate) {
+      setForwardProxyValidation({
+        status: 'failed',
+        message: t('settings.forwardProxy.modal.required'),
+      })
+      return
+    }
+
+    setForwardProxyValidation({ status: 'validating' })
+    try {
+      const result = await validateForwardProxyCandidate({
+        kind: forwardProxyModalKind,
+        value: candidate,
+      })
+      if (!result.ok) {
+        setForwardProxyValidation({
+          status: 'failed',
+          message: result.message || t('settings.forwardProxy.modal.validateFailed'),
+        })
+        return
+      }
+      setForwardProxyValidation({
+        status: 'passed',
+        message: result.message || t('settings.forwardProxy.modal.validateSuccess'),
+        normalizedValue: result.normalizedValue?.trim() || candidate,
+        discoveredNodes: result.discoveredNodes,
+        latencyMs: result.latencyMs,
+      })
+    } catch (err) {
+      setForwardProxyValidation({
+        status: 'failed',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }, [forwardProxyModalInput, forwardProxyModalKind, t])
+
+  const handleConfirmAddForwardProxyCandidate = useCallback(() => {
+    if (forwardProxyValidation.status !== 'passed' || !forwardProxyModalKind) return
+    const normalizedValue = forwardProxyValidation.normalizedValue.trim()
+    if (!normalizedValue) return
+    if (forwardProxyModalKind === 'proxyUrl') {
+      setForwardProxyUrls((current) => appendUniqueItem(current, normalizedValue))
+    } else {
+      setForwardProxySubscriptionUrls((current) => appendUniqueItem(current, normalizedValue))
+    }
+    setForwardProxyDirty(true)
+    closeForwardProxyAddModal()
+  }, [closeForwardProxyAddModal, forwardProxyModalKind, forwardProxyValidation])
+
+  const removeForwardProxyUrl = useCallback((target: string) => {
+    setForwardProxyUrls((current) => current.filter((item) => item !== target))
+    setForwardProxyDirty(true)
+  }, [])
+
+  const removeForwardProxySubscriptionUrl = useCallback((target: string) => {
+    setForwardProxySubscriptionUrls((current) => current.filter((item) => item !== target))
+    setForwardProxyDirty(true)
+  }, [])
+
+  const forwardProxyModalTitle = forwardProxyModalKind
+    ? t(
+        forwardProxyModalKind === 'proxyUrl'
+          ? 'settings.forwardProxy.modal.proxyTitle'
+          : 'settings.forwardProxy.modal.subscriptionTitle',
+      )
+    : ''
+  const forwardProxyModalInputLabel = forwardProxyModalKind
+    ? t(
+        forwardProxyModalKind === 'proxyUrl'
+          ? 'settings.forwardProxy.modal.proxyInputLabel'
+          : 'settings.forwardProxy.modal.subscriptionInputLabel',
+      )
+    : ''
+  const forwardProxyModalPlaceholder = forwardProxyModalKind
+    ? t(
+        forwardProxyModalKind === 'proxyUrl'
+          ? 'settings.forwardProxy.modal.proxyPlaceholder'
+          : 'settings.forwardProxy.modal.subscriptionPlaceholder',
+      )
+    : ''
+  const forwardProxyCanConfirmAdd =
+    forwardProxyValidation.status === 'passed' &&
+    forwardProxyValidation.normalizedValue.trim().length > 0 &&
+    !isForwardProxySaving
 
   if (isLoading) {
     return (
@@ -693,36 +804,83 @@ export default function SettingsPage() {
           </label>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-2">
-              <label htmlFor="forward-proxy-urls" className="block text-sm font-medium text-base-content/75">
-                {t('settings.forwardProxy.proxyUrls')}
-              </label>
-              <textarea
-                id="forward-proxy-urls"
-                className="h-36 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm font-mono outline-none ring-0 transition focus:border-primary/50"
-                placeholder={t('settings.forwardProxy.proxyUrlsPlaceholder')}
-                value={forwardProxyUrlsText}
-                onChange={(event) => {
-                  setForwardProxyUrlsText(event.target.value)
-                  setForwardProxyDirty(true)
-                }}
-              />
+            <div className="rounded-xl border border-base-300/80 bg-base-100/72 p-3.5">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="text-sm font-medium text-base-content/75">{t('settings.forwardProxy.proxyUrls')}</div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={isForwardProxySaving}
+                  onClick={() => openForwardProxyAddModal('proxyUrl')}
+                >
+                  <Icon icon="mdi:plus" className="mr-1 h-4 w-4" aria-hidden />
+                  {t('settings.forwardProxy.addProxy')}
+                </Button>
+              </div>
+              <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
+                {forwardProxyUrls.map((proxyUrl) => (
+                  <div key={proxyUrl} className="flex items-start gap-2 rounded-lg border border-base-300/80 bg-base-100/70 px-2.5 py-2">
+                    <div className="min-w-0 flex-1 font-mono text-xs text-base-content/85">{proxyUrl}</div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-error hover:bg-error/10"
+                      disabled={isForwardProxySaving}
+                      onClick={() => removeForwardProxyUrl(proxyUrl)}
+                    >
+                      {t('settings.forwardProxy.remove')}
+                    </Button>
+                  </div>
+                ))}
+                {forwardProxyUrls.length === 0 && (
+                  <div className="rounded-lg border border-dashed border-base-300/80 px-3 py-4 text-xs text-base-content/60">
+                    {t('settings.forwardProxy.listEmpty')}
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div className="space-y-2">
-              <label htmlFor="forward-proxy-subscriptions" className="block text-sm font-medium text-base-content/75">
-                {t('settings.forwardProxy.subscriptionUrls')}
-              </label>
-              <textarea
-                id="forward-proxy-subscriptions"
-                className="h-36 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm outline-none ring-0 transition focus:border-primary/50"
-                placeholder={t('settings.forwardProxy.subscriptionUrlsPlaceholder')}
-                value={forwardProxySubscriptionText}
-                onChange={(event) => {
-                  setForwardProxySubscriptionText(event.target.value)
-                  setForwardProxyDirty(true)
-                }}
-              />
+            <div className="rounded-xl border border-base-300/80 bg-base-100/72 p-3.5">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="text-sm font-medium text-base-content/75">{t('settings.forwardProxy.subscriptionUrls')}</div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={isForwardProxySaving}
+                  onClick={() => openForwardProxyAddModal('subscriptionUrl')}
+                >
+                  <Icon icon="mdi:plus" className="mr-1 h-4 w-4" aria-hidden />
+                  {t('settings.forwardProxy.addSubscription')}
+                </Button>
+              </div>
+              <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
+                {forwardProxySubscriptionUrls.map((subscriptionUrl) => (
+                  <div
+                    key={subscriptionUrl}
+                    className="flex items-start gap-2 rounded-lg border border-base-300/80 bg-base-100/70 px-2.5 py-2"
+                  >
+                    <div className="min-w-0 flex-1 break-all text-xs text-base-content/85">{subscriptionUrl}</div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-error hover:bg-error/10"
+                      disabled={isForwardProxySaving}
+                      onClick={() => removeForwardProxySubscriptionUrl(subscriptionUrl)}
+                    >
+                      {t('settings.forwardProxy.remove')}
+                    </Button>
+                  </div>
+                ))}
+                {forwardProxySubscriptionUrls.length === 0 && (
+                  <div className="rounded-lg border border-dashed border-base-300/80 px-3 py-4 text-xs text-base-content/60">
+                    {t('settings.forwardProxy.listEmpty')}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -816,6 +974,79 @@ export default function SettingsPage() {
               </tbody>
             </table>
           </div>
+
+          {forwardProxyModalKind && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-base-content/45 p-4">
+              <div className="w-full max-w-2xl rounded-2xl border border-base-300/75 bg-base-100 shadow-xl">
+                <div className="space-y-1 border-b border-base-300/70 px-5 py-4">
+                  <h3 className="text-lg font-semibold">{forwardProxyModalTitle}</h3>
+                  <p className="text-sm text-base-content/65">{t('settings.forwardProxy.modal.description')}</p>
+                </div>
+                <div className="space-y-4 px-5 py-4">
+                  <div className="space-y-2">
+                    <label htmlFor="forward-proxy-modal-input" className="block text-sm font-medium text-base-content/75">
+                      {forwardProxyModalInputLabel}
+                    </label>
+                    <Input
+                      id="forward-proxy-modal-input"
+                      value={forwardProxyModalInput}
+                      placeholder={forwardProxyModalPlaceholder}
+                      onChange={(event) => {
+                        setForwardProxyModalInput(event.target.value)
+                        setForwardProxyValidation({ status: 'idle' })
+                      }}
+                    />
+                  </div>
+
+                  {forwardProxyValidation.status === 'validating' && (
+                    <Alert variant="info">{t('settings.forwardProxy.modal.validating')}</Alert>
+                  )}
+                  {forwardProxyValidation.status === 'failed' && (
+                    <Alert variant="error">{forwardProxyValidation.message}</Alert>
+                  )}
+                  {forwardProxyValidation.status === 'passed' && (
+                    <Alert variant="success">
+                      <div className="space-y-1">
+                        <div>{forwardProxyValidation.message || t('settings.forwardProxy.modal.validateSuccess')}</div>
+                        <div className="text-xs opacity-80">
+                          {t('settings.forwardProxy.modal.normalizedValue', {
+                            value: forwardProxyValidation.normalizedValue,
+                          })}
+                        </div>
+                        {(forwardProxyValidation.discoveredNodes != null || forwardProxyValidation.latencyMs != null) && (
+                          <div className="text-xs opacity-80">
+                            {t('settings.forwardProxy.modal.probeSummary', {
+                              nodes: forwardProxyValidation.discoveredNodes ?? 1,
+                              latency:
+                                forwardProxyValidation.latencyMs == null
+                                  ? '—'
+                                  : `${forwardProxyValidation.latencyMs.toFixed(0)} ms`,
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </Alert>
+                  )}
+                </div>
+                <div className="flex items-center justify-end gap-2 border-t border-base-300/70 px-5 py-3">
+                  <Button type="button" variant="ghost" onClick={closeForwardProxyAddModal}>
+                    {t('settings.forwardProxy.modal.cancel')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={forwardProxyValidation.status === 'validating'}
+                    onClick={() => void handleValidateForwardProxyCandidate()}
+                  >
+                    {t('settings.forwardProxy.modal.validate')}
+                  </Button>
+                  <Button type="button" disabled={!forwardProxyCanConfirmAdd} onClick={handleConfirmAddForwardProxyCandidate}>
+                    {t('settings.forwardProxy.modal.add')}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

@@ -227,6 +227,60 @@ function StorybookSettingsMock({ children }: { children: React.ReactNode }) {
         return jsonResponse(nextForwardProxy)
       }
 
+      if (path === '/api/settings/forward-proxy/validate' && method === 'POST') {
+        const body = parseBody<{ kind: 'proxyUrl' | 'subscriptionUrl'; value: string }>({
+          kind: 'proxyUrl',
+          value: '',
+        })
+        const value = String(body.value || '').trim()
+        if (!value) {
+          return jsonResponse(
+            {
+              ok: false,
+              message: 'empty candidate',
+            },
+            200,
+          )
+        }
+        if (body.kind === 'subscriptionUrl') {
+          const isHttp = value.startsWith('http://') || value.startsWith('https://')
+          if (!isHttp) {
+            return jsonResponse(
+              {
+                ok: false,
+                message: 'subscription url must be http/https',
+              },
+              200,
+            )
+          }
+          return jsonResponse({
+            ok: true,
+            message: 'subscription validation succeeded',
+            normalizedValue: value,
+            discoveredNodes: 3,
+            latencyMs: 320,
+          })
+        }
+
+        const acceptedSchemes = ['http://', 'https://', 'socks://', 'socks5://', 'socks5h://', 'vmess://', 'vless://', 'trojan://', 'ss://']
+        if (!acceptedSchemes.some((prefix) => value.startsWith(prefix))) {
+          return jsonResponse(
+            {
+              ok: false,
+              message: 'unsupported proxy url scheme',
+            },
+            200,
+          )
+        }
+        return jsonResponse({
+          ok: true,
+          message: 'proxy validation succeeded',
+          normalizedValue: value,
+          discoveredNodes: 1,
+          latencyMs: 210,
+        })
+      }
+
       if (path === '/api/settings/pricing' && method === 'PUT') {
         const body = parseBody<{ catalogVersion: string; entries: PricingEntry[] }>({
           catalogVersion: settingsRef.current.pricing.catalogVersion,

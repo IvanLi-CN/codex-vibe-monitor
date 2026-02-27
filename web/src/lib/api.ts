@@ -266,6 +266,16 @@ export interface ForwardProxySettings {
   nodes: ForwardProxyNode[]
 }
 
+export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
+
+export interface ForwardProxyValidationResult {
+  ok: boolean
+  message: string
+  normalizedValue?: string
+  discoveredNodes?: number
+  latencyMs?: number
+}
+
 export interface SettingsPayload {
   proxy: ProxySettings
   forwardProxy: ForwardProxySettings
@@ -396,6 +406,17 @@ function normalizeForwardProxySettings(raw: unknown): ForwardProxySettings {
   }
 }
 
+function normalizeForwardProxyValidationResult(raw: unknown): ForwardProxyValidationResult {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  return {
+    ok: payload.ok === true,
+    message: typeof payload.message === 'string' && payload.message.trim() ? payload.message : 'validation failed',
+    normalizedValue: typeof payload.normalizedValue === 'string' ? payload.normalizedValue : undefined,
+    discoveredNodes: normalizeFiniteNumber(payload.discoveredNodes),
+    latencyMs: normalizeFiniteNumber(payload.latencyMs),
+  }
+}
+
 function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   const payload = (raw ?? {}) as Record<string, unknown>
   return {
@@ -445,6 +466,17 @@ export async function updateForwardProxySettings(payload: {
     body: JSON.stringify(payload),
   })
   return normalizeForwardProxySettings(response)
+}
+
+export async function validateForwardProxyCandidate(payload: {
+  kind: ForwardProxyValidationKind
+  value: string
+}): Promise<ForwardProxyValidationResult> {
+  const response = await fetchJson<unknown>('/api/settings/forward-proxy/validate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  return normalizeForwardProxyValidationResult(response)
 }
 
 export async function fetchSummary(window: string, options?: { limit?: number; timeZone?: string }) {
