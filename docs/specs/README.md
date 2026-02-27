@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                     | Status | Spec                                         | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | ------ | -------------------------------------------- | ---------- | -------------------- |
+| 8dun3 | 统计页成功/失败图增加首字耗时折线与悬浮统计（均值 + P95）                 | 已完成 | `8dun3-stats-success-failure-ttfb/SPEC.md`   | 2026-02-27 | 已实现并完成验证     |
 | 67acu | 修复更新提示可读性（更新横幅 + 同类透明度语义 + 可访问性回归）            | 已完成 | `67acu-update-banner-readability/SPEC.md`    | 2026-02-27 | 补按钮交互回归断言   |
 | 26knq | 修复 InvocationTable 异常横向滚动并补 E2E 回归                            | 已完成 | `26knq-invocation-table-overflow/SPEC.md`    | 2026-02-26 | PR #56 / fast-track  |
 | s8d2w | Dashboard 顶部替换“配额概览”为“今日统计信息”（Bento）                     | 已完成 | `s8d2w-dashboard-today-stats-bento/SPEC.md`  | 2026-02-26 | PR #58               |
