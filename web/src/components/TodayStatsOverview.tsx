@@ -26,7 +26,7 @@ function MetricTile({ label, value, loading, prominent, toneClass }: MetricTileP
     <div
       className={cn(
         'rounded-xl border bg-base-200/60 p-4',
-        prominent && 'sm:col-span-2 border-primary/35 bg-gradient-to-br from-primary/12 via-base-100/55 to-secondary/10',
+        prominent && 'sm:col-span-2 border-primary/35 bg-gradient-to-br from-primary/15 via-base-100/55 to-secondary/10',
         !prominent && 'border-base-300/75',
       )}
     >

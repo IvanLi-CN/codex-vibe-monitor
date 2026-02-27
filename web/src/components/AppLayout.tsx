@@ -11,6 +11,7 @@ import { useTranslation } from '../i18n'
 import { supportedLocales, type Locale } from '../i18n'
 import { useTheme } from '../theme'
 import { Button } from './ui/button'
+import { UpdateAvailableBanner } from './UpdateAvailableBanner'
 import { cn } from '../lib/utils'
 
 const navItems = [
@@ -317,21 +318,18 @@ export function AppLayout() {
           </div>
         </div>
       )}
-      {update.visible && (
-        <div className="sticky top-[70px] z-40 mx-auto mt-2 flex w-[calc(100%-2rem)] max-w-[1200px] items-start gap-2 rounded-xl border border-info/40 bg-info/12 px-4 py-3 text-info shadow">
-          <div className="flex flex-1 flex-wrap items-center gap-3 text-info-content">
-            <span>
-              {t('app.update.available')}{' '}
-              <span className="font-mono">{versionInfo?.backend ?? t('app.update.current')}</span>
-              {' → '}
-              <span className="font-mono">{update.availableVersion}</span>
-            </span>
-            <div className="ml-auto flex gap-2">
-              <Button size="sm" onClick={update.reload}>{t('app.update.refresh')}</Button>
-              <Button size="sm" variant="secondary" onClick={update.dismiss}>{t('app.update.later')}</Button>
-            </div>
-          </div>
-        </div>
+      {update.visible && update.availableVersion && (
+        <UpdateAvailableBanner
+          currentVersion={versionInfo?.backend ?? t('app.update.current')}
+          availableVersion={update.availableVersion}
+          onReload={update.reload}
+          onDismiss={update.dismiss}
+          labels={{
+            available: t('app.update.available'),
+            refresh: t('app.update.refresh'),
+            later: t('app.update.later'),
+          }}
+        />
       )}
       <main className="mx-auto w-full max-w-[1200px] px-4 py-6 pb-8">
         <Outlet />
