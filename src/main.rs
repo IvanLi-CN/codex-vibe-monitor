@@ -1,11 +1,14 @@
 use std::{
     borrow::Cow,
+    collections::hash_map::DefaultHasher,
     collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
     env,
     error::Error as StdError,
+    hash::{Hash, Hasher},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
+    process::Stdio,
     str::FromStr,
     sync::{
         Arc,
@@ -46,7 +49,8 @@ use sqlx::{
 use std::fs;
 use std::io::{self, Read, Write};
 use tokio::{
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
+    process::{Child, Command},
     sync::{Mutex, RwLock, Semaphore, broadcast, mpsc},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, sleep, timeout},
@@ -119,6 +123,9 @@ const FORWARD_PROXY_FAILURE_SEND_ERROR: &str = "send_error";
 const FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT: &str = "handshake_timeout";
 const FORWARD_PROXY_FAILURE_STREAM_ERROR: &str = "stream_error";
 const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
+const DEFAULT_XRAY_BINARY: &str = "xray";
+const DEFAULT_XRAY_RUNTIME_DIR: &str = ".codex/xray-forward";
+const XRAY_PROXY_READY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-02-23";
 const DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE: bool = true;
 const DEFAULT_XY_LEGACY_POLL_ENABLED: bool = false;
@@ -270,10 +277,21 @@ async fn main() -> Result<()> {
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy,
+        xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+            config.xray_binary.clone(),
+            config.xray_runtime_dir.clone(),
+        ))),
         forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog,
     });
+
+    if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
+        warn!(
+            error = %err,
+            "failed to initialize forward proxy xray routes at startup"
+        );
+    }
 
     // Shared cancellation token for graceful shutdown
     let cancel = CancellationToken::new();
@@ -312,6 +330,8 @@ async fn main() -> Result<()> {
             "forward proxy maintenance task terminated unexpectedly"
         );
     }
+
+    state.xray_supervisor.lock().await.shutdown_all().await;
 
     Ok(())
 }
@@ -6559,6 +6579,12 @@ async fn put_forward_proxy_settings(
         let mut manager = state.forward_proxy.lock().await;
         manager.apply_settings(next);
     }
+    if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
+        warn!(
+            error = %err,
+            "failed to sync forward proxy routes after settings update"
+        );
+    }
     if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), true).await {
         warn!(error = %err, "failed to refresh forward proxy subscriptions after settings update");
     }
@@ -7022,12 +7048,24 @@ async fn refresh_forward_proxy_subscriptions(state: Arc<AppState>, force: bool) 
         bail!("all forward proxy subscriptions failed to refresh");
     }
 
-    let runtime_snapshot = {
+    {
         let mut manager = state.forward_proxy.lock().await;
         manager.apply_subscription_urls(subscription_proxy_urls);
+    }
+    sync_forward_proxy_routes(state.as_ref()).await
+}
+
+async fn sync_forward_proxy_routes(state: &AppState) -> Result<()> {
+    let runtime_snapshot = {
+        let mut manager = state.forward_proxy.lock().await;
+        let mut xray_supervisor = state.xray_supervisor.lock().await;
+        xray_supervisor
+            .sync_endpoints(&mut manager.endpoints)
+            .await?;
+        manager.ensure_non_zero_weight();
         manager.snapshot_runtime()
     };
-    persist_forward_proxy_runtime_snapshot(state.as_ref(), runtime_snapshot).await
+    persist_forward_proxy_runtime_snapshot(state, runtime_snapshot).await
 }
 
 async fn persist_forward_proxy_runtime_snapshot(
@@ -7378,6 +7416,7 @@ struct AppState {
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,
     forward_proxy: Arc<Mutex<ForwardProxyManager>>,
+    xray_supervisor: Arc<Mutex<XraySupervisor>>,
     forward_proxy_settings_update_lock: Arc<Mutex<()>>,
     pricing_settings_update_lock: Arc<Mutex<()>>,
     pricing_catalog: Arc<RwLock<PricingCatalog>>,
@@ -7934,11 +7973,25 @@ impl From<ForwardProxySettingsUpdateRequest> for ForwardProxySettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForwardProxyProtocol {
+    Direct,
+    Http,
+    Https,
+    Socks5,
+    Socks5h,
+    Vmess,
+    Vless,
+    Trojan,
+    Shadowsocks,
+}
+
 #[derive(Debug, Clone)]
 struct ForwardProxyEndpoint {
     key: String,
     source: String,
     display_name: String,
+    protocol: ForwardProxyProtocol,
     endpoint_url: Option<Url>,
     raw_url: Option<String>,
 }
@@ -7949,9 +8002,24 @@ impl ForwardProxyEndpoint {
             key: FORWARD_PROXY_DIRECT_KEY.to_string(),
             source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
             display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
+            protocol: ForwardProxyProtocol::Direct,
             endpoint_url: None,
             raw_url: None,
         }
+    }
+
+    fn is_selectable(&self) -> bool {
+        self.protocol == ForwardProxyProtocol::Direct || self.endpoint_url.is_some()
+    }
+
+    fn requires_xray(&self) -> bool {
+        matches!(
+            self.protocol,
+            ForwardProxyProtocol::Vmess
+                | ForwardProxyProtocol::Vless
+                | ForwardProxyProtocol::Trojan
+                | ForwardProxyProtocol::Shadowsocks
+        )
     }
 }
 
@@ -8093,16 +8161,22 @@ impl ForwardProxyManager {
     }
 
     fn ensure_non_zero_weight(&mut self) {
-        if self
-            .runtime
-            .values()
-            .any(|entry| entry.weight > 0.0 && entry.weight.is_finite())
-        {
+        let active_keys = self
+            .endpoints
+            .iter()
+            .map(|endpoint| endpoint.key.as_str())
+            .collect::<HashSet<_>>();
+        if self.runtime.values().any(|entry| {
+            active_keys.contains(entry.proxy_key.as_str())
+                && entry.weight > 0.0
+                && entry.weight.is_finite()
+        }) {
             return;
         }
         if let Some(best_key) = self
             .runtime
             .values()
+            .filter(|entry| active_keys.contains(entry.proxy_key.as_str()))
             .max_by(|a, b| a.weight.total_cmp(&b.weight))
             .map(|entry| entry.proxy_key.clone())
             && let Some(entry) = self.runtime.get_mut(&best_key)
@@ -8126,6 +8200,9 @@ impl ForwardProxyManager {
         let mut candidates = Vec::new();
         let mut total_weight = 0.0f64;
         for endpoint in &self.endpoints {
+            if !endpoint.is_selectable() {
+                continue;
+            }
             if let Some(runtime) = self.runtime.get(&endpoint.key)
                 && runtime.weight > 0.0
                 && runtime.weight.is_finite()
@@ -8138,8 +8215,16 @@ impl ForwardProxyManager {
         if candidates.is_empty() {
             let fallback = self
                 .endpoints
-                .first()
+                .iter()
+                .find(|endpoint| endpoint.protocol == ForwardProxyProtocol::Direct)
                 .cloned()
+                .or_else(|| {
+                    self.endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.is_selectable())
+                        .cloned()
+                })
+                .or_else(|| self.endpoints.first().cloned())
                 .unwrap_or_else(ForwardProxyEndpoint::direct);
             return SelectedForwardProxy::from_endpoint(&fallback);
         }
@@ -8147,17 +8232,21 @@ impl ForwardProxyManager {
         let seed = self.selection_counter;
         let random = deterministic_unit_f64(seed);
         let mut threshold = random * total_weight;
+        let mut last_candidate: Option<&ForwardProxyEndpoint> = None;
         for (endpoint, weight) in candidates {
+            last_candidate = Some(endpoint);
             if threshold <= weight {
                 return SelectedForwardProxy::from_endpoint(endpoint);
             }
             threshold -= weight;
         }
-        SelectedForwardProxy::from_endpoint(
+        SelectedForwardProxy::from_endpoint(last_candidate.unwrap_or_else(|| {
             self.endpoints
-                .last()
-                .expect("forward proxy endpoints should not be empty"),
-        )
+                .iter()
+                .find(|endpoint| endpoint.is_selectable())
+                .or_else(|| self.endpoints.first())
+                .expect("forward proxy endpoints should not be empty")
+        }))
     }
 
     fn record_attempt(
@@ -8232,7 +8321,7 @@ impl ForwardProxyManager {
             .and_then(|entry| {
                 self.endpoints
                     .iter()
-                    .find(|item| item.key == entry.proxy_key)
+                    .find(|item| item.key == entry.proxy_key && item.is_selectable())
             })
             .cloned()?;
         self.probe_in_flight = true;
@@ -8266,6 +8355,698 @@ impl SelectedForwardProxy {
             endpoint_url_raw: endpoint.raw_url.clone(),
         }
     }
+}
+
+#[derive(Debug)]
+struct XrayInstance {
+    local_proxy_url: Url,
+    config_path: PathBuf,
+    child: Child,
+}
+
+#[derive(Debug, Default)]
+struct XraySupervisor {
+    binary: String,
+    runtime_dir: PathBuf,
+    instances: HashMap<String, XrayInstance>,
+}
+
+impl XraySupervisor {
+    fn new(binary: String, runtime_dir: PathBuf) -> Self {
+        Self {
+            binary,
+            runtime_dir,
+            instances: HashMap::new(),
+        }
+    }
+
+    async fn sync_endpoints(&mut self, endpoints: &mut [ForwardProxyEndpoint]) -> Result<()> {
+        fs::create_dir_all(&self.runtime_dir).with_context(|| {
+            format!(
+                "failed to create xray runtime directory: {}",
+                self.runtime_dir.display()
+            )
+        })?;
+
+        let desired_keys = endpoints
+            .iter()
+            .filter(|endpoint| endpoint.requires_xray())
+            .map(|endpoint| endpoint.key.clone())
+            .collect::<HashSet<_>>();
+        let stale_keys = self
+            .instances
+            .keys()
+            .filter(|key| !desired_keys.contains(*key))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in stale_keys {
+            self.remove_instance(&key).await;
+        }
+
+        for endpoint in endpoints {
+            if !endpoint.requires_xray() {
+                continue;
+            }
+            match self.ensure_instance(endpoint).await {
+                Ok(route_url) => endpoint.endpoint_url = Some(route_url),
+                Err(err) => {
+                    endpoint.endpoint_url = None;
+                    warn!(
+                        proxy_key = endpoint.key,
+                        proxy_source = endpoint.source,
+                        proxy_label = endpoint.display_name,
+                        proxy_url = endpoint.raw_url.as_deref().unwrap_or(""),
+                        error = %err,
+                        "failed to prepare xray forward proxy route"
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn shutdown_all(&mut self) {
+        let keys = self.instances.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            self.remove_instance(&key).await;
+        }
+    }
+
+    async fn ensure_instance(&mut self, endpoint: &ForwardProxyEndpoint) -> Result<Url> {
+        if let Some(instance) = self.instances.get_mut(&endpoint.key) {
+            match instance.child.try_wait() {
+                Ok(None) => return Ok(instance.local_proxy_url.clone()),
+                Ok(Some(status)) => {
+                    warn!(
+                        proxy_key = endpoint.key,
+                        status = %status,
+                        "xray proxy process exited unexpectedly; restarting"
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        proxy_key = endpoint.key,
+                        error = %err,
+                        "failed to inspect xray proxy process; restarting"
+                    );
+                }
+            }
+        }
+
+        self.remove_instance(&endpoint.key).await;
+        self.spawn_instance(endpoint).await
+    }
+
+    async fn spawn_instance(&mut self, endpoint: &ForwardProxyEndpoint) -> Result<Url> {
+        let outbound = build_xray_outbound_for_endpoint(endpoint)?;
+        let local_port = pick_unused_local_port().context("failed to allocate xray local port")?;
+        let config_path = self.runtime_dir.join(format!(
+            "forward-proxy-{:016x}.json",
+            stable_hash_u64(&endpoint.key)
+        ));
+        let config = build_xray_instance_config(local_port, outbound);
+        let serialized =
+            serde_json::to_vec_pretty(&config).context("failed to serialize xray config")?;
+        fs::write(&config_path, serialized)
+            .with_context(|| format!("failed to write xray config: {}", config_path.display()))?;
+
+        let mut child = Command::new(&self.binary)
+            .arg("run")
+            .arg("-c")
+            .arg(&config_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("failed to start xray binary: {}", self.binary))?;
+
+        if let Err(err) = wait_for_xray_proxy_ready(&mut child, local_port).await {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = fs::remove_file(&config_path);
+            return Err(err);
+        }
+
+        let local_proxy_url = Url::parse(&format!("socks5h://127.0.0.1:{local_port}"))
+            .context("failed to build local xray socks endpoint")?;
+        self.instances.insert(
+            endpoint.key.clone(),
+            XrayInstance {
+                local_proxy_url: local_proxy_url.clone(),
+                config_path,
+                child,
+            },
+        );
+
+        Ok(local_proxy_url)
+    }
+
+    async fn remove_instance(&mut self, key: &str) {
+        if let Some(mut instance) = self.instances.remove(key) {
+            let still_running = matches!(instance.child.try_wait(), Ok(None));
+            if still_running {
+                if let Err(err) = instance.child.kill().await {
+                    warn!(proxy_key = key, error = %err, "failed to terminate xray proxy process");
+                }
+                if let Err(err) = timeout(Duration::from_secs(2), instance.child.wait()).await {
+                    warn!(proxy_key = key, error = %err, "timed out waiting xray proxy process exit");
+                }
+            }
+            if let Err(err) = fs::remove_file(&instance.config_path)
+                && err.kind() != io::ErrorKind::NotFound
+            {
+                warn!(
+                    proxy_key = key,
+                    path = %instance.config_path.display(),
+                    error = %err,
+                    "failed to remove xray config file"
+                );
+            }
+        }
+    }
+}
+
+fn stable_hash_u64(raw: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    raw.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn pick_unused_local_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .context("failed to bind local socket for port allocation")?;
+    let port = listener
+        .local_addr()
+        .context("failed to read local address for allocated port")?
+        .port();
+    Ok(port)
+}
+
+async fn wait_for_xray_proxy_ready(child: &mut Child, local_port: u16) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_millis(XRAY_PROXY_READY_TIMEOUT_MS);
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to poll xray proxy process status")?
+        {
+            bail!("xray process exited before ready: {status}");
+        }
+        if timeout(
+            Duration::from_millis(250),
+            TcpStream::connect(("127.0.0.1", local_port)),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok())
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("xray local socks endpoint was not ready in time");
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn build_xray_instance_config(local_port: u16, outbound: Value) -> Value {
+    json!({
+        "log": {
+            "loglevel": "warning"
+        },
+        "inbounds": [
+            {
+                "tag": "inbound-local-socks",
+                "listen": "127.0.0.1",
+                "port": local_port,
+                "protocol": "socks",
+                "settings": {
+                    "auth": "noauth",
+                    "udp": false
+                }
+            }
+        ],
+        "outbounds": [
+            outbound,
+            {
+                "tag": "direct",
+                "protocol": "freedom"
+            }
+        ],
+        "routing": {
+            "domainStrategy": "AsIs",
+            "rules": [
+                {
+                    "type": "field",
+                    "inboundTag": ["inbound-local-socks"],
+                    "outboundTag": "proxy"
+                }
+            ]
+        }
+    })
+}
+
+fn build_xray_outbound_for_endpoint(endpoint: &ForwardProxyEndpoint) -> Result<Value> {
+    let raw = endpoint
+        .raw_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("xray endpoint missing share link url"))?;
+    match endpoint.protocol {
+        ForwardProxyProtocol::Vmess => build_vmess_xray_outbound(raw),
+        ForwardProxyProtocol::Vless => build_vless_xray_outbound(raw),
+        ForwardProxyProtocol::Trojan => build_trojan_xray_outbound(raw),
+        ForwardProxyProtocol::Shadowsocks => build_shadowsocks_xray_outbound(raw),
+        _ => bail!("unsupported xray protocol for endpoint"),
+    }
+}
+
+fn build_vmess_xray_outbound(raw: &str) -> Result<Value> {
+    let link = parse_vmess_share_link(raw)?;
+    let mut outbound = json!({
+        "tag": "proxy",
+        "protocol": "vmess",
+        "settings": {
+            "vnext": [
+                {
+                    "address": link.address,
+                    "port": link.port,
+                    "users": [
+                        {
+                            "id": link.id,
+                            "alterId": link.alter_id,
+                            "security": link.security
+                        }
+                    ]
+                }
+            ]
+        }
+    });
+    if let Some(stream_settings) = build_vmess_stream_settings(&link)
+        && let Some(object) = outbound.as_object_mut()
+    {
+        object.insert("streamSettings".to_string(), stream_settings);
+    }
+    Ok(outbound)
+}
+
+fn build_vmess_stream_settings(link: &VmessShareLink) -> Option<Value> {
+    let mut stream = serde_json::Map::new();
+    stream.insert("network".to_string(), Value::String(link.network.clone()));
+    let mut has_non_default_options = link.network != "tcp";
+
+    let security = link
+        .tls_mode
+        .as_deref()
+        .filter(|value| !value.is_empty() && *value != "none")
+        .map(|value| value.to_ascii_lowercase());
+    if let Some(security) = security.as_ref() {
+        stream.insert("security".to_string(), Value::String(security.clone()));
+        has_non_default_options = true;
+    }
+
+    match link.network.as_str() {
+        "ws" => {
+            let mut ws = serde_json::Map::new();
+            if let Some(path) = link.path.as_ref().filter(|value| !value.trim().is_empty()) {
+                ws.insert("path".to_string(), Value::String(path.clone()));
+            }
+            if let Some(host) = link.host.as_ref().filter(|value| !value.trim().is_empty()) {
+                ws.insert("headers".to_string(), json!({ "Host": host }));
+            }
+            if !ws.is_empty() {
+                stream.insert("wsSettings".to_string(), Value::Object(ws));
+                has_non_default_options = true;
+            }
+        }
+        "grpc" => {
+            let service_name = link
+                .path
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+                .unwrap_or_default();
+            stream.insert(
+                "grpcSettings".to_string(),
+                json!({
+                    "serviceName": service_name
+                }),
+            );
+            has_non_default_options = true;
+        }
+        "httpupgrade" => {
+            let mut settings = serde_json::Map::new();
+            if let Some(host) = link.host.as_ref().filter(|value| !value.trim().is_empty()) {
+                settings.insert("host".to_string(), Value::String(host.clone()));
+            }
+            if let Some(path) = link.path.as_ref().filter(|value| !value.trim().is_empty()) {
+                settings.insert("path".to_string(), Value::String(path.clone()));
+            }
+            if !settings.is_empty() {
+                stream.insert("httpupgradeSettings".to_string(), Value::Object(settings));
+                has_non_default_options = true;
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(security) = security {
+        if security == "tls" {
+            let mut tls_settings = serde_json::Map::new();
+            if let Some(server_name) = link
+                .sni
+                .as_ref()
+                .or(link.host.as_ref())
+                .filter(|value| !value.trim().is_empty())
+            {
+                tls_settings.insert("serverName".to_string(), Value::String(server_name.clone()));
+            }
+            if let Some(alpn) = link.alpn.as_ref().filter(|items| !items.is_empty()) {
+                tls_settings.insert("alpn".to_string(), json!(alpn));
+            }
+            if let Some(fingerprint) = link
+                .fingerprint
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                tls_settings.insert(
+                    "fingerprint".to_string(),
+                    Value::String(fingerprint.clone()),
+                );
+            }
+            if !tls_settings.is_empty() {
+                stream.insert("tlsSettings".to_string(), Value::Object(tls_settings));
+                has_non_default_options = true;
+            }
+        } else if security == "reality" {
+            let mut reality_settings = serde_json::Map::new();
+            if let Some(server_name) = link
+                .sni
+                .as_ref()
+                .or(link.host.as_ref())
+                .filter(|value| !value.trim().is_empty())
+            {
+                reality_settings
+                    .insert("serverName".to_string(), Value::String(server_name.clone()));
+            }
+            if let Some(fingerprint) = link
+                .fingerprint
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                reality_settings.insert(
+                    "fingerprint".to_string(),
+                    Value::String(fingerprint.clone()),
+                );
+            }
+            if !reality_settings.is_empty() {
+                stream.insert(
+                    "realitySettings".to_string(),
+                    Value::Object(reality_settings),
+                );
+                has_non_default_options = true;
+            }
+        }
+    }
+
+    if has_non_default_options {
+        Some(Value::Object(stream))
+    } else {
+        None
+    }
+}
+
+fn build_vless_xray_outbound(raw: &str) -> Result<Value> {
+    let url = Url::parse(raw).context("invalid vless share link")?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("vless host missing"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("vless port missing"))?;
+    let user_id = url.username();
+    if user_id.trim().is_empty() {
+        bail!("vless id missing");
+    }
+
+    let query = url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+    let encryption = query
+        .get("encryption")
+        .cloned()
+        .unwrap_or_else(|| "none".to_string());
+    let mut user = serde_json::Map::new();
+    user.insert("id".to_string(), Value::String(user_id.to_string()));
+    user.insert("encryption".to_string(), Value::String(encryption));
+    if let Some(flow) = query.get("flow").filter(|value| !value.trim().is_empty()) {
+        user.insert("flow".to_string(), Value::String(flow.clone()));
+    }
+
+    let mut outbound = json!({
+        "tag": "proxy",
+        "protocol": "vless",
+        "settings": {
+            "vnext": [
+                {
+                    "address": host,
+                    "port": port,
+                    "users": [Value::Object(user)]
+                }
+            ]
+        }
+    });
+    if let Some(stream_settings) = build_stream_settings_from_url(&url, None)
+        && let Some(object) = outbound.as_object_mut()
+    {
+        object.insert("streamSettings".to_string(), stream_settings);
+    }
+    Ok(outbound)
+}
+
+fn build_trojan_xray_outbound(raw: &str) -> Result<Value> {
+    let url = Url::parse(raw).context("invalid trojan share link")?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("trojan host missing"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("trojan port missing"))?;
+    let password = url.username();
+    if password.trim().is_empty() {
+        bail!("trojan password missing");
+    }
+
+    let mut outbound = json!({
+        "tag": "proxy",
+        "protocol": "trojan",
+        "settings": {
+            "servers": [
+                {
+                    "address": host,
+                    "port": port,
+                    "password": password
+                }
+            ]
+        }
+    });
+    if let Some(stream_settings) = build_stream_settings_from_url(&url, Some("tls"))
+        && let Some(object) = outbound.as_object_mut()
+    {
+        object.insert("streamSettings".to_string(), stream_settings);
+    }
+    Ok(outbound)
+}
+
+fn build_shadowsocks_xray_outbound(raw: &str) -> Result<Value> {
+    let parsed = parse_shadowsocks_share_link(raw)?;
+    Ok(json!({
+        "tag": "proxy",
+        "protocol": "shadowsocks",
+        "settings": {
+            "servers": [
+                {
+                    "address": parsed.host,
+                    "port": parsed.port,
+                    "method": parsed.method,
+                    "password": parsed.password
+                }
+            ]
+        }
+    }))
+}
+
+fn build_stream_settings_from_url(url: &Url, default_security: Option<&str>) -> Option<Value> {
+    let query = url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+    let network = query
+        .get("type")
+        .or_else(|| query.get("net"))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "tcp".to_string());
+    let security = query
+        .get("security")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .or_else(|| default_security.map(str::to_string))
+        .unwrap_or_else(|| "none".to_string());
+
+    let host = query
+        .get("host")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let path = query
+        .get("path")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let service_name = query
+        .get("serviceName")
+        .or_else(|| query.get("service_name"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| path.clone());
+
+    let mut stream = serde_json::Map::new();
+    stream.insert("network".to_string(), Value::String(network.clone()));
+    let mut has_non_default_options = network != "tcp";
+    if security != "none" {
+        stream.insert("security".to_string(), Value::String(security.clone()));
+        has_non_default_options = true;
+    }
+
+    match network.as_str() {
+        "ws" => {
+            let mut ws = serde_json::Map::new();
+            if let Some(path) = path.as_ref() {
+                ws.insert("path".to_string(), Value::String(path.clone()));
+            }
+            if let Some(host) = host.as_ref() {
+                ws.insert("headers".to_string(), json!({ "Host": host }));
+            }
+            if !ws.is_empty() {
+                stream.insert("wsSettings".to_string(), Value::Object(ws));
+                has_non_default_options = true;
+            }
+        }
+        "grpc" => {
+            let service_name = service_name.unwrap_or_default();
+            stream.insert(
+                "grpcSettings".to_string(),
+                json!({
+                    "serviceName": service_name,
+                    "multiMode": query_flag_true(&query, "multiMode")
+                }),
+            );
+            has_non_default_options = true;
+        }
+        "httpupgrade" => {
+            let mut settings = serde_json::Map::new();
+            if let Some(host) = host.as_ref() {
+                settings.insert("host".to_string(), Value::String(host.clone()));
+            }
+            if let Some(path) = path.as_ref() {
+                settings.insert("path".to_string(), Value::String(path.clone()));
+            }
+            if !settings.is_empty() {
+                stream.insert("httpupgradeSettings".to_string(), Value::Object(settings));
+                has_non_default_options = true;
+            }
+        }
+        _ => {}
+    }
+
+    if security == "tls" {
+        let mut tls_settings = serde_json::Map::new();
+        if let Some(server_name) = query
+            .get("sni")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| host.clone())
+            .or_else(|| url.host_str().map(str::to_string))
+        {
+            tls_settings.insert("serverName".to_string(), Value::String(server_name));
+        }
+        if query_flag_true(&query, "allowInsecure") || query_flag_true(&query, "insecure") {
+            tls_settings.insert("allowInsecure".to_string(), Value::Bool(true));
+        }
+        if let Some(fingerprint) = query
+            .get("fp")
+            .or_else(|| query.get("fingerprint"))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            tls_settings.insert("fingerprint".to_string(), Value::String(fingerprint));
+        }
+        if let Some(alpn) = query
+            .get("alpn")
+            .map(|value| parse_alpn_csv(value))
+            .filter(|items| !items.is_empty())
+        {
+            tls_settings.insert("alpn".to_string(), json!(alpn));
+        }
+        if !tls_settings.is_empty() {
+            stream.insert("tlsSettings".to_string(), Value::Object(tls_settings));
+            has_non_default_options = true;
+        }
+    } else if security == "reality" {
+        let mut reality_settings = serde_json::Map::new();
+        if let Some(server_name) = query
+            .get("sni")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| host.clone())
+            .or_else(|| url.host_str().map(str::to_string))
+        {
+            reality_settings.insert("serverName".to_string(), Value::String(server_name));
+        }
+        if let Some(fingerprint) = query
+            .get("fp")
+            .or_else(|| query.get("fingerprint"))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            reality_settings.insert("fingerprint".to_string(), Value::String(fingerprint));
+        }
+        if let Some(public_key) = query
+            .get("pbk")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            reality_settings.insert("publicKey".to_string(), Value::String(public_key));
+        }
+        if let Some(short_id) = query
+            .get("sid")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            reality_settings.insert("shortId".to_string(), Value::String(short_id));
+        }
+        if let Some(spider_x) = query
+            .get("spx")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            reality_settings.insert("spiderX".to_string(), Value::String(spider_x));
+        }
+        if !reality_settings.is_empty() {
+            stream.insert(
+                "realitySettings".to_string(),
+                Value::Object(reality_settings),
+            );
+            has_non_default_options = true;
+        }
+    }
+
+    if has_non_default_options {
+        Some(Value::Object(stream))
+    } else {
+        None
+    }
+}
+
+fn query_flag_true(query: &HashMap<String, String>, key: &str) -> bool {
+    query.get(key).is_some_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -8660,10 +9441,10 @@ fn normalize_proxy_url_entries(raw_entries: Vec<String>) -> Vec<String> {
     let mut normalized = Vec::new();
     for entry in raw_entries {
         for token in split_proxy_entry_tokens(&entry) {
-            if let Some(canonical) = normalize_single_proxy_url(token)
-                && seen.insert(canonical.clone())
+            if let Some(parsed) = parse_forward_proxy_entry(token)
+                && seen.insert(parsed.normalized.clone())
             {
-                normalized.push(canonical);
+                normalized.push(parsed.normalized);
             }
         }
     }
@@ -8677,26 +9458,80 @@ fn split_proxy_entry_tokens(raw: &str) -> Vec<&str> {
         .collect()
 }
 
+#[cfg(test)]
 fn normalize_single_proxy_url(raw: &str) -> Option<String> {
+    parse_forward_proxy_entry(raw).map(|entry| entry.normalized)
+}
+
+fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<ForwardProxyEndpoint> {
+    let mut seen = HashSet::new();
+    let mut endpoints = Vec::new();
+    for raw in urls {
+        if let Some(parsed) = parse_forward_proxy_entry(raw) {
+            let key = parsed.normalized.clone();
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            endpoints.push(ForwardProxyEndpoint {
+                key,
+                source: source.to_string(),
+                display_name: parsed.display_name,
+                protocol: parsed.protocol,
+                endpoint_url: parsed.endpoint_url,
+                raw_url: Some(parsed.normalized),
+            });
+        }
+    }
+    endpoints
+}
+
+#[derive(Debug, Clone)]
+struct ParsedForwardProxyEntry {
+    normalized: String,
+    display_name: String,
+    protocol: ForwardProxyProtocol,
+    endpoint_url: Option<Url>,
+}
+
+fn parse_forward_proxy_entry(raw: &str) -> Option<ParsedForwardProxyEntry> {
     let candidate = raw.trim();
     if candidate.is_empty() {
         return None;
     }
-    let candidate = if candidate.contains("://") {
-        candidate.to_string()
-    } else {
-        format!("http://{candidate}")
-    };
-    let parsed = Url::parse(&candidate).ok()?;
-    if !matches!(parsed.scheme(), "http" | "https" | "socks5" | "socks5h") {
-        return None;
+
+    if !candidate.contains("://") {
+        return parse_native_forward_proxy(&format!("http://{candidate}"));
     }
+
+    let (scheme_raw, _) = candidate.split_once("://")?;
+    let scheme = scheme_raw.to_ascii_lowercase();
+    match scheme.as_str() {
+        "http" | "https" | "socks5" | "socks5h" | "socks" => parse_native_forward_proxy(candidate),
+        "vmess" => parse_vmess_forward_proxy(candidate),
+        "vless" => parse_vless_forward_proxy(candidate),
+        "trojan" => parse_trojan_forward_proxy(candidate),
+        "ss" => parse_shadowsocks_forward_proxy(candidate),
+        _ => None,
+    }
+}
+
+fn parse_native_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
+    let parsed = Url::parse(candidate).ok()?;
+    let raw_scheme = parsed.scheme();
+    let (protocol, normalized_scheme) = match raw_scheme {
+        "http" => (ForwardProxyProtocol::Http, "http"),
+        "https" => (ForwardProxyProtocol::Https, "https"),
+        "socks5" | "socks" => (ForwardProxyProtocol::Socks5, "socks5"),
+        "socks5h" => (ForwardProxyProtocol::Socks5h, "socks5h"),
+        _ => return None,
+    };
+
     let host = parsed.host_str()?;
     if host.trim().is_empty() {
         return None;
     }
     let port = parsed.port_or_known_default()?;
-    let mut normalized = format!("{}://", parsed.scheme());
+    let mut normalized = format!("{normalized_scheme}://");
     if !parsed.username().is_empty() {
         normalized.push_str(parsed.username());
         if let Some(password) = parsed.password() {
@@ -8714,37 +9549,347 @@ fn normalize_single_proxy_url(raw: &str) -> Option<String> {
     }
     normalized.push(':');
     normalized.push_str(&port.to_string());
+    let endpoint_url = Url::parse(&normalized).ok()?;
+    Some(ParsedForwardProxyEntry {
+        normalized,
+        display_name: format!("{host}:{port}"),
+        protocol,
+        endpoint_url: Some(endpoint_url),
+    })
+}
+
+fn parse_vmess_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
+    let normalized = normalize_share_link_scheme(candidate, "vmess")?;
+    let parsed = parse_vmess_share_link(&normalized).ok()?;
+    Some(ParsedForwardProxyEntry {
+        normalized,
+        display_name: parsed.display_name,
+        protocol: ForwardProxyProtocol::Vmess,
+        endpoint_url: None,
+    })
+}
+
+fn parse_vless_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
+    let normalized = normalize_share_link_scheme(candidate, "vless")?;
+    let parsed = Url::parse(&normalized).ok()?;
+    let host = parsed.host_str()?;
+    let port = parsed.port_or_known_default()?;
+    let display_name =
+        proxy_display_name_from_url(&parsed).unwrap_or_else(|| format!("{host}:{port}"));
+    Some(ParsedForwardProxyEntry {
+        normalized,
+        display_name,
+        protocol: ForwardProxyProtocol::Vless,
+        endpoint_url: None,
+    })
+}
+
+fn parse_trojan_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
+    let normalized = normalize_share_link_scheme(candidate, "trojan")?;
+    let parsed = Url::parse(&normalized).ok()?;
+    let host = parsed.host_str()?;
+    let port = parsed.port_or_known_default()?;
+    let display_name =
+        proxy_display_name_from_url(&parsed).unwrap_or_else(|| format!("{host}:{port}"));
+    Some(ParsedForwardProxyEntry {
+        normalized,
+        display_name,
+        protocol: ForwardProxyProtocol::Trojan,
+        endpoint_url: None,
+    })
+}
+
+fn parse_shadowsocks_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry> {
+    let normalized = normalize_share_link_scheme(candidate, "ss")?;
+    let parsed = parse_shadowsocks_share_link(&normalized).ok()?;
+    Some(ParsedForwardProxyEntry {
+        normalized,
+        display_name: parsed.display_name,
+        protocol: ForwardProxyProtocol::Shadowsocks,
+        endpoint_url: None,
+    })
+}
+
+fn proxy_display_name_from_url(url: &Url) -> Option<String> {
+    if let Some(fragment) = url.fragment()
+        && !fragment.trim().is_empty()
+    {
+        return Some(fragment.to_string());
+    }
+    let host = url.host_str()?;
+    let port = url.port_or_known_default()?;
+    Some(format!("{host}:{port}"))
+}
+
+fn normalize_share_link_scheme(candidate: &str, scheme: &str) -> Option<String> {
+    let (_, remainder) = candidate.split_once("://")?;
+    let normalized = format!("{scheme}://{}", remainder.trim());
+    if normalized.len() <= scheme.len() + 3 {
+        return None;
+    }
     Some(normalized)
 }
 
-fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<ForwardProxyEndpoint> {
-    let mut seen = HashSet::new();
-    let mut endpoints = Vec::new();
-    for raw in urls {
-        if let Some(normalized) = normalize_single_proxy_url(raw) {
-            let key = normalized.clone();
-            if !seen.insert(key.clone()) {
-                continue;
-            }
-            let parsed = Url::parse(&normalized).ok();
-            let display_name = parsed
-                .as_ref()
-                .and_then(|url| {
-                    url.host_str().map(|host| {
-                        format!("{host}:{}", url.port_or_known_default().unwrap_or_default())
-                    })
-                })
-                .unwrap_or_else(|| normalized.clone());
-            endpoints.push(ForwardProxyEndpoint {
-                key,
-                source: source.to_string(),
-                display_name,
-                endpoint_url: parsed,
-                raw_url: Some(normalized),
+fn decode_base64_any(raw: &str) -> Option<Vec<u8>> {
+    let compact = raw
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect::<String>();
+    if compact.is_empty() {
+        return None;
+    }
+    for engine in [
+        base64::engine::general_purpose::STANDARD,
+        base64::engine::general_purpose::STANDARD_NO_PAD,
+        base64::engine::general_purpose::URL_SAFE,
+        base64::engine::general_purpose::URL_SAFE_NO_PAD,
+    ] {
+        if let Ok(decoded) = engine.decode(compact.as_bytes()) {
+            return Some(decoded);
+        }
+    }
+    None
+}
+
+fn decode_base64_string(raw: &str) -> Option<String> {
+    decode_base64_any(raw).and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
+#[derive(Debug, Clone)]
+struct VmessShareLink {
+    address: String,
+    port: u16,
+    id: String,
+    alter_id: u32,
+    security: String,
+    network: String,
+    host: Option<String>,
+    path: Option<String>,
+    tls_mode: Option<String>,
+    sni: Option<String>,
+    alpn: Option<Vec<String>>,
+    fingerprint: Option<String>,
+    display_name: String,
+}
+
+fn parse_vmess_share_link(raw: &str) -> Result<VmessShareLink> {
+    let payload = raw
+        .strip_prefix("vmess://")
+        .ok_or_else(|| anyhow!("invalid vmess share link"))?;
+    let decoded =
+        decode_base64_string(payload).ok_or_else(|| anyhow!("failed to decode vmess payload"))?;
+    let value: Value = serde_json::from_str(&decoded).context("invalid vmess json payload")?;
+
+    let address = value
+        .get("add")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("vmess payload missing add"))?
+        .to_string();
+    let port =
+        parse_port_value(value.get("port")).ok_or_else(|| anyhow!("vmess payload missing port"))?;
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("vmess payload missing id"))?
+        .to_string();
+    let alter_id = parse_u32_value(value.get("aid")).unwrap_or(0);
+    let security = value
+        .get("scy")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("security").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("auto")
+        .to_string();
+    let network = value
+        .get("net")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("tcp")
+        .to_ascii_lowercase();
+    let host = value
+        .get("host")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let path = value
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let tls_mode = value
+        .get("tls")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    let sni = value
+        .get("sni")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let alpn = value
+        .get("alpn")
+        .and_then(Value::as_str)
+        .map(parse_alpn_csv)
+        .filter(|items| !items.is_empty());
+    let fingerprint = value
+        .get("fp")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let display_name = value
+        .get("ps")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("{address}:{port}"));
+
+    Ok(VmessShareLink {
+        address,
+        port,
+        id,
+        alter_id,
+        security,
+        network,
+        host,
+        path,
+        tls_mode,
+        sni,
+        alpn,
+        fingerprint,
+        display_name,
+    })
+}
+
+fn parse_u32_value(value: Option<&Value>) -> Option<u32> {
+    match value {
+        Some(Value::Number(num)) => num.as_u64().and_then(|v| u32::try_from(v).ok()),
+        Some(Value::String(raw)) => raw.trim().parse::<u32>().ok(),
+        _ => None,
+    }
+}
+
+fn parse_port_value(value: Option<&Value>) -> Option<u16> {
+    match value {
+        Some(Value::Number(num)) => num.as_u64().and_then(|v| u16::try_from(v).ok()),
+        Some(Value::String(raw)) => raw.trim().parse::<u16>().ok(),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ShadowsocksShareLink {
+    method: String,
+    password: String,
+    host: String,
+    port: u16,
+    display_name: String,
+}
+
+fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShareLink> {
+    let normalized = raw
+        .strip_prefix("ss://")
+        .ok_or_else(|| anyhow!("invalid shadowsocks share link"))?;
+    let (main, fragment) = split_once_first(normalized, '#');
+    let (main, _) = split_once_first(main, '?');
+
+    if let Ok(url) = Url::parse(raw)
+        && let Some(host) = url.host_str()
+        && let Some(port) = url.port_or_known_default()
+    {
+        let credentials = if !url.username().is_empty() && url.password().is_some() {
+            Some((
+                url.username().to_string(),
+                url.password().unwrap_or_default().to_string(),
+            ))
+        } else if !url.username().is_empty() {
+            decode_base64_string(url.username()).and_then(|decoded| {
+                let (method, password) = decoded.split_once(':')?;
+                Some((method.to_string(), password.to_string()))
+            })
+        } else {
+            None
+        };
+        if let Some((method, password)) = credentials {
+            return Ok(ShadowsocksShareLink {
+                method,
+                password,
+                host: host.to_string(),
+                port,
+                display_name: fragment
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("{host}:{port}")),
             });
         }
     }
-    endpoints
+
+    let decoded_main = if main.contains('@') {
+        main.to_string()
+    } else {
+        decode_base64_string(main).ok_or_else(|| anyhow!("failed to decode shadowsocks payload"))?
+    };
+
+    let (credential, host_port) = decoded_main
+        .rsplit_once('@')
+        .ok_or_else(|| anyhow!("invalid shadowsocks payload"))?;
+    let (method, password) = if let Some((method, password)) = credential.split_once(':') {
+        (method.to_string(), password.to_string())
+    } else {
+        let decoded_credential = decode_base64_string(credential)
+            .ok_or_else(|| anyhow!("failed to decode shadowsocks credentials"))?;
+        let (method, password) = decoded_credential
+            .split_once(':')
+            .ok_or_else(|| anyhow!("invalid shadowsocks credentials"))?;
+        (method.to_string(), password.to_string())
+    };
+    let parsed_host = Url::parse(&format!("http://{host_port}"))
+        .context("invalid shadowsocks server endpoint")?;
+    let host = parsed_host
+        .host_str()
+        .ok_or_else(|| anyhow!("shadowsocks host missing"))?
+        .to_string();
+    let port = parsed_host
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("shadowsocks port missing"))?;
+    let display_name = fragment
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("{host}:{port}"));
+    Ok(ShadowsocksShareLink {
+        method,
+        password,
+        host,
+        port,
+        display_name,
+    })
+}
+
+fn split_once_first(raw: &str, delimiter: char) -> (&str, Option<&str>) {
+    if let Some((lhs, rhs)) = raw.split_once(delimiter) {
+        (lhs, Some(rhs))
+    } else {
+        (raw, None)
+    }
+}
+
+fn parse_alpn_csv(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn deterministic_unit_f64(seed: u64) -> f64 {
@@ -8968,6 +10113,8 @@ struct AppConfig {
     proxy_raw_max_bytes: Option<usize>,
     proxy_raw_retention: Duration,
     proxy_raw_dir: PathBuf,
+    xray_binary: String,
+    xray_runtime_dir: PathBuf,
     max_parallel_polls: usize,
     shared_connection_parallelism: usize,
     http_bind: SocketAddr,
@@ -9102,6 +10249,14 @@ impl AppConfig {
             .ok()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_PROXY_RAW_DIR));
+        let xray_binary = env::var("XY_XRAY_BINARY")
+            .or_else(|_| env::var("XRAY_BINARY"))
+            .unwrap_or_else(|_| DEFAULT_XRAY_BINARY.to_string());
+        let xray_runtime_dir = env::var("XY_XRAY_RUNTIME_DIR")
+            .or_else(|_| env::var("XRAY_RUNTIME_DIR"))
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_XRAY_RUNTIME_DIR));
         let max_parallel_polls = overrides
             .max_parallel_polls
             .or_else(|| {
@@ -9215,6 +10370,8 @@ impl AppConfig {
             proxy_raw_max_bytes,
             proxy_raw_retention,
             proxy_raw_dir,
+            xray_binary,
+            xray_runtime_dir,
             max_parallel_polls,
             shared_connection_parallelism,
             http_bind,
@@ -9360,6 +10517,54 @@ mod tests {
     }
 
     #[test]
+    fn normalize_single_proxy_url_supports_xray_share_links() {
+        let vmess_payload = serde_json::to_string(&json!({
+            "add": "vmess.example.com",
+            "port": "443",
+            "id": "11111111-1111-1111-1111-111111111111",
+            "aid": "0",
+            "net": "ws",
+            "host": "cdn.vmess.example.com",
+            "path": "/ws",
+            "tls": "tls",
+            "ps": "vmess-node"
+        }))
+        .expect("serialize vmess payload");
+        let vmess_link = format!(
+            "vmess://{}",
+            base64::engine::general_purpose::STANDARD.encode(vmess_payload)
+        );
+        assert!(normalize_single_proxy_url(&vmess_link).is_some());
+        assert!(normalize_single_proxy_url("vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com#vless").is_some());
+        assert!(normalize_single_proxy_url("trojan://password@trojan.example.com:443?type=ws&path=%2Fws&host=cdn.trojan.example.com").is_some());
+        assert!(
+            normalize_single_proxy_url("ss://YWVzLTI1Ni1nY206cGFzc0AxMjcuMC4wLjE6ODM4OA==")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parse_proxy_urls_from_subscription_body_supports_xray_links() {
+        let vmess_payload = serde_json::to_string(&json!({
+            "add": "vmess.example.com",
+            "port": "443",
+            "id": "11111111-1111-1111-1111-111111111111"
+        }))
+        .expect("serialize vmess payload");
+        let vmess_link = format!(
+            "vmess://{}",
+            base64::engine::general_purpose::STANDARD.encode(vmess_payload)
+        );
+        let vless_link =
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls";
+        let subscription_raw = format!("{vmess_link}\n{vless_link}");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(subscription_raw.as_bytes());
+        let parsed = parse_proxy_urls_from_subscription_body(&encoded);
+        assert!(parsed.iter().any(|item| item.starts_with("vmess://")));
+        assert!(parsed.iter().any(|item| item.starts_with("vless://")));
+    }
+
+    #[test]
     fn decode_subscription_payload_supports_base64_blob() {
         let encoded = base64::engine::general_purpose::STANDARD
             .encode("http://127.0.0.1:7890\nsocks5://127.0.0.1:1080");
@@ -9495,6 +10700,8 @@ mod tests {
             proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
             proxy_raw_retention: Duration::from_secs(DEFAULT_PROXY_RAW_RETENTION_DAYS * 86_400),
             proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
+            xray_binary: DEFAULT_XRAY_BINARY.to_string(),
+            xray_runtime_dir: PathBuf::from("target/xray-forward-tests"),
             max_parallel_polls: 2,
             shared_connection_parallelism: 1,
             http_bind: "127.0.0.1:38080".parse().expect("valid socket address"),
@@ -9688,7 +10895,7 @@ mod tests {
             .expect("pricing catalog should initialize");
 
         Arc::new(AppState {
-            config,
+            config: config.clone(),
             pool,
             http_clients,
             broadcaster,
@@ -9700,6 +10907,10 @@ mod tests {
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
                 ForwardProxySettings::default(),
                 Vec::new(),
+            ))),
+            xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+                config.xray_binary.clone(),
+                config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
@@ -11279,7 +12490,7 @@ mod tests {
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
         let state = Arc::new(AppState {
-            config,
+            config: config.clone(),
             pool,
             http_clients,
             broadcaster,
@@ -11295,6 +12506,10 @@ mod tests {
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
                 ForwardProxySettings::default(),
                 Vec::new(),
+            ))),
+            xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+                config.xray_binary.clone(),
+                config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
@@ -11919,7 +13134,7 @@ mod tests {
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
         let state = Arc::new(AppState {
-            config,
+            config: config.clone(),
             pool,
             http_clients,
             broadcaster,
@@ -11931,6 +13146,10 @@ mod tests {
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
                 ForwardProxySettings::default(),
                 Vec::new(),
+            ))),
+            xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+                config.xray_binary.clone(),
+                config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
@@ -12038,7 +13257,7 @@ mod tests {
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
         let state = Arc::new(AppState {
-            config,
+            config: config.clone(),
             pool,
             http_clients,
             broadcaster,
@@ -12050,6 +13269,10 @@ mod tests {
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
                 ForwardProxySettings::default(),
                 Vec::new(),
+            ))),
+            xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+                config.xray_binary.clone(),
+                config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
@@ -12199,7 +13422,7 @@ mod tests {
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
         let state = Arc::new(AppState {
-            config,
+            config: config.clone(),
             pool,
             http_clients,
             broadcaster,
@@ -12211,6 +13434,10 @@ mod tests {
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
                 ForwardProxySettings::default(),
                 Vec::new(),
+            ))),
+            xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+                config.xray_binary.clone(),
+                config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
@@ -12259,7 +13486,7 @@ mod tests {
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
         let state = Arc::new(AppState {
-            config,
+            config: config.clone(),
             pool,
             http_clients,
             broadcaster,
@@ -12271,6 +13498,10 @@ mod tests {
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
                 ForwardProxySettings::default(),
                 Vec::new(),
+            ))),
+            xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+                config.xray_binary.clone(),
+                config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
@@ -13456,7 +14687,7 @@ mod tests {
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
         let (broadcaster, _rx) = broadcast::channel(16);
         let state = Arc::new(AppState {
-            config,
+            config: config.clone(),
             pool,
             http_clients,
             broadcaster,
@@ -13468,6 +14699,10 @@ mod tests {
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
                 ForwardProxySettings::default(),
                 Vec::new(),
+            ))),
+            xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+                config.xray_binary.clone(),
+                config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
