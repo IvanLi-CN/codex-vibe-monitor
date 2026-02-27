@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { useSettings } from '../hooks/useSettings'
-import type { PricingEntry, PricingSettings } from '../lib/api'
+import type { ForwardProxySettings, PricingEntry, PricingSettings } from '../lib/api'
 import { cn } from '../lib/utils'
 import { useTranslation } from '../i18n'
 
@@ -136,21 +136,49 @@ function sourceBadgeVariant(source: string): 'success' | 'warning' | 'secondary'
   return 'secondary'
 }
 
+function toTextAreaValue(items: string[]): string {
+  return items.join('\n')
+}
+
+function parseTextAreaValues(raw: string): string[] {
+  return raw
+    .split('\n')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+}
+
+function formatSuccessRate(value?: number): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  return `${(value * 100).toFixed(1)}%`
+}
+
+function formatLatency(value?: number): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  return `${value.toFixed(0)} ms`
+}
+
 export default function SettingsPage() {
   const { t } = useTranslation()
   const {
     settings,
     isLoading,
     isProxySaving,
+    isForwardProxySaving,
     isPricingSaving,
     pricingRollbackVersion,
     error,
     saveProxy,
+    saveForwardProxy,
     savePricing,
   } = useSettings()
 
   const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null)
   const [pricingErrorKey, setPricingErrorKey] = useState<string | null>(null)
+  const [forwardProxyUrlsText, setForwardProxyUrlsText] = useState('')
+  const [forwardProxySubscriptionText, setForwardProxySubscriptionText] = useState('')
+  const [forwardProxyIntervalSecs, setForwardProxyIntervalSecs] = useState('3600')
+  const [forwardProxyInsertDirect, setForwardProxyInsertDirect] = useState(true)
+  const [forwardProxyDirty, setForwardProxyDirty] = useState(false)
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSyncedPricingKeyRef = useRef<string | null>(null)
   const lastHandledRollbackVersionRef = useRef(pricingRollbackVersion)
@@ -192,10 +220,32 @@ export default function SettingsPage() {
     })
   }, [pricingRollbackVersion, settings?.pricing])
 
+  useEffect(() => {
+    if (!settings?.forwardProxy) return
+    if (forwardProxyDirty && !isForwardProxySaving) return
+    setForwardProxyUrlsText(toTextAreaValue(settings.forwardProxy.proxyUrls))
+    setForwardProxySubscriptionText(toTextAreaValue(settings.forwardProxy.subscriptionUrls))
+    setForwardProxyIntervalSecs(String(settings.forwardProxy.subscriptionUpdateIntervalSecs))
+    setForwardProxyInsertDirect(settings.forwardProxy.insertDirect)
+    setForwardProxyDirty(false)
+  }, [forwardProxyDirty, isForwardProxySaving, settings?.forwardProxy])
+
   const currentProxy = settings?.proxy ?? null
+  const currentForwardProxy = settings?.forwardProxy ?? null
   const enabledPresetModelSet = useMemo(
     () => new Set(currentProxy?.enabledModels ?? []),
     [currentProxy?.enabledModels],
+  )
+  const forwardProxyIntervalOptions = useMemo(
+    () => [
+      { value: '60', label: t('settings.forwardProxy.interval.1m') },
+      { value: '300', label: t('settings.forwardProxy.interval.5m') },
+      { value: '900', label: t('settings.forwardProxy.interval.15m') },
+      { value: '3600', label: t('settings.forwardProxy.interval.1h') },
+      { value: '21600', label: t('settings.forwardProxy.interval.6h') },
+      { value: '86400', label: t('settings.forwardProxy.interval.1d') },
+    ],
+    [t],
   )
 
   const remotePricingKey = useMemo(() => stablePricingKey(settings?.pricing ?? null), [settings?.pricing])
@@ -349,6 +399,28 @@ export default function SettingsPage() {
     })
   }, [])
 
+  const handleForwardProxySave = useCallback(() => {
+    if (!currentForwardProxy) return
+    const parsedInterval = Number(forwardProxyIntervalSecs)
+    const intervalSecs = Number.isFinite(parsedInterval) ? Math.max(60, Math.floor(parsedInterval)) : 3600
+    const nextForwardProxy: ForwardProxySettings = {
+      ...currentForwardProxy,
+      proxyUrls: parseTextAreaValues(forwardProxyUrlsText),
+      subscriptionUrls: parseTextAreaValues(forwardProxySubscriptionText),
+      subscriptionUpdateIntervalSecs: intervalSecs,
+      insertDirect: forwardProxyInsertDirect,
+    }
+    void saveForwardProxy(nextForwardProxy)
+    setForwardProxyDirty(false)
+  }, [
+    currentForwardProxy,
+    forwardProxyInsertDirect,
+    forwardProxyIntervalSecs,
+    forwardProxySubscriptionText,
+    forwardProxyUrlsText,
+    saveForwardProxy,
+  ])
+
   if (isLoading) {
     return (
       <section className="mx-auto max-w-6xl space-y-4">
@@ -358,7 +430,7 @@ export default function SettingsPage() {
     )
   }
 
-  if (!settings || !currentProxy) {
+  if (!settings || !currentProxy || !currentForwardProxy) {
     return (
       <section className="mx-auto max-w-6xl space-y-4">
         <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
@@ -596,6 +668,156 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+        <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
+          <CardTitle>{t('settings.forwardProxy.title')}</CardTitle>
+          <CardDescription>{t('settings.forwardProxy.description')}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5 pt-4">
+          <label className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 rounded-xl border border-base-300/75 bg-base-100/72 px-4 py-4">
+            <div className="space-y-1">
+              <div className="font-medium leading-snug">{t('settings.forwardProxy.insertDirectLabel')}</div>
+              <div className="text-sm leading-snug text-base-content/70">{t('settings.forwardProxy.insertDirectHint')}</div>
+            </div>
+            <div className="pt-0.5">
+              <Switch
+                checked={forwardProxyInsertDirect}
+                disabled={isForwardProxySaving}
+                onCheckedChange={(checked) => {
+                  setForwardProxyInsertDirect(checked)
+                  setForwardProxyDirty(true)
+                }}
+              />
+            </div>
+          </label>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="space-y-2">
+              <label htmlFor="forward-proxy-urls" className="block text-sm font-medium text-base-content/75">
+                {t('settings.forwardProxy.proxyUrls')}
+              </label>
+              <textarea
+                id="forward-proxy-urls"
+                className="h-36 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm font-mono outline-none ring-0 transition focus:border-primary/50"
+                placeholder={t('settings.forwardProxy.proxyUrlsPlaceholder')}
+                value={forwardProxyUrlsText}
+                onChange={(event) => {
+                  setForwardProxyUrlsText(event.target.value)
+                  setForwardProxyDirty(true)
+                }}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="forward-proxy-subscriptions" className="block text-sm font-medium text-base-content/75">
+                {t('settings.forwardProxy.subscriptionUrls')}
+              </label>
+              <textarea
+                id="forward-proxy-subscriptions"
+                className="h-36 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm outline-none ring-0 transition focus:border-primary/50"
+                placeholder={t('settings.forwardProxy.subscriptionUrlsPlaceholder')}
+                value={forwardProxySubscriptionText}
+                onChange={(event) => {
+                  setForwardProxySubscriptionText(event.target.value)
+                  setForwardProxyDirty(true)
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-2">
+              <label htmlFor="forward-proxy-interval" className="block text-sm font-medium text-base-content/75">
+                {t('settings.forwardProxy.subscriptionInterval')}
+              </label>
+              <select
+                id="forward-proxy-interval"
+                className="h-10 min-w-48 rounded-xl border border-base-300/80 bg-base-100/70 px-3 text-sm outline-none transition focus:border-primary/50"
+                value={forwardProxyIntervalSecs}
+                onChange={(event) => {
+                  setForwardProxyIntervalSecs(event.target.value)
+                  setForwardProxyDirty(true)
+                }}
+              >
+                {forwardProxyIntervalOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button
+              type="button"
+              className="h-10"
+              disabled={isForwardProxySaving || !forwardProxyDirty}
+              onClick={handleForwardProxySave}
+            >
+              {isForwardProxySaving ? t('settings.saving') : t('settings.forwardProxy.save')}
+            </Button>
+            <span className="text-xs text-base-content/70">{t('settings.forwardProxy.supportHint')}</span>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72">
+            <table className="w-full min-w-[72rem] table-fixed text-xs">
+              <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
+                <tr>
+                  <th className={cn('w-56', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.proxy')}</th>
+                  <th className={pricingTableHeaderCellClass}>{t('settings.forwardProxy.table.oneMinute')}</th>
+                  <th className={pricingTableHeaderCellClass}>{t('settings.forwardProxy.table.fifteenMinutes')}</th>
+                  <th className={pricingTableHeaderCellClass}>{t('settings.forwardProxy.table.oneHour')}</th>
+                  <th className={pricingTableHeaderCellClass}>{t('settings.forwardProxy.table.oneDay')}</th>
+                  <th className={pricingTableHeaderCellClass}>{t('settings.forwardProxy.table.sevenDays')}</th>
+                  <th className={cn('w-28 text-right', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.weight')}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-base-300/65">
+                {currentForwardProxy.nodes.map((node) => {
+                  const windows = [
+                    node.stats.oneMinute,
+                    node.stats.fifteenMinutes,
+                    node.stats.oneHour,
+                    node.stats.oneDay,
+                    node.stats.sevenDays,
+                  ]
+                  return (
+                    <tr key={node.key} className={cn('transition-colors hover:bg-primary/6', node.penalized ? 'bg-warning/8' : '')}>
+                      <td className={pricingTableBodyCellClass}>
+                        <div className="space-y-0.5">
+                          <div className="font-medium text-sm">{node.displayName}</div>
+                          <div className="font-mono text-[11px] text-base-content/65">
+                            {node.endpointUrl ?? t('settings.forwardProxy.directLabel')}
+                          </div>
+                        </div>
+                      </td>
+                      {windows.map((window, index) => (
+                        <td key={`${node.key}-${index}`} className={pricingTableBodyCellClass}>
+                          <div className="space-y-0.5 text-[11px] leading-tight">
+                            <div>{t('settings.forwardProxy.table.successRate', { value: formatSuccessRate(window.successRate) })}</div>
+                            <div className="text-base-content/65">
+                              {t('settings.forwardProxy.table.avgLatency', { value: formatLatency(window.avgLatencyMs) })}
+                            </div>
+                          </div>
+                        </td>
+                      ))}
+                      <td className={cn(pricingTableBodyCellClass, 'text-right font-mono text-sm')}>
+                        {node.weight.toFixed(2)}
+                      </td>
+                    </tr>
+                  )
+                })}
+                {currentForwardProxy.nodes.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className={cn(pricingTableBodyCellClass, 'py-6 text-center text-base-content/60')}>
+                      {t('settings.forwardProxy.table.empty')}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
 
       {error && <Alert variant="error" className="text-sm">{t('settings.loadError', { error })}</Alert>}
     </section>

@@ -24,6 +24,7 @@ use axum::{
     response::{IntoResponse, Json, Response, Sse},
     routing::{any, get, put},
 };
+use base64::Engine;
 use chrono::{
     DateTime, Datelike, Duration as ChronoDuration, LocalResult, NaiveDate, NaiveDateTime,
     SecondsFormat, TimeZone, Utc,
@@ -35,7 +36,7 @@ use flate2::read::GzDecoder;
 use futures_util::{StreamExt, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::{Client, ClientBuilder, Url, header};
+use reqwest::{Client, ClientBuilder, Proxy, Url, header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{
@@ -97,6 +98,27 @@ const FAILURE_CLASS_CLIENT: &str = "client_failure";
 const FAILURE_CLASS_ABORT: &str = "client_abort";
 const PROXY_MODEL_SETTINGS_SINGLETON_ID: i64 = 1;
 const PRICING_SETTINGS_SINGLETON_ID: i64 = 1;
+const FORWARD_PROXY_SETTINGS_SINGLETON_ID: i64 = 1;
+const DEFAULT_FORWARD_PROXY_INSERT_DIRECT: bool = true;
+const DEFAULT_FORWARD_PROXY_SUBSCRIPTION_INTERVAL_SECS: u64 = 60 * 60;
+const FORWARD_PROXY_WEIGHT_RECOVERY: f64 = 0.6;
+const FORWARD_PROXY_WEIGHT_SUCCESS_BONUS: f64 = 0.45;
+const FORWARD_PROXY_WEIGHT_FAILURE_PENALTY_BASE: f64 = 0.9;
+const FORWARD_PROXY_WEIGHT_FAILURE_PENALTY_STEP: f64 = 0.35;
+const FORWARD_PROXY_WEIGHT_MIN: f64 = -12.0;
+const FORWARD_PROXY_WEIGHT_MAX: f64 = 12.0;
+const FORWARD_PROXY_PROBE_EVERY_REQUESTS: u64 = 100;
+const FORWARD_PROXY_PROBE_INTERVAL_SECS: i64 = 30 * 60;
+const FORWARD_PROXY_PROBE_RECOVERY_WEIGHT: f64 = 0.4;
+const FORWARD_PROXY_DIRECT_KEY: &str = "__direct__";
+const FORWARD_PROXY_DIRECT_LABEL: &str = "Direct";
+const FORWARD_PROXY_SOURCE_MANUAL: &str = "manual";
+const FORWARD_PROXY_SOURCE_SUBSCRIPTION: &str = "subscription";
+const FORWARD_PROXY_SOURCE_DIRECT: &str = "direct";
+const FORWARD_PROXY_FAILURE_SEND_ERROR: &str = "send_error";
+const FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT: &str = "handshake_timeout";
+const FORWARD_PROXY_FAILURE_STREAM_ERROR: &str = "stream_error";
+const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
 const DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-02-23";
 const DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE: bool = true;
 const DEFAULT_XY_LEGACY_POLL_ENABLED: bool = false;
@@ -219,6 +241,12 @@ async fn main() -> Result<()> {
         "invocation failure classification startup backfill finished"
     );
     let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
+    let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
+    let forward_proxy_runtime = load_forward_proxy_runtime_states(&pool).await?;
+    let forward_proxy = Arc::new(Mutex::new(ForwardProxyManager::new(
+        forward_proxy_settings,
+        forward_proxy_runtime,
+    )));
     fs::create_dir_all(&config.proxy_raw_dir).with_context(|| {
         format!(
             "failed to create proxy raw payload directory: {}",
@@ -241,6 +269,8 @@ async fn main() -> Result<()> {
         semaphore: semaphore.clone(),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+        forward_proxy,
+        forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog,
     });
@@ -262,6 +292,7 @@ async fn main() -> Result<()> {
         info!("legacy poller is disabled; scheduler will not start");
         None
     };
+    let forward_proxy_handle = spawn_forward_proxy_maintenance(state.clone(), cancel.clone());
     let server_handle = spawn_http_server(state.clone(), cancel.clone()).await?;
 
     // Wait until a shutdown signal is received, then wait for tasks to finish
@@ -274,6 +305,12 @@ async fn main() -> Result<()> {
         && let Err(err) = poller_handle.await
     {
         error!(?err, "poller task terminated unexpectedly");
+    }
+    if let Err(err) = forward_proxy_handle.await {
+        error!(
+            ?err,
+            "forward proxy maintenance task terminated unexpectedly"
+        );
     }
 
     Ok(())
@@ -323,6 +360,33 @@ fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandl
                         Err(err) => {
                             warn!(?err, "scheduled poll failed");
                         }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn spawn_forward_proxy_maintenance(
+    state: Arc<AppState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), true).await {
+            warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
+        }
+
+        let mut ticker = interval(Duration::from_secs(60));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    info!("forward proxy maintenance received shutdown");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false).await {
+                        warn!(error = %err, "failed to refresh forward proxy subscriptions");
                     }
                 }
             }
@@ -408,6 +472,10 @@ async fn spawn_http_server(
             any(removed_proxy_model_settings_endpoint),
         )
         .route("/api/settings/proxy", put(put_proxy_settings))
+        .route(
+            "/api/settings/forward-proxy",
+            put(put_forward_proxy_settings),
+        )
         .route("/api/settings/pricing", put(put_pricing_settings))
         .route("/api/invocations", get(list_invocations))
         .route("/api/stats", get(fetch_stats))
@@ -1300,6 +1368,95 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure pricing_settings_models table existence")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS forward_proxy_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            proxy_urls_json TEXT NOT NULL DEFAULT '[]',
+            subscription_urls_json TEXT NOT NULL DEFAULT '[]',
+            subscription_update_interval_secs INTEGER NOT NULL DEFAULT 3600,
+            insert_direct INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure forward_proxy_settings table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS forward_proxy_runtime (
+            proxy_key TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            source TEXT NOT NULL,
+            endpoint_url TEXT,
+            weight REAL NOT NULL,
+            success_ema REAL NOT NULL,
+            latency_ema_ms REAL,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            is_penalized INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure forward_proxy_runtime table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS forward_proxy_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            proxy_key TEXT NOT NULL,
+            occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+            is_success INTEGER NOT NULL,
+            latency_ms REAL,
+            failure_kind TEXT,
+            is_probe INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure forward_proxy_attempts table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_forward_proxy_attempts_proxy_time
+        ON forward_proxy_attempts (proxy_key, occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_forward_proxy_attempts_proxy_time")?;
+
+    let default_proxy_urls_json =
+        serde_json::to_string(&Vec::<String>::new()).context("serialize default proxy urls")?;
+    let default_subscription_urls_json = serde_json::to_string(&Vec::<String>::new())
+        .context("serialize default proxy subscription urls")?;
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO forward_proxy_settings (
+            id,
+            proxy_urls_json,
+            subscription_urls_json,
+            subscription_update_interval_secs,
+            insert_direct
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
+    .bind(default_proxy_urls_json)
+    .bind(default_subscription_urls_json)
+    .bind(DEFAULT_FORWARD_PROXY_SUBSCRIPTION_INTERVAL_SECS as i64)
+    .bind(DEFAULT_FORWARD_PROXY_INSERT_DIRECT as i64)
+    .execute(pool)
+    .await
+    .context("failed to ensure default forward_proxy_settings row")?;
+
     seed_default_pricing_catalog(pool).await?;
 
     Ok(())
@@ -1350,6 +1507,298 @@ async fn save_proxy_model_settings(
     .context("failed to persist proxy_model_settings row")?;
 
     Ok(())
+}
+
+#[derive(Debug, FromRow)]
+struct ForwardProxyAttemptStatsRow {
+    proxy_key: String,
+    attempts: i64,
+    success_count: i64,
+    avg_latency_ms: Option<f64>,
+}
+
+async fn load_forward_proxy_settings(pool: &Pool<Sqlite>) -> Result<ForwardProxySettings> {
+    let row = sqlx::query_as::<_, ForwardProxySettingsRow>(
+        r#"
+        SELECT
+            proxy_urls_json,
+            subscription_urls_json,
+            subscription_update_interval_secs,
+            insert_direct
+        FROM forward_proxy_settings
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
+    .fetch_optional(pool)
+    .await
+    .context("failed to load forward_proxy_settings row")?;
+
+    Ok(row
+        .map(Into::into)
+        .unwrap_or_else(ForwardProxySettings::default))
+}
+
+async fn save_forward_proxy_settings(
+    pool: &Pool<Sqlite>,
+    settings: ForwardProxySettings,
+) -> Result<()> {
+    let normalized = settings.normalized();
+    let proxy_urls_json = serde_json::to_string(&normalized.proxy_urls)
+        .context("failed to serialize forward proxy urls")?;
+    let subscription_urls_json = serde_json::to_string(&normalized.subscription_urls)
+        .context("failed to serialize forward proxy subscription urls")?;
+
+    sqlx::query(
+        r#"
+        UPDATE forward_proxy_settings
+        SET
+            proxy_urls_json = ?1,
+            subscription_urls_json = ?2,
+            subscription_update_interval_secs = ?3,
+            insert_direct = ?4,
+            updated_at = datetime('now')
+        WHERE id = ?5
+        "#,
+    )
+    .bind(proxy_urls_json)
+    .bind(subscription_urls_json)
+    .bind(normalized.subscription_update_interval_secs as i64)
+    .bind(normalized.insert_direct as i64)
+    .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
+    .execute(pool)
+    .await
+    .context("failed to persist forward_proxy_settings row")?;
+
+    Ok(())
+}
+
+async fn load_forward_proxy_runtime_states(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<ForwardProxyRuntimeState>> {
+    let rows = sqlx::query_as::<_, ForwardProxyRuntimeRow>(
+        r#"
+        SELECT
+            proxy_key,
+            display_name,
+            source,
+            endpoint_url,
+            weight,
+            success_ema,
+            latency_ema_ms,
+            consecutive_failures
+        FROM forward_proxy_runtime
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to load forward_proxy_runtime rows")?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+async fn persist_forward_proxy_runtime_state(
+    pool: &Pool<Sqlite>,
+    state: &ForwardProxyRuntimeState,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_runtime (
+            proxy_key,
+            display_name,
+            source,
+            endpoint_url,
+            weight,
+            success_ema,
+            latency_ema_ms,
+            consecutive_failures,
+            is_penalized,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+        ON CONFLICT(proxy_key) DO UPDATE SET
+            display_name = excluded.display_name,
+            source = excluded.source,
+            endpoint_url = excluded.endpoint_url,
+            weight = excluded.weight,
+            success_ema = excluded.success_ema,
+            latency_ema_ms = excluded.latency_ema_ms,
+            consecutive_failures = excluded.consecutive_failures,
+            is_penalized = excluded.is_penalized,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(&state.proxy_key)
+    .bind(&state.display_name)
+    .bind(&state.source)
+    .bind(&state.endpoint_url)
+    .bind(state.weight)
+    .bind(state.success_ema)
+    .bind(state.latency_ema_ms)
+    .bind(i64::from(state.consecutive_failures))
+    .bind(state.is_penalized() as i64)
+    .execute(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to persist forward_proxy_runtime row {}",
+            state.proxy_key
+        )
+    })?;
+    Ok(())
+}
+
+async fn delete_forward_proxy_runtime_rows_not_in(
+    pool: &Pool<Sqlite>,
+    active_keys: &[String],
+) -> Result<()> {
+    if active_keys.is_empty() {
+        sqlx::query("DELETE FROM forward_proxy_runtime")
+            .execute(pool)
+            .await
+            .context("failed to clear forward_proxy_runtime rows")?;
+        return Ok(());
+    }
+    let mut builder =
+        QueryBuilder::<Sqlite>::new("DELETE FROM forward_proxy_runtime WHERE proxy_key NOT IN (");
+    {
+        let mut separated = builder.separated(", ");
+        for key in active_keys {
+            separated.push_bind(key);
+        }
+    }
+    builder.push(")");
+    builder
+        .build()
+        .execute(pool)
+        .await
+        .context("failed to prune forward_proxy_runtime rows")?;
+    Ok(())
+}
+
+async fn insert_forward_proxy_attempt(
+    pool: &Pool<Sqlite>,
+    proxy_key: &str,
+    success: bool,
+    latency_ms: Option<f64>,
+    failure_kind: Option<&str>,
+    is_probe: bool,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_attempts (
+            proxy_key,
+            is_success,
+            latency_ms,
+            failure_kind,
+            is_probe
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind(proxy_key)
+    .bind(success as i64)
+    .bind(latency_ms)
+    .bind(failure_kind)
+    .bind(is_probe as i64)
+    .execute(pool)
+    .await
+    .with_context(|| format!("failed to insert forward proxy attempt for {proxy_key}"))?;
+    Ok(())
+}
+
+async fn query_forward_proxy_window_stats(
+    pool: &Pool<Sqlite>,
+    window: &str,
+) -> Result<HashMap<String, ForwardProxyAttemptWindowStats>> {
+    let rows = sqlx::query_as::<_, ForwardProxyAttemptStatsRow>(
+        r#"
+        SELECT
+            proxy_key,
+            COUNT(*) AS attempts,
+            SUM(CASE WHEN is_success != 0 THEN 1 ELSE 0 END) AS success_count,
+            AVG(CASE WHEN is_success != 0 THEN latency_ms END) AS avg_latency_ms
+        FROM forward_proxy_attempts
+        WHERE occurred_at >= datetime('now', ?1)
+        GROUP BY proxy_key
+        "#,
+    )
+    .bind(window)
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("failed to query forward proxy attempt stats for {window}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.proxy_key,
+                ForwardProxyAttemptWindowStats {
+                    attempts: row.attempts,
+                    success_count: row.success_count,
+                    avg_latency_ms: row.avg_latency_ms,
+                },
+            )
+        })
+        .collect())
+}
+
+async fn build_forward_proxy_settings_response(
+    state: &AppState,
+) -> Result<ForwardProxySettingsResponse> {
+    let (settings, runtime_rows) = {
+        let manager = state.forward_proxy.lock().await;
+        (manager.settings.clone(), manager.snapshot_runtime())
+    };
+
+    let windows = [
+        ("-1 minute", 0usize),
+        ("-15 minutes", 1usize),
+        ("-1 hour", 2usize),
+        ("-1 day", 3usize),
+        ("-7 days", 4usize),
+    ];
+    let mut window_maps: Vec<HashMap<String, ForwardProxyAttemptWindowStats>> = Vec::new();
+    for (window, _) in &windows {
+        window_maps.push(query_forward_proxy_window_stats(&state.pool, window).await?);
+    }
+
+    let mut nodes = runtime_rows
+        .into_iter()
+        .map(|runtime| {
+            let stats_for = |index: usize| {
+                window_maps[index]
+                    .get(&runtime.proxy_key)
+                    .cloned()
+                    .map(ForwardProxyWindowStatsResponse::from)
+                    .unwrap_or_default()
+            };
+            ForwardProxyNodeResponse {
+                key: runtime.proxy_key.clone(),
+                source: runtime.source.clone(),
+                display_name: runtime.display_name.clone(),
+                endpoint_url: runtime.endpoint_url.clone(),
+                weight: runtime.weight,
+                penalized: runtime.is_penalized(),
+                stats: ForwardProxyStatsResponse {
+                    one_minute: stats_for(0),
+                    fifteen_minutes: stats_for(1),
+                    one_hour: stats_for(2),
+                    one_day: stats_for(3),
+                    seven_days: stats_for(4),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
+
+    Ok(ForwardProxySettingsResponse {
+        proxy_urls: settings.proxy_urls,
+        subscription_urls: settings.subscription_urls,
+        subscription_update_interval_secs: settings.subscription_update_interval_secs,
+        insert_direct: settings.insert_direct,
+        nodes,
+    })
 }
 
 #[derive(Debug, FromRow)]
@@ -3363,7 +3812,15 @@ async fn proxy_openai_v1_inner(
             let mut payload = build_preset_models_payload(&settings.enabled_preset_models);
             let mut merge_status: Option<&'static str> = None;
             if settings.merge_upstream_enabled {
-                match fetch_upstream_models_payload(&state, target_url.clone(), &headers).await {
+                let selected_proxy = select_forward_proxy_for_request(state.as_ref()).await;
+                match fetch_upstream_models_payload(
+                    state.clone(),
+                    selected_proxy,
+                    target_url.clone(),
+                    &headers,
+                )
+                .await
+                {
                     Ok(upstream_payload) => {
                         match merge_models_payload_with_upstream(
                             &upstream_payload,
@@ -3405,6 +3862,8 @@ async fn proxy_openai_v1_inner(
         }
     }
 
+    let selected_proxy = select_forward_proxy_for_request(state.as_ref()).await;
+
     if let Some(target) = capture_target_for_request(original_uri.path(), &method) {
         return proxy_openai_v1_capture_target(
             state,
@@ -3414,6 +3873,7 @@ async fn proxy_openai_v1_inner(
             target,
             target_url,
             peer_ip,
+            selected_proxy,
         )
         .await;
     }
@@ -3449,9 +3909,16 @@ async fn proxy_openai_v1_inner(
         }
     });
 
-    let mut upstream_request = state
+    let proxy_client = state
         .http_clients
-        .proxy
+        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
+        .map_err(|err| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to initialize forward proxy client: {err}"),
+            )
+        })?;
+    let mut upstream_request = proxy_client
         .request(method, target_url)
         .body(reqwest::Body::wrap_stream(request_body_stream));
 
@@ -3476,34 +3943,69 @@ async fn proxy_openai_v1_inner(
         }
     };
 
+    let connect_started = Instant::now();
     let handshake_timeout = state.config.openai_proxy_handshake_timeout;
-    let upstream_response = timeout(handshake_timeout, upstream_request.send())
-        .await
-        .map_err(|_| {
-            (
+    let upstream_response = match timeout(handshake_timeout, upstream_request.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => {
+            let mapped = map_upstream_error(err);
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy.clone(),
+                false,
+                Some(elapsed_ms(connect_started)),
+                Some(FORWARD_PROXY_FAILURE_SEND_ERROR),
+                false,
+            )
+            .await;
+            return Err(mapped);
+        }
+        Err(_) => {
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy.clone(),
+                false,
+                Some(elapsed_ms(connect_started)),
+                Some(FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT),
+                false,
+            )
+            .await;
+            return Err((
                 StatusCode::BAD_GATEWAY,
                 format!(
                     "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
                     handshake_timeout.as_millis()
                 ),
-            )
-        })?
-        .map_err(map_upstream_error)?;
+            ));
+        }
+    };
 
-    let rewritten_location = normalize_proxy_location_header(
+    let rewritten_location = match normalize_proxy_location_header(
         upstream_response.status(),
         upstream_response.headers(),
         &state.config.openai_upstream_base_url,
-    )
-    .map_err(|err| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("failed to process upstream redirect: {err}"),
-        )
-    })?;
+    ) {
+        Ok(location) => location,
+        Err(err) => {
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy.clone(),
+                false,
+                Some(elapsed_ms(connect_started)),
+                Some(FORWARD_PROXY_FAILURE_SEND_ERROR),
+                false,
+            )
+            .await;
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!("failed to process upstream redirect: {err}"),
+            ));
+        }
+    };
 
+    let upstream_status = upstream_response.status();
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
-    let mut response_builder = Response::builder().status(upstream_response.status());
+    let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
         if should_forward_proxy_header(name, &upstream_connection_scoped) {
             if name == header::LOCATION {
@@ -3529,6 +4031,15 @@ async fn proxy_openai_v1_inner(
             Some(chunk)
         }
         Some(Err(err)) => {
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy.clone(),
+                false,
+                Some(elapsed_ms(connect_started)),
+                Some(FORWARD_PROXY_FAILURE_STREAM_ERROR),
+                false,
+            )
+            .await;
             warn!(
                 proxy_request_id,
                 error = %err,
@@ -3540,6 +4051,20 @@ async fn proxy_openai_v1_inner(
             ));
         }
         None => {
+            let success = !upstream_status.is_server_error();
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy.clone(),
+                success,
+                Some(elapsed_ms(connect_started)),
+                if success {
+                    None
+                } else {
+                    Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+                },
+                false,
+            )
+            .await;
             info!(
                 proxy_request_id,
                 ttfb_ms = stream_ttfb_started.elapsed().as_millis(),
@@ -3555,10 +4080,15 @@ async fn proxy_openai_v1_inner(
     };
 
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let state_for_record = state.clone();
+    let selected_proxy_for_record = selected_proxy.clone();
+    let upstream_status_for_record = upstream_status;
     tokio::spawn(async move {
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
         let stream_started_at = Instant::now();
+        let mut stream_error_happened = false;
+        let mut downstream_closed = false;
 
         if let Some(chunk) = first_chunk {
             forwarded_chunks = forwarded_chunks.saturating_add(1);
@@ -3571,11 +4101,17 @@ async fn proxy_openai_v1_inner(
                     elapsed_ms = stream_started_at.elapsed().as_millis(),
                     "openai proxy downstream closed before first streamed chunk"
                 );
-                return;
+                downstream_closed = true;
             }
         }
 
-        while let Some(next_chunk) = upstream_stream.next().await {
+        loop {
+            if downstream_closed {
+                break;
+            }
+            let Some(next_chunk) = upstream_stream.next().await else {
+                break;
+            };
             match next_chunk {
                 Ok(chunk) => {
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
@@ -3588,10 +4124,11 @@ async fn proxy_openai_v1_inner(
                             elapsed_ms = stream_started_at.elapsed().as_millis(),
                             "openai proxy downstream closed while streaming upstream response"
                         );
-                        return;
+                        break;
                     }
                 }
                 Err(err) => {
+                    stream_error_happened = true;
                     warn!(
                         proxy_request_id,
                         error = %err,
@@ -3605,10 +4142,27 @@ async fn proxy_openai_v1_inner(
                             "upstream stream error: {err}"
                         ))))
                         .await;
-                    return;
+                    break;
                 }
             }
         }
+
+        let success = !stream_error_happened && !upstream_status_for_record.is_server_error();
+        record_forward_proxy_attempt(
+            state_for_record,
+            selected_proxy_for_record,
+            success,
+            Some(elapsed_ms(connect_started)),
+            if success {
+                None
+            } else if stream_error_happened {
+                Some(FORWARD_PROXY_FAILURE_STREAM_ERROR)
+            } else {
+                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+            },
+            false,
+        )
+        .await;
 
         info!(
             proxy_request_id,
@@ -3640,6 +4194,7 @@ fn capture_target_for_request(path: &str, method: &Method) -> Option<ProxyCaptur
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn proxy_openai_v1_capture_target(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -3648,6 +4203,7 @@ async fn proxy_openai_v1_capture_target(
     capture_target: ProxyCaptureTarget,
     target_url: Url,
     peer_ip: Option<IpAddr>,
+    selected_proxy: SelectedForwardProxy,
 ) -> Result<Response, (StatusCode, String)> {
     let capture_started = Instant::now();
     let occurred_at_utc = Utc::now();
@@ -3758,9 +4314,16 @@ async fn proxy_openai_v1_capture_target(
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let req_raw = store_raw_payload_file(&state.config, &invoke_id, "request", &upstream_body);
 
-    let mut upstream_request = state
+    let proxy_client = state
         .http_clients
-        .proxy
+        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
+        .map_err(|err| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to initialize forward proxy client: {err}"),
+            )
+        })?;
+    let mut upstream_request = proxy_client
         .request(Method::POST, target_url)
         .body(upstream_body.clone());
     let request_connection_scoped = connection_scoped_header_names(&headers);
@@ -3796,6 +4359,15 @@ async fn proxy_openai_v1_capture_target(
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
             let (status, message, failure_kind) = map_upstream_error(err);
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy.clone(),
+                false,
+                Some(elapsed_ms(connect_started)),
+                Some(FORWARD_PROXY_FAILURE_SEND_ERROR),
+                false,
+            )
+            .await;
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
@@ -3858,6 +4430,15 @@ async fn proxy_openai_v1_capture_target(
                 handshake_timeout.as_millis()
             );
             let failure_kind = PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT;
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy.clone(),
+                false,
+                Some(elapsed_ms(connect_started)),
+                Some(FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT),
+                false,
+            )
+            .await;
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
@@ -3922,6 +4503,15 @@ async fn proxy_openai_v1_capture_target(
         Ok(location) => location,
         Err(err) => {
             let message = format!("failed to process upstream redirect: {err}");
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy.clone(),
+                false,
+                Some(t_upstream_connect_ms),
+                Some(FORWARD_PROXY_FAILURE_SEND_ERROR),
+                false,
+            )
+            .await;
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
@@ -4003,6 +4593,7 @@ async fn proxy_openai_v1_capture_target(
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let requester_ip_for_task = requester_ip.clone();
     let prompt_cache_key_for_task = prompt_cache_key.clone();
+    let selected_proxy_for_task = selected_proxy.clone();
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
 
     tokio::spawn(async move {
@@ -4095,6 +4686,7 @@ async fn proxy_openai_v1_capture_target(
         } else {
             None
         };
+        let had_stream_error = stream_error.is_some();
 
         let error_message = if let Some(err) = stream_error {
             Some(format!("[{}] {err}", PROXY_FAILURE_UPSTREAM_STREAM_ERROR))
@@ -4113,6 +4705,22 @@ async fn proxy_openai_v1_capture_target(
         } else {
             format!("http_{}", upstream_status.as_u16())
         };
+        let forward_proxy_success = !had_stream_error && !upstream_status.is_server_error();
+        record_forward_proxy_attempt(
+            state_for_task.clone(),
+            selected_proxy_for_task,
+            forward_proxy_success,
+            Some(t_upstream_connect_ms + t_upstream_ttfb_ms + t_upstream_stream_ms),
+            if forward_proxy_success {
+                None
+            } else if had_stream_error {
+                Some(FORWARD_PROXY_FAILURE_STREAM_ERROR)
+            } else {
+                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+            },
+            false,
+        )
+        .await;
         let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
             &state_for_task.pricing_catalog,
             response_info.model.as_deref(),
@@ -5887,8 +6495,10 @@ async fn get_settings(
 ) -> Result<Json<SettingsResponse>, ApiError> {
     let proxy = state.proxy_model_settings.read().await.clone();
     let pricing = state.pricing_catalog.read().await.clone();
+    let forward_proxy = build_forward_proxy_settings_response(state.as_ref()).await?;
     Ok(Json(SettingsResponse {
         proxy: proxy.into(),
+        forward_proxy,
         pricing: PricingSettingsResponse::from_catalog(&pricing),
     }))
 }
@@ -5925,6 +6535,38 @@ async fn put_proxy_settings(
     let mut guard = state.proxy_model_settings.write().await;
     *guard = next.clone();
     Ok(Json(next.into()))
+}
+
+async fn put_forward_proxy_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ForwardProxySettingsUpdateRequest>,
+) -> Result<Json<ForwardProxySettingsResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin settings writes are forbidden".to_string(),
+        ));
+    }
+
+    let next: ForwardProxySettings = payload.into();
+    let _update_guard = state.forward_proxy_settings_update_lock.lock().await;
+    save_forward_proxy_settings(&state.pool, next.clone())
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_settings(next);
+    }
+    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), true).await {
+        warn!(error = %err, "failed to refresh forward proxy subscriptions after settings update");
+    }
+
+    let response = build_forward_proxy_settings_response(state.as_ref())
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    Ok(Json(response))
 }
 
 async fn put_pricing_settings(
@@ -6334,12 +6976,257 @@ fn merge_models_payload_with_upstream(
     }))
 }
 
-async fn fetch_upstream_models_payload(
+async fn refresh_forward_proxy_subscriptions(state: Arc<AppState>, force: bool) -> Result<()> {
+    let (subscription_urls, interval_secs, last_refresh_at) = {
+        let manager = state.forward_proxy.lock().await;
+        (
+            manager.settings.subscription_urls.clone(),
+            manager.settings.subscription_update_interval_secs,
+            manager.last_subscription_refresh_at,
+        )
+    };
+
+    if !force
+        && let Some(last_refresh_at) = last_refresh_at
+        && (Utc::now() - last_refresh_at).num_seconds()
+            < i64::try_from(interval_secs).unwrap_or(i64::MAX)
+    {
+        return Ok(());
+    }
+
+    let mut subscription_proxy_urls = Vec::new();
+    let mut fetched_any_subscription = false;
+    for subscription_url in &subscription_urls {
+        match fetch_subscription_proxy_urls(
+            &state.http_clients.shared,
+            subscription_url,
+            state.config.request_timeout,
+        )
+        .await
+        {
+            Ok(urls) => {
+                fetched_any_subscription = true;
+                subscription_proxy_urls.extend(urls);
+            }
+            Err(err) => {
+                warn!(
+                    subscription_url,
+                    error = %err,
+                    "failed to fetch forward proxy subscription"
+                );
+            }
+        }
+    }
+
+    if !subscription_urls.is_empty() && !fetched_any_subscription {
+        bail!("all forward proxy subscriptions failed to refresh");
+    }
+
+    let runtime_snapshot = {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_subscription_urls(subscription_proxy_urls);
+        manager.snapshot_runtime()
+    };
+    persist_forward_proxy_runtime_snapshot(state.as_ref(), runtime_snapshot).await
+}
+
+async fn persist_forward_proxy_runtime_snapshot(
     state: &AppState,
+    runtime_snapshot: Vec<ForwardProxyRuntimeState>,
+) -> Result<()> {
+    let active_keys = runtime_snapshot
+        .iter()
+        .map(|entry| entry.proxy_key.clone())
+        .collect::<Vec<_>>();
+    delete_forward_proxy_runtime_rows_not_in(&state.pool, &active_keys).await?;
+    for runtime in &runtime_snapshot {
+        persist_forward_proxy_runtime_state(&state.pool, runtime).await?;
+    }
+    Ok(())
+}
+
+async fn fetch_subscription_proxy_urls(
+    client: &Client,
+    subscription_url: &str,
+    request_timeout: Duration,
+) -> Result<Vec<String>> {
+    let response = timeout(request_timeout, client.get(subscription_url).send())
+        .await
+        .map_err(|_| anyhow!("subscription request timed out"))?
+        .with_context(|| format!("failed to request subscription url: {subscription_url}"))?;
+    if !response.status().is_success() {
+        bail!(
+            "subscription url returned status {}: {subscription_url}",
+            response.status()
+        );
+    }
+    let body = timeout(request_timeout, response.text())
+        .await
+        .map_err(|_| anyhow!("subscription body read timed out"))?
+        .context("failed to read subscription body")?;
+    Ok(parse_proxy_urls_from_subscription_body(&body))
+}
+
+fn parse_proxy_urls_from_subscription_body(raw: &str) -> Vec<String> {
+    let decoded = decode_subscription_payload(raw);
+    normalize_proxy_url_entries(vec![decoded])
+}
+
+fn decode_subscription_payload(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.contains("://")
+        || trimmed
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .any(|line| line.contains("://"))
+    {
+        return trimmed.to_string();
+    }
+
+    let compact = trimmed
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect::<String>();
+    for engine in [
+        base64::engine::general_purpose::STANDARD,
+        base64::engine::general_purpose::STANDARD_NO_PAD,
+        base64::engine::general_purpose::URL_SAFE,
+        base64::engine::general_purpose::URL_SAFE_NO_PAD,
+    ] {
+        if let Ok(decoded) = engine.decode(compact.as_bytes())
+            && let Ok(text) = String::from_utf8(decoded)
+            && text.contains("://")
+        {
+            return text;
+        }
+    }
+    trimmed.to_string()
+}
+
+async fn select_forward_proxy_for_request(state: &AppState) -> SelectedForwardProxy {
+    let mut manager = state.forward_proxy.lock().await;
+    manager.select_proxy()
+}
+
+async fn record_forward_proxy_attempt(
+    state: Arc<AppState>,
+    selected_proxy: SelectedForwardProxy,
+    success: bool,
+    latency_ms: Option<f64>,
+    failure_kind: Option<&str>,
+    is_probe: bool,
+) {
+    let (updated_runtime, probe_candidate) = {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.record_attempt(&selected_proxy.key, success, latency_ms, is_probe);
+        let updated_runtime = manager.runtime.get(&selected_proxy.key).cloned();
+        let probe_candidate = if is_probe {
+            None
+        } else {
+            manager.mark_probe_started()
+        };
+        (updated_runtime, probe_candidate)
+    };
+
+    if let Err(err) = insert_forward_proxy_attempt(
+        &state.pool,
+        &selected_proxy.key,
+        success,
+        latency_ms,
+        failure_kind,
+        is_probe,
+    )
+    .await
+    {
+        warn!(
+            proxy_key = selected_proxy.key,
+            error = %err,
+            "failed to persist forward proxy attempt"
+        );
+    }
+
+    if let Some(runtime) = updated_runtime
+        && let Err(err) = persist_forward_proxy_runtime_state(&state.pool, &runtime).await
+    {
+        warn!(
+            proxy_key = runtime.proxy_key,
+            error = %err,
+            "failed to persist forward proxy runtime state"
+        );
+    }
+
+    if let Some(candidate) = probe_candidate {
+        spawn_penalized_forward_proxy_probe(state, candidate);
+    }
+}
+
+fn spawn_penalized_forward_proxy_probe(state: Arc<AppState>, candidate: SelectedForwardProxy) {
+    tokio::spawn(async move {
+        let probe_result = async {
+            let target = state
+                .config
+                .openai_upstream_base_url
+                .join("v1/models")
+                .context("failed to build probe target url")?;
+            let client = state
+                .http_clients
+                .client_for_forward_proxy(candidate.endpoint_url.as_ref())?;
+            let started = Instant::now();
+            let response = timeout(
+                state.config.openai_proxy_handshake_timeout,
+                client.get(target).send(),
+            )
+            .await
+            .map_err(|_| anyhow!("probe timed out"))?
+            .context("probe request failed")?;
+            let success = response.status().is_success();
+            let latency_ms = Some(elapsed_ms(started));
+            record_forward_proxy_attempt(
+                state.clone(),
+                candidate.clone(),
+                success,
+                latency_ms,
+                if success {
+                    None
+                } else {
+                    Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+                },
+                true,
+            )
+            .await;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        if let Err(err) = probe_result {
+            warn!(
+                proxy_key = candidate.key,
+                proxy_source = candidate.source,
+                proxy_label = candidate.display_name,
+                proxy_url = candidate.endpoint_url_raw.as_deref().unwrap_or("direct"),
+                error = %err,
+                "penalized forward proxy probe failed"
+            );
+        }
+
+        let mut manager = state.forward_proxy.lock().await;
+        manager.mark_probe_finished();
+    });
+}
+
+async fn fetch_upstream_models_payload(
+    state: Arc<AppState>,
+    selected_proxy: SelectedForwardProxy,
     target_url: Url,
     headers: &HeaderMap,
 ) -> Result<Value> {
-    let mut upstream_request = state.http_clients.proxy.request(Method::GET, target_url);
+    let client = state
+        .http_clients
+        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())?;
+    let mut upstream_request = client.request(Method::GET, target_url);
     let request_connection_scoped = connection_scoped_header_names(headers);
     for (name, value) in headers {
         if should_forward_proxy_header(name, &request_connection_scoped) {
@@ -6347,6 +7234,7 @@ async fn fetch_upstream_models_payload(
         }
     }
 
+    let started = Instant::now();
     let handshake_timeout = state.config.openai_proxy_handshake_timeout;
     let upstream_response = timeout(handshake_timeout, upstream_request.send())
         .await
@@ -6357,8 +7245,18 @@ async fn fetch_upstream_models_payload(
             )
         })?
         .context("failed to contact upstream")?;
+    let latency_ms = Some(elapsed_ms(started));
 
     if !upstream_response.status().is_success() {
+        record_forward_proxy_attempt(
+            state.clone(),
+            selected_proxy,
+            false,
+            latency_ms,
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX),
+            false,
+        )
+        .await;
         bail!(
             "upstream /v1/models returned status {}",
             upstream_response.status()
@@ -6383,6 +7281,7 @@ async fn fetch_upstream_models_payload(
         .and_then(|value| value.as_array())
         .ok_or_else(|| anyhow!("upstream /v1/models payload missing data array"))?;
 
+    record_forward_proxy_attempt(state, selected_proxy, true, latency_ms, None, false).await;
     Ok(payload)
 }
 
@@ -6478,6 +7377,8 @@ struct AppState {
     semaphore: Arc<Semaphore>,
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,
+    forward_proxy: Arc<Mutex<ForwardProxyManager>>,
+    forward_proxy_settings_update_lock: Arc<Mutex<()>>,
     pricing_settings_update_lock: Arc<Mutex<()>>,
     pricing_catalog: Arc<RwLock<PricingCatalog>>,
 }
@@ -6931,6 +7832,504 @@ impl PricingSettingsResponse {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxySettings {
+    #[serde(default)]
+    proxy_urls: Vec<String>,
+    #[serde(default)]
+    subscription_urls: Vec<String>,
+    #[serde(default = "default_forward_proxy_subscription_interval_secs")]
+    subscription_update_interval_secs: u64,
+    #[serde(default = "default_forward_proxy_insert_direct")]
+    insert_direct: bool,
+}
+
+impl Default for ForwardProxySettings {
+    fn default() -> Self {
+        Self {
+            proxy_urls: Vec::new(),
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: default_forward_proxy_subscription_interval_secs(),
+            insert_direct: default_forward_proxy_insert_direct(),
+        }
+    }
+}
+
+impl ForwardProxySettings {
+    fn normalized(self) -> Self {
+        let mut normalized = Self {
+            proxy_urls: normalize_proxy_url_entries(self.proxy_urls),
+            subscription_urls: normalize_subscription_entries(self.subscription_urls),
+            subscription_update_interval_secs: self
+                .subscription_update_interval_secs
+                .clamp(60, 7 * 24 * 60 * 60),
+            insert_direct: self.insert_direct,
+        };
+        if !normalized.insert_direct
+            && normalize_proxy_endpoints_from_urls(
+                &normalized.proxy_urls,
+                FORWARD_PROXY_SOURCE_MANUAL,
+            )
+            .is_empty()
+        {
+            normalized.insert_direct = true;
+        }
+        normalized
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct ForwardProxySettingsRow {
+    proxy_urls_json: Option<String>,
+    subscription_urls_json: Option<String>,
+    subscription_update_interval_secs: Option<i64>,
+    insert_direct: Option<i64>,
+}
+
+impl From<ForwardProxySettingsRow> for ForwardProxySettings {
+    fn from(value: ForwardProxySettingsRow) -> Self {
+        let proxy_urls = decode_string_vec_json(value.proxy_urls_json.as_deref());
+        let subscription_urls = decode_string_vec_json(value.subscription_urls_json.as_deref());
+        let interval = value
+            .subscription_update_interval_secs
+            .and_then(|v| u64::try_from(v).ok())
+            .unwrap_or_else(default_forward_proxy_subscription_interval_secs);
+        let insert_direct = value
+            .insert_direct
+            .map(|v| v != 0)
+            .unwrap_or_else(default_forward_proxy_insert_direct);
+        ForwardProxySettings {
+            proxy_urls,
+            subscription_urls,
+            subscription_update_interval_secs: interval,
+            insert_direct,
+        }
+        .normalized()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxySettingsUpdateRequest {
+    #[serde(default)]
+    proxy_urls: Vec<String>,
+    #[serde(default)]
+    subscription_urls: Vec<String>,
+    #[serde(default = "default_forward_proxy_subscription_interval_secs")]
+    subscription_update_interval_secs: u64,
+    #[serde(default = "default_forward_proxy_insert_direct")]
+    insert_direct: bool,
+}
+
+impl From<ForwardProxySettingsUpdateRequest> for ForwardProxySettings {
+    fn from(value: ForwardProxySettingsUpdateRequest) -> Self {
+        ForwardProxySettings {
+            proxy_urls: value.proxy_urls,
+            subscription_urls: value.subscription_urls,
+            subscription_update_interval_secs: value.subscription_update_interval_secs,
+            insert_direct: value.insert_direct,
+        }
+        .normalized()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ForwardProxyEndpoint {
+    key: String,
+    source: String,
+    display_name: String,
+    endpoint_url: Option<Url>,
+    raw_url: Option<String>,
+}
+
+impl ForwardProxyEndpoint {
+    fn direct() -> Self {
+        Self {
+            key: FORWARD_PROXY_DIRECT_KEY.to_string(),
+            source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
+            display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
+            endpoint_url: None,
+            raw_url: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ForwardProxyRuntimeState {
+    proxy_key: String,
+    display_name: String,
+    source: String,
+    endpoint_url: Option<String>,
+    weight: f64,
+    success_ema: f64,
+    latency_ema_ms: Option<f64>,
+    consecutive_failures: u32,
+}
+
+impl ForwardProxyRuntimeState {
+    fn default_for_endpoint(endpoint: &ForwardProxyEndpoint) -> Self {
+        Self {
+            proxy_key: endpoint.key.clone(),
+            display_name: endpoint.display_name.clone(),
+            source: endpoint.source.clone(),
+            endpoint_url: endpoint.raw_url.clone(),
+            weight: if endpoint.key == FORWARD_PROXY_DIRECT_KEY {
+                1.0
+            } else {
+                0.8
+            },
+            success_ema: 0.65,
+            latency_ema_ms: None,
+            consecutive_failures: 0,
+        }
+    }
+
+    fn is_penalized(&self) -> bool {
+        self.weight <= 0.0
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct ForwardProxyRuntimeRow {
+    proxy_key: String,
+    display_name: String,
+    source: String,
+    endpoint_url: Option<String>,
+    weight: f64,
+    success_ema: f64,
+    latency_ema_ms: Option<f64>,
+    consecutive_failures: i64,
+}
+
+impl From<ForwardProxyRuntimeRow> for ForwardProxyRuntimeState {
+    fn from(value: ForwardProxyRuntimeRow) -> Self {
+        Self {
+            proxy_key: value.proxy_key,
+            display_name: value.display_name,
+            source: value.source,
+            endpoint_url: value.endpoint_url,
+            weight: value.weight,
+            success_ema: value.success_ema.clamp(0.0, 1.0),
+            latency_ema_ms: value.latency_ema_ms,
+            consecutive_failures: value.consecutive_failures.max(0) as u32,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ForwardProxyManager {
+    settings: ForwardProxySettings,
+    endpoints: Vec<ForwardProxyEndpoint>,
+    runtime: HashMap<String, ForwardProxyRuntimeState>,
+    selection_counter: u64,
+    requests_since_probe: u64,
+    probe_in_flight: bool,
+    last_probe_at: DateTime<Utc>,
+    last_subscription_refresh_at: Option<DateTime<Utc>>,
+}
+
+impl ForwardProxyManager {
+    fn new(settings: ForwardProxySettings, runtime_rows: Vec<ForwardProxyRuntimeState>) -> Self {
+        let runtime = runtime_rows
+            .into_iter()
+            .map(|entry| (entry.proxy_key.clone(), entry))
+            .collect::<HashMap<_, _>>();
+        let mut manager = Self {
+            settings,
+            endpoints: Vec::new(),
+            runtime,
+            selection_counter: 0,
+            requests_since_probe: 0,
+            probe_in_flight: false,
+            last_probe_at: Utc::now() - ChronoDuration::seconds(FORWARD_PROXY_PROBE_INTERVAL_SECS),
+            last_subscription_refresh_at: None,
+        };
+        manager.rebuild_endpoints(Vec::new());
+        manager
+    }
+
+    fn apply_settings(&mut self, settings: ForwardProxySettings) {
+        self.settings = settings;
+        self.rebuild_endpoints(Vec::new());
+    }
+
+    fn apply_subscription_urls(&mut self, proxy_urls: Vec<String>) {
+        let normalized_urls = normalize_proxy_url_entries(proxy_urls);
+        let subscription_endpoints = normalize_proxy_endpoints_from_urls(
+            &normalized_urls,
+            FORWARD_PROXY_SOURCE_SUBSCRIPTION,
+        );
+        self.rebuild_endpoints(subscription_endpoints);
+        self.last_subscription_refresh_at = Some(Utc::now());
+    }
+
+    fn rebuild_endpoints(&mut self, subscription_endpoints: Vec<ForwardProxyEndpoint>) {
+        let mut merged = Vec::new();
+        let manual = normalize_proxy_endpoints_from_urls(
+            &self.settings.proxy_urls,
+            FORWARD_PROXY_SOURCE_MANUAL,
+        );
+        let mut seen = HashSet::new();
+        for endpoint in manual.into_iter().chain(subscription_endpoints.into_iter()) {
+            if seen.insert(endpoint.key.clone()) {
+                merged.push(endpoint);
+            }
+        }
+        if self.settings.insert_direct {
+            merged.push(ForwardProxyEndpoint::direct());
+        }
+        if merged.is_empty() {
+            merged.push(ForwardProxyEndpoint::direct());
+        }
+        self.endpoints = merged;
+
+        for endpoint in &self.endpoints {
+            self.runtime
+                .entry(endpoint.key.clone())
+                .or_insert_with(|| ForwardProxyRuntimeState::default_for_endpoint(endpoint));
+        }
+        self.ensure_non_zero_weight();
+    }
+
+    fn ensure_non_zero_weight(&mut self) {
+        if self
+            .runtime
+            .values()
+            .any(|entry| entry.weight > 0.0 && entry.weight.is_finite())
+        {
+            return;
+        }
+        if let Some(best_key) = self
+            .runtime
+            .values()
+            .max_by(|a, b| a.weight.total_cmp(&b.weight))
+            .map(|entry| entry.proxy_key.clone())
+            && let Some(entry) = self.runtime.get_mut(&best_key)
+        {
+            entry.weight = FORWARD_PROXY_PROBE_RECOVERY_WEIGHT;
+        }
+    }
+
+    fn snapshot_runtime(&self) -> Vec<ForwardProxyRuntimeState> {
+        self.endpoints
+            .iter()
+            .filter_map(|endpoint| self.runtime.get(&endpoint.key).cloned())
+            .collect()
+    }
+
+    fn select_proxy(&mut self) -> SelectedForwardProxy {
+        self.selection_counter = self.selection_counter.wrapping_add(1);
+        self.requests_since_probe = self.requests_since_probe.saturating_add(1);
+        self.ensure_non_zero_weight();
+
+        let mut candidates = Vec::new();
+        let mut total_weight = 0.0f64;
+        for endpoint in &self.endpoints {
+            if let Some(runtime) = self.runtime.get(&endpoint.key)
+                && runtime.weight > 0.0
+                && runtime.weight.is_finite()
+            {
+                total_weight += runtime.weight;
+                candidates.push((endpoint, runtime.weight));
+            }
+        }
+
+        if candidates.is_empty() {
+            let fallback = self
+                .endpoints
+                .first()
+                .cloned()
+                .unwrap_or_else(ForwardProxyEndpoint::direct);
+            return SelectedForwardProxy::from_endpoint(&fallback);
+        }
+
+        let seed = self.selection_counter;
+        let random = deterministic_unit_f64(seed);
+        let mut threshold = random * total_weight;
+        for (endpoint, weight) in candidates {
+            if threshold <= weight {
+                return SelectedForwardProxy::from_endpoint(endpoint);
+            }
+            threshold -= weight;
+        }
+        SelectedForwardProxy::from_endpoint(
+            self.endpoints
+                .last()
+                .expect("forward proxy endpoints should not be empty"),
+        )
+    }
+
+    fn record_attempt(
+        &mut self,
+        proxy_key: &str,
+        success: bool,
+        latency_ms: Option<f64>,
+        is_probe: bool,
+    ) {
+        let Some(runtime) = self.runtime.get_mut(proxy_key) else {
+            return;
+        };
+
+        runtime.success_ema = runtime.success_ema * 0.9 + if success { 0.1 } else { 0.0 };
+        if let Some(latency_ms) = latency_ms.filter(|value| value.is_finite() && *value >= 0.0) {
+            runtime.latency_ema_ms = Some(match runtime.latency_ema_ms {
+                Some(previous) => previous * 0.8 + latency_ms * 0.2,
+                None => latency_ms,
+            });
+        }
+
+        if success {
+            runtime.consecutive_failures = 0;
+            let latency_penalty = runtime
+                .latency_ema_ms
+                .map(|value| (value / 2500.0).min(0.6))
+                .unwrap_or(0.0);
+            runtime.weight += FORWARD_PROXY_WEIGHT_SUCCESS_BONUS - latency_penalty;
+            if is_probe && runtime.weight <= 0.0 {
+                runtime.weight = FORWARD_PROXY_PROBE_RECOVERY_WEIGHT;
+            }
+        } else {
+            runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
+            let failure_penalty = FORWARD_PROXY_WEIGHT_FAILURE_PENALTY_BASE
+                + f64::from(runtime.consecutive_failures.saturating_sub(1))
+                    * FORWARD_PROXY_WEIGHT_FAILURE_PENALTY_STEP;
+            runtime.weight -= failure_penalty;
+        }
+
+        runtime.weight = runtime
+            .weight
+            .clamp(FORWARD_PROXY_WEIGHT_MIN, FORWARD_PROXY_WEIGHT_MAX);
+
+        if success && runtime.weight < FORWARD_PROXY_WEIGHT_RECOVERY {
+            runtime.weight = runtime.weight.max(FORWARD_PROXY_WEIGHT_RECOVERY * 0.5);
+        }
+
+        self.ensure_non_zero_weight();
+    }
+
+    fn should_probe_penalized_proxy(&self) -> bool {
+        let has_penalized = self
+            .runtime
+            .values()
+            .any(ForwardProxyRuntimeState::is_penalized);
+        if !has_penalized || self.probe_in_flight {
+            return false;
+        }
+        self.requests_since_probe >= FORWARD_PROXY_PROBE_EVERY_REQUESTS
+            || (Utc::now() - self.last_probe_at).num_seconds() >= FORWARD_PROXY_PROBE_INTERVAL_SECS
+    }
+
+    fn mark_probe_started(&mut self) -> Option<SelectedForwardProxy> {
+        if !self.should_probe_penalized_proxy() {
+            return None;
+        }
+        let selected = self
+            .runtime
+            .values()
+            .filter(|entry| entry.is_penalized())
+            .max_by(|lhs, rhs| lhs.weight.total_cmp(&rhs.weight))
+            .and_then(|entry| {
+                self.endpoints
+                    .iter()
+                    .find(|item| item.key == entry.proxy_key)
+            })
+            .cloned()?;
+        self.probe_in_flight = true;
+        self.requests_since_probe = 0;
+        self.last_probe_at = Utc::now();
+        Some(SelectedForwardProxy::from_endpoint(&selected))
+    }
+
+    fn mark_probe_finished(&mut self) {
+        self.probe_in_flight = false;
+        self.last_probe_at = Utc::now();
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SelectedForwardProxy {
+    key: String,
+    source: String,
+    display_name: String,
+    endpoint_url: Option<Url>,
+    endpoint_url_raw: Option<String>,
+}
+
+impl SelectedForwardProxy {
+    fn from_endpoint(endpoint: &ForwardProxyEndpoint) -> Self {
+        Self {
+            key: endpoint.key.clone(),
+            source: endpoint.source.clone(),
+            display_name: endpoint.display_name.clone(),
+            endpoint_url: endpoint.endpoint_url.clone(),
+            endpoint_url_raw: endpoint.raw_url.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ForwardProxyAttemptWindowStats {
+    attempts: i64,
+    success_count: i64,
+    avg_latency_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyWindowStatsResponse {
+    attempts: i64,
+    success_rate: Option<f64>,
+    avg_latency_ms: Option<f64>,
+}
+
+impl From<ForwardProxyAttemptWindowStats> for ForwardProxyWindowStatsResponse {
+    fn from(value: ForwardProxyAttemptWindowStats) -> Self {
+        let success_rate = if value.attempts > 0 {
+            Some((value.success_count as f64) / (value.attempts as f64))
+        } else {
+            None
+        };
+        Self {
+            attempts: value.attempts,
+            success_rate,
+            avg_latency_ms: value.avg_latency_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyStatsResponse {
+    one_minute: ForwardProxyWindowStatsResponse,
+    fifteen_minutes: ForwardProxyWindowStatsResponse,
+    one_hour: ForwardProxyWindowStatsResponse,
+    one_day: ForwardProxyWindowStatsResponse,
+    seven_days: ForwardProxyWindowStatsResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyNodeResponse {
+    key: String,
+    source: String,
+    display_name: String,
+    endpoint_url: Option<String>,
+    weight: f64,
+    penalized: bool,
+    stats: ForwardProxyStatsResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxySettingsResponse {
+    proxy_urls: Vec<String>,
+    subscription_urls: Vec<String>,
+    subscription_update_interval_secs: u64,
+    insert_direct: bool,
+    nodes: Vec<ForwardProxyNodeResponse>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct ParsedUsage {
     input_tokens: Option<i64>,
@@ -7192,6 +8591,7 @@ impl From<ProxyModelSettings> for ProxyModelSettingsResponse {
 #[serde(rename_all = "camelCase")]
 struct SettingsResponse {
     proxy: ProxyModelSettingsResponse,
+    forward_proxy: ForwardProxySettingsResponse,
     pricing: PricingSettingsResponse,
 }
 
@@ -7218,6 +8618,143 @@ fn decode_enabled_preset_models(raw: Option<&str>) -> Vec<String> {
             .unwrap_or_else(|_| default_enabled_preset_models()),
         None => default_enabled_preset_models(),
     }
+}
+
+fn default_forward_proxy_subscription_interval_secs() -> u64 {
+    DEFAULT_FORWARD_PROXY_SUBSCRIPTION_INTERVAL_SECS
+}
+
+fn default_forward_proxy_insert_direct() -> bool {
+    DEFAULT_FORWARD_PROXY_INSERT_DIRECT
+}
+
+fn decode_string_vec_json(raw: Option<&str>) -> Vec<String> {
+    match raw {
+        Some(serialized) => serde_json::from_str::<Vec<String>>(serialized).unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
+fn normalize_subscription_entries(raw_entries: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for entry in raw_entries {
+        for token in split_proxy_entry_tokens(&entry) {
+            let Ok(url) = Url::parse(token) else {
+                continue;
+            };
+            if !matches!(url.scheme(), "http" | "https") {
+                continue;
+            }
+            let canonical = url.to_string();
+            if seen.insert(canonical.clone()) {
+                normalized.push(canonical);
+            }
+        }
+    }
+    normalized
+}
+
+fn normalize_proxy_url_entries(raw_entries: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for entry in raw_entries {
+        for token in split_proxy_entry_tokens(&entry) {
+            if let Some(canonical) = normalize_single_proxy_url(token)
+                && seen.insert(canonical.clone())
+            {
+                normalized.push(canonical);
+            }
+        }
+    }
+    normalized
+}
+
+fn split_proxy_entry_tokens(raw: &str) -> Vec<&str> {
+    raw.split(['\n', ',', ';'])
+        .map(str::trim)
+        .filter(|token| !token.is_empty() && !token.starts_with('#'))
+        .collect()
+}
+
+fn normalize_single_proxy_url(raw: &str) -> Option<String> {
+    let candidate = raw.trim();
+    if candidate.is_empty() {
+        return None;
+    }
+    let candidate = if candidate.contains("://") {
+        candidate.to_string()
+    } else {
+        format!("http://{candidate}")
+    };
+    let parsed = Url::parse(&candidate).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https" | "socks5" | "socks5h") {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    if host.trim().is_empty() {
+        return None;
+    }
+    let port = parsed.port_or_known_default()?;
+    let mut normalized = format!("{}://", parsed.scheme());
+    if !parsed.username().is_empty() {
+        normalized.push_str(parsed.username());
+        if let Some(password) = parsed.password() {
+            normalized.push(':');
+            normalized.push_str(password);
+        }
+        normalized.push('@');
+    }
+    if host.contains(':') {
+        normalized.push('[');
+        normalized.push_str(host);
+        normalized.push(']');
+    } else {
+        normalized.push_str(&host.to_ascii_lowercase());
+    }
+    normalized.push(':');
+    normalized.push_str(&port.to_string());
+    Some(normalized)
+}
+
+fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<ForwardProxyEndpoint> {
+    let mut seen = HashSet::new();
+    let mut endpoints = Vec::new();
+    for raw in urls {
+        if let Some(normalized) = normalize_single_proxy_url(raw) {
+            let key = normalized.clone();
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let parsed = Url::parse(&normalized).ok();
+            let display_name = parsed
+                .as_ref()
+                .and_then(|url| {
+                    url.host_str().map(|host| {
+                        format!("{host}:{}", url.port_or_known_default().unwrap_or_default())
+                    })
+                })
+                .unwrap_or_else(|| normalized.clone());
+            endpoints.push(ForwardProxyEndpoint {
+                key,
+                source: source.to_string(),
+                display_name,
+                endpoint_url: parsed,
+                raw_url: Some(normalized),
+            });
+        }
+    }
+    endpoints
+}
+
+fn deterministic_unit_f64(seed: u64) -> f64 {
+    let mut value = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xff51afd7ed558ccd);
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xc4ceb9fe1a85ec53);
+    value ^= value >> 33;
+    (value as f64) / (u64::MAX as f64)
 }
 
 fn default_pricing_source_custom() -> String {
@@ -7375,6 +8912,23 @@ impl HttpClients {
         } else {
             Ok(self.shared.clone())
         }
+    }
+
+    fn client_for_forward_proxy(&self, endpoint_url: Option<&Url>) -> Result<Client> {
+        let Some(endpoint_url) = endpoint_url else {
+            return Ok(self.proxy.clone());
+        };
+
+        Self::builder(None, &self.user_agent)
+            .pool_max_idle_per_host(2)
+            .connect_timeout(self.timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .proxy(
+                Proxy::all(endpoint_url.as_str())
+                    .with_context(|| format!("invalid forward proxy endpoint: {endpoint_url}"))?,
+            )
+            .build()
+            .context("failed to construct forward proxy HTTP client")
     }
 
     fn builder(timeout: Option<Duration>, user_agent: &str) -> ClientBuilder {
@@ -7793,6 +9347,48 @@ mod tests {
     }
 
     #[test]
+    fn normalize_single_proxy_url_supports_scheme_less_host_port() {
+        assert_eq!(
+            normalize_single_proxy_url("127.0.0.1:7890"),
+            Some("http://127.0.0.1:7890".to_string())
+        );
+        assert_eq!(
+            normalize_single_proxy_url("socks5://127.0.0.1:1080"),
+            Some("socks5://127.0.0.1:1080".to_string())
+        );
+        assert_eq!(normalize_single_proxy_url("vmess://example"), None);
+    }
+
+    #[test]
+    fn decode_subscription_payload_supports_base64_blob() {
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode("http://127.0.0.1:7890\nsocks5://127.0.0.1:1080");
+        let decoded = decode_subscription_payload(&encoded);
+        assert!(decoded.contains("http://127.0.0.1:7890"));
+        assert!(decoded.contains("socks5://127.0.0.1:1080"));
+    }
+
+    #[test]
+    fn forward_proxy_manager_keeps_one_positive_weight() {
+        let mut manager = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec!["http://127.0.0.1:7890".to_string()],
+                subscription_urls: vec![],
+                subscription_update_interval_secs: 3600,
+                insert_direct: false,
+            },
+            vec![],
+        );
+
+        for runtime in manager.runtime.values_mut() {
+            runtime.weight = -5.0;
+        }
+        manager.ensure_non_zero_weight();
+
+        assert!(manager.runtime.values().any(|entry| entry.weight > 0.0));
+    }
+
+    #[test]
     fn classify_invocation_failure_marks_downstream_closed_as_client_abort() {
         let result = classify_invocation_failure(
             Some("http_200"),
@@ -8101,6 +9697,11 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+                ForwardProxySettings::default(),
+                Vec::new(),
+            ))),
+            forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
         })
@@ -9691,6 +11292,11 @@ mod tests {
                 enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
             })),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+                ForwardProxySettings::default(),
+                Vec::new(),
+            ))),
+            forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
@@ -10322,6 +11928,11 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+                ForwardProxySettings::default(),
+                Vec::new(),
+            ))),
+            forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
@@ -10436,6 +12047,11 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+                ForwardProxySettings::default(),
+                Vec::new(),
+            ))),
+            forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
@@ -10592,6 +12208,11 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+                ForwardProxySettings::default(),
+                Vec::new(),
+            ))),
+            forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
@@ -10647,6 +12268,11 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+                ForwardProxySettings::default(),
+                Vec::new(),
+            ))),
+            forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
@@ -11839,6 +13465,11 @@ mod tests {
             semaphore,
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+                ForwardProxySettings::default(),
+                Vec::new(),
+            ))),
+            forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });

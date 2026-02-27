@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchSettings,
+  updateForwardProxySettings,
   updatePricingSettings,
   updateProxySettings,
+  type ForwardProxySettings,
   type PricingSettings,
   type ProxySettings,
   type SettingsPayload,
@@ -32,6 +34,7 @@ export function useSettings() {
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isProxySaving, setIsProxySaving] = useState(false)
+  const [isForwardProxySaving, setIsForwardProxySaving] = useState(false)
   const [isPricingSaving, setIsPricingSaving] = useState(false)
   const [pricingRollbackVersion, setPricingRollbackVersion] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -180,15 +183,63 @@ export function useSettings() {
     [rollback],
   )
 
+  const saveForwardProxy = useCallback(
+    async (nextForwardProxy: ForwardProxySettings) => {
+      if (!serverSnapshotRef.current) return
+      setSettings((current) => {
+        if (!current) return current
+        return {
+          ...current,
+          forwardProxy: nextForwardProxy,
+        }
+      })
+      setIsForwardProxySaving(true)
+      try {
+        const saved = await updateForwardProxySettings({
+          proxyUrls: nextForwardProxy.proxyUrls,
+          subscriptionUrls: nextForwardProxy.subscriptionUrls,
+          subscriptionUpdateIntervalSecs: nextForwardProxy.subscriptionUpdateIntervalSecs,
+          insertDirect: nextForwardProxy.insertDirect,
+        })
+
+        const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
+          ? {
+              ...serverSnapshotRef.current,
+              forwardProxy: saved,
+            }
+          : null
+        if (confirmedSnapshot) {
+          serverSnapshotRef.current = confirmedSnapshot
+        }
+        setSettings((current) => {
+          if (!current) return confirmedSnapshot ?? current
+          return {
+            ...current,
+            forwardProxy: saved,
+          }
+        })
+        setError(null)
+      } catch (err) {
+        rollback()
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setIsForwardProxySaving(false)
+      }
+    },
+    [rollback],
+  )
+
   return {
     settings,
     isLoading,
     isProxySaving,
+    isForwardProxySaving,
     isPricingSaving,
     pricingRollbackVersion,
     error,
     refresh: load,
     saveProxy,
+    saveForwardProxy,
     savePricing,
   }
 }
