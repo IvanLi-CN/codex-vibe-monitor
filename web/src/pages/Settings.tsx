@@ -1121,29 +1121,21 @@ export default function SettingsPage() {
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-base-content/45 p-4">
               <div className="w-full max-w-2xl rounded-2xl border border-base-300/75 bg-base-100 shadow-xl">
                 <div className="space-y-1 border-b border-base-300/70 px-5 py-4">
-                  <h3 className="text-lg font-semibold">{forwardProxyModalTitle}</h3>
-                  <p className="text-sm text-base-content/65">{t('settings.forwardProxy.modal.description')}</p>
-                  {forwardProxyModalIsBatch && (
-                    <div className="mt-3 rounded-xl border border-base-300/75 bg-base-200/35 p-2">
-                      <ol className="grid gap-2 sm:grid-cols-2">
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <h3 className="text-lg font-semibold">{forwardProxyModalTitle}</h3>
+                      <p className="text-sm text-base-content/65">{t('settings.forwardProxy.modal.description')}</p>
+                    </div>
+                    {forwardProxyModalIsBatch && (
+                      <ol className="hidden shrink-0 items-center gap-1 rounded-lg border border-base-300/70 bg-base-200/35 px-2 py-1 sm:flex">
                         {[1, 2].map((step) => {
                           const isActive = forwardProxyModalStep === step
                           const isCompleted = step === 1 && forwardProxyModalStep === 2
                           return (
-                            <li
-                              key={step}
-                              className={cn(
-                                'flex items-start gap-3 rounded-lg border px-3 py-2 transition',
-                                isActive
-                                  ? 'border-primary/45 bg-primary/10'
-                                  : isCompleted
-                                    ? 'border-success/40 bg-success/10'
-                                    : 'border-base-300/75 bg-base-100/55',
-                              )}
-                            >
+                            <li key={step} className="flex items-center gap-1.5">
                               <span
                                 className={cn(
-                                  'mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
+                                  'inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold',
                                   isActive
                                     ? 'bg-primary text-primary-content'
                                     : isCompleted
@@ -1151,25 +1143,53 @@ export default function SettingsPage() {
                                       : 'bg-base-300/85 text-base-content/70',
                                 )}
                               >
-                                {step}
+                                {isCompleted ? '✓' : step}
                               </span>
-                              <span className="space-y-0.5">
-                                <span className="block text-xs font-semibold text-base-content/85">
-                                  {t(step === 1 ? 'settings.forwardProxy.modal.step1' : 'settings.forwardProxy.modal.step2')}
-                                </span>
-                                <span className="block text-[11px] text-base-content/60">
-                                  {t(
-                                    step === 1
-                                      ? 'settings.forwardProxy.modal.step1Hint'
-                                      : 'settings.forwardProxy.modal.step2Hint',
-                                  )}
-                                </span>
+                              <span className={cn('text-[11px] font-medium', isActive ? 'text-primary' : 'text-base-content/65')}>
+                                {t(
+                                  step === 1
+                                    ? 'settings.forwardProxy.modal.step1Compact'
+                                    : 'settings.forwardProxy.modal.step2Compact',
+                                )}
                               </span>
+                              {step === 1 && <span className="text-base-content/35">/</span>}
                             </li>
                           )
                         })}
                       </ol>
-                    </div>
+                    )}
+                  </div>
+                  {forwardProxyModalIsBatch && (
+                    <ol className="mt-2 flex items-center gap-1 rounded-lg border border-base-300/70 bg-base-200/35 px-2 py-1 sm:hidden">
+                      {[1, 2].map((step) => {
+                        const isActive = forwardProxyModalStep === step
+                        const isCompleted = step === 1 && forwardProxyModalStep === 2
+                        return (
+                          <li key={`mobile-${step}`} className="flex items-center gap-1.5">
+                            <span
+                              className={cn(
+                                'inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold',
+                                isActive
+                                  ? 'bg-primary text-primary-content'
+                                  : isCompleted
+                                    ? 'bg-success/85 text-success-content'
+                                    : 'bg-base-300/85 text-base-content/70',
+                              )}
+                            >
+                              {isCompleted ? '✓' : step}
+                            </span>
+                            <span className={cn('text-[11px] font-medium', isActive ? 'text-primary' : 'text-base-content/65')}>
+                              {t(
+                                step === 1
+                                  ? 'settings.forwardProxy.modal.step1Compact'
+                                  : 'settings.forwardProxy.modal.step2Compact',
+                              )}
+                            </span>
+                            {step === 1 && <span className="text-base-content/35">/</span>}
+                          </li>
+                        )
+                      })}
+                    </ol>
                   )}
                 </div>
                 <div className="space-y-4 px-5 py-4">
