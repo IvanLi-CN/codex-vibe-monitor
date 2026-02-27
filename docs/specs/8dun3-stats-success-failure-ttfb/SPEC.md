@@ -79,6 +79,7 @@
 - 成功/失败图已升级为“堆叠柱 + 首字耗时均值折线”，tooltip 固定展示 5 项（失败、成功、成功率、均值、P95）。
 - 已新增测试：`timeseries_*first_byte*`（Rust）与 `SuccessFailureChart.test.tsx`、`useTimeseries.test.ts`（Vitest）。
 - 验证通过：`cargo fmt --check`、`cargo check`、`cargo test`、`cd web && npm run test`、`cd web && npm run build`。
+- 对应交付 PR：[#61](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/61)。
 
 ## 风险与回滚
 
