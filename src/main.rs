@@ -2177,7 +2177,7 @@ async fn fetch_timeseries(
     let start_str_iso = format_utc_iso(start_dt);
 
     let mut records_query = QueryBuilder::new(
-        "SELECT occurred_at, status, total_tokens, cost FROM codex_invocations WHERE occurred_at >= ",
+        "SELECT occurred_at, status, total_tokens, cost, t_upstream_ttfb_ms FROM codex_invocations WHERE occurred_at >= ",
     );
     records_query.push_bind(db_occurred_at_lower_bound(start_dt));
     if source_scope == InvocationSourceScope::ProxyOnly {
@@ -2217,6 +2217,7 @@ async fn fetch_timeseries(
             Some("success") => entry.success_count += 1,
             _ => entry.failure_count += 1,
         }
+        entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
         entry.total_tokens += record.total_tokens.unwrap_or(0);
         entry.total_cost += record.cost.unwrap_or(0.0);
     }
@@ -2273,6 +2274,8 @@ async fn fetch_timeseries(
             .timestamp_opt(bucket_epoch + bucket_seconds, 0)
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+        let first_byte_avg_ms = agg.first_byte_avg_ms();
+        let first_byte_p95_ms = agg.first_byte_p95_ms();
         points.push(TimeseriesPoint {
             bucket_start: format_utc_iso(start),
             bucket_end: format_utc_iso(end),
@@ -2281,6 +2284,9 @@ async fn fetch_timeseries(
             failure_count: agg.failure_count,
             total_tokens: agg.total_tokens,
             total_cost: agg.total_cost,
+            first_byte_sample_count: agg.first_byte_sample_count,
+            first_byte_avg_ms,
+            first_byte_p95_ms,
         });
     }
 
@@ -2350,7 +2356,7 @@ async fn fetch_timeseries_daily(
     }
 
     let mut records_query = QueryBuilder::new(
-        "SELECT occurred_at, status, total_tokens, cost FROM codex_invocations WHERE occurred_at >= ",
+        "SELECT occurred_at, status, total_tokens, cost, t_upstream_ttfb_ms FROM codex_invocations WHERE occurred_at >= ",
     );
     records_query.push_bind(db_occurred_at_lower_bound(start_dt));
     if source_scope == InvocationSourceScope::ProxyOnly {
@@ -2377,6 +2383,7 @@ async fn fetch_timeseries_daily(
             Some("success") => entry.success_count += 1,
             _ => entry.failure_count += 1,
         }
+        entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
         entry.total_tokens += record.total_tokens.unwrap_or(0);
         entry.total_cost += record.cost.unwrap_or(0.0);
     }
@@ -2415,6 +2422,8 @@ async fn fetch_timeseries_daily(
             .expect("midnight should be representable");
         let start = local_naive_to_utc(start_naive, reporting_tz);
         let end = local_naive_to_utc(end_naive, reporting_tz);
+        let first_byte_avg_ms = agg.first_byte_avg_ms();
+        let first_byte_p95_ms = agg.first_byte_p95_ms();
         points.push(TimeseriesPoint {
             bucket_start: format_utc_iso(start),
             bucket_end: format_utc_iso(end),
@@ -2423,6 +2432,9 @@ async fn fetch_timeseries_daily(
             failure_count: agg.failure_count,
             total_tokens: agg.total_tokens,
             total_cost: agg.total_cost,
+            first_byte_sample_count: agg.first_byte_sample_count,
+            first_byte_avg_ms,
+            first_byte_p95_ms,
         });
     }
 
@@ -6664,6 +6676,9 @@ struct TimeseriesPoint {
     failure_count: i64,
     total_tokens: i64,
     total_cost: f64,
+    first_byte_sample_count: i64,
+    first_byte_avg_ms: Option<f64>,
+    first_byte_p95_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -7311,6 +7326,7 @@ struct TimeseriesRecord {
     status: Option<String>,
     total_tokens: Option<i64>,
     cost: Option<f64>,
+    t_upstream_ttfb_ms: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -7330,6 +7346,42 @@ struct BucketAggregate {
     failure_count: i64,
     total_tokens: i64,
     total_cost: f64,
+    first_byte_ttfb_sum_ms: f64,
+    first_byte_ttfb_values: Vec<f64>,
+    first_byte_sample_count: i64,
+}
+
+impl BucketAggregate {
+    fn record_ttfb_sample(&mut self, status: Option<&str>, ttfb_ms: Option<f64>) {
+        if status != Some("success") {
+            return;
+        }
+        let Some(value) = ttfb_ms else {
+            return;
+        };
+        if !value.is_finite() || value <= 0.0 {
+            return;
+        }
+        self.first_byte_sample_count += 1;
+        self.first_byte_ttfb_sum_ms += value;
+        self.first_byte_ttfb_values.push(value);
+    }
+
+    fn first_byte_avg_ms(&self) -> Option<f64> {
+        if self.first_byte_sample_count <= 0 {
+            return None;
+        }
+        Some(self.first_byte_ttfb_sum_ms / self.first_byte_sample_count as f64)
+    }
+
+    fn first_byte_p95_ms(&self) -> Option<f64> {
+        if self.first_byte_ttfb_values.is_empty() {
+            return None;
+        }
+        let mut sorted = self.first_byte_ttfb_values.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Some(percentile_sorted_f64(&sorted, 0.95))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -11850,6 +11902,265 @@ mod tests {
         assert!(!snapshot.is_active);
         assert_eq!(snapshot.total_requests, 0);
         assert_eq!(snapshot.total_cost, 0.0);
+    }
+
+    async fn insert_timeseries_invocation(
+        pool: &SqlitePool,
+        invoke_id: &str,
+        occurred_at: &str,
+        status: &str,
+        t_upstream_ttfb_ms: Option<f64>,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                t_upstream_ttfb_ms,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(10_i64)
+        .bind(0.01_f64)
+        .bind(t_upstream_ttfb_ms)
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert timeseries invocation");
+    }
+
+    fn assert_f64_close(actual: f64, expected: f64) {
+        let diff = (actual - expected).abs();
+        assert!(
+            diff < 1e-6,
+            "expected {expected}, got {actual}, diff={diff}"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeseries_includes_first_byte_avg_and_p95_for_success_samples() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let occurred_at = format_naive(
+            (Utc::now() - ChronoDuration::minutes(5))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-sample-1",
+            &occurred_at,
+            "success",
+            Some(100.0),
+        )
+        .await;
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-sample-2",
+            &occurred_at,
+            "success",
+            Some(200.0),
+        )
+        .await;
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-sample-3",
+            &occurred_at,
+            "success",
+            Some(400.0),
+        )
+        .await;
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-sample-failure",
+            &occurred_at,
+            "failed",
+            Some(800.0),
+        )
+        .await;
+
+        let Json(response) = fetch_timeseries(
+            State(state),
+            Query(TimeseriesQuery {
+                range: "1h".to_string(),
+                bucket: Some("15m".to_string()),
+                settlement_hour: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+            }),
+        )
+        .await
+        .expect("fetch timeseries");
+        let bucket = response
+            .points
+            .iter()
+            .find(|point| point.total_count >= 4)
+            .expect("should include populated bucket");
+
+        assert_eq!(bucket.first_byte_sample_count, 3);
+        assert_f64_close(
+            bucket.first_byte_avg_ms.expect("avg should be present"),
+            (100.0 + 200.0 + 400.0) / 3.0,
+        );
+        assert_f64_close(
+            bucket.first_byte_p95_ms.expect("p95 should be present"),
+            380.0,
+        );
+    }
+
+    #[tokio::test]
+    async fn timeseries_ignores_non_positive_or_missing_ttfb_samples() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let occurred_at = format_naive(
+            (Utc::now() - ChronoDuration::minutes(10))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-ignore-null",
+            &occurred_at,
+            "success",
+            None,
+        )
+        .await;
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-ignore-zero",
+            &occurred_at,
+            "success",
+            Some(0.0),
+        )
+        .await;
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-ignore-negative",
+            &occurred_at,
+            "success",
+            Some(-5.0),
+        )
+        .await;
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-ignore-failed",
+            &occurred_at,
+            "failed",
+            Some(250.0),
+        )
+        .await;
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-keep-valid",
+            &occurred_at,
+            "success",
+            Some(250.0),
+        )
+        .await;
+
+        let Json(response) = fetch_timeseries(
+            State(state),
+            Query(TimeseriesQuery {
+                range: "1h".to_string(),
+                bucket: Some("15m".to_string()),
+                settlement_hour: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+            }),
+        )
+        .await
+        .expect("fetch timeseries");
+        let bucket = response
+            .points
+            .iter()
+            .find(|point| point.total_count >= 5)
+            .expect("should include populated bucket");
+
+        assert_eq!(bucket.first_byte_sample_count, 1);
+        assert_f64_close(
+            bucket.first_byte_avg_ms.expect("avg should be present"),
+            250.0,
+        );
+        assert_f64_close(
+            bucket.first_byte_p95_ms.expect("p95 should be present"),
+            250.0,
+        );
+    }
+
+    #[tokio::test]
+    async fn timeseries_daily_bucket_includes_first_byte_stats() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let occurred_at = format_naive(
+            (Utc::now() - ChronoDuration::minutes(15))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-daily-1",
+            &occurred_at,
+            "success",
+            Some(50.0),
+        )
+        .await;
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-daily-2",
+            &occurred_at,
+            "success",
+            Some(150.0),
+        )
+        .await;
+        insert_timeseries_invocation(
+            &state.pool,
+            "ttfb-daily-failed",
+            &occurred_at,
+            "failed",
+            Some(300.0),
+        )
+        .await;
+
+        let Json(response) = fetch_timeseries(
+            State(state),
+            Query(TimeseriesQuery {
+                range: "1d".to_string(),
+                bucket: Some("1d".to_string()),
+                settlement_hour: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+            }),
+        )
+        .await
+        .expect("fetch timeseries");
+        let bucket = response
+            .points
+            .iter()
+            .find(|point| point.total_count >= 3)
+            .expect("should include populated bucket");
+
+        assert_eq!(bucket.first_byte_sample_count, 2);
+        assert_f64_close(
+            bucket.first_byte_avg_ms.expect("avg should be present"),
+            100.0,
+        );
+        assert_f64_close(
+            bucket.first_byte_p95_ms.expect("p95 should be present"),
+            145.0,
+        );
     }
 }
 

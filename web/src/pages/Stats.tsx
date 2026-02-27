@@ -105,6 +105,7 @@ export default function StatsPage() {
     error: timeseriesError,
   } = useTimeseries(range, {
     bucket: effectiveBucket,
+    preferServerAggregation: true,
   })
 
   const { data: errors, isLoading: errorsLoading, error: errorsError } = useErrorDistribution(range, 8, errorScope)
