@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-02-26
-- Last: 2026-02-26
+- Last: 2026-02-27
 
 ## 背景 / 问题陈述
 
@@ -68,3 +68,4 @@
 - 已修复同类透明度写法：`alert.tsx` warning/error 分别统一为 `/15`，`TodayStatsOverview` 主卡渐变 `from-primary/15`。
 - 已通过 `npm run lint`、`npm run test`、`npm run build`、`cargo fmt --all -- --check`。
 - 已完成 Playwright 视觉核验：桌面浅色中文、桌面深色中文、桌面浅色英文、移动端浅色中文，横幅文本与操作按钮均可读可点。
+- 已补充更新横幅按钮交互回归断言（`onReload` / `onDismiss`），覆盖“立即刷新 / 稍后”回调绑定。
