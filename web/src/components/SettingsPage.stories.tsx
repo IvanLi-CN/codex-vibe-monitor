@@ -41,6 +41,23 @@ const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
   },
 ]
 
+const MOCK_SUBSCRIPTION_NODE_TEMPLATES: Array<Pick<ForwardProxyNode, 'displayName' | 'endpointUrl'>> = [
+  {
+    displayName: 'edge-vless',
+    endpointUrl:
+      'vless://11111111-1111-1111-1111-111111111111@edge.example.com:443?encryption=none&security=tls&type=ws&host=cdn.example.com&path=%2Fvless#edge-vless',
+  },
+  {
+    displayName: 'trojan-ws',
+    endpointUrl:
+      'trojan://topsecret@trojan.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Ftrojan#trojan-ws',
+  },
+  {
+    displayName: 'ss-main',
+    endpointUrl: 'ss://YWVzLTI1Ni1nY206c3Rvcnlib29rLXBhc3M=@ss.example.com:8388#ss-main',
+  },
+]
+
 function statsPreset(index: number): ForwardProxyNodeStats {
   const base = Math.max(1, 24 - index * 3)
   const successRate = Math.max(0.08, 0.97 - index * 0.09)
@@ -75,13 +92,14 @@ function buildNodesFromSettings(settings: ForwardProxySettings): ForwardProxyNod
     stats: statsPreset(index),
   }))
 
-  const subscriptionNodes: ForwardProxyNode[] = settings.subscriptionUrls.map((subscriptionUrl, index) => {
-    const virtualProxyUrl = `${subscriptionUrl}#node-${index + 1}`
+  const subscriptionNodes: ForwardProxyNode[] = settings.subscriptionUrls.map((_subscriptionUrl, index) => {
+    const template = MOCK_SUBSCRIPTION_NODE_TEMPLATES[index % MOCK_SUBSCRIPTION_NODE_TEMPLATES.length]
+    const key = `sub-${index + 1}-${template.displayName}`
     return {
-      key: virtualProxyUrl,
+      key,
       source: 'subscription',
-      displayName: `sub-${index + 1}`,
-      endpointUrl: virtualProxyUrl,
+      displayName: `${template.displayName}-${index + 1}`,
+      endpointUrl: template.endpointUrl,
       weight: Number((0.65 - index * 0.12).toFixed(2)),
       penalized: false,
       stats: statsPreset(index + manualNodes.length),
@@ -112,7 +130,7 @@ function StorybookSettingsMock({ children }: { children: React.ReactNode }) {
     proxy: DEFAULT_PROXY_SETTINGS,
     forwardProxy: {
       proxyUrls: [
-        'http://127.0.0.1:7890',
+        'vless://11111111-1111-1111-1111-111111111111@manual.example.com:443?encryption=none&security=tls&type=ws&host=cdn.manual.example.com&path=%2Fmanual#manual-vless',
         'socks5://127.0.0.1:1080',
       ],
       subscriptionUrls: ['https://example.com/subscription.base64'],

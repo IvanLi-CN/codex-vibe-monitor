@@ -94,7 +94,8 @@ const baseTranslations = {
     'settings.forwardProxy.interval.6h': '6 hours',
     'settings.forwardProxy.interval.1d': '1 day',
     'settings.forwardProxy.save': 'Save routing config',
-    'settings.forwardProxy.supportHint': 'Supported schemes: http, https, socks5, socks5h',
+    'settings.forwardProxy.supportHint':
+      'Supported schemes: http, https, socks, socks5, socks5h, vmess, vless, trojan, ss (via Xray)',
     'settings.forwardProxy.directLabel': 'Direct',
     'settings.forwardProxy.table.proxy': 'Proxy',
     'settings.forwardProxy.table.oneMinute': '1m',
@@ -345,7 +346,8 @@ const baseTranslations = {
     'settings.forwardProxy.interval.6h': '6 小时',
     'settings.forwardProxy.interval.1d': '1 天',
     'settings.forwardProxy.save': '保存路由配置',
-    'settings.forwardProxy.supportHint': '支持协议：http、https、socks5、socks5h',
+    'settings.forwardProxy.supportHint':
+      '支持协议：http、https、socks、socks5、socks5h、vmess、vless、trojan、ss（vmess/vless/trojan/ss 由 Xray 转发）',
     'settings.forwardProxy.directLabel': '直连',
     'settings.forwardProxy.table.proxy': '代理',
     'settings.forwardProxy.table.oneMinute': '1 分钟',
