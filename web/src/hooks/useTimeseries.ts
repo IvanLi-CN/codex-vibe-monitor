@@ -6,6 +6,7 @@ import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 export interface UseTimeseriesOptions {
   bucket?: string
   settlementHour?: number
+  preferServerAggregation?: boolean
 }
 
 export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
@@ -14,6 +15,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const [error, setError] = useState<string | null>(null)
   const bucket = options?.bucket
   const settlementHour = options?.settlementHour
+  const preferServerAggregation = options?.preferServerAggregation ?? false
   const hasHydratedRef = useRef(false)
   const lastResyncAtRef = useRef(0)
 
@@ -21,8 +23,9 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     () => ({
       bucket,
       settlementHour,
+      preferServerAggregation,
     }),
-    [bucket, settlementHour],
+    [bucket, settlementHour, preferServerAggregation],
   )
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
@@ -74,11 +77,9 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type === 'records') {
-        const ctxBucketSeconds =
-          guessBucketSeconds(options?.bucket) ?? defaultBucketSecondsForRange(range)
-        // Daily buckets depend on IANA timezone rules (incl. DST). Let the backend
-        // be the source of truth and resync instead of applying local deltas.
-        if (ctxBucketSeconds >= 86_400) {
+        // When consumers rely on backend-only aggregations (e.g., percentile series),
+        // use server-side recalculation instead of local incremental updates.
+        if (shouldResyncOnRecordsEvent(range, normalizedOptions)) {
           requestResync()
           return
         }
@@ -87,7 +88,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
             current ?? {
               rangeStart: formatEpochToIso(Math.floor((Date.now() - (parseRangeSpec(range) ?? 86_400) * 1000) / 1000)),
               rangeEnd: formatEpochToIso(Math.floor(Date.now() / 1000)),
-              bucketSeconds: guessBucketSeconds(options?.bucket) ?? defaultBucketSecondsForRange(range),
+              bucketSeconds: guessBucketSeconds(normalizedOptions.bucket) ?? defaultBucketSecondsForRange(range),
               points: [],
             }
           return applyRecordsToTimeseries(seeded, payload.records, {
@@ -99,7 +100,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       }
     })
     return unsubscribe
-  }, [normalizedOptions.settlementHour, options?.bucket, range, requestResync])
+  }, [normalizedOptions, range, requestResync])
 
   // Backfill missed SSE records when the page returns to the foreground or the SSE transport reconnects.
   useEffect(() => {
@@ -125,6 +126,13 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     error,
     refresh: load,
   }
+}
+
+export function shouldResyncOnRecordsEvent(range: string, options?: UseTimeseriesOptions) {
+  if (options?.preferServerAggregation) return true
+  const bucketSeconds = guessBucketSeconds(options?.bucket) ?? defaultBucketSecondsForRange(range)
+  // Daily buckets depend on IANA timezone rules (incl. DST). Let backend be source of truth.
+  return bucketSeconds >= 86_400
 }
 
 interface UpdateContext {

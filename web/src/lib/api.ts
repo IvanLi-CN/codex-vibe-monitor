@@ -96,6 +96,9 @@ export interface TimeseriesPoint {
   failureCount: number
   totalTokens: number
   totalCost: number
+  firstByteSampleCount?: number
+  firstByteAvgMs?: number | null
+  firstByteP95Ms?: number | null
 }
 
 export interface TimeseriesResponse {
