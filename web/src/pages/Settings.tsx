@@ -38,6 +38,15 @@ type ForwardProxyValidationState =
 
 type ForwardProxyModalKind = 'proxyBatch' | 'subscriptionUrl'
 
+type ForwardProxyBatchValidationItem = {
+  key: string
+  rawValue: string
+  normalizedValue: string
+  available: boolean
+  latencyMs?: number
+  message: string
+}
+
 const AUTO_SAVE_DEBOUNCE_MS = 600
 const pricingTableHeaderCellClass =
   'px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/65'
@@ -201,7 +210,9 @@ export default function SettingsPage() {
   const [forwardProxyInsertDirect, setForwardProxyInsertDirect] = useState(true)
   const [forwardProxyDirty, setForwardProxyDirty] = useState(false)
   const [forwardProxyModalKind, setForwardProxyModalKind] = useState<ForwardProxyModalKind | null>(null)
+  const [forwardProxyModalStep, setForwardProxyModalStep] = useState<1 | 2>(1)
   const [forwardProxyModalInput, setForwardProxyModalInput] = useState('')
+  const [forwardProxyBatchResults, setForwardProxyBatchResults] = useState<ForwardProxyBatchValidationItem[]>([])
   const [forwardProxyValidation, setForwardProxyValidation] = useState<ForwardProxyValidationState>({ status: 'idle' })
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSyncedPricingKeyRef = useRef<string | null>(null)
@@ -447,13 +458,17 @@ export default function SettingsPage() {
 
   const openForwardProxyAddModal = useCallback((kind: ForwardProxyModalKind) => {
     setForwardProxyModalKind(kind)
+    setForwardProxyModalStep(1)
     setForwardProxyModalInput('')
+    setForwardProxyBatchResults([])
     setForwardProxyValidation({ status: 'idle' })
   }, [])
 
   const closeForwardProxyAddModal = useCallback(() => {
     setForwardProxyModalKind(null)
+    setForwardProxyModalStep(1)
     setForwardProxyModalInput('')
+    setForwardProxyBatchResults([])
     setForwardProxyValidation({ status: 'idle' })
   }, [])
 
@@ -506,76 +521,118 @@ export default function SettingsPage() {
       })
       return
     }
+    const deduped = new Map<string, ForwardProxyBatchValidationItem>()
+    let availableCount = 0
+    let unavailableCount = 0
 
-    const normalizedValues: string[] = []
-    const failures: string[] = []
-    let totalLatency = 0
-    let latencyCount = 0
-
-    for (let index = 0; index < lines.length; index += 1) {
-      const rawLine = lines[index]
+    for (const rawLine of lines) {
+      let item: ForwardProxyBatchValidationItem
       try {
         const result = await validateForwardProxyCandidate({
           kind: 'proxyUrl',
           value: rawLine,
         })
-        if (!result.ok) {
-          failures.push(`${index + 1}: ${result.message || t('settings.forwardProxy.modal.validateFailed')}`)
-          continue
-        }
-        const normalized = result.normalizedValue?.trim() || rawLine
-        if (!normalizedValues.includes(normalized)) {
-          normalizedValues.push(normalized)
-        }
-        if (typeof result.latencyMs === 'number') {
-          totalLatency += result.latencyMs
-          latencyCount += 1
+        if (result.ok) {
+          const normalizedValue = result.normalizedValue?.trim() || rawLine
+          item = {
+            key: normalizedValue,
+            rawValue: rawLine,
+            normalizedValue,
+            available: true,
+            latencyMs: result.latencyMs,
+            message: result.message || t('settings.forwardProxy.modal.validateSuccess'),
+          }
+        } else {
+          item = {
+            key: rawLine,
+            rawValue: rawLine,
+            normalizedValue: rawLine,
+            available: false,
+            latencyMs: result.latencyMs,
+            message: result.message || t('settings.forwardProxy.modal.validateFailed'),
+          }
         }
       } catch (err) {
-        failures.push(`${index + 1}: ${err instanceof Error ? err.message : String(err)}`)
+        item = {
+          key: rawLine,
+          rawValue: rawLine,
+          normalizedValue: rawLine,
+          available: false,
+          message: err instanceof Error ? err.message : String(err),
+        }
+      }
+
+      const existing = deduped.get(item.key)
+      if (!existing) {
+        deduped.set(item.key, item)
+      } else if (!existing.available && item.available) {
+        deduped.set(item.key, item)
+      } else if (
+        existing.available &&
+        item.available &&
+        item.latencyMs != null &&
+        (existing.latencyMs == null || item.latencyMs < existing.latencyMs)
+      ) {
+        deduped.set(item.key, item)
       }
     }
 
-    if (failures.length > 0 || normalizedValues.length === 0) {
-      const detail = failures.slice(0, 2).join(' | ')
+    const results = [...deduped.values()]
+    for (const item of results) {
+      if (item.available) availableCount += 1
+      else unavailableCount += 1
+    }
+
+    if (results.length === 0) {
       setForwardProxyValidation({
         status: 'failed',
-        message: `${t('settings.forwardProxy.modal.batchValidateFailed', {
-          failed: failures.length || lines.length,
+        message: t('settings.forwardProxy.modal.batchValidateFailed', {
+          failed: lines.length,
           total: lines.length,
-        })}${detail ? ` ${detail}` : ''}`,
+        }),
       })
       return
     }
 
+    setForwardProxyBatchResults(results)
+    setForwardProxyModalStep(2)
     setForwardProxyValidation({
       status: 'passed',
-      message: t('settings.forwardProxy.modal.batchValidateSuccess', {
-        count: normalizedValues.length,
+      message: t('settings.forwardProxy.modal.batchValidateSummary', {
+        available: availableCount,
+        unavailable: unavailableCount,
       }),
-      normalizedValues,
-      discoveredNodes: normalizedValues.length,
-      latencyMs: latencyCount > 0 ? totalLatency / latencyCount : undefined,
+      normalizedValues: results.filter((item) => item.available).map((item) => item.normalizedValue),
+      discoveredNodes: availableCount,
     })
   }, [forwardProxyModalInput, forwardProxyModalKind, t])
 
   const handleConfirmAddForwardProxyCandidate = useCallback(() => {
     if (forwardProxyValidation.status !== 'passed' || !forwardProxyModalKind) return
+    if (forwardProxyModalKind !== 'subscriptionUrl') return
     if (forwardProxyValidation.normalizedValues.length === 0) return
-    if (forwardProxyModalKind === 'proxyBatch') {
-      setForwardProxyUrls((current) => {
-        let next = current
-        for (const value of forwardProxyValidation.normalizedValues) {
-          next = appendUniqueItem(next, value)
-        }
-        return next
-      })
-    } else {
-      setForwardProxySubscriptionUrls((current) => appendUniqueItem(current, forwardProxyValidation.normalizedValues[0]))
-    }
+    setForwardProxySubscriptionUrls((current) => appendUniqueItem(current, forwardProxyValidation.normalizedValues[0]))
     setForwardProxyDirty(true)
     closeForwardProxyAddModal()
   }, [closeForwardProxyAddModal, forwardProxyModalKind, forwardProxyValidation])
+
+  const handleAddValidatedBatchNode = useCallback(
+    (nodeKey: string) => {
+      if (forwardProxyModalKind !== 'proxyBatch') return
+      setForwardProxyBatchResults((current) => {
+        const target = current.find((item) => item.key === nodeKey)
+        if (!target || !target.available) return current
+        setForwardProxyUrls((list) => appendUniqueItem(list, target.normalizedValue))
+        setForwardProxyDirty(true)
+        const next = current.filter((item) => item.key !== nodeKey)
+        if (next.length === 0) {
+          queueMicrotask(() => closeForwardProxyAddModal())
+        }
+        return next
+      })
+    },
+    [closeForwardProxyAddModal, forwardProxyModalKind],
+  )
 
   const removeForwardProxyUrl = useCallback((target: string) => {
     setForwardProxyUrls((current) => current.filter((item) => item !== target))
@@ -594,6 +651,7 @@ export default function SettingsPage() {
           : 'settings.forwardProxy.modal.subscriptionTitle',
       )
     : ''
+  const forwardProxyModalIsBatch = forwardProxyModalKind === 'proxyBatch'
   const forwardProxyModalInputLabel = forwardProxyModalKind
     ? t(
         forwardProxyModalKind === 'proxyBatch'
@@ -608,7 +666,10 @@ export default function SettingsPage() {
           : 'settings.forwardProxy.modal.subscriptionPlaceholder',
       )
     : ''
+  const forwardProxyBatchAvailableCount = forwardProxyBatchResults.filter((item) => item.available).length
+  const forwardProxyBatchUnavailableCount = forwardProxyBatchResults.length - forwardProxyBatchAvailableCount
   const forwardProxyCanConfirmAdd =
+    !forwardProxyModalIsBatch &&
     forwardProxyValidation.status === 'passed' &&
     forwardProxyValidation.normalizedValues.length > 0 &&
     !isForwardProxySaving
@@ -1062,35 +1123,113 @@ export default function SettingsPage() {
                 <div className="space-y-1 border-b border-base-300/70 px-5 py-4">
                   <h3 className="text-lg font-semibold">{forwardProxyModalTitle}</h3>
                   <p className="text-sm text-base-content/65">{t('settings.forwardProxy.modal.description')}</p>
+                  {forwardProxyModalIsBatch && (
+                    <div className="mt-2 flex items-center gap-2 text-xs">
+                      <span
+                        className={cn(
+                          'rounded-full border px-2 py-1',
+                          forwardProxyModalStep === 1
+                            ? 'border-primary/45 bg-primary/10 text-primary'
+                            : 'border-base-300/75 bg-base-200/60 text-base-content/70',
+                        )}
+                      >
+                        {t('settings.forwardProxy.modal.step1')}
+                      </span>
+                      <span className="text-base-content/50">→</span>
+                      <span
+                        className={cn(
+                          'rounded-full border px-2 py-1',
+                          forwardProxyModalStep === 2
+                            ? 'border-primary/45 bg-primary/10 text-primary'
+                            : 'border-base-300/75 bg-base-200/60 text-base-content/70',
+                        )}
+                      >
+                        {t('settings.forwardProxy.modal.step2')}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-4 px-5 py-4">
-                  <div className="space-y-2">
-                    <label htmlFor="forward-proxy-modal-input" className="block text-sm font-medium text-base-content/75">
-                      {forwardProxyModalInputLabel}
-                    </label>
-                    {forwardProxyModalKind === 'proxyBatch' ? (
-                      <textarea
-                        id="forward-proxy-modal-input"
-                        className="h-36 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm font-mono outline-none ring-0 transition focus:border-primary/50"
-                        value={forwardProxyModalInput}
-                        placeholder={forwardProxyModalPlaceholder}
-                        onChange={(event) => {
-                          setForwardProxyModalInput(event.target.value)
-                          setForwardProxyValidation({ status: 'idle' })
-                        }}
-                      />
-                    ) : (
-                      <Input
-                        id="forward-proxy-modal-input"
-                        value={forwardProxyModalInput}
-                        placeholder={forwardProxyModalPlaceholder}
-                        onChange={(event) => {
-                          setForwardProxyModalInput(event.target.value)
-                          setForwardProxyValidation({ status: 'idle' })
-                        }}
-                      />
-                    )}
-                  </div>
+                  {(!forwardProxyModalIsBatch || forwardProxyModalStep === 1) && (
+                    <div className="space-y-2">
+                      <label htmlFor="forward-proxy-modal-input" className="block text-sm font-medium text-base-content/75">
+                        {forwardProxyModalInputLabel}
+                      </label>
+                      {forwardProxyModalIsBatch ? (
+                        <textarea
+                          id="forward-proxy-modal-input"
+                          className="h-36 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm font-mono outline-none ring-0 transition focus:border-primary/50"
+                          value={forwardProxyModalInput}
+                          placeholder={forwardProxyModalPlaceholder}
+                          onChange={(event) => {
+                            setForwardProxyModalInput(event.target.value)
+                            setForwardProxyValidation({ status: 'idle' })
+                          }}
+                        />
+                      ) : (
+                        <Input
+                          id="forward-proxy-modal-input"
+                          value={forwardProxyModalInput}
+                          placeholder={forwardProxyModalPlaceholder}
+                          onChange={(event) => {
+                            setForwardProxyModalInput(event.target.value)
+                            setForwardProxyValidation({ status: 'idle' })
+                          }}
+                        />
+                      )}
+                    </div>
+                  )}
+
+                  {forwardProxyModalIsBatch && forwardProxyModalStep === 2 && (
+                    <div className="space-y-3">
+                      <Alert variant="info">
+                        {t('settings.forwardProxy.modal.batchValidateSummary', {
+                          available: forwardProxyBatchAvailableCount,
+                          unavailable: forwardProxyBatchUnavailableCount,
+                        })}
+                      </Alert>
+                      <div className="max-h-72 overflow-y-auto rounded-xl border border-base-300/75">
+                        <table className="w-full text-xs">
+                          <thead className="bg-base-200/70 text-base-content/65">
+                            <tr>
+                              <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultNode')}</th>
+                              <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultStatus')}</th>
+                              <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultLatency')}</th>
+                              <th className="px-3 py-2 text-right">{t('settings.forwardProxy.modal.resultAction')}</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-base-300/65">
+                            {forwardProxyBatchResults.map((item) => (
+                              <tr key={item.key} className={item.available ? '' : 'bg-warning/10'}>
+                                <td className="px-3 py-2">
+                                  <div className="font-mono text-[11px] break-all">{item.normalizedValue}</div>
+                                  <div className="text-[11px] text-base-content/65">{item.message}</div>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span className={cn('rounded px-1.5 py-0.5 text-[11px]', item.available ? 'bg-success/20 text-success' : 'bg-warning/20 text-warning')}>
+                                    {item.available
+                                      ? t('settings.forwardProxy.modal.statusAvailable')
+                                      : t('settings.forwardProxy.modal.statusUnavailable')}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2">{item.latencyMs == null ? '—' : `${item.latencyMs.toFixed(0)} ms`}</td>
+                                <td className="px-3 py-2 text-right">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={!item.available || isForwardProxySaving}
+                                    onClick={() => handleAddValidatedBatchNode(item.key)}
+                                  >
+                                    {t('settings.forwardProxy.modal.addNode')}
+                                  </Button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
 
                   {forwardProxyValidation.status === 'validating' && (
                     <Alert variant="info">{t('settings.forwardProxy.modal.validating')}</Alert>
@@ -1098,15 +1237,10 @@ export default function SettingsPage() {
                   {forwardProxyValidation.status === 'failed' && (
                     <Alert variant="error">{forwardProxyValidation.message}</Alert>
                   )}
-                  {forwardProxyValidation.status === 'passed' && (
+                  {!forwardProxyModalIsBatch && forwardProxyValidation.status === 'passed' && (
                     <Alert variant="success">
                       <div className="space-y-1">
                         <div>{forwardProxyValidation.message || t('settings.forwardProxy.modal.validateSuccess')}</div>
-                        <div className="text-xs opacity-80">
-                          {t('settings.forwardProxy.modal.normalizedCount', {
-                            count: forwardProxyValidation.normalizedValues.length,
-                          })}
-                        </div>
                         {forwardProxyValidation.normalizedValues.slice(0, 2).map((value) => (
                           <div key={value} className="font-mono text-xs opacity-80">
                             {t('settings.forwardProxy.modal.normalizedValue', { value })}
@@ -1131,17 +1265,25 @@ export default function SettingsPage() {
                   <Button type="button" variant="ghost" onClick={closeForwardProxyAddModal}>
                     {t('settings.forwardProxy.modal.cancel')}
                   </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    disabled={forwardProxyValidation.status === 'validating'}
-                    onClick={() => void handleValidateForwardProxyCandidate()}
-                  >
-                    {t('settings.forwardProxy.modal.validate')}
-                  </Button>
-                  <Button type="button" disabled={!forwardProxyCanConfirmAdd} onClick={handleConfirmAddForwardProxyCandidate}>
-                    {t('settings.forwardProxy.modal.add')}
-                  </Button>
+                  {forwardProxyModalIsBatch && forwardProxyModalStep === 2 ? (
+                    <Button type="button" variant="secondary" onClick={() => setForwardProxyModalStep(1)}>
+                      {t('settings.forwardProxy.modal.backToStep1')}
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={forwardProxyValidation.status === 'validating'}
+                      onClick={() => void handleValidateForwardProxyCandidate()}
+                    >
+                      {t('settings.forwardProxy.modal.validate')}
+                    </Button>
+                  )}
+                  {!forwardProxyModalIsBatch && (
+                    <Button type="button" disabled={!forwardProxyCanConfirmAdd} onClick={handleConfirmAddForwardProxyCandidate}>
+                      {t('settings.forwardProxy.modal.add')}
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>
