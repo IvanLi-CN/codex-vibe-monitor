@@ -5,14 +5,14 @@ test.describe('Sticky footer layout', () => {
     await page.setViewportSize({ width: 1280, height: 900 })
     await page.goto('/#/stats')
 
-    const footer = page.locator('.app-shell > footer')
+    const footer = page.getByTestId('app-footer')
     await expect(footer).toBeAttached()
 
     // Force the "short content" scenario without depending on backend data volume.
     await page.addStyleTag({
       content: `
-        main > * { display: none !important; }
-        main { padding: 0 !important; }
+        .app-shell > main > * { display: none !important; }
+        .app-shell > main { padding: 0 !important; }
       `,
     })
 
@@ -21,7 +21,7 @@ test.describe('Sticky footer layout', () => {
     await expect
       .poll(async () => {
         return page.evaluate(() => {
-          const node = document.querySelector('.app-shell > footer') as HTMLElement | null
+          const node = document.querySelector('[data-testid="app-footer"]') as HTMLElement | null
           if (!node) return Number.POSITIVE_INFINITY
           const rect = node.getBoundingClientRect()
           return Math.abs(window.innerHeight - rect.bottom)
@@ -34,25 +34,28 @@ test.describe('Sticky footer layout', () => {
     await page.setViewportSize({ width: 1280, height: 900 })
     await page.goto('/#/stats')
 
-    const footer = page.locator('.app-shell > footer')
+    const footer = page.getByTestId('app-footer')
     await expect(footer).toBeAttached()
 
     // Make the page tall using CSS (avoids mutating the React-managed DOM).
     await page.addStyleTag({
       content: `
-        main::after { content: ''; display: block; height: 200vh; }
+        .app-shell > main::after { content: ''; display: block; height: 200vh; }
       `,
     })
 
     await expect(footer).not.toBeInViewport()
 
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+    await page.evaluate(() => {
+      const scrollingElement = document.scrollingElement ?? document.documentElement
+      window.scrollTo(0, scrollingElement.scrollHeight)
+    })
 
     await expect(footer).toBeInViewport()
     await expect
       .poll(async () => {
         return page.evaluate(() => {
-          const node = document.querySelector('.app-shell > footer') as HTMLElement | null
+          const node = document.querySelector('[data-testid="app-footer"]') as HTMLElement | null
           if (!node) return Number.POSITIVE_INFINITY
           const rect = node.getBoundingClientRect()
           return Math.abs(window.innerHeight - rect.bottom)

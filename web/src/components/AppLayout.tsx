@@ -334,7 +334,10 @@ export function AppLayout() {
       <main className="mx-auto w-full max-w-[1200px] flex-1 min-h-0 px-4 py-6 pb-8">
         <Outlet />
       </main>
-      <footer className="border-t border-base-300/75 bg-base-100/80 text-sm text-base-content/70 backdrop-blur">
+      <footer
+        className="border-t border-base-300/75 bg-base-100/80 text-sm text-base-content/70 backdrop-blur"
+        data-testid="app-footer"
+      >
         <div className="mx-auto flex w-full max-w-[1200px] flex-wrap items-center justify-between gap-3 px-4 py-3">
           <span>{t('app.footer.copyright')}</span>
           <div className="flex flex-wrap items-center gap-4">
