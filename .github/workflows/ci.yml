@@ -341,7 +341,7 @@ jobs:
           fi
 
           for _ in $(seq 1 30); do
-            if curl -fsS "http://127.0.0.1:${host_port}/health" | grep -q '^ok$'; then
+            if curl -fsS -m 1 "http://127.0.0.1:${host_port}/health" | grep -q '^ok$'; then
               echo "Smoke: /health ok"
               exit 0
             fi
