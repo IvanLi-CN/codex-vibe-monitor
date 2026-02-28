@@ -322,6 +322,26 @@ function isForwardProxyValidationTimeout(message: string): boolean {
   return normalized.includes('timed out') || normalized.includes('timeout') || normalized.includes('超时')
 }
 
+function isForwardProxyBackendServerError(message: string): boolean {
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('request failed: 500') ||
+    normalized.includes('request failed: 502') ||
+    normalized.includes('request failed: 503') ||
+    normalized.includes('request failed: 504')
+  )
+}
+
+function isForwardProxyBackendUnreachable(message: string): boolean {
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('failed to fetch') ||
+    normalized.includes('networkerror') ||
+    normalized.includes('load failed') ||
+    normalized.includes('network request failed')
+  )
+}
+
 function emptyForwardProxyNodeStats(): ForwardProxyNodeStats {
   return {
     oneMinute: { attempts: 0 },
@@ -692,6 +712,24 @@ export default function SettingsPage() {
     setForwardProxyValidation({ status: 'idle' })
   }, [])
 
+  const resolveForwardProxyValidationErrorMessage = useCallback(
+    (error: unknown) => {
+      const rawMessage = error instanceof Error ? error.message : String(error ?? '')
+      if (isForwardProxyValidationTimeout(rawMessage)) {
+        return rawMessage
+      }
+      if (isForwardProxyBackendUnreachable(rawMessage)) {
+        return t('settings.forwardProxy.modal.backendUnreachable')
+      }
+      if (isForwardProxyBackendServerError(rawMessage)) {
+        return t('settings.forwardProxy.modal.backendServerError')
+      }
+      const trimmed = rawMessage.trim()
+      return trimmed || t('settings.forwardProxy.modal.validateFailed')
+    },
+    [t],
+  )
+
   const syncForwardProxyBatchValidationState = useCallback(
     (results: ForwardProxyBatchValidationItem[]) => {
       const availableCount = results.filter((item) => item.status === 'available').length
@@ -753,7 +791,7 @@ export default function SettingsPage() {
           message,
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
+        const message = resolveForwardProxyValidationErrorMessage(err)
         roundResult = {
           round,
           ok: false,
@@ -802,7 +840,7 @@ export default function SettingsPage() {
         return next
       })
     },
-    [syncForwardProxyBatchValidationState, t],
+    [resolveForwardProxyValidationErrorMessage, syncForwardProxyBatchValidationState, t],
   )
 
   const handleValidateForwardProxyCandidate = useCallback(async () => {
@@ -840,7 +878,7 @@ export default function SettingsPage() {
       } catch (err) {
         setForwardProxyValidation({
           status: 'failed',
-          message: err instanceof Error ? err.message : String(err),
+          message: resolveForwardProxyValidationErrorMessage(err),
         })
       }
       return
@@ -905,6 +943,7 @@ export default function SettingsPage() {
   }, [
     forwardProxyModalInput,
     forwardProxyModalKind,
+    resolveForwardProxyValidationErrorMessage,
     runForwardProxyBatchValidationRoundTask,
     syncForwardProxyBatchValidationState,
     t,

@@ -15,8 +15,10 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    const text = await response.text()
-    throw new Error(`Request failed: ${response.status} ${text}`)
+    const rawText = await response.text()
+    const compactText = rawText.replace(/\s+/g, ' ').trim()
+    const detail = (compactText || response.statusText || '').slice(0, 220)
+    throw new Error(detail ? `Request failed: ${response.status} ${detail}` : `Request failed: ${response.status}`)
   }
 
   return response.json() as Promise<T>

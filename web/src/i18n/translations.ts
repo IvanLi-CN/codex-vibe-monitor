@@ -128,6 +128,10 @@ const baseTranslations = {
     'settings.forwardProxy.modal.cancel': 'Cancel',
     'settings.forwardProxy.modal.validateSuccess': 'Validation passed.',
     'settings.forwardProxy.modal.validateFailed': 'Validation failed.',
+    'settings.forwardProxy.modal.backendUnreachable':
+      'Cannot reach backend service. Please ensure 127.0.0.1:8080 is running.',
+    'settings.forwardProxy.modal.backendServerError':
+      'Backend returned an internal error. Please check backend status and logs.',
     'settings.forwardProxy.modal.batchValidateSuccess': 'Validation passed for {{count}} node(s).',
     'settings.forwardProxy.modal.batchValidateFailed': 'Validation failed for {{failed}}/{{total}} node(s).',
     'settings.forwardProxy.modal.batchValidateSummary': 'Available: {{available}}, unavailable: {{unavailable}}.',
@@ -436,6 +440,8 @@ const baseTranslations = {
     'settings.forwardProxy.modal.cancel': '取消',
     'settings.forwardProxy.modal.validateSuccess': '验证通过。',
     'settings.forwardProxy.modal.validateFailed': '验证失败。',
+    'settings.forwardProxy.modal.backendUnreachable': '无法连接后端服务，请确认 127.0.0.1:8080 已启动。',
+    'settings.forwardProxy.modal.backendServerError': '后端返回内部错误，请检查后端状态与日志。',
     'settings.forwardProxy.modal.batchValidateSuccess': '共 {{count}} 条节点验证通过。',
     'settings.forwardProxy.modal.batchValidateFailed': '共 {{total}} 条中有 {{failed}} 条验证失败。',
     'settings.forwardProxy.modal.batchValidateSummary': '可用 {{available}} 条，不可用 {{unavailable}} 条。',
