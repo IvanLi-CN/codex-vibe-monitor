@@ -32,17 +32,19 @@ type PricingDraft = {
 
 type ForwardProxyValidationState =
   | { status: 'idle' }
-  | { status: 'validating' }
+  | { status: 'validating'; message?: string }
   | { status: 'failed'; message: string }
   | { status: 'passed'; message: string; normalizedValues: string[]; discoveredNodes?: number; latencyMs?: number }
 
 type ForwardProxyModalKind = 'proxyBatch' | 'subscriptionUrl'
 
+type ForwardProxyBatchValidationStatus = 'validating' | 'available' | 'unavailable'
+
 type ForwardProxyBatchValidationItem = {
   key: string
   rawValue: string
   normalizedValue: string
-  available: boolean
+  status: ForwardProxyBatchValidationStatus
   latencyMs?: number
   message: string
 }
@@ -177,6 +179,32 @@ function parseMultilineItems(raw: string): string[] {
   return items
 }
 
+function batchStatusRank(status: ForwardProxyBatchValidationStatus): number {
+  if (status === 'available') return 3
+  if (status === 'validating') return 2
+  return 1
+}
+
+function pickPreferredBatchItem(
+  existing: ForwardProxyBatchValidationItem,
+  candidate: ForwardProxyBatchValidationItem,
+): ForwardProxyBatchValidationItem {
+  const existingRank = batchStatusRank(existing.status)
+  const candidateRank = batchStatusRank(candidate.status)
+  if (candidateRank > existingRank) return candidate
+  if (candidateRank < existingRank) return existing
+
+  if (
+    existing.status === 'available' &&
+    candidate.status === 'available' &&
+    candidate.latencyMs != null &&
+    (existing.latencyMs == null || candidate.latencyMs < existing.latencyMs)
+  ) {
+    return candidate
+  }
+  return existing
+}
+
 function formatSuccessRate(value?: number): string {
   if (value == null || Number.isNaN(value)) return '—'
   return `${(value * 100).toFixed(1)}%`
@@ -215,6 +243,7 @@ export default function SettingsPage() {
   const [forwardProxyBatchResults, setForwardProxyBatchResults] = useState<ForwardProxyBatchValidationItem[]>([])
   const [forwardProxyValidation, setForwardProxyValidation] = useState<ForwardProxyValidationState>({ status: 'idle' })
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const forwardProxyBatchValidationRunRef = useRef(0)
   const lastSyncedPricingKeyRef = useRef<string | null>(null)
   const lastHandledRollbackVersionRef = useRef(pricingRollbackVersion)
 
@@ -457,6 +486,7 @@ export default function SettingsPage() {
   ])
 
   const openForwardProxyAddModal = useCallback((kind: ForwardProxyModalKind) => {
+    forwardProxyBatchValidationRunRef.current += 1
     setForwardProxyModalKind(kind)
     setForwardProxyModalStep(1)
     setForwardProxyModalInput('')
@@ -465,6 +495,7 @@ export default function SettingsPage() {
   }, [])
 
   const closeForwardProxyAddModal = useCallback(() => {
+    forwardProxyBatchValidationRunRef.current += 1
     setForwardProxyModalKind(null)
     setForwardProxyModalStep(1)
     setForwardProxyModalInput('')
@@ -521,11 +552,30 @@ export default function SettingsPage() {
       })
       return
     }
-    const deduped = new Map<string, ForwardProxyBatchValidationItem>()
-    let availableCount = 0
-    let unavailableCount = 0
+    setForwardProxyModalStep(2)
+    const validationRunId = forwardProxyBatchValidationRunRef.current + 1
+    forwardProxyBatchValidationRunRef.current = validationRunId
+
+    const resultMap = new Map<string, ForwardProxyBatchValidationItem>()
+    const pendingKeyByRaw = new Map<string, string>()
+    for (const [index, rawLine] of lines.entries()) {
+      const pendingKey = `__pending__${index}`
+      pendingKeyByRaw.set(rawLine, pendingKey)
+      resultMap.set(pendingKey, {
+        key: pendingKey,
+        rawValue: rawLine,
+        normalizedValue: rawLine,
+        status: 'validating',
+        message: t('settings.forwardProxy.modal.rowValidating'),
+      })
+    }
+
+    setForwardProxyBatchResults([...resultMap.values()])
+    setForwardProxyValidation({ status: 'validating' })
 
     for (const rawLine of lines) {
+      if (forwardProxyBatchValidationRunRef.current !== validationRunId) return
+
       let item: ForwardProxyBatchValidationItem
       try {
         const result = await validateForwardProxyCandidate({
@@ -538,7 +588,7 @@ export default function SettingsPage() {
             key: normalizedValue,
             rawValue: rawLine,
             normalizedValue,
-            available: true,
+            status: 'available',
             latencyMs: result.latencyMs,
             message: result.message || t('settings.forwardProxy.modal.validateSuccess'),
           }
@@ -547,7 +597,7 @@ export default function SettingsPage() {
             key: rawLine,
             rawValue: rawLine,
             normalizedValue: rawLine,
-            available: false,
+            status: 'unavailable',
             latencyMs: result.latencyMs,
             message: result.message || t('settings.forwardProxy.modal.validateFailed'),
           }
@@ -557,52 +607,53 @@ export default function SettingsPage() {
           key: rawLine,
           rawValue: rawLine,
           normalizedValue: rawLine,
-          available: false,
+          status: 'unavailable',
           message: err instanceof Error ? err.message : String(err),
         }
       }
 
-      const existing = deduped.get(item.key)
+      resultMap.delete(pendingKeyByRaw.get(rawLine) ?? rawLine)
+      const existing = resultMap.get(item.key)
       if (!existing) {
-        deduped.set(item.key, item)
-      } else if (!existing.available && item.available) {
-        deduped.set(item.key, item)
-      } else if (
-        existing.available &&
-        item.available &&
-        item.latencyMs != null &&
-        (existing.latencyMs == null || item.latencyMs < existing.latencyMs)
-      ) {
-        deduped.set(item.key, item)
+        resultMap.set(item.key, item)
+      } else {
+        resultMap.set(item.key, pickPreferredBatchItem(existing, item))
       }
-    }
 
-    const results = [...deduped.values()]
-    for (const item of results) {
-      if (item.available) availableCount += 1
-      else unavailableCount += 1
-    }
+      if (forwardProxyBatchValidationRunRef.current !== validationRunId) return
 
-    if (results.length === 0) {
+      const progressResults = [...resultMap.values()]
+      const availableCount = progressResults.filter((entry) => entry.status === 'available').length
+      const unavailableCount = progressResults.filter((entry) => entry.status === 'unavailable').length
+      const validatingCount = progressResults.length - availableCount - unavailableCount
+
+      setForwardProxyBatchResults(progressResults)
       setForwardProxyValidation({
-        status: 'failed',
-        message: t('settings.forwardProxy.modal.batchValidateFailed', {
-          failed: lines.length,
-          total: lines.length,
+        status: 'validating',
+        message: t('settings.forwardProxy.modal.batchValidateProgress', {
+          available: availableCount,
+          unavailable: unavailableCount,
+          validating: validatingCount,
         }),
       })
-      return
     }
 
+    if (forwardProxyBatchValidationRunRef.current !== validationRunId) return
+
+    const results = [...resultMap.values()]
+    const availableCount = results.filter((item) => item.status === 'available').length
+    const unavailableCount = results.filter((item) => item.status === 'unavailable').length
+
     setForwardProxyBatchResults(results)
-    setForwardProxyModalStep(2)
     setForwardProxyValidation({
       status: 'passed',
       message: t('settings.forwardProxy.modal.batchValidateSummary', {
         available: availableCount,
         unavailable: unavailableCount,
       }),
-      normalizedValues: results.filter((item) => item.available).map((item) => item.normalizedValue),
+      normalizedValues: results
+        .filter((item) => item.status === 'available')
+        .map((item) => item.normalizedValue),
       discoveredNodes: availableCount,
     })
   }, [forwardProxyModalInput, forwardProxyModalKind, t])
@@ -621,7 +672,7 @@ export default function SettingsPage() {
       if (forwardProxyModalKind !== 'proxyBatch') return
       setForwardProxyBatchResults((current) => {
         const target = current.find((item) => item.key === nodeKey)
-        if (!target || !target.available) return current
+        if (!target || target.status !== 'available') return current
         setForwardProxyUrls((list) => appendUniqueItem(list, target.normalizedValue))
         setForwardProxyDirty(true)
         const next = current.filter((item) => item.key !== nodeKey)
@@ -666,8 +717,9 @@ export default function SettingsPage() {
           : 'settings.forwardProxy.modal.subscriptionPlaceholder',
       )
     : ''
-  const forwardProxyBatchAvailableCount = forwardProxyBatchResults.filter((item) => item.available).length
-  const forwardProxyBatchUnavailableCount = forwardProxyBatchResults.length - forwardProxyBatchAvailableCount
+  const forwardProxyBatchAvailableCount = forwardProxyBatchResults.filter((item) => item.status === 'available').length
+  const forwardProxyBatchUnavailableCount = forwardProxyBatchResults.filter((item) => item.status === 'unavailable').length
+  const forwardProxyBatchValidatingCount = forwardProxyBatchResults.length - forwardProxyBatchAvailableCount - forwardProxyBatchUnavailableCount
   const forwardProxyCanConfirmAdd =
     !forwardProxyModalIsBatch &&
     forwardProxyValidation.status === 'passed' &&
@@ -1205,7 +1257,9 @@ export default function SettingsPage() {
                           value={forwardProxyModalInput}
                           placeholder={forwardProxyModalPlaceholder}
                           onChange={(event) => {
+                            forwardProxyBatchValidationRunRef.current += 1
                             setForwardProxyModalInput(event.target.value)
+                            setForwardProxyBatchResults([])
                             setForwardProxyValidation({ status: 'idle' })
                           }}
                         />
@@ -1226,10 +1280,16 @@ export default function SettingsPage() {
                   {forwardProxyModalIsBatch && forwardProxyModalStep === 2 && (
                     <div className="space-y-3">
                       <Alert variant="info">
-                        {t('settings.forwardProxy.modal.batchValidateSummary', {
-                          available: forwardProxyBatchAvailableCount,
-                          unavailable: forwardProxyBatchUnavailableCount,
-                        })}
+                        {forwardProxyBatchValidatingCount > 0
+                          ? t('settings.forwardProxy.modal.batchValidateProgress', {
+                              available: forwardProxyBatchAvailableCount,
+                              unavailable: forwardProxyBatchUnavailableCount,
+                              validating: forwardProxyBatchValidatingCount,
+                            })
+                          : t('settings.forwardProxy.modal.batchValidateSummary', {
+                              available: forwardProxyBatchAvailableCount,
+                              unavailable: forwardProxyBatchUnavailableCount,
+                            })}
                       </Alert>
                       <div className="max-h-72 overflow-y-auto rounded-xl border border-base-300/75">
                         <table className="w-full text-xs">
@@ -1243,16 +1303,27 @@ export default function SettingsPage() {
                           </thead>
                           <tbody className="divide-y divide-base-300/65">
                             {forwardProxyBatchResults.map((item) => (
-                              <tr key={item.key} className={item.available ? '' : 'bg-warning/10'}>
+                              <tr key={item.key} className={item.status === 'unavailable' ? 'bg-warning/10' : ''}>
                                 <td className="px-3 py-2">
                                   <div className="font-mono text-[11px] break-all">{item.normalizedValue}</div>
                                   <div className="text-[11px] text-base-content/65">{item.message}</div>
                                 </td>
                                 <td className="px-3 py-2">
-                                  <span className={cn('rounded px-1.5 py-0.5 text-[11px]', item.available ? 'bg-success/20 text-success' : 'bg-warning/20 text-warning')}>
-                                    {item.available
+                                  <span
+                                    className={cn(
+                                      'rounded px-1.5 py-0.5 text-[11px]',
+                                      item.status === 'available'
+                                        ? 'bg-success/20 text-success'
+                                        : item.status === 'unavailable'
+                                          ? 'bg-warning/20 text-warning'
+                                          : 'bg-info/20 text-info',
+                                    )}
+                                  >
+                                    {item.status === 'available'
                                       ? t('settings.forwardProxy.modal.statusAvailable')
-                                      : t('settings.forwardProxy.modal.statusUnavailable')}
+                                      : item.status === 'unavailable'
+                                        ? t('settings.forwardProxy.modal.statusUnavailable')
+                                        : t('settings.forwardProxy.modal.statusValidating')}
                                   </span>
                                 </td>
                                 <td className="px-3 py-2">{item.latencyMs == null ? '—' : `${item.latencyMs.toFixed(0)} ms`}</td>
@@ -1260,7 +1331,7 @@ export default function SettingsPage() {
                                   <Button
                                     type="button"
                                     size="sm"
-                                    disabled={!item.available || isForwardProxySaving}
+                                    disabled={item.status !== 'available' || isForwardProxySaving}
                                     onClick={() => handleAddValidatedBatchNode(item.key)}
                                   >
                                     {t('settings.forwardProxy.modal.addNode')}
@@ -1274,7 +1345,7 @@ export default function SettingsPage() {
                     </div>
                   )}
 
-                  {forwardProxyValidation.status === 'validating' && (
+                  {!forwardProxyModalIsBatch && forwardProxyValidation.status === 'validating' && (
                     <Alert variant="info">{t('settings.forwardProxy.modal.validating')}</Alert>
                   )}
                   {forwardProxyValidation.status === 'failed' && (
