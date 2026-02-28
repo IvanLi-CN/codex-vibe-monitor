@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-03-01
 - Last: 2026-03-01
 
@@ -30,7 +30,7 @@
 
 ### In scope
 
-- `/Users/ivan/.codex/worktrees/75ff/codex-vibe-monitor/web/src/components/AppLayout.tsx`
+- `web/src/components/AppLayout.tsx`
   - 外层容器改为纵向 flex，`main` 使用 `flex-1` 撑满剩余高度。
 - （可选）新增轻量 Playwright E2E 回归：`web/tests/e2e/sticky-footer.spec.ts`
 
@@ -54,10 +54,13 @@
 ## 实现里程碑（Milestones / Delivery checklist）
 
 - [x] M1: 新增本 Spec 并登记到 `docs/specs/README.md`。
-- [ ] M2: 完成 `AppLayout` sticky footer 布局修复。
-- [ ] M3: 通过 `web` 的 lint + build（必要时补充 E2E 回归）。
-- [ ] M4: PR ready（checks 状态明确），并在 Index Notes 记录 PR 号。
+- [x] M2: 完成 `AppLayout` sticky footer 布局修复。
+- [x] M3: 通过 `web` 的 lint + build（必要时补充 E2E 回归）。
+- [x] M4: PR ready（checks 状态明确），并在 Index Notes 记录 PR 号。
 
 ## 进度备注
 
-- 2026-03-01: 创建 Spec 并登记 Index，待实现。
+- 2026-03-01: 完成 sticky footer 布局修复（`web/src/components/AppLayout.tsx`）：`app-shell` 增加 `flex flex-col`，`main` 增加 `flex-1 min-h-0`。
+- 2026-03-01: 新增 Playwright E2E 回归：`web/tests/e2e/sticky-footer.spec.ts`（短页贴底 + 长页滚动到底部才出现）。
+- 2026-03-01: 验证通过：`cd web && npm run lint -- --max-warnings=0`、`cd web && npx tsc -b`、`cd web && npm run build`。
+- 2026-03-01: PR #65，CI Pipeline 与 Label Gate 均为 success。
