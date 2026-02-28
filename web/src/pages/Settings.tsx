@@ -43,6 +43,7 @@ type ForwardProxyBatchValidationStatus = 'validating' | 'available' | 'unavailab
 
 type ForwardProxyBatchValidationItem = {
   key: string
+  order: number
   rawValue: string
   normalizedValue: string
   displayName: string
@@ -289,7 +290,7 @@ function pickPreferredBatchItem(
 ): ForwardProxyBatchValidationItem {
   const existingRank = batchStatusRank(existing.status)
   const candidateRank = batchStatusRank(candidate.status)
-  if (candidateRank > existingRank) return candidate
+  if (candidateRank > existingRank) return { ...candidate, order: Math.min(existing.order, candidate.order) }
   if (candidateRank < existingRank) return existing
 
   if (
@@ -298,9 +299,13 @@ function pickPreferredBatchItem(
     candidate.latencyMs != null &&
     (existing.latencyMs == null || candidate.latencyMs < existing.latencyMs)
   ) {
-    return candidate
+    return { ...candidate, order: Math.min(existing.order, candidate.order) }
   }
   return existing
+}
+
+function sortBatchResults(items: Iterable<ForwardProxyBatchValidationItem>): ForwardProxyBatchValidationItem[] {
+  return [...items].sort((a, b) => a.order - b.order)
 }
 
 function formatSuccessRate(value?: number): string {
@@ -663,6 +668,7 @@ export default function SettingsPage() {
       pendingKeyByRaw.set(rawLine, pendingKey)
       resultMap.set(pendingKey, {
         key: pendingKey,
+        order: index,
         rawValue: rawLine,
         normalizedValue: rawLine,
         displayName: extractProxyDisplayName(rawLine) || unknownNodeName,
@@ -672,10 +678,10 @@ export default function SettingsPage() {
       })
     }
 
-    setForwardProxyBatchResults([...resultMap.values()])
+    setForwardProxyBatchResults(sortBatchResults(resultMap.values()))
     setForwardProxyValidation({ status: 'validating' })
 
-    for (const rawLine of lines) {
+    for (const [lineIndex, rawLine] of lines.entries()) {
       if (forwardProxyBatchValidationRunRef.current !== validationRunId) return
 
       let item: ForwardProxyBatchValidationItem
@@ -688,6 +694,7 @@ export default function SettingsPage() {
           const normalizedValue = result.normalizedValue?.trim() || rawLine
           item = {
             key: normalizedValue,
+            order: lineIndex,
             rawValue: rawLine,
             normalizedValue,
             displayName: extractProxyDisplayName(normalizedValue) || extractProxyDisplayName(rawLine) || unknownNodeName,
@@ -699,6 +706,7 @@ export default function SettingsPage() {
         } else {
           item = {
             key: rawLine,
+            order: lineIndex,
             rawValue: rawLine,
             normalizedValue: rawLine,
             displayName: extractProxyDisplayName(rawLine) || unknownNodeName,
@@ -711,6 +719,7 @@ export default function SettingsPage() {
       } catch {
         item = {
           key: rawLine,
+          order: lineIndex,
           rawValue: rawLine,
           normalizedValue: rawLine,
           displayName: extractProxyDisplayName(rawLine) || unknownNodeName,
@@ -730,7 +739,7 @@ export default function SettingsPage() {
 
       if (forwardProxyBatchValidationRunRef.current !== validationRunId) return
 
-      const progressResults = [...resultMap.values()]
+      const progressResults = sortBatchResults(resultMap.values())
       const availableCount = progressResults.filter((entry) => entry.status === 'available').length
       const unavailableCount = progressResults.filter((entry) => entry.status === 'unavailable').length
       const validatingCount = progressResults.length - availableCount - unavailableCount
@@ -748,7 +757,7 @@ export default function SettingsPage() {
 
     if (forwardProxyBatchValidationRunRef.current !== validationRunId) return
 
-    const results = [...resultMap.values()]
+    const results = sortBatchResults(resultMap.values())
     const availableCount = results.filter((item) => item.status === 'available').length
     const unavailableCount = results.filter((item) => item.status === 'unavailable').length
 
