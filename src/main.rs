@@ -6735,8 +6735,13 @@ async fn probe_forward_proxy_endpoint(
         .await
         .map_err(|_| anyhow!("validation request timed out"))?
         .context("validation request failed")?;
-        if !response.status().is_success() {
-            bail!("validation probe returned status {}", response.status());
+        let status = response.status();
+        // Reaching upstream and getting auth-related responses still proves the route works.
+        let reachable = status.is_success()
+            || status == StatusCode::UNAUTHORIZED
+            || status == StatusCode::FORBIDDEN;
+        if !reachable {
+            bail!("validation probe returned status {}", status);
         }
         Ok::<(), anyhow::Error>(())
     }
