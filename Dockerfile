@@ -29,7 +29,29 @@ COPY . .
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
 RUN cargo build --release
 
-# Stage 3: runtime image
+# Stage 3: fetch Xray-core (xray) for forward-proxy subscription validation
+# The app defaults to `XY_XRAY_BINARY=xray` (PATH lookup). If the runtime image doesn't bundle
+# a real Xray-core binary, subscription validation for share links (vmess/vless/trojan/ss) fails.
+FROM debian:bookworm-slim AS xray-downloader
+ARG XRAY_CORE_VERSION=26.2.6
+ARG TARGETARCH
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "${TARGETARCH}" in \
+        amd64) XRAY_ZIP="Xray-linux-64.zip" ;; \
+        arm64) XRAY_ZIP="Xray-linux-arm64-v8a.zip" ;; \
+        *) echo "Unsupported TARGETARCH=${TARGETARCH} for Xray-core" >&2; exit 1 ;; \
+      esac \
+    && curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_CORE_VERSION}/${XRAY_ZIP}" \
+    && unzip -q /tmp/xray.zip -d /tmp/xray \
+    && install -m 0755 /tmp/xray/xray /usr/local/bin/xray \
+    && install -d /usr/local/share/licenses/xray-core \
+    && install -m 0644 /tmp/xray/LICENSE /usr/local/share/licenses/xray-core/LICENSE \
+    && rm -rf /tmp/xray /tmp/xray.zip
+
+# Stage 4: runtime image
 FROM debian:bookworm-slim AS runtime
 ARG APP_EFFECTIVE_VERSION
 ARG FRONTEND_EFFECTIVE_VERSION
@@ -41,6 +63,8 @@ RUN apt-get update \
 WORKDIR /srv/app
 
 COPY --from=rust-builder /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
+COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
+COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
 COPY --from=web-builder /app/web/dist ./web
 
 ENV XY_DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \

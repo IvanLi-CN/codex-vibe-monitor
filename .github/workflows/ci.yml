@@ -327,6 +327,9 @@ jobs:
           echo "Smoke: ${version_tag} -> codex-vibe-monitor --help"
           docker run --rm "${version_tag}" codex-vibe-monitor --help
 
+          echo "Smoke: ${version_tag} -> xray version"
+          docker run --rm "${version_tag}" xray version
+
           echo "Smoke: ${version_tag} -> start container and probe /health"
           cid="$(docker run -d -p 127.0.0.1::8080 "${version_tag}")"
           cleanup() { docker rm -f -v "${cid}" >/dev/null 2>&1 || true; }
