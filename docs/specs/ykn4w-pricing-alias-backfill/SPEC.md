@@ -47,7 +47,7 @@
 - Given 请求模型为 `gpt-5.2-2025-12-11` 且价目表存在 `gpt-5.2`，When 成本估算执行，Then `cost` 为非空且 `cost_estimated=true`。
 - Given 同时存在精确条目和基础条目，When 模型为日期后缀条目，Then 必须优先命中精确条目价格。
 - Given 启动时存在 `cost IS NULL` 且 usage 可用的历史成功记录，When 启动 backfill 执行，Then 对应行被补算并写入 `cost/cost_estimated/price_version`。
-- Given 历史记录缺少模型、缺少 usage 或模型无定价，When backfill 执行，Then 该记录保持不变并计入跳过统计。
+- Given 历史记录缺少模型、缺少 usage 或模型无定价，When backfill 执行，Then 其 `cost` 保持为空；其中“模型存在但无定价”的记录会写入尝试版号，避免同一价目快照重复扫描。
 - Given 已补算完成后再次执行 backfill，When 无新增空成本记录，Then `updated=0`（幂等）。
 - Given 执行 `cargo test`，When 测试结束，Then 新增回归测试通过且既有关键用例不回归。
 

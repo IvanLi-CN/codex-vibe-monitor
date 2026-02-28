@@ -70,6 +70,7 @@ const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
 const BACKFILL_BATCH_SIZE: i64 = 200;
 const BACKFILL_LOCK_RETRY_MAX_ATTEMPTS: u32 = 2;
 const BACKFILL_LOCK_RETRY_DELAY_SECS: u64 = 3;
+const COST_BACKFILL_ALGO_VERSION: &str = "2026-02-28";
 const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
 const DEFAULT_PROXY_RAW_RETENTION_DAYS: u64 = 7;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
@@ -4764,6 +4765,8 @@ fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> String {
     }
 
     let mut hash = 0xcbf29ce484222325_u64;
+    mix_fvn1a(&mut hash, COST_BACKFILL_ALGO_VERSION.as_bytes());
+    mix_fvn1a(&mut hash, &[0xfc]);
     mix_fvn1a(&mut hash, catalog.version.as_bytes());
     mix_fvn1a(&mut hash, &[0xff]);
 
@@ -12115,7 +12118,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backfill_proxy_missing_costs_tracks_skip_reasons() {
+    async fn backfill_proxy_missing_costs_skips_missing_model_or_usage_and_retries_unpriced_rows() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
             .expect("connect in-memory sqlite");
