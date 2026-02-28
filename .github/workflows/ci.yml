@@ -301,12 +301,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${PLATFORMS}" == *","* ]]; then
-            echo "PLATFORMS must be single-platform when using load: true (smoke gate)." >&2
+          # buildx `load` only supports a single-platform result.
+          if [[ "${PLATFORMS}" == *","* || "${PLATFORMS}" == *" "* ]]; then
+            echo "Smoke requires a single platform when using buildx load (PLATFORMS=${PLATFORMS})" >&2
             exit 1
           fi
 
-      - name: Build Docker image (load locally)
+      - name: Build Docker image (load)
         if: steps.intent.outputs.release_enabled == 'true'
         uses: docker/build-push-action@v6
         with:
@@ -321,7 +322,7 @@ jobs:
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
 
-      - name: Smoke test image (/health)
+      - name: Smoke test Docker image (startup + /health)
         if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
         env:
@@ -334,17 +335,19 @@ jobs:
         shell: bash
         env:
           SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:v${{ env.APP_EFFECTIVE_VERSION }}
+          TAGS: ${{ steps.image-tags.outputs.tags }}
         run: |
           set -euo pipefail
-          echo "[push] $SMOKE_TAG"
-          docker push "$SMOKE_TAG"
+          echo "[push] ${SMOKE_TAG}"
+          docker push "${SMOKE_TAG}"
 
-          while IFS= read -r tag; do
-            [[ -z "$tag" ]] && continue
-            [[ "$tag" == "$SMOKE_TAG" ]] && continue
-            echo "[push] $tag"
-            docker push "$tag"
-          done <<< "${{ steps.image-tags.outputs.tags }}"
+          mapfile -t tags <<< "${TAGS}"
+          for tag in "${tags[@]}"; do
+            [[ -z "${tag}" ]] && continue
+            [[ "${tag}" == "${SMOKE_TAG}" ]] && continue
+            echo "[push] ${tag}"
+            docker push "${tag}"
+          done
 
       - name: Create and push git tag
         if: steps.intent.outputs.release_enabled == 'true'

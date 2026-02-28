@@ -8,7 +8,7 @@ if [[ -z "$tag" ]]; then
 fi
 
 host="${SMOKE_HOST:-127.0.0.1}"
-port="${SMOKE_PORT:-18080}"
+port="${SMOKE_PORT-}"
 timeout_secs="${SMOKE_TIMEOUT_SECS:-60}"
 name="${SMOKE_CONTAINER_NAME:-smoke-codex-vibe-monitor}"
 
@@ -25,8 +25,28 @@ if ! docker image inspect "$tag" >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "[smoke] ${tag} -> codex-vibe-monitor --help"
+docker run --rm --pull=never "$tag" codex-vibe-monitor --help >/dev/null
+
+port_args=("-p" "${host}::8080")
+host_port=""
+if [[ -n "$port" ]]; then
+  port_args=("-p" "${host}:${port}:8080")
+  host_port="$port"
+fi
+
 echo "[smoke] starting container: ${tag}"
-docker run -d --name "$name" --pull=never -p "${host}:${port}:8080" "$tag" >/dev/null
+docker run -d --name "$name" --pull=never "${port_args[@]}" "$tag" >/dev/null
+
+if [[ -z "$host_port" ]]; then
+  host_port="$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort }}' "$name" 2>/dev/null || true)"
+  if [[ -z "$host_port" ]]; then
+    echo "[smoke] failed to resolve published host port for container ${name}" >&2
+    docker ps -a >&2 || true
+    docker logs "$name" >&2 || true
+    exit 1
+  fi
+fi
 
 deadline=$((SECONDS + timeout_secs))
 while (( SECONDS < deadline )); do
@@ -37,7 +57,7 @@ while (( SECONDS < deadline )); do
     exit 1
   fi
 
-  if curl -m 1 -fsS "http://${host}:${port}/health" | grep -qx "ok"; then
+  if curl -m 1 -fsS "http://${host}:${host_port}/health" | grep -qx "ok"; then
     echo "[smoke] /health ok"
     exit 0
   fi
