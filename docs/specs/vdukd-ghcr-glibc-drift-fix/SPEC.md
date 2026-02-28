@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（2/3）
+- Status: 已完成（3/3）
 - Created: 2026-03-01
 - Last: 2026-03-01
 
@@ -100,7 +100,9 @@ None
 
 - [x] M1: Pin Rust build stage to Debian bookworm（避免 glibc 漂移）
 - [x] M2: Add CI smoke gate before pushing image tags
-- [ ] M3: Release stable patch and verify `:latest` is usable
+- [x] M3: Release stable patch and verify `:latest` is usable
+  - Released: `v0.11.1`
+  - Good image digest (`v0.11.1` / `latest`): `sha256:8e4a351d68f809bfde1dcb42b27eecb078124af71850137b4bd42893d456c92a`
 
 ## 方案概述（Approach, high-level）
 
@@ -114,5 +116,6 @@ None
 
 ## 参考（References）
 
-- GitHub Release: v0.11.0
+- PR: #64
+- GitHub Release: `v0.11.1`
 - Bad image digest: `ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:4f8cf36367d6e7a5cba7496cee119bc205b06a118df54171c51a6dfa162ac327`
