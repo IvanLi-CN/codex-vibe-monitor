@@ -267,12 +267,14 @@ function extractProxyProtocolName(raw: string): string | null {
     socks: 'SOCKS',
     socks5: 'SOCKS5',
     socks5h: 'SOCKS5H',
-    vmess: 'VMess',
+    vmess: 'VMESS',
     vless: 'VLESS',
-    trojan: 'Trojan',
-    ss: 'Shadowsocks',
+    trojan: 'TROJAN',
+    ss: 'SS',
   }
-  return schemeDisplay[scheme] ?? scheme.toUpperCase()
+  const label = schemeDisplay[scheme] ?? scheme.toUpperCase()
+  if (label.length <= 10) return label
+  return `${label.slice(0, 10)}…`
 }
 
 function batchStatusRank(status: ForwardProxyBatchValidationStatus): number {
