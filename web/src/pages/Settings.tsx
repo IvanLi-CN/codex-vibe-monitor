@@ -1531,7 +1531,7 @@ export default function SettingsPage() {
                             <tr>
                               <th className="w-14 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultIndex')}</th>
                               <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultName')}</th>
-                              <th className="w-24 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultProtocol')}</th>
+                              <th className="w-24 px-3 py-2 text-right">{t('settings.forwardProxy.modal.resultProtocol')}</th>
                               <th className="w-24 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultStatus')}</th>
                               <th className="w-32 px-3 py-2 text-right">{t('settings.forwardProxy.modal.resultAction')}</th>
                             </tr>
@@ -1548,8 +1548,8 @@ export default function SettingsPage() {
                                     {item.displayName}
                                   </div>
                                 </td>
-                                <td className="px-3 py-2 text-base-content/70">
-                                  <span className="inline-block whitespace-nowrap text-sm">{item.protocolName}</span>
+                                <td className="px-3 py-2 text-right font-mono text-base-content/70">
+                                  <span className="inline-block w-full truncate whitespace-nowrap text-sm">{item.protocolName}</span>
                                 </td>
                                 <td className="px-3 py-2">
                                   <span
