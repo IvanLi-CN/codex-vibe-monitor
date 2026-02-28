@@ -47,7 +47,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use tokio::{
     net::{TcpListener, TcpStream},
     process::{Child, Command},
@@ -8889,6 +8889,7 @@ impl SelectedForwardProxy {
 struct XrayInstance {
     local_proxy_url: Url,
     config_path: PathBuf,
+    stderr_path: PathBuf,
     child: Child,
 }
 
@@ -8993,11 +8994,22 @@ impl XraySupervisor {
             "forward-proxy-{:016x}.json",
             stable_hash_u64(&endpoint.key)
         ));
+        let stderr_path = self.runtime_dir.join(format!(
+            "forward-proxy-{:016x}.stderr.log",
+            stable_hash_u64(&endpoint.key)
+        ));
         let config = build_xray_instance_config(local_port, outbound);
         let serialized =
             serde_json::to_vec_pretty(&config).context("failed to serialize xray config")?;
         fs::write(&config_path, serialized)
             .with_context(|| format!("failed to write xray config: {}", config_path.display()))?;
+
+        let stderr_file = fs::File::create(&stderr_path).with_context(|| {
+            format!(
+                "failed to create xray stderr log file: {}",
+                stderr_path.display()
+            )
+        })?;
 
         let mut child = Command::new(&self.binary)
             .arg("run")
@@ -9005,14 +9017,21 @@ impl XraySupervisor {
             .arg(&config_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(stderr_file))
             .spawn()
             .with_context(|| format!("failed to start xray binary: {}", self.binary))?;
 
         if let Err(err) = wait_for_xray_proxy_ready(&mut child, local_port).await {
+            let stderr_tail = read_file_tail_lossy(&stderr_path, 4 * 1024).unwrap_or(None);
             let _ = child.kill().await;
             let _ = child.wait().await;
             let _ = fs::remove_file(&config_path);
+            let _ = fs::remove_file(&stderr_path);
+            if let Some(stderr_tail) = stderr_tail
+                && !stderr_tail.trim().is_empty()
+            {
+                return Err(anyhow!("{err}\n\nxray stderr (tail):\n{stderr_tail}"));
+            }
             return Err(err);
         }
 
@@ -9023,6 +9042,7 @@ impl XraySupervisor {
             XrayInstance {
                 local_proxy_url: local_proxy_url.clone(),
                 config_path,
+                stderr_path,
                 child,
             },
         );
@@ -9059,8 +9079,40 @@ impl XraySupervisor {
                     "failed to remove xray config file"
                 );
             }
+            if let Err(err) = fs::remove_file(&instance.stderr_path)
+                && err.kind() != io::ErrorKind::NotFound
+            {
+                warn!(
+                    proxy_key_ref = %forward_proxy_log_ref(key),
+                    path = %instance.stderr_path.display(),
+                    error = %err,
+                    "failed to remove xray stderr log file"
+                );
+            }
         }
     }
+}
+
+fn read_file_tail_lossy(path: &Path, max_bytes: usize) -> Result<Option<String>> {
+    if max_bytes == 0 {
+        return Ok(None);
+    }
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("failed to open {}", path.display())),
+    };
+    let len = file
+        .metadata()
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len();
+    let start = len.saturating_sub(max_bytes as u64);
+    file.seek(SeekFrom::Start(start))
+        .with_context(|| format!("failed to seek {}", path.display()))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(Some(String::from_utf8_lossy(&buf).to_string()))
 }
 
 fn stable_hash_u64(raw: &str) -> u64 {
@@ -11351,6 +11403,61 @@ mod tests {
             snapshot_min_interval: Duration::from_secs(60),
             crs_stats: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn xray_start_failure_includes_stderr_tail() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = make_temp_test_dir("xray-stderr-tail");
+        let runtime_dir = root.join("runtime");
+        fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+
+        let fake_xray_path = root.join("fake-xray");
+        let script = [
+            "#!/bin/sh",
+            "echo \"fake xray failure: boom\" 1>&2",
+            "exit 1",
+            "",
+        ]
+        .join("\n");
+        fs::write(&fake_xray_path, script).expect("write fake xray script");
+        let mut perms = fs::metadata(&fake_xray_path)
+            .expect("stat fake xray")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_xray_path, perms).expect("chmod fake xray");
+
+        let mut supervisor = XraySupervisor::new(
+            fake_xray_path.to_string_lossy().to_string(),
+            runtime_dir.clone(),
+        );
+        let endpoint = ForwardProxyEndpoint {
+            key: "__xray_test__".to_string(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            display_name: "xray-test".to_string(),
+            protocol: ForwardProxyProtocol::Vless,
+            endpoint_url: None,
+            raw_url: Some(
+                "vless://00000000-0000-0000-0000-000000000000@example.com:443?encryption=none#x"
+                    .to_string(),
+            ),
+        };
+
+        let err = supervisor
+            .ensure_instance(&endpoint)
+            .await
+            .expect_err("ensure_instance should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("xray stderr (tail)"),
+            "error should mention stderr tail: {msg}"
+        );
+        assert!(
+            msg.contains("fake xray failure: boom"),
+            "error should include fake stderr: {msg}"
+        );
     }
 
     fn make_temp_test_dir(prefix: &str) -> PathBuf {
