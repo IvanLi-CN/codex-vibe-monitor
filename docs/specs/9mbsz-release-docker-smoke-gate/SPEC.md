@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-03-01
 - Last: 2026-03-01
 
@@ -77,9 +77,13 @@ None
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: Add spec + index row
-- [ ] M2: Add smoke script
-- [ ] M3: Wire release job to gate push on smoke success
+- [x] M1: Add spec + index row
+- [x] M2: Add smoke script
+- [x] M3: Wire release job to gate push on smoke success
+
+## 进度备注
+
+- release job 现在会在 push 镜像 tags 前执行 `docker run` + `/health` smoke test；失败会中断后续发布步骤。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
