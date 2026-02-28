@@ -380,10 +380,22 @@ export default function SettingsPage() {
   const [forwardProxyBatchResults, setForwardProxyBatchResults] = useState<ForwardProxyBatchValidationItem[]>([])
   const [forwardProxyBatchTooltipKey, setForwardProxyBatchTooltipKey] = useState<string | null>(null)
   const [forwardProxyValidation, setForwardProxyValidation] = useState<ForwardProxyValidationState>({ status: 'idle' })
+  const forwardProxyUrlsRef = useRef<string[]>([])
+  const forwardProxySubscriptionUrlsRef = useRef<string[]>([])
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const forwardProxyBatchValidationRunRef = useRef(0)
   const lastSyncedPricingKeyRef = useRef<string | null>(null)
   const lastHandledRollbackVersionRef = useRef(pricingRollbackVersion)
+
+  const applyForwardProxyUrls = useCallback((nextUrls: string[]) => {
+    forwardProxyUrlsRef.current = nextUrls
+    setForwardProxyUrls(nextUrls)
+  }, [])
+
+  const applyForwardProxySubscriptionUrls = useCallback((nextUrls: string[]) => {
+    forwardProxySubscriptionUrlsRef.current = nextUrls
+    setForwardProxySubscriptionUrls(nextUrls)
+  }, [])
 
   useEffect(() => {
     if (!settings?.pricing) return
@@ -425,12 +437,18 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!settings?.forwardProxy) return
     if (forwardProxyDirty && !isForwardProxySaving) return
-    setForwardProxyUrls(settings.forwardProxy.proxyUrls)
-    setForwardProxySubscriptionUrls(settings.forwardProxy.subscriptionUrls)
+    applyForwardProxyUrls(settings.forwardProxy.proxyUrls)
+    applyForwardProxySubscriptionUrls(settings.forwardProxy.subscriptionUrls)
     setForwardProxyIntervalSecs(String(settings.forwardProxy.subscriptionUpdateIntervalSecs))
     setForwardProxyInsertDirect(settings.forwardProxy.insertDirect)
     setForwardProxyDirty(false)
-  }, [forwardProxyDirty, isForwardProxySaving, settings?.forwardProxy])
+  }, [
+    applyForwardProxySubscriptionUrls,
+    applyForwardProxyUrls,
+    forwardProxyDirty,
+    isForwardProxySaving,
+    settings?.forwardProxy,
+  ])
 
   const currentProxy = settings?.proxy ?? null
   const currentForwardProxy = settings?.forwardProxy ?? null
@@ -674,8 +692,8 @@ export default function SettingsPage() {
       const intervalSecs = Number.isFinite(parsedInterval) ? Math.max(60, Math.floor(parsedInterval)) : 3600
       const nextForwardProxy: ForwardProxySettings = {
         ...currentForwardProxy,
-        proxyUrls: overrides?.proxyUrls ?? forwardProxyUrls,
-        subscriptionUrls: overrides?.subscriptionUrls ?? forwardProxySubscriptionUrls,
+        proxyUrls: overrides?.proxyUrls ?? forwardProxyUrlsRef.current,
+        subscriptionUrls: overrides?.subscriptionUrls ?? forwardProxySubscriptionUrlsRef.current,
         subscriptionUpdateIntervalSecs: intervalSecs,
         insertDirect: forwardProxyInsertDirect,
       }
@@ -686,28 +704,30 @@ export default function SettingsPage() {
       currentForwardProxy,
       forwardProxyInsertDirect,
       forwardProxyIntervalSecs,
-      forwardProxySubscriptionUrls,
-      forwardProxyUrls,
       saveForwardProxy,
     ],
   )
 
   const handleRemoveForwardProxyUrl = useCallback(
     (targetUrl: string) => {
-      const nextProxyUrls = forwardProxyUrls.filter((item) => item !== targetUrl)
-      setForwardProxyUrls(nextProxyUrls)
+      const currentProxyUrls = forwardProxyUrlsRef.current
+      const nextProxyUrls = currentProxyUrls.filter((item) => item !== targetUrl)
+      if (nextProxyUrls.length === currentProxyUrls.length) return
+      applyForwardProxyUrls(nextProxyUrls)
       persistForwardProxyDraft({ proxyUrls: nextProxyUrls })
     },
-    [forwardProxyUrls, persistForwardProxyDraft],
+    [applyForwardProxyUrls, persistForwardProxyDraft],
   )
 
   const handleRemoveForwardProxySubscriptionUrl = useCallback(
     (targetUrl: string) => {
-      const nextSubscriptionUrls = forwardProxySubscriptionUrls.filter((item) => item !== targetUrl)
-      setForwardProxySubscriptionUrls(nextSubscriptionUrls)
+      const currentSubscriptionUrls = forwardProxySubscriptionUrlsRef.current
+      const nextSubscriptionUrls = currentSubscriptionUrls.filter((item) => item !== targetUrl)
+      if (nextSubscriptionUrls.length === currentSubscriptionUrls.length) return
+      applyForwardProxySubscriptionUrls(nextSubscriptionUrls)
       persistForwardProxyDraft({ subscriptionUrls: nextSubscriptionUrls })
     },
-    [forwardProxySubscriptionUrls, persistForwardProxyDraft],
+    [applyForwardProxySubscriptionUrls, persistForwardProxyDraft],
   )
 
   const openForwardProxyAddModal = useCallback((kind: ForwardProxyModalKind) => {
@@ -971,14 +991,17 @@ export default function SettingsPage() {
     if (forwardProxyValidation.status !== 'passed' || !forwardProxyModalKind) return
     if (forwardProxyModalKind !== 'subscriptionUrl') return
     if (forwardProxyValidation.normalizedValues.length === 0) return
-    const nextSubscriptionUrls = appendUniqueItem(forwardProxySubscriptionUrls, forwardProxyValidation.normalizedValues[0])
-    setForwardProxySubscriptionUrls(nextSubscriptionUrls)
+    const nextSubscriptionUrls = appendUniqueItem(
+      forwardProxySubscriptionUrlsRef.current,
+      forwardProxyValidation.normalizedValues[0],
+    )
+    applyForwardProxySubscriptionUrls(nextSubscriptionUrls)
     persistForwardProxyDraft({ subscriptionUrls: nextSubscriptionUrls })
     closeForwardProxyAddModal()
   }, [
+    applyForwardProxySubscriptionUrls,
     closeForwardProxyAddModal,
     forwardProxyModalKind,
-    forwardProxySubscriptionUrls,
     forwardProxyValidation,
     persistForwardProxyDraft,
   ])
@@ -1038,8 +1061,8 @@ export default function SettingsPage() {
       setForwardProxyBatchResults((current) => {
         const target = current.find((item) => item.key === nodeKey)
         if (!target || target.status !== 'available') return current
-        const nextProxyUrls = appendUniqueItem(forwardProxyUrls, target.normalizedValue)
-        setForwardProxyUrls(nextProxyUrls)
+        const nextProxyUrls = appendUniqueItem(forwardProxyUrlsRef.current, target.normalizedValue)
+        applyForwardProxyUrls(nextProxyUrls)
         persistForwardProxyDraft({ proxyUrls: nextProxyUrls })
         const next = current.filter((item) => item.key !== nodeKey)
         if (next.length === 0) {
@@ -1048,7 +1071,7 @@ export default function SettingsPage() {
         return next
       })
     },
-    [closeForwardProxyAddModal, forwardProxyModalKind, forwardProxyUrls, persistForwardProxyDraft],
+    [applyForwardProxyUrls, closeForwardProxyAddModal, forwardProxyModalKind, persistForwardProxyDraft],
   )
 
   const handleSubmitValidatedBatchNodes = useCallback(() => {
@@ -1058,10 +1081,10 @@ export default function SettingsPage() {
       const availableItems = current.filter((item) => item.status === 'available')
       if (availableItems.length === 0) return current
       const nextProxyUrls = appendUniqueItems(
-        forwardProxyUrls,
+        forwardProxyUrlsRef.current,
         availableItems.map((item) => item.normalizedValue),
       )
-      setForwardProxyUrls(nextProxyUrls)
+      applyForwardProxyUrls(nextProxyUrls)
       persistForwardProxyDraft({ proxyUrls: nextProxyUrls })
       const next = current.filter((item) => item.status !== 'available')
       if (next.length === 0) {
@@ -1069,7 +1092,7 @@ export default function SettingsPage() {
       }
       return next
     })
-  }, [closeForwardProxyAddModal, forwardProxyModalKind, forwardProxyUrls, persistForwardProxyDraft])
+  }, [applyForwardProxyUrls, closeForwardProxyAddModal, forwardProxyModalKind, persistForwardProxyDraft])
 
   const forwardProxyModalTitle = forwardProxyModalKind
     ? t(
@@ -1418,20 +1441,25 @@ export default function SettingsPage() {
                 <p className="text-xs text-base-content/60">{t('settings.forwardProxy.listEmpty')}</p>
               ) : (
                 <ul className="space-y-1.5">
-                  {forwardProxyUrls.map((proxyUrl) => (
+                  {forwardProxyUrls.map((proxyUrl, index) => (
                     <li
                       key={`proxy-url-${proxyUrl}`}
                       className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/75 px-2.5 py-1.5"
                     >
-                      <code className="min-w-0 flex-1 truncate whitespace-nowrap text-[11px] tabular-nums" title={proxyUrl}>
-                        {proxyUrl}
-                      </code>
+                      <div className="min-w-0 flex-1 text-sm font-medium">
+                        <div className="truncate whitespace-nowrap">
+                          {extractProxyDisplayName(proxyUrl) ??
+                            t('settings.forwardProxy.nodeItemFallback', { index: index + 1 })}
+                        </div>
+                      </div>
+                      <span className="rounded-md border border-base-300/70 bg-base-200/45 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-base-content/75">
+                        {extractProxyProtocolName(proxyUrl) ?? t('settings.forwardProxy.modal.unknownProtocol')}
+                      </span>
                       <Button
                         type="button"
                         size="sm"
                         variant="ghost"
                         className="h-7 w-7 p-0 text-error hover:bg-error/10 hover:text-error"
-                        disabled={isForwardProxySaving}
                         onClick={() => handleRemoveForwardProxyUrl(proxyUrl)}
                         title={t('settings.forwardProxy.remove')}
                         aria-label={t('settings.forwardProxy.remove')}
@@ -1454,23 +1482,24 @@ export default function SettingsPage() {
                 <p className="text-xs text-base-content/60">{t('settings.forwardProxy.subscriptionListEmpty')}</p>
               ) : (
                 <ul className="space-y-1.5">
-                  {forwardProxySubscriptionUrls.map((subscriptionUrl) => (
+                  {forwardProxySubscriptionUrls.map((subscriptionUrl, index) => (
                     <li
                       key={`subscription-url-${subscriptionUrl}`}
                       className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/75 px-2.5 py-1.5"
                     >
-                      <code
-                        className="min-w-0 flex-1 truncate whitespace-nowrap text-[11px] tabular-nums"
-                        title={subscriptionUrl}
-                      >
-                        {subscriptionUrl}
-                      </code>
+                      <div className="min-w-0 flex-1 text-sm font-medium">
+                        <div className="truncate whitespace-nowrap">
+                          {t('settings.forwardProxy.subscriptionItemFallback', { index: index + 1 })}
+                        </div>
+                      </div>
+                      <span className="rounded-md border border-base-300/70 bg-base-200/45 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-base-content/75">
+                        {extractProxyProtocolName(subscriptionUrl) ?? t('settings.forwardProxy.modal.unknownProtocol')}
+                      </span>
                       <Button
                         type="button"
                         size="sm"
                         variant="ghost"
                         className="h-7 w-7 p-0 text-error hover:bg-error/10 hover:text-error"
-                        disabled={isForwardProxySaving}
                         onClick={() => handleRemoveForwardProxySubscriptionUrl(subscriptionUrl)}
                         title={t('settings.forwardProxy.remove')}
                         aria-label={t('settings.forwardProxy.remove')}

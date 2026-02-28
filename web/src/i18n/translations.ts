@@ -80,10 +80,10 @@ const baseTranslations = {
     'settings.forwardProxy.insertDirectLabel': 'Insert direct connection',
     'settings.forwardProxy.insertDirectHint':
       'Keep a direct route as a special proxy entry for unified scheduling and fallback.',
-    'settings.forwardProxy.proxyUrls': 'Proxy URLs (one per line)',
+    'settings.forwardProxy.proxyUrls': 'Proxy URLs',
     'settings.forwardProxy.proxyUrlsPlaceholder':
       'Examples:\nhttp://127.0.0.1:7890\nsocks5://127.0.0.1:1080\nuser:pass@proxy.example.com:8443',
-    'settings.forwardProxy.subscriptionUrls': 'Subscription URLs (one per line)',
+    'settings.forwardProxy.subscriptionUrls': 'Subscription URLs',
     'settings.forwardProxy.subscriptionUrlsPlaceholder':
       'https://example.com/subscription.txt\nhttps://example.com/subscription.base64',
     'settings.forwardProxy.subscriptionInterval': 'Subscription refresh interval',
@@ -98,6 +98,8 @@ const baseTranslations = {
     'settings.forwardProxy.addSubscription': 'Add subscription',
     'settings.forwardProxy.proxyCount': 'Configured nodes: {{count}}',
     'settings.forwardProxy.subscriptionCount': 'Configured subscriptions: {{count}}',
+    'settings.forwardProxy.nodeItemFallback': 'Node #{{index}}',
+    'settings.forwardProxy.subscriptionItemFallback': 'Subscription #{{index}}',
     'settings.forwardProxy.remove': 'Remove',
     'settings.forwardProxy.listEmpty': 'No entry yet. Add one after validation.',
     'settings.forwardProxy.subscriptionListEmpty': 'No subscription yet.',
@@ -394,10 +396,10 @@ const baseTranslations = {
     'settings.forwardProxy.description': '配置上游请求代理、订阅自动刷新周期与运行期健康指标。',
     'settings.forwardProxy.insertDirectLabel': '插入直连',
     'settings.forwardProxy.insertDirectHint': '将直连作为特殊代理加入统一调度，便于兜底与对比。',
-    'settings.forwardProxy.proxyUrls': '代理 URL（每行一个）',
+    'settings.forwardProxy.proxyUrls': '代理 URL',
     'settings.forwardProxy.proxyUrlsPlaceholder':
       '示例：\nhttp://127.0.0.1:7890\nsocks5://127.0.0.1:1080\nuser:pass@proxy.example.com:8443',
-    'settings.forwardProxy.subscriptionUrls': '订阅链接（每行一个）',
+    'settings.forwardProxy.subscriptionUrls': '订阅链接',
     'settings.forwardProxy.subscriptionUrlsPlaceholder':
       'https://example.com/subscription.txt\nhttps://example.com/subscription.base64',
     'settings.forwardProxy.subscriptionInterval': '订阅刷新周期',
@@ -412,6 +414,8 @@ const baseTranslations = {
     'settings.forwardProxy.addSubscription': '添加订阅',
     'settings.forwardProxy.proxyCount': '已配置节点：{{count}}',
     'settings.forwardProxy.subscriptionCount': '已配置订阅：{{count}}',
+    'settings.forwardProxy.nodeItemFallback': '节点 #{{index}}',
+    'settings.forwardProxy.subscriptionItemFallback': '订阅 #{{index}}',
     'settings.forwardProxy.remove': '删除',
     'settings.forwardProxy.listEmpty': '暂无条目，请先验证后添加。',
     'settings.forwardProxy.subscriptionListEmpty': '暂无订阅链接。',

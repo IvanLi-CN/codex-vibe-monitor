@@ -41,6 +41,8 @@ export function useSettings() {
   const serverSnapshotRef = useRef<SettingsPayload | null>(null)
   const pendingPricingRef = useRef<PricingSettings | null>(null)
   const pricingSaveInFlightRef = useRef(false)
+  const pendingForwardProxyRef = useRef<ForwardProxySettings | null>(null)
+  const forwardProxySaveInFlightRef = useRef(false)
 
   const load = useCallback(async () => {
     setIsLoading(true)
@@ -193,38 +195,61 @@ export function useSettings() {
           forwardProxy: nextForwardProxy,
         }
       })
-      setIsForwardProxySaving(true)
-      try {
-        const saved = await updateForwardProxySettings({
-          proxyUrls: nextForwardProxy.proxyUrls,
-          subscriptionUrls: nextForwardProxy.subscriptionUrls,
-          subscriptionUpdateIntervalSecs: nextForwardProxy.subscriptionUpdateIntervalSecs,
-          insertDirect: nextForwardProxy.insertDirect,
-        })
+      pendingForwardProxyRef.current = nextForwardProxy
 
-        const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
-          ? {
+      if (forwardProxySaveInFlightRef.current) {
+        return
+      }
+
+      forwardProxySaveInFlightRef.current = true
+      setIsForwardProxySaving(true)
+      while (pendingForwardProxyRef.current) {
+        const candidate = pendingForwardProxyRef.current
+        pendingForwardProxyRef.current = null
+
+        try {
+          const saved = await updateForwardProxySettings({
+            proxyUrls: candidate.proxyUrls,
+            subscriptionUrls: candidate.subscriptionUrls,
+            subscriptionUpdateIntervalSecs: candidate.subscriptionUpdateIntervalSecs,
+            insertDirect: candidate.insertDirect,
+          })
+
+          // Ignore stale payload when a newer draft is already queued.
+          if (pendingForwardProxyRef.current == null) {
+            const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
+              ? {
+                  ...serverSnapshotRef.current,
+                  forwardProxy: saved,
+                }
+              : null
+            if (confirmedSnapshot) {
+              serverSnapshotRef.current = confirmedSnapshot
+            }
+            setSettings((current) => {
+              if (!current) return confirmedSnapshot ?? current
+              return {
+                ...current,
+                forwardProxy: saved,
+              }
+            })
+          } else if (serverSnapshotRef.current) {
+            serverSnapshotRef.current = {
               ...serverSnapshotRef.current,
               forwardProxy: saved,
             }
-          : null
-        if (confirmedSnapshot) {
-          serverSnapshotRef.current = confirmedSnapshot
-        }
-        setSettings((current) => {
-          if (!current) return confirmedSnapshot ?? current
-          return {
-            ...current,
-            forwardProxy: saved,
           }
-        })
-        setError(null)
-      } catch (err) {
-        rollback()
-        setError(err instanceof Error ? err.message : String(err))
-      } finally {
-        setIsForwardProxySaving(false)
+          setError(null)
+        } catch (err) {
+          if (pendingForwardProxyRef.current == null) {
+            rollback()
+          }
+          setError(err instanceof Error ? err.message : String(err))
+        }
       }
+
+      forwardProxySaveInFlightRef.current = false
+      setIsForwardProxySaving(false)
     },
     [rollback],
   )
