@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                     | Status | Spec                                         | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | ------ | -------------------------------------------- | ---------- | -------------------- |
+| ykn4w | 日期后缀模型成本回退与历史空成本补算                                      | 已完成 | `ykn4w-pricing-alias-backfill/SPEC.md`       | 2026-02-28 | fast-track           |
 | 8dun3 | 统计页成功/失败图增加首字耗时折线与悬浮统计（均值 + P95）                 | 已完成 | `8dun3-stats-success-failure-ttfb/SPEC.md`   | 2026-02-27 | PR #61               |
 | 67acu | 修复更新提示可读性（更新横幅 + 同类透明度语义 + 可访问性回归）            | 已完成 | `67acu-update-banner-readability/SPEC.md`    | 2026-02-27 | 补按钮交互回归断言   |
 | 26knq | 修复 InvocationTable 异常横向滚动并补 E2E 回归                            | 已完成 | `26knq-invocation-table-overflow/SPEC.md`    | 2026-02-26 | PR #56 / fast-track  |
