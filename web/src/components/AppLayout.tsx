@@ -177,7 +177,7 @@ export function AppLayout() {
   const themeSwitcherLabel = t(isDarkTheme ? 'app.theme.switchToLight' : 'app.theme.switchToDark')
 
   return (
-    <div className="app-shell min-h-screen text-base-content">
+    <div className="app-shell min-h-screen flex flex-col text-base-content">
       <header className="sticky top-0 z-50 border-b border-base-300/75 bg-base-100/80 backdrop-blur-md">
         <div className="mx-auto flex w-full max-w-[1200px] items-center gap-2 px-4 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -331,7 +331,7 @@ export function AppLayout() {
           }}
         />
       )}
-      <main className="mx-auto w-full max-w-[1200px] px-4 py-6 pb-8">
+      <main className="mx-auto w-full max-w-[1200px] flex-1 min-h-0 px-4 py-6 pb-8">
         <Outlet />
       </main>
       <footer className="border-t border-base-300/75 bg-base-100/80 text-sm text-base-content/70 backdrop-blur">
