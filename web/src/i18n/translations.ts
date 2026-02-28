@@ -96,6 +96,8 @@ const baseTranslations = {
     'settings.forwardProxy.save': 'Save routing config',
     'settings.forwardProxy.addProxyBatch': 'Import nodes',
     'settings.forwardProxy.addSubscription': 'Add subscription',
+    'settings.forwardProxy.proxyCount': 'Configured nodes: {{count}}',
+    'settings.forwardProxy.subscriptionCount': 'Configured subscriptions: {{count}}',
     'settings.forwardProxy.remove': 'Remove',
     'settings.forwardProxy.listEmpty': 'No entry yet. Add one after validation.',
     'settings.forwardProxy.supportHint':
@@ -398,6 +400,8 @@ const baseTranslations = {
     'settings.forwardProxy.save': '保存路由配置',
     'settings.forwardProxy.addProxyBatch': '批量导入节点',
     'settings.forwardProxy.addSubscription': '添加订阅',
+    'settings.forwardProxy.proxyCount': '已配置节点：{{count}}',
+    'settings.forwardProxy.subscriptionCount': '已配置订阅：{{count}}',
     'settings.forwardProxy.remove': '删除',
     'settings.forwardProxy.listEmpty': '暂无条目，请先验证后添加。',
     'settings.forwardProxy.supportHint':

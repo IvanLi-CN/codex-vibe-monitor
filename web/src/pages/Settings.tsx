@@ -894,16 +894,6 @@ export default function SettingsPage() {
     })
   }, [closeForwardProxyAddModal, forwardProxyModalKind])
 
-  const removeForwardProxyUrl = useCallback((target: string) => {
-    setForwardProxyUrls((current) => current.filter((item) => item !== target))
-    setForwardProxyDirty(true)
-  }, [])
-
-  const removeForwardProxySubscriptionUrl = useCallback((target: string) => {
-    setForwardProxySubscriptionUrls((current) => current.filter((item) => item !== target))
-    setForwardProxyDirty(true)
-  }, [])
-
   const forwardProxyModalTitle = forwardProxyModalKind
     ? t(
         forwardProxyModalKind === 'proxyBatch'
@@ -1212,85 +1202,31 @@ export default function SettingsPage() {
             </div>
           </label>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="rounded-xl border border-base-300/80 bg-base-100/72 p-3.5">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <div className="text-sm font-medium text-base-content/75">{t('settings.forwardProxy.proxyUrls')}</div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  disabled={isForwardProxySaving}
-                  onClick={() => openForwardProxyAddModal('proxyBatch')}
-                >
-                  <Icon icon="mdi:plus" className="mr-1 h-4 w-4" aria-hidden />
-                  {t('settings.forwardProxy.addProxyBatch')}
-                </Button>
-              </div>
-              <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
-                {forwardProxyUrls.map((proxyUrl) => (
-                  <div key={proxyUrl} className="flex items-start gap-2 rounded-lg border border-base-300/80 bg-base-100/70 px-2.5 py-2">
-                    <div className="min-w-0 flex-1 font-mono text-xs text-base-content/85">{proxyUrl}</div>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2 text-error hover:bg-error/10"
-                      disabled={isForwardProxySaving}
-                      onClick={() => removeForwardProxyUrl(proxyUrl)}
-                    >
-                      {t('settings.forwardProxy.remove')}
-                    </Button>
-                  </div>
-                ))}
-                {forwardProxyUrls.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-base-300/80 px-3 py-4 text-xs text-base-content/60">
-                    {t('settings.forwardProxy.listEmpty')}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-base-300/80 bg-base-100/72 p-3.5">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <div className="text-sm font-medium text-base-content/75">{t('settings.forwardProxy.subscriptionUrls')}</div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  disabled={isForwardProxySaving}
-                  onClick={() => openForwardProxyAddModal('subscriptionUrl')}
-                >
-                  <Icon icon="mdi:plus" className="mr-1 h-4 w-4" aria-hidden />
-                  {t('settings.forwardProxy.addSubscription')}
-                </Button>
-              </div>
-              <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
-                {forwardProxySubscriptionUrls.map((subscriptionUrl) => (
-                  <div
-                    key={subscriptionUrl}
-                    className="flex items-start gap-2 rounded-lg border border-base-300/80 bg-base-100/70 px-2.5 py-2"
-                  >
-                    <div className="min-w-0 flex-1 break-all text-xs text-base-content/85">{subscriptionUrl}</div>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2 text-error hover:bg-error/10"
-                      disabled={isForwardProxySaving}
-                      onClick={() => removeForwardProxySubscriptionUrl(subscriptionUrl)}
-                    >
-                      {t('settings.forwardProxy.remove')}
-                    </Button>
-                  </div>
-                ))}
-                {forwardProxySubscriptionUrls.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-base-300/80 px-3 py-4 text-xs text-base-content/60">
-                    {t('settings.forwardProxy.listEmpty')}
-                  </div>
-                )}
-              </div>
-            </div>
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-base-300/80 bg-base-100/72 px-3.5 py-3">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={isForwardProxySaving}
+              onClick={() => openForwardProxyAddModal('proxyBatch')}
+            >
+              <Icon icon="mdi:plus" className="mr-1 h-4 w-4" aria-hidden />
+              {t('settings.forwardProxy.addProxyBatch')}
+            </Button>
+            <span className="text-xs text-base-content/70">{t('settings.forwardProxy.proxyCount', { count: forwardProxyUrls.length })}</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={isForwardProxySaving}
+              onClick={() => openForwardProxyAddModal('subscriptionUrl')}
+            >
+              <Icon icon="mdi:plus" className="mr-1 h-4 w-4" aria-hidden />
+              {t('settings.forwardProxy.addSubscription')}
+            </Button>
+            <span className="text-xs text-base-content/70">
+              {t('settings.forwardProxy.subscriptionCount', { count: forwardProxySubscriptionUrls.length })}
+            </span>
           </div>
 
           <div className="flex flex-wrap items-end gap-3">
