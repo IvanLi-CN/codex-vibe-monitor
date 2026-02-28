@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 部分完成（2/3）
 - Created: 2026-03-01
 - Last: 2026-03-01
 
@@ -98,8 +98,8 @@ None
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: Pin Rust build stage to Debian bookworm（避免 glibc 漂移）
-- [ ] M2: Add CI smoke gate before pushing image tags
+- [x] M1: Pin Rust build stage to Debian bookworm（避免 glibc 漂移）
+- [x] M2: Add CI smoke gate before pushing image tags
 - [ ] M3: Release stable patch and verify `:latest` is usable
 
 ## 方案概述（Approach, high-level）
