@@ -9,7 +9,7 @@
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------- |
 | wtwsn | GHCR 发布切换多架构 manifest（amd64 + arm64）                             | 已完成（5/5）   | `wtwsn-ghcr-multiarch-release-manifest/SPEC.md`          | 2026-03-01 | fast-track / hotfix  |
-| m96jw | 修复订阅验证路径下 xray 运行目录缺失导致添加失败                          | 进行中（2/3）   | `m96jw-subscription-validation-xray-runtime-dir/SPEC.md` | 2026-03-01 | fast-track / bugfix  |
+| m96jw | 修复订阅验证路径下 xray 运行目录缺失导致添加失败                          | 已完成（3/3）   | `m96jw-subscription-validation-xray-runtime-dir/SPEC.md` | 2026-03-01 | PR #71 / fast-track  |
 | c5yag | 订阅验证超时改为 60 秒（单条验证保持 5 秒）                               | 已完成（3/3）   | `c5yag-subscription-validation-timeout-60/SPEC.md`       | 2026-03-01 | fast-track           |
 | 9anzf | Docker 镜像内置 Xray-core（xray）以支持订阅代理验证                       | 部分完成（2/3） | `9anzf-bundle-xray-in-image/SPEC.md`                     | 2026-03-01 | hotfix               |
 | vdukd | 修复 GHCR 镜像 GLIBC 漂移导致 bookworm runtime 启动失败                   | 已完成（3/3）   | `vdukd-ghcr-glibc-drift-fix/SPEC.md`                     | 2026-03-01 | fast-track / hotfix  |

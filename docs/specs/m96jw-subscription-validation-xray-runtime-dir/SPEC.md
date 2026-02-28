@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中（2/3）
+- Status: 已完成（3/3）
 - Created: 2026-03-01
 - Last: 2026-03-01
 
@@ -47,4 +47,4 @@
 
 - [x] M1: 复现失败并定位到 `spawn_instance` 写配置前未创建目录
 - [x] M2: 修复目录创建逻辑 + 新增回归测试
-- [ ] M3: fast-flow 下完成 PR + checks + review-loop 收敛
+- [x] M3: fast-flow 下完成 PR + checks + review-loop 收敛
