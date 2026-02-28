@@ -3,6 +3,7 @@ import { getBrowserTimeZone } from './timeZone'
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? ''
 const API_BASE = rawBase.endsWith('/') ? rawBase.slice(0, -1) : rawBase
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000
+const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000
 
 const withBase = (path: string) => `${API_BASE}${path}`
 
@@ -282,6 +283,12 @@ export interface ForwardProxyValidationResult {
   latencyMs?: number
 }
 
+function forwardProxyValidationTimeoutMs(kind: ForwardProxyValidationKind): number {
+  return kind === 'subscriptionUrl'
+    ? FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS
+    : FORWARD_PROXY_VALIDATION_TIMEOUT_MS
+}
+
 export interface SettingsPayload {
   proxy: ProxySettings
   forwardProxy: ForwardProxySettings
@@ -479,7 +486,8 @@ export async function validateForwardProxyCandidate(payload: {
   value: string
 }): Promise<ForwardProxyValidationResult> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FORWARD_PROXY_VALIDATION_TIMEOUT_MS)
+  const timeoutMs = forwardProxyValidationTimeoutMs(payload.kind)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetchJson<unknown>('/api/settings/forward-proxy/validate', {
       method: 'POST',
@@ -490,7 +498,7 @@ export async function validateForwardProxyCandidate(payload: {
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       throw new Error(
-        `validation request timed out after ${Math.floor(FORWARD_PROXY_VALIDATION_TIMEOUT_MS / 1000)}s`,
+        `validation request timed out after ${Math.floor(timeoutMs / 1000)}s`,
       )
     }
     throw err
