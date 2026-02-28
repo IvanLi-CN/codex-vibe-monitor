@@ -19,6 +19,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # NOTE: The release smoke gate relies on buildx `load: true` (single platform only).
   PLATFORMS: linux/amd64
 
 jobs:
@@ -320,10 +321,16 @@ jobs:
       - name: Push Docker image tags (after smoke)
         if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
+        env:
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:v${{ env.APP_EFFECTIVE_VERSION }}
         run: |
           set -euo pipefail
+          echo "[push] $SMOKE_TAG"
+          docker push "$SMOKE_TAG"
+
           echo "${{ steps.image-tags.outputs.tags }}" | while IFS= read -r tag; do
             [[ -z "$tag" ]] && continue
+            [[ "$tag" == "$SMOKE_TAG" ]] && continue
             echo "[push] $tag"
             docker push "$tag"
           done

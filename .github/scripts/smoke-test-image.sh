@@ -12,16 +12,33 @@ port="${SMOKE_PORT:-18080}"
 timeout_secs="${SMOKE_TIMEOUT_SECS:-60}"
 name="${SMOKE_CONTAINER_NAME:-smoke-codex-vibe-monitor}"
 
-docker rm -f "$name" >/dev/null 2>&1 || true
+cleanup() {
+  docker rm -f -v "$name" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+cleanup
+
+if ! docker image inspect "$tag" >/dev/null 2>&1; then
+  echo "[smoke] image not present locally: ${tag}" >&2
+  docker image ls >&2 || true
+  exit 1
+fi
 
 echo "[smoke] starting container: ${tag}"
-docker run -d --name "$name" -p "${host}:${port}:8080" "$tag" >/dev/null
+docker run -d --name "$name" --pull=never -p "${host}:${port}:8080" "$tag" >/dev/null
 
 deadline=$((SECONDS + timeout_secs))
 while (( SECONDS < deadline )); do
-  if curl -fsS "http://${host}:${port}/health" | grep -q "ok"; then
+  status="$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)"
+  if [[ "$status" == "exited" || "$status" == "dead" ]]; then
+    echo "[smoke] container exited before health became ready" >&2
+    docker logs "$name" >&2 || true
+    exit 1
+  fi
+
+  if curl -m 1 -fsS "http://${host}:${port}/health" | grep -q "ok"; then
     echo "[smoke] /health ok"
-    docker rm -f "$name" >/dev/null
     exit 0
   fi
   sleep 1
@@ -30,6 +47,4 @@ done
 echo "[smoke] timed out waiting for /health (timeout=${timeout_secs}s)" >&2
 docker ps -a >&2 || true
 docker logs "$name" >&2 || true
-docker rm -f "$name" >/dev/null 2>&1 || true
 exit 1
-
