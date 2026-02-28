@@ -58,7 +58,10 @@ RUN set -eux; \
     zip="Xray-linux-${machine}.zip"; \
     curl -fsSLo "${zip}" "${base}/${zip}"; \
     curl -fsSLo "${zip}.dgst" "${base}/${zip}.dgst"; \
-    sha="$(grep -E '^sha256:' "${zip}.dgst" | head -n1 | cut -d: -f2 | tr -d '[:space:]')"; \
+    sha="$(grep -E '^SHA2-256=' "${zip}.dgst" | head -n1 | cut -d= -f2 | tr -d '[:space:]')"; \
+    if [ -z "${sha}" ]; then \
+      sha="$(grep -E '^sha256:' "${zip}.dgst" | head -n1 | cut -d: -f2 | tr -d '[:space:]')"; \
+    fi; \
     test -n "${sha}"; \
     echo "${sha}  ${zip}" | sha256sum -c -; \
     unzip -q "${zip}"; \
