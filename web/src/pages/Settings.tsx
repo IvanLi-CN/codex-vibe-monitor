@@ -1233,7 +1233,7 @@ export default function SettingsPage() {
           </div>
 
           {forwardProxyModalKind && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-base-content/45 p-4">
+            <div className="fixed inset-0 z-[80] flex items-center justify-center bg-base-content/45 p-4">
               <div className="w-full max-w-2xl rounded-2xl border border-base-300/75 bg-base-100 shadow-xl">
                 <div className="space-y-1 border-b border-base-300/70 px-5 py-4">
                   <div className="flex items-start gap-3">
