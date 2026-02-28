@@ -19,6 +19,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # NOTE: The release smoke gate relies on buildx `load: true` (single platform only).
   PLATFORMS: linux/amd64
 
 jobs:
@@ -295,6 +296,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Validate platforms for smoke gate
+        if: steps.intent.outputs.release_enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # buildx `load` only supports a single-platform result.
+          if [[ "${PLATFORMS}" == *","* || "${PLATFORMS}" == *" "* ]]; then
+            echo "Smoke requires a single platform when using buildx load (PLATFORMS=${PLATFORMS})" >&2
+            exit 1
+          fi
+
       - name: Build Docker image (load)
         if: steps.intent.outputs.release_enabled == 'true'
         uses: docker/build-push-action@v6
@@ -313,60 +325,27 @@ jobs:
       - name: Smoke test Docker image (startup + /health)
         if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
-        run: |
-          set -euo pipefail
-          image="${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}"
-          version_tag="${image}:v${APP_EFFECTIVE_VERSION}"
+        env:
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:v${{ env.APP_EFFECTIVE_VERSION }}
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+        run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
 
-          # buildx `load` only supports a single-platform result.
-          if [[ "${PLATFORMS}" == *","* || "${PLATFORMS}" == *" "* ]]; then
-            echo "Smoke requires a single platform when using buildx load (PLATFORMS=${PLATFORMS})" >&2
-            exit 1
-          fi
-
-          echo "Smoke: ${version_tag} -> codex-vibe-monitor --help"
-          docker run --rm "${version_tag}" codex-vibe-monitor --help
-
-          echo "Smoke: ${version_tag} -> xray version"
-          docker run --rm "${version_tag}" xray version
-
-          echo "Smoke: ${version_tag} -> start container and probe /health"
-          cid="$(docker run -d -p 127.0.0.1::8080 "${version_tag}")"
-          cleanup() { docker rm -f -v "${cid}" >/dev/null 2>&1 || true; }
-          trap cleanup EXIT
-
-          host_port="$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort }}' "${cid}")"
-          if [[ -z "${host_port}" ]]; then
-            echo "Smoke failed: unable to resolve published host port for container ${cid}" >&2
-            docker ps -a || true
-            docker logs "${cid}" || true
-            exit 1
-          fi
-
-          for _ in $(seq 1 30); do
-            if curl -fsS -m 1 "http://127.0.0.1:${host_port}/health" | grep -q '^ok$'; then
-              echo "Smoke: /health ok"
-              exit 0
-            fi
-            sleep 1
-          done
-
-          echo "Smoke failed: /health not ready in 30s" >&2
-          docker ps -a || true
-          docker logs "${cid}" || true
-          exit 1
-
-      - name: Push Docker image tags
+      - name: Push Docker image tags (after smoke)
         if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
         env:
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:v${{ env.APP_EFFECTIVE_VERSION }}
           TAGS: ${{ steps.image-tags.outputs.tags }}
         run: |
           set -euo pipefail
+          echo "[push] ${SMOKE_TAG}"
+          docker push "${SMOKE_TAG}"
+
           mapfile -t tags <<< "${TAGS}"
           for tag in "${tags[@]}"; do
             [[ -z "${tag}" ]] && continue
-            echo "Pushing ${tag}"
+            [[ "${tag}" == "${SMOKE_TAG}" ]] && continue
+            echo "[push] ${tag}"
             docker push "${tag}"
           done
 
