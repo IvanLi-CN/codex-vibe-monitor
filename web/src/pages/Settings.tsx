@@ -1640,7 +1640,7 @@ export default function SettingsPage() {
                   </Button>
                   {forwardProxyModalIsBatch && forwardProxyModalStep === 2 ? (
                     <Button type="button" disabled={!forwardProxyCanSubmitBatch} onClick={handleSubmitValidatedBatchNodes}>
-                      {t('settings.forwardProxy.modal.submit')}
+                      {t('settings.forwardProxy.modal.submitWithCount', { count: forwardProxyBatchAvailableCount })}
                     </Button>
                   ) : (
                     <Button
