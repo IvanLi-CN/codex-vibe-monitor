@@ -10046,6 +10046,9 @@ fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShareLink> {
         .ok_or_else(|| anyhow!("invalid shadowsocks share link"))?;
     let (main, fragment) = split_once_first(normalized, '#');
     let (main, _) = split_once_first(main, '?');
+    let display_name = fragment
+        .map(percent_decode_once_lossy)
+        .filter(|value| !value.trim().is_empty());
 
     if let Ok(url) = Url::parse(raw)
         && let Some(host) = url.host_str()
@@ -10053,11 +10056,12 @@ fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShareLink> {
     {
         let credentials = if !url.username().is_empty() && url.password().is_some() {
             Some((
-                url.username().to_string(),
-                url.password().unwrap_or_default().to_string(),
+                percent_decode_once_lossy(url.username()),
+                percent_decode_once_lossy(url.password().unwrap_or_default()),
             ))
         } else if !url.username().is_empty() {
-            decode_base64_string(url.username()).and_then(|decoded| {
+            let username = percent_decode_once_lossy(url.username());
+            decode_base64_string(&username).and_then(|decoded| {
                 let (method, password) = decoded.split_once(':')?;
                 Some((method.to_string(), password.to_string()))
             })
@@ -10070,9 +10074,8 @@ fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShareLink> {
                 password,
                 host: host.to_string(),
                 port,
-                display_name: fragment
-                    .filter(|value| !value.trim().is_empty())
-                    .map(ToOwned::to_owned)
+                display_name: display_name
+                    .clone()
                     .unwrap_or_else(|| format!("{host}:{port}")),
             });
         }
@@ -10081,21 +10084,29 @@ fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShareLink> {
     let decoded_main = if main.contains('@') {
         main.to_string()
     } else {
-        decode_base64_string(main).ok_or_else(|| anyhow!("failed to decode shadowsocks payload"))?
+        let main_for_decode = percent_decode_once_lossy(main);
+        decode_base64_string(&main_for_decode)
+            .ok_or_else(|| anyhow!("failed to decode shadowsocks payload"))?
     };
 
     let (credential, host_port) = decoded_main
         .rsplit_once('@')
         .ok_or_else(|| anyhow!("invalid shadowsocks payload"))?;
     let (method, password) = if let Some((method, password)) = credential.split_once(':') {
-        (method.to_string(), password.to_string())
+        (
+            percent_decode_once_lossy(method),
+            percent_decode_once_lossy(password),
+        )
     } else {
         let decoded_credential = decode_base64_string(credential)
             .ok_or_else(|| anyhow!("failed to decode shadowsocks credentials"))?;
         let (method, password) = decoded_credential
             .split_once(':')
             .ok_or_else(|| anyhow!("invalid shadowsocks credentials"))?;
-        (method.to_string(), password.to_string())
+        (
+            percent_decode_once_lossy(method),
+            percent_decode_once_lossy(password),
+        )
     };
     let parsed_host = Url::parse(&format!("http://{host_port}"))
         .context("invalid shadowsocks server endpoint")?;
@@ -10106,10 +10117,7 @@ fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShareLink> {
     let port = parsed_host
         .port_or_known_default()
         .ok_or_else(|| anyhow!("shadowsocks port missing"))?;
-    let display_name = fragment
-        .filter(|value| !value.trim().is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("{host}:{port}"));
+    let display_name = display_name.unwrap_or_else(|| format!("{host}:{port}"));
     Ok(ShadowsocksShareLink {
         method,
         password,
@@ -10805,6 +10813,29 @@ mod tests {
         let parsed = parse_proxy_urls_from_subscription_body(&encoded);
         assert!(parsed.iter().any(|item| item.starts_with("vmess://")));
         assert!(parsed.iter().any(|item| item.starts_with("vless://")));
+    }
+
+    #[test]
+    fn parse_shadowsocks_share_link_decodes_percent_encoded_credentials() {
+        let parsed = parse_shadowsocks_share_link(
+            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388#ss%20node",
+        )
+        .expect("parse ss2022 link");
+        assert_eq!(parsed.method, "2022-blake3-aes-128-gcm");
+        assert_eq!(parsed.password, "+/=");
+        assert_eq!(parsed.display_name, "ss node");
+        assert_eq!(parsed.host, "127.0.0.1");
+        assert_eq!(parsed.port, 8388);
+    }
+
+    #[test]
+    fn parse_shadowsocks_share_link_decodes_percent_encoded_base64_userinfo() {
+        let userinfo =
+            base64::engine::general_purpose::STANDARD.encode("chacha20-ietf-poly1305:pass+/=");
+        let link = format!("ss://{}@127.0.0.1:8388#node", userinfo.replace('=', "%3D"));
+        let parsed = parse_shadowsocks_share_link(&link).expect("parse ss base64 userinfo link");
+        assert_eq!(parsed.method, "chacha20-ietf-poly1305");
+        assert_eq!(parsed.password, "pass+/=");
     }
 
     #[test]
