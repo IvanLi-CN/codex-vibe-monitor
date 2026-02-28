@@ -10,6 +10,7 @@
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------- | ---------- | -------------------- |
 | 9anzf | Docker 镜像内置 Xray-core（xray）以支持订阅代理验证                       | 部分完成（2/3） | `9anzf-bundle-xray-in-image/SPEC.md`         | 2026-03-01 | hotfix               |
 | vdukd | 修复 GHCR 镜像 GLIBC 漂移导致 bookworm runtime 启动失败                   | 已完成（3/3）   | `vdukd-ghcr-glibc-drift-fix/SPEC.md`         | 2026-03-01 | fast-track / hotfix  |
+| 9mbsz | Release 前 Docker Smoke Gate（Push 镜像前先验证）                         | 已完成          | `9mbsz-release-docker-smoke-gate/SPEC.md`    | 2026-03-01 | PR #66 / fast-track  |
 | zrxcd | Sticky Footer 修复：页脚在短页面贴底                                      | 已完成          | `zrxcd-sticky-footer-layout/SPEC.md`         | 2026-03-01 | PR #65 / fast-track  |
 | ykn4w | 日期后缀模型成本回退与历史空成本补算                                      | 已完成          | `ykn4w-pricing-alias-backfill/SPEC.md`       | 2026-02-28 | fast-track           |
 | 8dun3 | 统计页成功/失败图增加首字耗时折线与悬浮统计（均值 + P95）                 | 已完成          | `8dun3-stats-success-failure-ttfb/SPEC.md`   | 2026-02-27 | PR #61               |
