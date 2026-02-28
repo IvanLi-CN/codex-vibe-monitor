@@ -25,3 +25,7 @@ dist-ssr
 
 *storybook.log
 storybook-static
+
+# Playwright artifacts
+test-results
+playwright-report
