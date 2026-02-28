@@ -37,7 +37,7 @@ while (( SECONDS < deadline )); do
     exit 1
   fi
 
-  if curl -m 1 -fsS "http://${host}:${port}/health" | grep -q "ok"; then
+  if curl -m 1 -fsS "http://${host}:${port}/health" | grep -qx "ok"; then
     echo "[smoke] /health ok"
     exit 0
   fi
