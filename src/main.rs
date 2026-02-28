@@ -8990,6 +8990,12 @@ impl XraySupervisor {
     async fn spawn_instance(&mut self, endpoint: &ForwardProxyEndpoint) -> Result<Url> {
         let outbound = build_xray_outbound_for_endpoint(endpoint)?;
         let local_port = pick_unused_local_port().context("failed to allocate xray local port")?;
+        fs::create_dir_all(&self.runtime_dir).with_context(|| {
+            format!(
+                "failed to create xray runtime directory: {}",
+                self.runtime_dir.display()
+            )
+        })?;
         let config_path = self.runtime_dir.join(format!(
             "forward-proxy-{:016x}.json",
             stable_hash_u64(&endpoint.key)
@@ -9030,7 +9036,8 @@ impl XraySupervisor {
             if let Some(stderr_tail) = stderr_tail
                 && !stderr_tail.trim().is_empty()
             {
-                return Err(anyhow!("{err}\n\nxray stderr (tail):\n{stderr_tail}"));
+                let redacted = redact_xray_stderr_tail(&stderr_tail);
+                return Err(anyhow!("{err}\n\nxray stderr (tail):\n{redacted}"));
             }
             return Err(err);
         }
@@ -9113,6 +9120,17 @@ fn read_file_tail_lossy(path: &Path, max_bytes: usize) -> Result<Option<String>>
     file.read_to_end(&mut buf)
         .with_context(|| format!("failed to read {}", path.display()))?;
     Ok(Some(String::from_utf8_lossy(&buf).to_string()))
+}
+
+static XRAY_SHARE_LINK_REDACT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(vmess|vless|trojan|ss)://\\S+").expect("valid redact regex"));
+
+fn redact_xray_stderr_tail(raw: &str) -> String {
+    // Be conservative: only redact obvious share-link tokens to reduce accidental secret leakage
+    // while keeping the error actionable for debugging.
+    XRAY_SHARE_LINK_REDACT_RE
+        .replace_all(raw, "$1://<redacted>")
+        .to_string()
 }
 
 fn stable_hash_u64(raw: &str) -> u64 {
