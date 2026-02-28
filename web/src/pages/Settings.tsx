@@ -44,6 +44,7 @@ type ForwardProxyBatchValidationItem = {
   key: string
   rawValue: string
   normalizedValue: string
+  displayName: string
   status: ForwardProxyBatchValidationStatus
   latencyMs?: number
   message: string
@@ -177,6 +178,63 @@ function parseMultilineItems(raw: string): string[] {
     items.push(trimmed)
   }
   return items
+}
+
+function decodeBase64Maybe(raw: string): string | null {
+  const compact = raw.trim().replace(/\s+/g, '')
+  if (!compact) return null
+  const normalized = compact.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
+  try {
+    return atob(padded)
+  } catch {
+    return null
+  }
+}
+
+function labelFromUrl(url: URL): string | null {
+  const fragment = decodeURIComponent(url.hash.replace(/^#/, '')).trim()
+  if (fragment) return fragment
+
+  const host = url.hostname || url.host
+  if (!host) return null
+  const defaultPort = url.protocol === 'https:' ? '443' : url.protocol === 'http:' ? '80' : ''
+  const port = url.port || defaultPort
+  return port ? `${host}:${port}` : host
+}
+
+function extractProxyDisplayName(raw: string): string | null {
+  const candidate = raw.trim()
+  if (!candidate) return null
+
+  if (candidate.startsWith('vmess://')) {
+    const payload = candidate.slice('vmess://'.length).split('#')[0].split('?')[0]
+    const decoded = decodeBase64Maybe(payload)
+    if (!decoded) return null
+    try {
+      const parsed = JSON.parse(decoded) as { ps?: string; add?: string; port?: string | number }
+      const display = (parsed.ps || '').trim()
+      if (display) return display
+      if (parsed.add) return parsed.port ? `${parsed.add}:${parsed.port}` : parsed.add
+    } catch {
+      return null
+    }
+    return null
+  }
+
+  if (candidate.startsWith('ss://')) {
+    const fragment = candidate.split('#')[1]
+    if (fragment) {
+      const decoded = decodeURIComponent(fragment).trim()
+      if (decoded) return decoded
+    }
+  }
+
+  try {
+    return labelFromUrl(new URL(candidate))
+  } catch {
+    return null
+  }
 }
 
 function batchStatusRank(status: ForwardProxyBatchValidationStatus): number {
@@ -552,6 +610,7 @@ export default function SettingsPage() {
       })
       return
     }
+    const unknownNodeName = t('settings.forwardProxy.modal.unknownNode')
     setForwardProxyModalStep(2)
     const validationRunId = forwardProxyBatchValidationRunRef.current + 1
     forwardProxyBatchValidationRunRef.current = validationRunId
@@ -565,6 +624,7 @@ export default function SettingsPage() {
         key: pendingKey,
         rawValue: rawLine,
         normalizedValue: rawLine,
+        displayName: extractProxyDisplayName(rawLine) || unknownNodeName,
         status: 'validating',
         message: t('settings.forwardProxy.modal.rowValidating'),
       })
@@ -588,6 +648,7 @@ export default function SettingsPage() {
             key: normalizedValue,
             rawValue: rawLine,
             normalizedValue,
+            displayName: extractProxyDisplayName(normalizedValue) || extractProxyDisplayName(rawLine) || unknownNodeName,
             status: 'available',
             latencyMs: result.latencyMs,
             message: result.message || t('settings.forwardProxy.modal.validateSuccess'),
@@ -597,18 +658,20 @@ export default function SettingsPage() {
             key: rawLine,
             rawValue: rawLine,
             normalizedValue: rawLine,
+            displayName: extractProxyDisplayName(rawLine) || unknownNodeName,
             status: 'unavailable',
             latencyMs: result.latencyMs,
-            message: result.message || t('settings.forwardProxy.modal.validateFailed'),
+            message: t('settings.forwardProxy.modal.validateFailed'),
           }
         }
-      } catch (err) {
+      } catch {
         item = {
           key: rawLine,
           rawValue: rawLine,
           normalizedValue: rawLine,
+          displayName: extractProxyDisplayName(rawLine) || unknownNodeName,
           status: 'unavailable',
-          message: err instanceof Error ? err.message : String(err),
+          message: t('settings.forwardProxy.modal.validateFailed'),
         }
       }
 
@@ -1295,38 +1358,42 @@ export default function SettingsPage() {
                         <table className="w-full text-xs">
                           <thead className="bg-base-200/70 text-base-content/65">
                             <tr>
-                              <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultNode')}</th>
+                              <th className="w-14 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultIndex')}</th>
+                              <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultName')}</th>
                               <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultStatus')}</th>
-                              <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultLatency')}</th>
                               <th className="px-3 py-2 text-right">{t('settings.forwardProxy.modal.resultAction')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-base-300/65">
-                            {forwardProxyBatchResults.map((item) => (
+                            {forwardProxyBatchResults.map((item, index) => (
                               <tr key={item.key} className={item.status === 'unavailable' ? 'bg-warning/10' : ''}>
+                                <td className="px-3 py-2 text-base-content/60">{index + 1}</td>
                                 <td className="px-3 py-2">
-                                  <div className="font-mono text-[11px] break-all">{item.normalizedValue}</div>
-                                  <div className="text-[11px] text-base-content/65">{item.message}</div>
+                                  <div className="text-sm font-medium text-base-content/85">{item.displayName}</div>
                                 </td>
                                 <td className="px-3 py-2">
-                                  <span
-                                    className={cn(
-                                      'rounded px-1.5 py-0.5 text-[11px]',
-                                      item.status === 'available'
-                                        ? 'bg-success/20 text-success'
+                                  <div className="space-y-1">
+                                    <span
+                                      className={cn(
+                                        'rounded px-1.5 py-0.5 text-[11px]',
+                                        item.status === 'available'
+                                          ? 'bg-success/20 text-success'
+                                          : item.status === 'unavailable'
+                                            ? 'bg-warning/20 text-warning'
+                                            : 'bg-info/20 text-info',
+                                      )}
+                                    >
+                                      {item.status === 'available'
+                                        ? t('settings.forwardProxy.modal.statusAvailable')
                                         : item.status === 'unavailable'
-                                          ? 'bg-warning/20 text-warning'
-                                          : 'bg-info/20 text-info',
+                                          ? t('settings.forwardProxy.modal.statusUnavailable')
+                                          : t('settings.forwardProxy.modal.statusValidating')}
+                                    </span>
+                                    {item.status === 'available' && item.latencyMs != null && (
+                                      <div className="text-[11px] text-base-content/60">{formatLatency(item.latencyMs)}</div>
                                     )}
-                                  >
-                                    {item.status === 'available'
-                                      ? t('settings.forwardProxy.modal.statusAvailable')
-                                      : item.status === 'unavailable'
-                                        ? t('settings.forwardProxy.modal.statusUnavailable')
-                                        : t('settings.forwardProxy.modal.statusValidating')}
-                                  </span>
+                                  </div>
                                 </td>
-                                <td className="px-3 py-2">{item.latencyMs == null ? '—' : `${item.latencyMs.toFixed(0)} ms`}</td>
                                 <td className="px-3 py-2 text-right">
                                   <Button
                                     type="button"
