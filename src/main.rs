@@ -6946,14 +6946,18 @@ async fn validate_subscription_candidate(
     state: &AppState,
     value: String,
 ) -> Result<ForwardProxyCandidateValidationResponse> {
+    let validation_timeout =
+        forward_proxy_validation_timeout(ForwardProxyValidationKind::SubscriptionUrl);
+    let validation_started = Instant::now();
     let normalized_subscription = normalize_subscription_entries(vec![value])
         .into_iter()
         .next()
         .ok_or_else(|| anyhow!("subscription url must be a valid http/https url"))?;
-    let urls = fetch_subscription_proxy_urls(
+    let urls = fetch_subscription_proxy_urls_with_validation_budget(
         &state.http_clients.shared,
         &normalized_subscription,
-        state.config.request_timeout,
+        validation_timeout,
+        validation_started,
     )
     .await
     .context("failed to fetch or decode subscription payload")?;
@@ -6967,9 +6971,6 @@ async fn validate_subscription_candidate(
 
     let mut last_error: Option<anyhow::Error> = None;
     let mut best_latency_ms: Option<f64> = None;
-    let validation_timeout =
-        forward_proxy_validation_timeout(ForwardProxyValidationKind::SubscriptionUrl);
-    let validation_started = Instant::now();
     for endpoint in endpoints.iter().take(3) {
         let Some(remaining_timeout) =
             remaining_timeout_budget(validation_timeout, validation_started.elapsed())
@@ -6988,9 +6989,7 @@ async fn validate_subscription_candidate(
                 break;
             }
             Err(err) => {
-                if remaining_timeout_budget(validation_timeout, validation_started.elapsed())
-                    .is_none()
-                {
+                if timeout_budget_exhausted(validation_timeout, validation_started.elapsed()) {
                     last_error = Some(timeout_error_for_duration(validation_timeout));
                     break;
                 }
@@ -7026,15 +7025,18 @@ async fn probe_forward_proxy_endpoint(
         .openai_upstream_base_url
         .join("v1/models")
         .context("failed to build validation probe target")?;
-    let (endpoint_url, temporary_xray_key) =
-        resolve_forward_proxy_probe_endpoint_url(state, endpoint).await?;
-
     let started = Instant::now();
+    let (endpoint_url, temporary_xray_key) =
+        resolve_forward_proxy_probe_endpoint_url(state, endpoint, validation_timeout).await?;
+
     let probe_result = async {
+        let send_timeout = remaining_timeout_budget(validation_timeout, started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| timeout_error_for_duration(validation_timeout))?;
         let client = state
             .http_clients
             .client_for_forward_proxy(endpoint_url.as_ref())?;
-        let response = timeout(validation_timeout, client.get(probe_target).send())
+        let response = timeout(send_timeout, client.get(probe_target).send())
             .await
             .map_err(|_| timeout_error_for_duration(validation_timeout))?
             .context("validation request failed")?;
@@ -7074,6 +7076,13 @@ fn remaining_timeout_budget(total_timeout: Duration, elapsed: Duration) -> Optio
     total_timeout.checked_sub(elapsed)
 }
 
+fn timeout_budget_exhausted(total_timeout: Duration, elapsed: Duration) -> bool {
+    match remaining_timeout_budget(total_timeout, elapsed) {
+        Some(remaining) => remaining.is_zero(),
+        None => true,
+    }
+}
+
 fn timeout_error_for_duration(timeout: Duration) -> anyhow::Error {
     anyhow!(
         "validation request timed out after {}s",
@@ -7093,6 +7102,7 @@ fn timeout_seconds_for_message(timeout: Duration) -> u64 {
 async fn resolve_forward_proxy_probe_endpoint_url(
     state: &AppState,
     endpoint: &ForwardProxyEndpoint,
+    validation_timeout: Duration,
 ) -> Result<(Option<Url>, Option<String>)> {
     if !endpoint.requires_xray() {
         return Ok((endpoint.endpoint_url.clone(), None));
@@ -7116,7 +7126,9 @@ async fn resolve_forward_proxy_probe_endpoint_url(
     };
     let route_url = {
         let mut supervisor = state.xray_supervisor.lock().await;
-        supervisor.ensure_instance(&probe_endpoint).await?
+        supervisor
+            .ensure_instance_with_ready_timeout(&probe_endpoint, validation_timeout)
+            .await?
     };
     Ok((Some(route_url), Some(temporary_key)))
 }
@@ -7627,6 +7639,35 @@ async fn fetch_subscription_proxy_urls(
     let body = timeout(request_timeout, response.text())
         .await
         .map_err(|_| anyhow!("subscription body read timed out"))?
+        .context("failed to read subscription body")?;
+    Ok(parse_proxy_urls_from_subscription_body(&body))
+}
+
+async fn fetch_subscription_proxy_urls_with_validation_budget(
+    client: &Client,
+    subscription_url: &str,
+    total_timeout: Duration,
+    started: Instant,
+) -> Result<Vec<String>> {
+    let request_timeout = remaining_timeout_budget(total_timeout, started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| timeout_error_for_duration(total_timeout))?;
+    let response = timeout(request_timeout, client.get(subscription_url).send())
+        .await
+        .map_err(|_| timeout_error_for_duration(total_timeout))?
+        .with_context(|| format!("failed to request subscription url: {subscription_url}"))?;
+    if !response.status().is_success() {
+        bail!(
+            "subscription url returned status {}: {subscription_url}",
+            response.status()
+        );
+    }
+    let read_timeout = remaining_timeout_budget(total_timeout, started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| timeout_error_for_duration(total_timeout))?;
+    let body = timeout(read_timeout, response.text())
+        .await
+        .map_err(|_| timeout_error_for_duration(total_timeout))?
         .context("failed to read subscription body")?;
     Ok(parse_proxy_urls_from_subscription_body(&body))
 }
@@ -9014,6 +9055,18 @@ impl XraySupervisor {
     }
 
     async fn ensure_instance(&mut self, endpoint: &ForwardProxyEndpoint) -> Result<Url> {
+        self.ensure_instance_with_ready_timeout(
+            endpoint,
+            Duration::from_millis(XRAY_PROXY_READY_TIMEOUT_MS),
+        )
+        .await
+    }
+
+    async fn ensure_instance_with_ready_timeout(
+        &mut self,
+        endpoint: &ForwardProxyEndpoint,
+        ready_timeout: Duration,
+    ) -> Result<Url> {
         if let Some(instance) = self.instances.get_mut(&endpoint.key) {
             match instance.child.try_wait() {
                 Ok(None) => return Ok(instance.local_proxy_url.clone()),
@@ -9035,10 +9088,14 @@ impl XraySupervisor {
         }
 
         self.remove_instance(&endpoint.key).await;
-        self.spawn_instance(endpoint).await
+        self.spawn_instance(endpoint, ready_timeout).await
     }
 
-    async fn spawn_instance(&mut self, endpoint: &ForwardProxyEndpoint) -> Result<Url> {
+    async fn spawn_instance(
+        &mut self,
+        endpoint: &ForwardProxyEndpoint,
+        ready_timeout: Duration,
+    ) -> Result<Url> {
         let outbound = build_xray_outbound_for_endpoint(endpoint)?;
         let local_port = pick_unused_local_port().context("failed to allocate xray local port")?;
         let config_path = self.runtime_dir.join(format!(
@@ -9061,7 +9118,7 @@ impl XraySupervisor {
             .spawn()
             .with_context(|| format!("failed to start xray binary: {}", self.binary))?;
 
-        if let Err(err) = wait_for_xray_proxy_ready(&mut child, local_port).await {
+        if let Err(err) = wait_for_xray_proxy_ready(&mut child, local_port, ready_timeout).await {
             let _ = child.kill().await;
             let _ = child.wait().await;
             let _ = fs::remove_file(&config_path);
@@ -9140,8 +9197,12 @@ fn pick_unused_local_port() -> Result<u16> {
     Ok(port)
 }
 
-async fn wait_for_xray_proxy_ready(child: &mut Child, local_port: u16) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_millis(XRAY_PROXY_READY_TIMEOUT_MS);
+async fn wait_for_xray_proxy_ready(
+    child: &mut Child,
+    local_port: u16,
+    ready_timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + ready_timeout;
     loop {
         if let Some(status) = child
             .try_wait()
@@ -11291,6 +11352,14 @@ mod tests {
             remaining_timeout_budget(total, Duration::from_secs(61)),
             None
         );
+    }
+
+    #[test]
+    fn timeout_budget_exhausted_treats_zero_budget_as_exhausted() {
+        let total = Duration::from_secs(60);
+        assert!(!timeout_budget_exhausted(total, Duration::from_secs(59)));
+        assert!(timeout_budget_exhausted(total, Duration::from_secs(60)));
+        assert!(timeout_budget_exhausted(total, Duration::from_secs(61)));
     }
 
     #[test]
