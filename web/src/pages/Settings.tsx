@@ -1246,8 +1246,68 @@ export default function SettingsPage() {
                         {[1, 2].map((step) => {
                           const isActive = forwardProxyModalStep === step
                           const isCompleted = step === 1 && forwardProxyModalStep === 2
+                          const canJump = step === 1 || forwardProxyModalStep === 2
                           return (
                             <li key={step} className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                className={cn(
+                                  'flex items-center gap-1.5 rounded-md px-1 py-0.5 transition',
+                                  canJump ? 'hover:bg-base-300/45' : 'cursor-default',
+                                )}
+                                disabled={!canJump}
+                                onClick={() => {
+                                  if (!canJump) return
+                                  setForwardProxyModalStep(step as 1 | 2)
+                                }}
+                              >
+                                <span
+                                  className={cn(
+                                    'inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold',
+                                    isActive
+                                      ? 'bg-primary text-primary-content'
+                                      : isCompleted
+                                        ? 'bg-success/85 text-success-content'
+                                        : 'bg-base-300/85 text-base-content/70',
+                                  )}
+                                >
+                                  {isCompleted ? '✓' : step}
+                                </span>
+                                <span className={cn('text-[11px] font-medium', isActive ? 'text-primary' : 'text-base-content/65')}>
+                                  {t(
+                                    step === 1
+                                      ? 'settings.forwardProxy.modal.step1Compact'
+                                      : 'settings.forwardProxy.modal.step2Compact',
+                                  )}
+                                </span>
+                              </button>
+                              {step === 1 && <span className="text-base-content/35">/</span>}
+                            </li>
+                          )
+                        })}
+                      </ol>
+                    )}
+                  </div>
+                  {forwardProxyModalIsBatch && (
+                    <ol className="mt-2 flex items-center gap-1 rounded-lg border border-base-300/70 bg-base-200/35 px-2 py-1 sm:hidden">
+                      {[1, 2].map((step) => {
+                        const isActive = forwardProxyModalStep === step
+                        const isCompleted = step === 1 && forwardProxyModalStep === 2
+                        const canJump = step === 1 || forwardProxyModalStep === 2
+                        return (
+                          <li key={`mobile-${step}`} className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              className={cn(
+                                'flex items-center gap-1.5 rounded-md px-1 py-0.5 transition',
+                                canJump ? 'hover:bg-base-300/45' : 'cursor-default',
+                              )}
+                              disabled={!canJump}
+                              onClick={() => {
+                                if (!canJump) return
+                                setForwardProxyModalStep(step as 1 | 2)
+                              }}
+                            >
                               <span
                                 className={cn(
                                   'inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold',
@@ -1267,39 +1327,7 @@ export default function SettingsPage() {
                                     : 'settings.forwardProxy.modal.step2Compact',
                                 )}
                               </span>
-                              {step === 1 && <span className="text-base-content/35">/</span>}
-                            </li>
-                          )
-                        })}
-                      </ol>
-                    )}
-                  </div>
-                  {forwardProxyModalIsBatch && (
-                    <ol className="mt-2 flex items-center gap-1 rounded-lg border border-base-300/70 bg-base-200/35 px-2 py-1 sm:hidden">
-                      {[1, 2].map((step) => {
-                        const isActive = forwardProxyModalStep === step
-                        const isCompleted = step === 1 && forwardProxyModalStep === 2
-                        return (
-                          <li key={`mobile-${step}`} className="flex items-center gap-1.5">
-                            <span
-                              className={cn(
-                                'inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold',
-                                isActive
-                                  ? 'bg-primary text-primary-content'
-                                  : isCompleted
-                                    ? 'bg-success/85 text-success-content'
-                                    : 'bg-base-300/85 text-base-content/70',
-                              )}
-                            >
-                              {isCompleted ? '✓' : step}
-                            </span>
-                            <span className={cn('text-[11px] font-medium', isActive ? 'text-primary' : 'text-base-content/65')}>
-                              {t(
-                                step === 1
-                                  ? 'settings.forwardProxy.modal.step1Compact'
-                                  : 'settings.forwardProxy.modal.step2Compact',
-                              )}
-                            </span>
+                            </button>
                             {step === 1 && <span className="text-base-content/35">/</span>}
                           </li>
                         )
