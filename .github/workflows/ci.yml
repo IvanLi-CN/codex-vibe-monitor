@@ -324,6 +324,9 @@ jobs:
             exit 1
           fi
 
+          echo "Smoke: ${version_tag} -> xray version"
+          docker run --rm "${version_tag}" xray version
+
           echo "Smoke: ${version_tag} -> codex-vibe-monitor --help"
           docker run --rm "${version_tag}" codex-vibe-monitor --help
 

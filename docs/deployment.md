@@ -53,6 +53,18 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 - `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`：请求体读取总超时（默认 `180` 秒；超时返回 `408`）。
 - `XY_LEGACY_POLL_ENABLED`：legacy 轮询写入开关（默认关闭；开启后会并行写入旧来源统计）。
 
+## Forward Proxy (Xray)
+
+设置页的 Forward proxy routing 支持 `vmess` / `vless` / `trojan` / `ss` 等 share link（通过 Xray 进行本地 socks 路由与可用性探测）。
+
+部署要点：
+
+- 发布镜像已内置 `xray`，默认路径：`/usr/local/bin/xray`（镜像内无需额外安装）。
+- 可通过环境变量覆盖：
+  - `XY_XRAY_BINARY`：指定 xray 可执行文件路径（默认 `xray`，Docker 镜像内已设为 `/usr/local/bin/xray`）。
+  - `XY_XRAY_RUNTIME_DIR`：xray 运行时目录（写入临时 config / stderr 日志），必须可写。
+- 若启用只读根文件系统（read-only rootfs），需确保 `XY_XRAY_RUNTIME_DIR` 指向可写卷（例如挂载到 `/srv/app/data/xray-forward`）。
+
 价格配置说明：
 
 - 价格目录由 SQLite 持久化，不再依赖本地 JSON 文件路径。
