@@ -19,8 +19,9 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  # NOTE: The release smoke gate relies on buildx `load: true` (single platform only).
-  PLATFORMS: linux/amd64
+  PLATFORM_AMD64: linux/amd64
+  PLATFORM_ARM64: linux/arm64
+  PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   lint:
@@ -270,10 +271,11 @@ jobs:
           set -euo pipefail
           image="${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}"
           if [[ "${RELEASE_CHANNEL}" == "stable" ]]; then
+            # Keep version tag first to avoid "latest updated but version missing" partial state.
             {
               echo "tags<<EOF"
-              echo "${image}:latest"
               echo "${image}:v${APP_EFFECTIVE_VERSION}"
+              echo "${image}:latest"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           else
@@ -301,52 +303,147 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # buildx `load` only supports a single-platform result.
-          if [[ "${PLATFORMS}" == *","* || "${PLATFORMS}" == *" "* ]]; then
-            echo "Smoke requires a single platform when using buildx load (PLATFORMS=${PLATFORMS})" >&2
-            exit 1
-          fi
+          required_platforms=("${PLATFORM_AMD64}" "${PLATFORM_ARM64}")
+          normalized=",${PLATFORMS// /},"
+          for platform in "${required_platforms[@]}"; do
+            if [[ "${normalized}" != *",${platform},"* ]]; then
+              echo "Missing required platform in PLATFORMS=${PLATFORMS}: ${platform}" >&2
+              exit 1
+            fi
+          done
 
-      - name: Build Docker image (load)
+      - name: Build smoke image (linux/amd64, load)
         if: steps.intent.outputs.release_enabled == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: ${{ env.PLATFORMS }}
+          platforms: ${{ env.PLATFORM_AMD64 }}
           push: false
           load: true
-          tags: ${{ steps.image-tags.outputs.tags }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-amd64
+            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}-amd64
           build-args: |
             APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
 
-      - name: Smoke test Docker image (startup + /health)
+      - name: Smoke test image (linux/amd64)
         if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
         env:
-          SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:v${{ env.APP_EFFECTIVE_VERSION }}
-          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-amd64
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
 
-      - name: Push Docker image tags (after smoke)
+      - name: Build smoke image (linux/arm64, load)
+        if: steps.intent.outputs.release_enabled == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ env.PLATFORM_ARM64 }}
+          push: false
+          load: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+          build-args: |
+            APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
+
+      - name: Smoke test image (linux/arm64)
         if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
         env:
-          SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:v${{ env.APP_EFFECTIVE_VERSION }}
-          TAGS: ${{ steps.image-tags.outputs.tags }}
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_PLATFORM: ${{ env.PLATFORM_ARM64 }}
+          SMOKE_TIMEOUT_SECS: "120"
+        run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+      - name: Push smoke-verified platform images
+        if: steps.intent.outputs.release_enabled == 'true'
+        id: staged-images
+        shell: bash
         run: |
           set -euo pipefail
-          echo "[push] ${SMOKE_TAG}"
-          docker push "${SMOKE_TAG}"
+          image="${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}"
+          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          candidate_amd64="${image}:candidate-${suffix}-amd64"
+          candidate_arm64="${image}:candidate-${suffix}-arm64"
+          echo "[push] ${candidate_amd64}"
+          docker push "${candidate_amd64}"
+          echo "[push] ${candidate_arm64}"
+          docker push "${candidate_arm64}"
+          echo "candidate_amd64=${candidate_amd64}" >> "$GITHUB_OUTPUT"
+          echo "candidate_arm64=${candidate_arm64}" >> "$GITHUB_OUTPUT"
 
+      - name: Create release manifest tags from smoke-verified images
+        if: steps.intent.outputs.release_enabled == 'true'
+        shell: bash
+        env:
+          TAGS: ${{ steps.image-tags.outputs.tags }}
+          CANDIDATE_AMD64: ${{ steps.staged-images.outputs.candidate_amd64 }}
+          CANDIDATE_ARM64: ${{ steps.staged-images.outputs.candidate_arm64 }}
+        run: |
+          set -euo pipefail
           mapfile -t tags <<< "${TAGS}"
           for tag in "${tags[@]}"; do
             [[ -z "${tag}" ]] && continue
-            [[ "${tag}" == "${SMOKE_TAG}" ]] && continue
-            echo "[push] ${tag}"
-            docker push "${tag}"
+            echo "[manifest] ${tag} <= ${CANDIDATE_AMD64}, ${CANDIDATE_ARM64}"
+            for attempt in 1 2 3 4 5; do
+              if docker buildx imagetools create --tag "${tag}" "${CANDIDATE_AMD64}" "${CANDIDATE_ARM64}" 2>"/tmp/imagetools-create-${attempt}.err"; then
+                break
+              fi
+              if [[ "${attempt}" == "5" ]]; then
+                echo "[manifest] failed after ${attempt} attempts for ${tag}" >&2
+                if [[ -s "/tmp/imagetools-create-${attempt}.err" ]]; then
+                  cat "/tmp/imagetools-create-${attempt}.err" >&2
+                fi
+                exit 1
+              fi
+              sleep_secs=$((attempt * 3))
+              echo "[manifest] retry in ${sleep_secs}s (${attempt}/5): ${tag}" >&2
+              sleep "${sleep_secs}"
+            done
+          done
+
+      - name: Verify pushed manifest platforms
+        if: steps.intent.outputs.release_enabled == 'true'
+        shell: bash
+        env:
+          TAGS: ${{ steps.image-tags.outputs.tags }}
+          REQUIRED_PLATFORMS: ${{ env.PLATFORMS }}
+        run: |
+          set -euo pipefail
+          mapfile -t tags <<< "${TAGS}"
+          for tag in "${tags[@]}"; do
+            [[ -z "${tag}" ]] && continue
+            echo "[verify] ${tag}"
+            for attempt in 1 2 3 4 5; do
+              if raw_json="$(docker buildx imagetools inspect "${tag}" --raw 2>"/tmp/imagetools-${attempt}.err")"; then
+                if RAW_JSON="${raw_json}" python3 -c "import json, os, sys; tag = sys.argv[1]; manifest = json.loads(os.environ['RAW_JSON']); required = {p.strip() for p in os.environ.get('REQUIRED_PLATFORMS', '').split(',') if p.strip()}; platforms = {f\"{p.get('os')}/{p.get('architecture')}\" for p in [(item.get('platform') or {}) for item in manifest.get('manifests', [])] if p.get('os') and p.get('architecture')}; missing = sorted(required - platforms); missing and (_ for _ in ()).throw(SystemExit(f'missing required platforms for {tag}: {\", \".join(missing)} (detected: {sorted(platforms)})')); print(f'[verify] {tag}: detected {sorted(platforms)}')" "${tag}"
+                then
+                  break
+                fi
+              fi
+
+              if [[ "${attempt}" == "5" ]]; then
+                echo "[verify] failed after ${attempt} attempts for ${tag}" >&2
+                if [[ -s "/tmp/imagetools-${attempt}.err" ]]; then
+                  cat "/tmp/imagetools-${attempt}.err" >&2
+                fi
+                exit 1
+              fi
+
+              sleep_secs=$((attempt * 3))
+              echo "[verify] retry in ${sleep_secs}s (${attempt}/5): ${tag}" >&2
+              sleep "${sleep_secs}"
+            done
           done
 
       - name: Create and push git tag
