@@ -7376,7 +7376,7 @@ async fn record_forward_proxy_attempt(
     .await
     {
         warn!(
-            proxy_key = selected_proxy.key,
+            proxy_key_ref = %forward_proxy_log_ref(&selected_proxy.key),
             error = %err,
             "failed to persist forward proxy attempt"
         );
@@ -7386,7 +7386,7 @@ async fn record_forward_proxy_attempt(
         && let Err(err) = persist_forward_proxy_runtime_state(&state.pool, &runtime).await
     {
         warn!(
-            proxy_key = runtime.proxy_key,
+            proxy_key_ref = %forward_proxy_log_ref(&runtime.proxy_key),
             error = %err,
             "failed to persist forward proxy runtime state"
         );
@@ -7416,7 +7416,7 @@ fn spawn_penalized_forward_proxy_probe(state: Arc<AppState>, candidate: Selected
             .await
             .map_err(|_| anyhow!("probe timed out"))?
             .context("probe request failed")?;
-            let success = response.status().is_success();
+            let success = !response.status().is_server_error();
             let latency_ms = Some(elapsed_ms(started));
             record_forward_proxy_attempt(
                 state.clone(),
@@ -7437,10 +7437,10 @@ fn spawn_penalized_forward_proxy_probe(state: Arc<AppState>, candidate: Selected
 
         if let Err(err) = probe_result {
             warn!(
-                proxy_key = candidate.key,
+                proxy_key_ref = %forward_proxy_log_ref(&candidate.key),
                 proxy_source = candidate.source,
                 proxy_label = candidate.display_name,
-                proxy_url = candidate.endpoint_url_raw.as_deref().unwrap_or("direct"),
+                proxy_url_ref = %forward_proxy_log_ref_option(candidate.endpoint_url_raw.as_deref()),
                 error = %err,
                 "penalized forward proxy probe failed"
             );
@@ -7481,7 +7481,7 @@ async fn fetch_upstream_models_payload(
         .context("failed to contact upstream")?;
     let latency_ms = Some(elapsed_ms(started));
 
-    if !upstream_response.status().is_success() {
+    if upstream_response.status().is_server_error() {
         record_forward_proxy_attempt(
             state.clone(),
             selected_proxy,
@@ -8659,10 +8659,10 @@ impl XraySupervisor {
                 Err(err) => {
                     endpoint.endpoint_url = None;
                     warn!(
-                        proxy_key = endpoint.key,
+                        proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
                         proxy_source = endpoint.source,
                         proxy_label = endpoint.display_name,
-                        proxy_url = endpoint.raw_url.as_deref().unwrap_or(""),
+                        proxy_url_ref = %forward_proxy_log_ref_option(endpoint.raw_url.as_deref()),
                         error = %err,
                         "failed to prepare xray forward proxy route"
                     );
@@ -8686,14 +8686,14 @@ impl XraySupervisor {
                 Ok(None) => return Ok(instance.local_proxy_url.clone()),
                 Ok(Some(status)) => {
                     warn!(
-                        proxy_key = endpoint.key,
+                        proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
                         status = %status,
                         "xray proxy process exited unexpectedly; restarting"
                     );
                 }
                 Err(err) => {
                     warn!(
-                        proxy_key = endpoint.key,
+                        proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
                         error = %err,
                         "failed to inspect xray proxy process; restarting"
                     );
@@ -8754,17 +8754,25 @@ impl XraySupervisor {
             let still_running = matches!(instance.child.try_wait(), Ok(None));
             if still_running {
                 if let Err(err) = instance.child.kill().await {
-                    warn!(proxy_key = key, error = %err, "failed to terminate xray proxy process");
+                    warn!(
+                        proxy_key_ref = %forward_proxy_log_ref(key),
+                        error = %err,
+                        "failed to terminate xray proxy process"
+                    );
                 }
                 if let Err(err) = timeout(Duration::from_secs(2), instance.child.wait()).await {
-                    warn!(proxy_key = key, error = %err, "timed out waiting xray proxy process exit");
+                    warn!(
+                        proxy_key_ref = %forward_proxy_log_ref(key),
+                        error = %err,
+                        "timed out waiting xray proxy process exit"
+                    );
                 }
             }
             if let Err(err) = fs::remove_file(&instance.config_path)
                 && err.kind() != io::ErrorKind::NotFound
             {
                 warn!(
-                    proxy_key = key,
+                    proxy_key_ref = %forward_proxy_log_ref(key),
                     path = %instance.config_path.display(),
                     error = %err,
                     "failed to remove xray config file"
@@ -8778,6 +8786,15 @@ fn stable_hash_u64(raw: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     raw.hash(&mut hasher);
     hasher.finish()
+}
+
+fn forward_proxy_log_ref(raw: &str) -> String {
+    format!("fp_{:016x}", stable_hash_u64(raw))
+}
+
+fn forward_proxy_log_ref_option(raw: Option<&str>) -> String {
+    raw.map(forward_proxy_log_ref)
+        .unwrap_or_else(|| "direct".to_string())
 }
 
 fn pick_unused_local_port() -> Result<u16> {
