@@ -692,6 +692,24 @@ export default function SettingsPage() {
     ],
   )
 
+  const handleRemoveForwardProxyUrl = useCallback(
+    (targetUrl: string) => {
+      const nextProxyUrls = forwardProxyUrls.filter((item) => item !== targetUrl)
+      setForwardProxyUrls(nextProxyUrls)
+      persistForwardProxyDraft({ proxyUrls: nextProxyUrls })
+    },
+    [forwardProxyUrls, persistForwardProxyDraft],
+  )
+
+  const handleRemoveForwardProxySubscriptionUrl = useCallback(
+    (targetUrl: string) => {
+      const nextSubscriptionUrls = forwardProxySubscriptionUrls.filter((item) => item !== targetUrl)
+      setForwardProxySubscriptionUrls(nextSubscriptionUrls)
+      persistForwardProxyDraft({ subscriptionUrls: nextSubscriptionUrls })
+    },
+    [forwardProxySubscriptionUrls, persistForwardProxyDraft],
+  )
+
   const openForwardProxyAddModal = useCallback((kind: ForwardProxyModalKind) => {
     forwardProxyBatchValidationRunRef.current += 1
     setForwardProxyModalKind(kind)
@@ -1388,6 +1406,77 @@ export default function SettingsPage() {
             <span className="text-xs text-base-content/70">
               {t('settings.forwardProxy.subscriptionCount', { count: forwardProxySubscriptionUrls.length })}
             </span>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <section className="rounded-xl border border-base-300/80 bg-base-100/72 p-3">
+              <header className="mb-2 flex items-center justify-between gap-2">
+                <h4 className="text-sm font-medium text-base-content/85">{t('settings.forwardProxy.proxyUrls')}</h4>
+                <span className="text-xs text-base-content/65">{forwardProxyUrls.length}</span>
+              </header>
+              {forwardProxyUrls.length === 0 ? (
+                <p className="text-xs text-base-content/60">{t('settings.forwardProxy.listEmpty')}</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {forwardProxyUrls.map((proxyUrl) => (
+                    <li
+                      key={`proxy-url-${proxyUrl}`}
+                      className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/75 px-2.5 py-1.5"
+                    >
+                      <code className="min-w-0 flex-1 truncate whitespace-nowrap text-[11px] tabular-nums" title={proxyUrl}>
+                        {proxyUrl}
+                      </code>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs text-error hover:bg-error/10 hover:text-error"
+                        disabled={isForwardProxySaving}
+                        onClick={() => handleRemoveForwardProxyUrl(proxyUrl)}
+                      >
+                        {t('settings.forwardProxy.remove')}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="rounded-xl border border-base-300/80 bg-base-100/72 p-3">
+              <header className="mb-2 flex items-center justify-between gap-2">
+                <h4 className="text-sm font-medium text-base-content/85">{t('settings.forwardProxy.subscriptionUrls')}</h4>
+                <span className="text-xs text-base-content/65">{forwardProxySubscriptionUrls.length}</span>
+              </header>
+              {forwardProxySubscriptionUrls.length === 0 ? (
+                <p className="text-xs text-base-content/60">{t('settings.forwardProxy.subscriptionListEmpty')}</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {forwardProxySubscriptionUrls.map((subscriptionUrl) => (
+                    <li
+                      key={`subscription-url-${subscriptionUrl}`}
+                      className="flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-100/75 px-2.5 py-1.5"
+                    >
+                      <code
+                        className="min-w-0 flex-1 truncate whitespace-nowrap text-[11px] tabular-nums"
+                        title={subscriptionUrl}
+                      >
+                        {subscriptionUrl}
+                      </code>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs text-error hover:bg-error/10 hover:text-error"
+                        disabled={isForwardProxySaving}
+                        onClick={() => handleRemoveForwardProxySubscriptionUrl(subscriptionUrl)}
+                      >
+                        {t('settings.forwardProxy.remove')}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
           </div>
 
           <div className="flex flex-wrap items-end gap-3">

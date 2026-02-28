@@ -100,6 +100,7 @@ const baseTranslations = {
     'settings.forwardProxy.subscriptionCount': 'Configured subscriptions: {{count}}',
     'settings.forwardProxy.remove': 'Remove',
     'settings.forwardProxy.listEmpty': 'No entry yet. Add one after validation.',
+    'settings.forwardProxy.subscriptionListEmpty': 'No subscription yet.',
     'settings.forwardProxy.supportHint':
       'Supported schemes: http, https, socks, socks5, socks5h, vmess, vless, trojan, ss (via Xray)',
     'settings.forwardProxy.directLabel': 'Direct',
@@ -413,6 +414,7 @@ const baseTranslations = {
     'settings.forwardProxy.subscriptionCount': '已配置订阅：{{count}}',
     'settings.forwardProxy.remove': '删除',
     'settings.forwardProxy.listEmpty': '暂无条目，请先验证后添加。',
+    'settings.forwardProxy.subscriptionListEmpty': '暂无订阅链接。',
     'settings.forwardProxy.supportHint':
       '支持协议：http、https、socks、socks5、socks5h、vmess、vless、trojan、ss（vmess/vless/trojan/ss 由 Xray 转发）',
     'settings.forwardProxy.directLabel': '直连',
