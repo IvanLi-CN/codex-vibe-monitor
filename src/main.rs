@@ -116,6 +116,7 @@ const FORWARD_PROXY_PROBE_EVERY_REQUESTS: u64 = 100;
 const FORWARD_PROXY_PROBE_INTERVAL_SECS: i64 = 30 * 60;
 const FORWARD_PROXY_PROBE_RECOVERY_WEIGHT: f64 = 0.4;
 const FORWARD_PROXY_VALIDATION_TIMEOUT_SECS: u64 = 5;
+const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS: u64 = 60;
 const FORWARD_PROXY_DIRECT_KEY: &str = "__direct__";
 const FORWARD_PROXY_DIRECT_LABEL: &str = "Direct";
 const FORWARD_PROXY_SOURCE_MANUAL: &str = "manual";
@@ -6927,7 +6928,12 @@ async fn validate_single_forward_proxy_candidate(
         endpoint_url: parsed.endpoint_url,
         raw_url: Some(parsed.normalized.clone()),
     };
-    let latency_ms = probe_forward_proxy_endpoint(state, &endpoint).await?;
+    let latency_ms = probe_forward_proxy_endpoint(
+        state,
+        &endpoint,
+        forward_proxy_validation_timeout_secs(ForwardProxyValidationKind::ProxyUrl),
+    )
+    .await?;
     Ok(ForwardProxyCandidateValidationResponse::success(
         "proxy validation succeeded",
         Some(parsed.normalized),
@@ -6961,8 +6967,10 @@ async fn validate_subscription_candidate(
 
     let mut last_error: Option<anyhow::Error> = None;
     let mut best_latency_ms: Option<f64> = None;
+    let validation_timeout_secs =
+        forward_proxy_validation_timeout_secs(ForwardProxyValidationKind::SubscriptionUrl);
     for endpoint in endpoints.iter().take(3) {
-        match probe_forward_proxy_endpoint(state, endpoint).await {
+        match probe_forward_proxy_endpoint(state, endpoint, validation_timeout_secs).await {
             Ok(latency_ms) => {
                 best_latency_ms = Some(latency_ms);
                 break;
@@ -6993,6 +7001,7 @@ async fn validate_subscription_candidate(
 async fn probe_forward_proxy_endpoint(
     state: &AppState,
     endpoint: &ForwardProxyEndpoint,
+    validation_timeout_secs: u64,
 ) -> Result<f64> {
     let probe_target = state
         .config
@@ -7003,7 +7012,7 @@ async fn probe_forward_proxy_endpoint(
         resolve_forward_proxy_probe_endpoint_url(state, endpoint).await?;
 
     let started = Instant::now();
-    let validation_timeout = Duration::from_secs(FORWARD_PROXY_VALIDATION_TIMEOUT_SECS);
+    let validation_timeout = Duration::from_secs(validation_timeout_secs);
     let probe_result = async {
         let client = state
             .http_clients
@@ -7013,7 +7022,7 @@ async fn probe_forward_proxy_endpoint(
             .map_err(|_| {
                 anyhow!(
                     "validation request timed out after {}s",
-                    FORWARD_PROXY_VALIDATION_TIMEOUT_SECS
+                    validation_timeout_secs
                 )
             })?
             .context("validation request failed")?;
@@ -7036,6 +7045,15 @@ async fn probe_forward_proxy_endpoint(
 
     probe_result?;
     Ok(elapsed_ms(started))
+}
+
+fn forward_proxy_validation_timeout_secs(kind: ForwardProxyValidationKind) -> u64 {
+    match kind {
+        ForwardProxyValidationKind::ProxyUrl => FORWARD_PROXY_VALIDATION_TIMEOUT_SECS,
+        ForwardProxyValidationKind::SubscriptionUrl => {
+            FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS
+        }
+    }
 }
 
 async fn resolve_forward_proxy_probe_endpoint_url(
@@ -11210,6 +11228,18 @@ mod tests {
         let decoded = decode_subscription_payload(&encoded);
         assert!(decoded.contains("http://127.0.0.1:7890"));
         assert!(decoded.contains("socks5://127.0.0.1:1080"));
+    }
+
+    #[test]
+    fn forward_proxy_validation_timeout_secs_are_split_by_kind() {
+        assert_eq!(
+            forward_proxy_validation_timeout_secs(ForwardProxyValidationKind::ProxyUrl),
+            FORWARD_PROXY_VALIDATION_TIMEOUT_SECS
+        );
+        assert_eq!(
+            forward_proxy_validation_timeout_secs(ForwardProxyValidationKind::SubscriptionUrl),
+            FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS
+        );
     }
 
     #[test]
