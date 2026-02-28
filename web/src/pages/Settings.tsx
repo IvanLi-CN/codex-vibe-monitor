@@ -169,6 +169,14 @@ function appendUniqueItem(list: string[], value: string): string[] {
   return [...list, trimmed]
 }
 
+function appendUniqueItems(list: string[], values: string[]): string[] {
+  let next = list
+  for (const value of values) {
+    next = appendUniqueItem(next, value)
+  }
+  return next
+}
+
 function parseMultilineItems(raw: string): string[] {
   const seen = new Set<string>()
   const items: string[] = []
@@ -731,6 +739,77 @@ export default function SettingsPage() {
     closeForwardProxyAddModal()
   }, [closeForwardProxyAddModal, forwardProxyModalKind, forwardProxyValidation])
 
+  const handleRetryBatchNode = useCallback(
+    async (nodeKey: string) => {
+      if (forwardProxyModalKind !== 'proxyBatch') return
+      const target = forwardProxyBatchResults.find((item) => item.key === nodeKey)
+      if (!target) return
+      const unknownNodeName = t('settings.forwardProxy.modal.unknownNode')
+
+      setForwardProxyBatchResults((current) =>
+        current.map((item) =>
+          item.key === nodeKey
+            ? {
+                ...item,
+                status: 'validating',
+                latencyMs: undefined,
+                message: t('settings.forwardProxy.modal.rowValidating'),
+              }
+            : item,
+        ),
+      )
+
+      try {
+        const result = await validateForwardProxyCandidate({
+          kind: 'proxyUrl',
+          value: target.rawValue,
+        })
+
+        setForwardProxyBatchResults((current) =>
+          current.map((item) => {
+            if (item.key !== nodeKey) return item
+            if (!result.ok) {
+              return {
+                ...item,
+                status: 'unavailable',
+                latencyMs: result.latencyMs,
+                message: t('settings.forwardProxy.modal.validateFailed'),
+              }
+            }
+
+            const normalizedValue = result.normalizedValue?.trim() || target.rawValue
+            return {
+              ...item,
+              rawValue: target.rawValue,
+              normalizedValue,
+              displayName:
+                extractProxyDisplayName(normalizedValue) ||
+                extractProxyDisplayName(target.rawValue) ||
+                item.displayName ||
+                unknownNodeName,
+              status: 'available',
+              latencyMs: result.latencyMs,
+              message: result.message || t('settings.forwardProxy.modal.validateSuccess'),
+            }
+          }),
+        )
+      } catch {
+        setForwardProxyBatchResults((current) =>
+          current.map((item) =>
+            item.key === nodeKey
+              ? {
+                  ...item,
+                  status: 'unavailable',
+                  message: t('settings.forwardProxy.modal.validateFailed'),
+                }
+              : item,
+          ),
+        )
+      }
+    },
+    [forwardProxyBatchResults, forwardProxyModalKind, t],
+  )
+
   const handleAddValidatedBatchNode = useCallback(
     (nodeKey: string) => {
       if (forwardProxyModalKind !== 'proxyBatch') return
@@ -748,6 +827,21 @@ export default function SettingsPage() {
     },
     [closeForwardProxyAddModal, forwardProxyModalKind],
   )
+
+  const handleSubmitValidatedBatchNodes = useCallback(() => {
+    if (forwardProxyModalKind !== 'proxyBatch') return
+    setForwardProxyBatchResults((current) => {
+      const availableItems = current.filter((item) => item.status === 'available')
+      if (availableItems.length === 0) return current
+      setForwardProxyUrls((list) => appendUniqueItems(list, availableItems.map((item) => item.normalizedValue)))
+      setForwardProxyDirty(true)
+      const next = current.filter((item) => item.status !== 'available')
+      if (next.length === 0) {
+        queueMicrotask(() => closeForwardProxyAddModal())
+      }
+      return next
+    })
+  }, [closeForwardProxyAddModal, forwardProxyModalKind])
 
   const removeForwardProxyUrl = useCallback((target: string) => {
     setForwardProxyUrls((current) => current.filter((item) => item !== target))
@@ -788,6 +882,12 @@ export default function SettingsPage() {
     !forwardProxyModalIsBatch &&
     forwardProxyValidation.status === 'passed' &&
     forwardProxyValidation.normalizedValues.length > 0 &&
+    !isForwardProxySaving
+  const forwardProxyCanSubmitBatch =
+    forwardProxyModalIsBatch &&
+    forwardProxyModalStep === 2 &&
+    forwardProxyBatchAvailableCount > 0 &&
+    forwardProxyBatchValidatingCount === 0 &&
     !isForwardProxySaving
 
   if (isLoading) {
@@ -1386,13 +1486,13 @@ export default function SettingsPage() {
                             })}
                       </Alert>
                       <div className="max-h-72 overflow-y-auto rounded-xl border border-base-300/75">
-                        <table className="w-full text-xs">
+                        <table className="w-full table-fixed text-xs">
                           <thead className="bg-base-200/70 text-base-content/65">
                             <tr>
                               <th className="w-14 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultIndex')}</th>
                               <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultName')}</th>
-                              <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultStatus')}</th>
-                              <th className="px-3 py-2 text-right">{t('settings.forwardProxy.modal.resultAction')}</th>
+                              <th className="w-28 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultStatus')}</th>
+                              <th className="w-40 px-3 py-2 text-right">{t('settings.forwardProxy.modal.resultAction')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-base-300/65">
@@ -1400,40 +1500,57 @@ export default function SettingsPage() {
                               <tr key={item.key} className={item.status === 'unavailable' ? 'bg-warning/10' : ''}>
                                 <td className="px-3 py-2 text-base-content/60">{index + 1}</td>
                                 <td className="px-3 py-2">
-                                  <div className="text-sm font-medium text-base-content/85">{item.displayName}</div>
-                                </td>
-                                <td className="px-3 py-2">
-                                  <div className="space-y-1">
-                                    <span
-                                      className={cn(
-                                        'rounded px-1.5 py-0.5 text-[11px]',
-                                        item.status === 'available'
-                                          ? 'bg-success/20 text-success'
-                                          : item.status === 'unavailable'
-                                            ? 'bg-warning/20 text-warning'
-                                            : 'bg-info/20 text-info',
-                                      )}
-                                    >
-                                      {item.status === 'available'
-                                        ? t('settings.forwardProxy.modal.statusAvailable')
-                                        : item.status === 'unavailable'
-                                          ? t('settings.forwardProxy.modal.statusUnavailable')
-                                          : t('settings.forwardProxy.modal.statusValidating')}
-                                    </span>
-                                    {item.status === 'available' && item.latencyMs != null && (
-                                      <div className="text-[11px] text-base-content/60">{formatLatency(item.latencyMs)}</div>
-                                    )}
+                                  <div
+                                    className="truncate text-sm font-medium text-base-content/85"
+                                    title={item.displayName}
+                                  >
+                                    {item.displayName}
                                   </div>
                                 </td>
-                                <td className="px-3 py-2 text-right">
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    disabled={item.status !== 'available' || isForwardProxySaving}
-                                    onClick={() => handleAddValidatedBatchNode(item.key)}
+                                <td className="px-3 py-2">
+                                  <span
+                                    className={cn(
+                                      'inline-block whitespace-nowrap text-sm font-medium',
+                                      item.status === 'available'
+                                        ? 'text-success'
+                                        : item.status === 'unavailable'
+                                          ? 'text-warning'
+                                          : 'text-info',
+                                    )}
                                   >
-                                    {t('settings.forwardProxy.modal.addNode')}
-                                  </Button>
+                                    {item.status === 'available'
+                                      ? formatLatency(item.latencyMs)
+                                      : item.status === 'unavailable'
+                                        ? t('settings.forwardProxy.modal.statusUnavailable')
+                                        : t('settings.forwardProxy.modal.statusValidating')}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-right">
+                                  <div className="inline-flex items-center gap-1.5">
+                                    <Button
+                                      type="button"
+                                      size="icon"
+                                      variant="ghost"
+                                      className="h-8 w-8"
+                                      title={t('settings.forwardProxy.modal.retryNode')}
+                                      disabled={item.status === 'validating' || isForwardProxySaving}
+                                      onClick={() => void handleRetryBatchNode(item.key)}
+                                    >
+                                      <Icon icon="mdi:refresh" className="h-4 w-4" aria-hidden />
+                                      <span className="sr-only">{t('settings.forwardProxy.modal.retryNode')}</span>
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      size="icon"
+                                      className="h-8 w-8"
+                                      title={t('settings.forwardProxy.modal.addNode')}
+                                      disabled={item.status !== 'available' || isForwardProxySaving}
+                                      onClick={() => handleAddValidatedBatchNode(item.key)}
+                                    >
+                                      <Icon icon="mdi:plus" className="h-4 w-4" aria-hidden />
+                                      <span className="sr-only">{t('settings.forwardProxy.modal.addNode')}</span>
+                                    </Button>
+                                  </div>
                                 </td>
                               </tr>
                             ))}
@@ -1478,8 +1595,8 @@ export default function SettingsPage() {
                     {t('settings.forwardProxy.modal.cancel')}
                   </Button>
                   {forwardProxyModalIsBatch && forwardProxyModalStep === 2 ? (
-                    <Button type="button" variant="secondary" onClick={() => setForwardProxyModalStep(1)}>
-                      {t('settings.forwardProxy.modal.backToStep1')}
+                    <Button type="button" disabled={!forwardProxyCanSubmitBatch} onClick={handleSubmitValidatedBatchNodes}>
+                      {t('settings.forwardProxy.modal.submit')}
                     </Button>
                   ) : (
                     <Button
