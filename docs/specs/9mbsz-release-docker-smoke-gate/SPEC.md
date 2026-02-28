@@ -87,7 +87,7 @@ None
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
-- 风险：runner 端口冲突导致 false negative（默认使用 18080；可用环境变量覆盖）。
+- 风险：容器启动慢或 runner 资源抖动导致 smoke 超时；默认使用随机 host 端口发布（可用 `SMOKE_PORT` 固定端口）。
 - 假设：`ubuntu-latest` runner 具备 `docker` 与 `curl`。
 
 ## 参考（References）
