@@ -295,19 +295,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build Docker image (load locally)
         if: steps.intent.outputs.release_enabled == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           platforms: ${{ env.PLATFORMS }}
-          push: true
+          push: false
+          load: true
           tags: ${{ steps.image-tags.outputs.tags }}
           build-args: |
             APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
+
+      - name: Smoke test image (/health)
+        if: steps.intent.outputs.release_enabled == 'true'
+        shell: bash
+        env:
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:v${{ env.APP_EFFECTIVE_VERSION }}
+        run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+      - name: Push Docker image tags (after smoke)
+        if: steps.intent.outputs.release_enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${{ steps.image-tags.outputs.tags }}" | while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            echo "[push] $tag"
+            docker push "$tag"
+          done
 
       - name: Create and push git tag
         if: steps.intent.outputs.release_enabled == 'true'
