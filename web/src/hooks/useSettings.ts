@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchSettings,
+  updateForwardProxySettings,
   updatePricingSettings,
   updateProxySettings,
+  type ForwardProxySettings,
   type PricingSettings,
   type ProxySettings,
   type SettingsPayload,
@@ -32,12 +34,15 @@ export function useSettings() {
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isProxySaving, setIsProxySaving] = useState(false)
+  const [isForwardProxySaving, setIsForwardProxySaving] = useState(false)
   const [isPricingSaving, setIsPricingSaving] = useState(false)
   const [pricingRollbackVersion, setPricingRollbackVersion] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const serverSnapshotRef = useRef<SettingsPayload | null>(null)
   const pendingPricingRef = useRef<PricingSettings | null>(null)
   const pricingSaveInFlightRef = useRef(false)
+  const pendingForwardProxyRef = useRef<ForwardProxySettings | null>(null)
+  const forwardProxySaveInFlightRef = useRef(false)
 
   const load = useCallback(async () => {
     setIsLoading(true)
@@ -180,15 +185,86 @@ export function useSettings() {
     [rollback],
   )
 
+  const saveForwardProxy = useCallback(
+    async (nextForwardProxy: ForwardProxySettings) => {
+      if (!serverSnapshotRef.current) return
+      setSettings((current) => {
+        if (!current) return current
+        return {
+          ...current,
+          forwardProxy: nextForwardProxy,
+        }
+      })
+      pendingForwardProxyRef.current = nextForwardProxy
+
+      if (forwardProxySaveInFlightRef.current) {
+        return
+      }
+
+      forwardProxySaveInFlightRef.current = true
+      setIsForwardProxySaving(true)
+      while (pendingForwardProxyRef.current) {
+        const candidate = pendingForwardProxyRef.current
+        pendingForwardProxyRef.current = null
+
+        try {
+          const saved = await updateForwardProxySettings({
+            proxyUrls: candidate.proxyUrls,
+            subscriptionUrls: candidate.subscriptionUrls,
+            subscriptionUpdateIntervalSecs: candidate.subscriptionUpdateIntervalSecs,
+            insertDirect: candidate.insertDirect,
+          })
+
+          // Ignore stale payload when a newer draft is already queued.
+          if (pendingForwardProxyRef.current == null) {
+            const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
+              ? {
+                  ...serverSnapshotRef.current,
+                  forwardProxy: saved,
+                }
+              : null
+            if (confirmedSnapshot) {
+              serverSnapshotRef.current = confirmedSnapshot
+            }
+            setSettings((current) => {
+              if (!current) return confirmedSnapshot ?? current
+              return {
+                ...current,
+                forwardProxy: saved,
+              }
+            })
+          } else if (serverSnapshotRef.current) {
+            serverSnapshotRef.current = {
+              ...serverSnapshotRef.current,
+              forwardProxy: saved,
+            }
+          }
+          setError(null)
+        } catch (err) {
+          if (pendingForwardProxyRef.current == null) {
+            rollback()
+          }
+          setError(err instanceof Error ? err.message : String(err))
+        }
+      }
+
+      forwardProxySaveInFlightRef.current = false
+      setIsForwardProxySaving(false)
+    },
+    [rollback],
+  )
+
   return {
     settings,
     isLoading,
     isProxySaving,
+    isForwardProxySaving,
     isPricingSaving,
     pricingRollbackVersion,
     error,
     refresh: load,
     saveProxy,
+    saveForwardProxy,
     savePricing,
   }
 }

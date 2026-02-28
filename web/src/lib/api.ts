@@ -2,6 +2,7 @@ import { getBrowserTimeZone } from './timeZone'
 
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? ''
 const API_BASE = rawBase.endsWith('/') ? rawBase.slice(0, -1) : rawBase
+const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000
 
 const withBase = (path: string) => `${API_BASE}${path}`
 
@@ -14,8 +15,10 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    const text = await response.text()
-    throw new Error(`Request failed: ${response.status} ${text}`)
+    const rawText = await response.text()
+    const compactText = rawText.replace(/\s+/g, ' ').trim()
+    const detail = (compactText || response.statusText || '').slice(0, 220)
+    throw new Error(detail ? `Request failed: ${response.status} ${detail}` : `Request failed: ${response.status}`)
   }
 
   return response.json() as Promise<T>
@@ -237,8 +240,51 @@ export interface PricingSettings {
   entries: PricingEntry[]
 }
 
+export interface ForwardProxyWindowStats {
+  attempts: number
+  successRate?: number
+  avgLatencyMs?: number
+}
+
+export interface ForwardProxyNodeStats {
+  oneMinute: ForwardProxyWindowStats
+  fifteenMinutes: ForwardProxyWindowStats
+  oneHour: ForwardProxyWindowStats
+  oneDay: ForwardProxyWindowStats
+  sevenDays: ForwardProxyWindowStats
+}
+
+export interface ForwardProxyNode {
+  key: string
+  source: string
+  displayName: string
+  endpointUrl?: string
+  weight: number
+  penalized: boolean
+  stats: ForwardProxyNodeStats
+}
+
+export interface ForwardProxySettings {
+  proxyUrls: string[]
+  subscriptionUrls: string[]
+  subscriptionUpdateIntervalSecs: number
+  insertDirect: boolean
+  nodes: ForwardProxyNode[]
+}
+
+export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
+
+export interface ForwardProxyValidationResult {
+  ok: boolean
+  message: string
+  normalizedValue?: string
+  discoveredNodes?: number
+  latencyMs?: number
+}
+
 export interface SettingsPayload {
   proxy: ProxySettings
+  forwardProxy: ForwardProxySettings
   pricing: PricingSettings
 }
 
@@ -303,10 +349,85 @@ function normalizePricingSettings(raw: unknown): PricingSettings {
   }
 }
 
+function normalizeForwardProxyWindowStats(raw: unknown): ForwardProxyWindowStats {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const attempts = normalizeFiniteNumber(payload.attempts) ?? 0
+  const successRate = normalizeFiniteNumber(payload.successRate)
+  const avgLatencyMs = normalizeFiniteNumber(payload.avgLatencyMs)
+  return {
+    attempts,
+    successRate,
+    avgLatencyMs,
+  }
+}
+
+function emptyForwardProxyNodeStats(): ForwardProxyNodeStats {
+  return {
+    oneMinute: { attempts: 0 },
+    fifteenMinutes: { attempts: 0 },
+    oneHour: { attempts: 0 },
+    oneDay: { attempts: 0 },
+    sevenDays: { attempts: 0 },
+  }
+}
+
+function normalizeForwardProxyNode(raw: unknown): ForwardProxyNode | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const key = typeof payload.key === 'string' ? payload.key : ''
+  if (!key) return null
+  const statsPayload = (payload.stats ?? {}) as Record<string, unknown>
+  return {
+    key,
+    source: typeof payload.source === 'string' ? payload.source : 'manual',
+    displayName: typeof payload.displayName === 'string' ? payload.displayName : key,
+    endpointUrl: typeof payload.endpointUrl === 'string' ? payload.endpointUrl : undefined,
+    weight: normalizeFiniteNumber(payload.weight) ?? 0,
+    penalized: Boolean(payload.penalized),
+    stats: {
+      oneMinute: normalizeForwardProxyWindowStats(statsPayload.oneMinute),
+      fifteenMinutes: normalizeForwardProxyWindowStats(statsPayload.fifteenMinutes),
+      oneHour: normalizeForwardProxyWindowStats(statsPayload.oneHour),
+      oneDay: normalizeForwardProxyWindowStats(statsPayload.oneDay),
+      sevenDays: normalizeForwardProxyWindowStats(statsPayload.sevenDays),
+    },
+  }
+}
+
+function normalizeForwardProxySettings(raw: unknown): ForwardProxySettings {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const nodesRaw = Array.isArray(payload.nodes) ? payload.nodes : []
+  const nodes = nodesRaw
+    .map(normalizeForwardProxyNode)
+    .filter((node): node is ForwardProxyNode => node != null)
+    .sort((a, b) => a.displayName.localeCompare(b.displayName))
+  return {
+    proxyUrls: normalizeStringArray(payload.proxyUrls),
+    subscriptionUrls: normalizeStringArray(payload.subscriptionUrls),
+    subscriptionUpdateIntervalSecs: normalizeFiniteNumber(payload.subscriptionUpdateIntervalSecs) ?? 3600,
+    insertDirect: payload.insertDirect !== false,
+    nodes: nodes.map((node) => ({
+      ...node,
+      stats: node.stats ?? emptyForwardProxyNodeStats(),
+    })),
+  }
+}
+
+function normalizeForwardProxyValidationResult(raw: unknown): ForwardProxyValidationResult {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  return {
+    ok: payload.ok === true,
+    message: typeof payload.message === 'string' && payload.message.trim() ? payload.message : 'validation failed',
+    normalizedValue: typeof payload.normalizedValue === 'string' ? payload.normalizedValue : undefined,
+    discoveredNodes: normalizeFiniteNumber(payload.discoveredNodes),
+    latencyMs: normalizeFiniteNumber(payload.latencyMs),
+  }
+}
+
 function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   const payload = (raw ?? {}) as Record<string, unknown>
   return {
     proxy: normalizeProxySettings(payload.proxy),
+    forwardProxy: normalizeForwardProxySettings(payload.forwardProxy),
     pricing: normalizePricingSettings(payload.pricing),
   }
 }
@@ -338,6 +459,44 @@ export async function updatePricingSettings(payload: PricingSettings): Promise<P
     body: JSON.stringify(payload),
   })
   return normalizePricingSettings(response)
+}
+
+export async function updateForwardProxySettings(payload: {
+  proxyUrls: string[]
+  subscriptionUrls: string[]
+  subscriptionUpdateIntervalSecs: number
+  insertDirect: boolean
+}): Promise<ForwardProxySettings> {
+  const response = await fetchJson<unknown>('/api/settings/forward-proxy', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+  return normalizeForwardProxySettings(response)
+}
+
+export async function validateForwardProxyCandidate(payload: {
+  kind: ForwardProxyValidationKind
+  value: string
+}): Promise<ForwardProxyValidationResult> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FORWARD_PROXY_VALIDATION_TIMEOUT_MS)
+  try {
+    const response = await fetchJson<unknown>('/api/settings/forward-proxy/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+    return normalizeForwardProxyValidationResult(response)
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(
+        `validation request timed out after ${Math.floor(FORWARD_PROXY_VALIDATION_TIMEOUT_MS / 1000)}s`,
+      )
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export async function fetchSummary(window: string, options?: { limit?: number; timeZone?: string }) {
