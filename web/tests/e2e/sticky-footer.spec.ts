@@ -20,10 +20,8 @@ test.describe('Sticky footer layout', () => {
 
     await expect
       .poll(async () => {
-        return page.evaluate(() => {
-          const node = document.querySelector('[data-testid="app-footer"]') as HTMLElement | null
-          if (!node) return Number.POSITIVE_INFINITY
-          const rect = node.getBoundingClientRect()
+        return footer.evaluate((node) => {
+          const rect = (node as HTMLElement).getBoundingClientRect()
           return Math.abs(window.innerHeight - rect.bottom)
         })
       })
@@ -54,10 +52,8 @@ test.describe('Sticky footer layout', () => {
     await expect(footer).toBeInViewport()
     await expect
       .poll(async () => {
-        return page.evaluate(() => {
-          const node = document.querySelector('[data-testid="app-footer"]') as HTMLElement | null
-          if (!node) return Number.POSITIVE_INFINITY
-          const rect = node.getBoundingClientRect()
+        return footer.evaluate((node) => {
+          const rect = (node as HTMLElement).getBoundingClientRect()
           return Math.abs(window.innerHeight - rect.bottom)
         })
       })
