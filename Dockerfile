@@ -11,7 +11,9 @@ ENV VITE_APP_VERSION=${APP_EFFECTIVE_VERSION}
 RUN npm run build
 
 # Stage 2: build the Rust binary
-FROM rust:1.91 AS rust-builder
+# IMPORTANT: runtime image is Debian bookworm (glibc 2.36). Pin the Rust build stage to bookworm too,
+# otherwise the rust:<version> default base may drift and produce a binary requiring newer GLIBC.
+FROM rust:1.91.0-bookworm AS rust-builder
 ARG APP_EFFECTIVE_VERSION
 WORKDIR /app
 
