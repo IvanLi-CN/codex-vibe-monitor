@@ -188,6 +188,7 @@ async fn main() -> Result<()> {
         .context("failed to open sqlite database")?;
 
     ensure_schema(&pool).await?;
+    let pricing_catalog = load_pricing_catalog(&pool).await?;
     let raw_path_fallback_root = config.database_path.parent();
     if config.proxy_usage_backfill_on_startup {
         let summary = run_backfill_with_retry(&pool, raw_path_fallback_root).await?;
@@ -202,6 +203,13 @@ async fn main() -> Result<()> {
     } else {
         info!("proxy usage startup backfill is disabled");
     }
+    let cost_backfill_summary = run_cost_backfill_with_retry(&pool, &pricing_catalog).await?;
+    info!(
+        scanned = cost_backfill_summary.scanned,
+        updated = cost_backfill_summary.updated,
+        skipped_unpriced_model = cost_backfill_summary.skipped_unpriced_model,
+        "proxy cost startup backfill finished"
+    );
     let prompt_cache_summary =
         backfill_proxy_prompt_cache_keys(&pool, raw_path_fallback_root).await?;
     info!(
@@ -225,7 +233,7 @@ async fn main() -> Result<()> {
             config.proxy_raw_dir.display()
         )
     })?;
-    let pricing_catalog = Arc::new(RwLock::new(load_pricing_catalog(&pool).await?));
+    let pricing_catalog = Arc::new(RwLock::new(pricing_catalog));
 
     let http_clients = HttpClients::build(&config)?;
     let (tx, _rx) = broadcast::channel(128);
@@ -4706,6 +4714,87 @@ async fn estimate_proxy_cost_from_shared_catalog(
     estimate_proxy_cost(&guard, model, usage)
 }
 
+fn has_billable_usage(usage: &ParsedUsage) -> bool {
+    usage.input_tokens.unwrap_or(0).max(0) > 0
+        || usage.output_tokens.unwrap_or(0).max(0) > 0
+        || usage.cache_input_tokens.unwrap_or(0).max(0) > 0
+        || usage.reasoning_tokens.unwrap_or(0).max(0) > 0
+}
+
+fn resolve_pricing_for_model<'a>(
+    catalog: &'a PricingCatalog,
+    model: &str,
+) -> Option<&'a ModelPricing> {
+    if let Some(pricing) = catalog.models.get(model) {
+        return Some(pricing);
+    }
+    dated_model_alias_base(model).and_then(|base| catalog.models.get(base))
+}
+
+fn dated_model_alias_base(model: &str) -> Option<&str> {
+    const DATED_SUFFIX_LEN: usize = 11; // -YYYY-MM-DD
+    if model.len() <= DATED_SUFFIX_LEN {
+        return None;
+    }
+    let suffix = &model.as_bytes()[model.len() - DATED_SUFFIX_LEN..];
+    let is_dated_suffix = suffix[0] == b'-'
+        && suffix[1].is_ascii_digit()
+        && suffix[2].is_ascii_digit()
+        && suffix[3].is_ascii_digit()
+        && suffix[4].is_ascii_digit()
+        && suffix[5] == b'-'
+        && suffix[6].is_ascii_digit()
+        && suffix[7].is_ascii_digit()
+        && suffix[8] == b'-'
+        && suffix[9].is_ascii_digit()
+        && suffix[10].is_ascii_digit();
+    if !is_dated_suffix {
+        return None;
+    }
+    let base = &model[..model.len() - DATED_SUFFIX_LEN];
+    if base.is_empty() { None } else { Some(base) }
+}
+
+fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> String {
+    fn mix_fvn1a(hash: &mut u64, bytes: &[u8]) {
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+
+    let mut hash = 0xcbf29ce484222325_u64;
+    mix_fvn1a(&mut hash, catalog.version.as_bytes());
+    mix_fvn1a(&mut hash, &[0xff]);
+
+    let mut models = catalog.models.iter().collect::<Vec<_>>();
+    models.sort_by(|(a, _), (b, _)| a.cmp(b));
+    for (model, pricing) in models {
+        mix_fvn1a(&mut hash, model.as_bytes());
+        mix_fvn1a(&mut hash, &[0xfe]);
+        mix_fvn1a(&mut hash, &pricing.input_per_1m.to_bits().to_le_bytes());
+        mix_fvn1a(&mut hash, &pricing.output_per_1m.to_bits().to_le_bytes());
+
+        match pricing.cache_input_per_1m {
+            Some(value) => {
+                mix_fvn1a(&mut hash, &[1]);
+                mix_fvn1a(&mut hash, &value.to_bits().to_le_bytes());
+            }
+            None => mix_fvn1a(&mut hash, &[0]),
+        }
+        match pricing.reasoning_per_1m {
+            Some(value) => {
+                mix_fvn1a(&mut hash, &[1]);
+                mix_fvn1a(&mut hash, &value.to_bits().to_le_bytes());
+            }
+            None => mix_fvn1a(&mut hash, &[0]),
+        }
+        mix_fvn1a(&mut hash, &[0xfd]);
+    }
+
+    format!("{}@{:016x}", catalog.version, hash)
+}
+
 fn estimate_proxy_cost(
     catalog: &PricingCatalog,
     model: Option<&str>,
@@ -4715,18 +4804,14 @@ fn estimate_proxy_cost(
     let Some(model) = model else {
         return (None, false, price_version);
     };
-    let Some(pricing) = catalog.models.get(model) else {
+    let Some(pricing) = resolve_pricing_for_model(catalog, model) else {
         return (None, false, price_version);
     };
     let input_tokens = usage.input_tokens.unwrap_or(0).max(0);
     let output_tokens = usage.output_tokens.unwrap_or(0).max(0) as f64;
     let cache_input_tokens = usage.cache_input_tokens.unwrap_or(0).max(0);
     let reasoning_tokens = usage.reasoning_tokens.unwrap_or(0).max(0) as f64;
-    if input_tokens == 0
-        && output_tokens == 0.0
-        && cache_input_tokens == 0
-        && reasoning_tokens == 0.0
-    {
+    if !has_billable_usage(usage) {
         return (None, false, price_version);
     }
 
@@ -5281,6 +5366,184 @@ async fn run_backfill_with_retry(
                 return Err(err).with_context(|| {
                     format!(
                         "proxy usage startup backfill failed after {attempt}/{} attempt(s)",
+                        BACKFILL_LOCK_RETRY_MAX_ATTEMPTS
+                    )
+                });
+            }
+        }
+    }
+}
+
+async fn backfill_proxy_missing_costs(
+    pool: &Pool<Sqlite>,
+    catalog: &PricingCatalog,
+) -> Result<ProxyCostBackfillSummary> {
+    let attempt_version = pricing_backfill_attempt_version(catalog);
+    let snapshot_max_id: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(MAX(id), 0)
+        FROM codex_invocations
+        WHERE source = ?1
+          AND status = 'success'
+          AND cost IS NULL
+          AND model IS NOT NULL
+          AND (
+              COALESCE(input_tokens, 0) > 0
+              OR COALESCE(output_tokens, 0) > 0
+              OR COALESCE(cache_input_tokens, 0) > 0
+              OR COALESCE(reasoning_tokens, 0) > 0
+          )
+          AND (price_version IS NULL OR price_version != ?2)
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(&attempt_version)
+    .fetch_one(pool)
+    .await?;
+
+    backfill_proxy_missing_costs_up_to_id(pool, snapshot_max_id, catalog, &attempt_version).await
+}
+
+async fn backfill_proxy_missing_costs_up_to_id(
+    pool: &Pool<Sqlite>,
+    snapshot_max_id: i64,
+    catalog: &PricingCatalog,
+    attempt_version: &str,
+) -> Result<ProxyCostBackfillSummary> {
+    let mut summary = ProxyCostBackfillSummary::default();
+    let mut last_seen_id = 0_i64;
+    loop {
+        let candidates = sqlx::query_as::<_, ProxyCostBackfillCandidate>(
+            r#"
+            SELECT id, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens
+            FROM codex_invocations
+            WHERE source = ?1
+              AND status = 'success'
+              AND cost IS NULL
+              AND model IS NOT NULL
+              AND (
+                  COALESCE(input_tokens, 0) > 0
+                  OR COALESCE(output_tokens, 0) > 0
+                  OR COALESCE(cache_input_tokens, 0) > 0
+                  OR COALESCE(reasoning_tokens, 0) > 0
+              )
+              AND (price_version IS NULL OR price_version != ?4)
+              AND id > ?2
+              AND id <= ?3
+            ORDER BY id ASC
+            LIMIT ?5
+            "#,
+        )
+        .bind(SOURCE_PROXY)
+        .bind(last_seen_id)
+        .bind(snapshot_max_id)
+        .bind(attempt_version)
+        .bind(BACKFILL_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        let mut updates = Vec::new();
+        for candidate in candidates {
+            last_seen_id = candidate.id;
+            summary.scanned += 1;
+            let Some(model) = candidate.model.as_deref() else {
+                summary.skipped_unpriced_model += 1;
+                continue;
+            };
+            let usage = ParsedUsage {
+                input_tokens: candidate.input_tokens,
+                output_tokens: candidate.output_tokens,
+                cache_input_tokens: candidate.cache_input_tokens,
+                reasoning_tokens: candidate.reasoning_tokens,
+                total_tokens: candidate.total_tokens,
+            };
+            if !has_billable_usage(&usage) {
+                summary.skipped_unpriced_model += 1;
+                continue;
+            }
+
+            let (cost, cost_estimated, price_version) =
+                estimate_proxy_cost(catalog, Some(model), &usage);
+            if cost.is_none() || !cost_estimated {
+                summary.skipped_unpriced_model += 1;
+            }
+            let persisted_price_version = if cost_estimated && cost.is_some() {
+                price_version
+            } else {
+                Some(attempt_version.to_string())
+            };
+            updates.push(ProxyCostBackfillUpdate {
+                id: candidate.id,
+                cost,
+                cost_estimated,
+                price_version: persisted_price_version,
+            });
+        }
+
+        if updates.is_empty() {
+            continue;
+        }
+
+        let mut tx = pool.begin().await?;
+        let mut updated_this_batch = 0_u64;
+        for update in updates {
+            let affected = sqlx::query(
+                r#"
+                UPDATE codex_invocations
+                SET cost = ?1,
+                    cost_estimated = ?2,
+                    price_version = ?3
+                WHERE id = ?4
+                  AND source = ?5
+                  AND cost IS NULL
+                "#,
+            )
+            .bind(update.cost)
+            .bind(update.cost_estimated as i64)
+            .bind(update.price_version.as_deref())
+            .bind(update.id)
+            .bind(SOURCE_PROXY)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            updated_this_batch += affected;
+        }
+        tx.commit().await?;
+        summary.updated += updated_this_batch;
+    }
+
+    Ok(summary)
+}
+
+async fn run_cost_backfill_with_retry(
+    pool: &Pool<Sqlite>,
+    catalog: &PricingCatalog,
+) -> Result<ProxyCostBackfillSummary> {
+    let mut attempt = 1_u32;
+    loop {
+        match backfill_proxy_missing_costs(pool, catalog).await {
+            Ok(summary) => return Ok(summary),
+            Err(err)
+                if attempt < BACKFILL_LOCK_RETRY_MAX_ATTEMPTS && is_sqlite_lock_error(&err) =>
+            {
+                warn!(
+                    attempt,
+                    max_attempts = BACKFILL_LOCK_RETRY_MAX_ATTEMPTS,
+                    retry_delay_secs = BACKFILL_LOCK_RETRY_DELAY_SECS,
+                    error = %err,
+                    "proxy cost startup backfill hit sqlite lock; retrying"
+                );
+                attempt += 1;
+                sleep(Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS)).await;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "proxy cost startup backfill failed after {attempt}/{} attempt(s)",
                         BACKFILL_LOCK_RETRY_MAX_ATTEMPTS
                     )
                 });
@@ -7039,6 +7302,13 @@ struct ProxyUsageBackfillSummary {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
+struct ProxyCostBackfillSummary {
+    scanned: u64,
+    updated: u64,
+    skipped_unpriced_model: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
 struct ProxyPromptCacheKeyBackfillSummary {
     scanned: u64,
     updated: u64,
@@ -7097,6 +7367,17 @@ struct ProxyUsageBackfillCandidate {
 }
 
 #[derive(Debug, FromRow)]
+struct ProxyCostBackfillCandidate {
+    id: i64,
+    model: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+}
+
+#[derive(Debug, FromRow)]
 struct ProxyPromptCacheKeyBackfillCandidate {
     id: i64,
     request_raw_path: String,
@@ -7106,6 +7387,14 @@ struct ProxyPromptCacheKeyBackfillCandidate {
 struct ProxyUsageBackfillUpdate {
     id: i64,
     usage: ParsedUsage,
+}
+
+#[derive(Debug)]
+struct ProxyCostBackfillUpdate {
+    id: i64,
+    cost: Option<f64>,
+    cost_estimated: bool,
+    price_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -8072,6 +8361,38 @@ mod tests {
         .execute(pool)
         .await
         .expect("insert proxy row");
+    }
+
+    async fn insert_proxy_cost_backfill_row(
+        pool: &SqlitePool,
+        invoke_id: &str,
+        model: Option<&str>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, model, input_tokens, output_tokens, total_tokens, cost, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-02-23 00:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(model)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(match (input_tokens, output_tokens) {
+            (Some(input), Some(output)) => Some(input + output),
+            _ => None,
+        })
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert proxy cost row");
     }
 
     async fn insert_proxy_prompt_cache_backfill_row(
@@ -10898,6 +11219,80 @@ mod tests {
     }
 
     #[test]
+    fn estimate_proxy_cost_falls_back_to_dated_model_base_pricing() {
+        let catalog = PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([(
+                "gpt-5.2".to_string(),
+                ModelPricing {
+                    input_per_1m: 2.0,
+                    output_per_1m: 3.0,
+                    cache_input_per_1m: None,
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+        let usage = ParsedUsage {
+            input_tokens: Some(1000),
+            output_tokens: Some(500),
+            cache_input_tokens: None,
+            reasoning_tokens: None,
+            total_tokens: Some(1500),
+        };
+
+        let (cost, estimated, _) =
+            estimate_proxy_cost(&catalog, Some("gpt-5.2-2025-12-11"), &usage);
+
+        let expected = ((1000.0 * 2.0) + (500.0 * 3.0)) / 1_000_000.0;
+        assert!((cost.expect("cost should be present") - expected).abs() < 1e-12);
+        assert!(estimated);
+    }
+
+    #[test]
+    fn estimate_proxy_cost_prefers_exact_model_over_dated_model_base_pricing() {
+        let catalog = PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([
+                (
+                    "gpt-5.2".to_string(),
+                    ModelPricing {
+                        input_per_1m: 1.0,
+                        output_per_1m: 1.0,
+                        cache_input_per_1m: None,
+                        reasoning_per_1m: None,
+                        source: "custom".to_string(),
+                    },
+                ),
+                (
+                    "gpt-5.2-2025-12-11".to_string(),
+                    ModelPricing {
+                        input_per_1m: 4.0,
+                        output_per_1m: 5.0,
+                        cache_input_per_1m: None,
+                        reasoning_per_1m: None,
+                        source: "custom".to_string(),
+                    },
+                ),
+            ]),
+        };
+        let usage = ParsedUsage {
+            input_tokens: Some(1000),
+            output_tokens: Some(1000),
+            cache_input_tokens: None,
+            reasoning_tokens: None,
+            total_tokens: Some(2000),
+        };
+
+        let (cost, estimated, _) =
+            estimate_proxy_cost(&catalog, Some("gpt-5.2-2025-12-11"), &usage);
+
+        let expected = ((1000.0 * 4.0) + (1000.0 * 5.0)) / 1_000_000.0;
+        assert!((cost.expect("cost should be present") - expected).abs() < 1e-12);
+        assert!(estimated);
+    }
+
+    #[test]
     fn parse_target_response_payload_decodes_gzip_stream_usage() {
         let raw = [
             "event: response.created",
@@ -11645,6 +12040,220 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
+    #[tokio::test]
+    async fn backfill_proxy_missing_costs_updates_dated_model_alias_and_is_idempotent() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        insert_proxy_cost_backfill_row(
+            &pool,
+            "proxy-cost-backfill-dated-model",
+            Some("gpt-5.2-2025-12-11"),
+            Some(1_000),
+            Some(500),
+        )
+        .await;
+
+        let catalog = PricingCatalog {
+            version: "unit-cost-backfill".to_string(),
+            models: HashMap::from([(
+                "gpt-5.2".to_string(),
+                ModelPricing {
+                    input_per_1m: 2.0,
+                    output_per_1m: 3.0,
+                    cache_input_per_1m: None,
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+
+        let summary_first = backfill_proxy_missing_costs(&pool, &catalog)
+            .await
+            .expect("first cost backfill should succeed");
+        assert_eq!(summary_first.scanned, 1);
+        assert_eq!(summary_first.updated, 1);
+        assert_eq!(summary_first.skipped_unpriced_model, 0);
+
+        let row = sqlx::query(
+            "SELECT cost, cost_estimated, price_version FROM codex_invocations WHERE invoke_id = ?1",
+        )
+        .bind("proxy-cost-backfill-dated-model")
+        .fetch_one(&pool)
+        .await
+        .expect("query updated cost row");
+        let expected = ((1_000.0 * 2.0) + (500.0 * 3.0)) / 1_000_000.0;
+        assert!(
+            (row.try_get::<Option<f64>, _>("cost")
+                .expect("read cost")
+                .expect("cost should exist")
+                - expected)
+                .abs()
+                < 1e-12
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("cost_estimated")
+                .expect("read cost_estimated"),
+            Some(1)
+        );
+        assert_eq!(
+            row.try_get::<Option<String>, _>("price_version")
+                .expect("read price_version")
+                .as_deref(),
+            Some("unit-cost-backfill")
+        );
+
+        let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
+            .await
+            .expect("second cost backfill should be idempotent");
+        assert_eq!(summary_second.scanned, 0);
+        assert_eq!(summary_second.updated, 0);
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_missing_costs_tracks_skip_reasons() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        insert_proxy_cost_backfill_row(
+            &pool,
+            "proxy-cost-backfill-missing-model",
+            None,
+            Some(1_000),
+            Some(500),
+        )
+        .await;
+        insert_proxy_cost_backfill_row(
+            &pool,
+            "proxy-cost-backfill-unpriced-model",
+            Some("unknown-model"),
+            Some(1_000),
+            Some(500),
+        )
+        .await;
+        insert_proxy_cost_backfill_row(
+            &pool,
+            "proxy-cost-backfill-missing-usage",
+            Some("gpt-5.2"),
+            None,
+            None,
+        )
+        .await;
+
+        let catalog = PricingCatalog {
+            version: "unit-cost-backfill".to_string(),
+            models: HashMap::from([(
+                "gpt-5.2".to_string(),
+                ModelPricing {
+                    input_per_1m: 2.0,
+                    output_per_1m: 3.0,
+                    cache_input_per_1m: None,
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+
+        let summary = backfill_proxy_missing_costs(&pool, &catalog)
+            .await
+            .expect("cost backfill should succeed");
+        assert_eq!(summary.scanned, 1);
+        assert_eq!(summary.updated, 1);
+        assert_eq!(summary.skipped_unpriced_model, 1);
+        let expected_attempt_version = pricing_backfill_attempt_version(&catalog);
+
+        let unknown_row = sqlx::query(
+            "SELECT cost, cost_estimated, price_version FROM codex_invocations WHERE invoke_id = ?1",
+        )
+        .bind("proxy-cost-backfill-unpriced-model")
+        .fetch_one(&pool)
+        .await
+        .expect("query unpriced model row");
+        assert_eq!(
+            unknown_row
+                .try_get::<Option<f64>, _>("cost")
+                .expect("read unknown cost"),
+            None
+        );
+        assert_eq!(
+            unknown_row
+                .try_get::<Option<i64>, _>("cost_estimated")
+                .expect("read unknown cost_estimated"),
+            Some(0)
+        );
+        assert_eq!(
+            unknown_row
+                .try_get::<Option<String>, _>("price_version")
+                .expect("read unknown price_version")
+                .as_deref(),
+            Some(expected_attempt_version.as_str())
+        );
+
+        let summary_same_version = backfill_proxy_missing_costs(&pool, &catalog)
+            .await
+            .expect("same-version cost backfill should skip attempted unpriced rows");
+        assert_eq!(summary_same_version.scanned, 0);
+        assert_eq!(summary_same_version.updated, 0);
+
+        let updated_catalog_same_version = PricingCatalog {
+            version: catalog.version.clone(),
+            models: HashMap::from([
+                (
+                    "gpt-5.2".to_string(),
+                    ModelPricing {
+                        input_per_1m: 2.0,
+                        output_per_1m: 3.0,
+                        cache_input_per_1m: None,
+                        reasoning_per_1m: None,
+                        source: "custom".to_string(),
+                    },
+                ),
+                (
+                    "unknown-model".to_string(),
+                    ModelPricing {
+                        input_per_1m: 4.0,
+                        output_per_1m: 6.0,
+                        cache_input_per_1m: None,
+                        reasoning_per_1m: None,
+                        source: "custom".to_string(),
+                    },
+                ),
+            ]),
+        };
+        let summary_same_version_after_pricing_update =
+            backfill_proxy_missing_costs(&pool, &updated_catalog_same_version)
+                .await
+                .expect("same-version pricing update should retry previously unpriced rows");
+        assert_eq!(summary_same_version_after_pricing_update.scanned, 1);
+        assert_eq!(summary_same_version_after_pricing_update.updated, 1);
+        assert_eq!(
+            summary_same_version_after_pricing_update.skipped_unpriced_model,
+            0
+        );
+
+        let unknown_cost_after_update: Option<f64> =
+            sqlx::query_scalar("SELECT cost FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-cost-backfill-unpriced-model")
+                .fetch_one(&pool)
+                .await
+                .expect("query unknown model cost after pricing update");
+        let expected_unknown_cost = ((1_000.0 * 4.0) + (500.0 * 6.0)) / 1_000_000.0;
+        assert!(
+            (unknown_cost_after_update.expect("unknown cost should be backfilled")
+                - expected_unknown_cost)
+                .abs()
+                < 1e-12
+        );
+    }
+
     #[test]
     fn is_sqlite_lock_error_detects_structured_sqlite_codes() {
         let busy_code_error = anyhow::Error::new(sqlx::Error::Database(Box::new(
@@ -11848,6 +12457,130 @@ mod tests {
         let err = run_backfill_with_retry(&pool, None)
             .await
             .expect_err("backfill should fail immediately on non-lock errors");
+        assert!(
+            started.elapsed() < Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
+            "non-lock errors should not wait for retry delay"
+        );
+        assert!(
+            err.to_string().contains("failed after 1/2 attempt(s)"),
+            "expected single-attempt context in error: {err:?}"
+        );
+        assert!(!is_sqlite_lock_error(&err));
+        assert!(err.chain().any(|cause| {
+            cause
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("no such table")
+        }));
+
+        pool.close().await;
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn run_cost_backfill_with_retry_succeeds_after_lock_release() {
+        let temp_dir = make_temp_test_dir("proxy-cost-backfill-retry-success");
+        let db_path = temp_dir.join("lock-success.db");
+        let db_url = sqlite_url_for_path(&db_path);
+        let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
+            .expect("build sqlite options");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(connect_options)
+            .await
+            .expect("connect sqlite pool");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        insert_proxy_cost_backfill_row(
+            &pool,
+            "proxy-cost-lock-retry-success",
+            Some("gpt-5.2-2025-12-11"),
+            Some(2_000),
+            Some(1_000),
+        )
+        .await;
+        let catalog = PricingCatalog {
+            version: "unit-cost-retry".to_string(),
+            models: HashMap::from([(
+                "gpt-5.2".to_string(),
+                ModelPricing {
+                    input_per_1m: 2.0,
+                    output_per_1m: 3.0,
+                    cache_input_per_1m: None,
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+
+        let mut lock_conn = SqliteConnection::connect(&db_url)
+            .await
+            .expect("connect lock holder");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut lock_conn)
+            .await
+            .expect("acquire sqlite write lock");
+
+        let started = Instant::now();
+        let pool_for_task = pool.clone();
+        let catalog_for_task = catalog.clone();
+        let backfill_task = tokio::spawn(async move {
+            run_cost_backfill_with_retry(&pool_for_task, &catalog_for_task).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        sqlx::query("COMMIT")
+            .execute(&mut lock_conn)
+            .await
+            .expect("release sqlite write lock");
+
+        let summary = backfill_task
+            .await
+            .expect("join cost backfill task")
+            .expect("cost backfill should succeed after retry");
+        assert!(
+            started.elapsed() >= Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
+            "expected retry delay to be applied"
+        );
+        assert_eq!(summary.scanned, 1);
+        assert_eq!(summary.updated, 1);
+
+        let cost: Option<f64> =
+            sqlx::query_scalar("SELECT cost FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-cost-lock-retry-success")
+                .fetch_one(&pool)
+                .await
+                .expect("query backfilled cost row");
+        assert!(cost.is_some());
+
+        pool.close().await;
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn run_cost_backfill_with_retry_does_not_retry_non_lock_errors() {
+        let temp_dir = make_temp_test_dir("proxy-cost-backfill-retry-non-lock");
+        let db_path = temp_dir.join("non-lock.db");
+        let db_url = sqlite_url_for_path(&db_path);
+        let connect_options = build_sqlite_connect_options(&db_url, Duration::from_millis(100))
+            .expect("build sqlite options");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(connect_options)
+            .await
+            .expect("connect sqlite pool");
+        let catalog = PricingCatalog {
+            version: "unit-cost-retry".to_string(),
+            models: HashMap::new(),
+        };
+
+        // Intentionally skip schema initialization to force a deterministic non-lock error.
+        let started = Instant::now();
+        let err = run_cost_backfill_with_retry(&pool, &catalog)
+            .await
+            .expect_err("cost backfill should fail immediately on non-lock errors");
         assert!(
             started.elapsed() < Duration::from_secs(BACKFILL_LOCK_RETRY_DELAY_SECS),
             "non-lock errors should not wait for retry delay"
