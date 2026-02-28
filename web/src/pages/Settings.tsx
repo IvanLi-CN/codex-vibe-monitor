@@ -1430,11 +1430,14 @@ export default function SettingsPage() {
                         type="button"
                         size="sm"
                         variant="ghost"
-                        className="h-7 px-2 text-xs text-error hover:bg-error/10 hover:text-error"
+                        className="h-7 w-7 p-0 text-error hover:bg-error/10 hover:text-error"
                         disabled={isForwardProxySaving}
                         onClick={() => handleRemoveForwardProxyUrl(proxyUrl)}
+                        title={t('settings.forwardProxy.remove')}
+                        aria-label={t('settings.forwardProxy.remove')}
                       >
-                        {t('settings.forwardProxy.remove')}
+                        <Icon icon="mdi:trash-can-outline" className="h-4 w-4" aria-hidden />
+                        <span className="sr-only">{t('settings.forwardProxy.remove')}</span>
                       </Button>
                     </li>
                   ))}
@@ -1466,11 +1469,14 @@ export default function SettingsPage() {
                         type="button"
                         size="sm"
                         variant="ghost"
-                        className="h-7 px-2 text-xs text-error hover:bg-error/10 hover:text-error"
+                        className="h-7 w-7 p-0 text-error hover:bg-error/10 hover:text-error"
                         disabled={isForwardProxySaving}
                         onClick={() => handleRemoveForwardProxySubscriptionUrl(subscriptionUrl)}
+                        title={t('settings.forwardProxy.remove')}
+                        aria-label={t('settings.forwardProxy.remove')}
                       >
-                        {t('settings.forwardProxy.remove')}
+                        <Icon icon="mdi:trash-can-outline" className="h-4 w-4" aria-hidden />
+                        <span className="sr-only">{t('settings.forwardProxy.remove')}</span>
                       </Button>
                     </li>
                   ))}
