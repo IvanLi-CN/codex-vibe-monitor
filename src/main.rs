@@ -6931,7 +6931,7 @@ async fn validate_single_forward_proxy_candidate(
     let latency_ms = probe_forward_proxy_endpoint(
         state,
         &endpoint,
-        forward_proxy_validation_timeout_secs(ForwardProxyValidationKind::ProxyUrl),
+        forward_proxy_validation_timeout(ForwardProxyValidationKind::ProxyUrl),
     )
     .await?;
     Ok(ForwardProxyCandidateValidationResponse::success(
@@ -6967,15 +6967,33 @@ async fn validate_subscription_candidate(
 
     let mut last_error: Option<anyhow::Error> = None;
     let mut best_latency_ms: Option<f64> = None;
-    let validation_timeout_secs =
-        forward_proxy_validation_timeout_secs(ForwardProxyValidationKind::SubscriptionUrl);
+    let validation_timeout =
+        forward_proxy_validation_timeout(ForwardProxyValidationKind::SubscriptionUrl);
+    let validation_started = Instant::now();
     for endpoint in endpoints.iter().take(3) {
-        match probe_forward_proxy_endpoint(state, endpoint, validation_timeout_secs).await {
+        let Some(remaining_timeout) =
+            remaining_timeout_budget(validation_timeout, validation_started.elapsed())
+        else {
+            last_error = Some(timeout_error_for_duration(validation_timeout));
+            break;
+        };
+        if remaining_timeout.is_zero() {
+            last_error = Some(timeout_error_for_duration(validation_timeout));
+            break;
+        }
+
+        match probe_forward_proxy_endpoint(state, endpoint, remaining_timeout).await {
             Ok(latency_ms) => {
                 best_latency_ms = Some(latency_ms);
                 break;
             }
             Err(err) => {
+                if remaining_timeout_budget(validation_timeout, validation_started.elapsed())
+                    .is_none()
+                {
+                    last_error = Some(timeout_error_for_duration(validation_timeout));
+                    break;
+                }
                 last_error = Some(err);
             }
         }
@@ -7001,7 +7019,7 @@ async fn validate_subscription_candidate(
 async fn probe_forward_proxy_endpoint(
     state: &AppState,
     endpoint: &ForwardProxyEndpoint,
-    validation_timeout_secs: u64,
+    validation_timeout: Duration,
 ) -> Result<f64> {
     let probe_target = state
         .config
@@ -7012,19 +7030,13 @@ async fn probe_forward_proxy_endpoint(
         resolve_forward_proxy_probe_endpoint_url(state, endpoint).await?;
 
     let started = Instant::now();
-    let validation_timeout = Duration::from_secs(validation_timeout_secs);
     let probe_result = async {
         let client = state
             .http_clients
             .client_for_forward_proxy(endpoint_url.as_ref())?;
         let response = timeout(validation_timeout, client.get(probe_target).send())
             .await
-            .map_err(|_| {
-                anyhow!(
-                    "validation request timed out after {}s",
-                    validation_timeout_secs
-                )
-            })?
+            .map_err(|_| timeout_error_for_duration(validation_timeout))?
             .context("validation request failed")?;
         let status = response.status();
         // Reaching upstream and getting auth-related responses still proves the route works.
@@ -7047,12 +7059,34 @@ async fn probe_forward_proxy_endpoint(
     Ok(elapsed_ms(started))
 }
 
-fn forward_proxy_validation_timeout_secs(kind: ForwardProxyValidationKind) -> u64 {
+fn forward_proxy_validation_timeout(kind: ForwardProxyValidationKind) -> Duration {
     match kind {
-        ForwardProxyValidationKind::ProxyUrl => FORWARD_PROXY_VALIDATION_TIMEOUT_SECS,
-        ForwardProxyValidationKind::SubscriptionUrl => {
-            FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS
+        ForwardProxyValidationKind::ProxyUrl => {
+            Duration::from_secs(FORWARD_PROXY_VALIDATION_TIMEOUT_SECS)
         }
+        ForwardProxyValidationKind::SubscriptionUrl => {
+            Duration::from_secs(FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS)
+        }
+    }
+}
+
+fn remaining_timeout_budget(total_timeout: Duration, elapsed: Duration) -> Option<Duration> {
+    total_timeout.checked_sub(elapsed)
+}
+
+fn timeout_error_for_duration(timeout: Duration) -> anyhow::Error {
+    anyhow!(
+        "validation request timed out after {}s",
+        timeout_seconds_for_message(timeout)
+    )
+}
+
+fn timeout_seconds_for_message(timeout: Duration) -> u64 {
+    let secs = timeout.as_secs();
+    if timeout.subsec_nanos() > 0 {
+        secs.saturating_add(1).max(1)
+    } else {
+        secs.max(1)
     }
 }
 
@@ -11231,15 +11265,39 @@ mod tests {
     }
 
     #[test]
-    fn forward_proxy_validation_timeout_secs_are_split_by_kind() {
+    fn forward_proxy_validation_timeout_is_split_by_kind() {
         assert_eq!(
-            forward_proxy_validation_timeout_secs(ForwardProxyValidationKind::ProxyUrl),
-            FORWARD_PROXY_VALIDATION_TIMEOUT_SECS
+            forward_proxy_validation_timeout(ForwardProxyValidationKind::ProxyUrl),
+            Duration::from_secs(FORWARD_PROXY_VALIDATION_TIMEOUT_SECS)
         );
         assert_eq!(
-            forward_proxy_validation_timeout_secs(ForwardProxyValidationKind::SubscriptionUrl),
-            FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS
+            forward_proxy_validation_timeout(ForwardProxyValidationKind::SubscriptionUrl),
+            Duration::from_secs(FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS)
         );
+    }
+
+    #[test]
+    fn remaining_timeout_budget_stops_when_elapsed_reaches_total() {
+        let total = Duration::from_secs(60);
+        assert_eq!(
+            remaining_timeout_budget(total, Duration::from_secs(20)),
+            Some(Duration::from_secs(40))
+        );
+        assert_eq!(
+            remaining_timeout_budget(total, Duration::from_secs(60)),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            remaining_timeout_budget(total, Duration::from_secs(61)),
+            None
+        );
+    }
+
+    #[test]
+    fn timeout_seconds_for_message_rounds_subsecond_up_to_one() {
+        assert_eq!(timeout_seconds_for_message(Duration::from_millis(1)), 1);
+        assert_eq!(timeout_seconds_for_message(Duration::from_secs(5)), 5);
+        assert_eq!(timeout_seconds_for_message(Duration::from_millis(5500)), 6);
     }
 
     #[test]
