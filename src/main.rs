@@ -114,6 +114,7 @@ const FORWARD_PROXY_WEIGHT_MAX: f64 = 12.0;
 const FORWARD_PROXY_PROBE_EVERY_REQUESTS: u64 = 100;
 const FORWARD_PROXY_PROBE_INTERVAL_SECS: i64 = 30 * 60;
 const FORWARD_PROXY_PROBE_RECOVERY_WEIGHT: f64 = 0.4;
+const FORWARD_PROXY_VALIDATION_TIMEOUT_SECS: u64 = 5;
 const FORWARD_PROXY_DIRECT_KEY: &str = "__direct__";
 const FORWARD_PROXY_DIRECT_LABEL: &str = "Direct";
 const FORWARD_PROXY_SOURCE_MANUAL: &str = "manual";
@@ -6724,17 +6725,20 @@ async fn probe_forward_proxy_endpoint(
         resolve_forward_proxy_probe_endpoint_url(state, endpoint).await?;
 
     let started = Instant::now();
+    let validation_timeout = Duration::from_secs(FORWARD_PROXY_VALIDATION_TIMEOUT_SECS);
     let probe_result = async {
         let client = state
             .http_clients
             .client_for_forward_proxy(endpoint_url.as_ref())?;
-        let response = timeout(
-            state.config.openai_proxy_handshake_timeout,
-            client.get(probe_target).send(),
-        )
-        .await
-        .map_err(|_| anyhow!("validation request timed out"))?
-        .context("validation request failed")?;
+        let response = timeout(validation_timeout, client.get(probe_target).send())
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "validation request timed out after {}s",
+                    FORWARD_PROXY_VALIDATION_TIMEOUT_SECS
+                )
+            })?
+            .context("validation request failed")?;
         let status = response.status();
         // Reaching upstream and getting auth-related responses still proves the route works.
         let reachable = status.is_success()

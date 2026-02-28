@@ -2,6 +2,7 @@ import { getBrowserTimeZone } from './timeZone'
 
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? ''
 const API_BASE = rawBase.endsWith('/') ? rawBase.slice(0, -1) : rawBase
+const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000
 
 const withBase = (path: string) => `${API_BASE}${path}`
 
@@ -472,11 +473,25 @@ export async function validateForwardProxyCandidate(payload: {
   kind: ForwardProxyValidationKind
   value: string
 }): Promise<ForwardProxyValidationResult> {
-  const response = await fetchJson<unknown>('/api/settings/forward-proxy/validate', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-  return normalizeForwardProxyValidationResult(response)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FORWARD_PROXY_VALIDATION_TIMEOUT_MS)
+  try {
+    const response = await fetchJson<unknown>('/api/settings/forward-proxy/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+    return normalizeForwardProxyValidationResult(response)
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(
+        `validation request timed out after ${Math.floor(FORWARD_PROXY_VALIDATION_TIMEOUT_MS / 1000)}s`,
+      )
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export async function fetchSummary(window: string, options?: { limit?: number; timeZone?: string }) {
