@@ -28,6 +28,9 @@ fi
 echo "[smoke] ${tag} -> codex-vibe-monitor --help"
 docker run --rm --pull=never "$tag" codex-vibe-monitor --help >/dev/null
 
+echo "[smoke] ${tag} -> xray version"
+docker run --rm --pull=never "$tag" xray version >/dev/null
+
 port_args=("-p" "${host}::8080")
 host_port=""
 if [[ -n "$port" ]]; then
