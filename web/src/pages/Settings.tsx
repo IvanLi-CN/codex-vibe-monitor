@@ -46,6 +46,7 @@ type ForwardProxyBatchValidationItem = {
   rawValue: string
   normalizedValue: string
   displayName: string
+  protocolName: string
   status: ForwardProxyBatchValidationStatus
   latencyMs?: number
   message: string
@@ -244,6 +245,34 @@ function extractProxyDisplayName(raw: string): string | null {
   } catch {
     return null
   }
+}
+
+function extractProxyProtocolName(raw: string): string | null {
+  const candidate = raw.trim()
+  if (!candidate) return null
+
+  const schemeFromUrl = (() => {
+    try {
+      return new URL(candidate).protocol.replace(/:$/, '').toLowerCase()
+    } catch {
+      return null
+    }
+  })()
+  const scheme = schemeFromUrl ?? candidate.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//)?.[1]?.toLowerCase() ?? null
+  if (!scheme) return null
+
+  const schemeDisplay: Record<string, string> = {
+    http: 'HTTP',
+    https: 'HTTPS',
+    socks: 'SOCKS',
+    socks5: 'SOCKS5',
+    socks5h: 'SOCKS5H',
+    vmess: 'VMess',
+    vless: 'VLESS',
+    trojan: 'Trojan',
+    ss: 'Shadowsocks',
+  }
+  return schemeDisplay[scheme] ?? scheme.toUpperCase()
 }
 
 function batchStatusRank(status: ForwardProxyBatchValidationStatus): number {
@@ -620,6 +649,7 @@ export default function SettingsPage() {
       return
     }
     const unknownNodeName = t('settings.forwardProxy.modal.unknownNode')
+    const unknownProtocolName = t('settings.forwardProxy.modal.unknownProtocol')
     setForwardProxyModalStep(2)
     const validationRunId = forwardProxyBatchValidationRunRef.current + 1
     forwardProxyBatchValidationRunRef.current = validationRunId
@@ -634,6 +664,7 @@ export default function SettingsPage() {
         rawValue: rawLine,
         normalizedValue: rawLine,
         displayName: extractProxyDisplayName(rawLine) || unknownNodeName,
+        protocolName: extractProxyProtocolName(rawLine) || unknownProtocolName,
         status: 'validating',
         message: t('settings.forwardProxy.modal.rowValidating'),
       })
@@ -658,6 +689,7 @@ export default function SettingsPage() {
             rawValue: rawLine,
             normalizedValue,
             displayName: extractProxyDisplayName(normalizedValue) || extractProxyDisplayName(rawLine) || unknownNodeName,
+            protocolName: extractProxyProtocolName(normalizedValue) || extractProxyProtocolName(rawLine) || unknownProtocolName,
             status: 'available',
             latencyMs: result.latencyMs,
             message: result.message || t('settings.forwardProxy.modal.validateSuccess'),
@@ -668,6 +700,7 @@ export default function SettingsPage() {
             rawValue: rawLine,
             normalizedValue: rawLine,
             displayName: extractProxyDisplayName(rawLine) || unknownNodeName,
+            protocolName: extractProxyProtocolName(rawLine) || unknownProtocolName,
             status: 'unavailable',
             latencyMs: result.latencyMs,
             message: t('settings.forwardProxy.modal.validateFailed'),
@@ -679,6 +712,7 @@ export default function SettingsPage() {
           rawValue: rawLine,
           normalizedValue: rawLine,
           displayName: extractProxyDisplayName(rawLine) || unknownNodeName,
+          protocolName: extractProxyProtocolName(rawLine) || unknownProtocolName,
           status: 'unavailable',
           message: t('settings.forwardProxy.modal.validateFailed'),
         }
@@ -745,6 +779,7 @@ export default function SettingsPage() {
       const target = forwardProxyBatchResults.find((item) => item.key === nodeKey)
       if (!target) return
       const unknownNodeName = t('settings.forwardProxy.modal.unknownNode')
+      const unknownProtocolName = t('settings.forwardProxy.modal.unknownProtocol')
 
       setForwardProxyBatchResults((current) =>
         current.map((item) =>
@@ -787,6 +822,11 @@ export default function SettingsPage() {
                 extractProxyDisplayName(target.rawValue) ||
                 item.displayName ||
                 unknownNodeName,
+              protocolName:
+                extractProxyProtocolName(normalizedValue) ||
+                extractProxyProtocolName(target.rawValue) ||
+                item.protocolName ||
+                unknownProtocolName,
               status: 'available',
               latencyMs: result.latencyMs,
               message: result.message || t('settings.forwardProxy.modal.validateSuccess'),
@@ -1491,8 +1531,9 @@ export default function SettingsPage() {
                             <tr>
                               <th className="w-14 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultIndex')}</th>
                               <th className="px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultName')}</th>
-                              <th className="w-28 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultStatus')}</th>
-                              <th className="w-40 px-3 py-2 text-right">{t('settings.forwardProxy.modal.resultAction')}</th>
+                              <th className="w-24 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultProtocol')}</th>
+                              <th className="w-24 px-3 py-2 text-left">{t('settings.forwardProxy.modal.resultStatus')}</th>
+                              <th className="w-32 px-3 py-2 text-right">{t('settings.forwardProxy.modal.resultAction')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-base-300/65">
@@ -1506,6 +1547,9 @@ export default function SettingsPage() {
                                   >
                                     {item.displayName}
                                   </div>
+                                </td>
+                                <td className="px-3 py-2 text-base-content/70">
+                                  <span className="inline-block whitespace-nowrap text-sm">{item.protocolName}</span>
                                 </td>
                                 <td className="px-3 py-2">
                                   <span
