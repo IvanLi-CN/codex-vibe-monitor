@@ -9114,7 +9114,7 @@ impl XraySupervisor {
         fs::write(&config_path, serialized)
             .with_context(|| format!("failed to write xray config: {}", config_path.display()))?;
 
-        let mut child = Command::new(&self.binary)
+        let mut child = match Command::new(&self.binary)
             .arg("run")
             .arg("-c")
             .arg(&config_path)
@@ -9122,7 +9122,14 @@ impl XraySupervisor {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .with_context(|| format!("failed to start xray binary: {}", self.binary))?;
+        {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = fs::remove_file(&config_path);
+                return Err(err)
+                    .with_context(|| format!("failed to start xray binary: {}", self.binary));
+            }
+        };
 
         if let Err(err) = wait_for_xray_proxy_ready(&mut child, local_port, ready_timeout).await {
             let _ = child.kill().await;
@@ -11394,6 +11401,10 @@ mod tests {
                     .to_string(),
             ),
         };
+        let expected_config_path = runtime_dir.join(format!(
+            "forward-proxy-{:016x}.json",
+            stable_hash_u64(&endpoint.key)
+        ));
 
         let err = supervisor
             .ensure_instance_with_ready_timeout(&endpoint, Duration::from_millis(50))
@@ -11411,6 +11422,10 @@ mod tests {
         assert!(
             !message.contains("failed to write xray config"),
             "runtime dir creation regression: {message}"
+        );
+        assert!(
+            !expected_config_path.exists(),
+            "spawn failure should clean temporary xray config file"
         );
 
         let _ = fs::remove_dir_all(&temp_root);
