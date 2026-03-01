@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS,
   CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS,
   CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS,
+  CURRENT_SUMMARY_RETRY_DELAY_MS,
   createUnsupportedRefreshGate,
   getCurrentSummarySseRefreshDelay,
   mergePendingSummarySilentOption,
   runUnsupportedSummaryRefresh,
   shouldTriggerCurrentSummaryOpenResync,
+  shouldRetryCurrentSummaryError,
   shouldHandleUnsupportedSummaryRefresh,
   UNSUPPORTED_SSE_REFRESH_INTERVAL_MS,
 } from './useStats'
@@ -94,5 +97,17 @@ describe('useSummary unsupported window fallback', () => {
   it('allows forced reconnect resync regardless of cooldown', () => {
     const allowed = shouldTriggerCurrentSummaryOpenResync(40_000, 40_500, true)
     expect(allowed).toBe(true)
+  })
+
+  it('retries current summary only for transient network-like errors', () => {
+    expect(shouldRetryCurrentSummaryError('summary request timed out after 10s')).toBe(true)
+    expect(shouldRetryCurrentSummaryError('Failed to fetch')).toBe(true)
+    expect(shouldRetryCurrentSummaryError('Network error: ECONNRESET')).toBe(true)
+    expect(shouldRetryCurrentSummaryError('HTTP 400: bad request')).toBe(false)
+  })
+
+  it('keeps retry policy bounded by defaults', () => {
+    expect(CURRENT_SUMMARY_RETRY_DELAY_MS).toBe(2_000)
+    expect(CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS).toBeGreaterThan(0)
   })
 })

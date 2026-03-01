@@ -11,14 +11,19 @@ const SUPPORTED_SSE_WINDOWS = new Set(['all', '30m', '1h', '1d', '1mo'])
 export const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000
 export const CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 600
 export const CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS = 3_000
+export const CURRENT_SUMMARY_REQUEST_TIMEOUT_MS = 10_000
+export const CURRENT_SUMMARY_RETRY_DELAY_MS = 2_000
+export const CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS = 3
 
 interface LoadOptions {
   silent?: boolean
   force?: boolean
+  trackCurrentThrottle?: boolean
 }
 
 interface PendingLoad {
   silent: boolean
+  trackCurrentThrottle: boolean
   waiters: Array<() => void>
 }
 
@@ -46,6 +51,24 @@ export function shouldTriggerCurrentSummaryOpenResync(lastResyncAt: number, now:
 
 export function shouldHandleUnsupportedSummaryRefresh(payloadWindow: string, currentWindow: string, supportsSse: boolean): boolean {
   return payloadWindow !== currentWindow && !supportsSse && currentWindow !== 'current'
+}
+
+export function shouldRetryCurrentSummaryError(error: string): boolean {
+  const normalized = error.toLowerCase()
+  return (
+    normalized.includes('timed out') ||
+    normalized.includes('timeout') ||
+    normalized.includes('failed to fetch') ||
+    normalized.includes('network error') ||
+    normalized.includes('networkerror')
+  )
+}
+
+function resolvePendingLoad(pending: PendingLoad | null) {
+  if (!pending) {
+    return
+  }
+  pending.waiters.forEach((resolve) => resolve())
 }
 
 export async function runUnsupportedSummaryRefresh(
@@ -84,8 +107,10 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const pendingOpenResyncRef = useRef(false)
   const requestSeqRef = useRef(0)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const activeRequestControllerRef = useRef<AbortController | null>(null)
   const lastCurrentRecordsRefreshAtRef = useRef(0)
   const lastOpenResyncAtRef = useRef(0)
+  const currentRetryAttemptRef = useRef(0)
   summaryContextRef.current.window = window
   summaryContextRef.current.limit = options?.limit
 
@@ -95,34 +120,58 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     refreshTimerRef.current = null
   }, [])
 
+  const clearPendingLoad = useCallback(() => {
+    resolvePendingLoad(pendingLoadRef.current)
+    pendingLoadRef.current = null
+  }, [])
+
   const runLoad = useCallback(async ({ silent = false }: LoadOptions = {}) => {
     activeLoadCountRef.current += 1
     const requestSeq = requestSeqRef.current + 1
     requestSeqRef.current = requestSeq
     const shouldShowLoading = !(silent && hasHydratedRef.current)
+    const isCurrentWindow = summaryContextRef.current.window === 'current'
+    const controller = new AbortController()
+    const timeoutHandle = isCurrentWindow
+      ? setTimeout(() => controller.abort(), CURRENT_SUMMARY_REQUEST_TIMEOUT_MS)
+      : null
+    activeRequestControllerRef.current = controller
     if (shouldShowLoading) {
       setIsLoading(true)
     }
     try {
       const response = await fetchSummary(summaryContextRef.current.window, {
         limit: summaryContextRef.current.limit,
+        signal: controller.signal,
       })
       if (requestSeq !== requestSeqRef.current) return
       setStats(response)
       hasHydratedRef.current = true
+      currentRetryAttemptRef.current = 0
       setError(null)
       if (pendingOpenResyncRef.current) {
         pendingOpenResyncRef.current = false
+        lastOpenResyncAtRef.current = Date.now()
         if (pendingLoadRef.current) {
           pendingLoadRef.current.silent = mergePendingSummarySilentOption(pendingLoadRef.current.silent, true)
         } else {
-          pendingLoadRef.current = { silent: true, waiters: [] }
+          pendingLoadRef.current = { silent: true, trackCurrentThrottle: false, waiters: [] }
         }
       }
     } catch (err) {
       if (requestSeq !== requestSeqRef.current) return
-      setError(err instanceof Error ? err.message : String(err))
+      if (timeoutHandle != null && err instanceof Error && err.name === 'AbortError') {
+        setError(`summary request timed out after ${Math.floor(CURRENT_SUMMARY_REQUEST_TIMEOUT_MS / 1000)}s`)
+      } else {
+        setError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
+      if (timeoutHandle != null) {
+        clearTimeout(timeoutHandle)
+      }
+      if (activeRequestControllerRef.current === controller) {
+        activeRequestControllerRef.current = null
+      }
       if (requestSeq === requestSeqRef.current && shouldShowLoading) {
         setIsLoading(false)
       }
@@ -133,34 +182,51 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const load = useCallback(async (loadOptions: LoadOptions = {}) => {
     const silent = loadOptions.silent ?? false
     const force = loadOptions.force ?? false
+    const trackCurrentThrottle = loadOptions.trackCurrentThrottle ?? false
+    if (force) {
+      // Force refresh keeps the freshest context: cancel current request and drop stale queued refreshes.
+      activeRequestControllerRef.current?.abort()
+      clearPendingLoad()
+      clearPendingRefreshTimer()
+      if (window === 'current') {
+        lastCurrentRecordsRefreshAtRef.current = Date.now()
+      }
+    }
+
     if (!force && activeLoadCountRef.current > 0) {
       return new Promise<void>((resolve) => {
         if (pendingLoadRef.current) {
           pendingLoadRef.current.silent = mergePendingSummarySilentOption(pendingLoadRef.current.silent, silent)
+          pendingLoadRef.current.trackCurrentThrottle ||= trackCurrentThrottle
           pendingLoadRef.current.waiters.push(resolve)
           return
         }
-        pendingLoadRef.current = { silent, waiters: [resolve] }
+        pendingLoadRef.current = { silent, trackCurrentThrottle, waiters: [resolve] }
       })
     }
 
+    if (trackCurrentThrottle) {
+      lastCurrentRecordsRefreshAtRef.current = Date.now()
+    }
     await runLoad({ silent })
 
     while (activeLoadCountRef.current === 0 && pendingLoadRef.current) {
       const pending = pendingLoadRef.current
       pendingLoadRef.current = null
+      if (pending.trackCurrentThrottle) {
+        lastCurrentRecordsRefreshAtRef.current = Date.now()
+      }
       await runLoad({ silent: pending.silent })
       pending.waiters.forEach((resolve) => resolve())
     }
-  }, [runLoad])
+  }, [clearPendingLoad, clearPendingRefreshTimer, runLoad, window])
 
   const triggerCurrentWindowRefresh = useCallback(() => {
     const now = Date.now()
     const delay = getCurrentSummarySseRefreshDelay(lastCurrentRecordsRefreshAtRef.current, now)
     const run = () => {
       refreshTimerRef.current = null
-      lastCurrentRecordsRefreshAtRef.current = Date.now()
-      void load({ silent: true })
+      void load({ silent: true, trackCurrentThrottle: true })
     }
 
     if (delay === 0) {
@@ -198,29 +264,38 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     pendingOpenResyncRef.current = false
     lastCurrentRecordsRefreshAtRef.current = 0
     lastOpenResyncAtRef.current = 0
+    currentRetryAttemptRef.current = 0
+    clearPendingLoad()
     clearPendingRefreshTimer()
     void load({ force: true })
-  }, [clearPendingRefreshTimer, load, options?.limit, window])
+  }, [clearPendingLoad, clearPendingRefreshTimer, load, options?.limit, window])
 
   useEffect(() => {
-    if (!error || window !== 'current') {
+    if (!error || window !== 'current' || !shouldRetryCurrentSummaryError(error)) {
       return
     }
+    if (currentRetryAttemptRef.current >= CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS) {
+      return
+    }
+    currentRetryAttemptRef.current += 1
+    const delay = CURRENT_SUMMARY_RETRY_DELAY_MS * currentRetryAttemptRef.current
     const timer = setTimeout(() => {
       void load({ silent: true, force: true })
-    }, 2_000)
+    }, delay)
     return () => clearTimeout(timer)
   }, [error, load, window])
 
   useEffect(
     () => () => {
       requestSeqRef.current += 1
-      pendingLoadRef.current?.waiters.forEach((resolve) => resolve())
-      pendingLoadRef.current = null
+      activeRequestControllerRef.current?.abort()
+      activeRequestControllerRef.current = null
+      clearPendingLoad()
       pendingOpenResyncRef.current = false
+      currentRetryAttemptRef.current = 0
       clearPendingRefreshTimer()
     },
-    [clearPendingRefreshTimer],
+    [clearPendingLoad, clearPendingRefreshTimer],
   )
 
   const supportsSse = useMemo(() => SUPPORTED_SSE_WINDOWS.has(window), [window])

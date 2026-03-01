@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchForwardProxyLiveStats, validateForwardProxyCandidate } from './api'
+import { fetchForwardProxyLiveStats, fetchSummary, validateForwardProxyCandidate } from './api'
 
 function abortError(): Error {
   const error = new Error('aborted')
@@ -124,5 +124,35 @@ describe('fetchForwardProxyLiveStats', () => {
     expect(response.nodes[0].last24h).toHaveLength(1)
     expect(response.nodes[0].last24h[0].successCount).toBe(3)
     expect(response.nodes[0].last24h[0].failureCount).toBe(1)
+  })
+})
+
+describe('fetchSummary', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('forwards request signal to fetch for caller-managed cancellation', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      void _input
+      void _init
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as typeof fetch)
+
+    const controller = new AbortController()
+    await fetchSummary('current', {
+      timeZone: 'UTC',
+      signal: controller.signal,
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const firstCall = fetchMock.mock.calls[0]
+    expect(firstCall).toBeDefined()
+    const init = firstCall?.[1] as RequestInit | undefined
+    expect(init?.signal).toBe(controller.signal)
   })
 })
