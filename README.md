@@ -180,6 +180,8 @@ docker run --rm \
 
 容器内默认：`XY_DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db`，`XY_HTTP_BIND=0.0.0.0:8080`，`XY_STATIC_DIR=/srv/app/web`。
 
+GHCR 发布镜像默认提供多架构 manifest（`linux/amd64` + `linux/arm64`），`stable` 会同步更新 `${image}:latest`。
+
 ## 验证与排查
 
 - SQLite 检查：
@@ -219,6 +221,8 @@ docker run --rm \
 - 镜像：推送至 GHCR `ghcr.io/ivanli-cn/codex-vibe-monitor`
   - stable：`${image}:vX.Y.Z` 与 `${image}:latest`
   - rc：`${image}:vX.Y.Z-rc.<sha7>`（仅该 tag）
+  - 发布前会分别对 `linux/amd64` 与 `linux/arm64` 做容器 smoke（`--help`、`xray version`、`/health`）；通过后再推送多架构 manifest
+  - 推送后会校验版本 tag 的 manifest 必须同时包含 `linux/amd64` 与 `linux/arm64`
   - 同步创建 GitHub Release（stable 为非 prerelease，rc 为 prerelease）
 
 ## 许可证
