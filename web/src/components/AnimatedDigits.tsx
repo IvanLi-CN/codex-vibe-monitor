@@ -55,14 +55,29 @@ export function AnimatedDigits({ value, duration = 450, easing = 'cubic-bezier(0
 function DigitRoll({ prev, next, direction, duration, easing }: { prev: number; next: number; direction: Direction; duration: number; easing: string }) {
   const [path, setPath] = useState<number[]>([next])
   const [index, setIndex] = useState<number>(0)
+  const rafRef = useRef<number | null>(null)
 
   useEffect(() => {
     const newPath = buildPath(prev, next, direction)
     // Start from the first element (prev) then animate to last (next)
     setPath(newPath)
     setIndex(0)
-    // Next frame, move to the end to trigger transition
-    requestAnimationFrame(() => setIndex(newPath.length - 1))
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current)
+    }
+    if (newPath.length > 1) {
+      // Next frame, move to the end to trigger transition
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null
+        setIndex(newPath.length - 1)
+      })
+    }
+    return () => {
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
   }, [prev, next, direction])
 
   const translateY = -index * 1.0

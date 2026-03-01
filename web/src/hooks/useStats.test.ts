@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS,
   createUnsupportedRefreshGate,
+  getCurrentSummarySseRefreshDelay,
+  mergePendingSummarySilentOption,
   runUnsupportedSummaryRefresh,
   shouldHandleUnsupportedSummaryRefresh,
   UNSUPPORTED_SSE_REFRESH_INTERVAL_MS,
@@ -60,5 +63,21 @@ describe('useSummary unsupported window fallback', () => {
     expect(shouldHandleUnsupportedSummaryRefresh('30m', '1d', true)).toBe(false)
     expect(shouldHandleUnsupportedSummaryRefresh('1h', 'current', false)).toBe(false)
     expect(shouldHandleUnsupportedSummaryRefresh('1h', 'today', false)).toBe(true)
+  })
+
+  it('returns zero delay when current summary refresh is outside throttle window', () => {
+    const delay = getCurrentSummarySseRefreshDelay(10_000, 10_000 + CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS)
+    expect(delay).toBe(0)
+  })
+
+  it('returns remaining delay when current summary refresh is still throttled', () => {
+    const delay = getCurrentSummarySseRefreshDelay(20_000, 20_250)
+    expect(delay).toBe(CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS - 250)
+  })
+
+  it('merges pending silent options to preserve non-silent requests', () => {
+    expect(mergePendingSummarySilentOption(null, true)).toBe(true)
+    expect(mergePendingSummarySilentOption(true, false)).toBe(false)
+    expect(mergePendingSummarySilentOption(false, true)).toBe(false)
   })
 })
