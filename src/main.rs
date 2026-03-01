@@ -7041,11 +7041,8 @@ async fn probe_forward_proxy_endpoint(
             .map_err(|_| timeout_error_for_duration(validation_timeout))?
             .context("validation request failed")?;
         let status = response.status();
-        // Reaching upstream and getting auth-related responses still proves the route works.
-        let reachable = status.is_success()
-            || status == StatusCode::UNAUTHORIZED
-            || status == StatusCode::FORBIDDEN;
-        if !reachable {
+        // Validation only needs to prove the route is reachable; auth/404 still count as reachable.
+        if !is_validation_probe_reachable_status(status) {
             bail!("validation probe returned status {}", status);
         }
         Ok::<(), anyhow::Error>(())
@@ -7059,6 +7056,13 @@ async fn probe_forward_proxy_endpoint(
 
     probe_result?;
     Ok(elapsed_ms(started))
+}
+
+fn is_validation_probe_reachable_status(status: StatusCode) -> bool {
+    status.is_success()
+        || status == StatusCode::UNAUTHORIZED
+        || status == StatusCode::FORBIDDEN
+        || status == StatusCode::NOT_FOUND
 }
 
 fn forward_proxy_validation_timeout(kind: ForwardProxyValidationKind) -> Duration {
@@ -11382,6 +11386,146 @@ mod tests {
         assert_eq!(timeout_seconds_for_message(Duration::from_millis(5500)), 6);
     }
 
+    #[test]
+    fn validation_probe_reachable_status_accepts_success_auth_and_not_found() {
+        for status in [
+            StatusCode::OK,
+            StatusCode::NO_CONTENT,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+        ] {
+            assert!(
+                is_validation_probe_reachable_status(status),
+                "status {status} should be reachable"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_probe_reachable_status_rejects_non_reachable_codes() {
+        for status in [
+            StatusCode::PROXY_AUTHENTICATION_REQUIRED,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            assert!(
+                !is_validation_probe_reachable_status(status),
+                "status {status} should not be reachable"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_proxy_url_candidate_accepts_probe_404() {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
+        let state = test_state_with_openai_base(
+            Url::parse("http://probe-target.example/").expect("valid probe target"),
+        )
+        .await;
+
+        let response = validate_single_forward_proxy_candidate(state.as_ref(), proxy_url.clone())
+            .await
+            .expect("404 should be treated as reachable");
+
+        assert!(response.ok);
+        assert_eq!(response.message, "proxy validation succeeded");
+        assert_eq!(
+            response.normalized_value.as_deref(),
+            Some(proxy_url.as_str())
+        );
+        assert_eq!(response.discovered_nodes, Some(1));
+        assert!(
+            response.latency_ms.unwrap_or_default() >= 0.0,
+            "latency should be present"
+        );
+
+        proxy_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn validate_proxy_url_candidate_keeps_5xx_as_failure() {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::INTERNAL_SERVER_ERROR).await;
+        let state = test_state_with_openai_base(
+            Url::parse("http://probe-target.example/").expect("valid probe target"),
+        )
+        .await;
+
+        let err = validate_single_forward_proxy_candidate(state.as_ref(), proxy_url)
+            .await
+            .expect_err("5xx should still fail validation");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("validation probe returned status 500 Internal Server Error"),
+            "expected 500 validation probe failure, got: {message}"
+        );
+
+        proxy_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn validate_subscription_candidate_accepts_probe_404() {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
+        let (subscription_url, subscription_handle) =
+            spawn_test_subscription_source(format!("{proxy_url}\n")).await;
+        let state = test_state_with_openai_base(
+            Url::parse("http://probe-target.example/").expect("valid probe target"),
+        )
+        .await;
+
+        let response = validate_subscription_candidate(state.as_ref(), subscription_url.clone())
+            .await
+            .expect("404 should be treated as reachable for subscription validation");
+
+        assert!(response.ok);
+        assert_eq!(response.message, "subscription validation succeeded");
+        assert_eq!(
+            response.normalized_value.as_deref(),
+            Some(subscription_url.as_str())
+        );
+        assert_eq!(response.discovered_nodes, Some(1));
+        assert!(
+            response.latency_ms.unwrap_or_default() >= 0.0,
+            "latency should be present"
+        );
+
+        subscription_handle.abort();
+        proxy_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn validate_subscription_candidate_keeps_5xx_as_failure() {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::INTERNAL_SERVER_ERROR).await;
+        let (subscription_url, subscription_handle) =
+            spawn_test_subscription_source(format!("{proxy_url}\n")).await;
+        let state = test_state_with_openai_base(
+            Url::parse("http://probe-target.example/").expect("valid probe target"),
+        )
+        .await;
+
+        let err = validate_subscription_candidate(state.as_ref(), subscription_url)
+            .await
+            .expect_err("5xx should still fail subscription validation");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("subscription proxy probe failed"),
+            "expected subscription probe failure context, got: {message}"
+        );
+        assert!(
+            message.contains("validation probe returned status 500 Internal Server Error"),
+            "expected 500 validation probe failure, got: {message}"
+        );
+
+        subscription_handle.abort();
+        proxy_handle.abort();
+    }
+
     #[tokio::test]
     async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path() {
         let temp_root = make_temp_test_dir("xray-runtime-create");
@@ -11904,6 +12048,59 @@ mod tests {
                 Err(_) => break,
             }
         }
+    }
+
+    async fn spawn_test_forward_proxy_status(status: StatusCode) -> (String, JoinHandle<()>) {
+        let app = Router::new().fallback(any(move || async move {
+            (
+                status,
+                Json(json!({
+                    "status": status.as_u16(),
+                })),
+            )
+        }));
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind forward proxy status test server");
+        let addr = listener
+            .local_addr()
+            .expect("forward proxy status test server addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("forward proxy status test server should run");
+        });
+
+        (format!("http://{addr}"), handle)
+    }
+
+    async fn spawn_test_subscription_source(body: String) -> (String, JoinHandle<()>) {
+        let body = Arc::new(body);
+        let app = Router::new().route(
+            "/subscription",
+            get({
+                let body = body.clone();
+                move || {
+                    let body = body.clone();
+                    async move { (StatusCode::OK, body.as_str().to_string()) }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind subscription source test server");
+        let addr = listener
+            .local_addr()
+            .expect("subscription source test server addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("subscription source test server should run");
+        });
+
+        (format!("http://{addr}/subscription"), handle)
     }
 
     async fn test_upstream_echo(
