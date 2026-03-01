@@ -30,7 +30,8 @@ RUN mkdir -p src \
 # Copy app sources and build the real binary.
 COPY src ./src
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
-RUN rm -f target/release/codex-vibe-monitor \
+RUN find src -type f -name '*.rs' -exec touch {} + \
+    && rm -f target/release/codex-vibe-monitor \
     && cargo build --release --locked
 
 # Stage 3: fetch Xray-core (xray) for forward-proxy subscription validation
