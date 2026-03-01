@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchSummary } from '../lib/api'
 import type { StatsResponse } from '../lib/api'
-import { subscribeToSse } from '../lib/sse'
+import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 
 interface UseSummaryOptions {
   limit?: number
@@ -10,6 +10,7 @@ interface UseSummaryOptions {
 const SUPPORTED_SSE_WINDOWS = new Set(['all', '30m', '1h', '1d', '1mo'])
 export const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000
 export const CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 600
+export const CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS = 3_000
 
 interface LoadOptions {
   silent?: boolean
@@ -30,6 +31,11 @@ export function getCurrentSummarySseRefreshDelay(lastRefreshAt: number, now: num
 
 export function mergePendingSummarySilentOption(existingSilent: boolean | null, incomingSilent: boolean) {
   return (existingSilent ?? true) && incomingSilent
+}
+
+export function shouldTriggerCurrentSummaryOpenResync(lastResyncAt: number, now: number, force = false) {
+  if (force) return true
+  return now - lastResyncAt >= CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS
 }
 
 export function shouldHandleUnsupportedSummaryRefresh(payloadWindow: string, currentWindow: string, supportsSse: boolean): boolean {
@@ -68,6 +74,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const requestSeqRef = useRef(0)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastCurrentRecordsRefreshAtRef = useRef(0)
+  const lastOpenResyncAtRef = useRef(0)
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return
@@ -137,12 +144,25 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     refreshTimerRef.current = setTimeout(run, delay)
   }, [clearPendingRefreshTimer, load])
 
+  const triggerCurrentOpenResync = useCallback(() => {
+    if (window !== 'current' || !hasHydratedRef.current) {
+      return
+    }
+    const now = Date.now()
+    if (!shouldTriggerCurrentSummaryOpenResync(lastOpenResyncAtRef.current, now)) {
+      return
+    }
+    lastOpenResyncAtRef.current = now
+    void load({ silent: true })
+  }, [load, window])
+
   useEffect(() => {
     // Invalidate prior async loads when summary query context changes.
     requestSeqRef.current += 1
     hasHydratedRef.current = false
     pendingLoadRef.current = null
     lastCurrentRecordsRefreshAtRef.current = 0
+    lastOpenResyncAtRef.current = 0
     clearPendingRefreshTimer()
     void load()
   }, [clearPendingRefreshTimer, load, options?.limit, window])
@@ -177,6 +197,13 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     })
     return unsubscribe
   }, [load, supportsSse, triggerCurrentWindowRefresh, window])
+
+  useEffect(() => {
+    const unsubscribe = subscribeToSseOpen(() => {
+      triggerCurrentOpenResync()
+    })
+    return unsubscribe
+  }, [triggerCurrentOpenResync])
 
   return {
     summary: stats,

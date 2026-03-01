@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS,
   CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS,
   createUnsupportedRefreshGate,
   getCurrentSummarySseRefreshDelay,
   mergePendingSummarySilentOption,
   runUnsupportedSummaryRefresh,
+  shouldTriggerCurrentSummaryOpenResync,
   shouldHandleUnsupportedSummaryRefresh,
   UNSUPPORTED_SSE_REFRESH_INTERVAL_MS,
 } from './useStats'
@@ -79,5 +81,18 @@ describe('useSummary unsupported window fallback', () => {
     expect(mergePendingSummarySilentOption(null, true)).toBe(true)
     expect(mergePendingSummarySilentOption(true, false)).toBe(false)
     expect(mergePendingSummarySilentOption(false, true)).toBe(false)
+  })
+
+  it('throttles current summary reconnect resync in cooldown window', () => {
+    const allowed = shouldTriggerCurrentSummaryOpenResync(
+      30_000,
+      30_000 + CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS - 1,
+    )
+    expect(allowed).toBe(false)
+  })
+
+  it('allows forced reconnect resync regardless of cooldown', () => {
+    const allowed = shouldTriggerCurrentSummaryOpenResync(40_000, 40_500, true)
+    expect(allowed).toBe(true)
   })
 })
