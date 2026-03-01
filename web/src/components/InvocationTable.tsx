@@ -46,7 +46,7 @@ function resolveProxyDisplayName(record: ApiInvocation) {
   if (payloadProxyName) return payloadProxyName
   const sourceValue = record.source?.trim()
   if (sourceValue && sourceValue.toLowerCase() !== 'proxy') return sourceValue
-  return FALLBACK_CELL
+  return null
 }
 
 export function InvocationTable({ records, isLoading, error }: InvocationTableProps) {
@@ -189,6 +189,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
             const errorMessage = record.errorMessage?.trim() ?? ''
             const endpointValue = record.endpoint?.trim() || FALLBACK_CELL
             const proxyDisplayName = resolveProxyDisplayName(record)
+            const statusLabel = t(meta.key)
+            const proxyBadgeLabel = proxyDisplayName ?? statusLabel
             const latencySummary = `${formatMilliseconds(record.tUpstreamTtfbMs)} / ${formatMilliseconds(record.tTotalMs)}`
             const latencyCompactSummary = `${formatMillisecondsCompact(record.tUpstreamTtfbMs)}/${formatMillisecondsCompact(record.tTotalMs)}`
             const occurredValid = !Number.isNaN(occurred.getTime())
@@ -230,11 +232,13 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                   <td className="border-t border-base-300/65 px-3 py-2.5 align-middle text-center">
                     <div className="flex w-full min-w-0 flex-col items-center justify-center gap-1 leading-tight">
                       <Badge variant={meta.variant} className="max-w-[7rem] justify-center overflow-hidden sm:max-w-[8rem]">
-                        <span className="block max-w-[7rem] truncate whitespace-nowrap text-center sm:max-w-[8rem]" title={proxyDisplayName}>
-                          {proxyDisplayName}
+                        <span className="block max-w-[7rem] truncate whitespace-nowrap text-center sm:max-w-[8rem]" title={proxyBadgeLabel}>
+                          {proxyBadgeLabel}
                         </span>
-                        <span className="sr-only">{t(meta.key)}</span>
                       </Badge>
+                      {proxyDisplayName ? (
+                        <span className="text-xs text-base-content/70">{statusLabel}</span>
+                      ) : null}
                       <span className="block whitespace-nowrap font-mono text-xs text-base-content/70 sm:hidden" title={latencySummary}>
                         {latencyCompactSummary}
                       </span>

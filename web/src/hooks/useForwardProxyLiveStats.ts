@@ -14,6 +14,8 @@ export function useForwardProxyLiveStats() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const hasHydratedRef = useRef(false)
+  const inFlightRef = useRef(false)
+  const pendingLoadRef = useRef<LoadOptions | null>(null)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRefreshAtRef = useRef(0)
   const requestSeqRef = useRef(0)
@@ -24,7 +26,8 @@ export function useForwardProxyLiveStats() {
     refreshTimerRef.current = null
   }, [])
 
-  const load = useCallback(async ({ silent = false }: LoadOptions = {}) => {
+  const runLoad = useCallback(async ({ silent = false }: LoadOptions = {}) => {
+    inFlightRef.current = true
     const requestSeq = requestSeqRef.current + 1
     requestSeqRef.current = requestSeq
     const shouldShowLoading = !(silent && hasHydratedRef.current)
@@ -40,8 +43,24 @@ export function useForwardProxyLiveStats() {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       if (requestSeq === requestSeqRef.current && shouldShowLoading) setIsLoading(false)
+      inFlightRef.current = false
+      const pendingLoad = pendingLoadRef.current
+      if (pendingLoad) {
+        pendingLoadRef.current = null
+        void runLoad(pendingLoad)
+      }
     }
   }, [])
+
+  const load = useCallback(async (options: LoadOptions = {}) => {
+    const silent = options.silent ?? false
+    if (inFlightRef.current) {
+      const pendingSilent = pendingLoadRef.current?.silent ?? true
+      pendingLoadRef.current = { silent: pendingSilent && silent }
+      return
+    }
+    await runLoad({ silent })
+  }, [runLoad])
 
   const triggerSseRefresh = useCallback(() => {
     const now = Date.now()
@@ -82,6 +101,7 @@ export function useForwardProxyLiveStats() {
   useEffect(
     () => () => {
       clearPendingRefreshTimer()
+      pendingLoadRef.current = null
     },
     [clearPendingRefreshTimer],
   )
