@@ -7049,14 +7049,24 @@ async fn put_forward_proxy_settings(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
-    {
+    let added_manual_endpoints = {
         let mut manager = state.forward_proxy.lock().await;
+        let before = snapshot_active_forward_proxy_endpoints(&manager);
         manager.apply_settings(next);
-    }
+        let after = snapshot_active_forward_proxy_endpoints(&manager);
+        compute_added_forward_proxy_endpoints(&before, &after)
+    };
     if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
         warn!(
             error = %err,
             "failed to sync forward proxy routes after settings update"
+        );
+    }
+    if !added_manual_endpoints.is_empty() {
+        spawn_forward_proxy_bootstrap_probe_round(
+            state.clone(),
+            added_manual_endpoints,
+            "settings-update",
         );
     }
     if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), true).await {
@@ -7734,6 +7744,105 @@ fn merge_models_payload_with_upstream(
     }))
 }
 
+fn snapshot_active_forward_proxy_endpoints(
+    manager: &ForwardProxyManager,
+) -> Vec<ForwardProxyEndpoint> {
+    manager
+        .endpoints
+        .iter()
+        .filter(|endpoint| endpoint.protocol != ForwardProxyProtocol::Direct)
+        .filter(|endpoint| endpoint.endpoint_url.is_some() || endpoint.requires_xray())
+        .cloned()
+        .collect()
+}
+
+fn compute_added_forward_proxy_endpoints(
+    before: &[ForwardProxyEndpoint],
+    after: &[ForwardProxyEndpoint],
+) -> Vec<ForwardProxyEndpoint> {
+    let known = before
+        .iter()
+        .map(|endpoint| endpoint.key.as_str())
+        .collect::<HashSet<_>>();
+    after
+        .iter()
+        .filter(|endpoint| !known.contains(endpoint.key.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn classify_bootstrap_forward_proxy_probe_failure(err: &anyhow::Error) -> &'static str {
+    let message = err.to_string().to_ascii_lowercase();
+    if message.contains("timed out") || message.contains("timeout") {
+        return FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT;
+    }
+    if message.contains("validation probe returned status 5") {
+        return FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX;
+    }
+    FORWARD_PROXY_FAILURE_SEND_ERROR
+}
+
+fn spawn_forward_proxy_bootstrap_probe_round(
+    state: Arc<AppState>,
+    added_endpoints: Vec<ForwardProxyEndpoint>,
+    trigger: &'static str,
+) {
+    if added_endpoints.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        let validation_timeout =
+            forward_proxy_validation_timeout(ForwardProxyValidationKind::ProxyUrl);
+        info!(
+            trigger,
+            added_count = added_endpoints.len(),
+            timeout_secs = validation_timeout.as_secs(),
+            "forward proxy bootstrap probe round started"
+        );
+        for endpoint in added_endpoints {
+            let selected_proxy = SelectedForwardProxy::from_endpoint(&endpoint);
+            let started = Instant::now();
+            match probe_forward_proxy_endpoint(state.as_ref(), &endpoint, validation_timeout).await
+            {
+                Ok(latency_ms) => {
+                    record_forward_proxy_attempt(
+                        state.clone(),
+                        selected_proxy,
+                        true,
+                        Some(latency_ms),
+                        None,
+                        true,
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    let failure_kind = classify_bootstrap_forward_proxy_probe_failure(&err);
+                    warn!(
+                        trigger,
+                        proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
+                        proxy_source = endpoint.source,
+                        proxy_label = endpoint.display_name,
+                        proxy_url_ref = %forward_proxy_log_ref_option(endpoint.raw_url.as_deref()),
+                        failure_kind,
+                        error = %err,
+                        "forward proxy bootstrap probe failed"
+                    );
+                    record_forward_proxy_attempt(
+                        state.clone(),
+                        selected_proxy,
+                        false,
+                        Some(elapsed_ms(started)),
+                        Some(failure_kind),
+                        true,
+                    )
+                    .await;
+                }
+            }
+        }
+        info!(trigger, "forward proxy bootstrap probe round finished");
+    });
+}
+
 async fn refresh_forward_proxy_subscriptions(state: Arc<AppState>, force: bool) -> Result<()> {
     let (subscription_urls, interval_secs, last_refresh_at) = {
         let manager = state.forward_proxy.lock().await;
@@ -7780,11 +7889,22 @@ async fn refresh_forward_proxy_subscriptions(state: Arc<AppState>, force: bool) 
         bail!("all forward proxy subscriptions failed to refresh");
     }
 
-    {
+    let added_subscription_endpoints = {
         let mut manager = state.forward_proxy.lock().await;
+        let before = snapshot_active_forward_proxy_endpoints(&manager);
         manager.apply_subscription_urls(subscription_proxy_urls);
+        let after = snapshot_active_forward_proxy_endpoints(&manager);
+        compute_added_forward_proxy_endpoints(&before, &after)
+    };
+    sync_forward_proxy_routes(state.as_ref()).await?;
+    if !added_subscription_endpoints.is_empty() {
+        spawn_forward_proxy_bootstrap_probe_round(
+            state,
+            added_subscription_endpoints,
+            "subscription-refresh",
+        );
     }
-    sync_forward_proxy_routes(state.as_ref()).await
+    Ok(())
 }
 
 async fn sync_forward_proxy_routes(state: &AppState) -> Result<()> {
@@ -11804,6 +11924,175 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_root);
     }
 
+    #[tokio::test]
+    async fn forward_proxy_settings_triggers_async_bootstrap_probe_for_added_manual_nodes() {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
+        let normalized_proxy =
+            normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+        let state = test_state_with_openai_base(
+            Url::parse("http://probe-target.example/").expect("valid probe target"),
+        )
+        .await;
+
+        let Json(updated) = put_forward_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ForwardProxySettingsUpdateRequest {
+                proxy_urls: vec![proxy_url],
+                subscription_urls: Vec::new(),
+                subscription_update_interval_secs: 3600,
+                insert_direct: true,
+            }),
+        )
+        .await
+        .expect("put forward proxy settings should succeed");
+        assert!(updated.proxy_urls.contains(&normalized_proxy));
+
+        wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, 1).await;
+        let success_count =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
+        assert!(
+            success_count >= 1,
+            "expected at least one successful bootstrap probe attempt"
+        );
+
+        proxy_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn forward_proxy_settings_does_not_probe_when_no_new_nodes() {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
+        let normalized_proxy =
+            normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+        let state = test_state_with_openai_base(
+            Url::parse("http://probe-target.example/").expect("valid probe target"),
+        )
+        .await;
+
+        let request = ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec![proxy_url.clone()],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        };
+        let _ = put_forward_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ForwardProxySettingsUpdateRequest {
+                proxy_urls: request.proxy_urls.clone(),
+                subscription_urls: request.subscription_urls.clone(),
+                subscription_update_interval_secs: request.subscription_update_interval_secs,
+                insert_direct: request.insert_direct,
+            }),
+        )
+        .await
+        .expect("initial put forward proxy settings should succeed");
+        wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, 1).await;
+        let first_count =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+
+        let _ = put_forward_proxy_settings(State(state.clone()), HeaderMap::new(), Json(request))
+            .await
+            .expect("repeated put forward proxy settings should succeed");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let second_count =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        assert_eq!(
+            second_count, first_count,
+            "no newly added endpoint should not trigger extra bootstrap probe"
+        );
+
+        proxy_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_nodes() {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
+        let normalized_proxy =
+            normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+        let (subscription_url, subscription_handle) =
+            spawn_test_subscription_source(format!("{proxy_url}\n")).await;
+        let state = test_state_with_openai_base(
+            Url::parse("http://probe-target.example/").expect("valid probe target"),
+        )
+        .await;
+
+        {
+            let mut manager = state.forward_proxy.lock().await;
+            manager.apply_settings(ForwardProxySettings {
+                proxy_urls: Vec::new(),
+                subscription_urls: vec![subscription_url],
+                subscription_update_interval_secs: 3600,
+                insert_direct: true,
+            });
+        }
+        sync_forward_proxy_routes(state.as_ref())
+            .await
+            .expect("sync forward proxy routes before subscription refresh");
+
+        refresh_forward_proxy_subscriptions(state.clone(), true)
+            .await
+            .expect("refresh subscriptions should succeed");
+
+        wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, 1).await;
+        let success_count =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
+        assert!(
+            success_count >= 1,
+            "expected at least one successful bootstrap probe attempt from subscription refresh"
+        );
+
+        subscription_handle.abort();
+        proxy_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn forward_proxy_settings_bootstrap_probe_failure_penalizes_runtime_weight() {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::INTERNAL_SERVER_ERROR).await;
+        let normalized_proxy =
+            normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+        let state = test_state_with_openai_base(
+            Url::parse("http://probe-target.example/").expect("valid probe target"),
+        )
+        .await;
+
+        let _ = put_forward_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ForwardProxySettingsUpdateRequest {
+                proxy_urls: vec![proxy_url],
+                subscription_urls: Vec::new(),
+                subscription_update_interval_secs: 3600,
+                insert_direct: true,
+            }),
+        )
+        .await
+        .expect("put forward proxy settings should succeed");
+
+        wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, 1).await;
+        let failure_count =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(false)).await;
+        assert!(
+            failure_count >= 1,
+            "expected at least one failed bootstrap probe attempt"
+        );
+
+        let runtime_weight = read_forward_proxy_runtime_weight(&state.pool, &normalized_proxy)
+            .await
+            .expect("runtime weight should exist");
+        assert!(
+            runtime_weight <= 0.0,
+            "expected failed bootstrap probe to penalize runtime weight; got {runtime_weight}"
+        );
+
+        proxy_handle.abort();
+    }
+
     #[test]
     fn forward_proxy_manager_keeps_one_positive_weight() {
         let mut manager = ForwardProxyManager::new(
@@ -12364,6 +12653,58 @@ mod tests {
         });
 
         (format!("http://{addr}/subscription"), handle)
+    }
+
+    async fn count_forward_proxy_probe_attempts(
+        pool: &SqlitePool,
+        proxy_key: &str,
+        success: Option<bool>,
+    ) -> i64 {
+        let query = match success {
+            Some(true) => {
+                "SELECT COUNT(*) FROM forward_proxy_attempts WHERE proxy_key = ?1 AND is_probe != 0 AND is_success != 0"
+            }
+            Some(false) => {
+                "SELECT COUNT(*) FROM forward_proxy_attempts WHERE proxy_key = ?1 AND is_probe != 0 AND is_success = 0"
+            }
+            None => {
+                "SELECT COUNT(*) FROM forward_proxy_attempts WHERE proxy_key = ?1 AND is_probe != 0"
+            }
+        };
+        sqlx::query_scalar(query)
+            .bind(proxy_key)
+            .fetch_one(pool)
+            .await
+            .expect("count forward proxy probe attempts")
+    }
+
+    async fn wait_for_forward_proxy_probe_attempts(
+        pool: &SqlitePool,
+        proxy_key: &str,
+        expected_min_count: i64,
+    ) {
+        let started = Instant::now();
+        loop {
+            let count = count_forward_proxy_probe_attempts(pool, proxy_key, None).await;
+            if count >= expected_min_count {
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "timed out waiting forward proxy probe attempts for {proxy_key}; expected at least {expected_min_count}, got {count}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    async fn read_forward_proxy_runtime_weight(pool: &SqlitePool, proxy_key: &str) -> Option<f64> {
+        sqlx::query_scalar::<_, f64>(
+            "SELECT weight FROM forward_proxy_runtime WHERE proxy_key = ?1",
+        )
+        .bind(proxy_key)
+        .fetch_optional(pool)
+        .await
+        .expect("read forward proxy runtime weight")
     }
 
     async fn test_upstream_echo(
