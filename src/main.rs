@@ -2517,7 +2517,9 @@ async fn list_invocations(
         .clamp(1, state.config.list_limit_max as i64);
 
     let mut query = QueryBuilder::new(
-        "SELECT id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, \
+        "SELECT id, invoke_id, occurred_at, source, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
+         model, input_tokens, output_tokens, \
          cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
          COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind, \
@@ -4322,6 +4324,7 @@ async fn proxy_openai_v1_capture_target(
                     Some(read_err.failure_kind),
                     requester_ip.as_deref(),
                     header_prompt_cache_key.as_deref(),
+                    Some(selected_proxy.display_name.as_str()),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -4448,6 +4451,7 @@ async fn proxy_openai_v1_capture_target(
                     Some(failure_kind),
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
+                    Some(selected_proxy.display_name.as_str()),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -4515,6 +4519,7 @@ async fn proxy_openai_v1_capture_target(
                     Some(failure_kind),
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
+                    Some(selected_proxy.display_name.as_str()),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -4587,6 +4592,7 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
+                    Some(selected_proxy.display_name.as_str()),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -4752,6 +4758,7 @@ async fn proxy_openai_v1_capture_target(
         } else {
             format!("http_{}", upstream_status.as_u16())
         };
+        let selected_proxy_display_name = selected_proxy_for_task.display_name.clone();
         let forward_proxy_success = !had_stream_error && !upstream_status.is_server_error();
         record_forward_proxy_attempt(
             state_for_task.clone(),
@@ -4791,6 +4798,7 @@ async fn proxy_openai_v1_capture_target(
             failure_kind,
             requester_ip_for_task.as_deref(),
             prompt_cache_key_for_task.as_deref(),
+            Some(selected_proxy_display_name.as_str()),
         );
 
         let record = ProxyCaptureRecord {
@@ -5293,6 +5301,7 @@ fn build_proxy_payload_summary(
     failure_kind: Option<&str>,
     requester_ip: Option<&str>,
     prompt_cache_key: Option<&str>,
+    proxy_display_name: Option<&str>,
 ) -> String {
     let endpoint = match target {
         ProxyCaptureTarget::ChatCompletions => "/v1/chat/completions",
@@ -5309,6 +5318,7 @@ fn build_proxy_payload_summary(
         "failureKind": failure_kind,
         "requesterIp": requester_ip,
         "promptCacheKey": prompt_cache_key,
+        "proxyDisplayName": proxy_display_name,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
@@ -5767,6 +5777,7 @@ async fn persist_proxy_capture_record(
             invoke_id,
             occurred_at,
             source,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name,
             model,
             input_tokens,
             output_tokens,
@@ -8019,6 +8030,8 @@ struct ApiInvocation {
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     occurred_at: String,
     source: String,
+    #[sqlx(default)]
+    proxy_display_name: Option<String>,
     model: Option<String>,
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
@@ -15094,7 +15107,7 @@ mod tests {
         .bind(SOURCE_PROXY)
         .bind("failed")
         .bind(
-            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-list-1\"}",
+            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-list-1\",\"proxyDisplayName\":\"jp-relay-01\"}",
         )
         .bind("{}")
         .execute(&state.pool)
@@ -15124,6 +15137,7 @@ mod tests {
         );
         assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
         assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-list-1"));
+        assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
     }
 
     #[tokio::test]

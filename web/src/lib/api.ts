@@ -30,6 +30,7 @@ export interface ApiInvocation {
   invokeId: string
   occurredAt: string
   source?: string
+  proxyDisplayName?: string
   model?: string
   inputTokens?: number
   outputTokens?: number
