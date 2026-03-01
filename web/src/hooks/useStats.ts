@@ -81,6 +81,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const hasHydratedRef = useRef(false)
   const activeLoadCountRef = useRef(0)
   const pendingLoadRef = useRef<PendingLoad | null>(null)
+  const pendingOpenResyncRef = useRef(false)
   const requestSeqRef = useRef(0)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastCurrentRecordsRefreshAtRef = useRef(0)
@@ -110,6 +111,14 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       setStats(response)
       hasHydratedRef.current = true
       setError(null)
+      if (pendingOpenResyncRef.current) {
+        pendingOpenResyncRef.current = false
+        if (pendingLoadRef.current) {
+          pendingLoadRef.current.silent = mergePendingSummarySilentOption(pendingLoadRef.current.silent, true)
+        } else {
+          pendingLoadRef.current = { silent: true, waiters: [] }
+        }
+      }
     } catch (err) {
       if (requestSeq !== requestSeqRef.current) return
       setError(err instanceof Error ? err.message : String(err))
@@ -167,7 +176,11 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   }, [clearPendingRefreshTimer, load])
 
   const triggerCurrentOpenResync = useCallback(() => {
-    if (window !== 'current' || !hasHydratedRef.current) {
+    if (window !== 'current') {
+      return
+    }
+    if (!hasHydratedRef.current) {
+      pendingOpenResyncRef.current = true
       return
     }
     const now = Date.now()
@@ -182,16 +195,29 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     // Invalidate prior async loads when summary query context changes.
     requestSeqRef.current += 1
     hasHydratedRef.current = false
+    pendingOpenResyncRef.current = false
     lastCurrentRecordsRefreshAtRef.current = 0
     lastOpenResyncAtRef.current = 0
     clearPendingRefreshTimer()
     void load({ force: true })
   }, [clearPendingRefreshTimer, load, options?.limit, window])
 
+  useEffect(() => {
+    if (!error || window !== 'current') {
+      return
+    }
+    const timer = setTimeout(() => {
+      void load({ silent: true, force: true })
+    }, 2_000)
+    return () => clearTimeout(timer)
+  }, [error, load, window])
+
   useEffect(
     () => () => {
       requestSeqRef.current += 1
+      pendingLoadRef.current?.waiters.forEach((resolve) => resolve())
       pendingLoadRef.current = null
+      pendingOpenResyncRef.current = false
       clearPendingRefreshTimer()
     },
     [clearPendingRefreshTimer],
