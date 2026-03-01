@@ -10,7 +10,7 @@ This project ships a local-only backtest tool for forward proxy weight algorithm
 
 ## Script
 
-- Path: `/Users/ivan/.codex/worktrees/200e/codex-vibe-monitor/scripts/forward_proxy_backtest.py`
+- Path: `scripts/forward_proxy_backtest.py`
 - Input: a local SQLite snapshot containing `forward_proxy_attempts` and `forward_proxy_runtime`.
 - Output: one JSON report and one Markdown report.
 
@@ -30,7 +30,7 @@ If any required security check fails, acceptance will fail.
 Run with the same acceptance command used in planning:
 
 ```bash
-python3 /Users/ivan/.codex/worktrees/200e/codex-vibe-monitor/scripts/forward_proxy_backtest.py \
+python3 scripts/forward_proxy_backtest.py \
   --db /tmp/cvm-prod-db-Jd0UiY/codex_vibe_monitor.db \
   --algos v1,v2 \
   --seeds 7,11,19,23,29 \

@@ -117,6 +117,7 @@ class AttemptRow:
 @dataclass
 class ProxyProfile:
     key: str
+    observed_attempts: int
     success_rate: float
     success_latencies: List[float]
     failure_latencies: List[float]
@@ -128,23 +129,21 @@ class ForwardProxyStateMachine:
         self,
         algo: AlgoConfig,
         proxy_keys: Iterable[str],
+        insert_direct: bool,
         seed_runtime: Optional[Dict[str, RuntimeState]] = None,
     ) -> None:
         self.algo = algo
         self.proxy_keys = sorted({key for key in proxy_keys if key})
-        if DIRECT_KEY not in self.proxy_keys:
+        if insert_direct and DIRECT_KEY not in self.proxy_keys:
+            self.proxy_keys.append(DIRECT_KEY)
+        if not self.proxy_keys:
             self.proxy_keys.append(DIRECT_KEY)
         self.runtime: Dict[str, RuntimeState] = {
             key: RuntimeState(weight=self._default_weight(key)) for key in self.proxy_keys
         }
         if seed_runtime:
             for key, state in seed_runtime.items():
-                self.runtime[key] = RuntimeState(
-                    weight=state.weight,
-                    success_ema=state.success_ema,
-                    latency_ema_ms=state.latency_ema_ms,
-                    consecutive_failures=state.consecutive_failures,
-                )
+                self.runtime[key] = self._normalize_seed_state(state)
                 if key not in self.proxy_keys:
                     self.proxy_keys.append(key)
         self.selection_counter = 0
@@ -162,6 +161,24 @@ class ForwardProxyStateMachine:
         if isinstance(latency_ms, (float, int)) and math.isfinite(latency_ms) and latency_ms >= 0.0:
             return float(latency_ms)
         return None
+
+    def _normalize_seed_state(self, state: RuntimeState) -> RuntimeState:
+        weight = state.weight if math.isfinite(state.weight) else 0.0
+        weight = max(self.algo.weight_min, min(self.algo.weight_max, weight))
+
+        if math.isfinite(state.success_ema):
+            success_ema = max(0.0, min(1.0, state.success_ema))
+        else:
+            success_ema = 0.65
+
+        latency_ema_ms = self._valid_latency(state.latency_ema_ms)
+        consecutive_failures = max(0, int(state.consecutive_failures))
+        return RuntimeState(
+            weight=weight,
+            success_ema=success_ema,
+            latency_ema_ms=latency_ema_ms,
+            consecutive_failures=consecutive_failures,
+        )
 
     def ensure_min_positive_candidates(self) -> None:
         positive_keys = [
@@ -316,7 +333,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--algos",
         default="v1,v2",
-        help="Comma-separated list of algorithms to run (subset of v1,v2)",
+        help="Comma-separated algorithms to evaluate (must include both v1 and v2)",
     )
     parser.add_argument(
         "--seeds",
@@ -349,7 +366,7 @@ def repo_root_from_script() -> Path:
 def validate_inputs(args: argparse.Namespace) -> Tuple[Path, List[AlgoConfig], List[int], Path, Dict[str, bool]]:
     checks: Dict[str, bool] = {
         "db_exists": False,
-        "db_readonly_uri_mode": True,
+        "db_readonly_uri_mode": False,
         "db_outside_repository": False,
         "output_in_tmp": False,
         "redaction_enabled": not args.no_redact,
@@ -398,16 +415,23 @@ def validate_inputs(args: argparse.Namespace) -> Tuple[Path, List[AlgoConfig], L
         output_prefix = Path(args.output_prefix).expanduser().resolve()
     else:
         output_prefix = Path(f"/tmp/forward-proxy-backtest-{timestamp}")
-    checks["output_in_tmp"] = output_prefix.parent.resolve() == Path("/tmp").resolve()
+    output_prefix = output_prefix.resolve()
+    tmp_root = Path("/tmp").resolve()
+    try:
+        output_prefix.relative_to(tmp_root)
+    except ValueError:
+        checks["output_in_tmp"] = False
+    else:
+        checks["output_in_tmp"] = True
 
     return db_path, algos, seeds, output_prefix, checks
 
 
-def open_readonly_connection(db_path: Path) -> sqlite3.Connection:
+def open_readonly_connection(db_path: Path) -> Tuple[sqlite3.Connection, bool]:
     uri = f"file:{db_path}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
-    return conn
+    return conn, "mode=ro" in uri.lower()
 
 
 def load_attempts(conn: sqlite3.Connection) -> List[AttemptRow]:
@@ -484,6 +508,28 @@ def load_runtime_states(conn: sqlite3.Connection) -> Dict[str, RuntimeState]:
     return states
 
 
+def load_insert_direct(conn: sqlite3.Connection) -> bool:
+    try:
+        row = conn.execute(
+            """
+            SELECT insert_direct
+            FROM forward_proxy_settings
+            WHERE id = 1
+            """
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return True
+    if row is None:
+        return True
+    raw_value = row["insert_direct"]
+    if raw_value is None:
+        return True
+    try:
+        return bool(int(raw_value))
+    except (TypeError, ValueError):
+        return True
+
+
 def redact_proxy(key: str, enable_redact: bool) -> str:
     if not enable_redact:
         return key
@@ -504,6 +550,7 @@ def build_profiles(attempts: List[AttemptRow], proxy_keys: Iterable[str]) -> Dic
         if not rows:
             profiles[key] = ProxyProfile(
                 key=key,
+                observed_attempts=0,
                 success_rate=0.65,
                 success_latencies=[],
                 failure_latencies=[],
@@ -528,6 +575,7 @@ def build_profiles(attempts: List[AttemptRow], proxy_keys: Iterable[str]) -> Dic
             failure_kinds = ["handshake_timeout"]
         profiles[key] = ProxyProfile(
             key=key,
+            observed_attempts=len(rows),
             success_rate=success_rate,
             success_latencies=success_latencies,
             failure_latencies=failure_latencies,
@@ -545,8 +593,10 @@ def sample_latency(profile: ProxyProfile, success: bool, rng: random.Random, fal
     return None
 
 
-def trace_replay(attempts: List[AttemptRow], algo: AlgoConfig, proxy_keys: Iterable[str]) -> Dict[str, object]:
-    machine = ForwardProxyStateMachine(algo, proxy_keys)
+def trace_replay(
+    attempts: List[AttemptRow], algo: AlgoConfig, proxy_keys: Iterable[str], insert_direct: bool
+) -> Dict[str, object]:
+    machine = ForwardProxyStateMachine(algo, proxy_keys, insert_direct=insert_direct)
     positive_counts: List[int] = []
     collapse_events = 0
     recovery_waits: List[int] = []
@@ -591,9 +641,17 @@ def run_simulation(
     profiles: Dict[str, ProxyProfile],
     seeds: List[int],
     requests: int,
+    insert_direct: bool,
     seed_runtime: Optional[Dict[str, RuntimeState]],
 ) -> Dict[str, object]:
-    proxy_keys = sorted(profiles.keys())
+    proxy_keys = sorted(
+        key for key, profile in profiles.items() if profile.observed_attempts > 0
+    )
+    if not proxy_keys:
+        proxy_keys = sorted(profiles.keys())
+    if insert_direct and DIRECT_KEY not in proxy_keys:
+        proxy_keys.append(DIRECT_KEY)
+    allowed_keys = set(proxy_keys)
     all_success_latencies = [
         latency
         for profile in profiles.values()
@@ -610,7 +668,22 @@ def run_simulation(
     per_seed = []
     for seed in seeds:
         rng = random.Random(seed)
-        machine = ForwardProxyStateMachine(algo, proxy_keys, seed_runtime=seed_runtime)
+        runtime_seed = (
+            {
+                key: state
+                for key, state in seed_runtime.items()
+                if key in allowed_keys
+            }
+            if seed_runtime
+            else None
+        )
+        enable_direct = insert_direct
+        machine = ForwardProxyStateMachine(
+            algo,
+            proxy_keys,
+            insert_direct=enable_direct,
+            seed_runtime=runtime_seed,
+        )
         selection_counter: collections.Counter[str] = collections.Counter()
         failure_kind_counter: collections.Counter[str] = collections.Counter()
 
@@ -625,6 +698,7 @@ def run_simulation(
             if profile is None:
                 profile = ProxyProfile(
                     key=key,
+                    observed_attempts=0,
                     success_rate=0.65,
                     success_latencies=all_success_latencies,
                     failure_latencies=all_failure_latencies,
@@ -790,40 +864,59 @@ def main() -> int:
     args = parse_args()
     db_path, algos, seeds, output_prefix, security_checks = validate_inputs(args)
 
-    if "v1" not in {algo.name for algo in algos} or "v2" not in {algo.name for algo in algos}:
+    algo_by_name = {algo.name: algo for algo in algos}
+    if "v1" not in algo_by_name or "v2" not in algo_by_name:
         raise SystemExit("--algos must include both v1 and v2 for acceptance evaluation")
+    baseline_algo = algo_by_name["v1"]
+    candidate_algo = algo_by_name["v2"]
 
-    conn = open_readonly_connection(db_path)
+    conn, readonly_uri_mode = open_readonly_connection(db_path)
     try:
+        security_checks["db_readonly_uri_mode"] = readonly_uri_mode
         attempts = load_attempts(conn)
         runtime_keys = load_runtime_keys(conn)
         runtime_states = load_runtime_states(conn)
+        insert_direct = load_insert_direct(conn)
     finally:
         conn.close()
 
     if not attempts:
         raise SystemExit("forward_proxy_attempts is empty; cannot run backtest")
 
-    proxy_keys = sorted(set(runtime_keys) | {item.proxy_key for item in attempts})
-    profiles = build_profiles(attempts, proxy_keys)
+    attempt_proxy_keys = sorted({item.proxy_key for item in attempts})
+    trace_proxy_keys = sorted(set(attempt_proxy_keys) | ({DIRECT_KEY} if insert_direct else set()))
+    profile_proxy_keys = sorted(set(runtime_keys) | set(attempt_proxy_keys))
+    profiles = build_profiles(attempts, profile_proxy_keys)
 
     baseline = {
-        "trace_replay": trace_replay(attempts, ALGO_V1, proxy_keys),
+        "trace_replay": trace_replay(
+            attempts,
+            baseline_algo,
+            trace_proxy_keys,
+            insert_direct=insert_direct,
+        ),
         "simulation": run_simulation(
-            ALGO_V1,
+            baseline_algo,
             profiles,
             seeds,
             args.requests,
+            insert_direct,
             runtime_states,
         ),
     }
     candidate = {
-        "trace_replay": trace_replay(attempts, ALGO_V2, proxy_keys),
+        "trace_replay": trace_replay(
+            attempts,
+            candidate_algo,
+            trace_proxy_keys,
+            insert_direct=insert_direct,
+        ),
         "simulation": run_simulation(
-            ALGO_V2,
+            candidate_algo,
             profiles,
             seeds,
             args.requests,
+            insert_direct,
             runtime_states,
         ),
     }
@@ -832,6 +925,17 @@ def main() -> int:
     sanitize_seed_output(candidate["simulation"], redact=not args.no_redact)
 
     acceptance = evaluate_acceptance(baseline, candidate, security_checks)
+    security_failed = [
+        item
+        for item in acceptance["failed_rules"]
+        if item.startswith("security_check_failed:")
+    ]
+    if security_failed:
+        print("acceptance_pass=False")
+        print("failed_rules=")
+        for item in acceptance["failed_rules"]:
+            print(f"- {item}")
+        return 1
 
     result = {
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),

@@ -106,7 +106,7 @@ const PRICING_SETTINGS_SINGLETON_ID: i64 = 1;
 const FORWARD_PROXY_SETTINGS_SINGLETON_ID: i64 = 1;
 const DEFAULT_FORWARD_PROXY_INSERT_DIRECT: bool = true;
 const DEFAULT_FORWARD_PROXY_SUBSCRIPTION_INTERVAL_SECS: u64 = 60 * 60;
-const DEFAULT_FORWARD_PROXY_ALGO: ForwardProxyAlgo = ForwardProxyAlgo::V1;
+const DEFAULT_FORWARD_PROXY_ALGO: ForwardProxyAlgo = ForwardProxyAlgo::V2;
 const FORWARD_PROXY_WEIGHT_RECOVERY: f64 = 0.6;
 const FORWARD_PROXY_WEIGHT_SUCCESS_BONUS: f64 = 0.45;
 const FORWARD_PROXY_WEIGHT_FAILURE_PENALTY_BASE: f64 = 0.9;
@@ -198,8 +198,21 @@ impl FromStr for ForwardProxyAlgo {
         match raw.trim().to_ascii_lowercase().as_str() {
             "v1" => Ok(Self::V1),
             "v2" => Ok(Self::V2),
-            _ => bail!("invalid XY_FORWARD_PROXY_ALGO: {raw}"),
+            _ => bail!("invalid FORWARD_PROXY_ALGO value: {raw}"),
         }
+    }
+}
+
+fn resolve_forward_proxy_algo_config(
+    primary_raw: Option<&str>,
+    legacy_raw: Option<&str>,
+) -> Result<ForwardProxyAlgo> {
+    if legacy_raw.is_some() {
+        bail!("XY_FORWARD_PROXY_ALGO is not supported; use FORWARD_PROXY_ALGO");
+    }
+    match primary_raw {
+        Some(primary) => ForwardProxyAlgo::from_str(primary),
+        None => Ok(DEFAULT_FORWARD_PROXY_ALGO),
     }
 }
 
@@ -9172,7 +9185,10 @@ impl ForwardProxyManager {
     ) -> Self {
         let runtime = runtime_rows
             .into_iter()
-            .map(|entry| (entry.proxy_key.clone(), entry))
+            .map(|mut entry| {
+                Self::normalize_runtime_for_algo(&mut entry, algo);
+                (entry.proxy_key.clone(), entry)
+            })
             .collect::<HashMap<_, _>>();
         let mut manager = Self {
             algo,
@@ -9187,6 +9203,27 @@ impl ForwardProxyManager {
         };
         manager.rebuild_endpoints(Vec::new());
         manager
+    }
+
+    fn normalize_runtime_for_algo(runtime: &mut ForwardProxyRuntimeState, algo: ForwardProxyAlgo) {
+        runtime.success_ema = runtime.success_ema.clamp(0.0, 1.0);
+        if runtime
+            .latency_ema_ms
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+        {
+            runtime.latency_ema_ms = None;
+        }
+        if !runtime.weight.is_finite() {
+            runtime.weight = 0.0;
+        }
+        runtime.weight = match algo {
+            ForwardProxyAlgo::V1 => runtime
+                .weight
+                .clamp(FORWARD_PROXY_WEIGHT_MIN, FORWARD_PROXY_WEIGHT_MAX),
+            ForwardProxyAlgo::V2 => runtime
+                .weight
+                .clamp(FORWARD_PROXY_V2_WEIGHT_MIN, FORWARD_PROXY_V2_WEIGHT_MAX),
+        };
     }
 
     fn apply_settings(&mut self, settings: ForwardProxySettings) {
@@ -9249,16 +9286,28 @@ impl ForwardProxyManager {
         self.ensure_min_positive_candidates(minimum, self.algo.probe_recovery_weight());
     }
 
+    fn selectable_endpoint_keys(&self) -> HashSet<&str> {
+        self.endpoints
+            .iter()
+            .filter(|endpoint| endpoint.is_selectable())
+            .map(|endpoint| endpoint.key.as_str())
+            .collect::<HashSet<_>>()
+    }
+
     fn ensure_min_positive_candidates(&mut self, minimum: usize, recovery_weight: f64) {
         if minimum == 0 {
             return;
         }
 
-        let active_keys = self
-            .endpoints
-            .iter()
-            .map(|endpoint| endpoint.key.as_str())
-            .collect::<HashSet<_>>();
+        let selectable_keys = self.selectable_endpoint_keys();
+        let active_keys = if selectable_keys.is_empty() {
+            self.endpoints
+                .iter()
+                .map(|endpoint| endpoint.key.as_str())
+                .collect::<HashSet<_>>()
+        } else {
+            selectable_keys
+        };
         let mut positive_count = self
             .runtime
             .values()
@@ -9474,10 +9523,13 @@ impl ForwardProxyManager {
     }
 
     fn should_probe_penalized_proxy(&self) -> bool {
-        let has_penalized = self
-            .runtime
-            .values()
-            .any(ForwardProxyRuntimeState::is_penalized);
+        let selectable_keys = self.selectable_endpoint_keys();
+        if selectable_keys.is_empty() {
+            return false;
+        }
+        let has_penalized = self.runtime.values().any(|entry| {
+            selectable_keys.contains(entry.proxy_key.as_str()) && entry.is_penalized()
+        });
         if !has_penalized || self.probe_in_flight {
             return false;
         }
@@ -9489,15 +9541,18 @@ impl ForwardProxyManager {
         if !self.should_probe_penalized_proxy() {
             return None;
         }
+        let selectable_keys = self.selectable_endpoint_keys();
         let selected = self
             .runtime
             .values()
-            .filter(|entry| entry.is_penalized())
+            .filter(|entry| {
+                entry.is_penalized() && selectable_keys.contains(entry.proxy_key.as_str())
+            })
             .max_by(|lhs, rhs| lhs.weight.total_cmp(&rhs.weight))
             .and_then(|entry| {
                 self.endpoints
                     .iter()
-                    .find(|item| item.key == entry.proxy_key && item.is_selectable())
+                    .find(|item| item.key == entry.proxy_key)
             })
             .cloned()?;
         self.probe_in_flight = true;
@@ -11592,11 +11647,12 @@ impl AppConfig {
             .ok()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_XRAY_RUNTIME_DIR));
-        let forward_proxy_algo = env::var("XY_FORWARD_PROXY_ALGO")
-            .ok()
-            .map(|raw| ForwardProxyAlgo::from_str(&raw))
-            .transpose()?
-            .unwrap_or(DEFAULT_FORWARD_PROXY_ALGO);
+        let forward_proxy_algo_raw = env::var("FORWARD_PROXY_ALGO").ok();
+        let forward_proxy_algo_legacy_raw = env::var("XY_FORWARD_PROXY_ALGO").ok();
+        let forward_proxy_algo = resolve_forward_proxy_algo_config(
+            forward_proxy_algo_raw.as_deref(),
+            forward_proxy_algo_legacy_raw.as_deref(),
+        )?;
         let max_parallel_polls = overrides
             .max_parallel_polls
             .or_else(|| {
@@ -12512,6 +12568,30 @@ mod tests {
     }
 
     #[test]
+    fn forward_proxy_algo_config_defaults_to_latest_v2() {
+        let algo =
+            resolve_forward_proxy_algo_config(None, None).expect("default algo should resolve");
+        assert_eq!(algo, ForwardProxyAlgo::V2);
+    }
+
+    #[test]
+    fn forward_proxy_algo_config_accepts_primary_env() {
+        let algo = resolve_forward_proxy_algo_config(Some("v2"), None)
+            .expect("primary env should resolve");
+        assert_eq!(algo, ForwardProxyAlgo::V2);
+    }
+
+    #[test]
+    fn forward_proxy_algo_config_rejects_legacy_env() {
+        assert!(resolve_forward_proxy_algo_config(None, Some("v1")).is_err());
+    }
+
+    #[test]
+    fn forward_proxy_algo_config_rejects_when_both_env_vars_are_set() {
+        assert!(resolve_forward_proxy_algo_config(Some("v2"), Some("v1")).is_err());
+    }
+
+    #[test]
     fn forward_proxy_manager_v2_keeps_two_positive_weights() {
         let mut manager = ForwardProxyManager::with_algo(
             ForwardProxySettings {
@@ -12536,6 +12616,138 @@ mod tests {
             .filter(|entry| entry.weight > 0.0)
             .count();
         assert_eq!(positive_count, 2);
+    }
+
+    #[test]
+    fn forward_proxy_manager_v2_clamps_persisted_runtime_weight_on_startup() {
+        let manager = ForwardProxyManager::with_algo(
+            ForwardProxySettings {
+                proxy_urls: vec![],
+                subscription_urls: vec![],
+                subscription_update_interval_secs: 3600,
+                insert_direct: true,
+            },
+            vec![ForwardProxyRuntimeState {
+                proxy_key: FORWARD_PROXY_DIRECT_KEY.to_string(),
+                display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
+                source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
+                endpoint_url: None,
+                weight: 99.0,
+                success_ema: 0.65,
+                latency_ema_ms: None,
+                consecutive_failures: 0,
+            }],
+            ForwardProxyAlgo::V2,
+        );
+
+        let direct_runtime = manager
+            .runtime
+            .get(FORWARD_PROXY_DIRECT_KEY)
+            .expect("direct runtime should exist");
+        assert_eq!(direct_runtime.weight, FORWARD_PROXY_V2_WEIGHT_MAX);
+    }
+
+    #[test]
+    fn forward_proxy_manager_v2_counts_only_selectable_positive_candidates() {
+        let mut manager = ForwardProxyManager::with_algo(
+            ForwardProxySettings {
+                proxy_urls: vec![
+                    "http://127.0.0.1:7890".to_string(),
+                    "http://127.0.0.1:7891".to_string(),
+                    "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:443?encryption=none"
+                        .to_string(),
+                ],
+                subscription_urls: vec![],
+                subscription_update_interval_secs: 3600,
+                insert_direct: false,
+            },
+            vec![],
+            ForwardProxyAlgo::V2,
+        );
+
+        let selectable_keys = manager
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.is_selectable())
+            .map(|endpoint| endpoint.key.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(selectable_keys.len(), 2);
+        let non_selectable_key = manager
+            .endpoints
+            .iter()
+            .find(|endpoint| !endpoint.is_selectable())
+            .map(|endpoint| endpoint.key.clone())
+            .expect("non-selectable endpoint should exist");
+
+        manager
+            .runtime
+            .get_mut(&selectable_keys[0])
+            .expect("selectable runtime should exist")
+            .weight = 1.0;
+        manager
+            .runtime
+            .get_mut(&selectable_keys[1])
+            .expect("selectable runtime should exist")
+            .weight = -5.0;
+        manager
+            .runtime
+            .get_mut(&non_selectable_key)
+            .expect("non-selectable runtime should exist")
+            .weight = 1.0;
+
+        manager.ensure_non_zero_weight();
+
+        let positive_selectable = selectable_keys
+            .iter()
+            .filter_map(|key| manager.runtime.get(key))
+            .filter(|runtime| runtime.weight > 0.0)
+            .count();
+        assert_eq!(positive_selectable, 2);
+    }
+
+    #[test]
+    fn forward_proxy_manager_v2_probe_ignores_non_selectable_penalties() {
+        let mut manager = ForwardProxyManager::with_algo(
+            ForwardProxySettings {
+                proxy_urls: vec![
+                    "http://127.0.0.1:7890".to_string(),
+                    "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:443?encryption=none"
+                        .to_string(),
+                ],
+                subscription_urls: vec![],
+                subscription_update_interval_secs: 3600,
+                insert_direct: false,
+            },
+            vec![],
+            ForwardProxyAlgo::V2,
+        );
+
+        let selectable_key = manager
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.is_selectable())
+            .map(|endpoint| endpoint.key.clone())
+            .expect("selectable endpoint should exist");
+        let non_selectable_key = manager
+            .endpoints
+            .iter()
+            .find(|endpoint| !endpoint.is_selectable())
+            .map(|endpoint| endpoint.key.clone())
+            .expect("non-selectable endpoint should exist");
+
+        manager
+            .runtime
+            .get_mut(&selectable_key)
+            .expect("selectable runtime should exist")
+            .weight = 1.0;
+        manager
+            .runtime
+            .get_mut(&non_selectable_key)
+            .expect("non-selectable runtime should exist")
+            .weight = -2.0;
+
+        assert!(!manager.should_probe_penalized_proxy());
+        assert!(manager.mark_probe_started().is_none());
     }
 
     #[test]
