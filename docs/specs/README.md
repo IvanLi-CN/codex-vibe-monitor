@@ -8,7 +8,7 @@
 
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------- |
-| zanzr | Release 构建加速：arm64 迁移到 GitHub-hosted ARM runner                   | 进行中（0/4）   | `zanzr-release-arm64-native-runner/SPEC.md`              | 2026-03-01 | fast-track           |
+| zanzr | Release 构建加速：arm64 迁移到 GitHub-hosted ARM runner                   | 部分完成（3/4） | `zanzr-release-arm64-native-runner/SPEC.md`              | 2026-03-01 | fast-track           |
 | wtwsn | GHCR 发布切换多架构 manifest（amd64 + arm64）                             | 已完成（5/5）   | `wtwsn-ghcr-multiarch-release-manifest/SPEC.md`          | 2026-03-01 | fast-track / hotfix  |
 | m96jw | 修复订阅验证路径下 xray 运行目录缺失导致添加失败                          | 已完成（3/3）   | `m96jw-subscription-validation-xray-runtime-dir/SPEC.md` | 2026-03-01 | PR #71 / fast-track  |
 | c5yag | 订阅验证超时改为 60 秒（单条验证保持 5 秒）                               | 已完成（3/3）   | `c5yag-subscription-validation-timeout-60/SPEC.md`       | 2026-03-01 | fast-track           |

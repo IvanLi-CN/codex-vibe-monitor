@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中（0/4）
+- Status: 部分完成（3/4）
 - Created: 2026-03-01
 - Last: 2026-03-01
 
@@ -54,9 +54,9 @@
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: 建立 spec 文档并登记索引
-- [ ] M2: release workflow job 拆分 + arm64 迁移到 `ubuntu-24.04-arm`
-- [ ] M3: Dockerfile Rust build 分层 + `.dockerignore`
+- [x] M1: 建立 spec 文档并登记索引
+- [x] M2: release workflow job 拆分 + arm64 迁移到 `ubuntu-24.04-arm`
+- [x] M3: Dockerfile Rust build 分层 + `.dockerignore`
 - [ ] M4: 以 `type:patch + channel:rc` 跑通一次 release 验证（不更新 latest）
 
 ## 风险 / 备注
