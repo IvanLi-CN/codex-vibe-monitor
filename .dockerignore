@@ -1,0 +1,8 @@
+.git
+target
+web/node_modules
+web/dist
+.codex
+**/*.db
+**/*.sqlite*
+.env*

@@ -150,16 +150,26 @@ jobs:
       - name: Cargo build (release)
         run: cargo build --release --locked
 
-  docker:
-    name: Release (GHCR + tag + GitHub Release)
+  release-meta:
+    name: Release Meta (intent + version + tags)
     runs-on: ubuntu-latest
     needs: [lint, unit-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
-      contents: write
-      packages: write
+      contents: read
       pull-requests: read
-    timeout-minutes: 45
+    outputs:
+      release_enabled: ${{ steps.intent.outputs.release_enabled }}
+      release_bump: ${{ steps.intent.outputs.release_bump }}
+      release_channel: ${{ steps.intent.outputs.release_channel }}
+      pr_number: ${{ steps.intent.outputs.pr_number }}
+      pr_title: ${{ steps.intent.outputs.pr_title }}
+      image_name_lower: ${{ steps.image-name.outputs.image_name_lower }}
+      app_effective_version: ${{ steps.version.outputs.app_effective_version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      release_prerelease: ${{ steps.version.outputs.release_prerelease }}
+      tags_csv: ${{ steps.image-tags.outputs.tags_csv }}
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -241,10 +251,6 @@ jobs:
             core.setOutput('release_bump', typeLabel.split(':', 2)[1]) // patch|minor|major
             core.setOutput('release_channel', channelLabel.split(':', 2)[1]) // stable|rc
 
-      - name: Set up QEMU
-        if: steps.intent.outputs.release_enabled == 'true'
-        uses: docker/setup-qemu-action@v3
-
       - name: Compute lowercase image name
         if: steps.intent.outputs.release_enabled == 'true'
         id: image-name
@@ -263,6 +269,16 @@ jobs:
           RELEASE_CHANNEL: ${{ steps.intent.outputs.release_channel }}
         run: ./.github/scripts/compute-version.sh
 
+      - name: Export version outputs
+        if: steps.intent.outputs.release_enabled == 'true'
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "app_effective_version=${APP_EFFECTIVE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_prerelease=${RELEASE_PRERELEASE}" >> "$GITHUB_OUTPUT"
+
       - name: Compute image tags
         if: steps.intent.outputs.release_enabled == 'true'
         id: image-tags
@@ -272,31 +288,10 @@ jobs:
           image="${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}"
           if [[ "${RELEASE_CHANNEL}" == "stable" ]]; then
             # Keep version tag first to avoid "latest updated but version missing" partial state.
-            {
-              echo "tags<<EOF"
-              echo "${image}:v${APP_EFFECTIVE_VERSION}"
-              echo "${image}:latest"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            echo "tags_csv=${image}:v${APP_EFFECTIVE_VERSION},${image}:latest" >> "$GITHUB_OUTPUT"
           else
-            {
-              echo "tags<<EOF"
-              echo "${image}:v${APP_EFFECTIVE_VERSION}"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            echo "tags_csv=${image}:v${APP_EFFECTIVE_VERSION}" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Set up Docker Buildx
-        if: steps.intent.outputs.release_enabled == 'true'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        if: steps.intent.outputs.release_enabled == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Validate platforms for smoke gate
         if: steps.intent.outputs.release_enabled == 'true'
@@ -312,8 +307,30 @@ jobs:
             fi
           done
 
+  docker-amd64:
+    name: Build + Smoke + Push Candidate (linux/amd64)
+    runs-on: ubuntu-latest
+    needs: [release-meta]
+    if: needs.release-meta.outputs.release_enabled == 'true'
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build smoke image (linux/amd64, load)
-        if: steps.intent.outputs.release_enabled == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -322,24 +339,57 @@ jobs:
           push: false
           load: true
           tags: |
-            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-amd64
-            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}-amd64
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-amd64
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}-amd64
           build-args: |
-            APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
+            APP_EFFECTIVE_VERSION=${{ needs.release-meta.outputs.app_effective_version }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-amd64
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-amd64,mode=max
 
       - name: Smoke test image (linux/amd64)
-        if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
         env:
-          SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-amd64
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-amd64
           SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-amd64-${{ github.run_id }}-${{ github.run_attempt }}
           SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
 
+      - name: Push candidate image (linux/amd64)
+        shell: bash
+        env:
+          IMAGE_NAME_LOWER: ${{ needs.release-meta.outputs.image_name_lower }}
+        run: |
+          set -euo pipefail
+          image="${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}"
+          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          candidate_amd64="${image}:candidate-${suffix}-amd64"
+          echo "[push] ${candidate_amd64}"
+          docker push "${candidate_amd64}"
+
+  docker-arm64:
+    name: Build + Smoke + Push Candidate (linux/arm64)
+    runs-on: ubuntu-24.04-arm
+    needs: [release-meta]
+    if: needs.release-meta.outputs.release_enabled == 'true'
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build smoke image (linux/arm64, load)
-        if: steps.intent.outputs.release_enabled == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -348,55 +398,77 @@ jobs:
           push: false
           load: true
           tags: |
-            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-arm64
-            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}-arm64
           build-args: |
-            APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
+            APP_EFFECTIVE_VERSION=${{ needs.release-meta.outputs.app_effective_version }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64,mode=max
 
       - name: Smoke test image (linux/arm64)
-        if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
         env:
-          SMOKE_TAG: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-arm64
           SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-arm64-${{ github.run_id }}-${{ github.run_attempt }}
           SMOKE_PLATFORM: ${{ env.PLATFORM_ARM64 }}
           SMOKE_TIMEOUT_SECS: "120"
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
 
-      - name: Push smoke-verified platform images
-        if: steps.intent.outputs.release_enabled == 'true'
-        id: staged-images
+      - name: Push candidate image (linux/arm64)
         shell: bash
+        env:
+          IMAGE_NAME_LOWER: ${{ needs.release-meta.outputs.image_name_lower }}
         run: |
           set -euo pipefail
-          image="${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}"
+          image="${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}"
+          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          candidate_arm64="${image}:candidate-${suffix}-arm64"
+          echo "[push] ${candidate_arm64}"
+          docker push "${candidate_arm64}"
+
+  release-publish:
+    name: Release Publish (manifest + tag + GitHub Release)
+    runs-on: ubuntu-latest
+    needs: [release-meta, docker-amd64, docker-arm64]
+    if: needs.release-meta.outputs.release_enabled == 'true'
+    permissions:
+      contents: write
+      packages: write
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release manifest tags from smoke-verified images
+        shell: bash
+        env:
+          TAGS_CSV: ${{ needs.release-meta.outputs.tags_csv }}
+          IMAGE_NAME_LOWER: ${{ needs.release-meta.outputs.image_name_lower }}
+        run: |
+          set -euo pipefail
+          image="${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}"
           suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           candidate_amd64="${image}:candidate-${suffix}-amd64"
           candidate_arm64="${image}:candidate-${suffix}-arm64"
-          echo "[push] ${candidate_amd64}"
-          docker push "${candidate_amd64}"
-          echo "[push] ${candidate_arm64}"
-          docker push "${candidate_arm64}"
-          echo "candidate_amd64=${candidate_amd64}" >> "$GITHUB_OUTPUT"
-          echo "candidate_arm64=${candidate_arm64}" >> "$GITHUB_OUTPUT"
 
-      - name: Create release manifest tags from smoke-verified images
-        if: steps.intent.outputs.release_enabled == 'true'
-        shell: bash
-        env:
-          TAGS: ${{ steps.image-tags.outputs.tags }}
-          CANDIDATE_AMD64: ${{ steps.staged-images.outputs.candidate_amd64 }}
-          CANDIDATE_ARM64: ${{ steps.staged-images.outputs.candidate_arm64 }}
-        run: |
-          set -euo pipefail
-          mapfile -t tags <<< "${TAGS}"
+          IFS=',' read -r -a tags <<< "${TAGS_CSV}"
           for tag in "${tags[@]}"; do
             [[ -z "${tag}" ]] && continue
-            echo "[manifest] ${tag} <= ${CANDIDATE_AMD64}, ${CANDIDATE_ARM64}"
+            echo "[manifest] ${tag} <= ${candidate_amd64}, ${candidate_arm64}"
             for attempt in 1 2 3 4 5; do
-              if docker buildx imagetools create --tag "${tag}" "${CANDIDATE_AMD64}" "${CANDIDATE_ARM64}" 2>"/tmp/imagetools-create-${attempt}.err"; then
+              if docker buildx imagetools create --tag "${tag}" "${candidate_amd64}" "${candidate_arm64}" 2>"/tmp/imagetools-create-${attempt}.err"; then
                 break
               fi
               if [[ "${attempt}" == "5" ]]; then
@@ -413,14 +485,13 @@ jobs:
           done
 
       - name: Verify pushed manifest platforms
-        if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
         env:
-          TAGS: ${{ steps.image-tags.outputs.tags }}
+          TAGS_CSV: ${{ needs.release-meta.outputs.tags_csv }}
           REQUIRED_PLATFORMS: ${{ env.PLATFORMS }}
         run: |
           set -euo pipefail
-          mapfile -t tags <<< "${TAGS}"
+          IFS=',' read -r -a tags <<< "${TAGS_CSV}"
           for tag in "${tags[@]}"; do
             [[ -z "${tag}" ]] && continue
             echo "[verify] ${tag}"
@@ -447,8 +518,10 @@ jobs:
           done
 
       - name: Create and push git tag
-        if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-meta.outputs.release_tag }}
+          APP_EFFECTIVE_VERSION: ${{ needs.release-meta.outputs.app_effective_version }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -471,13 +544,14 @@ jobs:
           git push origin "${tag}"
 
       - name: Create GitHub Release
-        if: steps.intent.outputs.release_enabled == 'true'
         uses: actions/github-script@v7
         env:
-          RELEASE_PR_NUMBER: ${{ steps.intent.outputs.pr_number }}
-          RELEASE_PR_TITLE: ${{ steps.intent.outputs.pr_title }}
-          RELEASE_BUMP: ${{ steps.intent.outputs.release_bump }}
-          RELEASE_CHANNEL: ${{ steps.intent.outputs.release_channel }}
+          RELEASE_TAG: ${{ needs.release-meta.outputs.release_tag }}
+          RELEASE_PRERELEASE: ${{ needs.release-meta.outputs.release_prerelease }}
+          RELEASE_PR_NUMBER: ${{ needs.release-meta.outputs.pr_number }}
+          RELEASE_PR_TITLE: ${{ needs.release-meta.outputs.pr_title }}
+          RELEASE_BUMP: ${{ needs.release-meta.outputs.release_bump }}
+          RELEASE_CHANNEL: ${{ needs.release-meta.outputs.release_channel }}
         with:
           script: |
             const { owner, repo } = context.repo
