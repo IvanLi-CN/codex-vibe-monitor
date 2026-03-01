@@ -17,17 +17,20 @@ FROM rust:1.91.0-bookworm AS rust-builder
 ARG APP_EFFECTIVE_VERSION
 WORKDIR /app
 
-# Cache dependencies
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev \
-    && cargo fetch
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy remaining sources and build
-COPY . .
+# Cache dependencies (avoid invalidating the dependency layer when only app sources change).
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src \
+    && printf '%s\n' 'fn main() {}' > src/main.rs \
+    && cargo build --release --locked
+
+# Copy app sources and build the real binary.
+COPY src ./src
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
-RUN cargo build --release
+RUN cargo build --release --locked
 
 # Stage 3: fetch Xray-core (xray) for forward-proxy subscription validation
 # The app defaults to `XY_XRAY_BINARY=xray` (PATH lookup). If the runtime image doesn't bundle
