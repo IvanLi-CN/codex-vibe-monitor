@@ -62,7 +62,7 @@ use tower_http::{
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const SOURCE_XY: &str = "xy";
 const SOURCE_CRS: &str = "crs";
@@ -293,6 +293,7 @@ async fn main() -> Result<()> {
             config.xray_runtime_dir.clone(),
         ))),
         forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+        forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog,
     });
@@ -403,7 +404,17 @@ fn spawn_forward_proxy_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), true).await {
+        let startup_known_subscription_keys = {
+            let manager = state.forward_proxy.lock().await;
+            snapshot_known_subscription_proxy_keys(&manager)
+        };
+        if let Err(err) = refresh_forward_proxy_subscriptions(
+            state.clone(),
+            true,
+            Some(startup_known_subscription_keys),
+        )
+        .await
+        {
             warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
         }
 
@@ -416,7 +427,7 @@ fn spawn_forward_proxy_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false).await {
+                    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
                         warn!(error = %err, "failed to refresh forward proxy subscriptions");
                     }
                 }
@@ -7049,12 +7060,19 @@ async fn put_forward_proxy_settings(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
-    let added_manual_endpoints = {
+    let (known_subscription_keys_before_settings, added_manual_endpoints) = {
         let mut manager = state.forward_proxy.lock().await;
         let before = snapshot_active_forward_proxy_endpoints(&manager);
         manager.apply_settings(next);
         let after = snapshot_active_forward_proxy_endpoints(&manager);
-        compute_added_forward_proxy_endpoints(&before, &after)
+        (
+            before
+                .iter()
+                .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+                .map(|endpoint| endpoint.key.clone())
+                .collect::<HashSet<_>>(),
+            compute_added_forward_proxy_endpoints(&before, &after),
+        )
     };
     if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
         warn!(
@@ -7062,15 +7080,21 @@ async fn put_forward_proxy_settings(
             "failed to sync forward proxy routes after settings update"
         );
     }
+    if let Err(err) = refresh_forward_proxy_subscriptions(
+        state.clone(),
+        true,
+        Some(known_subscription_keys_before_settings),
+    )
+    .await
+    {
+        warn!(error = %err, "failed to refresh forward proxy subscriptions after settings update");
+    }
     if !added_manual_endpoints.is_empty() {
         spawn_forward_proxy_bootstrap_probe_round(
             state.clone(),
             added_manual_endpoints,
             "settings-update",
         );
-    }
-    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), true).await {
-        warn!(error = %err, "failed to refresh forward proxy subscriptions after settings update");
     }
 
     let response = build_forward_proxy_settings_response(state.as_ref())
@@ -7771,6 +7795,15 @@ fn compute_added_forward_proxy_endpoints(
         .collect()
 }
 
+fn snapshot_known_subscription_proxy_keys(manager: &ForwardProxyManager) -> HashSet<String> {
+    manager
+        .runtime
+        .values()
+        .filter(|entry| entry.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+        .map(|entry| entry.proxy_key.clone())
+        .collect()
+}
+
 fn classify_bootstrap_forward_proxy_probe_failure(err: &anyhow::Error) -> &'static str {
     let message = err.to_string().to_ascii_lowercase();
     if message.contains("timed out") || message.contains("timeout") {
@@ -7843,7 +7876,11 @@ fn spawn_forward_proxy_bootstrap_probe_round(
     });
 }
 
-async fn refresh_forward_proxy_subscriptions(state: Arc<AppState>, force: bool) -> Result<()> {
+async fn refresh_forward_proxy_subscriptions(
+    state: Arc<AppState>,
+    force: bool,
+    known_subscription_keys_override: Option<HashSet<String>>,
+) -> Result<()> {
     let (subscription_urls, interval_secs, last_refresh_at) = {
         let manager = state.forward_proxy.lock().await;
         (
@@ -7889,17 +7926,33 @@ async fn refresh_forward_proxy_subscriptions(state: Arc<AppState>, force: bool) 
         bail!("all forward proxy subscriptions failed to refresh");
     }
 
+    let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
     let added_subscription_endpoints = {
         let mut manager = state.forward_proxy.lock().await;
-        let before = snapshot_active_forward_proxy_endpoints(&manager);
+        if manager.settings.subscription_urls != subscription_urls {
+            debug!("skip stale forward proxy subscription refresh after settings changed");
+            return Ok(());
+        }
+        let mut known_subscription_keys = snapshot_active_forward_proxy_endpoints(&manager)
+            .into_iter()
+            .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+            .map(|endpoint| endpoint.key)
+            .collect::<HashSet<_>>();
+        if let Some(override_keys) = &known_subscription_keys_override {
+            known_subscription_keys.extend(override_keys.iter().cloned());
+        }
         manager.apply_subscription_urls(subscription_proxy_urls);
         let after = snapshot_active_forward_proxy_endpoints(&manager);
-        compute_added_forward_proxy_endpoints(&before, &after)
+        after
+            .into_iter()
+            .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+            .filter(|endpoint| !known_subscription_keys.contains(&endpoint.key))
+            .collect::<Vec<_>>()
     };
     sync_forward_proxy_routes(state.as_ref()).await?;
     if !added_subscription_endpoints.is_empty() {
         spawn_forward_proxy_bootstrap_probe_round(
-            state,
+            state.clone(),
             added_subscription_endpoints,
             "subscription-refresh",
         );
@@ -8040,8 +8093,16 @@ async fn record_forward_proxy_attempt(
 ) {
     let (updated_runtime, probe_candidate) = {
         let mut manager = state.forward_proxy.lock().await;
+        let runtime_active = manager
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.key == selected_proxy.key);
         manager.record_attempt(&selected_proxy.key, success, latency_ms, is_probe);
-        let updated_runtime = manager.runtime.get(&selected_proxy.key).cloned();
+        let updated_runtime = if runtime_active {
+            manager.runtime.get(&selected_proxy.key).cloned()
+        } else {
+            None
+        };
         let probe_candidate = if is_probe {
             None
         } else {
@@ -8299,6 +8360,7 @@ struct AppState {
     forward_proxy: Arc<Mutex<ForwardProxyManager>>,
     xray_supervisor: Arc<Mutex<XraySupervisor>>,
     forward_proxy_settings_update_lock: Arc<Mutex<()>>,
+    forward_proxy_subscription_refresh_lock: Arc<Mutex<()>>,
     pricing_settings_update_lock: Arc<Mutex<()>>,
     pricing_catalog: Arc<RwLock<PricingCatalog>>,
 }
@@ -9090,9 +9152,17 @@ impl ForwardProxyManager {
         self.endpoints = merged;
 
         for endpoint in &self.endpoints {
-            self.runtime
-                .entry(endpoint.key.clone())
-                .or_insert_with(|| ForwardProxyRuntimeState::default_for_endpoint(endpoint));
+            match self.runtime.entry(endpoint.key.clone()) {
+                std::collections::hash_map::Entry::Occupied(mut occupied) => {
+                    let runtime = occupied.get_mut();
+                    runtime.display_name = endpoint.display_name.clone();
+                    runtime.source = endpoint.source.clone();
+                    runtime.endpoint_url = endpoint.raw_url.clone();
+                }
+                std::collections::hash_map::Entry::Vacant(vacant) => {
+                    vacant.insert(ForwardProxyRuntimeState::default_for_endpoint(endpoint));
+                }
+            }
         }
         self.ensure_non_zero_weight();
     }
@@ -9193,6 +9263,13 @@ impl ForwardProxyManager {
         latency_ms: Option<f64>,
         is_probe: bool,
     ) {
+        if !self
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.key == proxy_key)
+        {
+            return;
+        }
         let Some(runtime) = self.runtime.get_mut(proxy_key) else {
             return;
         };
@@ -11934,6 +12011,10 @@ mod tests {
             Url::parse("http://probe-target.example/").expect("valid probe target"),
         )
         .await;
+        let probe_count_before =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        let success_count_before =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
 
         let Json(updated) = put_forward_proxy_settings(
             State(state.clone()),
@@ -11949,11 +12030,16 @@ mod tests {
         .expect("put forward proxy settings should succeed");
         assert!(updated.proxy_urls.contains(&normalized_proxy));
 
-        wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, 1).await;
+        wait_for_forward_proxy_probe_attempts(
+            &state.pool,
+            &normalized_proxy,
+            probe_count_before + 1,
+        )
+        .await;
         let success_count =
             count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
         assert!(
-            success_count >= 1,
+            success_count > success_count_before,
             "expected at least one successful bootstrap probe attempt"
         );
 
@@ -11977,6 +12063,8 @@ mod tests {
             subscription_update_interval_secs: 3600,
             insert_direct: true,
         };
+        let probe_count_before =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
         let _ = put_forward_proxy_settings(
             State(state.clone()),
             HeaderMap::new(),
@@ -11989,7 +12077,12 @@ mod tests {
         )
         .await
         .expect("initial put forward proxy settings should succeed");
-        wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, 1).await;
+        wait_for_forward_proxy_probe_attempts(
+            &state.pool,
+            &normalized_proxy,
+            probe_count_before + 1,
+        )
+        .await;
         let first_count =
             count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
 
@@ -12005,6 +12098,67 @@ mod tests {
             "no newly added endpoint should not trigger extra bootstrap probe"
         );
 
+        proxy_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged() {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
+        let normalized_proxy =
+            normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+        let (subscription_url, subscription_handle) =
+            spawn_test_subscription_source(format!("{proxy_url}\n")).await;
+        let state = test_state_with_openai_base(
+            Url::parse("http://probe-target.example/").expect("valid probe target"),
+        )
+        .await;
+        let probe_count_before =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+
+        let _ = put_forward_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ForwardProxySettingsUpdateRequest {
+                proxy_urls: Vec::new(),
+                subscription_urls: vec![subscription_url.clone()],
+                subscription_update_interval_secs: 3600,
+                insert_direct: true,
+            }),
+        )
+        .await
+        .expect("initial put forward proxy settings should succeed");
+        wait_for_forward_proxy_probe_attempts(
+            &state.pool,
+            &normalized_proxy,
+            probe_count_before + 1,
+        )
+        .await;
+        let first_count =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+
+        let _ = put_forward_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ForwardProxySettingsUpdateRequest {
+                proxy_urls: Vec::new(),
+                subscription_urls: vec![subscription_url],
+                subscription_update_interval_secs: 3600,
+                insert_direct: true,
+            }),
+        )
+        .await
+        .expect("repeated put forward proxy settings should succeed");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let second_count =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        assert_eq!(
+            second_count, first_count,
+            "unchanged subscription endpoints should not trigger extra bootstrap probes"
+        );
+
+        subscription_handle.abort();
         proxy_handle.abort();
     }
 
@@ -12033,17 +12187,70 @@ mod tests {
         sync_forward_proxy_routes(state.as_ref())
             .await
             .expect("sync forward proxy routes before subscription refresh");
+        let probe_count_before =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        let success_count_before =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
 
-        refresh_forward_proxy_subscriptions(state.clone(), true)
+        refresh_forward_proxy_subscriptions(state.clone(), true, None)
             .await
             .expect("refresh subscriptions should succeed");
-
-        wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, 1).await;
+        wait_for_forward_proxy_probe_attempts(
+            &state.pool,
+            &normalized_proxy,
+            probe_count_before + 1,
+        )
+        .await;
         let success_count =
             count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
         assert!(
-            success_count >= 1,
+            success_count > success_count_before,
             "expected at least one successful bootstrap probe attempt from subscription refresh"
+        );
+
+        subscription_handle.abort();
+        proxy_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn refresh_forward_proxy_subscriptions_skips_probe_for_known_subscription_keys() {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
+        let normalized_proxy =
+            normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+        let (subscription_url, subscription_handle) =
+            spawn_test_subscription_source(format!("{proxy_url}\n")).await;
+        let state = test_state_with_openai_base(
+            Url::parse("http://probe-target.example/").expect("valid probe target"),
+        )
+        .await;
+
+        {
+            let mut manager = state.forward_proxy.lock().await;
+            manager.apply_settings(ForwardProxySettings {
+                proxy_urls: Vec::new(),
+                subscription_urls: vec![subscription_url],
+                subscription_update_interval_secs: 3600,
+                insert_direct: true,
+            });
+        }
+        sync_forward_proxy_routes(state.as_ref())
+            .await
+            .expect("sync forward proxy routes before subscription refresh");
+
+        let probe_count_before =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        let known_keys = HashSet::from([normalized_proxy.clone()]);
+        refresh_forward_proxy_subscriptions(state.clone(), true, Some(known_keys))
+            .await
+            .expect("refresh subscriptions should succeed");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let probe_count_after =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        assert_eq!(
+            probe_count_after, probe_count_before,
+            "known subscription keys should suppress startup-style reprobe"
         );
 
         subscription_handle.abort();
@@ -12060,6 +12267,10 @@ mod tests {
             Url::parse("http://probe-target.example/").expect("valid probe target"),
         )
         .await;
+        let probe_count_before =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        let failure_count_before =
+            count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(false)).await;
 
         let _ = put_forward_proxy_settings(
             State(state.clone()),
@@ -12074,11 +12285,16 @@ mod tests {
         .await
         .expect("put forward proxy settings should succeed");
 
-        wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, 1).await;
+        wait_for_forward_proxy_probe_attempts(
+            &state.pool,
+            &normalized_proxy,
+            probe_count_before + 1,
+        )
+        .await;
         let failure_count =
             count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(false)).await;
         assert!(
-            failure_count >= 1,
+            failure_count > failure_count_before,
             "expected at least one failed bootstrap probe attempt"
         );
 
@@ -12428,7 +12644,10 @@ mod tests {
         body_limit: usize,
         request_read_timeout: Duration,
     ) -> Arc<AppState> {
-        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        let db_url =
+            format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
+        let pool = SqlitePool::connect(&db_url)
             .await
             .expect("connect in-memory sqlite");
         ensure_schema(&pool)
@@ -12465,6 +12684,7 @@ mod tests {
                 config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
         })
@@ -14378,6 +14598,7 @@ mod tests {
                 config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
@@ -15018,6 +15239,7 @@ mod tests {
                 config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
@@ -15141,6 +15363,7 @@ mod tests {
                 config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
@@ -15306,6 +15529,7 @@ mod tests {
                 config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
@@ -15370,6 +15594,7 @@ mod tests {
                 config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
@@ -16984,6 +17209,7 @@ mod tests {
                 config.xray_runtime_dir.clone(),
             ))),
             forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
         });
