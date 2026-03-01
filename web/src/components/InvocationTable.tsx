@@ -442,8 +442,12 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </td>
                       <td className="hidden min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:table-cell xl:px-3">
                         <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
-                          <span className="truncate whitespace-nowrap text-base-content/70" title={row.endpointValue}>{row.endpointValue}</span>
-                          <span className="truncate whitespace-nowrap" title={row.errorMessage || undefined}>{row.errorMessage || FALLBACK_CELL}</span>
+                          <span className="block truncate whitespace-nowrap text-base-content/70" title={row.endpointValue}>
+                            {row.endpointValue}
+                          </span>
+                          <span className="block truncate whitespace-nowrap" title={row.errorMessage || undefined}>
+                            {row.errorMessage || FALLBACK_CELL}
+                          </span>
                         </div>
                       </td>
                       <td className="border-t border-base-300/65 px-2 py-2.5 align-middle text-right xl:px-3">

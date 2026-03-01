@@ -163,6 +163,19 @@ async function mockInvocations(page: Page) {
       return
     }
 
+    if (pathname === '/api/stats/forward-proxy') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          rangeStart: '2026-03-02T00:00:00Z',
+          rangeEnd: '2026-03-02T12:00:00Z',
+          items: [],
+        }),
+      })
+      return
+    }
+
     if (pathname === '/api/version') {
       await route.fulfill({
         status: 200,
@@ -245,8 +258,7 @@ test.describe('InvocationTable layout regression', () => {
             type: 'invocation-table-layout',
             description: JSON.stringify({ target: target.label, viewport, metrics }),
           })
-          const maxOverflow = viewport.width >= 1024 ? 1 : 2
-          expect(metrics.overflowDelta).toBeLessThanOrEqual(maxOverflow)
+          expect(metrics.overflowDelta).toBeLessThanOrEqual(1)
           expect(metrics.firstToggleHiddenRightPx).toBeLessThanOrEqual(0)
         }
       })
