@@ -74,6 +74,10 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   const { t, locale } = useTranslation()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [isXlUp, setIsXlUp] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.matchMedia('(min-width: 1280px)').matches
+  })
 
   const toggleLabels = useMemo(() => {
     if (locale === 'zh') {
@@ -100,6 +104,27 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
       return records.some((record) => record.id === current) ? current : null
     })
   }, [records])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const mediaQuery = window.matchMedia('(min-width: 1280px)')
+    const sync = () => {
+      setIsXlUp(mediaQuery.matches)
+    }
+
+    sync()
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', sync)
+      return () => {
+        mediaQuery.removeEventListener('change', sync)
+      }
+    }
+
+    mediaQuery.addListener(sync)
+    return () => {
+      mediaQuery.removeListener(sync)
+    }
+  }, [])
 
   const dateFormatter = useMemo(
     () =>
@@ -341,8 +366,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           <table className="w-full table-fixed border-separate border-spacing-0 text-sm">
             <thead className="bg-base-200/65 text-[11px] uppercase tracking-[0.08em] text-base-content/70">
               <tr>
-                <th className="w-[10%] px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:px-3">{t('table.column.time')}</th>
-                <th className="w-[15%] px-2 py-2.5 text-center font-semibold whitespace-nowrap xl:px-3">
+                <th className="w-[12%] px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:w-[10%] xl:px-3">{t('table.column.time')}</th>
+                <th className="w-[18%] px-2 py-2.5 text-center font-semibold whitespace-nowrap xl:w-[15%] xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.proxy')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -350,7 +375,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="w-[16%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3">
+                <th className="w-[19%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[16%] xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.model')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -358,7 +383,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="w-[15%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3">
+                <th className="w-[18%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[15%] xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.inputTokens')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -366,8 +391,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="w-[9%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3">{t('table.column.outputTokens')}</th>
-                <th className="w-[10%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:px-3">{t('table.column.totalTokens')}</th>
+                <th className="w-[10%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[9%] xl:px-3">{t('table.column.outputTokens')}</th>
+                <th className="w-[13%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[10%] xl:px-3">{t('table.column.totalTokens')}</th>
                 <th className="hidden w-[18%] px-2 py-2.5 text-left font-semibold xl:table-cell xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.error')}</span>
@@ -376,7 +401,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="w-[7%] px-2 py-2.5 text-right xl:px-3">
+                <th className="w-[10%] px-2 py-2.5 text-right xl:w-[7%] xl:px-3">
                   <span className="sr-only">{toggleLabels.header}</span>
                 </th>
               </tr>
@@ -470,7 +495,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </tr>
                     {isExpanded && (
                       <tr className="bg-base-200/68">
-                        <td colSpan={8} className="border-t border-base-300/65 px-2 py-2.5 xl:px-3">
+                        <td colSpan={isXlUp ? 8 : 7} className="border-t border-base-300/65 px-2 py-2.5 xl:px-3">
                           {renderExpandedContent(tableDetailId, row.detailPairs, row.timingPairs, row.errorMessage, 'default')}
                         </td>
                       </tr>

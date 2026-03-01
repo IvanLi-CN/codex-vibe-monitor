@@ -63,6 +63,7 @@ interface TableMetrics {
   scrollWidth: number
   overflowDelta: number
   firstToggleHiddenRightPx: number
+  firstRowTrailingGapPx: number
 }
 
 async function mockInvocations(page: Page) {
@@ -197,9 +198,13 @@ async function readTableMetrics(page: Page): Promise<TableMetrics> {
 
   return tableScroll.evaluate((node) => {
     const container = node as HTMLElement
-    const firstToggle = container.querySelector('tbody tr button') as HTMLElement | null
+    const firstDataRow = container.querySelector('tbody tr')
+    const firstToggle = firstDataRow?.querySelector('button') as HTMLElement | null
+    const firstDataCells = firstDataRow ? Array.from(firstDataRow.querySelectorAll('td')) : []
+    const lastDataCell = firstDataCells.length > 0 ? (firstDataCells[firstDataCells.length - 1] as HTMLElement) : null
     const containerRect = container.getBoundingClientRect()
     const toggleRect = firstToggle?.getBoundingClientRect()
+    const lastDataCellRect = lastDataCell?.getBoundingClientRect()
 
     return {
       clientWidth: container.clientWidth,
@@ -207,6 +212,9 @@ async function readTableMetrics(page: Page): Promise<TableMetrics> {
       overflowDelta: container.scrollWidth - container.clientWidth,
       firstToggleHiddenRightPx: toggleRect
         ? Math.max(0, toggleRect.right - containerRect.right)
+        : Number.POSITIVE_INFINITY,
+      firstRowTrailingGapPx: lastDataCellRect
+        ? Math.max(0, containerRect.right - lastDataCellRect.right)
         : Number.POSITIVE_INFINITY,
     }
   })
@@ -249,17 +257,27 @@ test.describe('InvocationTable layout regression', () => {
           expect(viewportOverflow).toBeLessThanOrEqual(1)
         } else {
           await expect(page.getByTestId('invocation-list')).toBeHidden()
-          const metrics = await readTableMetrics(page)
+          const metricsBeforeExpand = await readTableMetrics(page)
           const firstToggle = page.getByTestId('invocation-table-scroll').locator('tbody tr button').first()
           await firstToggle.click()
           await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
+          const metricsAfterExpand = await readTableMetrics(page)
 
           test.info().annotations.push({
             type: 'invocation-table-layout',
-            description: JSON.stringify({ target: target.label, viewport, metrics }),
+            description: JSON.stringify({
+              target: target.label,
+              viewport,
+              metricsBeforeExpand,
+              metricsAfterExpand,
+            }),
           })
-          expect(metrics.overflowDelta).toBeLessThanOrEqual(1)
-          expect(metrics.firstToggleHiddenRightPx).toBeLessThanOrEqual(0)
+          expect(metricsBeforeExpand.overflowDelta).toBeLessThanOrEqual(1)
+          expect(metricsAfterExpand.overflowDelta).toBeLessThanOrEqual(1)
+          expect(metricsBeforeExpand.firstToggleHiddenRightPx).toBeLessThanOrEqual(0)
+          expect(metricsAfterExpand.firstToggleHiddenRightPx).toBeLessThanOrEqual(0)
+          expect(metricsBeforeExpand.firstRowTrailingGapPx).toBeLessThanOrEqual(1)
+          expect(metricsAfterExpand.firstRowTrailingGapPx).toBeLessThanOrEqual(1)
         }
       })
     }
