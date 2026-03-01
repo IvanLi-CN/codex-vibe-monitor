@@ -30,7 +30,8 @@ RUN mkdir -p src \
 # Copy app sources and build the real binary.
 COPY src ./src
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
-RUN cargo build --release --locked
+RUN rm -f target/release/codex-vibe-monitor \
+    && cargo build --release --locked
 
 # Stage 3: fetch Xray-core (xray) for forward-proxy subscription validation
 # The app defaults to `XY_XRAY_BINARY=xray` (PATH lookup). If the runtime image doesn't bundle
