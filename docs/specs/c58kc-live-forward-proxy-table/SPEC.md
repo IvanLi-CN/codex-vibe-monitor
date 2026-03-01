@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-01
 - Last: 2026-03-01
 
@@ -143,7 +143,7 @@
 - [x] M2: 补齐后端测试，覆盖聚合、补零与空节点语义。
 - [x] M3: 前端新增 API + hook + `ForwardProxyLiveTable` 并接入 `Live` 页面。
 - [x] M4: 完成 i18n 文案与移动端可读性处理。
-- [ ] M5: 完成本地验证与 fast-track 交付收敛（PR + checks + review-loop）。
+- [x] M5: 完成本地验证与 fast-track 交付收敛（PR + checks + review-loop）。
 
 ## 方案概述（Approach, high-level）
 
@@ -161,6 +161,7 @@
 
 - 2026-03-01: 新建规格，冻结字段口径与验收标准。
 - 2026-03-01: 完成后端接口、前端页面接线与本地验证，状态更新为 `部分完成（4/5）`。
+- 2026-03-01: 完成 review-loop 修复与 fast-track 收敛（labels/checks 全绿），状态更新为 `已完成（5/5）`。
 
 ## 参考（References）
 

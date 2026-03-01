@@ -8,7 +8,7 @@
 
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------- |
-| c58kc | 实况页新增“代理”统计表与 24h 成败示意图                                   | 部分完成（4/5） | `c58kc-live-forward-proxy-table/SPEC.md`                 | 2026-03-01 | fast-track           |
+| c58kc | 实况页新增“代理”统计表与 24h 成败示意图                                   | 已完成（5/5）   | `c58kc-live-forward-proxy-table/SPEC.md`                 | 2026-03-01 | fast-track / PR #77  |
 | k52tw | Forward proxy 验证放宽：404 视为可达（proxyUrl + subscriptionUrl）        | 已完成（3/3）   | `k52tw-forward-proxy-validation-allow-404/SPEC.md`       | 2026-03-01 | fast-track / hotfix  |
 | zanzr | Release 构建加速：arm64 迁移到 GitHub-hosted ARM runner                   | 部分完成（3/4） | `zanzr-release-arm64-native-runner/SPEC.md`              | 2026-03-01 | fast-track           |
 | wtwsn | GHCR 发布切换多架构 manifest（amd64 + arm64）                             | 已完成（5/5）   | `wtwsn-ghcr-multiarch-release-manifest/SPEC.md`          | 2026-03-01 | fast-track / hotfix  |
