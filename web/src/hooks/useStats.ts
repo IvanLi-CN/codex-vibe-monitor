@@ -14,6 +14,12 @@ export const CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS = 3_000
 
 interface LoadOptions {
   silent?: boolean
+  force?: boolean
+}
+
+interface PendingLoad {
+  silent: boolean
+  waiters: Array<() => void>
 }
 
 export interface UnsupportedRefreshGate {
@@ -68,13 +74,19 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const unsupportedRefreshRef = useRef<UnsupportedRefreshGate>(createUnsupportedRefreshGate())
+  const summaryContextRef = useRef<{ window: string; limit?: number }>({
+    window,
+    limit: options?.limit,
+  })
   const hasHydratedRef = useRef(false)
-  const inFlightRef = useRef(false)
-  const pendingLoadRef = useRef<LoadOptions | null>(null)
+  const activeLoadCountRef = useRef(0)
+  const pendingLoadRef = useRef<PendingLoad | null>(null)
   const requestSeqRef = useRef(0)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastCurrentRecordsRefreshAtRef = useRef(0)
   const lastOpenResyncAtRef = useRef(0)
+  summaryContextRef.current.window = window
+  summaryContextRef.current.limit = options?.limit
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return
@@ -83,7 +95,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   }, [])
 
   const runLoad = useCallback(async ({ silent = false }: LoadOptions = {}) => {
-    inFlightRef.current = true
+    activeLoadCountRef.current += 1
     const requestSeq = requestSeqRef.current + 1
     requestSeqRef.current = requestSeq
     const shouldShowLoading = !(silent && hasHydratedRef.current)
@@ -91,7 +103,9 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       setIsLoading(true)
     }
     try {
-      const response = await fetchSummary(window, { limit: options?.limit })
+      const response = await fetchSummary(summaryContextRef.current.window, {
+        limit: summaryContextRef.current.limit,
+      })
       if (requestSeq !== requestSeqRef.current) return
       setStats(response)
       hasHydratedRef.current = true
@@ -103,24 +117,32 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       if (requestSeq === requestSeqRef.current && shouldShowLoading) {
         setIsLoading(false)
       }
-      inFlightRef.current = false
-      const pendingLoad = pendingLoadRef.current
-      if (pendingLoad) {
-        pendingLoadRef.current = null
-        void runLoad(pendingLoad)
-      }
+      activeLoadCountRef.current = Math.max(0, activeLoadCountRef.current - 1)
     }
-  }, [options?.limit, window])
+  }, [])
 
   const load = useCallback(async (loadOptions: LoadOptions = {}) => {
     const silent = loadOptions.silent ?? false
-    if (inFlightRef.current) {
-      pendingLoadRef.current = {
-        silent: mergePendingSummarySilentOption(pendingLoadRef.current?.silent ?? null, silent),
-      }
-      return
+    const force = loadOptions.force ?? false
+    if (!force && activeLoadCountRef.current > 0) {
+      return new Promise<void>((resolve) => {
+        if (pendingLoadRef.current) {
+          pendingLoadRef.current.silent = mergePendingSummarySilentOption(pendingLoadRef.current.silent, silent)
+          pendingLoadRef.current.waiters.push(resolve)
+          return
+        }
+        pendingLoadRef.current = { silent, waiters: [resolve] }
+      })
     }
+
     await runLoad({ silent })
+
+    while (activeLoadCountRef.current === 0 && pendingLoadRef.current) {
+      const pending = pendingLoadRef.current
+      pendingLoadRef.current = null
+      await runLoad({ silent: pending.silent })
+      pending.waiters.forEach((resolve) => resolve())
+    }
   }, [runLoad])
 
   const triggerCurrentWindowRefresh = useCallback(() => {
@@ -153,18 +175,17 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       return
     }
     lastOpenResyncAtRef.current = now
-    void load({ silent: true })
+    void load({ silent: true, force: true })
   }, [load, window])
 
   useEffect(() => {
     // Invalidate prior async loads when summary query context changes.
     requestSeqRef.current += 1
     hasHydratedRef.current = false
-    pendingLoadRef.current = null
     lastCurrentRecordsRefreshAtRef.current = 0
     lastOpenResyncAtRef.current = 0
     clearPendingRefreshTimer()
-    void load()
+    void load({ force: true })
   }, [clearPendingRefreshTimer, load, options?.limit, window])
 
   useEffect(
