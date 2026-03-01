@@ -1470,6 +1470,16 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_forward_proxy_attempts_proxy_time")?;
 
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_forward_proxy_attempts_time_proxy
+        ON forward_proxy_attempts (occurred_at, proxy_key)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_forward_proxy_attempts_time_proxy")?;
+
     let default_proxy_urls_json =
         serde_json::to_string(&Vec::<String>::new()).context("serialize default proxy urls")?;
     let default_subscription_urls_json = serde_json::to_string(&Vec::<String>::new())
@@ -1803,8 +1813,8 @@ async fn query_forward_proxy_hourly_stats(
             SUM(CASE WHEN is_success != 0 THEN 1 ELSE 0 END) AS success_count,
             SUM(CASE WHEN is_success = 0 THEN 1 ELSE 0 END) AS failure_count
         FROM forward_proxy_attempts
-        WHERE CAST(strftime('%s', occurred_at) AS INTEGER) >= ?1
-          AND CAST(strftime('%s', occurred_at) AS INTEGER) < ?2
+        WHERE occurred_at >= datetime(?1, 'unixepoch')
+          AND occurred_at < datetime(?2, 'unixepoch')
         GROUP BY proxy_key, bucket_start_epoch
         "#,
     )

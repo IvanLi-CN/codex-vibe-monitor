@@ -16,6 +16,7 @@ export function useForwardProxyLiveStats() {
   const hasHydratedRef = useRef(false)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRefreshAtRef = useRef(0)
+  const requestSeqRef = useRef(0)
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return
@@ -24,17 +25,21 @@ export function useForwardProxyLiveStats() {
   }, [])
 
   const load = useCallback(async ({ silent = false }: LoadOptions = {}) => {
+    const requestSeq = requestSeqRef.current + 1
+    requestSeqRef.current = requestSeq
     const shouldShowLoading = !(silent && hasHydratedRef.current)
     if (shouldShowLoading) setIsLoading(true)
     try {
       const response = await fetchForwardProxyLiveStats()
+      if (requestSeq !== requestSeqRef.current) return
       setStats(response)
       hasHydratedRef.current = true
       setError(null)
     } catch (err) {
+      if (requestSeq !== requestSeqRef.current) return
       setError(err instanceof Error ? err.message : String(err))
     } finally {
-      if (shouldShowLoading) setIsLoading(false)
+      if (requestSeq === requestSeqRef.current && shouldShowLoading) setIsLoading(false)
     }
   }, [])
 
