@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-01
-- Last: 2026-03-01
+- Last: 2026-03-02
 
 ## 背景 / 问题陈述
 
@@ -51,6 +51,7 @@
 - 行维度覆盖运行时节点（含 direct），按 `displayName` 排序。
 - 5 个窗口统计口径与设置页一致（attempts/successRate/avgLatencyMs）。
 - `Live` 页数据刷新策略为：首屏拉取 + SSE `records` 触发节流刷新 + 60s 兜底刷新。
+- SSE 连接 `open`（含重连恢复）后需静默回源一次，补齐重连窗口内可能漏过的变更。
 - 空数据和错误态需稳定可见，不影响 `Live` 现有其它区块。
 
 ### SHOULD
@@ -68,6 +69,7 @@
 
 - 打开 `Live` 页面时，代理表格自动加载并展示每个节点 5 个窗口统计 + 24h 成败示意图。
 - 收到 SSE `records` 事件时，代理表执行节流刷新（最短 5 秒一次）。
+- SSE 连接 `open`（首次连接/重连恢复）时，代理表静默回源同步一次。
 - 若 SSE 长时间无事件，60 秒轮询兜底刷新一次。
 
 ### Edge cases / errors
@@ -95,6 +97,7 @@
 - Given 某小时没有该代理尝试记录，When 查询 24h 数据，Then 对应桶返回 `successCount=0` 且 `failureCount=0`。
 - Given 接口异常，When 页面渲染，Then 代理区块显示错误提示且 `Live` 其它区块可正常使用。
 - Given 事件持续到达，When SSE `records` 触发刷新，Then 代理区块刷新频率不超过每 5 秒 1 次。
+- Given SSE 发生断线并恢复，When 连接触发 `open`，Then 代理区块会静默回源同步一次，补齐可能漏过的更新。
 
 ## 实现前置条件（Definition of Ready / Preconditions）
 
@@ -137,6 +140,11 @@
 
 - None
 
+## 验收截图（Screenshots）
+
+- Live 页面代理区块（新版列名 + 24h 请求量示意）：
+  ![Live proxy table screenshot](assets/live-proxy-current-ui-20260302.png)
+
 ## 实现里程碑（Milestones / Delivery checklist）
 
 - [x] M1: 新增后端 `/api/stats/forward-proxy`，返回节点窗口统计与 24h 小时桶。
@@ -162,6 +170,8 @@
 - 2026-03-01: 新建规格，冻结字段口径与验收标准。
 - 2026-03-01: 完成后端接口、前端页面接线与本地验证，状态更新为 `部分完成（4/5）`。
 - 2026-03-01: 完成 review-loop 修复与 fast-track 收敛（labels/checks 全绿），状态更新为 `已完成（5/5）`。
+- 2026-03-02: 根据反馈补齐代理表 SSE `open` 静默回源同步，并更新列名文案为“请求量（成功/失败）/成功/失败”以避免歧义。
+- 2026-03-02: 增加 Live 页面验收截图资产，供 PR 与规格联动核对。
 
 ## 参考（References）
 

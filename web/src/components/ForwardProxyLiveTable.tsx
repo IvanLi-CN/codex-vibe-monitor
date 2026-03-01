@@ -66,6 +66,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
         node,
         windows: [node.stats.oneMinute, node.stats.fifteenMinutes, node.stats.oneHour, node.stats.oneDay, node.stats.sevenDays],
         total24h: sumLast24h(node),
+        maxBucketTotal24h: Math.max(...node.last24h.map((bucket) => bucket.successCount + bucket.failureCount), 0),
       })),
     [stats?.nodes],
   )
@@ -96,16 +97,16 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
         <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
           <tr>
             <th className="w-[22%] px-3 py-3 text-left font-semibold">{t('live.proxy.table.proxy')}</th>
-            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('settings.forwardProxy.table.oneMinute')}</th>
-            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('settings.forwardProxy.table.fifteenMinutes')}</th>
-            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('settings.forwardProxy.table.oneHour')}</th>
-            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('settings.forwardProxy.table.oneDay')}</th>
-            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('settings.forwardProxy.table.sevenDays')}</th>
+            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneMinute')}</th>
+            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.fifteenMinutes')}</th>
+            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneHour')}</th>
+            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneDay')}</th>
+            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.sevenDays')}</th>
             <th className="w-[42%] px-3 py-3 text-left font-semibold">{t('live.proxy.table.trend24h')}</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-base-300/65">
-          {rowData.map(({ node, windows, total24h }) => (
+          {rowData.map(({ node, windows, total24h, maxBucketTotal24h }) => (
             <tr key={node.key} className={cn('transition-colors hover:bg-primary/6', node.penalized && 'bg-warning/8')}>
               <td className="max-w-0 px-3 py-3 align-middle">
                 <div className="min-w-0">
@@ -129,8 +130,9 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                   <div className="flex h-11 items-end gap-[2px]">
                     {node.last24h.map((bucket, index) => {
                       const total = bucket.successCount + bucket.failureCount
-                      const successRatio = total > 0 ? bucket.successCount / total : 0
-                      const failureRatio = total > 0 ? bucket.failureCount / total : 0
+                      const successHeight = maxBucketTotal24h > 0 ? (bucket.successCount / maxBucketTotal24h) * 100 : 0
+                      const failureHeight = maxBucketTotal24h > 0 ? (bucket.failureCount / maxBucketTotal24h) * 100 : 0
+                      const emptyHeight = Math.max(0, 100 - Math.round(successHeight + failureHeight))
                       return (
                         <div
                           key={`${node.key}-${index}`}
@@ -143,12 +145,16 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                           )}
                         >
                           <div
+                            className="bg-transparent"
+                            style={{ height: `${emptyHeight}%` }}
+                          />
+                          <div
                             className={cn(total > 0 ? 'bg-error/85' : 'bg-transparent')}
-                            style={{ height: `${Math.round(failureRatio * 100)}%` }}
+                            style={{ height: `${Math.round(failureHeight)}%` }}
                           />
                           <div
                             className={cn(total > 0 ? 'bg-success/85' : 'bg-transparent')}
-                            style={{ height: `${Math.round(successRatio * 100)}%` }}
+                            style={{ height: `${Math.round(successHeight)}%` }}
                           />
                         </div>
                       )
