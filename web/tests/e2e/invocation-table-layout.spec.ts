@@ -1,6 +1,9 @@
 import { expect, test, type Page } from '@playwright/test'
 
 const VIEWPORTS = [
+  { width: 375, height: 900 },
+  { width: 768, height: 900 },
+  { width: 1024, height: 900 },
   { width: 1280, height: 900 },
   { width: 1440, height: 900 },
   { width: 1873, height: 900 },
@@ -19,6 +22,7 @@ const INVOCATION_FIXTURE = {
       occurredAt: '2026-02-26T02:35:52Z',
       createdAt: '2026-02-26T02:35:52Z',
       source: 'proxy',
+      proxyDisplayName: 'sg-relay-edge-01',
       endpoint: '/v1/responses',
       model: 'gpt-5.3-codex',
       status: 'success',
@@ -36,9 +40,10 @@ const INVOCATION_FIXTURE = {
       occurredAt: '2026-02-26T02:34:52Z',
       createdAt: '2026-02-26T02:34:52Z',
       source: 'proxy',
-      endpoint: '/v1/responses',
+      proxyDisplayName: 'tokyo-super-long-relay-name-for-overflow-regression-verify',
+      endpoint: '/v1/responses/' + 'very-long-segment-'.repeat(12),
       model: 'gpt-5.3-codex',
-      status: 'success',
+      status: 'failed',
       inputTokens: 95250,
       outputTokens: 69,
       cacheInputTokens: 99072,
@@ -46,6 +51,9 @@ const INVOCATION_FIXTURE = {
       cost: 0.0186,
       tUpstreamTtfbMs: 102.2,
       tTotalMs: 7348.7,
+      errorMessage:
+        '[downstream_closed] ' +
+        'x'.repeat(260),
     },
   ],
 }
@@ -58,12 +66,113 @@ interface TableMetrics {
 }
 
 async function mockInvocations(page: Page) {
-  await page.route('**/api/invocations?**', async (route) => {
+  await page.route('**/events', async (route) => {
     await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(INVOCATION_FIXTURE),
+      status: 204,
+      headers: {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+      },
+      body: '',
     })
+  })
+
+  await page.route('**/api/**', async (route) => {
+    const requestUrl = new URL(route.request().url())
+    const pathname = requestUrl.pathname
+
+    if (pathname === '/api/invocations') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(INVOCATION_FIXTURE),
+      })
+      return
+    }
+
+    if (pathname === '/api/stats' || pathname === '/api/stats/summary') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          totalCount: INVOCATION_FIXTURE.records.length,
+          successCount: 1,
+          failureCount: 1,
+          totalCost: 0.0467,
+          totalTokens: 212768,
+        }),
+      })
+      return
+    }
+
+    if (pathname === '/api/stats/timeseries') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          rangeStart: '2026-03-02T00:00:00Z',
+          rangeEnd: '2026-03-02T12:00:00Z',
+          bucketSeconds: 600,
+          points: [],
+        }),
+      })
+      return
+    }
+
+    if (pathname === '/api/stats/errors') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          rangeStart: '2026-03-02T00:00:00Z',
+          rangeEnd: '2026-03-02T12:00:00Z',
+          items: [],
+        }),
+      })
+      return
+    }
+
+    if (pathname === '/api/stats/failures/summary') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          rangeStart: '2026-03-02T00:00:00Z',
+          rangeEnd: '2026-03-02T12:00:00Z',
+          totalFailures: 1,
+          serviceFailureCount: 1,
+          clientFailureCount: 0,
+          clientAbortCount: 0,
+          actionableFailureCount: 1,
+          actionableFailureRate: 1,
+        }),
+      })
+      return
+    }
+
+    if (pathname === '/api/stats/perf') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          rangeStart: '2026-03-02T00:00:00Z',
+          rangeEnd: '2026-03-02T12:00:00Z',
+          items: [],
+        }),
+      })
+      return
+    }
+
+    if (pathname === '/api/version') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ backend: '0.2.0', frontend: '0.2.0' }),
+      })
+      return
+    }
+
+    throw new Error(`Unexpected API request in invocation-table-layout spec: ${pathname}`)
   })
 }
 
@@ -90,10 +199,17 @@ async function readTableMetrics(page: Page): Promise<TableMetrics> {
   })
 }
 
+async function readViewportOverflow(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const root = document.documentElement
+    return root.scrollWidth - root.clientWidth
+  })
+}
+
 test.describe('InvocationTable layout regression', () => {
   for (const viewport of VIEWPORTS) {
     for (const target of TARGET_PAGES) {
-      test(`keeps expand toggle visible without artificial horizontal overflow at ${target.label} ${viewport.width}px`, async ({
+      test(`keeps responsive layout stable at ${target.label} ${viewport.width}px`, async ({
         page,
       }) => {
         await page.setViewportSize(viewport)
@@ -101,14 +217,38 @@ test.describe('InvocationTable layout regression', () => {
         await page.goto(target.path)
         await expect(page).toHaveURL(new RegExp(`${target.hashPath}$`))
 
-        const metrics = await readTableMetrics(page)
-        test.info().annotations.push({
-          type: 'invocation-table-layout',
-          description: JSON.stringify({ target: target.label, viewport, metrics }),
-        })
+        if (viewport.width < 768) {
+          const mobileList = page.getByTestId('invocation-list')
+          await expect(mobileList).toBeVisible()
+          await expect(page.getByTestId('invocation-list-item')).toHaveCount(INVOCATION_FIXTURE.records.length)
+          await expect(page.getByTestId('invocation-table-scroll')).toBeHidden()
 
-        expect(metrics.overflowDelta).toBeLessThanOrEqual(2)
-        expect(metrics.firstToggleHiddenRightPx).toBeLessThanOrEqual(0)
+          const listToggle = mobileList.locator('button[aria-expanded]').first()
+          await expect(listToggle).toBeVisible()
+          await listToggle.click()
+          await expect(listToggle).toHaveAttribute('aria-expanded', 'true')
+
+          const viewportOverflow = await readViewportOverflow(page)
+          test.info().annotations.push({
+            type: 'invocation-mobile-layout',
+            description: JSON.stringify({ target: target.label, viewport, viewportOverflow }),
+          })
+          expect(viewportOverflow).toBeLessThanOrEqual(1)
+        } else {
+          await expect(page.getByTestId('invocation-list')).toBeHidden()
+          const metrics = await readTableMetrics(page)
+          const firstToggle = page.getByTestId('invocation-table-scroll').locator('tbody tr button').first()
+          await firstToggle.click()
+          await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
+
+          test.info().annotations.push({
+            type: 'invocation-table-layout',
+            description: JSON.stringify({ target: target.label, viewport, metrics }),
+          })
+          const maxOverflow = viewport.width >= 1024 ? 1 : 2
+          expect(metrics.overflowDelta).toBeLessThanOrEqual(maxOverflow)
+          expect(metrics.firstToggleHiddenRightPx).toBeLessThanOrEqual(0)
+        }
       })
     }
   }
