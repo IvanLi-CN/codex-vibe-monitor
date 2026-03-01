@@ -9098,6 +9098,12 @@ impl XraySupervisor {
     ) -> Result<Url> {
         let outbound = build_xray_outbound_for_endpoint(endpoint)?;
         let local_port = pick_unused_local_port().context("failed to allocate xray local port")?;
+        fs::create_dir_all(&self.runtime_dir).with_context(|| {
+            format!(
+                "failed to create xray runtime directory: {}",
+                self.runtime_dir.display()
+            )
+        })?;
         let config_path = self.runtime_dir.join(format!(
             "forward-proxy-{:016x}.json",
             stable_hash_u64(&endpoint.key)
@@ -9108,7 +9114,7 @@ impl XraySupervisor {
         fs::write(&config_path, serialized)
             .with_context(|| format!("failed to write xray config: {}", config_path.display()))?;
 
-        let mut child = Command::new(&self.binary)
+        let mut child = match Command::new(&self.binary)
             .arg("run")
             .arg("-c")
             .arg(&config_path)
@@ -9116,7 +9122,14 @@ impl XraySupervisor {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .with_context(|| format!("failed to start xray binary: {}", self.binary))?;
+        {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = fs::remove_file(&config_path);
+                return Err(err)
+                    .with_context(|| format!("failed to start xray binary: {}", self.binary));
+            }
+        };
 
         if let Err(err) = wait_for_xray_proxy_ready(&mut child, local_port, ready_timeout).await {
             let _ = child.kill().await;
@@ -11367,6 +11380,55 @@ mod tests {
         assert_eq!(timeout_seconds_for_message(Duration::from_millis(1)), 1);
         assert_eq!(timeout_seconds_for_message(Duration::from_secs(5)), 5);
         assert_eq!(timeout_seconds_for_message(Duration::from_millis(5500)), 6);
+    }
+
+    #[tokio::test]
+    async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path() {
+        let temp_root = make_temp_test_dir("xray-runtime-create");
+        let runtime_dir = temp_root.join("nested/runtime");
+        let mut supervisor = XraySupervisor::new(
+            "/path/to/non-existent-xray".to_string(),
+            runtime_dir.clone(),
+        );
+        let endpoint = ForwardProxyEndpoint {
+            key: "xray-validation-test".to_string(),
+            source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+            display_name: "xray-validation-test".to_string(),
+            protocol: ForwardProxyProtocol::Vless,
+            endpoint_url: None,
+            raw_url: Some(
+                "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:443?encryption=none"
+                    .to_string(),
+            ),
+        };
+        let expected_config_path = runtime_dir.join(format!(
+            "forward-proxy-{:016x}.json",
+            stable_hash_u64(&endpoint.key)
+        ));
+
+        let err = supervisor
+            .ensure_instance_with_ready_timeout(&endpoint, Duration::from_millis(50))
+            .await
+            .expect_err("non-existent xray binary should fail to start");
+        let message = format!("{err:#}");
+        assert!(
+            runtime_dir.is_dir(),
+            "runtime dir should be created before writing xray config"
+        );
+        assert!(
+            message.contains("failed to start xray binary"),
+            "expected startup failure after config write path is available, got: {message}"
+        );
+        assert!(
+            !message.contains("failed to write xray config"),
+            "runtime dir creation regression: {message}"
+        );
+        assert!(
+            !expected_config_path.exists(),
+            "spawn failure should clean temporary xray config file"
+        );
+
+        let _ = fs::remove_dir_all(&temp_root);
     }
 
     #[test]
