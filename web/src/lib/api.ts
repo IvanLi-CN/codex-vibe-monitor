@@ -30,6 +30,7 @@ export interface ApiInvocation {
   invokeId: string
   occurredAt: string
   source?: string
+  proxyDisplayName?: string
   model?: string
   inputTokens?: number
   outputTokens?: number
@@ -273,6 +274,31 @@ export interface ForwardProxySettings {
   nodes: ForwardProxyNode[]
 }
 
+export interface ForwardProxyHourlyBucket {
+  bucketStart: string
+  bucketEnd: string
+  successCount: number
+  failureCount: number
+}
+
+export interface ForwardProxyLiveNode {
+  key: string
+  source: string
+  displayName: string
+  endpointUrl?: string
+  weight: number
+  penalized: boolean
+  stats: ForwardProxyNodeStats
+  last24h: ForwardProxyHourlyBucket[]
+}
+
+export interface ForwardProxyLiveStatsResponse {
+  rangeStart: string
+  rangeEnd: string
+  bucketSeconds: number
+  nodes: ForwardProxyLiveNode[]
+}
+
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
 
 export interface ForwardProxyValidationResult {
@@ -419,6 +445,54 @@ function normalizeForwardProxySettings(raw: unknown): ForwardProxySettings {
   }
 }
 
+function normalizeForwardProxyHourlyBucket(raw: unknown): ForwardProxyHourlyBucket | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const bucketStart = typeof payload.bucketStart === 'string' ? payload.bucketStart : ''
+  const bucketEnd = typeof payload.bucketEnd === 'string' ? payload.bucketEnd : ''
+  if (!bucketStart || !bucketEnd) return null
+  return {
+    bucketStart,
+    bucketEnd,
+    successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
+    failureCount: normalizeFiniteNumber(payload.failureCount) ?? 0,
+  }
+}
+
+function normalizeForwardProxyLiveNode(raw: unknown): ForwardProxyLiveNode | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const base = normalizeForwardProxyNode(raw)
+  if (!base) return null
+  const bucketsRaw = Array.isArray(payload.last24h) ? payload.last24h : []
+  const last24h = bucketsRaw
+    .map(normalizeForwardProxyHourlyBucket)
+    .filter((item): item is ForwardProxyHourlyBucket => item != null)
+  return {
+    key: base.key,
+    source: base.source,
+    displayName: base.displayName,
+    endpointUrl: base.endpointUrl,
+    weight: base.weight,
+    penalized: base.penalized,
+    stats: base.stats,
+    last24h,
+  }
+}
+
+function normalizeForwardProxyLiveStatsResponse(raw: unknown): ForwardProxyLiveStatsResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const nodesRaw = Array.isArray(payload.nodes) ? payload.nodes : []
+  const nodes = nodesRaw
+    .map(normalizeForwardProxyLiveNode)
+    .filter((node): node is ForwardProxyLiveNode => node != null)
+    .sort((a, b) => a.displayName.localeCompare(b.displayName))
+  return {
+    rangeStart: typeof payload.rangeStart === 'string' ? payload.rangeStart : '',
+    rangeEnd: typeof payload.rangeEnd === 'string' ? payload.rangeEnd : '',
+    bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 3600,
+    nodes,
+  }
+}
+
 function normalizeForwardProxyValidationResult(raw: unknown): ForwardProxyValidationResult {
   const payload = (raw ?? {}) as Record<string, unknown>
   return {
@@ -515,6 +589,11 @@ export async function fetchSummary(window: string, options?: { limit?: number; t
     search.set('limit', String(options.limit))
   }
   return fetchJson<StatsResponse>(`/api/stats/summary?${search.toString()}`)
+}
+
+export async function fetchForwardProxyLiveStats() {
+  const response = await fetchJson<unknown>('/api/stats/forward-proxy')
+  return normalizeForwardProxyLiveStatsResponse(response)
 }
 
 export async function fetchTimeseries(range: string, params?: { bucket?: string; settlementHour?: number; timeZone?: string }) {

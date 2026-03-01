@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState } from 'react'
+import { ForwardProxyLiveTable } from '../components/ForwardProxyLiveTable'
 import { InvocationChart } from '../components/InvocationChart'
 import { InvocationTable } from '../components/InvocationTable'
 import { StatsCards } from '../components/StatsCards'
+import { useForwardProxyLiveStats } from '../hooks/useForwardProxyLiveStats'
 import { useInvocationStream } from '../hooks/useInvocations'
 import { useSummary } from '../hooks/useStats'
 import { useTranslation } from '../i18n'
@@ -20,6 +22,11 @@ export default function LivePage() {
   const { t } = useTranslation()
   const [limit, setLimit] = useState(50)
   const [summaryWindow, setSummaryWindow] = useState('current')
+  const {
+    stats: forwardProxyStats,
+    isLoading: forwardProxyLoading,
+    error: forwardProxyError,
+  } = useForwardProxyLiveStats()
 
   const summaryWindows = useMemo(
     () => SUMMARY_WINDOWS.map((option) => ({ value: option.value, label: t(option.labelKey) })),
@@ -69,6 +76,20 @@ export default function LivePage() {
             </div>
           </div>
           <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />
+        </div>
+      </section>
+
+      <section className="surface-panel">
+        <div className="surface-panel-body gap-4">
+          <div className="section-heading">
+            <h2 className="section-title">{t('live.proxy.title')}</h2>
+            <p className="section-description">{t('live.proxy.description')}</p>
+          </div>
+          <ForwardProxyLiveTable
+            stats={forwardProxyStats}
+            isLoading={forwardProxyLoading}
+            error={forwardProxyError}
+          />
         </div>
       </section>
 
