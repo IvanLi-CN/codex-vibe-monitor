@@ -515,6 +515,10 @@ async fn spawn_http_server(
         .route("/api/invocations", get(list_invocations))
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
+        .route(
+            "/api/stats/forward-proxy",
+            get(fetch_forward_proxy_live_stats),
+        )
         .route("/api/stats/timeseries", get(fetch_timeseries))
         .route("/api/stats/perf", get(fetch_perf_stats))
         .route("/api/stats/errors", get(fetch_error_distribution))
@@ -1552,6 +1556,14 @@ struct ForwardProxyAttemptStatsRow {
     avg_latency_ms: Option<f64>,
 }
 
+#[derive(Debug, FromRow)]
+struct ForwardProxyHourlyStatsRow {
+    proxy_key: String,
+    bucket_start_epoch: i64,
+    success_count: i64,
+    failure_count: i64,
+}
+
 async fn load_forward_proxy_settings(pool: &Pool<Sqlite>) -> Result<ForwardProxySettings> {
     let row = sqlx::query_as::<_, ForwardProxySettingsRow>(
         r#"
@@ -1778,6 +1790,48 @@ async fn query_forward_proxy_window_stats(
         .collect())
 }
 
+async fn query_forward_proxy_hourly_stats(
+    pool: &Pool<Sqlite>,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+) -> Result<HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>> {
+    let rows = sqlx::query_as::<_, ForwardProxyHourlyStatsRow>(
+        r#"
+        SELECT
+            proxy_key,
+            (CAST(strftime('%s', occurred_at) AS INTEGER) / 3600) * 3600 AS bucket_start_epoch,
+            SUM(CASE WHEN is_success != 0 THEN 1 ELSE 0 END) AS success_count,
+            SUM(CASE WHEN is_success = 0 THEN 1 ELSE 0 END) AS failure_count
+        FROM forward_proxy_attempts
+        WHERE CAST(strftime('%s', occurred_at) AS INTEGER) >= ?1
+          AND CAST(strftime('%s', occurred_at) AS INTEGER) < ?2
+        GROUP BY proxy_key, bucket_start_epoch
+        "#,
+    )
+    .bind(range_start_epoch)
+    .bind(range_end_epoch)
+    .fetch_all(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to query forward proxy hourly stats within [{range_start_epoch}, {range_end_epoch})"
+        )
+    })?;
+
+    let mut grouped: HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>> = HashMap::new();
+    for row in rows {
+        grouped.entry(row.proxy_key).or_default().insert(
+            row.bucket_start_epoch,
+            ForwardProxyHourlyStatsPoint {
+                success_count: row.success_count,
+                failure_count: row.failure_count,
+            },
+        );
+    }
+
+    Ok(grouped)
+}
+
 async fn build_forward_proxy_settings_response(
     state: &AppState,
 ) -> Result<ForwardProxySettingsResponse> {
@@ -1832,6 +1886,114 @@ async fn build_forward_proxy_settings_response(
         subscription_urls: settings.subscription_urls,
         subscription_update_interval_secs: settings.subscription_update_interval_secs,
         insert_direct: settings.insert_direct,
+        nodes,
+    })
+}
+
+async fn build_forward_proxy_live_stats_response(
+    state: &AppState,
+) -> Result<ForwardProxyLiveStatsResponse> {
+    const BUCKET_SECONDS: i64 = 3600;
+    const BUCKET_COUNT: i64 = 24;
+
+    let runtime_rows = {
+        let manager = state.forward_proxy.lock().await;
+        manager.snapshot_runtime()
+    };
+
+    let windows = [
+        ("-1 minute", 0usize),
+        ("-15 minutes", 1usize),
+        ("-1 hour", 2usize),
+        ("-1 day", 3usize),
+        ("-7 days", 4usize),
+    ];
+    let mut window_maps: Vec<HashMap<String, ForwardProxyAttemptWindowStats>> = Vec::new();
+    for (window, _) in &windows {
+        window_maps.push(query_forward_proxy_window_stats(&state.pool, window).await?);
+    }
+
+    let now_epoch = Utc::now().timestamp();
+    let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
+    let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
+    let hourly_map =
+        query_forward_proxy_hourly_stats(&state.pool, range_start_epoch, range_end_epoch).await?;
+
+    let mut nodes = runtime_rows
+        .into_iter()
+        .map(|runtime| {
+            let proxy_key = runtime.proxy_key.clone();
+            let penalized = runtime.is_penalized();
+            let stats_for = |index: usize, key: &str| {
+                window_maps[index]
+                    .get(key)
+                    .cloned()
+                    .map(ForwardProxyWindowStatsResponse::from)
+                    .unwrap_or_default()
+            };
+            let hourly = hourly_map.get(&proxy_key);
+            let one_minute = stats_for(0, &proxy_key);
+            let fifteen_minutes = stats_for(1, &proxy_key);
+            let one_hour = stats_for(2, &proxy_key);
+            let one_day = stats_for(3, &proxy_key);
+            let seven_days = stats_for(4, &proxy_key);
+            let last24h = (0..BUCKET_COUNT)
+                .map(|index| {
+                    let bucket_start_epoch = range_start_epoch + index * BUCKET_SECONDS;
+                    let bucket_end_epoch = bucket_start_epoch + BUCKET_SECONDS;
+                    let point = hourly
+                        .and_then(|items| items.get(&bucket_start_epoch))
+                        .cloned()
+                        .unwrap_or_default();
+                    let bucket_start = Utc
+                        .timestamp_opt(bucket_start_epoch, 0)
+                        .single()
+                        .ok_or_else(|| anyhow!("invalid forward proxy bucket start epoch"))?;
+                    let bucket_end = Utc
+                        .timestamp_opt(bucket_end_epoch, 0)
+                        .single()
+                        .ok_or_else(|| anyhow!("invalid forward proxy bucket end epoch"))?;
+                    Ok(ForwardProxyHourlyBucketResponse {
+                        bucket_start: format_utc_iso(bucket_start),
+                        bucket_end: format_utc_iso(bucket_end),
+                        success_count: point.success_count,
+                        failure_count: point.failure_count,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(ForwardProxyLiveNodeResponse {
+                key: proxy_key,
+                source: runtime.source,
+                display_name: runtime.display_name,
+                endpoint_url: runtime.endpoint_url,
+                weight: runtime.weight,
+                penalized,
+                stats: ForwardProxyStatsResponse {
+                    one_minute,
+                    fifteen_minutes,
+                    one_hour,
+                    one_day,
+                    seven_days,
+                },
+                last24h,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
+
+    let range_start = Utc
+        .timestamp_opt(range_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid forward proxy range start epoch"))?;
+    let range_end = Utc
+        .timestamp_opt(range_end_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid forward proxy range end epoch"))?;
+
+    Ok(ForwardProxyLiveStatsResponse {
+        range_start: format_utc_iso(range_start),
+        range_end: format_utc_iso(range_end),
+        bucket_seconds: BUCKET_SECONDS,
         nodes,
     })
 }
@@ -2625,6 +2787,13 @@ async fn fetch_summary(
     };
 
     Ok(Json(totals.into_response()))
+}
+
+async fn fetch_forward_proxy_live_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ForwardProxyLiveStatsResponse>, ApiError> {
+    let response = build_forward_proxy_live_stats_response(state.as_ref()).await?;
+    Ok(Json(response))
 }
 
 async fn fetch_timeseries(
@@ -9800,6 +9969,43 @@ struct ForwardProxySettingsResponse {
 }
 
 #[derive(Debug, Clone, Default)]
+struct ForwardProxyHourlyStatsPoint {
+    success_count: i64,
+    failure_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyHourlyBucketResponse {
+    bucket_start: String,
+    bucket_end: String,
+    success_count: i64,
+    failure_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyLiveNodeResponse {
+    key: String,
+    source: String,
+    display_name: String,
+    endpoint_url: Option<String>,
+    weight: f64,
+    penalized: bool,
+    stats: ForwardProxyStatsResponse,
+    last24h: Vec<ForwardProxyHourlyBucketResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyLiveStatsResponse {
+    range_start: String,
+    range_end: String,
+    bucket_seconds: i64,
+    nodes: Vec<ForwardProxyLiveNodeResponse>,
+}
+
+#[derive(Debug, Clone, Default)]
 struct ParsedUsage {
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
@@ -12052,6 +12258,40 @@ mod tests {
         .expect("seed quota snapshot");
     }
 
+    async fn seed_forward_proxy_attempt_at(
+        pool: &SqlitePool,
+        proxy_key: &str,
+        occurred_at: DateTime<Utc>,
+        is_success: bool,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO forward_proxy_attempts (
+                proxy_key,
+                occurred_at,
+                is_success,
+                latency_ms,
+                failure_kind,
+                is_probe
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(proxy_key)
+        .bind(occurred_at.format("%Y-%m-%d %H:%M:%S").to_string())
+        .bind(is_success as i64)
+        .bind(if is_success { Some(120.0) } else { None })
+        .bind(if is_success {
+            None::<String>
+        } else {
+            Some(FORWARD_PROXY_FAILURE_STREAM_ERROR.to_string())
+        })
+        .bind(0_i64)
+        .execute(pool)
+        .await
+        .expect("seed forward proxy attempt");
+    }
+
     async fn drain_broadcast_messages(rx: &mut broadcast::Receiver<BroadcastPayload>) {
         loop {
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
@@ -13191,6 +13431,181 @@ mod tests {
         assert!(updated.hijack_enabled);
         assert!(!updated.merge_upstream_enabled);
         assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let Json(settings_response) = put_forward_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ForwardProxySettingsUpdateRequest {
+                proxy_urls: vec!["socks5://127.0.0.1:1080".to_string()],
+                subscription_urls: vec![],
+                subscription_update_interval_secs: 3600,
+                insert_direct: true,
+            }),
+        )
+        .await
+        .expect("put forward proxy settings should succeed");
+
+        let direct_key = settings_response
+            .nodes
+            .iter()
+            .find(|node| node.source == FORWARD_PROXY_SOURCE_DIRECT)
+            .map(|node| node.key.clone())
+            .expect("direct node should exist");
+        let manual_key = settings_response
+            .nodes
+            .iter()
+            .find(|node| node.source == FORWARD_PROXY_SOURCE_MANUAL)
+            .map(|node| node.key.clone())
+            .expect("manual node should exist");
+
+        let now = Utc::now();
+        seed_forward_proxy_attempt_at(
+            &state.pool,
+            &manual_key,
+            now - ChronoDuration::minutes(12),
+            true,
+        )
+        .await;
+        seed_forward_proxy_attempt_at(
+            &state.pool,
+            &manual_key,
+            now - ChronoDuration::hours(1) - ChronoDuration::minutes(8),
+            false,
+        )
+        .await;
+        seed_forward_proxy_attempt_at(
+            &state.pool,
+            &manual_key,
+            now - ChronoDuration::hours(30),
+            true,
+        )
+        .await;
+        seed_forward_proxy_attempt_at(
+            &state.pool,
+            &direct_key,
+            now - ChronoDuration::minutes(40),
+            true,
+        )
+        .await;
+
+        let Json(response) = fetch_forward_proxy_live_stats(State(state.clone()))
+            .await
+            .expect("fetch forward proxy live stats should succeed");
+
+        assert_eq!(response.bucket_seconds, 3600);
+        assert_eq!(response.nodes.len(), 2);
+        assert_eq!(response.range_end, response.nodes[0].last24h[23].bucket_end);
+        assert_eq!(
+            response.range_start,
+            response.nodes[0].last24h[0].bucket_start
+        );
+
+        for node in &response.nodes {
+            assert_eq!(
+                node.last24h.len(),
+                24,
+                "node {} should include fixed 24 buckets",
+                node.key
+            );
+        }
+
+        let manual = response
+            .nodes
+            .iter()
+            .find(|node| node.key == manual_key)
+            .expect("manual node should be present");
+        let manual_success_total: i64 = manual
+            .last24h
+            .iter()
+            .map(|bucket| bucket.success_count)
+            .sum();
+        let manual_failure_total: i64 = manual
+            .last24h
+            .iter()
+            .map(|bucket| bucket.failure_count)
+            .sum();
+        let manual_zero_buckets = manual
+            .last24h
+            .iter()
+            .filter(|bucket| bucket.success_count == 0 && bucket.failure_count == 0)
+            .count();
+        assert_eq!(
+            manual_success_total, 1,
+            "out-of-range attempts should be excluded"
+        );
+        assert_eq!(manual_failure_total, 1);
+        assert!(
+            manual_zero_buckets >= 22,
+            "expected most buckets to be zero-filled, got {manual_zero_buckets}"
+        );
+
+        let direct = response
+            .nodes
+            .iter()
+            .find(|node| node.key == direct_key)
+            .expect("direct node should be present");
+        let direct_success_total: i64 = direct
+            .last24h
+            .iter()
+            .map(|bucket| bucket.success_count)
+            .sum();
+        let direct_failure_total: i64 = direct
+            .last24h
+            .iter()
+            .map(|bucket| bucket.failure_count)
+            .sum();
+        assert_eq!(direct_success_total, 1);
+        assert_eq!(direct_failure_total, 0);
+
+        let display_names = response
+            .nodes
+            .iter()
+            .map(|node| node.display_name.as_str())
+            .collect::<Vec<_>>();
+        let mut sorted_display_names = display_names.clone();
+        sorted_display_names.sort();
+        assert_eq!(
+            display_names, sorted_display_names,
+            "live stats nodes should stay display-name sorted"
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_proxy_live_stats_keeps_direct_node_and_zero_metrics_when_no_attempts() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let Json(response) = fetch_forward_proxy_live_stats(State(state))
+            .await
+            .expect("fetch forward proxy live stats should succeed");
+
+        assert_eq!(response.bucket_seconds, 3600);
+        assert_eq!(
+            response.nodes.len(),
+            1,
+            "default runtime should only include direct node"
+        );
+        let direct = &response.nodes[0];
+        assert_eq!(direct.source, FORWARD_PROXY_SOURCE_DIRECT);
+        assert_eq!(direct.stats.one_minute.attempts, 0);
+        assert_eq!(direct.stats.one_day.attempts, 0);
+        assert_eq!(direct.last24h.len(), 24);
+        assert!(
+            direct
+                .last24h
+                .iter()
+                .all(|bucket| bucket.success_count == 0 && bucket.failure_count == 0)
+        );
     }
 
     #[tokio::test]
@@ -16432,11 +16847,8 @@ mod tests {
             Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         )
         .await;
-        let occurred_at = format_naive(
-            (Utc::now() - ChronoDuration::minutes(15))
-                .with_timezone(&Shanghai)
-                .naive_local(),
-        );
+        // Use "now" to avoid crossing local-day boundaries around midnight.
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
         insert_timeseries_invocation(
             &state.pool,
             "ttfb-daily-1",
