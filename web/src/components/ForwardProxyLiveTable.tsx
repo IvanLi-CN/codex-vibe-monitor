@@ -257,24 +257,40 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-base-300/75 bg-base-100/55">
-      <table className="w-full min-w-[72rem] table-fixed text-xs">
+    <div className="overflow-hidden rounded-xl border border-base-300/75 bg-base-100/55">
+      <table className="w-full table-fixed text-[11px] sm:text-xs">
         <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
           <tr>
-            <th className="w-[21%] px-3 py-3 text-left font-semibold">{t('live.proxy.table.proxy')}</th>
-            <th className="w-[8%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneMinute')}</th>
-            <th className="w-[8%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.fifteenMinutes')}</th>
-            <th className="w-[8%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneHour')}</th>
-            <th className="w-[8%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneDay')}</th>
-            <th className="w-[8%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.sevenDays')}</th>
-            <th className="w-[21%] px-3 py-3 text-left font-semibold">{t('live.proxy.table.trend24h')}</th>
-            <th className="w-[18%] px-3 py-3 text-left font-semibold">{t('live.proxy.table.weightTrend24h')}</th>
+            <th className="w-[38%] px-2 py-2 text-left font-semibold sm:w-[30%] sm:px-3 sm:py-3 md:w-[18%] lg:w-[21%]">
+              {t('live.proxy.table.proxy')}
+            </th>
+            <th className="w-[18%] px-1 py-2 text-center font-semibold sm:w-[13%] sm:px-2 sm:py-3 md:w-[8%] lg:w-[8%]">
+              {t('live.proxy.table.oneMinute')}
+            </th>
+            <th className="hidden px-2 py-3 text-center font-semibold md:table-cell md:w-[8%] lg:w-[8%]">
+              {t('live.proxy.table.fifteenMinutes')}
+            </th>
+            <th className="hidden px-2 py-3 text-center font-semibold md:table-cell md:w-[8%] lg:w-[8%]">
+              {t('live.proxy.table.oneHour')}
+            </th>
+            <th className="hidden px-2 py-3 text-center font-semibold lg:table-cell lg:w-[8%]">
+              {t('live.proxy.table.oneDay')}
+            </th>
+            <th className="hidden px-2 py-3 text-center font-semibold lg:table-cell lg:w-[8%]">
+              {t('live.proxy.table.sevenDays')}
+            </th>
+            <th className="w-[24%] px-2 py-2 text-left font-semibold sm:w-[29%] sm:px-3 sm:py-3 md:w-[31%] lg:w-[21%]">
+              {t('live.proxy.table.trend24h')}
+            </th>
+            <th className="w-[20%] px-2 py-2 text-left font-semibold sm:w-[28%] sm:px-3 sm:py-3 md:w-[27%] lg:w-[18%]">
+              {t('live.proxy.table.weightTrend24h')}
+            </th>
           </tr>
         </thead>
         <tbody className="divide-y divide-base-300/65">
           {rowData.map(({ node, windows, total24h, weightBuckets, maxBucketTotal24h }) => (
             <tr key={node.key} className={cn('transition-colors hover:bg-primary/6', node.penalized && 'bg-warning/8')}>
-              <td className="max-w-0 px-3 py-3 align-middle">
+              <td className="max-w-0 px-2 py-2 align-middle sm:px-3 sm:py-3">
                 <div className="min-w-0">
                   <div className="truncate whitespace-nowrap text-sm font-medium" title={node.displayName}>
                     {node.displayName}
@@ -287,13 +303,22 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                 </div>
               </td>
               {windows.map((window, index) => (
-                <td key={`${node.key}-${index}`} className="px-2 py-3 text-center align-middle">
+                <td
+                  key={`${node.key}-${index}`}
+                  className={cn(
+                    'px-1 py-2 text-center align-middle sm:px-2 sm:py-3',
+                    index === 1 && 'hidden md:table-cell',
+                    index === 2 && 'hidden md:table-cell',
+                    index === 3 && 'hidden lg:table-cell',
+                    index === 4 && 'hidden lg:table-cell',
+                  )}
+                >
                   <WindowCell value={window} />
                 </td>
               ))}
-              <td className="px-3 py-3 align-middle">
+              <td className="px-2 py-2 align-middle sm:px-3 sm:py-3">
                 <div className="space-y-1">
-                  <div className="flex h-11 items-end gap-[2px]">
+                  <div className="flex h-11 items-end gap-px sm:gap-[1.5px] md:gap-[2px]">
                     {node.last24h.map((bucket, index) => {
                       const total = bucket.successCount + bucket.failureCount
                       const successHeight = maxBucketTotal24h > 0 ? (bucket.successCount / maxBucketTotal24h) * 100 : 0
@@ -302,7 +327,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                       return (
                         <div
                           key={`${node.key}-${index}`}
-                          className="flex h-10 w-[6px] flex-col overflow-hidden rounded-[2px] bg-base-300/45"
+                          className="flex h-10 w-[2px] flex-col overflow-hidden rounded-[2px] bg-base-300/45 sm:w-[3px] md:w-[4px] lg:w-[6px]"
                           title={bucketTooltipLabel(
                             bucket,
                             localeTag,
@@ -328,7 +353,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                   </div>
                 </div>
               </td>
-              <td className="px-3 py-3 align-middle">
+              <td className="px-2 py-2 align-middle sm:px-3 sm:py-3">
                 <WeightTrendCell
                   buckets={weightBuckets}
                   localeTag={localeTag}
