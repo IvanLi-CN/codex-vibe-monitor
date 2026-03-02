@@ -9271,7 +9271,9 @@ impl ForwardProxyManager {
                     runtime.endpoint_url = endpoint.raw_url.clone();
                 }
                 std::collections::hash_map::Entry::Vacant(vacant) => {
-                    vacant.insert(ForwardProxyRuntimeState::default_for_endpoint(endpoint, algo));
+                    vacant.insert(ForwardProxyRuntimeState::default_for_endpoint(
+                        endpoint, algo,
+                    ));
                 }
             }
         }
