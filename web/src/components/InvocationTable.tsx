@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { Icon } from '@iconify/react'
 import type { ApiInvocation } from '../lib/api'
 import { formatProxyWeightDelta } from '../lib/invocation'
@@ -67,7 +67,7 @@ interface InvocationRowViewModel {
   errorMessage: string
   latencySummary: string
   latencyCompactSummary: string
-  detailPairs: Array<{ label: TranslationKey; value: string }>
+  detailPairs: Array<{ label: TranslationKey; value: ReactNode }>
   timingPairs: Array<{ label: TranslationKey; value: string }>
 }
 
@@ -173,14 +173,50 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const occurredTime = occurredValid ? timeFormatter.format(occurred) : record.occurredAt
         const occurredDate = occurredValid ? dateFormatter.format(occurred) : FALLBACK_CELL
 
-        const detailPairs: Array<{ label: TranslationKey; value: string }> = [
+        const proxyWeightDeltaView = formatProxyWeightDelta(record.proxyWeightDelta)
+        const proxyWeightDeltaValue =
+          proxyWeightDeltaView.direction === 'missing' ? (
+            FALLBACK_CELL
+          ) : (
+            <span
+              className={`inline-flex items-center gap-1 font-mono ${
+                proxyWeightDeltaView.direction === 'up'
+                  ? 'text-success'
+                  : proxyWeightDeltaView.direction === 'down'
+                    ? 'text-error'
+                    : 'text-base-content/70'
+              }`}
+              aria-label={
+                proxyWeightDeltaView.direction === 'up'
+                  ? t('table.details.proxyWeightDeltaA11yIncrease', { value: proxyWeightDeltaView.value })
+                  : proxyWeightDeltaView.direction === 'down'
+                    ? t('table.details.proxyWeightDeltaA11yDecrease', { value: proxyWeightDeltaView.value })
+                    : t('table.details.proxyWeightDeltaA11yUnchanged', { value: proxyWeightDeltaView.value })
+              }
+            >
+              <Icon
+                icon={
+                  proxyWeightDeltaView.direction === 'up'
+                    ? 'mdi:arrow-up-bold'
+                    : proxyWeightDeltaView.direction === 'down'
+                      ? 'mdi:arrow-down-bold'
+                      : 'mdi:arrow-right-bold'
+                }
+                className="h-3.5 w-3.5"
+                aria-hidden
+              />
+              <span aria-hidden>{proxyWeightDeltaView.value}</span>
+            </span>
+          )
+
+        const detailPairs: Array<{ label: TranslationKey; value: ReactNode }> = [
           { label: 'table.details.invokeId', value: record.invokeId || FALLBACK_CELL },
           { label: 'table.details.source', value: record.source || FALLBACK_CELL },
           { label: 'table.details.proxy', value: proxyDisplayName },
           { label: 'table.details.endpoint', value: record.endpoint || FALLBACK_CELL },
           { label: 'table.details.requesterIp', value: record.requesterIp || FALLBACK_CELL },
           { label: 'table.details.promptCacheKey', value: record.promptCacheKey || FALLBACK_CELL },
-          { label: 'table.details.proxyWeightDelta', value: formatProxyWeightDelta(record.proxyWeightDelta) },
+          { label: 'table.details.proxyWeightDelta', value: proxyWeightDeltaValue },
           { label: 'table.details.failureKind', value: record.failureKind || FALLBACK_CELL },
         ]
         const timingPairs: Array<{ label: TranslationKey; value: string }> = [
@@ -215,12 +251,12 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           timingPairs,
         }
       }),
-    [records, currencyFormatter, dateFormatter, numberFormatter, timeFormatter],
+    [records, currencyFormatter, dateFormatter, numberFormatter, t, timeFormatter],
   )
 
   const renderExpandedContent = (
     detailId: string,
-    detailPairs: Array<{ label: TranslationKey; value: string }>,
+    detailPairs: Array<{ label: TranslationKey; value: ReactNode }>,
     timingPairs: Array<{ label: TranslationKey; value: string }>,
     errorMessage: string,
     size: 'compact' | 'default',
