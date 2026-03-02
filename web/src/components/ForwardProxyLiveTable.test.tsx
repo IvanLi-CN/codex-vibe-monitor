@@ -77,7 +77,7 @@ describe('ForwardProxyLiveTable', () => {
     const html = renderTable(stats)
 
     expect(html).toContain('近 24 小时权重变化')
-    expect(html).toContain('aria-label="weight trend"')
+    expect(html).toContain('aria-label="近 24 小时权重趋势图"')
     expect(countOccurrences(html, '成功 10')).toBe(1)
     expect(countOccurrences(html, '失败 2')).toBe(1)
   })
@@ -117,7 +117,7 @@ describe('ForwardProxyLiveTable', () => {
     const html = renderTable(stats)
 
     expect(html).toContain('Proxy B')
-    expect(html).toContain('aria-label="weight trend"')
+    expect(html).toContain('aria-label="近 24 小时权重趋势图"')
     expect(html).toContain('近 24 小时请求量（成功/失败）')
   })
 })

@@ -146,10 +146,12 @@ function WeightTrendCell({
   buckets,
   localeTag,
   tooltipLabels,
+  ariaLabel,
 }: {
   buckets: ForwardProxyWeightBucket[]
   localeTag: string
   tooltipLabels: WeightTooltipLabels
+  ariaLabel: string
 }) {
   const geometry = buildWeightTrendGeometry(buckets)
   if (!geometry) {
@@ -162,7 +164,7 @@ function WeightTrendCell({
         viewBox={`0 0 ${geometry.chartWidth} ${geometry.chartHeight}`}
         className="h-10 w-full rounded-md border border-base-300/55 bg-base-100/40"
         role="img"
-        aria-label="weight trend"
+        aria-label={ariaLabel}
       >
         <line
           x1={0}
@@ -210,6 +212,7 @@ function WeightTrendCell({
 export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyLiveTableProps) {
   const { t, locale } = useTranslation()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
+  const weightTrendAriaLabel = t('live.proxy.table.weightTrendAria')
   const weightTooltipLabels = useMemo(
     () => ({
       samples: t('live.proxy.table.weightTooltip.samples'),
@@ -326,7 +329,12 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                 </div>
               </td>
               <td className="px-3 py-3 align-middle">
-                <WeightTrendCell buckets={weightBuckets} localeTag={localeTag} tooltipLabels={weightTooltipLabels} />
+                <WeightTrendCell
+                  buckets={weightBuckets}
+                  localeTag={localeTag}
+                  tooltipLabels={weightTooltipLabels}
+                  ariaLabel={weightTrendAriaLabel}
+                />
               </td>
             </tr>
           ))}
