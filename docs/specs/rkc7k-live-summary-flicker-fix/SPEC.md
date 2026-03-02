@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（5/6）
+- Status: 已完成（6/6）
 - Created: 2026-03-02
 - Last: 2026-03-02
 
@@ -114,7 +114,7 @@ None
 - [x] M3: 移除 Live 页重复 summary 刷新触发。
 - [x] M4: 修复 `AnimatedDigits` rAF cleanup 竞态。
 - [x] M5: 完成前端测试与构建验证。
-- [ ] M6: 完成 fast-track PR、checks 跟踪与 review-loop 收敛。
+- [x] M6: 完成 fast-track PR、checks 跟踪与 review-loop 收敛。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -126,3 +126,4 @@ None
 - 2026-03-02: 创建规格并冻结实现边界。
 - 2026-03-02: 完成 M1-M5，实现前端节流刷新与动画竞态修复并通过 web test/build。
 - 2026-03-02: 根据 review-loop 反馈补强强制刷新并发语义（abort stale in-flight）与 current 窗口重试边界，降低重连/慢网场景抖动回归风险。
+- 2026-03-02: 完成 M6，PR #80 checks 全绿并进入合并收尾阶段。
