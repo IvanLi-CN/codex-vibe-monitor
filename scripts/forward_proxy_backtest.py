@@ -645,10 +645,14 @@ def run_simulation(
     seed_runtime: Optional[Dict[str, RuntimeState]],
 ) -> Dict[str, object]:
     proxy_keys = sorted(
-        key for key, profile in profiles.items() if profile.observed_attempts > 0
+        key
+        for key, profile in profiles.items()
+        if profile.observed_attempts > 0 and (insert_direct or key != DIRECT_KEY)
     )
     if not proxy_keys:
-        proxy_keys = sorted(profiles.keys())
+        proxy_keys = sorted(
+            key for key in profiles.keys() if insert_direct or key != DIRECT_KEY
+        )
     if insert_direct and DIRECT_KEY not in proxy_keys:
         proxy_keys.append(DIRECT_KEY)
     allowed_keys = set(proxy_keys)
@@ -664,6 +668,22 @@ def run_simulation(
         for latency in profile.failure_latencies
         if latency is not None
     ]
+
+    def fallback_profile_for(key: str) -> ProxyProfile:
+        return ProxyProfile(
+            key=key,
+            observed_attempts=0,
+            success_rate=0.65,
+            success_latencies=all_success_latencies,
+            failure_latencies=all_failure_latencies,
+            failure_kinds=["handshake_timeout"],
+        )
+
+    def profile_for(key: str) -> ProxyProfile:
+        profile = profiles.get(key)
+        if profile is None:
+            return fallback_profile_for(key)
+        return profile
 
     per_seed = []
     for seed in seeds:
@@ -694,16 +714,7 @@ def run_simulation(
         for _ in range(requests):
             key = machine.select_proxy(rng)
             selection_counter[key] += 1
-            profile = profiles.get(key)
-            if profile is None:
-                profile = ProxyProfile(
-                    key=key,
-                    observed_attempts=0,
-                    success_rate=0.65,
-                    success_latencies=all_success_latencies,
-                    failure_latencies=all_failure_latencies,
-                    failure_kinds=["handshake_timeout"],
-                )
+            profile = profile_for(key)
             success = rng.random() < profile.success_rate
             latency = sample_latency(
                 profile,
@@ -728,7 +739,7 @@ def run_simulation(
 
             probe_key = machine.start_probe(now_secs)
             if probe_key is not None:
-                probe_profile = profiles.get(probe_key, profile)
+                probe_profile = profile_for(probe_key)
                 probe_success = rng.random() < probe_profile.success_rate
                 probe_latency = sample_latency(
                     probe_profile,
