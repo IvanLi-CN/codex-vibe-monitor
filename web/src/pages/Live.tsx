@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { ForwardProxyLiveTable } from '../components/ForwardProxyLiveTable'
 import { InvocationChart } from '../components/InvocationChart'
 import { InvocationTable } from '../components/InvocationTable'
@@ -37,18 +37,13 @@ export default function LivePage() {
     summary,
     isLoading: summaryLoading,
     error: summaryError,
-    refresh: refreshSummary,
   } = useSummary(summaryWindow, summaryWindow === 'current' ? { limit } : undefined)
-
-  const handleNewRecords = useCallback(() => {
-    void refreshSummary()
-  }, [refreshSummary])
 
   const {
     records,
     isLoading,
     error,
-  } = useInvocationStream(limit, undefined, handleNewRecords, { enableStream: true })
+  } = useInvocationStream(limit, undefined, undefined, { enableStream: true })
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">

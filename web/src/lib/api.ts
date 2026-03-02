@@ -581,14 +581,14 @@ export async function validateForwardProxyCandidate(payload: {
   }
 }
 
-export async function fetchSummary(window: string, options?: { limit?: number; timeZone?: string }) {
+export async function fetchSummary(window: string, options?: { limit?: number; timeZone?: string; signal?: AbortSignal }) {
   const search = new URLSearchParams()
   search.set('window', window)
   search.set('timeZone', options?.timeZone ?? getBrowserTimeZone())
   if (options?.limit !== undefined) {
     search.set('limit', String(options.limit))
   }
-  return fetchJson<StatsResponse>(`/api/stats/summary?${search.toString()}`)
+  return fetchJson<StatsResponse>(`/api/stats/summary?${search.toString()}`, { signal: options?.signal })
 }
 
 export async function fetchForwardProxyLiveStats() {

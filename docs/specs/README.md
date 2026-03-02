@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------- |
+| rkc7k | 修复 Live 实时统计闪烁与数字滚动被打断                                    | 已完成（6/6）   | `rkc7k-live-summary-flicker-fix/SPEC.md`                 | 2026-03-02 | fast-track / PR #80  |
 | c58kc | 实况页新增“代理”统计表与 24h 成败示意图                                   | 已完成（5/5）   | `c58kc-live-forward-proxy-table/SPEC.md`                 | 2026-03-02 | fast-track / PR #77  |
 | wv3m7 | Forward Proxy 新增后异步首轮探测补齐                                      | 已完成（3/3）   | `wv3m7-forward-proxy-bootstrap-probe/SPEC.md`            | 2026-03-02 | fast-track           |
 | r8m3k | InvocationTable 响应式修复：lg+ 无横向滚动、sm 及以下列表化               | 已完成（5/5）   | `r8m3k-invocation-table-responsive-no-overflow/SPEC.md`  | 2026-03-02 | fast-track / PR #79  |
