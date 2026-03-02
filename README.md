@@ -106,6 +106,7 @@ PROXY_RAW_MAX_BYTES=0                          # (0=unlimited, set >0 to cap)
 PROXY_RAW_RETENTION_DAYS=7                     # (7)
 PROXY_ENFORCE_STREAM_INCLUDE_USAGE=true        # (true)
 PROXY_USAGE_BACKFILL_ON_STARTUP=true           # (true，启动时回填历史 proxy 空 token 记录)
+FORWARD_PROXY_ALGO=v2                          # (v2，正向代理权重算法开关: v1|v2)
 XY_LEGACY_POLL_ENABLED=false                   # (false，true 时启用 legacy 轮询写入)
 XY_MAX_PARALLEL_POLLS=6                        # (6)
 XY_SHARED_CONNECTION_PARALLELISM=2             # (2)
@@ -115,6 +116,7 @@ XY_LIST_LIMIT_MAX=200                          # (200)
 XY_USER_AGENT=codex-vibe-monitor/0.2.0         # (自动)
 XY_STATIC_DIR=web/dist                         # (存在时自动使用)
 XY_SNAPSHOT_MIN_INTERVAL_SECS=300              # (300)
+# 注意：XY_FORWARD_PROXY_ALGO 已移除，配置将直接失败，请改用 FORWARD_PROXY_ALGO
 
 # CRS 日统计源（可选；未配置则禁用）
 CRS_STATS_BASE_URL=https://claude-relay-service.nsngc.org
