@@ -120,4 +120,69 @@ describe('ForwardProxyLiveTable', () => {
     expect(html).toContain('aria-label="近 24 小时权重趋势图"')
     expect(html).toContain('近 24 小时请求量（成功/失败）')
   })
+
+  it('uses different colors for positive and negative weight regions', () => {
+    const stats: ForwardProxyLiveStatsResponse = {
+      rangeStart: '2026-03-01T00:00:00Z',
+      rangeEnd: '2026-03-02T00:00:00Z',
+      bucketSeconds: 3600,
+      nodes: [
+        {
+          key: 'proxy-c',
+          source: 'manual',
+          displayName: 'Proxy C',
+          weight: -0.12,
+          penalized: false,
+          stats: {
+            oneMinute: { attempts: 4, successRate: 0.75, avgLatencyMs: 180 },
+            fifteenMinutes: { attempts: 20, successRate: 0.72, avgLatencyMs: 210 },
+            oneHour: { attempts: 80, successRate: 0.7, avgLatencyMs: 240 },
+            oneDay: { attempts: 640, successRate: 0.68, avgLatencyMs: 290 },
+            sevenDays: { attempts: 3200, successRate: 0.67, avgLatencyMs: 320 },
+          },
+          last24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              successCount: 3,
+              failureCount: 1,
+            },
+            {
+              bucketStart: '2026-03-01T01:00:00Z',
+              bucketEnd: '2026-03-01T02:00:00Z',
+              successCount: 2,
+              failureCount: 2,
+            },
+          ],
+          weight24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              sampleCount: 2,
+              minWeight: -0.4,
+              maxWeight: -0.1,
+              avgWeight: -0.24,
+              lastWeight: -0.18,
+            },
+            {
+              bucketStart: '2026-03-01T01:00:00Z',
+              bucketEnd: '2026-03-01T02:00:00Z',
+              sampleCount: 2,
+              minWeight: 0.05,
+              maxWeight: 0.28,
+              avgWeight: 0.16,
+              lastWeight: 0.22,
+            },
+          ],
+        },
+      ],
+    }
+
+    const html = renderTable(stats)
+
+    expect(html).toContain('fill="oklch(var(--color-success) / 0.18)"')
+    expect(html).toContain('fill="oklch(var(--color-error) / 0.16)"')
+    expect(html).toContain('fill="oklch(var(--color-success) / 0.95)"')
+    expect(html).toContain('fill="oklch(var(--color-error) / 0.9)"')
+  })
 })

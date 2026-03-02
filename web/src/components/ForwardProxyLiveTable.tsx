@@ -99,6 +99,7 @@ interface WeightTrendGeometry {
   chartWidth: number
   chartHeight: number
   bucketWidth: number
+  zeroY: number
   linePath: string
   areaPath: string
   points: Array<{ x: number; y: number }>
@@ -109,8 +110,8 @@ function buildWeightTrendGeometry(buckets: ForwardProxyWeightBucket[]): WeightTr
   const chartWidth = 216
   const chartHeight = 40
   const values = buckets.map((bucket) => bucket.lastWeight)
-  const minValue = Math.min(...values)
-  const maxValue = Math.max(...values)
+  const minValue = Math.min(...values, 0)
+  const maxValue = Math.max(...values, 0)
   const span = Math.max(maxValue - minValue, Number.EPSILON)
   const bucketWidth = chartWidth / buckets.length
   const points = values.map((value, index) => {
@@ -119,14 +120,22 @@ function buildWeightTrendGeometry(buckets: ForwardProxyWeightBucket[]): WeightTr
     const y = chartHeight - ratio * chartHeight
     return { x, y }
   })
+  const firstPoint = points[0]
+  const lastPoint = points[points.length - 1]
+  if (!firstPoint || !lastPoint) return null
+
+  const zeroRatio = (0 - minValue) / span
+  const zeroY = chartHeight - zeroRatio * chartHeight
+  const zeroYClamped = Math.max(0, Math.min(chartHeight, zeroY))
   const linePath = points
     .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
     .join(' ')
-  const areaPath = `${linePath} L ${chartWidth.toFixed(2)} ${chartHeight.toFixed(2)} L 0 ${chartHeight.toFixed(2)} Z`
+  const areaPath = `${linePath} L ${lastPoint.x.toFixed(2)} ${zeroYClamped.toFixed(2)} L ${firstPoint.x.toFixed(2)} ${zeroYClamped.toFixed(2)} Z`
   return {
     chartWidth,
     chartHeight,
     bucketWidth,
+    zeroY: zeroYClamped,
     linePath,
     areaPath,
     points,
@@ -147,16 +156,23 @@ function WeightTrendCell({
   localeTag,
   tooltipLabels,
   ariaLabel,
+  clipId,
 }: {
   buckets: ForwardProxyWeightBucket[]
   localeTag: string
   tooltipLabels: WeightTooltipLabels
   ariaLabel: string
+  clipId: string
 }) {
   const geometry = buildWeightTrendGeometry(buckets)
   if (!geometry) {
     return <div className="text-[11px] text-base-content/55">—</div>
   }
+
+  const positiveClipId = `${clipId}-positive`
+  const negativeClipId = `${clipId}-negative`
+  const positiveHeight = Math.max(geometry.zeroY, 0)
+  const negativeHeight = Math.max(geometry.chartHeight - geometry.zeroY, 0)
 
   return (
     <div className="h-11">
@@ -166,19 +182,38 @@ function WeightTrendCell({
         role="img"
         aria-label={ariaLabel}
       >
+        <defs>
+          <clipPath id={positiveClipId}>
+            <rect x={0} y={0} width={geometry.chartWidth} height={positiveHeight} />
+          </clipPath>
+          <clipPath id={negativeClipId}>
+            <rect x={0} y={geometry.zeroY} width={geometry.chartWidth} height={negativeHeight} />
+          </clipPath>
+        </defs>
         <line
           x1={0}
-          y1={geometry.chartHeight}
+          y1={geometry.zeroY}
           x2={geometry.chartWidth}
-          y2={geometry.chartHeight}
+          y2={geometry.zeroY}
           stroke="oklch(var(--color-base-content) / 0.15)"
           strokeWidth="1"
         />
-        <path d={geometry.areaPath} fill="oklch(var(--color-primary) / 0.12)" />
+        <path d={geometry.areaPath} fill="oklch(var(--color-success) / 0.18)" clipPath={`url(#${positiveClipId})`} />
+        <path d={geometry.areaPath} fill="oklch(var(--color-error) / 0.16)" clipPath={`url(#${negativeClipId})`} />
         <path
           d={geometry.linePath}
           fill="none"
-          stroke="oklch(var(--color-primary) / 0.9)"
+          stroke="oklch(var(--color-success) / 0.95)"
+          clipPath={`url(#${positiveClipId})`}
+          strokeWidth="1.6"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        <path
+          d={geometry.linePath}
+          fill="none"
+          stroke="oklch(var(--color-error) / 0.92)"
+          clipPath={`url(#${negativeClipId})`}
           strokeWidth="1.6"
           strokeLinejoin="round"
           strokeLinecap="round"
@@ -189,7 +224,7 @@ function WeightTrendCell({
             cx={point.x}
             cy={point.y}
             r={1.5}
-            fill="oklch(var(--color-primary) / 0.95)"
+            fill={buckets[index]?.lastWeight >= 0 ? 'oklch(var(--color-success) / 0.95)' : 'oklch(var(--color-error) / 0.9)'}
           />
         ))}
         {buckets.map((bucket, index) => (
@@ -359,6 +394,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                   localeTag={localeTag}
                   tooltipLabels={weightTooltipLabels}
                   ariaLabel={weightTrendAriaLabel}
+                  clipId={`weight-trend-${node.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`}
                 />
               </td>
             </tr>
