@@ -9,6 +9,7 @@
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------- |
 | hrvtt | 请求详情补齐代理信息与本次权重变化                                        | 已完成（4/4）   | `hrvtt-invocation-proxy-weight-delta/SPEC.md`            | 2026-03-02 | fast-track           |
+| t7m4h | Live 代理运行态：新增 24h 权重趋势列与断点适配                            | 部分完成（4/5） | `t7m4h-live-proxy-weight-trend/SPEC.md`                  | 2026-03-02 | fast-track           |
 | rkc7k | 修复 Live 实时统计闪烁与数字滚动被打断                                    | 已完成（6/6）   | `rkc7k-live-summary-flicker-fix/SPEC.md`                 | 2026-03-02 | fast-track / PR #80  |
 | c58kc | 实况页新增“代理”统计表与 24h 成败示意图                                   | 已完成（5/5）   | `c58kc-live-forward-proxy-table/SPEC.md`                 | 2026-03-02 | fast-track / PR #77  |
 | wv3m7 | Forward Proxy 新增后异步首轮探测补齐                                      | 已完成（3/3）   | `wv3m7-forward-proxy-bootstrap-probe/SPEC.md`            | 2026-03-02 | fast-track           |

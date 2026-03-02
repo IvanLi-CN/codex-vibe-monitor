@@ -1,6 +1,12 @@
 import { useMemo } from 'react'
 import { useTranslation } from '../i18n'
-import type { ForwardProxyHourlyBucket, ForwardProxyLiveNode, ForwardProxyLiveStatsResponse, ForwardProxyWindowStats } from '../lib/api'
+import type {
+  ForwardProxyHourlyBucket,
+  ForwardProxyLiveNode,
+  ForwardProxyLiveStatsResponse,
+  ForwardProxyWeightBucket,
+  ForwardProxyWindowStats,
+} from '../lib/api'
 import { cn } from '../lib/utils'
 import { Alert } from './ui/alert'
 import { Spinner } from './ui/spinner'
@@ -32,6 +38,20 @@ function sumLast24h(node: ForwardProxyLiveNode) {
   )
 }
 
+function resolveWeightBuckets(node: ForwardProxyLiveNode): ForwardProxyWeightBucket[] {
+  if (node.weight24h.length > 0) return node.weight24h
+  if (node.last24h.length === 0) return []
+  return node.last24h.map((bucket) => ({
+    bucketStart: bucket.bucketStart,
+    bucketEnd: bucket.bucketEnd,
+    sampleCount: 0,
+    minWeight: node.weight,
+    maxWeight: node.weight,
+    avgWeight: node.weight,
+    lastWeight: node.weight,
+  }))
+}
+
 function bucketTooltipLabel(bucket: ForwardProxyHourlyBucket, localeTag: string, successLabel: string, failureLabel: string) {
   const start = new Date(bucket.bucketStart)
   const end = new Date(bucket.bucketEnd)
@@ -47,6 +67,72 @@ function bucketTooltipLabel(bucket: ForwardProxyHourlyBucket, localeTag: string,
   return `${startLabel} - ${endLabel}\n${successLabel}: ${bucket.successCount}\n${failureLabel}: ${bucket.failureCount}`
 }
 
+interface WeightTooltipLabels {
+  samples: string
+  min: string
+  max: string
+  avg: string
+  last: string
+}
+
+function formatWeight(value: number) {
+  if (!Number.isFinite(value)) return '—'
+  return value.toFixed(2)
+}
+
+function weightBucketTooltipLabel(bucket: ForwardProxyWeightBucket, localeTag: string, labels: WeightTooltipLabels) {
+  const start = new Date(bucket.bucketStart)
+  const end = new Date(bucket.bucketEnd)
+  const formatter = new Intl.DateTimeFormat(localeTag, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+  const startLabel = Number.isNaN(start.getTime()) ? bucket.bucketStart : formatter.format(start)
+  const endLabel = Number.isNaN(end.getTime()) ? bucket.bucketEnd : formatter.format(end)
+  return `${startLabel} - ${endLabel}\n${labels.samples}: ${bucket.sampleCount}\n${labels.min}: ${formatWeight(bucket.minWeight)}\n${labels.max}: ${formatWeight(bucket.maxWeight)}\n${labels.avg}: ${formatWeight(bucket.avgWeight)}\n${labels.last}: ${formatWeight(bucket.lastWeight)}`
+}
+
+interface WeightTrendGeometry {
+  chartWidth: number
+  chartHeight: number
+  bucketWidth: number
+  linePath: string
+  areaPath: string
+  points: Array<{ x: number; y: number }>
+}
+
+function buildWeightTrendGeometry(buckets: ForwardProxyWeightBucket[]): WeightTrendGeometry | null {
+  if (buckets.length === 0) return null
+  const chartWidth = 216
+  const chartHeight = 40
+  const values = buckets.map((bucket) => bucket.lastWeight)
+  const minValue = Math.min(...values)
+  const maxValue = Math.max(...values)
+  const span = Math.max(maxValue - minValue, Number.EPSILON)
+  const bucketWidth = chartWidth / buckets.length
+  const points = values.map((value, index) => {
+    const ratio = (value - minValue) / span
+    const x = bucketWidth * index + bucketWidth / 2
+    const y = chartHeight - ratio * chartHeight
+    return { x, y }
+  })
+  const linePath = points
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(' ')
+  const areaPath = `${linePath} L ${chartWidth.toFixed(2)} ${chartHeight.toFixed(2)} L 0 ${chartHeight.toFixed(2)} Z`
+  return {
+    chartWidth,
+    chartHeight,
+    bucketWidth,
+    linePath,
+    areaPath,
+    points,
+  }
+}
+
 function WindowCell({ value }: { value: ForwardProxyWindowStats }) {
   return (
     <div className="space-y-0.5 text-[11px] leading-tight">
@@ -56,9 +142,84 @@ function WindowCell({ value }: { value: ForwardProxyWindowStats }) {
   )
 }
 
+function WeightTrendCell({
+  buckets,
+  localeTag,
+  tooltipLabels,
+}: {
+  buckets: ForwardProxyWeightBucket[]
+  localeTag: string
+  tooltipLabels: WeightTooltipLabels
+}) {
+  const geometry = buildWeightTrendGeometry(buckets)
+  if (!geometry) {
+    return <div className="text-[11px] text-base-content/55">—</div>
+  }
+
+  return (
+    <div className="h-11">
+      <svg
+        viewBox={`0 0 ${geometry.chartWidth} ${geometry.chartHeight}`}
+        className="h-10 w-full rounded-md border border-base-300/55 bg-base-100/40"
+        role="img"
+        aria-label="weight trend"
+      >
+        <line
+          x1={0}
+          y1={geometry.chartHeight}
+          x2={geometry.chartWidth}
+          y2={geometry.chartHeight}
+          stroke="oklch(var(--color-base-content) / 0.15)"
+          strokeWidth="1"
+        />
+        <path d={geometry.areaPath} fill="oklch(var(--color-primary) / 0.12)" />
+        <path
+          d={geometry.linePath}
+          fill="none"
+          stroke="oklch(var(--color-primary) / 0.9)"
+          strokeWidth="1.6"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        {geometry.points.map((point, index) => (
+          <circle
+            key={`${buckets[index]?.bucketStart ?? index}-dot`}
+            cx={point.x}
+            cy={point.y}
+            r={1.5}
+            fill="oklch(var(--color-primary) / 0.95)"
+          />
+        ))}
+        {buckets.map((bucket, index) => (
+          <rect
+            key={`${bucket.bucketStart}-hit`}
+            x={geometry.bucketWidth * index}
+            y={0}
+            width={geometry.bucketWidth}
+            height={geometry.chartHeight}
+            fill="transparent"
+          >
+            <title>{weightBucketTooltipLabel(bucket, localeTag, tooltipLabels)}</title>
+          </rect>
+        ))}
+      </svg>
+    </div>
+  )
+}
+
 export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyLiveTableProps) {
   const { t, locale } = useTranslation()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
+  const weightTooltipLabels = useMemo(
+    () => ({
+      samples: t('live.proxy.table.weightTooltip.samples'),
+      min: t('live.proxy.table.weightTooltip.min'),
+      max: t('live.proxy.table.weightTooltip.max'),
+      avg: t('live.proxy.table.weightTooltip.avg'),
+      last: t('live.proxy.table.weightTooltip.last'),
+    }),
+    [t],
+  )
 
   const rowData = useMemo(
     () =>
@@ -66,6 +227,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
         node,
         windows: [node.stats.oneMinute, node.stats.fifteenMinutes, node.stats.oneHour, node.stats.oneDay, node.stats.sevenDays],
         total24h: sumLast24h(node),
+        weightBuckets: resolveWeightBuckets(node),
         maxBucketTotal24h: Math.max(...node.last24h.map((bucket) => bucket.successCount + bucket.failureCount), 0),
       })),
     [stats?.nodes],
@@ -93,20 +255,21 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
 
   return (
     <div className="overflow-x-auto rounded-xl border border-base-300/75 bg-base-100/55">
-      <table className="w-full min-w-[58rem] table-fixed text-xs">
+      <table className="w-full min-w-[72rem] table-fixed text-xs">
         <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
           <tr>
-            <th className="w-[22%] px-3 py-3 text-left font-semibold">{t('live.proxy.table.proxy')}</th>
-            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneMinute')}</th>
-            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.fifteenMinutes')}</th>
-            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneHour')}</th>
-            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneDay')}</th>
-            <th className="w-[9%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.sevenDays')}</th>
-            <th className="w-[42%] px-3 py-3 text-left font-semibold">{t('live.proxy.table.trend24h')}</th>
+            <th className="w-[21%] px-3 py-3 text-left font-semibold">{t('live.proxy.table.proxy')}</th>
+            <th className="w-[8%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneMinute')}</th>
+            <th className="w-[8%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.fifteenMinutes')}</th>
+            <th className="w-[8%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneHour')}</th>
+            <th className="w-[8%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.oneDay')}</th>
+            <th className="w-[8%] px-2 py-3 text-center font-semibold">{t('live.proxy.table.sevenDays')}</th>
+            <th className="w-[21%] px-3 py-3 text-left font-semibold">{t('live.proxy.table.trend24h')}</th>
+            <th className="w-[18%] px-3 py-3 text-left font-semibold">{t('live.proxy.table.weightTrend24h')}</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-base-300/65">
-          {rowData.map(({ node, windows, total24h, maxBucketTotal24h }) => (
+          {rowData.map(({ node, windows, total24h, weightBuckets, maxBucketTotal24h }) => (
             <tr key={node.key} className={cn('transition-colors hover:bg-primary/6', node.penalized && 'bg-warning/8')}>
               <td className="max-w-0 px-3 py-3 align-middle">
                 <div className="min-w-0">
@@ -160,11 +323,10 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                       )
                     })}
                   </div>
-                  <div className="flex items-center justify-between text-[10px] text-base-content/65">
-                    <span>{t('live.proxy.table.successShort', { count: total24h.success })}</span>
-                    <span>{t('live.proxy.table.failureShort', { count: total24h.failure })}</span>
-                  </div>
                 </div>
+              </td>
+              <td className="px-3 py-3 align-middle">
+                <WeightTrendCell buckets={weightBuckets} localeTag={localeTag} tooltipLabels={weightTooltipLabels} />
               </td>
             </tr>
           ))}
