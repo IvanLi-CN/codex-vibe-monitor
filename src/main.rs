@@ -2781,6 +2781,7 @@ async fn list_invocations(
          failure_class, is_actionable, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta, \
          cost_estimated, price_version, \
          request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
          response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
@@ -4587,6 +4588,7 @@ async fn proxy_openai_v1_capture_target(
                     requester_ip.as_deref(),
                     header_prompt_cache_key.as_deref(),
                     Some(selected_proxy.display_name.as_str()),
+                    None,
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -4671,7 +4673,7 @@ async fn proxy_openai_v1_capture_target(
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
             let (status, message, failure_kind) = map_upstream_error(err);
-            record_forward_proxy_attempt(
+            let proxy_attempt_update = record_forward_proxy_attempt(
                 state.clone(),
                 selected_proxy.clone(),
                 false,
@@ -4714,6 +4716,7 @@ async fn proxy_openai_v1_capture_target(
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
                     Some(selected_proxy.display_name.as_str()),
+                    proxy_attempt_update.delta(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -4743,7 +4746,7 @@ async fn proxy_openai_v1_capture_target(
                 handshake_timeout.as_millis()
             );
             let failure_kind = PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT;
-            record_forward_proxy_attempt(
+            let proxy_attempt_update = record_forward_proxy_attempt(
                 state.clone(),
                 selected_proxy.clone(),
                 false,
@@ -4782,6 +4785,7 @@ async fn proxy_openai_v1_capture_target(
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
                     Some(selected_proxy.display_name.as_str()),
+                    proxy_attempt_update.delta(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -4817,7 +4821,7 @@ async fn proxy_openai_v1_capture_target(
         Ok(location) => location,
         Err(err) => {
             let message = format!("failed to process upstream redirect: {err}");
-            record_forward_proxy_attempt(
+            let proxy_attempt_update = record_forward_proxy_attempt(
                 state.clone(),
                 selected_proxy.clone(),
                 false,
@@ -4855,6 +4859,7 @@ async fn proxy_openai_v1_capture_target(
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
                     Some(selected_proxy.display_name.as_str()),
+                    proxy_attempt_update.delta(),
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -5022,7 +5027,7 @@ async fn proxy_openai_v1_capture_target(
         };
         let selected_proxy_display_name = selected_proxy_for_task.display_name.clone();
         let forward_proxy_success = !had_stream_error && !upstream_status.is_server_error();
-        record_forward_proxy_attempt(
+        let proxy_attempt_update = record_forward_proxy_attempt(
             state_for_task.clone(),
             selected_proxy_for_task,
             forward_proxy_success,
@@ -5061,6 +5066,7 @@ async fn proxy_openai_v1_capture_target(
             requester_ip_for_task.as_deref(),
             prompt_cache_key_for_task.as_deref(),
             Some(selected_proxy_display_name.as_str()),
+            proxy_attempt_update.delta(),
         );
 
         let record = ProxyCaptureRecord {
@@ -5564,6 +5570,7 @@ fn build_proxy_payload_summary(
     requester_ip: Option<&str>,
     prompt_cache_key: Option<&str>,
     proxy_display_name: Option<&str>,
+    proxy_weight_delta: Option<f64>,
 ) -> String {
     let endpoint = match target {
         ProxyCaptureTarget::ChatCompletions => "/v1/chat/completions",
@@ -5581,6 +5588,7 @@ fn build_proxy_payload_summary(
         "requesterIp": requester_ip,
         "promptCacheKey": prompt_cache_key,
         "proxyDisplayName": proxy_display_name,
+        "proxyWeightDelta": proxy_weight_delta,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
@@ -6055,6 +6063,7 @@ async fn persist_proxy_capture_record(
             is_actionable,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta,
             cost_estimated,
             price_version,
             request_raw_path,
@@ -8155,6 +8164,28 @@ async fn select_forward_proxy_for_request(state: &AppState) -> SelectedForwardPr
     manager.select_proxy()
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ForwardProxyAttemptUpdate {
+    weight_before: Option<f64>,
+    weight_after: Option<f64>,
+    weight_delta: Option<f64>,
+}
+
+impl ForwardProxyAttemptUpdate {
+    fn delta(self) -> Option<f64> {
+        self.weight_delta.or_else(|| {
+            let (Some(before), Some(after)) = (self.weight_before, self.weight_after) else {
+                return None;
+            };
+            if before.is_finite() && after.is_finite() {
+                Some(after - before)
+            } else {
+                None
+            }
+        })
+    }
+}
+
 async fn record_forward_proxy_attempt(
     state: Arc<AppState>,
     selected_proxy: SelectedForwardProxy,
@@ -8162,25 +8193,48 @@ async fn record_forward_proxy_attempt(
     latency_ms: Option<f64>,
     failure_kind: Option<&str>,
     is_probe: bool,
-) {
-    let (updated_runtime, probe_candidate) = {
+) -> ForwardProxyAttemptUpdate {
+    let (updated_runtime, probe_candidate, attempt_update) = {
         let mut manager = state.forward_proxy.lock().await;
         let runtime_active = manager
             .endpoints
             .iter()
             .any(|endpoint| endpoint.key == selected_proxy.key);
+        let weight_before = if runtime_active {
+            manager
+                .runtime
+                .get(&selected_proxy.key)
+                .map(|runtime| runtime.weight)
+        } else {
+            None
+        };
         manager.record_attempt(&selected_proxy.key, success, latency_ms, is_probe);
         let updated_runtime = if runtime_active {
             manager.runtime.get(&selected_proxy.key).cloned()
         } else {
             None
         };
+        let weight_after = updated_runtime.as_ref().map(|runtime| runtime.weight);
+        let weight_delta = match (weight_before, weight_after) {
+            (Some(before), Some(after)) if before.is_finite() && after.is_finite() => {
+                Some(after - before)
+            }
+            _ => None,
+        };
         let probe_candidate = if is_probe {
             None
         } else {
             manager.mark_probe_started()
         };
-        (updated_runtime, probe_candidate)
+        (
+            updated_runtime,
+            probe_candidate,
+            ForwardProxyAttemptUpdate {
+                weight_before,
+                weight_after,
+                weight_delta,
+            },
+        )
     };
 
     if let Err(err) = insert_forward_proxy_attempt(
@@ -8213,6 +8267,8 @@ async fn record_forward_proxy_attempt(
     if let Some(candidate) = probe_candidate {
         spawn_penalized_forward_proxy_probe(state, candidate);
     }
+
+    attempt_update
 }
 
 fn spawn_penalized_forward_proxy_probe(state: Arc<AppState>, candidate: SelectedForwardProxy) {
@@ -8486,6 +8542,8 @@ struct ApiInvocation {
     requester_ip: Option<String>,
     #[sqlx(default)]
     prompt_cache_key: Option<String>,
+    #[sqlx(default)]
+    proxy_weight_delta: Option<f64>,
     #[sqlx(default)]
     cost_estimated: Option<i64>,
     #[sqlx(default)]
@@ -16531,6 +16589,10 @@ mod tests {
         assert!(payload["usageMissingReason"].is_null());
         assert_eq!(payload["requesterIp"], "198.51.100.42");
         assert_eq!(payload["promptCacheKey"], "pck-gzip-1");
+        assert!(
+            payload["proxyWeightDelta"].is_number(),
+            "proxy weight delta should be recorded for fresh proxy attempts"
+        );
 
         upstream_handle.abort();
     }
@@ -16596,7 +16658,7 @@ mod tests {
         .bind(SOURCE_PROXY)
         .bind("failed")
         .bind(
-            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-list-1\",\"proxyDisplayName\":\"jp-relay-01\"}",
+            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-list-1\",\"proxyDisplayName\":\"jp-relay-01\",\"proxyWeightDelta\":-0.68}",
         )
         .bind("{}")
         .execute(&state.pool)
@@ -16627,6 +16689,7 @@ mod tests {
         assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
         assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-list-1"));
         assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
+        assert_eq!(record.proxy_weight_delta, Some(-0.68));
     }
 
     #[tokio::test]
@@ -16679,6 +16742,7 @@ mod tests {
         assert_eq!(record.failure_kind, None);
         assert_eq!(record.requester_ip, None);
         assert_eq!(record.prompt_cache_key, None);
+        assert_eq!(record.proxy_weight_delta, None);
     }
 
     #[test]

@@ -31,6 +31,7 @@ const INVOCATION_FIXTURE = {
       cacheInputTokens: 109568,
       totalTokens: 113449,
       cost: 0.0281,
+      proxyWeightDelta: 0.55,
       tUpstreamTtfbMs: 105.5,
       tTotalMs: 7969.3,
     },
@@ -49,6 +50,7 @@ const INVOCATION_FIXTURE = {
       cacheInputTokens: 99072,
       totalTokens: 99319,
       cost: 0.0186,
+      proxyWeightDelta: -0.68,
       tUpstreamTtfbMs: 102.2,
       tTotalMs: 7348.7,
       errorMessage:
@@ -248,6 +250,8 @@ test.describe('InvocationTable layout regression', () => {
           await expect(listToggle).toBeVisible()
           await listToggle.click()
           await expect(listToggle).toHaveAttribute('aria-expanded', 'true')
+          await expect(page.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/)).toBeVisible()
+          await expect(page.getByText('+0.55')).toBeVisible()
 
           const viewportOverflow = await readViewportOverflow(page)
           test.info().annotations.push({
@@ -261,6 +265,8 @@ test.describe('InvocationTable layout regression', () => {
           const firstToggle = page.getByTestId('invocation-table-scroll').locator('tbody tr button').first()
           await firstToggle.click()
           await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
+          await expect(page.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/)).toBeVisible()
+          await expect(page.getByText('+0.55')).toBeVisible()
           const metricsAfterExpand = await readTableMetrics(page)
 
           test.info().annotations.push({

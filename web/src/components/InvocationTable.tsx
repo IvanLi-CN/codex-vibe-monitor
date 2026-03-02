@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Icon } from '@iconify/react'
 import type { ApiInvocation } from '../lib/api'
+import { formatProxyWeightDelta } from '../lib/invocation'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { Alert } from './ui/alert'
@@ -175,9 +176,11 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const detailPairs: Array<{ label: TranslationKey; value: string }> = [
           { label: 'table.details.invokeId', value: record.invokeId || FALLBACK_CELL },
           { label: 'table.details.source', value: record.source || FALLBACK_CELL },
+          { label: 'table.details.proxy', value: proxyDisplayName },
           { label: 'table.details.endpoint', value: record.endpoint || FALLBACK_CELL },
           { label: 'table.details.requesterIp', value: record.requesterIp || FALLBACK_CELL },
           { label: 'table.details.promptCacheKey', value: record.promptCacheKey || FALLBACK_CELL },
+          { label: 'table.details.proxyWeightDelta', value: formatProxyWeightDelta(record.proxyWeightDelta) },
           { label: 'table.details.failureKind', value: record.failureKind || FALLBACK_CELL },
         ]
         const timingPairs: Array<{ label: TranslationKey; value: string }> = [
