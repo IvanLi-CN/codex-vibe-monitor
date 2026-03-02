@@ -2781,7 +2781,9 @@ async fn list_invocations(
          failure_class, is_actionable, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta, \
+         CASE WHEN json_valid(payload) \
+           AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real') \
+           THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta, \
          cost_estimated, price_version, \
          request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
          response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
@@ -6063,7 +6065,9 @@ async fn persist_proxy_capture_record(
             is_actionable,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta,
+            CASE WHEN json_valid(payload)
+              AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real')
+              THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta,
             cost_estimated,
             price_version,
             request_raw_path,
@@ -16742,6 +16746,58 @@ mod tests {
         assert_eq!(record.failure_kind, None);
         assert_eq!(record.requester_ip, None);
         assert_eq!(record.prompt_cache_key, None);
+        assert_eq!(record.proxy_weight_delta, None);
+    }
+
+    #[tokio::test]
+    async fn list_invocations_ignores_non_numeric_proxy_weight_delta() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind("proxy-context-delta-text")
+        .bind("2026-02-25 10:02:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(
+            "{\"endpoint\":\"/v1/responses\",\"proxyDisplayName\":\"jp-relay-02\",\"proxyWeightDelta\":\"abc\"}",
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert non-numeric proxyWeightDelta invocation");
+
+        let Json(response) = list_invocations(
+            State(state),
+            Query(ListQuery {
+                limit: Some(10),
+                model: None,
+                status: None,
+            }),
+        )
+        .await
+        .expect("list invocations should ignore non-numeric proxyWeightDelta");
+
+        let record = response
+            .records
+            .into_iter()
+            .find(|item| item.invoke_id == "proxy-context-delta-text")
+            .expect("inserted invocation should be present");
+        assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-02"));
         assert_eq!(record.proxy_weight_delta, None);
     }
 

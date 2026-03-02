@@ -13,6 +13,7 @@ describe('formatProxyWeightDelta', () => {
   it('formats zero with explicit sign', () => {
     expect(formatProxyWeightDelta(0)).toBe('+0.00')
     expect(formatProxyWeightDelta(-0)).toBe('+0.00')
+    expect(formatProxyWeightDelta(-0.004)).toBe('+0.00')
   })
 
   it('falls back to em dash for missing or invalid values', () => {
