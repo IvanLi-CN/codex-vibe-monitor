@@ -47,7 +47,7 @@
 
 - `GET /api/invocations` 返回对象新增 `proxyWeightDelta?: number`。
 - 详情区代理信息粒度固定为“仅代理名称（proxyDisplayName）”。
-- 详情区权重变化固定为“仅Δ、带符号、两位小数”。
+- 详情区权重变化固定为“仅Δ、两位小数”，方向由箭头表示。
 - 当无值/不可计算时前端回退 `—`，不得报错。
 
 ### SHOULD
@@ -66,7 +66,7 @@
 - 新的 `/v1/responses` 或 `/v1/chat/completions` 调用完成后，后端在记录 forward proxy 尝试时计算权重 delta，并随 payload 落库。
 - 用户在 Dashboard/Live 展开任意调用详情时，看到：
   - 代理：命中代理展示名。
-  - 代理权重变化（本次）：形如 `+0.55` / `-0.68`。
+  - 代理权重变化（本次）：形如 `↑ 0.55` / `↓ 0.68`（数值不带符号）。
 
 ### Edge cases / errors
 
@@ -91,7 +91,7 @@
 ## 验收标准（Acceptance Criteria）
 
 - Given 新调用命中 forward proxy，When 查询 `/api/invocations`，Then 记录对象可返回 `proxyWeightDelta` 数值。
-- Given 用户展开详情，When 记录包含权重变化，Then 显示“代理权重变化（本次）”且格式为带符号两位小数。
+- Given 用户展开详情，When 记录包含权重变化，Then 显示“代理权重变化（本次）”且格式为箭头 + 无符号两位小数。
 - Given 历史记录或不可计算场景，When 展开详情，Then 字段显示 `—`。
 - Given payload 为 malformed JSON，When 请求 `/api/invocations`，Then 接口成功返回且 `proxyWeightDelta` 为空。
 - Given SSE 推送新 records，When 前端渲染详情，Then 与 HTTP 首屏字段一致。
@@ -147,7 +147,7 @@
 
 - 在 forward proxy attempt 记录函数内集中计算权重前后值，避免分散在各 capture 分支重复实现。
 - 继续复用 payload JSON 承载新增字段，保持 schema 稳定。
-- 前端格式化逻辑集中在组件函数中，统一处理符号、保留位数与空值回退。
+- 前端格式化逻辑集中在组件函数中，统一处理方向箭头、两位小数与空值回退。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -159,6 +159,7 @@
 
 - 2026-03-02: 初始化规格，冻结“最简代理信息 + 仅Δ + 历史不回填”口径。
 - 2026-03-02: 完成后端字段投影与详情展示改造，新增回归测试并通过 `cargo` 与 `web` 质量检查。
+- 2026-03-02: 根据产品反馈将详情展示调整为“彩色箭头 + 无符号两位小数”，并补充可访问性文案要求。
 
 ## 参考（References）
 
