@@ -251,7 +251,7 @@ test.describe('InvocationTable layout regression', () => {
           await listToggle.click()
           await expect(listToggle).toHaveAttribute('aria-expanded', 'true')
           await expect(page.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/)).toBeVisible()
-          await expect(page.getByText('+0.55')).toBeVisible()
+          await expect(page.getByText(/↑\s\+0\.55/)).toBeVisible()
 
           const viewportOverflow = await readViewportOverflow(page)
           test.info().annotations.push({
@@ -266,7 +266,7 @@ test.describe('InvocationTable layout regression', () => {
           await firstToggle.click()
           await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
           await expect(page.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/)).toBeVisible()
-          await expect(page.getByText('+0.55')).toBeVisible()
+          await expect(page.getByText(/↑\s\+0\.55/)).toBeVisible()
           const metricsAfterExpand = await readTableMetrics(page)
 
           test.info().annotations.push({
