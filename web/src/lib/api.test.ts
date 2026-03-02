@@ -108,6 +108,26 @@ describe('fetchForwardProxyLiveStats', () => {
                     failureCount: 99,
                   },
                 ],
+                weight24h: [
+                  {
+                    bucketStart: '2026-03-01T00:00:00Z',
+                    bucketEnd: '2026-03-01T01:00:00Z',
+                    sampleCount: 3,
+                    minWeight: 0.32,
+                    maxWeight: 0.95,
+                    avgWeight: 0.61,
+                    lastWeight: 0.88,
+                  },
+                  {
+                    bucketStart: '',
+                    bucketEnd: '',
+                    sampleCount: 99,
+                    minWeight: 1,
+                    maxWeight: 1,
+                    avgWeight: 1,
+                    lastWeight: 1,
+                  },
+                ],
               },
             ],
           }),
@@ -124,6 +144,46 @@ describe('fetchForwardProxyLiveStats', () => {
     expect(response.nodes[0].last24h).toHaveLength(1)
     expect(response.nodes[0].last24h[0].successCount).toBe(3)
     expect(response.nodes[0].last24h[0].failureCount).toBe(1)
+    expect(response.nodes[0].weight24h).toHaveLength(1)
+    expect(response.nodes[0].weight24h[0].sampleCount).toBe(3)
+    expect(response.nodes[0].weight24h[0].lastWeight).toBe(0.88)
+  })
+
+  it('falls back to empty weight buckets when backend payload omits weight24h', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            rangeStart: '2026-03-01T00:00:00Z',
+            rangeEnd: '2026-03-02T00:00:00Z',
+            bucketSeconds: 3600,
+            nodes: [
+              {
+                key: '__direct__',
+                source: 'direct',
+                displayName: 'Direct',
+                weight: 1,
+                penalized: false,
+                stats: {
+                  oneMinute: { attempts: 0 },
+                  fifteenMinutes: { attempts: 0 },
+                  oneHour: { attempts: 0 },
+                  oneDay: { attempts: 0 },
+                  sevenDays: { attempts: 0 },
+                },
+                last24h: [],
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }) as typeof fetch,
+    )
+
+    const response = await fetchForwardProxyLiveStats()
+    expect(response.nodes).toHaveLength(1)
+    expect(response.nodes[0].weight24h).toEqual([])
   })
 })
 

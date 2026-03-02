@@ -282,6 +282,16 @@ export interface ForwardProxyHourlyBucket {
   failureCount: number
 }
 
+export interface ForwardProxyWeightBucket {
+  bucketStart: string
+  bucketEnd: string
+  sampleCount: number
+  minWeight: number
+  maxWeight: number
+  avgWeight: number
+  lastWeight: number
+}
+
 export interface ForwardProxyLiveNode {
   key: string
   source: string
@@ -291,6 +301,7 @@ export interface ForwardProxyLiveNode {
   penalized: boolean
   stats: ForwardProxyNodeStats
   last24h: ForwardProxyHourlyBucket[]
+  weight24h: ForwardProxyWeightBucket[]
 }
 
 export interface ForwardProxyLiveStatsResponse {
@@ -459,6 +470,30 @@ function normalizeForwardProxyHourlyBucket(raw: unknown): ForwardProxyHourlyBuck
   }
 }
 
+function normalizeForwardProxyWeightBucket(raw: unknown): ForwardProxyWeightBucket | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const bucketStart = typeof payload.bucketStart === 'string' ? payload.bucketStart : ''
+  const bucketEnd = typeof payload.bucketEnd === 'string' ? payload.bucketEnd : ''
+  if (!bucketStart || !bucketEnd) return null
+  const sampleCount = normalizeFiniteNumber(payload.sampleCount) ?? 0
+  const minWeight = normalizeFiniteNumber(payload.minWeight)
+  const maxWeight = normalizeFiniteNumber(payload.maxWeight)
+  const avgWeight = normalizeFiniteNumber(payload.avgWeight)
+  const lastWeight = normalizeFiniteNumber(payload.lastWeight)
+  if (minWeight === undefined || maxWeight === undefined || avgWeight === undefined || lastWeight === undefined) {
+    return null
+  }
+  return {
+    bucketStart,
+    bucketEnd,
+    sampleCount,
+    minWeight,
+    maxWeight,
+    avgWeight,
+    lastWeight,
+  }
+}
+
 function normalizeForwardProxyLiveNode(raw: unknown): ForwardProxyLiveNode | null {
   const payload = (raw ?? {}) as Record<string, unknown>
   const base = normalizeForwardProxyNode(raw)
@@ -467,6 +502,10 @@ function normalizeForwardProxyLiveNode(raw: unknown): ForwardProxyLiveNode | nul
   const last24h = bucketsRaw
     .map(normalizeForwardProxyHourlyBucket)
     .filter((item): item is ForwardProxyHourlyBucket => item != null)
+  const weightBucketsRaw = Array.isArray(payload.weight24h) ? payload.weight24h : []
+  const weight24h = weightBucketsRaw
+    .map(normalizeForwardProxyWeightBucket)
+    .filter((item): item is ForwardProxyWeightBucket => item != null)
   return {
     key: base.key,
     source: base.source,
@@ -476,6 +515,7 @@ function normalizeForwardProxyLiveNode(raw: unknown): ForwardProxyLiveNode | nul
     penalized: base.penalized,
     stats: base.stats,
     last24h,
+    weight24h,
   }
 }
 

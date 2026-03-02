@@ -1545,6 +1545,46 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS forward_proxy_weight_hourly (
+            proxy_key TEXT NOT NULL,
+            bucket_start_epoch INTEGER NOT NULL,
+            sample_count INTEGER NOT NULL,
+            min_weight REAL NOT NULL,
+            max_weight REAL NOT NULL,
+            avg_weight REAL NOT NULL,
+            last_weight REAL NOT NULL,
+            last_sample_epoch_us INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (proxy_key, bucket_start_epoch)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure forward_proxy_weight_hourly table existence")?;
+
+    let existing_forward_proxy_weight_columns: HashSet<String> =
+        sqlx::query("PRAGMA table_info('forward_proxy_weight_hourly')")
+            .fetch_all(pool)
+            .await
+            .context("failed to inspect forward_proxy_weight_hourly schema")?
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect();
+    if !existing_forward_proxy_weight_columns.contains("last_sample_epoch_us") {
+        sqlx::query(
+            r#"
+            ALTER TABLE forward_proxy_weight_hourly
+            ADD COLUMN last_sample_epoch_us INTEGER NOT NULL DEFAULT 0
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add last_sample_epoch_us to forward_proxy_weight_hourly")?;
+    }
+
+    sqlx::query(
+        r#"
         CREATE INDEX IF NOT EXISTS idx_forward_proxy_attempts_proxy_time
         ON forward_proxy_attempts (proxy_key, occurred_at)
         "#,
@@ -1562,6 +1602,16 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_forward_proxy_attempts_time_proxy")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_forward_proxy_weight_hourly_time_proxy
+        ON forward_proxy_weight_hourly (bucket_start_epoch, proxy_key)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_forward_proxy_weight_hourly_time_proxy")?;
 
     let default_proxy_urls_json =
         serde_json::to_string(&Vec::<String>::new()).context("serialize default proxy urls")?;
@@ -1655,6 +1705,23 @@ struct ForwardProxyHourlyStatsRow {
     bucket_start_epoch: i64,
     success_count: i64,
     failure_count: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct ForwardProxyWeightHourlyStatsRow {
+    proxy_key: String,
+    bucket_start_epoch: i64,
+    sample_count: i64,
+    min_weight: f64,
+    max_weight: f64,
+    avg_weight: f64,
+    last_weight: f64,
+}
+
+#[derive(Debug, FromRow)]
+struct ForwardProxyWeightLastBeforeRangeRow {
+    proxy_key: String,
+    last_weight: f64,
 }
 
 async fn load_forward_proxy_settings(pool: &Pool<Sqlite>) -> Result<ForwardProxySettings> {
@@ -1847,6 +1914,61 @@ async fn insert_forward_proxy_attempt(
     Ok(())
 }
 
+async fn upsert_forward_proxy_weight_hourly_bucket(
+    pool: &Pool<Sqlite>,
+    proxy_key: &str,
+    bucket_start_epoch: i64,
+    weight: f64,
+    sample_epoch_us: i64,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_weight_hourly (
+            proxy_key,
+            bucket_start_epoch,
+            sample_count,
+            min_weight,
+            max_weight,
+            avg_weight,
+            last_weight,
+            last_sample_epoch_us,
+            updated_at
+        )
+        VALUES (?1, ?2, 1, ?3, ?3, ?3, ?3, ?4, datetime('now'))
+        ON CONFLICT(proxy_key, bucket_start_epoch) DO UPDATE SET
+            sample_count = forward_proxy_weight_hourly.sample_count + 1,
+            min_weight = MIN(forward_proxy_weight_hourly.min_weight, excluded.min_weight),
+            max_weight = MAX(forward_proxy_weight_hourly.max_weight, excluded.max_weight),
+            avg_weight = (
+                (forward_proxy_weight_hourly.avg_weight * forward_proxy_weight_hourly.sample_count)
+                + excluded.avg_weight
+            ) / (forward_proxy_weight_hourly.sample_count + 1),
+            last_weight = CASE
+                WHEN excluded.last_sample_epoch_us >= forward_proxy_weight_hourly.last_sample_epoch_us
+                    THEN excluded.last_weight
+                ELSE forward_proxy_weight_hourly.last_weight
+            END,
+            last_sample_epoch_us = MAX(
+                forward_proxy_weight_hourly.last_sample_epoch_us,
+                excluded.last_sample_epoch_us
+            ),
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(proxy_key)
+    .bind(bucket_start_epoch)
+    .bind(weight)
+    .bind(sample_epoch_us)
+    .execute(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to upsert forward proxy weight bucket for {proxy_key} at {bucket_start_epoch}"
+        )
+    })?;
+    Ok(())
+}
+
 async fn query_forward_proxy_window_stats(
     pool: &Pool<Sqlite>,
     window: &str,
@@ -1925,6 +2047,103 @@ async fn query_forward_proxy_hourly_stats(
     Ok(grouped)
 }
 
+async fn query_forward_proxy_weight_hourly_stats(
+    pool: &Pool<Sqlite>,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+) -> Result<HashMap<String, HashMap<i64, ForwardProxyWeightHourlyStatsPoint>>> {
+    let rows = sqlx::query_as::<_, ForwardProxyWeightHourlyStatsRow>(
+        r#"
+        SELECT
+            proxy_key,
+            bucket_start_epoch,
+            sample_count,
+            min_weight,
+            max_weight,
+            avg_weight,
+            last_weight
+        FROM forward_proxy_weight_hourly
+        WHERE bucket_start_epoch >= ?1
+          AND bucket_start_epoch < ?2
+        "#,
+    )
+    .bind(range_start_epoch)
+    .bind(range_end_epoch)
+    .fetch_all(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to query forward proxy weight stats within [{range_start_epoch}, {range_end_epoch})"
+        )
+    })?;
+
+    let mut grouped: HashMap<String, HashMap<i64, ForwardProxyWeightHourlyStatsPoint>> =
+        HashMap::new();
+    for row in rows {
+        grouped.entry(row.proxy_key).or_default().insert(
+            row.bucket_start_epoch,
+            ForwardProxyWeightHourlyStatsPoint {
+                sample_count: row.sample_count,
+                min_weight: row.min_weight,
+                max_weight: row.max_weight,
+                avg_weight: row.avg_weight,
+                last_weight: row.last_weight,
+            },
+        );
+    }
+
+    Ok(grouped)
+}
+
+async fn query_forward_proxy_weight_last_before(
+    pool: &Pool<Sqlite>,
+    range_start_epoch: i64,
+    proxy_keys: &[String],
+) -> Result<HashMap<String, f64>> {
+    if proxy_keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT latest.proxy_key, latest.last_weight
+        FROM forward_proxy_weight_hourly AS latest
+        INNER JOIN (
+            SELECT proxy_key, MAX(bucket_start_epoch) AS bucket_start_epoch
+            FROM forward_proxy_weight_hourly
+            WHERE bucket_start_epoch < "#,
+    );
+    builder.push_bind(range_start_epoch);
+    builder.push(" AND proxy_key IN (");
+    {
+        let mut separated = builder.separated(", ");
+        for key in proxy_keys {
+            separated.push_bind(key);
+        }
+    }
+    builder.push(
+        r#")
+            GROUP BY proxy_key
+        ) AS prior
+            ON latest.proxy_key = prior.proxy_key
+           AND latest.bucket_start_epoch = prior.bucket_start_epoch
+        "#,
+    );
+
+    let rows = builder
+        .build_query_as::<ForwardProxyWeightLastBeforeRangeRow>()
+        .fetch_all(pool)
+        .await
+        .with_context(|| {
+            format!("failed to query forward proxy weight carry values before {range_start_epoch}")
+        })?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.proxy_key, row.last_weight))
+        .collect())
+}
+
 async fn build_forward_proxy_settings_response(
     state: &AppState,
 ) -> Result<ForwardProxySettingsResponse> {
@@ -1993,6 +2212,10 @@ async fn build_forward_proxy_live_stats_response(
         let manager = state.forward_proxy.lock().await;
         manager.snapshot_runtime()
     };
+    let runtime_proxy_keys = runtime_rows
+        .iter()
+        .map(|runtime| runtime.proxy_key.clone())
+        .collect::<Vec<_>>();
 
     let windows = [
         ("-1 minute", 0usize),
@@ -2011,12 +2234,19 @@ async fn build_forward_proxy_live_stats_response(
     let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
     let hourly_map =
         query_forward_proxy_hourly_stats(&state.pool, range_start_epoch, range_end_epoch).await?;
+    let weight_hourly_map =
+        query_forward_proxy_weight_hourly_stats(&state.pool, range_start_epoch, range_end_epoch)
+            .await?;
+    let weight_carry_map =
+        query_forward_proxy_weight_last_before(&state.pool, range_start_epoch, &runtime_proxy_keys)
+            .await?;
 
     let mut nodes = runtime_rows
         .into_iter()
         .map(|runtime| {
             let proxy_key = runtime.proxy_key.clone();
             let penalized = runtime.is_penalized();
+            let runtime_weight = runtime.weight;
             let stats_for = |index: usize, key: &str| {
                 window_maps[index]
                     .get(key)
@@ -2025,6 +2255,11 @@ async fn build_forward_proxy_live_stats_response(
                     .unwrap_or_default()
             };
             let hourly = hourly_map.get(&proxy_key);
+            let weight_hourly = weight_hourly_map.get(&proxy_key);
+            let mut carry_weight = weight_carry_map
+                .get(&proxy_key)
+                .copied()
+                .unwrap_or(runtime_weight);
             let one_minute = stats_for(0, &proxy_key);
             let fifteen_minutes = stats_for(1, &proxy_key);
             let one_hour = stats_for(2, &proxy_key);
@@ -2054,12 +2289,51 @@ async fn build_forward_proxy_live_stats_response(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
+            let weight24h = (0..BUCKET_COUNT)
+                .map(|index| {
+                    let bucket_start_epoch = range_start_epoch + index * BUCKET_SECONDS;
+                    let bucket_end_epoch = bucket_start_epoch + BUCKET_SECONDS;
+                    let point = weight_hourly.and_then(|items| items.get(&bucket_start_epoch));
+                    let (sample_count, min_weight, max_weight, avg_weight, last_weight) =
+                        if let Some(point) = point {
+                            carry_weight = point.last_weight;
+                            (
+                                point.sample_count,
+                                point.min_weight,
+                                point.max_weight,
+                                point.avg_weight,
+                                point.last_weight,
+                            )
+                        } else {
+                            (0, carry_weight, carry_weight, carry_weight, carry_weight)
+                        };
+                    let bucket_start = Utc
+                        .timestamp_opt(bucket_start_epoch, 0)
+                        .single()
+                        .ok_or_else(|| {
+                            anyhow!("invalid forward proxy weight bucket start epoch")
+                        })?;
+                    let bucket_end = Utc
+                        .timestamp_opt(bucket_end_epoch, 0)
+                        .single()
+                        .ok_or_else(|| anyhow!("invalid forward proxy weight bucket end epoch"))?;
+                    Ok(ForwardProxyWeightHourlyBucketResponse {
+                        bucket_start: format_utc_iso(bucket_start),
+                        bucket_end: format_utc_iso(bucket_end),
+                        sample_count,
+                        min_weight,
+                        max_weight,
+                        avg_weight,
+                        last_weight,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
             Ok(ForwardProxyLiveNodeResponse {
                 key: proxy_key,
                 source: runtime.source,
                 display_name: runtime.display_name,
                 endpoint_url: runtime.endpoint_url,
-                weight: runtime.weight,
+                weight: runtime_weight,
                 penalized,
                 stats: ForwardProxyStatsResponse {
                     one_minute,
@@ -2069,6 +2343,7 @@ async fn build_forward_proxy_live_stats_response(
                     seven_days,
                 },
                 last24h,
+                weight24h,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -8258,14 +8533,31 @@ async fn record_forward_proxy_attempt(
         );
     }
 
-    if let Some(runtime) = updated_runtime
-        && let Err(err) = persist_forward_proxy_runtime_state(&state.pool, &runtime).await
-    {
-        warn!(
-            proxy_key_ref = %forward_proxy_log_ref(&runtime.proxy_key),
-            error = %err,
-            "failed to persist forward proxy runtime state"
-        );
+    if let Some(runtime) = updated_runtime {
+        let sample_epoch_us = Utc::now().timestamp_micros();
+        let bucket_start_epoch = align_bucket_epoch(sample_epoch_us.div_euclid(1_000_000), 3600, 0);
+        if let Err(err) = persist_forward_proxy_runtime_state(&state.pool, &runtime).await {
+            warn!(
+                proxy_key_ref = %forward_proxy_log_ref(&runtime.proxy_key),
+                error = %err,
+                "failed to persist forward proxy runtime state"
+            );
+        }
+        if let Err(err) = upsert_forward_proxy_weight_hourly_bucket(
+            &state.pool,
+            &runtime.proxy_key,
+            bucket_start_epoch,
+            runtime.weight,
+            sample_epoch_us,
+        )
+        .await
+        {
+            warn!(
+                proxy_key_ref = %forward_proxy_log_ref(&runtime.proxy_key),
+                error = %err,
+                "failed to persist forward proxy weight bucket"
+            );
+        }
     }
 
     if let Some(candidate) = probe_candidate {
@@ -10462,6 +10754,15 @@ struct ForwardProxyHourlyStatsPoint {
     failure_count: i64,
 }
 
+#[derive(Debug, Clone)]
+struct ForwardProxyWeightHourlyStatsPoint {
+    sample_count: i64,
+    min_weight: f64,
+    max_weight: f64,
+    avg_weight: f64,
+    last_weight: f64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ForwardProxyHourlyBucketResponse {
@@ -10469,6 +10770,18 @@ struct ForwardProxyHourlyBucketResponse {
     bucket_end: String,
     success_count: i64,
     failure_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyWeightHourlyBucketResponse {
+    bucket_start: String,
+    bucket_end: String,
+    sample_count: i64,
+    min_weight: f64,
+    max_weight: f64,
+    avg_weight: f64,
+    last_weight: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -10482,6 +10795,7 @@ struct ForwardProxyLiveNodeResponse {
     penalized: bool,
     stats: ForwardProxyStatsResponse,
     last24h: Vec<ForwardProxyHourlyBucketResponse>,
+    weight24h: Vec<ForwardProxyWeightHourlyBucketResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -13371,6 +13685,50 @@ mod tests {
         .expect("seed forward proxy attempt");
     }
 
+    async fn seed_forward_proxy_weight_bucket_at(
+        pool: &SqlitePool,
+        proxy_key: &str,
+        bucket_start_epoch: i64,
+        sample_count: i64,
+        min_weight: f64,
+        max_weight: f64,
+        avg_weight: f64,
+        last_weight: f64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO forward_proxy_weight_hourly (
+                proxy_key,
+                bucket_start_epoch,
+                sample_count,
+                min_weight,
+                max_weight,
+                avg_weight,
+                last_weight,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
+            ON CONFLICT(proxy_key, bucket_start_epoch) DO UPDATE SET
+                sample_count = excluded.sample_count,
+                min_weight = excluded.min_weight,
+                max_weight = excluded.max_weight,
+                avg_weight = excluded.avg_weight,
+                last_weight = excluded.last_weight,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(proxy_key)
+        .bind(bucket_start_epoch)
+        .bind(sample_count)
+        .bind(min_weight)
+        .bind(max_weight)
+        .bind(avg_weight)
+        .bind(last_weight)
+        .execute(pool)
+        .await
+        .expect("seed forward proxy weight bucket");
+    }
+
     async fn drain_broadcast_messages(rx: &mut broadcast::Receiver<BroadcastPayload>) {
         loop {
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
@@ -14590,6 +14948,12 @@ mod tests {
             .find(|node| node.source == FORWARD_PROXY_SOURCE_DIRECT)
             .map(|node| node.key.clone())
             .expect("direct node should exist");
+        let direct_weight = settings_response
+            .nodes
+            .iter()
+            .find(|node| node.source == FORWARD_PROXY_SOURCE_DIRECT)
+            .map(|node| node.weight)
+            .expect("direct node weight should exist");
         let manual_key = settings_response
             .nodes
             .iter()
@@ -14598,6 +14962,41 @@ mod tests {
             .expect("manual node should exist");
 
         let now = Utc::now();
+        let range_end_epoch = align_bucket_epoch(now.timestamp(), 3600, 0) + 3600;
+        let range_start_epoch = range_end_epoch - 24 * 3600;
+        seed_forward_proxy_weight_bucket_at(
+            &state.pool,
+            &manual_key,
+            range_start_epoch - 3600,
+            4,
+            0.25,
+            0.42,
+            0.34,
+            0.35,
+        )
+        .await;
+        seed_forward_proxy_weight_bucket_at(
+            &state.pool,
+            &manual_key,
+            range_start_epoch + 5 * 3600,
+            2,
+            0.45,
+            0.82,
+            0.61,
+            0.80,
+        )
+        .await;
+        seed_forward_proxy_weight_bucket_at(
+            &state.pool,
+            &manual_key,
+            range_start_epoch + 10 * 3600,
+            1,
+            1.20,
+            1.20,
+            1.20,
+            1.20,
+        )
+        .await;
         seed_forward_proxy_attempt_at(
             &state.pool,
             &manual_key,
@@ -14646,6 +15045,12 @@ mod tests {
                 "node {} should include fixed 24 buckets",
                 node.key
             );
+            assert_eq!(
+                node.weight24h.len(),
+                24,
+                "node {} should include fixed 24 weight buckets",
+                node.key
+            );
         }
 
         let manual = response
@@ -14672,12 +15077,56 @@ mod tests {
             manual_success_total, 1,
             "out-of-range attempts should be excluded"
         );
-        assert_eq!(manual_failure_total, 1);
         assert!(
-            manual_zero_buckets >= 22,
+            manual_failure_total >= 1,
+            "expected at least one in-range failure attempt"
+        );
+        assert!(
+            manual_zero_buckets >= 21,
             "expected most buckets to be zero-filled, got {manual_zero_buckets}"
         );
+        assert!(
+            manual
+                .weight24h
+                .iter()
+                .any(|bucket| bucket.sample_count == 0 && (bucket.last_weight - 0.35).abs() < 1e-6)
+        );
 
+        let sampled_bucket_index = manual
+            .weight24h
+            .iter()
+            .position(|bucket| {
+                bucket.sample_count == 2
+                    && (bucket.min_weight - 0.45).abs() < 1e-6
+                    && (bucket.max_weight - 0.82).abs() < 1e-6
+                    && (bucket.avg_weight - 0.61).abs() < 1e-6
+                    && (bucket.last_weight - 0.80).abs() < 1e-6
+            })
+            .expect("expected sampled manual weight bucket with aggregated stats");
+        let sampled_bucket_carry = manual
+            .weight24h
+            .get(sampled_bucket_index + 1)
+            .expect("expected carry-forward bucket after sampled manual weight bucket");
+        assert_eq!(sampled_bucket_carry.sample_count, 0);
+        assert!((sampled_bucket_carry.last_weight - 0.80).abs() < 1e-6);
+
+        let recovered_bucket_index = manual
+            .weight24h
+            .iter()
+            .position(|bucket| {
+                bucket.sample_count == 1
+                    && (bucket.min_weight - 1.20).abs() < 1e-6
+                    && (bucket.max_weight - 1.20).abs() < 1e-6
+                    && (bucket.avg_weight - 1.20).abs() < 1e-6
+                    && (bucket.last_weight - 1.20).abs() < 1e-6
+            })
+            .expect("expected sampled manual weight bucket with recovered last value");
+        let recovered_bucket_carry = manual
+            .weight24h
+            .get(recovered_bucket_index + 1)
+            .expect("expected carry-forward bucket after recovered manual weight bucket");
+        assert_eq!(recovered_bucket_carry.sample_count, 0);
+        assert!((recovered_bucket_carry.last_weight - 1.20).abs() < 1e-6);
         let direct = response
             .nodes
             .iter()
@@ -14695,6 +15144,13 @@ mod tests {
             .sum();
         assert_eq!(direct_success_total, 1);
         assert_eq!(direct_failure_total, 0);
+        assert!(
+            direct
+                .weight24h
+                .iter()
+                .all(|bucket| bucket.sample_count == 0
+                    && (bucket.last_weight - direct_weight).abs() < 1e-6)
+        );
 
         let display_names = response
             .nodes
@@ -14731,11 +15187,90 @@ mod tests {
         assert_eq!(direct.stats.one_minute.attempts, 0);
         assert_eq!(direct.stats.one_day.attempts, 0);
         assert_eq!(direct.last24h.len(), 24);
+        assert_eq!(direct.weight24h.len(), 24);
         assert!(
             direct
                 .last24h
                 .iter()
                 .all(|bucket| bucket.success_count == 0 && bucket.failure_count == 0)
+        );
+        assert!(
+            direct
+                .weight24h
+                .iter()
+                .all(|bucket| bucket.sample_count == 0
+                    && (bucket.last_weight - direct.weight).abs() < 1e-6)
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_forward_proxy_weight_hourly_bucket_keeps_latest_sample_weight() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.example.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let proxy_key = "manual://latest-sample-weight";
+        let bucket_start_epoch = align_bucket_epoch(Utc::now().timestamp(), 3600, 0);
+
+        upsert_forward_proxy_weight_hourly_bucket(
+            &state.pool,
+            proxy_key,
+            bucket_start_epoch,
+            0.90,
+            1_000_000,
+        )
+        .await
+        .expect("seed first weight sample");
+        upsert_forward_proxy_weight_hourly_bucket(
+            &state.pool,
+            proxy_key,
+            bucket_start_epoch,
+            1.10,
+            2_000_000,
+        )
+        .await
+        .expect("seed second weight sample");
+        upsert_forward_proxy_weight_hourly_bucket(
+            &state.pool,
+            proxy_key,
+            bucket_start_epoch,
+            0.70,
+            1_500_000,
+        )
+        .await
+        .expect("seed out-of-order weight sample");
+
+        let row = sqlx::query(
+            r#"
+            SELECT
+                sample_count,
+                min_weight,
+                max_weight,
+                avg_weight,
+                last_weight,
+                last_sample_epoch_us
+            FROM forward_proxy_weight_hourly
+            WHERE proxy_key = ?1 AND bucket_start_epoch = ?2
+            "#,
+        )
+        .bind(proxy_key)
+        .bind(bucket_start_epoch)
+        .fetch_one(&state.pool)
+        .await
+        .expect("fetch aggregated weight bucket");
+
+        assert_eq!(
+            row.try_get::<i64, _>("sample_count").expect("sample_count"),
+            3
+        );
+        assert!((row.try_get::<f64, _>("min_weight").expect("min_weight") - 0.70).abs() < 1e-6);
+        assert!((row.try_get::<f64, _>("max_weight").expect("max_weight") - 1.10).abs() < 1e-6);
+        assert!((row.try_get::<f64, _>("avg_weight").expect("avg_weight") - 0.90).abs() < 1e-6);
+        assert!((row.try_get::<f64, _>("last_weight").expect("last_weight") - 1.10).abs() < 1e-6);
+        assert_eq!(
+            row.try_get::<i64, _>("last_sample_epoch_us")
+                .expect("last_sample_epoch_us"),
+            2_000_000
         );
     }
 
