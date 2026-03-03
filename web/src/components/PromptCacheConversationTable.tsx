@@ -45,6 +45,12 @@ function formatNumber(value: number, formatter: Intl.NumberFormat) {
   return formatter.format(value)
 }
 
+function formatDateLabel(raw: string, formatter: Intl.DateTimeFormat) {
+  const value = new Date(raw)
+  if (Number.isNaN(value.getTime())) return raw || FALLBACK_CELL
+  return formatter.format(value)
+}
+
 function buildSegments(
   points: PromptCacheConversationRequestPoint[],
   rangeStartEpoch: number,
@@ -278,7 +284,76 @@ export function PromptCacheConversationTable({ stats, isLoading, error }: Prompt
 
   return (
     <div className="overflow-hidden rounded-xl border border-base-300/75 bg-base-100/55">
-      <table className="w-full table-fixed text-[11px] sm:text-xs">
+      <div className="space-y-3 p-3 sm:hidden">
+        {stats.conversations.map((conversation) => {
+          const createdAtLabel = formatDateLabel(conversation.createdAt, dateFormatter)
+          const lastActivityLabel = formatDateLabel(conversation.lastActivityAt, dateFormatter)
+
+          return (
+            <article
+              key={`${conversation.promptCacheKey}-mobile`}
+              className="space-y-3 rounded-lg border border-base-300/70 bg-base-100/70 p-3"
+            >
+              <div className="space-y-1">
+                <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                  {t('live.conversations.table.promptCacheKey')}
+                </div>
+                <div className="break-all font-mono text-xs">{conversation.promptCacheKey}</div>
+              </div>
+
+              <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                <div>
+                  <dt className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                    {t('live.conversations.table.requestCount')}
+                  </dt>
+                  <dd>{formatNumber(conversation.requestCount, numberFormatter)}</dd>
+                </div>
+                <div>
+                  <dt className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                    {t('live.conversations.table.totalTokens')}
+                  </dt>
+                  <dd>{formatNumber(conversation.totalTokens, numberFormatter)}</dd>
+                </div>
+                <div>
+                  <dt className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                    {t('live.conversations.table.totalCost')}
+                  </dt>
+                  <dd>
+                    {Number.isFinite(conversation.totalCost) ? currencyFormatter.format(conversation.totalCost) : FALLBACK_CELL}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                    {t('live.conversations.table.createdAt')}
+                  </dt>
+                  <dd>{createdAtLabel}</dd>
+                </div>
+                <div className="col-span-2">
+                  <dt className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                    {t('live.conversations.table.lastActivityAt')}
+                  </dt>
+                  <dd>{lastActivityLabel}</dd>
+                </div>
+              </dl>
+
+              <div className="space-y-1">
+                <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                  {t('live.conversations.table.chart24h')}
+                </div>
+                <ConversationSparkline
+                  conversation={conversation}
+                  rangeStart={rangeStart}
+                  rangeEnd={rangeEnd}
+                  localeTag={localeTag}
+                  tooltipLabels={tooltipLabels}
+                />
+              </div>
+            </article>
+          )
+        })}
+      </div>
+
+      <table className="hidden w-full table-fixed text-xs sm:table">
         <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
           <tr>
             <th className="w-[22%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
@@ -306,12 +381,8 @@ export function PromptCacheConversationTable({ stats, isLoading, error }: Prompt
         </thead>
         <tbody className="divide-y divide-base-300/65">
           {stats.conversations.map((conversation) => {
-            const createdAt = new Date(conversation.createdAt)
-            const lastActivityAt = new Date(conversation.lastActivityAt)
-            const createdAtLabel = Number.isNaN(createdAt.getTime()) ? conversation.createdAt : dateFormatter.format(createdAt)
-            const lastActivityLabel = Number.isNaN(lastActivityAt.getTime())
-              ? conversation.lastActivityAt
-              : dateFormatter.format(lastActivityAt)
+            const createdAtLabel = formatDateLabel(conversation.createdAt, dateFormatter)
+            const lastActivityLabel = formatDateLabel(conversation.lastActivityAt, dateFormatter)
 
             return (
               <tr key={conversation.promptCacheKey} className="transition-colors hover:bg-primary/6">

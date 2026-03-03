@@ -50,6 +50,8 @@ describe('PromptCacheConversationTable', () => {
     expect(html).toContain('pck-chat-001')
     expect(html).toContain('Prompt Cache Key')
     expect(html).toContain('24h Token 累计')
+    expect(html).toContain('sm:hidden')
+    expect(html).toContain('sm:table')
     expect(html).toContain('stroke="oklch(var(--color-success) / 0.95)"')
     expect(html).toContain('stroke="oklch(var(--color-error) / 0.92)"')
   })
