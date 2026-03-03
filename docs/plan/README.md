@@ -56,7 +56,7 @@
 | ----: | ------------------------------ | ------ | ---------------------------------------------------- | ---------- | ------------------------------------------------ |
 |  0001 | 接入 Claude Relay 统计源       | 待实现 | `0001:claude-relay-api-stats/PLAN.md`                | 2026-01-16 | -                                                |
 |  0002 | PR 标签驱动发版                | 已完成 | `0002:pr-label-release/PLAN.md`                      | 2026-02-19 | PR #36                                           |
-|  0003 | 开发环境 devctl+zellij 保活    | 已完成 | `0003:dev-runtime-service-manager/PLAN.md`           | 2026-02-20 | PR #37                                           |
+|  0003 | 开发环境 devctl+zellij 保活    | 已完成 | `0003:dev-runtime-service-manager/PLAN.md`           | 2026-02-20 | PR #37；历史方案（已弃用，2026-03-03）           |
 |  0004 | 统计按浏览器时区自然日         | 已完成 | `0004:reporting-timezone-natural-day/PLAN.md`        | 2026-02-20 | PR #38                                           |
 |  0005 | OpenAI 反向代理透传            | 已完成 | `0005:openai-reverse-proxy/PLAN.md`                  | 2026-02-22 | PR #40                                           |
 |  0006 | 代理模型列表劫持与合并         | 已完成 | `0006:proxy-model-list-hijack/PLAN.md`               | 2026-02-22 | PR #41                                           |

@@ -19,45 +19,16 @@
 
 ## Development Runtime (Background, Non-blocking)
 
-This workflow avoids blocking the shell and strictly prohibits using `alarm` for long‑running services. The only acceptable use of short timeouts is for one‑off, non‑service commands (e.g., a build), never for dev servers.
+Use non-blocking runtime management for long-lived services, but do not require any specific process manager.
 
-- Always run long-lived dev services via `devctl` (Zellij background sessions), either directly or through `scripts/` wrappers:
-  - Backend start: `./scripts/start-backend.sh`
-  - Frontend start: `./scripts/start-frontend.sh`
-  - Status: `./scripts/dev-status.sh`
-  - Stop: `./scripts/stop-backend.sh` / `./scripts/stop-frontend.sh`
-
-- Do **not** launch these services by hand with ad-hoc `nohup`/`cargo run`/`npm run dev` commands.
-- Do **not** use `alarm` for any long-running service (backend, Vite); it is only allowed for one-off commands that might hang.
-
-Service management (recommended patterns)
-
-- Backend (Rust, port `8080`):
-  - Start (detached via zellij):
-    - `~/.codex/bin/devctl --root $(pwd) up backend -- env RUST_LOG=info cargo run`
-  - Readiness (max 60s):
-    - `SECS=0; until curl -sS -m 1 http://127.0.0.1:8080/health | grep -q ok; do sleep 1; SECS=$((SECS+1)); if [ $SECS -ge 60 ]; then echo 'backend not ready'; ~/.codex/bin/devctl --root $(pwd) logs backend -n 200; exit 1; fi; done`
-  - Logs:
-    - `~/.codex/bin/devctl --root $(pwd) logs backend -n 200`
-  - Stop:
-    - `~/.codex/bin/devctl --root $(pwd) down backend`
-
-- Front-end (Vite, port `60080`):
-  - Start (detached via zellij):
-    - `~/.codex/bin/devctl --root $(pwd) up frontend -- bash -lc 'cd web && npm run dev -- --host 127.0.0.1 --port 60080 --strictPort true'`
-  - Readiness (max 90s):
-    - `SECS=0; until curl -sS -m 1 http://127.0.0.1:60080/ >/dev/null; do sleep 1; SECS=$((SECS+1)); if [ $SECS -ge 90 ]; then echo 'frontend not ready'; ~/.codex/bin/devctl --root $(pwd) logs frontend -n 200; exit 1; fi; done`
-  - Logs:
-    - `~/.codex/bin/devctl --root $(pwd) logs frontend -n 200`
-  - Stop:
-    - `~/.codex/bin/devctl --root $(pwd) down frontend`
-
-Operational notes
-
-- One service per zellij session; stopping is always `devctl down <service>` (focus-independent).
-- Logs are written to `.codex/logs/<service>.log` so viewing does not depend on focused panes.
-- If a port is in use, the wrapper scripts will refuse to start and you must resolve the conflict manually.
-- Vite dev server proxies to the backend as configured in `web/vite.config.ts`.
+- Backend start: `cargo run` (default `127.0.0.1:8080`)
+- Frontend start: `cd web && npm install && npm run dev -- --host 127.0.0.1 --port 60080`
+- Readiness checks:
+  - Backend: `curl -sS -m 1 http://127.0.0.1:8080/health | grep -q ok`
+  - Frontend: `curl -sS -m 1 http://127.0.0.1:60080/ >/dev/null`
+- If any required port is occupied, resolve the conflict before starting services.
+- Keep logs and process ownership explicit so services can be stopped reliably.
+- Do not use `alarm` for long-running services; it is only suitable for one-off commands.
 
 ## Coding Style & Naming Conventions
 
