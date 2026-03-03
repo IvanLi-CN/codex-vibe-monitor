@@ -51,7 +51,7 @@ use std::io::{self, Read, Write};
 use tokio::{
     net::{TcpListener, TcpStream},
     process::{Child, Command},
-    sync::{Mutex, RwLock, Semaphore, broadcast, mpsc},
+    sync::{Mutex, Notify, RwLock, Semaphore, broadcast, mpsc},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, sleep, timeout},
 };
@@ -152,6 +152,8 @@ const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
 const DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP: bool = true;
 const ENV_CORS_ALLOWED_ORIGINS: &str = "XY_CORS_ALLOWED_ORIGINS";
+const PROMPT_CACHE_CONVERSATION_DEFAULT_LIMIT: i64 = 50;
+const PROMPT_CACHE_CONVERSATION_CACHE_TTL_SECS: u64 = 5;
 const PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.3-codex",
     "gpt-5.2-codex",
@@ -368,6 +370,9 @@ async fn main() -> Result<()> {
         forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
         pricing_settings_update_lock: Arc::new(Mutex::new(())),
         pricing_catalog,
+        prompt_cache_conversation_cache: Arc::new(Mutex::new(
+            PromptCacheConversationsCacheState::default(),
+        )),
     });
 
     if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
@@ -607,6 +612,10 @@ async fn spawn_http_server(
         .route("/api/stats/errors", get(fetch_error_distribution))
         .route("/api/stats/failures/summary", get(fetch_failure_summary))
         .route("/api/stats/errors/others", get(fetch_other_errors))
+        .route(
+            "/api/stats/prompt-cache-conversations",
+            get(fetch_prompt_cache_conversations),
+        )
         .route("/api/quota/latest", get(latest_quota_snapshot))
         .route("/events", get(sse_stream))
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
@@ -1297,6 +1306,19 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_codex_invocations_failure_class_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_occurred_at
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at")?;
 
     sqlx::query(
         r#"
@@ -3165,6 +3187,274 @@ async fn fetch_forward_proxy_live_stats(
 ) -> Result<Json<ForwardProxyLiveStatsResponse>, ApiError> {
     let response = build_forward_proxy_live_stats_response(state.as_ref()).await?;
     Ok(Json(response))
+}
+
+async fn fetch_prompt_cache_conversations(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PromptCacheConversationsQuery>,
+) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
+    let limit = normalize_prompt_cache_conversation_limit(params.limit);
+    let response = fetch_prompt_cache_conversations_cached(state.as_ref(), limit).await?;
+    Ok(Json(response))
+}
+
+fn normalize_prompt_cache_conversation_limit(raw: Option<i64>) -> i64 {
+    match raw {
+        Some(value @ (20 | 50 | 100)) => value,
+        _ => PROMPT_CACHE_CONVERSATION_DEFAULT_LIMIT,
+    }
+}
+
+async fn fetch_prompt_cache_conversations_cached(
+    state: &AppState,
+    limit: i64,
+) -> Result<PromptCacheConversationsResponse> {
+    loop {
+        let mut wait_on: Option<Arc<Notify>> = None;
+        {
+            let mut cache = state.prompt_cache_conversation_cache.lock().await;
+            if let Some(entry) = cache.entries.get(&limit)
+                && entry.cached_at.elapsed()
+                    <= Duration::from_secs(PROMPT_CACHE_CONVERSATION_CACHE_TTL_SECS)
+            {
+                return Ok(entry.response.clone());
+            }
+
+            if let Some(notify) = cache.in_flight.get(&limit) {
+                wait_on = Some(notify.clone());
+            } else {
+                cache.in_flight.insert(limit, Arc::new(Notify::new()));
+            }
+        }
+
+        if let Some(notify) = wait_on {
+            notify.notified().await;
+            continue;
+        }
+
+        let result = build_prompt_cache_conversations_response(state, limit).await;
+
+        let mut cache = state.prompt_cache_conversation_cache.lock().await;
+        if let Some(notify) = cache.in_flight.remove(&limit) {
+            if let Ok(response) = &result {
+                cache.entries.insert(
+                    limit,
+                    PromptCacheConversationsCacheEntry {
+                        cached_at: Instant::now(),
+                        response: response.clone(),
+                    },
+                );
+            }
+            notify.notify_waiters();
+        }
+
+        return result;
+    }
+}
+
+async fn build_prompt_cache_conversations_response(
+    state: &AppState,
+    limit: i64,
+) -> Result<PromptCacheConversationsResponse> {
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let range_end = Utc::now();
+    let range_start = range_end - ChronoDuration::hours(24);
+    let range_start_bound = db_occurred_at_lower_bound(range_start);
+
+    let aggregates = query_prompt_cache_conversation_aggregates(
+        &state.pool,
+        &range_start_bound,
+        source_scope,
+        limit,
+    )
+    .await?;
+    if aggregates.is_empty() {
+        return Ok(PromptCacheConversationsResponse {
+            range_start: format_utc_iso(range_start),
+            range_end: format_utc_iso(range_end),
+            conversations: Vec::new(),
+        });
+    }
+
+    let selected_keys = aggregates
+        .iter()
+        .map(|row| row.prompt_cache_key.clone())
+        .collect::<Vec<_>>();
+    let events = query_prompt_cache_conversation_events(
+        &state.pool,
+        &range_start_bound,
+        source_scope,
+        &selected_keys,
+    )
+    .await?;
+
+    let mut grouped_events: HashMap<String, Vec<PromptCacheConversationRequestPointResponse>> =
+        HashMap::new();
+    for row in events {
+        let status = row.status.trim().to_string();
+        let status = if status.is_empty() {
+            "unknown".to_string()
+        } else {
+            status
+        };
+        let is_success = status.eq_ignore_ascii_case("success");
+        let request_tokens = row.request_tokens.max(0);
+        let points = grouped_events.entry(row.prompt_cache_key).or_default();
+        let cumulative_tokens = points
+            .last()
+            .map(|point| point.cumulative_tokens)
+            .unwrap_or(0)
+            + request_tokens;
+        points.push(PromptCacheConversationRequestPointResponse {
+            occurred_at: row.occurred_at,
+            status,
+            is_success,
+            request_tokens,
+            cumulative_tokens,
+        });
+    }
+
+    let conversations = aggregates
+        .into_iter()
+        .map(|row| PromptCacheConversationResponse {
+            prompt_cache_key: row.prompt_cache_key.clone(),
+            request_count: row.request_count,
+            total_tokens: row.total_tokens,
+            total_cost: row.total_cost,
+            created_at: row.created_at,
+            last_activity_at: row.last_activity_at,
+            last24h_requests: grouped_events
+                .remove(&row.prompt_cache_key)
+                .unwrap_or_default(),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(PromptCacheConversationsResponse {
+        range_start: format_utc_iso(range_start),
+        range_end: format_utc_iso(range_end),
+        conversations,
+    })
+}
+
+async fn query_prompt_cache_conversation_aggregates(
+    pool: &Pool<Sqlite>,
+    range_start_bound: &str,
+    source_scope: InvocationSourceScope,
+    limit: i64,
+) -> Result<Vec<PromptCacheConversationAggregateRow>> {
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "WITH active AS (\
+            SELECT ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(
+            " AS prompt_cache_key, MIN(occurred_at) AS first_seen_24h \
+             FROM codex_invocations \
+             WHERE occurred_at >= ",
+        )
+        .push_bind(range_start_bound);
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(KEY_EXPR)
+        .push(
+            " <> '' \
+             GROUP BY prompt_cache_key\
+         ), aggregates AS (\
+            SELECT ",
+        )
+        .push(KEY_EXPR)
+        .push(
+            " AS prompt_cache_key, \
+                 COUNT(*) AS request_count, \
+                 COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+                 COALESCE(SUM(cost), 0.0) AS total_cost, \
+                 MIN(occurred_at) AS created_at, \
+                 MAX(occurred_at) AS last_activity_at \
+             FROM codex_invocations \
+             WHERE ",
+        )
+        .push(KEY_EXPR)
+        .push(" IN (SELECT prompt_cache_key FROM active)");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query
+        .push(
+            " GROUP BY prompt_cache_key\
+         ) \
+         SELECT prompt_cache_key, request_count, total_tokens, total_cost, created_at, last_activity_at \
+         FROM aggregates \
+         ORDER BY created_at DESC \
+         LIMIT ",
+        )
+        .push_bind(limit);
+
+    query
+        .build_query_as::<PromptCacheConversationAggregateRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn query_prompt_cache_conversation_events(
+    pool: &Pool<Sqlite>,
+    range_start_bound: &str,
+    source_scope: InvocationSourceScope,
+    selected_keys: &[String],
+) -> Result<Vec<PromptCacheConversationEventRow>> {
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT occurred_at, COALESCE(status, 'unknown') AS status, \
+         COALESCE(total_tokens, 0) AS request_tokens, ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(
+            " AS prompt_cache_key \
+             FROM codex_invocations \
+             WHERE occurred_at >= ",
+        )
+        .push_bind(range_start_bound)
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IN (");
+
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(")");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query.push(" ORDER BY prompt_cache_key ASC, occurred_at ASC, id ASC");
+
+    query
+        .build_query_as::<PromptCacheConversationEventRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
 }
 
 async fn fetch_timeseries(
@@ -8787,6 +9077,7 @@ struct AppState {
     forward_proxy_subscription_refresh_lock: Arc<Mutex<()>>,
     pricing_settings_update_lock: Arc<Mutex<()>>,
     pricing_catalog: Arc<RwLock<PricingCatalog>>,
+    prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -10807,6 +11098,51 @@ struct ForwardProxyLiveStatsResponse {
     nodes: Vec<ForwardProxyLiveNodeResponse>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptCacheConversationsResponse {
+    range_start: String,
+    range_end: String,
+    conversations: Vec<PromptCacheConversationResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptCacheConversationResponse {
+    prompt_cache_key: String,
+    request_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    created_at: String,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    last_activity_at: String,
+    last24h_requests: Vec<PromptCacheConversationRequestPointResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptCacheConversationRequestPointResponse {
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    occurred_at: String,
+    status: String,
+    is_success: bool,
+    request_tokens: i64,
+    cumulative_tokens: i64,
+}
+
+#[derive(Debug, Clone)]
+struct PromptCacheConversationsCacheEntry {
+    cached_at: Instant,
+    response: PromptCacheConversationsResponse,
+}
+
+#[derive(Debug, Default)]
+struct PromptCacheConversationsCacheState {
+    entries: HashMap<i64, PromptCacheConversationsCacheEntry>,
+    in_flight: HashMap<i64, Arc<Notify>>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct ParsedUsage {
     input_tokens: Option<i64>,
@@ -10995,12 +11331,36 @@ struct ProxyCostBackfillUpdate {
     price_version: Option<String>,
 }
 
+#[derive(Debug, FromRow)]
+struct PromptCacheConversationAggregateRow {
+    prompt_cache_key: String,
+    request_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    created_at: String,
+    last_activity_at: String,
+}
+
+#[derive(Debug, FromRow)]
+struct PromptCacheConversationEventRow {
+    occurred_at: String,
+    status: String,
+    request_tokens: i64,
+    prompt_cache_key: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListQuery {
     limit: Option<i64>,
     model: Option<String>,
     status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptCacheConversationsQuery {
+    limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13561,6 +13921,9 @@ mod tests {
             forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
+            prompt_cache_conversation_cache: Arc::new(Mutex::new(
+                PromptCacheConversationsCacheState::default(),
+            )),
         })
     }
 
@@ -15696,6 +16059,9 @@ mod tests {
             forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
+            prompt_cache_conversation_cache: Arc::new(Mutex::new(
+                PromptCacheConversationsCacheState::default(),
+            )),
         });
 
         let started = Instant::now();
@@ -16337,6 +16703,9 @@ mod tests {
             forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
+            prompt_cache_conversation_cache: Arc::new(Mutex::new(
+                PromptCacheConversationsCacheState::default(),
+            )),
         });
 
         let slow_chunks = stream::unfold(0u8, |state| async move {
@@ -16461,6 +16830,9 @@ mod tests {
             forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
+            prompt_cache_conversation_cache: Arc::new(Mutex::new(
+                PromptCacheConversationsCacheState::default(),
+            )),
         });
 
         let app = Router::new()
@@ -16627,6 +16999,9 @@ mod tests {
             forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
+            prompt_cache_conversation_cache: Arc::new(Mutex::new(
+                PromptCacheConversationsCacheState::default(),
+            )),
         });
 
         let response = proxy_openai_v1(
@@ -16692,6 +17067,9 @@ mod tests {
             forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
+            prompt_cache_conversation_cache: Arc::new(Mutex::new(
+                PromptCacheConversationsCacheState::default(),
+            )),
         });
 
         let response = proxy_openai_v1(
@@ -17334,6 +17712,241 @@ mod tests {
             .expect("inserted invocation should be present");
         assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-02"));
         assert_eq!(record.proxy_weight_delta, None);
+    }
+
+    #[test]
+    fn normalize_prompt_cache_conversation_limit_accepts_whitelist_values_only() {
+        assert_eq!(normalize_prompt_cache_conversation_limit(None), 50);
+        assert_eq!(normalize_prompt_cache_conversation_limit(Some(20)), 20);
+        assert_eq!(normalize_prompt_cache_conversation_limit(Some(50)), 50);
+        assert_eq!(normalize_prompt_cache_conversation_limit(Some(100)), 100);
+        assert_eq!(normalize_prompt_cache_conversation_limit(Some(10)), 50);
+        assert_eq!(normalize_prompt_cache_conversation_limit(Some(200)), 50);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let now = Utc::now();
+
+        async fn insert_row(
+            pool: &Pool<Sqlite>,
+            invoke_id: &str,
+            occurred_at: DateTime<Utc>,
+            key: Option<&str>,
+            status: &str,
+            total_tokens: i64,
+            cost: f64,
+        ) {
+            let payload = match key {
+                Some(key) => json!({ "promptCacheKey": key }).to_string(),
+                None => "{}".to_string(),
+            };
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "#,
+            )
+            .bind(invoke_id)
+            .bind(format_naive(occurred_at.with_timezone(&Shanghai).naive_local()))
+            .bind(SOURCE_PROXY)
+            .bind(status)
+            .bind(total_tokens)
+            .bind(cost)
+            .bind(payload)
+            .bind("{}")
+            .execute(pool)
+            .await
+            .expect("insert invocation row");
+        }
+
+        // key-a: active in 24h + older history
+        insert_row(
+            &state.pool,
+            "pck-a-history",
+            now - ChronoDuration::hours(48),
+            Some("pck-a"),
+            "success",
+            100,
+            1.0,
+        )
+        .await;
+        insert_row(
+            &state.pool,
+            "pck-a-24h-1",
+            now - ChronoDuration::hours(2),
+            Some("pck-a"),
+            "success",
+            20,
+            0.2,
+        )
+        .await;
+        insert_row(
+            &state.pool,
+            "pck-a-24h-2",
+            now - ChronoDuration::hours(1),
+            Some("pck-a"),
+            "failed",
+            30,
+            0.3,
+        )
+        .await;
+
+        // key-b: newer created_at so it should rank before key-a.
+        insert_row(
+            &state.pool,
+            "pck-b-24h-1",
+            now - ChronoDuration::hours(10),
+            Some("pck-b"),
+            "success",
+            10,
+            0.1,
+        )
+        .await;
+
+        // key-c: not active in last 24h; should be excluded.
+        insert_row(
+            &state.pool,
+            "pck-c-history",
+            now - ChronoDuration::hours(72),
+            Some("pck-c"),
+            "success",
+            8,
+            0.08,
+        )
+        .await;
+
+        // missing key in last 24h; should be ignored.
+        insert_row(
+            &state.pool,
+            "pck-missing-24h",
+            now - ChronoDuration::minutes(40),
+            None,
+            "success",
+            999,
+            9.99,
+        )
+        .await;
+
+        let Json(response) = fetch_prompt_cache_conversations(
+            State(state.clone()),
+            Query(PromptCacheConversationsQuery { limit: Some(20) }),
+        )
+        .await
+        .expect("prompt cache conversation stats should succeed");
+
+        assert_eq!(response.conversations.len(), 2);
+        assert_eq!(response.conversations[0].prompt_cache_key, "pck-b");
+        assert_eq!(response.conversations[1].prompt_cache_key, "pck-a");
+
+        let key_a = response
+            .conversations
+            .iter()
+            .find(|item| item.prompt_cache_key == "pck-a")
+            .expect("pck-a should be included");
+        assert_eq!(key_a.request_count, 3);
+        assert_eq!(key_a.total_tokens, 150);
+        assert!((key_a.total_cost - 1.5).abs() < 1e-9);
+        assert_eq!(key_a.last24h_requests.len(), 2);
+        assert_eq!(key_a.last24h_requests[0].request_tokens, 20);
+        assert_eq!(key_a.last24h_requests[0].cumulative_tokens, 20);
+        assert!(key_a.last24h_requests[0].is_success);
+        assert_eq!(key_a.last24h_requests[1].request_tokens, 30);
+        assert_eq!(key_a.last24h_requests[1].cumulative_tokens, 50);
+        assert!(!key_a.last24h_requests[1].is_success);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let now = Utc::now();
+        let occurred_a = format_naive(
+            (now - ChronoDuration::minutes(80))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let occurred_b = format_naive(
+            (now - ChronoDuration::minutes(30))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind("pck-cache-1")
+        .bind(&occurred_a)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10)
+        .bind(0.01)
+        .bind(r#"{"promptCacheKey":"pck-cache"}"#)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert first cache row");
+
+        let Json(first) = fetch_prompt_cache_conversations(
+            State(state.clone()),
+            Query(PromptCacheConversationsQuery { limit: Some(20) }),
+        )
+        .await
+        .expect("first fetch should succeed");
+        let first_count = first
+            .conversations
+            .iter()
+            .find(|item| item.prompt_cache_key == "pck-cache")
+            .map(|item| item.request_count)
+            .expect("pck-cache should be present");
+        assert_eq!(first_count, 1);
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind("pck-cache-2")
+        .bind(&occurred_b)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(15)
+        .bind(0.015)
+        .bind(r#"{"promptCacheKey":"pck-cache"}"#)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert second cache row");
+
+        let Json(second) = fetch_prompt_cache_conversations(
+            State(state),
+            Query(PromptCacheConversationsQuery { limit: Some(20) }),
+        )
+        .await
+        .expect("second fetch should use cached result");
+        let second_count = second
+            .conversations
+            .iter()
+            .find(|item| item.prompt_cache_key == "pck-cache")
+            .map(|item| item.request_count)
+            .expect("pck-cache should still be present");
+        assert_eq!(second_count, 1);
     }
 
     #[test]
@@ -18365,6 +18978,9 @@ mod tests {
             forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
             pricing_settings_update_lock: Arc::new(Mutex::new(())),
             pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
+            prompt_cache_conversation_cache: Arc::new(Mutex::new(
+                PromptCacheConversationsCacheState::default(),
+            )),
         });
 
         let Json(snapshot) = latest_quota_snapshot(State(state))

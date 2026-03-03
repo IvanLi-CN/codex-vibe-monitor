@@ -311,6 +311,30 @@ export interface ForwardProxyLiveStatsResponse {
   nodes: ForwardProxyLiveNode[]
 }
 
+export interface PromptCacheConversationRequestPoint {
+  occurredAt: string
+  status: string
+  isSuccess: boolean
+  requestTokens: number
+  cumulativeTokens: number
+}
+
+export interface PromptCacheConversation {
+  promptCacheKey: string
+  requestCount: number
+  totalTokens: number
+  totalCost: number
+  createdAt: string
+  lastActivityAt: string
+  last24hRequests: PromptCacheConversationRequestPoint[]
+}
+
+export interface PromptCacheConversationsResponse {
+  rangeStart: string
+  rangeEnd: string
+  conversations: PromptCacheConversation[]
+}
+
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
 
 export interface ForwardProxyValidationResult {
@@ -534,6 +558,49 @@ function normalizeForwardProxyLiveStatsResponse(raw: unknown): ForwardProxyLiveS
   }
 }
 
+function normalizePromptCacheConversationRequestPoint(raw: unknown): PromptCacheConversationRequestPoint | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const occurredAt = typeof payload.occurredAt === 'string' ? payload.occurredAt : ''
+  if (!occurredAt) return null
+  return {
+    occurredAt,
+    status: typeof payload.status === 'string' ? payload.status : 'unknown',
+    isSuccess: payload.isSuccess === true,
+    requestTokens: normalizeFiniteNumber(payload.requestTokens) ?? 0,
+    cumulativeTokens: normalizeFiniteNumber(payload.cumulativeTokens) ?? 0,
+  }
+}
+
+function normalizePromptCacheConversation(raw: unknown): PromptCacheConversation | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const promptCacheKey = typeof payload.promptCacheKey === 'string' ? payload.promptCacheKey.trim() : ''
+  if (!promptCacheKey) return null
+  const requestsRaw = Array.isArray(payload.last24hRequests) ? payload.last24hRequests : []
+  return {
+    promptCacheKey,
+    requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
+    totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
+    totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
+    createdAt: typeof payload.createdAt === 'string' ? payload.createdAt : '',
+    lastActivityAt: typeof payload.lastActivityAt === 'string' ? payload.lastActivityAt : '',
+    last24hRequests: requestsRaw
+      .map(normalizePromptCacheConversationRequestPoint)
+      .filter((item): item is PromptCacheConversationRequestPoint => item != null),
+  }
+}
+
+function normalizePromptCacheConversationsResponse(raw: unknown): PromptCacheConversationsResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const conversationsRaw = Array.isArray(payload.conversations) ? payload.conversations : []
+  return {
+    rangeStart: typeof payload.rangeStart === 'string' ? payload.rangeStart : '',
+    rangeEnd: typeof payload.rangeEnd === 'string' ? payload.rangeEnd : '',
+    conversations: conversationsRaw
+      .map(normalizePromptCacheConversation)
+      .filter((item): item is PromptCacheConversation => item != null),
+  }
+}
+
 function normalizeForwardProxyValidationResult(raw: unknown): ForwardProxyValidationResult {
   const payload = (raw ?? {}) as Record<string, unknown>
   return {
@@ -635,6 +702,13 @@ export async function fetchSummary(window: string, options?: { limit?: number; t
 export async function fetchForwardProxyLiveStats() {
   const response = await fetchJson<unknown>('/api/stats/forward-proxy')
   return normalizeForwardProxyLiveStatsResponse(response)
+}
+
+export async function fetchPromptCacheConversations(limit: number) {
+  const search = new URLSearchParams()
+  search.set('limit', String(limit))
+  const response = await fetchJson<unknown>(`/api/stats/prompt-cache-conversations?${search.toString()}`)
+  return normalizePromptCacheConversationsResponse(response)
 }
 
 export async function fetchTimeseries(range: string, params?: { bucket?: string; settlementHour?: number; timeZone?: string }) {
