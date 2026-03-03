@@ -23,6 +23,7 @@ export function usePromptCacheConversations(limit: number) {
   const [stats, setStats] = useState<PromptCacheConversationsResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const limitRef = useRef(limit)
   const hasHydratedRef = useRef(false)
   const inFlightRef = useRef(false)
   const pendingLoadRef = useRef<LoadOptions | null>(null)
@@ -38,14 +39,19 @@ export function usePromptCacheConversations(limit: number) {
     refreshTimerRef.current = null
   }, [])
 
+  useEffect(() => {
+    limitRef.current = limit
+  }, [limit])
+
   const runLoad = useCallback(async ({ silent = false }: LoadOptions = {}) => {
     inFlightRef.current = true
     const requestSeq = requestSeqRef.current + 1
     requestSeqRef.current = requestSeq
+    const requestedLimit = limitRef.current
     const shouldShowLoading = !(silent && hasHydratedRef.current)
     if (shouldShowLoading) setIsLoading(true)
     try {
-      const response = await fetchPromptCacheConversations(limit)
+      const response = await fetchPromptCacheConversations(requestedLimit)
       if (requestSeq !== requestSeqRef.current) return
       setStats(response)
       hasHydratedRef.current = true
@@ -67,7 +73,7 @@ export function usePromptCacheConversations(limit: number) {
         void runLoad(pendingLoad)
       }
     }
-  }, [limit])
+  }, [])
 
   const load = useCallback(async (options: LoadOptions = {}) => {
     const silent = options.silent ?? false
@@ -112,7 +118,7 @@ export function usePromptCacheConversations(limit: number) {
 
   useEffect(() => {
     void load()
-  }, [load])
+  }, [limit, load])
 
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {

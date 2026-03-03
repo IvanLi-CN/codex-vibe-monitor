@@ -51,7 +51,7 @@ use std::io::{self, Read, Write};
 use tokio::{
     net::{TcpListener, TcpStream},
     process::{Child, Command},
-    sync::{Mutex, Notify, RwLock, Semaphore, broadcast, mpsc},
+    sync::{Mutex, RwLock, Semaphore, broadcast, mpsc, watch},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, sleep, timeout},
 };
@@ -3210,7 +3210,8 @@ async fn fetch_prompt_cache_conversations_cached(
     limit: i64,
 ) -> Result<PromptCacheConversationsResponse> {
     loop {
-        let mut wait_on: Option<Arc<Notify>> = None;
+        let mut wait_on: Option<watch::Receiver<bool>> = None;
+        let mut flight_guard: Option<PromptCacheConversationFlightGuard> = None;
         {
             let mut cache = state.prompt_cache_conversation_cache.lock().await;
             if let Some(entry) = cache.entries.get(&limit)
@@ -3220,22 +3221,35 @@ async fn fetch_prompt_cache_conversations_cached(
                 return Ok(entry.response.clone());
             }
 
-            if let Some(notify) = cache.in_flight.get(&limit) {
-                wait_on = Some(notify.clone());
+            if let Some(in_flight) = cache.in_flight.get(&limit) {
+                wait_on = Some(in_flight.signal.subscribe());
             } else {
-                cache.in_flight.insert(limit, Arc::new(Notify::new()));
+                let (signal, _receiver) = watch::channel(false);
+                cache
+                    .in_flight
+                    .insert(limit, PromptCacheConversationInFlight { signal });
+                flight_guard = Some(PromptCacheConversationFlightGuard::new(
+                    state.prompt_cache_conversation_cache.clone(),
+                    limit,
+                ));
             }
         }
 
-        if let Some(notify) = wait_on {
-            notify.notified().await;
+        if let Some(mut receiver) = wait_on {
+            if !*receiver.borrow() {
+                let _ = receiver.changed().await;
+            }
             continue;
         }
 
         let result = build_prompt_cache_conversations_response(state, limit).await;
 
+        if let Some(guard) = flight_guard.as_mut() {
+            guard.disarm();
+        }
+
         let mut cache = state.prompt_cache_conversation_cache.lock().await;
-        if let Some(notify) = cache.in_flight.remove(&limit) {
+        if let Some(in_flight) = cache.in_flight.remove(&limit) {
             if let Ok(response) = &result {
                 cache.entries.insert(
                     limit,
@@ -3245,7 +3259,7 @@ async fn fetch_prompt_cache_conversations_cached(
                     },
                 );
             }
-            notify.notify_waiters();
+            let _ = in_flight.signal.send(true);
         }
 
         return result;
@@ -11137,10 +11151,62 @@ struct PromptCacheConversationsCacheEntry {
     response: PromptCacheConversationsResponse,
 }
 
+#[derive(Debug)]
+struct PromptCacheConversationInFlight {
+    signal: watch::Sender<bool>,
+}
+
 #[derive(Debug, Default)]
 struct PromptCacheConversationsCacheState {
     entries: HashMap<i64, PromptCacheConversationsCacheEntry>,
-    in_flight: HashMap<i64, Arc<Notify>>,
+    in_flight: HashMap<i64, PromptCacheConversationInFlight>,
+}
+
+#[derive(Debug)]
+struct PromptCacheConversationFlightGuard {
+    cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
+    limit: i64,
+    active: bool,
+}
+
+impl PromptCacheConversationFlightGuard {
+    fn new(cache: Arc<Mutex<PromptCacheConversationsCacheState>>, limit: i64) -> Self {
+        Self {
+            cache,
+            limit,
+            active: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for PromptCacheConversationFlightGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+
+        let cache = self.cache.clone();
+        let limit = self.limit;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let mut state = cache.lock().await;
+                if let Some(in_flight) = state.in_flight.remove(&limit) {
+                    let _ = in_flight.signal.send(true);
+                }
+            });
+            return;
+        }
+
+        if let Ok(mut state) = cache.try_lock()
+            && let Some(in_flight) = state.in_flight.remove(&limit)
+        {
+            let _ = in_flight.signal.send(true);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -17947,6 +18013,102 @@ mod tests {
             .map(|item| item.request_count)
             .expect("pck-cache should still be present");
         assert_eq!(second_count, 1);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let now = Utc::now();
+        let occurred = format_naive(
+            (now - ChronoDuration::minutes(20))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind("pck-concurrent-1")
+        .bind(&occurred)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(18)
+        .bind(0.018)
+        .bind(r#"{"promptCacheKey":"pck-concurrent"}"#)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert concurrent cache row");
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let state_clone = state.clone();
+            handles.push(tokio::spawn(async move {
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    fetch_prompt_cache_conversations(
+                        State(state_clone),
+                        Query(PromptCacheConversationsQuery { limit: Some(20) }),
+                    ),
+                )
+                .await
+            }));
+        }
+
+        for handle in handles {
+            let response = handle
+                .await
+                .expect("join should succeed")
+                .expect("concurrent request should not timeout")
+                .expect("concurrent request should succeed");
+            let Json(payload) = response;
+            assert!(
+                payload
+                    .conversations
+                    .iter()
+                    .any(|item| item.prompt_cache_key == "pck-concurrent"),
+                "expected pck-concurrent to be present in each response",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
+        let cache = Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
+        let (signal, _receiver) = watch::channel(false);
+        {
+            let mut state = cache.lock().await;
+            state
+                .in_flight
+                .insert(20, PromptCacheConversationInFlight { signal });
+        }
+
+        {
+            let _guard = PromptCacheConversationFlightGuard::new(cache.clone(), 20);
+        }
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let has_entry = {
+                    let state = cache.lock().await;
+                    state.in_flight.contains_key(&20)
+                };
+                if !has_entry {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("drop cleanup should remove in-flight marker");
     }
 
     #[test]
