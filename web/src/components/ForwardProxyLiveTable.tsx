@@ -175,10 +175,10 @@ function WeightTrendCell({
   const negativeHeight = Math.max(geometry.chartHeight - geometry.zeroY, 0)
 
   return (
-    <div className="h-11">
+    <div className="flex h-11 items-end">
       <svg
         viewBox={`0 0 ${geometry.chartWidth} ${geometry.chartHeight}`}
-        className="h-10 w-full rounded-md border border-base-300/55 bg-base-100/40"
+        className="block h-10 w-full rounded-md border border-base-300/55 bg-base-100/40"
         role="img"
         aria-label={ariaLabel}
       >
@@ -334,6 +334,9 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                     {t('live.proxy.table.successShort', { count: total24h.success })}
                     {' / '}
                     {t('live.proxy.table.failureShort', { count: total24h.failure })}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-base-content/58">
+                    {t('live.proxy.table.currentWeight', { value: formatWeight(node.weight) })}
                   </div>
                 </div>
               </td>

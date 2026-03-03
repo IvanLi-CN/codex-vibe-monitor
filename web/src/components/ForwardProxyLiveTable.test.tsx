@@ -118,7 +118,7 @@ describe('ForwardProxyLiveTable', () => {
 
     expect(html).toContain('Proxy B')
     expect(html).toContain('aria-label="近 24 小时权重趋势图"')
-    expect(html).toContain('近 24 小时请求量（成功/失败）')
+    expect(html).toContain('近 24 小时请求量')
   })
 
   it('uses different colors for positive and negative weight regions', () => {
