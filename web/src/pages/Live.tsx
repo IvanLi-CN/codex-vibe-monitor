@@ -2,9 +2,11 @@ import { useMemo, useState } from 'react'
 import { ForwardProxyLiveTable } from '../components/ForwardProxyLiveTable'
 import { InvocationChart } from '../components/InvocationChart'
 import { InvocationTable } from '../components/InvocationTable'
+import { PromptCacheConversationTable } from '../components/PromptCacheConversationTable'
 import { StatsCards } from '../components/StatsCards'
 import { useForwardProxyLiveStats } from '../hooks/useForwardProxyLiveStats'
 import { useInvocationStream } from '../hooks/useInvocations'
+import { usePromptCacheConversations } from '../hooks/usePromptCacheConversations'
 import { useSummary } from '../hooks/useStats'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
@@ -21,6 +23,7 @@ const SUMMARY_WINDOWS: { value: string; labelKey: TranslationKey }[] = [
 export default function LivePage() {
   const { t } = useTranslation()
   const [limit, setLimit] = useState(50)
+  const [conversationLimit, setConversationLimit] = useState(50)
   const [summaryWindow, setSummaryWindow] = useState('current')
   const {
     stats: forwardProxyStats,
@@ -44,6 +47,11 @@ export default function LivePage() {
     isLoading,
     error,
   } = useInvocationStream(limit, undefined, undefined, { enableStream: true })
+  const {
+    stats: conversationStats,
+    isLoading: conversationsLoading,
+    error: conversationsError,
+  } = usePromptCacheConversations(conversationLimit)
 
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
@@ -84,6 +92,36 @@ export default function LivePage() {
             stats={forwardProxyStats}
             isLoading={forwardProxyLoading}
             error={forwardProxyError}
+          />
+        </div>
+      </section>
+
+      <section className="surface-panel">
+        <div className="surface-panel-body gap-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="section-heading">
+              <h2 className="section-title">{t('live.conversations.title')}</h2>
+              <p className="section-description">{t('live.conversations.description')}</p>
+            </div>
+            <label className="field w-40">
+              <span className="field-label">{t('live.conversations.windowLabel')}</span>
+              <select
+                className="field-select field-select-sm"
+                value={conversationLimit}
+                onChange={(event) => setConversationLimit(Number(event.target.value))}
+              >
+                {LIMIT_OPTIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {t('live.conversations.option.count', { count: value })}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <PromptCacheConversationTable
+            stats={conversationStats}
+            isLoading={conversationsLoading}
+            error={conversationsError}
           />
         </div>
       </section>

@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------- |
+| 4kkpp | Live 对话统计（按 Prompt Cache Key）— 无统计表方案（索引 + 轻缓存）       | 已完成（5/5）   | `4kkpp-live-prompt-cache-conversations/SPEC.md`          | 2026-03-03 | fast-track           |
 | hrvtt | 请求详情补齐代理信息与本次权重变化                                        | 已完成（4/4）   | `hrvtt-invocation-proxy-weight-delta/SPEC.md`            | 2026-03-02 | fast-track           |
 | t7m4h | Live 代理运行态：新增 24h 权重趋势列与断点适配                            | 已完成（5/5）   | `t7m4h-live-proxy-weight-trend/SPEC.md`                  | 2026-03-02 | fast-track / PR #83  |
 | rkc7k | 修复 Live 实时统计闪烁与数字滚动被打断                                    | 已完成（6/6）   | `rkc7k-live-summary-flicker-fix/SPEC.md`                 | 2026-03-02 | fast-track / PR #80  |
