@@ -64,3 +64,4 @@
 - 加载期对 blocks 增加 `animate-pulse`，并禁用 tooltip 事件，避免骨架阶段产生误导性交互。
 - 新增 E2E：注入 `range=90d&bucket=1d` 延迟，断言加载前后首行两卡并排且 `usage-calendar-card` 的 x 位置稳定（≤2px）。
 - 已完成 `web` 的 `npm run lint`、`npm run test`、`npm run build`；Playwright 回归关注点已覆盖在 UsageCalendar spec 内。
+- PR: #88
