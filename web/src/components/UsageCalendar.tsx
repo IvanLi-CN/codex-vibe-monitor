@@ -279,7 +279,9 @@ export function UsageCalendar() {
                     renderBlock={(block, activity) => {
                       const accessibleBlock = block as AccessibleBlock
                       const formatted = formatMetricValue(activity.count)
-                      const title = `${activity.date}${valueSeparator}${formatted}`
+                      // During skeleton mode, avoid native browser tooltips (title="...") that
+                      // could misleadingly show "0 calls" while loading.
+                      const title = skeletonMode ? undefined : `${activity.date}${valueSeparator}${formatted}`
                       const handleEnter = (event: ReactMouseEvent<SVGElement>) => {
                         if (!containerRef.current) return
                         const target = event.currentTarget as Element
@@ -306,7 +308,7 @@ export function UsageCalendar() {
                         'aria-label': title,
                         onMouseEnter: skeletonMode ? undefined : handleEnter,
                         onMouseLeave: skeletonMode ? undefined : handleLeave,
-                        className: cn(accessibleBlock.props?.className, skeletonMode && 'animate-pulse'),
+                        className: cn(accessibleBlock.props?.className, skeletonMode && 'animate-pulse pointer-events-none'),
                         // Remove default stroke from react-activity-calendar to align
                         // with the weekly heatmap appearance.
                         style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
