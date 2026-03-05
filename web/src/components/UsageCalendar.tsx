@@ -2,7 +2,7 @@ import { cloneElement, useCallback, useLayoutEffect, useMemo, useRef, useState }
 import type { ReactElement, CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 import ActivityCalendar, { type Activity } from 'react-activity-calendar'
 import { useTimeseries } from '../hooks/useTimeseries'
-import type { TimeseriesPoint } from '../lib/api'
+import type { TimeseriesResponse } from '../lib/api'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { formatTokensShort } from '../lib/numberFormatters'
@@ -22,6 +22,7 @@ interface MetricOption {
 type AccessibleBlock = ReactElement<{
   title?: string
   'aria-label'?: string
+  className?: string
   style?: CSSProperties
   onMouseEnter?: (event: ReactMouseEvent<SVGElement>) => void
   onMouseLeave?: (event: ReactMouseEvent<SVGElement>) => void
@@ -55,6 +56,7 @@ export function UsageCalendar() {
   const timeZone = getBrowserTimeZone()
   const [metric, setMetric] = useState<MetricKey>('totalCount')
   const { data, isLoading, error } = useTimeseries('90d', { bucket: '1d' })
+  const skeletonMode = isLoading && !data
   const [blockSize, setBlockSize] = useState(DEFAULT_BLOCK_SIZE)
   const containerRef = useRef<HTMLDivElement>(null)
   const [tooltip, setTooltip] = useState<CalendarTooltipState | null>(null)
@@ -108,7 +110,7 @@ export function UsageCalendar() {
   )
 
   const calendarData = useMemo(
-    () => transformPointsToActivities(data?.points ?? [], metric),
+    () => transformTimeseriesToActivities(data, metric),
     [data, metric],
   )
 
@@ -195,8 +197,6 @@ export function UsageCalendar() {
     }
   }, [metric, calendarData.weekCount])
 
-  const calendarLoading = isLoading || calendarData.activities.length === 0
-
   const themeForMetric = useMemo(
     () => ({
       light: calendarPalette(metric, 'light'),
@@ -263,7 +263,6 @@ export function UsageCalendar() {
                   />
                   <ActivityCalendar
                     data={calendarData.activities}
-                    loading={calendarLoading}
                     blockSize={blockSize}
                     // Match the subtle rounding used by the 7-day heatmap.
                     blockRadius={2}
@@ -280,7 +279,9 @@ export function UsageCalendar() {
                     renderBlock={(block, activity) => {
                       const accessibleBlock = block as AccessibleBlock
                       const formatted = formatMetricValue(activity.count)
-                      const title = `${activity.date}${valueSeparator}${formatted}`
+                      // During skeleton mode, avoid native browser tooltips (title="...") that
+                      // could misleadingly show "0 calls" while loading.
+                      const title = skeletonMode ? undefined : `${activity.date}${valueSeparator}${formatted}`
                       const handleEnter = (event: ReactMouseEvent<SVGElement>) => {
                         if (!containerRef.current) return
                         const target = event.currentTarget as Element
@@ -305,8 +306,9 @@ export function UsageCalendar() {
                       return cloneElement(accessibleBlock, {
                         title,
                         'aria-label': title,
-                        onMouseEnter: handleEnter,
-                        onMouseLeave: handleLeave,
+                        onMouseEnter: skeletonMode ? undefined : handleEnter,
+                        onMouseLeave: skeletonMode ? undefined : handleLeave,
+                        className: cn(accessibleBlock.props?.className, skeletonMode && 'animate-pulse pointer-events-none'),
                         // Remove default stroke from react-activity-calendar to align
                         // with the weekly heatmap appearance.
                         style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
@@ -362,29 +364,21 @@ interface CalendarComputation {
   monthMarkers: MonthMarker[]
 }
 
-function transformPointsToActivities(points: TimeseriesPoint[], metric: MetricKey): CalendarComputation {
-  if (!points || points.length === 0) {
-    return { activities: [], maxValue: 0, totalValue: 0, thresholds: [], weekCount: 0, monthMarkers: [] }
-  }
-
-  const sortedPoints = [...points].sort((a, b) => parseDateLocal(a.bucketStart) - parseDateLocal(b.bucketStart))
+function transformTimeseriesToActivities(response: TimeseriesResponse | null, metric: MetricKey): CalendarComputation {
+  const points = response?.points ?? []
+  const range = resolveLocalDateRange(response)
 
   const valuesByDate = new Map<string, number>()
-  for (const point of sortedPoints) {
+  for (const point of points) {
     const iso = toLocalISODate(point.bucketStart)
     const current = valuesByDate.get(iso) ?? 0
     valuesByDate.set(iso, current + (point[metric] ?? 0))
   }
 
-  const startIso = toLocalISODate(sortedPoints[0].bucketStart)
-  const endIso = toLocalISODate(sortedPoints[sortedPoints.length - 1].bucketStart)
-  const startDate = parseLocalISODate(startIso)
-  const endDate = parseLocalISODate(endIso)
-
   const activities: Activity[] = []
   const values: number[] = []
-  const cursor = new Date(startDate)
-  while (cursor <= endDate) {
+  const cursor = new Date(range.start)
+  while (cursor <= range.endInclusive) {
     const iso = formatLocalISODate(cursor)
     const value = valuesByDate.get(iso) ?? 0
     values.push(value)
@@ -423,11 +417,6 @@ function formatLocalISODate(date: Date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
-function parseLocalISODate(value: string) {
-  const [year, month, day] = value.split('-').map(Number)
-  return new Date(year, (month ?? 1) - 1, day ?? 1)
-}
-
 function toLocalISODate(value: string) {
   if (value.includes('T')) {
     // bucketStart/bucketEnd are RFC3339 UTC timestamps; convert to local day.
@@ -437,15 +426,37 @@ function toLocalISODate(value: string) {
   return datePart ?? ''
 }
 
-function parseDateLocal(value: string) {
-  if (value.includes('T')) {
-    const d = new Date(value)
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+function resolveLocalDateRange(response: TimeseriesResponse | null) {
+  // Daily time-series endpoints use [rangeStart, rangeEnd) where rangeEnd is the next local midnight.
+  // We keep the UI stable by always rendering a 90-day calendar, even during the initial load.
+  const today = startOfLocalDay(new Date())
+
+  const rangeStart = response?.rangeStart
+  const rangeEnd = response?.rangeEnd
+  if (rangeStart && rangeEnd) {
+    const start = startOfLocalDay(new Date(rangeStart))
+    const endExclusive = startOfLocalDay(new Date(rangeEnd))
+    if (Number.isFinite(start.getTime()) && Number.isFinite(endExclusive.getTime())) {
+      const endInclusive = addLocalDays(endExclusive, -1)
+      if (start <= endInclusive) {
+        return { start, endInclusive }
+      }
+    }
   }
-  const [datePart] = value.split(' ')
-  if (!datePart) return 0
-  const [year, month, day] = datePart.split('-').map(Number)
-  return new Date(year, (month ?? 1) - 1, day ?? 1).getTime()
+
+  const endInclusive = today
+  const start = addLocalDays(endInclusive, -89)
+  return { start, endInclusive }
+}
+
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate())
+}
+
+function addLocalDays(date: Date, days: number) {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return startOfLocalDay(next)
 }
 
 interface MonthMarker { weekIndex: number; year: number; month: number }

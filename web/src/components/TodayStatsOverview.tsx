@@ -75,7 +75,7 @@ export function TodayStatsOverview({ stats, loading, error }: TodayStatsOverview
   const tokenValue = numberFormatter.format(totalTokens)
 
   return (
-    <section className="surface-panel h-full">
+    <section className="surface-panel h-full" data-testid="today-stats-overview-card">
       <div className="surface-panel-body gap-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="section-heading">
