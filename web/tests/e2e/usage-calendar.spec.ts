@@ -123,6 +123,10 @@ test.describe('UsageCalendar responsive layout', () => {
     await todayCard.waitFor({ state: 'visible' })
     await usageCard.waitFor({ state: 'visible' })
 
+    // Ensure we are measuring the loading skeleton state, not the hydrated state.
+    const pulseBefore = await usageCard.locator('rect.animate-pulse').count()
+    expect(pulseBefore).toBeGreaterThan(0)
+
     const todayBefore = await todayCard.boundingBox()
     const usageBefore = await usageCard.boundingBox()
     expect(todayBefore).not.toBeNull()
@@ -142,8 +146,7 @@ test.describe('UsageCalendar responsive layout', () => {
     expect(Math.abs(todayBox.y - usageBox.y)).toBeLessThanOrEqual(8)
     expect(todayBox.x + todayBox.width).toBeLessThan(usageBox.x)
 
-    releaseTimeseries?.()
-    await page.waitForResponse((resp) => {
+    const waitTimeseries = page.waitForResponse((resp) => {
       if (!resp.url().includes('/api/stats/timeseries')) return false
       try {
         const url = new URL(resp.url())
@@ -153,7 +156,11 @@ test.describe('UsageCalendar responsive layout', () => {
       }
     })
 
-    await page.waitForTimeout(200)
+    releaseTimeseries?.()
+    await waitTimeseries
+
+    // Wait until the UI flips from skeleton to hydrated render (pulse class removed).
+    await expect(usageCard.locator('rect.animate-pulse')).toHaveCount(0)
 
     const usageAfter = await usageCard.boundingBox()
     expect(usageAfter).not.toBeNull()
@@ -167,5 +174,40 @@ test.describe('UsageCalendar responsive layout', () => {
     })
 
     expect(Math.abs(usageAfterBox.x - usageBox.x)).toBeLessThanOrEqual(2)
+  })
+
+  test('renders an empty 90d calendar when timeseries returns no points', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    await page.route('**/api/stats/timeseries**', async (route) => {
+      const requestUrl = new URL(route.request().url())
+      const range = requestUrl.searchParams.get('range')
+      const bucket = requestUrl.searchParams.get('bucket')
+      if (range === '90d' && bucket === '1d') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            rangeStart: '2026-01-01T00:00:00Z',
+            rangeEnd: '2026-04-01T00:00:00Z',
+            bucketSeconds: 86400,
+            points: [],
+          }),
+        })
+        return
+      }
+      await route.continue()
+    })
+
+    await page.goto('/dashboard')
+
+    const usageCard = page.getByTestId('usage-calendar-card')
+    await usageCard.waitFor({ state: 'visible' })
+    await expect(usageCard.locator('[data-testid="usage-calendar-wrapper"]')).toBeVisible()
+    await expect(usageCard.locator('rect.animate-pulse')).toHaveCount(0)
+
+    // Empty calendar should still render a full grid of blocks (no fallback to library loading skeleton).
+    const blockCount = await usageCard.locator('svg rect').count()
+    expect(blockCount).toBeGreaterThanOrEqual(60)
   })
 })
