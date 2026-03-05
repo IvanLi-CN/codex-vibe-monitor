@@ -97,4 +97,75 @@ test.describe('UsageCalendar responsive layout', () => {
     test.info().annotations.push({ type: 'center-gaps', description: JSON.stringify(gaps) })
     expect(Math.abs(gaps.leftGap - gaps.rightGap)).toBeLessThanOrEqual(16)
   })
+
+  test('does not shift dashboard top row while 90d timeseries is loading', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+
+    let releaseTimeseries: (() => void) | null = null
+    const gate = new Promise<void>((resolve) => {
+      releaseTimeseries = resolve
+    })
+
+    await page.route('**/api/stats/timeseries**', async (route) => {
+      const requestUrl = new URL(route.request().url())
+      const range = requestUrl.searchParams.get('range')
+      const bucket = requestUrl.searchParams.get('bucket')
+      if (range === '90d' && bucket === '1d') {
+        await gate
+      }
+      await route.continue()
+    })
+
+    await page.goto('/dashboard')
+
+    const todayCard = page.getByTestId('today-stats-overview-card')
+    const usageCard = page.getByTestId('usage-calendar-card')
+    await todayCard.waitFor({ state: 'visible' })
+    await usageCard.waitFor({ state: 'visible' })
+
+    const todayBefore = await todayCard.boundingBox()
+    const usageBefore = await usageCard.boundingBox()
+    expect(todayBefore).not.toBeNull()
+    expect(usageBefore).not.toBeNull()
+
+    const todayBox = todayBefore!
+    const usageBox = usageBefore!
+    test.info().annotations.push({
+      type: 'dashboard-top-row-before',
+      description: JSON.stringify({
+        today: { x: Math.round(todayBox.x), y: Math.round(todayBox.y), w: Math.round(todayBox.width), h: Math.round(todayBox.height) },
+        usage: { x: Math.round(usageBox.x), y: Math.round(usageBox.y), w: Math.round(usageBox.width), h: Math.round(usageBox.height) },
+      }),
+    })
+
+    // Two cards should stay on the same row (desktop layout) even during loading.
+    expect(Math.abs(todayBox.y - usageBox.y)).toBeLessThanOrEqual(8)
+    expect(todayBox.x + todayBox.width).toBeLessThan(usageBox.x)
+
+    releaseTimeseries?.()
+    await page.waitForResponse((resp) => {
+      if (!resp.url().includes('/api/stats/timeseries')) return false
+      try {
+        const url = new URL(resp.url())
+        return url.searchParams.get('range') === '90d' && url.searchParams.get('bucket') === '1d'
+      } catch {
+        return false
+      }
+    })
+
+    await page.waitForTimeout(200)
+
+    const usageAfter = await usageCard.boundingBox()
+    expect(usageAfter).not.toBeNull()
+    const usageAfterBox = usageAfter!
+
+    test.info().annotations.push({
+      type: 'dashboard-top-row-after',
+      description: JSON.stringify({
+        usage: { x: Math.round(usageAfterBox.x), y: Math.round(usageAfterBox.y), w: Math.round(usageAfterBox.width), h: Math.round(usageAfterBox.height) },
+      }),
+    })
+
+    expect(Math.abs(usageAfterBox.x - usageBox.x)).toBeLessThanOrEqual(2)
+  })
 })
