@@ -711,13 +711,16 @@ export async function fetchPromptCacheConversations(limit: number) {
   return normalizePromptCacheConversationsResponse(response)
 }
 
-export async function fetchTimeseries(range: string, params?: { bucket?: string; settlementHour?: number; timeZone?: string }) {
+export async function fetchTimeseries(
+  range: string,
+  params?: { bucket?: string; settlementHour?: number; timeZone?: string; signal?: AbortSignal },
+) {
   const search = new URLSearchParams()
   search.set('range', range)
   search.set('timeZone', params?.timeZone ?? getBrowserTimeZone())
   if (params?.bucket) search.set('bucket', params.bucket)
   if (params?.settlementHour !== undefined) search.set('settlementHour', String(params.settlementHour))
-  return fetchJson<TimeseriesResponse>(`/api/stats/timeseries?${search.toString()}`)
+  return fetchJson<TimeseriesResponse>(`/api/stats/timeseries?${search.toString()}`, { signal: params?.signal })
 }
 
 export async function fetchErrorDistribution(

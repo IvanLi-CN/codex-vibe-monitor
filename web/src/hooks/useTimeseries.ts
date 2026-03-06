@@ -9,6 +9,103 @@ export interface UseTimeseriesOptions {
   preferServerAggregation?: boolean
 }
 
+export type TimeseriesSyncMode = 'local' | 'current-day-local' | 'server'
+
+export interface TimeseriesSyncPolicy {
+  mode: TimeseriesSyncMode
+  recordsRefreshThrottleMs: number
+}
+
+interface LoadOptions {
+  silent?: boolean
+  force?: boolean
+}
+
+interface PendingLoad {
+  silent: boolean
+  waiters: Array<() => void>
+}
+
+interface UpdateContext {
+  range: string
+  bucketSeconds?: number
+  settlementHour?: number
+}
+
+export const TIMESERIES_RECORDS_RESYNC_THROTTLE_MS = 3_000
+export const TIMESERIES_OPEN_RESYNC_COOLDOWN_MS = 3_000
+
+export function resolveTimeseriesSyncPolicy(range: string, options?: UseTimeseriesOptions): TimeseriesSyncPolicy {
+  if (options?.preferServerAggregation) {
+    return {
+      mode: 'server',
+      recordsRefreshThrottleMs: TIMESERIES_RECORDS_RESYNC_THROTTLE_MS,
+    }
+  }
+
+  if (range === '1d' && options?.bucket === '1m') {
+    return {
+      mode: 'local',
+      recordsRefreshThrottleMs: 0,
+    }
+  }
+
+  if (range === '7d' && options?.bucket === '1h') {
+    return {
+      mode: 'local',
+      recordsRefreshThrottleMs: 0,
+    }
+  }
+
+  if (range === '90d' && options?.bucket === '1d') {
+    return {
+      mode: 'current-day-local',
+      recordsRefreshThrottleMs: 0,
+    }
+  }
+
+  const bucketSeconds = guessBucketSeconds(options?.bucket) ?? defaultBucketSecondsForRange(range)
+  return {
+    mode: bucketSeconds >= 86_400 ? 'server' : 'local',
+    recordsRefreshThrottleMs: bucketSeconds >= 86_400 ? TIMESERIES_RECORDS_RESYNC_THROTTLE_MS : 0,
+  }
+}
+
+export function shouldResyncOnRecordsEvent(range: string, options?: UseTimeseriesOptions) {
+  return resolveTimeseriesSyncPolicy(range, options).mode === 'server'
+}
+
+export function shouldPatchCurrentDayBucketOnRecordsEvent(range: string, options?: UseTimeseriesOptions) {
+  return resolveTimeseriesSyncPolicy(range, options).mode === 'current-day-local'
+}
+
+export function getTimeseriesRecordsResyncDelay(lastRefreshAt: number, now: number, throttleMs = TIMESERIES_RECORDS_RESYNC_THROTTLE_MS) {
+  return Math.max(0, throttleMs - (now - lastRefreshAt))
+}
+
+export function shouldTriggerTimeseriesOpenResync(lastResyncAt: number, now: number, force = false) {
+  if (force) return true
+  return now - lastResyncAt >= TIMESERIES_OPEN_RESYNC_COOLDOWN_MS
+}
+
+export function mergePendingTimeseriesSilentOption(existingSilent: boolean | null, incomingSilent: boolean) {
+  return (existingSilent ?? true) && incomingSilent
+}
+
+function resolvePendingLoad(pending: PendingLoad | null) {
+  if (!pending) return
+  pending.waiters.forEach((resolve) => resolve())
+}
+
+function createSeededTimeseries(range: string, bucket?: string) {
+  const bucketSeconds = guessBucketSeconds(bucket) ?? defaultBucketSecondsForRange(range)
+  const now = Date.now()
+  const rangeSeconds = parseRangeSpec(range) ?? 86_400
+  const start = formatEpochToIso(Math.floor((now - rangeSeconds * 1000) / 1000))
+  const end = formatEpochToIso(Math.floor(now / 1000))
+  return { rangeStart: start, rangeEnd: end, bucketSeconds, points: [] satisfies TimeseriesPoint[] }
+}
+
 export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const [data, setData] = useState<TimeseriesResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -17,7 +114,17 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const settlementHour = options?.settlementHour
   const preferServerAggregation = options?.preferServerAggregation ?? false
   const hasHydratedRef = useRef(false)
-  const lastResyncAtRef = useRef(0)
+  const activeLoadCountRef = useRef(0)
+  const pendingLoadRef = useRef<PendingLoad | null>(null)
+  const pendingOpenResyncRef = useRef(false)
+  const requestSeqRef = useRef(0)
+  const activeRequestControllerRef = useRef<AbortController | null>(null)
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const dayRolloverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastRecordsRefreshAtRef = useRef(0)
+  const lastOpenResyncAtRef = useRef(0)
+  const localRevisionRef = useRef(0)
+  const dataRef = useRef<TimeseriesResponse | null>(null)
 
   const normalizedOptions = useMemo<UseTimeseriesOptions>(
     () => ({
@@ -28,36 +135,196 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     [bucket, settlementHour, preferServerAggregation],
   )
 
-  const load = useCallback(async (opts?: { silent?: boolean }) => {
-    const shouldShowLoading = !(opts?.silent && hasHydratedRef.current)
+  const syncPolicy = useMemo(
+    () => resolveTimeseriesSyncPolicy(range, normalizedOptions),
+    [normalizedOptions, range],
+  )
+
+  const clearPendingRefreshTimer = useCallback(() => {
+    if (!refreshTimerRef.current) return
+    clearTimeout(refreshTimerRef.current)
+    refreshTimerRef.current = null
+  }, [])
+
+  const clearDayRolloverTimer = useCallback(() => {
+    if (!dayRolloverTimerRef.current) return
+    clearTimeout(dayRolloverTimerRef.current)
+    dayRolloverTimerRef.current = null
+  }, [])
+
+  const clearPendingLoad = useCallback(() => {
+    resolvePendingLoad(pendingLoadRef.current)
+    pendingLoadRef.current = null
+  }, [])
+
+  const runLoad = useCallback(async ({ silent = false }: LoadOptions = {}) => {
+    activeLoadCountRef.current += 1
+    const requestSeq = requestSeqRef.current + 1
+    requestSeqRef.current = requestSeq
+    const baselineLocalRevision = localRevisionRef.current
+    const controller = new AbortController()
+    activeRequestControllerRef.current = controller
+    const shouldShowLoading = !(silent && hasHydratedRef.current)
     if (shouldShowLoading) {
       setIsLoading(true)
     }
+
     try {
-      const response = await fetchTimeseries(range, normalizedOptions)
-      setData(response)
+      const response = await fetchTimeseries(range, {
+        ...normalizedOptions,
+        signal: controller.signal,
+      })
+      if (requestSeq !== requestSeqRef.current) {
+        return
+      }
+
+      const shouldPreserveLocallyPatchedData =
+        syncPolicy.mode !== 'server' && baselineLocalRevision !== localRevisionRef.current
+
+      if (shouldPreserveLocallyPatchedData) {
+        if (pendingLoadRef.current) {
+          pendingLoadRef.current.silent = mergePendingTimeseriesSilentOption(
+            pendingLoadRef.current.silent,
+            true,
+          )
+        } else {
+          pendingLoadRef.current = { silent: true, waiters: [] }
+        }
+      } else {
+        dataRef.current = response
+        setData(response)
+      }
+
       hasHydratedRef.current = true
       setError(null)
+
+      if (pendingOpenResyncRef.current) {
+        pendingOpenResyncRef.current = false
+        lastOpenResyncAtRef.current = Date.now()
+        if (pendingLoadRef.current) {
+          pendingLoadRef.current.silent = mergePendingTimeseriesSilentOption(
+            pendingLoadRef.current.silent,
+            true,
+          )
+        } else {
+          pendingLoadRef.current = { silent: true, waiters: [] }
+        }
+      }
     } catch (err) {
+      if (requestSeq !== requestSeqRef.current) {
+        return
+      }
+      if (err instanceof Error && err.name === 'AbortError') {
+        return
+      }
       setError(err instanceof Error ? err.message : String(err))
-      // Bootstrap an empty timeseries so SSE records can hydrate the view
-      const bucketSeconds = guessBucketSeconds(bucket) ?? defaultBucketSecondsForRange(range)
-      const now = Date.now()
-      const rangeSeconds = parseRangeSpec(range) ?? 86_400
-      const start = formatEpochToIso(Math.floor((now - rangeSeconds * 1000) / 1000))
-      const end = formatEpochToIso(Math.floor(now / 1000))
-      setData({ rangeStart: start, rangeEnd: end, bucketSeconds, points: [] })
+      const fallback = createSeededTimeseries(range, normalizedOptions.bucket)
+      dataRef.current = fallback
+      setData(fallback)
       hasHydratedRef.current = true
     } finally {
-      setIsLoading(false)
+      if (activeRequestControllerRef.current === controller) {
+        activeRequestControllerRef.current = null
+      }
+      if (requestSeq === requestSeqRef.current && shouldShowLoading) {
+        setIsLoading(false)
+      }
+      activeLoadCountRef.current = Math.max(0, activeLoadCountRef.current - 1)
+      if (activeLoadCountRef.current === 0) {
+        const pendingLoad = pendingLoadRef.current
+        if (pendingLoad) {
+          pendingLoadRef.current = null
+          void runLoad({ silent: pendingLoad.silent }).finally(() => {
+            pendingLoad.waiters.forEach((resolve) => resolve())
+          })
+        }
+      }
     }
-  }, [normalizedOptions, range, bucket])
+  }, [normalizedOptions, range, syncPolicy.mode])
 
-  useEffect(() => {
-    void load()
+  const load = useCallback(async ({ silent = false, force = false }: LoadOptions = {}) => {
+    if (force) {
+      activeRequestControllerRef.current?.abort()
+      clearPendingLoad()
+      clearPendingRefreshTimer()
+    }
+
+    if (!force && activeLoadCountRef.current > 0) {
+      return new Promise<void>((resolve) => {
+        if (pendingLoadRef.current) {
+          pendingLoadRef.current.silent = mergePendingTimeseriesSilentOption(
+            pendingLoadRef.current.silent,
+            silent,
+          )
+          pendingLoadRef.current.waiters.push(resolve)
+          return
+        }
+        pendingLoadRef.current = { silent, waiters: [resolve] }
+      })
+    }
+
+    if (syncPolicy.mode === 'server') {
+      lastRecordsRefreshAtRef.current = Date.now()
+    }
+
+    await runLoad({ silent })
+  }, [clearPendingLoad, clearPendingRefreshTimer, runLoad, syncPolicy.mode])
+
+  const triggerRecordsResync = useCallback(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+    const now = Date.now()
+    const delay = getTimeseriesRecordsResyncDelay(
+      lastRecordsRefreshAtRef.current,
+      now,
+      syncPolicy.recordsRefreshThrottleMs,
+    )
+    const run = () => {
+      refreshTimerRef.current = null
+      lastRecordsRefreshAtRef.current = Date.now()
+      void load({ silent: true })
+    }
+
+    if (delay === 0) {
+      clearPendingRefreshTimer()
+      run()
+      return
+    }
+
+    if (refreshTimerRef.current) {
+      return
+    }
+    refreshTimerRef.current = setTimeout(run, delay)
+  }, [clearPendingRefreshTimer, load, syncPolicy.recordsRefreshThrottleMs])
+
+  const triggerOpenResync = useCallback((force = false) => {
+    if (!hasHydratedRef.current) {
+      pendingOpenResyncRef.current = true
+      return
+    }
+    const now = Date.now()
+    if (!shouldTriggerTimeseriesOpenResync(lastOpenResyncAtRef.current, now, force)) {
+      return
+    }
+    lastOpenResyncAtRef.current = now
+    void load({ silent: true, force: true })
   }, [load])
 
-  // Auto-retry on transient failures (e.g., backend temporarily unavailable)
+  useEffect(() => {
+    requestSeqRef.current += 1
+    activeRequestControllerRef.current?.abort()
+    activeRequestControllerRef.current = null
+    hasHydratedRef.current = false
+    pendingOpenResyncRef.current = false
+    lastRecordsRefreshAtRef.current = 0
+    lastOpenResyncAtRef.current = 0
+    localRevisionRef.current = 0
+    dataRef.current = null
+    clearPendingLoad()
+    clearPendingRefreshTimer()
+    clearDayRolloverTimer()
+    void load({ force: true })
+  }, [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer, load, options?.bucket, options?.preferServerAggregation, options?.settlementHour, range])
+
   useEffect(() => {
     if (!error) return
     const id = setTimeout(() => {
@@ -66,59 +333,94 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     return () => clearTimeout(id)
   }, [error, load])
 
-  const requestResync = useCallback(() => {
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
-    const now = Date.now()
-    if (now - lastResyncAtRef.current < 3000) return
-    lastResyncAtRef.current = now
-    void load({ silent: true })
-  }, [load])
-
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
-      if (payload.type === 'records') {
-        // When consumers rely on backend-only aggregations (e.g., percentile series),
-        // use server-side recalculation instead of local incremental updates.
-        if (shouldResyncOnRecordsEvent(range, normalizedOptions)) {
-          requestResync()
+      if (payload.type !== 'records') return
+
+      if (syncPolicy.mode === 'server') {
+        triggerRecordsResync()
+        return
+      }
+
+      if (syncPolicy.mode === 'current-day-local') {
+        const nowEpochSeconds = Math.floor(Date.now() / 1000)
+        if (shouldResyncForCurrentDayBucket(dataRef.current, nowEpochSeconds)) {
+          triggerOpenResync(true)
           return
         }
         setData((current) => {
-          const seeded =
-            current ?? {
-              rangeStart: formatEpochToIso(Math.floor((Date.now() - (parseRangeSpec(range) ?? 86_400) * 1000) / 1000)),
-              rangeEnd: formatEpochToIso(Math.floor(Date.now() / 1000)),
-              bucketSeconds: guessBucketSeconds(normalizedOptions.bucket) ?? defaultBucketSecondsForRange(range),
-              points: [],
-            }
-          return applyRecordsToTimeseries(seeded, payload.records, {
-            range,
-            bucketSeconds: seeded.bucketSeconds,
-            settlementHour: normalizedOptions.settlementHour,
-          })
+          const next = applyRecordsToCurrentDayBucket(current, payload.records, nowEpochSeconds)
+          if (next !== current) {
+            dataRef.current = next
+            localRevisionRef.current += 1
+          }
+          return next
         })
+        return
       }
+
+      setData((current) => {
+        const seeded = current ?? createSeededTimeseries(range, normalizedOptions.bucket)
+        const next = applyRecordsToTimeseries(seeded, payload.records, {
+          range,
+          bucketSeconds: seeded.bucketSeconds,
+          settlementHour: normalizedOptions.settlementHour,
+        })
+        if (next !== current) {
+          dataRef.current = next
+          localRevisionRef.current += 1
+        }
+        return next
+      })
     })
     return unsubscribe
-  }, [normalizedOptions, range, requestResync])
+  }, [normalizedOptions.bucket, normalizedOptions.settlementHour, range, syncPolicy.mode, triggerOpenResync, triggerRecordsResync])
 
-  // Backfill missed SSE records when the page returns to the foreground or the SSE transport reconnects.
   useEffect(() => {
     if (typeof document === 'undefined') return
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return
-      requestResync()
+      triggerOpenResync(syncPolicy.mode === 'current-day-local')
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [requestResync])
+  }, [syncPolicy.mode, triggerOpenResync])
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
-      requestResync()
+      triggerOpenResync()
     })
     return unsubscribe
-  }, [requestResync])
+  }, [triggerOpenResync])
+
+  useEffect(() => {
+    clearDayRolloverTimer()
+    if (syncPolicy.mode !== 'current-day-local') {
+      return
+    }
+    const currentBucketEndEpoch = getCurrentDayBucketEndEpoch(data)
+    if (currentBucketEndEpoch == null) {
+      return
+    }
+    const delay = Math.max(0, currentBucketEndEpoch * 1000 - Date.now() + 50)
+    dayRolloverTimerRef.current = setTimeout(() => {
+      void load({ silent: true, force: true })
+    }, delay)
+    return clearDayRolloverTimer
+  }, [clearDayRolloverTimer, data, load, syncPolicy.mode])
+
+  useEffect(
+    () => () => {
+      requestSeqRef.current += 1
+      activeRequestControllerRef.current?.abort()
+      activeRequestControllerRef.current = null
+      clearPendingLoad()
+      clearPendingRefreshTimer()
+      clearDayRolloverTimer()
+      pendingOpenResyncRef.current = false
+    },
+    [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer],
+  )
 
   return {
     data,
@@ -128,20 +430,88 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   }
 }
 
-export function shouldResyncOnRecordsEvent(range: string, options?: UseTimeseriesOptions) {
-  if (options?.preferServerAggregation) return true
-  const bucketSeconds = guessBucketSeconds(options?.bucket) ?? defaultBucketSecondsForRange(range)
-  // Daily buckets depend on IANA timezone rules (incl. DST). Let backend be source of truth.
-  return bucketSeconds >= 86_400
+export function getCurrentDayBucketEndEpoch(current: TimeseriesResponse | null, nowEpochSeconds = Math.floor(Date.now() / 1000)) {
+  const currentBucket = getCurrentDayBucket(current, nowEpochSeconds)
+  return parseIsoEpoch(currentBucket?.bucketEnd)
 }
 
-interface UpdateContext {
-  range: string
-  bucketSeconds?: number
-  settlementHour?: number
+export function shouldResyncForCurrentDayBucket(current: TimeseriesResponse | null, nowEpochSeconds = Math.floor(Date.now() / 1000)) {
+  if (!current || current.points.length === 0) {
+    return false
+  }
+  return getCurrentDayBucket(current, nowEpochSeconds) == null
 }
 
-function applyRecordsToTimeseries(
+function getCurrentDayBucket(current: TimeseriesResponse | null, nowEpochSeconds: number) {
+  if (!current) return null
+  for (let index = current.points.length - 1; index >= 0; index -= 1) {
+    const point = current.points[index]
+    const bucketStartEpoch = parseIsoEpoch(point.bucketStart)
+    const bucketEndEpoch = parseIsoEpoch(point.bucketEnd)
+    if (bucketStartEpoch == null || bucketEndEpoch == null) continue
+    if (nowEpochSeconds >= bucketStartEpoch && nowEpochSeconds < bucketEndEpoch) {
+      return point
+    }
+  }
+  return null
+}
+
+export function applyRecordsToCurrentDayBucket(
+  current: TimeseriesResponse | null,
+  records: ApiInvocation[],
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  if (!current || records.length === 0) {
+    return current
+  }
+
+  const currentBucket = getCurrentDayBucket(current, nowEpochSeconds)
+  if (!currentBucket) {
+    return current
+  }
+
+  const bucketStartEpoch = parseIsoEpoch(currentBucket.bucketStart)
+  const bucketEndEpoch = parseIsoEpoch(currentBucket.bucketEnd)
+  if (bucketStartEpoch == null || bucketEndEpoch == null) {
+    return current
+  }
+
+  const nextPoints = current.points.map((point) =>
+    point.bucketStart === currentBucket.bucketStart ? { ...point } : point,
+  )
+  const nextBucket = nextPoints.find((point) => point.bucketStart === currentBucket.bucketStart)
+  if (!nextBucket) {
+    return current
+  }
+
+  let mutating = false
+  for (const record of records) {
+    const occurredEpoch = parseIsoEpoch(record.occurredAt)
+    if (occurredEpoch == null || occurredEpoch < bucketStartEpoch || occurredEpoch >= bucketEndEpoch) {
+      continue
+    }
+    nextBucket.totalCount += 1
+    if (record.status === 'success') {
+      nextBucket.successCount += 1
+    } else {
+      nextBucket.failureCount += 1
+    }
+    nextBucket.totalTokens += record.totalTokens ?? 0
+    nextBucket.totalCost += record.cost ?? 0
+    mutating = true
+  }
+
+  if (!mutating) {
+    return current
+  }
+
+  return {
+    ...current,
+    points: nextPoints,
+  }
+}
+
+export function applyRecordsToTimeseries(
   current: TimeseriesResponse | null,
   records: ApiInvocation[],
   context: UpdateContext,

@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS,
   CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS,
   CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS,
   CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS,
   CURRENT_SUMMARY_RETRY_DELAY_MS,
   createUnsupportedRefreshGate,
   getCurrentSummarySseRefreshDelay,
+  isCalendarSummaryWindow,
   mergePendingSummarySilentOption,
+  runCalendarSummaryRefresh,
   runUnsupportedSummaryRefresh,
   shouldTriggerCurrentSummaryOpenResync,
   shouldRetryCurrentSummaryError,
@@ -67,7 +70,30 @@ describe('useSummary unsupported window fallback', () => {
     expect(shouldHandleUnsupportedSummaryRefresh('1d', '1d', true)).toBe(false)
     expect(shouldHandleUnsupportedSummaryRefresh('30m', '1d', true)).toBe(false)
     expect(shouldHandleUnsupportedSummaryRefresh('1h', 'current', false)).toBe(false)
-    expect(shouldHandleUnsupportedSummaryRefresh('1h', 'today', false)).toBe(true)
+    expect(shouldHandleUnsupportedSummaryRefresh('1h', 'today', false)).toBe(false)
+    expect(shouldHandleUnsupportedSummaryRefresh('1h', '7d', false)).toBe(true)
+  })
+
+  it('recognizes calendar windows that should refresh from records', () => {
+    expect(isCalendarSummaryWindow('today')).toBe(true)
+    expect(isCalendarSummaryWindow('thisWeek')).toBe(true)
+    expect(isCalendarSummaryWindow('thisMonth')).toBe(true)
+    expect(isCalendarSummaryWindow('1d')).toBe(false)
+  })
+
+  it('throttles calendar-window records refreshes to 1 second', async () => {
+    const gate = createUnsupportedRefreshGate()
+    const refresh = vi.fn().mockResolvedValue(undefined)
+    const base = CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS
+
+    const first = await runCalendarSummaryRefresh(gate, base, refresh)
+    const tooEarly = await runCalendarSummaryRefresh(gate, base + CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS - 1, refresh)
+    const reopened = await runCalendarSummaryRefresh(gate, base + CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS, refresh)
+
+    expect(first).toBe(true)
+    expect(tooEarly).toBe(false)
+    expect(reopened).toBe(true)
+    expect(refresh).toHaveBeenCalledTimes(2)
   })
 
   it('returns zero delay when current summary refresh is outside throttle window', () => {
