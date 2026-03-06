@@ -17,14 +17,15 @@
 ### Goals
 
 - 默认 pricing catalog 内置 `gpt-5.4` / `gpt-5.4-pro` 的单价。
-- `estimate_proxy_cost` 对 `gpt-5.4*` 在 `usage.input_tokens > 272_000` 时应用加价：
+- `estimate_proxy_cost` 对 `gpt-5.4` / `gpt-5.4-pro`（可带 `-YYYY-MM-DD` dated suffix）
+  在 `usage.input_tokens > 272_000` 时应用加价：
   - input cost x2（包含 cached input 部分）
   - output cost x1.5
   - reasoning cost x1.5
 - `/v1/models` hijack preset 列表可向下游暴露 `gpt-5.4` / `gpt-5.4-pro`（仅扩展 id 集合，不改变 payload 结构）。
 - SQLite 启动/加载阶段自动补齐：
   - pricing 缺少新模型条目则 `INSERT OR IGNORE` 插入
-  - proxy enabled list 仅在保持 legacy 默认列表时才追加，避免覆盖用户自定义
+  - proxy enabled list 仅在保持 legacy 默认列表时才追加，且迁移仅执行一次（允许后续显式移除）
 
 ### Non-goals
 
@@ -49,7 +50,7 @@
 ### MUST
 
 - 不覆盖 `pricing_settings_models` 中已有的同名 model 行（保留用户值）。
-- `gpt-5.4*` 超阈值加价按 whole session 计费（对 input/output/reasoning 部分分别乘倍率）。
+- `gpt-5.4` / `gpt-5.4-pro`（可带 `-YYYY-MM-DD` dated suffix）超阈值加价按 whole session 计费。
 - `/v1/models` hijack 仍返回 `{object:\"list\", data:[{id, object, owned_by, created}, ...]}`。
 
 ### SHOULD
@@ -69,8 +70,9 @@
   - preset 模型列表集合包含 `gpt-5.4` / `gpt-5.4-pro`
   - enabled list 等于 legacy 默认列表时，自动追加新模型
   - enabled list 为用户自定义时不自动改动
+  - 迁移追加会写入 migration flag，后续重启不再重复自动追加
 - 成本估算：
-  - `model` 以 `\"gpt-5.4\"` 前缀匹配
+  - `model` 精确匹配 `gpt-5.4` / `gpt-5.4-pro`，并允许 `-YYYY-MM-DD` dated suffix
   - 若 `usage.input_tokens > 272_000`：input x2、output x1.5、reasoning x1.5
   - 阈值等于 272_000 时不触发（strictly greater）
 
@@ -129,12 +131,13 @@ None
 - [x] M1: Add `gpt-5.4` / `gpt-5.4-pro` to preset model ids for downstream `/v1/models`.
 - [x] M2: Add default pricing catalog entries and catalog version refresh.
 - [x] M3: Add long-context surcharge rule for `gpt-5.4*`.
+- [x] M3: Add long-context surcharge rule for `gpt-5.4` / `gpt-5.4-pro`.
 - [x] M4: Add SQLite ensure/seed logic and regression tests.
 
 ## 方案概述（Approach, high-level）
 
 - Keep pricing defaults embedded; seed missing rows in SQLite via `INSERT OR IGNORE` to preserve user overrides.
-- Apply long-context surcharge only for `gpt-5.4*` and only when prompt tokens strictly exceed threshold.
+- Apply long-context surcharge only for `gpt-5.4` / `gpt-5.4-pro` and only when prompt tokens strictly exceed threshold.
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
