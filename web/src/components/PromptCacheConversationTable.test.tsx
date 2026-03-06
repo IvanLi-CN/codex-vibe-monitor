@@ -56,6 +56,54 @@ describe('PromptCacheConversationTable', () => {
     expect(html).toContain('stroke="oklch(var(--color-error) / 0.92)"')
   })
 
+  it('shares the 24h token chart scale across visible conversations', () => {
+    const stats: PromptCacheConversationsResponse = {
+      rangeStart: '2026-03-02T00:00:00Z',
+      rangeEnd: '2026-03-03T00:00:00Z',
+      conversations: [
+        {
+          promptCacheKey: 'pck-low',
+          requestCount: 1,
+          totalTokens: 50,
+          totalCost: 0.01,
+          createdAt: '2026-03-02T01:00:00Z',
+          lastActivityAt: '2026-03-02T01:00:00Z',
+          last24hRequests: [
+            {
+              occurredAt: '2026-03-02T01:00:00Z',
+              status: 'success',
+              isSuccess: true,
+              requestTokens: 50,
+              cumulativeTokens: 50,
+            },
+          ],
+        },
+        {
+          promptCacheKey: 'pck-high',
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.02,
+          createdAt: '2026-03-02T02:00:00Z',
+          lastActivityAt: '2026-03-02T02:00:00Z',
+          last24hRequests: [
+            {
+              occurredAt: '2026-03-02T02:00:00Z',
+              status: 'success',
+              isSuccess: true,
+              requestTokens: 100,
+              cumulativeTokens: 100,
+            },
+          ],
+        },
+      ],
+    }
+
+    const html = renderTable(stats)
+
+    expect(html).toContain('aria-label="pck-low"')
+    expect(html).toContain('y1="24"')
+  })
+
   it('renders empty state when there are no conversations', () => {
     const stats: PromptCacheConversationsResponse = {
       rangeStart: '2026-03-02T00:00:00Z',

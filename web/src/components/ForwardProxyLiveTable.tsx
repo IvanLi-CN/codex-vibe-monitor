@@ -105,13 +105,18 @@ interface WeightTrendGeometry {
   points: Array<{ x: number; y: number }>
 }
 
-function buildWeightTrendGeometry(buckets: ForwardProxyWeightBucket[]): WeightTrendGeometry | null {
+interface WeightTrendScale {
+  minValue: number
+  maxValue: number
+}
+
+function buildWeightTrendGeometry(buckets: ForwardProxyWeightBucket[], scale: WeightTrendScale): WeightTrendGeometry | null {
   if (buckets.length === 0) return null
   const chartWidth = 216
   const chartHeight = 40
   const values = buckets.map((bucket) => bucket.lastWeight)
-  const minValue = Math.min(...values, 0)
-  const maxValue = Math.max(...values, 0)
+  const minValue = scale.minValue
+  const maxValue = scale.maxValue
   const span = Math.max(maxValue - minValue, Number.EPSILON)
   const bucketWidth = chartWidth / buckets.length
   const points = values.map((value, index) => {
@@ -153,18 +158,20 @@ function WindowCell({ value }: { value: ForwardProxyWindowStats }) {
 
 function WeightTrendCell({
   buckets,
+  scale,
   localeTag,
   tooltipLabels,
   ariaLabel,
   clipId,
 }: {
   buckets: ForwardProxyWeightBucket[]
+  scale: WeightTrendScale
   localeTag: string
   tooltipLabels: WeightTooltipLabels
   ariaLabel: string
   clipId: string
 }) {
-  const geometry = buildWeightTrendGeometry(buckets)
+  const geometry = buildWeightTrendGeometry(buckets, scale)
   if (!geometry) {
     return <div className="text-[11px] text-base-content/55">—</div>
   }
@@ -259,17 +266,31 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
     [t],
   )
 
-  const rowData = useMemo(
-    () =>
-      (stats?.nodes ?? []).map((node) => ({
+  const { rowData, requestBucketScaleMax, weightTrendScale } = useMemo(() => {
+    const rows = (stats?.nodes ?? []).map((node) => {
+      const weightBuckets = resolveWeightBuckets(node)
+      return {
         node,
         windows: [node.stats.oneMinute, node.stats.fifteenMinutes, node.stats.oneHour, node.stats.oneDay, node.stats.sevenDays],
         total24h: sumLast24h(node),
-        weightBuckets: resolveWeightBuckets(node),
-        maxBucketTotal24h: Math.max(...node.last24h.map((bucket) => bucket.successCount + bucket.failureCount), 0),
-      })),
-    [stats?.nodes],
-  )
+        weightBuckets,
+      }
+    })
+    const requestBucketScaleMax = Math.max(
+      ...rows.flatMap(({ node }) => node.last24h.map((bucket) => bucket.successCount + bucket.failureCount)),
+      0,
+    )
+    const weightValues = rows.flatMap(({ weightBuckets }) => weightBuckets.map((bucket) => bucket.lastWeight))
+    const weightTrendScale = {
+      minValue: Math.min(...weightValues, 0),
+      maxValue: Math.max(...weightValues, 0),
+    }
+    return {
+      rowData: rows,
+      requestBucketScaleMax,
+      weightTrendScale,
+    }
+  }, [stats?.nodes])
 
   if (error) {
     return (
@@ -323,7 +344,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
           </tr>
         </thead>
         <tbody className="divide-y divide-base-300/65">
-          {rowData.map(({ node, windows, total24h, weightBuckets, maxBucketTotal24h }) => (
+          {rowData.map(({ node, windows, total24h, weightBuckets }) => (
             <tr key={node.key} className={cn('transition-colors hover:bg-primary/6', node.penalized && 'bg-warning/8')}>
               <td className="max-w-0 px-2 py-2 align-middle sm:px-3 sm:py-3">
                 <div className="min-w-0">
@@ -359,8 +380,8 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                   <div className="flex h-11 items-end gap-px sm:gap-[1.5px] md:gap-[2px]">
                     {node.last24h.map((bucket, index) => {
                       const total = bucket.successCount + bucket.failureCount
-                      const successHeight = maxBucketTotal24h > 0 ? (bucket.successCount / maxBucketTotal24h) * 100 : 0
-                      const failureHeight = maxBucketTotal24h > 0 ? (bucket.failureCount / maxBucketTotal24h) * 100 : 0
+                      const successHeight = requestBucketScaleMax > 0 ? (bucket.successCount / requestBucketScaleMax) * 100 : 0
+                      const failureHeight = requestBucketScaleMax > 0 ? (bucket.failureCount / requestBucketScaleMax) * 100 : 0
                       const emptyHeight = Math.max(0, 100 - Math.round(successHeight + failureHeight))
                       return (
                         <div
@@ -394,6 +415,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
               <td className="px-2 py-2 align-middle sm:px-3 sm:py-3">
                 <WeightTrendCell
                   buckets={weightBuckets}
+                  scale={weightTrendScale}
                   localeTag={localeTag}
                   tooltipLabels={weightTooltipLabels}
                   ariaLabel={weightTrendAriaLabel}

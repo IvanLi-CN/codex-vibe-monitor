@@ -90,6 +90,7 @@ function buildGeometry(
   points: PromptCacheConversationRequestPoint[],
   rangeStart: string,
   rangeEnd: string,
+  maxCumulativeTokens: number,
 ): ConversationChartGeometry | null {
   const rangeStartEpoch = parseEpoch(rangeStart)
   const rangeEndEpoch = parseEpoch(rangeEnd)
@@ -98,7 +99,7 @@ function buildGeometry(
   const segments = buildSegments(points, rangeStartEpoch, rangeEndEpoch)
   if (segments.length === 0) return null
 
-  const maxCumulative = Math.max(...segments.map((segment) => segment.cumulativeTokens), 1)
+  const maxCumulative = Math.max(maxCumulativeTokens, ...segments.map((segment) => segment.cumulativeTokens), 1)
   const span = rangeEndEpoch - rangeStartEpoch
   const xForEpoch = (epoch: number) => ((epoch - rangeStartEpoch) / span) * CHART_WIDTH
   const yForTokens = (tokens: number) => CHART_HEIGHT - (tokens / maxCumulative) * CHART_HEIGHT
@@ -153,12 +154,14 @@ function ConversationSparkline({
   conversation,
   rangeStart,
   rangeEnd,
+  maxCumulativeTokens,
   localeTag,
   tooltipLabels,
 }: {
   conversation: PromptCacheConversation
   rangeStart: string
   rangeEnd: string
+  maxCumulativeTokens: number
   localeTag: string
   tooltipLabels: {
     status: string
@@ -167,8 +170,8 @@ function ConversationSparkline({
   }
 }) {
   const geometry = useMemo(
-    () => buildGeometry(conversation.last24hRequests, rangeStart, rangeEnd),
-    [conversation.last24hRequests, rangeEnd, rangeStart],
+    () => buildGeometry(conversation.last24hRequests, rangeStart, rangeEnd, maxCumulativeTokens),
+    [conversation.last24hRequests, maxCumulativeTokens, rangeEnd, rangeStart],
   )
 
   if (!geometry) {
@@ -261,6 +264,16 @@ export function PromptCacheConversationTable({ stats, isLoading, error }: Prompt
 
   const rangeStart = stats?.rangeStart ?? ''
   const rangeEnd = stats?.rangeEnd ?? ''
+  const conversationChartMax = useMemo(
+    () =>
+      Math.max(
+        ...(stats?.conversations ?? []).flatMap((conversation) =>
+          conversation.last24hRequests.map((point) => Math.max(point.cumulativeTokens, 0)),
+        ),
+        0,
+      ),
+    [stats?.conversations],
+  )
 
   if (error) {
     return (
@@ -344,6 +357,7 @@ export function PromptCacheConversationTable({ stats, isLoading, error }: Prompt
                   conversation={conversation}
                   rangeStart={rangeStart}
                   rangeEnd={rangeEnd}
+                  maxCumulativeTokens={conversationChartMax}
                   localeTag={localeTag}
                   tooltipLabels={tooltipLabels}
                 />
@@ -407,6 +421,7 @@ export function PromptCacheConversationTable({ stats, isLoading, error }: Prompt
                     conversation={conversation}
                     rangeStart={rangeStart}
                     rangeEnd={rangeEnd}
+                    maxCumulativeTokens={conversationChartMax}
                     localeTag={localeTag}
                     tooltipLabels={tooltipLabels}
                   />
