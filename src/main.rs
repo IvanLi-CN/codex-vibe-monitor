@@ -1450,6 +1450,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             hijack_enabled INTEGER NOT NULL DEFAULT 0,
             merge_upstream_enabled INTEGER NOT NULL DEFAULT 0,
             enabled_preset_models_json TEXT,
+            preset_models_migrated INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -1469,6 +1470,19 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         && !err.to_string().contains("duplicate column name")
     {
         return Err(err).context("failed to ensure enabled_preset_models_json column");
+    }
+
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE proxy_model_settings
+        ADD COLUMN preset_models_migrated INTEGER NOT NULL DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context("failed to ensure preset_models_migrated column");
     }
 
     let default_enabled_models_json = serde_json::to_string(&default_enabled_preset_models())
@@ -1729,9 +1743,27 @@ async fn save_proxy_model_settings(
 }
 
 async fn ensure_proxy_enabled_models_contains_new_presets(pool: &Pool<Sqlite>) -> Result<()> {
+    let migrated = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT preset_models_migrated
+        FROM proxy_model_settings
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .fetch_optional(pool)
+    .await
+    .context("failed to check proxy preset models migration flag")?
+    .unwrap_or(0);
+    if migrated != 0 {
+        return Ok(());
+    }
+
     let mut settings = load_proxy_model_settings(pool).await?;
 
     if settings.enabled_preset_models.is_empty() {
+        mark_proxy_preset_models_migrated(pool).await?;
         return Ok(());
     }
 
@@ -1742,6 +1774,7 @@ async fn ensure_proxy_enabled_models_contains_new_presets(pool: &Pool<Sqlite>) -
     if settings.enabled_preset_models != legacy_default {
         // Respect user customizations: only auto-append when the enabled list matches
         // the legacy default preset list exactly.
+        mark_proxy_preset_models_migrated(pool).await?;
         return Ok(());
     }
 
@@ -1758,10 +1791,28 @@ async fn ensure_proxy_enabled_models_contains_new_presets(pool: &Pool<Sqlite>) -
     }
 
     if !changed {
+        mark_proxy_preset_models_migrated(pool).await?;
         return Ok(());
     }
 
-    save_proxy_model_settings(pool, settings).await
+    save_proxy_model_settings(pool, settings).await?;
+    mark_proxy_preset_models_migrated(pool).await
+}
+
+async fn mark_proxy_preset_models_migrated(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE proxy_model_settings
+        SET preset_models_migrated = 1,
+            updated_at = datetime('now')
+        WHERE id = ?1
+        "#,
+    )
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .execute(pool)
+    .await
+    .context("failed to mark proxy preset models as migrated")?;
+    Ok(())
 }
 
 #[derive(Debug, FromRow)]
@@ -6401,6 +6452,11 @@ fn dated_model_alias_base(model: &str) -> Option<&str> {
     if base.is_empty() { None } else { Some(base) }
 }
 
+fn is_gpt_5_4_long_context_surcharge_model(model: &str) -> bool {
+    let base = dated_model_alias_base(model).unwrap_or(model);
+    matches!(base, "gpt-5.4" | "gpt-5.4-pro")
+}
+
 fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> String {
     fn mix_fvn1a(hash: &mut u64, bytes: &[u8]) {
         for byte in bytes {
@@ -6463,8 +6519,8 @@ fn estimate_proxy_cost(
         return (None, false, price_version);
     }
 
-    let apply_long_context_surcharge =
-        model.starts_with("gpt-5.4") && input_tokens > GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS;
+    let apply_long_context_surcharge = is_gpt_5_4_long_context_surcharge_model(model)
+        && input_tokens > GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS;
 
     let billable_cache_tokens = if pricing.cache_input_per_1m.is_some() {
         cache_input_tokens
@@ -15303,7 +15359,8 @@ mod tests {
         sqlx::query(
             r#"
             UPDATE proxy_model_settings
-            SET enabled_preset_models_json = ?1
+            SET enabled_preset_models_json = ?1,
+                preset_models_migrated = 0
             WHERE id = ?2
             "#,
         )
@@ -15343,7 +15400,8 @@ mod tests {
         sqlx::query(
             r#"
             UPDATE proxy_model_settings
-            SET enabled_preset_models_json = ?1
+            SET enabled_preset_models_json = ?1,
+                preset_models_migrated = 0
             WHERE id = ?2
             "#,
         )
@@ -15359,6 +15417,75 @@ mod tests {
             .await
             .expect("load proxy model settings");
         assert_eq!(settings.enabled_preset_models, custom_enabled);
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_allows_opting_out_of_new_proxy_models_after_migration() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("in-memory sqlite");
+        ensure_schema(&pool).await.expect("ensure schema");
+
+        let legacy_enabled = LEGACY_PROXY_PRESET_MODEL_IDS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect::<Vec<_>>();
+        let legacy_enabled_json =
+            serde_json::to_string(&legacy_enabled).expect("serialize legacy enabled list");
+
+        sqlx::query(
+            r#"
+            UPDATE proxy_model_settings
+            SET enabled_preset_models_json = ?1,
+                preset_models_migrated = 0
+            WHERE id = ?2
+            "#,
+        )
+        .bind(&legacy_enabled_json)
+        .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+        .execute(&pool)
+        .await
+        .expect("force legacy enabled preset models");
+
+        ensure_schema(&pool)
+            .await
+            .expect("ensure schema migration run");
+        let migrated = load_proxy_model_settings(&pool)
+            .await
+            .expect("load proxy model settings after migration");
+        assert!(
+            migrated
+                .enabled_preset_models
+                .contains(&"gpt-5.4".to_string())
+        );
+        assert!(
+            migrated
+                .enabled_preset_models
+                .contains(&"gpt-5.4-pro".to_string())
+        );
+
+        // User explicitly removes the new models after migration; schema re-run should not
+        // force them back in.
+        sqlx::query(
+            r#"
+            UPDATE proxy_model_settings
+            SET enabled_preset_models_json = ?1,
+                preset_models_migrated = 1
+            WHERE id = ?2
+            "#,
+        )
+        .bind(&legacy_enabled_json)
+        .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+        .execute(&pool)
+        .await
+        .expect("force legacy enabled preset models after migration");
+
+        ensure_schema(&pool).await.expect("ensure schema rerun");
+
+        let settings = load_proxy_model_settings(&pool)
+            .await
+            .expect("load proxy model settings after opt-out");
+        assert_eq!(settings.enabled_preset_models, legacy_enabled);
     }
 
     #[tokio::test]
@@ -17922,6 +18049,71 @@ mod tests {
         let input_part = (272_001.0 * 30.0) / 1_000_000.0;
         let output_part = (1_000.0 * 180.0) / 1_000_000.0;
         let expected = (input_part * 2.0) + (output_part * 1.5);
+        let computed = cost.expect("cost should be present");
+        assert!((computed - expected).abs() < 1e-12);
+        assert!(estimated);
+    }
+
+    #[test]
+    fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_for_dated_model_suffix() {
+        let catalog = PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([(
+                "gpt-5.4".to_string(),
+                ModelPricing {
+                    input_per_1m: 2.5,
+                    output_per_1m: 15.0,
+                    cache_input_per_1m: Some(0.25),
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+        let usage = ParsedUsage {
+            input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1),
+            output_tokens: Some(1_000),
+            cache_input_tokens: Some(1_000),
+            reasoning_tokens: None,
+            total_tokens: None,
+        };
+
+        let (cost, estimated, _) =
+            estimate_proxy_cost(&catalog, Some("gpt-5.4-2026-03-01"), &usage);
+
+        let input_part = ((271_001.0 * 2.5) + (1_000.0 * 0.25)) / 1_000_000.0;
+        let output_part = (1_000.0 * 15.0) / 1_000_000.0;
+        let expected = (input_part * 2.0) + (output_part * 1.5);
+        let computed = cost.expect("cost should be present");
+        assert!((computed - expected).abs() < 1e-12);
+        assert!(estimated);
+    }
+
+    #[test]
+    fn estimate_proxy_cost_does_not_apply_gpt_5_4_long_context_surcharge_for_other_models() {
+        let catalog = PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([(
+                "gpt-5.4o".to_string(),
+                ModelPricing {
+                    input_per_1m: 2.5,
+                    output_per_1m: 15.0,
+                    cache_input_per_1m: None,
+                    reasoning_per_1m: None,
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+        let usage = ParsedUsage {
+            input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1),
+            output_tokens: Some(1_000),
+            cache_input_tokens: None,
+            reasoning_tokens: None,
+            total_tokens: None,
+        };
+
+        let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4o"), &usage);
+
+        let expected = ((272_001.0 * 2.5) + (1_000.0 * 15.0)) / 1_000_000.0;
         let computed = cost.expect("cost should be present");
         assert!((computed - expected).abs() < 1e-12);
         assert!(estimated);
