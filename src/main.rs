@@ -2564,6 +2564,23 @@ async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+async fn normalize_default_pricing_sources(pool: &Pool<Sqlite>) -> Result<()> {
+    // Legacy versions used `temporary` for some built-in models; keep the pricing untouched
+    // but normalize the metadata so UI and reporting remain consistent.
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET source = 'official'
+        WHERE model = 'gpt-5.3-codex'
+          AND lower(trim(source)) = 'temporary'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to normalize default pricing sources")?;
+    Ok(())
+}
+
 async fn seed_default_pricing_catalog(pool: &Pool<Sqlite>) -> Result<()> {
     let legacy_path = resolve_legacy_pricing_catalog_path();
     seed_default_pricing_catalog_with_legacy_path(pool, Some(&legacy_path)).await
@@ -2601,6 +2618,7 @@ async fn seed_default_pricing_catalog_with_legacy_path(
             || version == LEGACY_DEFAULT_PRICING_CATALOG_VERSION
         {
             ensure_pricing_models_present(pool).await?;
+            normalize_default_pricing_sources(pool).await?;
         }
         return Ok(());
     }
@@ -2628,6 +2646,7 @@ async fn seed_default_pricing_catalog_with_legacy_path(
         .await
         .context("failed to ensure default pricing_settings_meta row")?;
         ensure_pricing_models_present(pool).await?;
+        normalize_default_pricing_sources(pool).await?;
         return Ok(());
     }
 
@@ -2641,6 +2660,12 @@ async fn seed_default_pricing_catalog_with_legacy_path(
                     "migrating legacy pricing catalog into sqlite"
                 );
                 save_pricing_catalog(pool, &catalog).await?;
+                if catalog.version == DEFAULT_PRICING_CATALOG_VERSION
+                    || catalog.version == LEGACY_DEFAULT_PRICING_CATALOG_VERSION
+                {
+                    ensure_pricing_models_present(pool).await?;
+                    normalize_default_pricing_sources(pool).await?;
+                }
                 return Ok(());
             }
             Ok(None) => {}
@@ -2656,6 +2681,7 @@ async fn seed_default_pricing_catalog_with_legacy_path(
 
     save_pricing_catalog(pool, &default_pricing_catalog()).await?;
     ensure_pricing_models_present(pool).await?;
+    normalize_default_pricing_sources(pool).await?;
     Ok(())
 }
 
@@ -16362,6 +16388,52 @@ mod tests {
             .expect("load pricing catalog should succeed");
         assert!(catalog.models.contains_key("gpt-5.4"));
         assert!(catalog.models.contains_key("gpt-5.4-pro"));
+    }
+
+    #[tokio::test]
+    async fn seed_default_pricing_catalog_normalizes_gpt_5_3_codex_source_for_legacy_default_version()
+     {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("in-memory sqlite");
+        ensure_schema(&pool).await.expect("ensure schema");
+
+        save_pricing_catalog(&pool, &default_pricing_catalog())
+            .await
+            .expect("seed default pricing catalog");
+
+        sqlx::query(
+            r#"
+            UPDATE pricing_settings_meta
+            SET catalog_version = ?1
+            WHERE id = ?2
+            "#,
+        )
+        .bind(LEGACY_DEFAULT_PRICING_CATALOG_VERSION)
+        .bind(PRICING_SETTINGS_SINGLETON_ID)
+        .execute(&pool)
+        .await
+        .expect("downgrade catalog version for test");
+
+        sqlx::query(
+            r#"
+            UPDATE pricing_settings_models
+            SET source = 'temporary'
+            WHERE model = 'gpt-5.3-codex'
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("force legacy gpt-5.3-codex source");
+
+        let catalog = load_pricing_catalog(&pool)
+            .await
+            .expect("load pricing catalog");
+        let pricing = catalog
+            .models
+            .get("gpt-5.3-codex")
+            .expect("gpt-5.3-codex pricing present");
+        assert_eq!(pricing.source, "official");
     }
 
     #[tokio::test]
