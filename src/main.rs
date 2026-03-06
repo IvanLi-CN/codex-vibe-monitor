@@ -15489,6 +15489,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ensure_schema_marks_proxy_preset_models_migrated_when_enabled_list_empty() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("in-memory sqlite");
+        ensure_schema(&pool).await.expect("ensure schema");
+
+        sqlx::query(
+            r#"
+            UPDATE proxy_model_settings
+            SET enabled_preset_models_json = ?1,
+                preset_models_migrated = 0
+            WHERE id = ?2
+            "#,
+        )
+        .bind("[]")
+        .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+        .execute(&pool)
+        .await
+        .expect("force empty enabled preset models list");
+
+        ensure_schema(&pool).await.expect("ensure schema rerun");
+
+        let settings = load_proxy_model_settings(&pool)
+            .await
+            .expect("load proxy model settings");
+        assert!(
+            settings.enabled_preset_models.is_empty(),
+            "empty enabled list should be preserved"
+        );
+
+        let migrated = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT preset_models_migrated
+            FROM proxy_model_settings
+            WHERE id = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("read migration flag");
+        assert_eq!(migrated, 1);
+    }
+
+    #[tokio::test]
     async fn proxy_model_settings_api_rejects_cross_origin_writes() {
         let state = test_state_with_openai_base(
             Url::parse("https://api.example.com/").expect("valid upstream base url"),
@@ -18022,6 +18068,40 @@ mod tests {
     }
 
     #[test]
+    fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_to_reasoning_cost() {
+        let catalog = PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([(
+                "gpt-5.4".to_string(),
+                ModelPricing {
+                    input_per_1m: 2.5,
+                    output_per_1m: 15.0,
+                    cache_input_per_1m: Some(0.25),
+                    reasoning_per_1m: Some(20.0),
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+        let usage = ParsedUsage {
+            input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1),
+            output_tokens: Some(1_000),
+            cache_input_tokens: Some(1_000),
+            reasoning_tokens: Some(2_000),
+            total_tokens: None,
+        };
+
+        let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4"), &usage);
+
+        let input_part = ((271_001.0 * 2.5) + (1_000.0 * 0.25)) / 1_000_000.0;
+        let output_part = (1_000.0 * 15.0) / 1_000_000.0;
+        let reasoning_part = (2_000.0 * 20.0) / 1_000_000.0;
+        let expected = (input_part * 2.0) + (output_part * 1.5) + (reasoning_part * 1.5);
+        let computed = cost.expect("cost should be present");
+        assert!((computed - expected).abs() < 1e-12);
+        assert!(estimated);
+    }
+
+    #[test]
     fn estimate_proxy_cost_applies_gpt_5_4_pro_long_context_surcharge_above_threshold() {
         let catalog = PricingCatalog {
             version: "unit-test".to_string(),
@@ -18049,6 +18129,41 @@ mod tests {
         let input_part = (272_001.0 * 30.0) / 1_000_000.0;
         let output_part = (1_000.0 * 180.0) / 1_000_000.0;
         let expected = (input_part * 2.0) + (output_part * 1.5);
+        let computed = cost.expect("cost should be present");
+        assert!((computed - expected).abs() < 1e-12);
+        assert!(estimated);
+    }
+
+    #[test]
+    fn estimate_proxy_cost_applies_gpt_5_4_pro_long_context_surcharge_for_dated_model_suffix() {
+        let catalog = PricingCatalog {
+            version: "unit-test".to_string(),
+            models: HashMap::from([(
+                "gpt-5.4-pro".to_string(),
+                ModelPricing {
+                    input_per_1m: 30.0,
+                    output_per_1m: 180.0,
+                    cache_input_per_1m: None,
+                    reasoning_per_1m: Some(90.0),
+                    source: "custom".to_string(),
+                },
+            )]),
+        };
+        let usage = ParsedUsage {
+            input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1),
+            output_tokens: Some(1_000),
+            cache_input_tokens: Some(999_999),
+            reasoning_tokens: Some(2_000),
+            total_tokens: None,
+        };
+
+        let (cost, estimated, _) =
+            estimate_proxy_cost(&catalog, Some("gpt-5.4-pro-2026-03-01"), &usage);
+
+        let input_part = (272_001.0 * 30.0) / 1_000_000.0;
+        let output_part = (1_000.0 * 180.0) / 1_000_000.0;
+        let reasoning_part = (2_000.0 * 90.0) / 1_000_000.0;
+        let expected = (input_part * 2.0) + (output_part * 1.5) + (reasoning_part * 1.5);
         let computed = cost.expect("cost should be present");
         assert!((computed - expected).abs() < 1e-12);
         assert!(estimated);
