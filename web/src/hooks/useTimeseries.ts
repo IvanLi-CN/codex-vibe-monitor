@@ -436,8 +436,9 @@ export function getCurrentDayBucketEndEpoch(current: TimeseriesResponse | null, 
 }
 
 export function shouldResyncForCurrentDayBucket(current: TimeseriesResponse | null, nowEpochSeconds = Math.floor(Date.now() / 1000)) {
+  // Without a current bucket, the next live record cannot be patched locally and needs a server resync.
   if (!current || current.points.length === 0) {
-    return false
+    return true
   }
   return getCurrentDayBucket(current, nowEpochSeconds) == null
 }

@@ -123,6 +123,19 @@ describe('useTimeseries current-day bucket patching', () => {
       Math.floor(Date.parse('2026-03-07T00:00:00Z') / 1000),
     )
   })
+
+  it('requests a full resync when there is no current-day bucket to patch yet', () => {
+    expect(shouldResyncForCurrentDayBucket(null, Math.floor(Date.parse('2026-03-06T12:00:00Z') / 1000))).toBe(true)
+    expect(
+      shouldResyncForCurrentDayBucket(
+        {
+          ...base,
+          points: [],
+        },
+        Math.floor(Date.parse('2026-03-06T12:00:00Z') / 1000),
+      ),
+    ).toBe(true)
+  })
 })
 
 describe('useTimeseries refresh coordination helpers', () => {

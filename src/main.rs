@@ -547,11 +547,30 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
             Ok(Ok(publish)) => {
                 let PublishResult {
                     records,
-                    summaries,
-                    quota_snapshot,
+                    mut summaries,
+                    mut quota_snapshot,
+                    collected_broadcast_state,
                 } = publish;
 
-                if state_clone.broadcaster.receiver_count() > 0
+                let receiver_count = state_clone.broadcaster.receiver_count();
+                if should_collect_late_broadcast_state(receiver_count, collected_broadcast_state) {
+                    match collect_broadcast_state_snapshots(
+                        &state_clone.pool,
+                        state_clone.config.crs_stats.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok((latest_summaries, latest_quota_snapshot)) => {
+                            summaries = latest_summaries;
+                            quota_snapshot = latest_quota_snapshot;
+                        }
+                        Err(err) => {
+                            warn!(?err, "failed to collect late-subscriber broadcast state");
+                        }
+                    }
+                }
+
+                if receiver_count > 0
                     && let Some(records) = records.filter(|v| !v.is_empty())
                     && let Err(err) = state_clone
                         .broadcaster
@@ -701,11 +720,29 @@ struct PublishResult {
     records: Option<Vec<ApiInvocation>>,
     summaries: Vec<SummaryPublish>,
     quota_snapshot: Option<QuotaSnapshotResponse>,
+    collected_broadcast_state: bool,
 }
 
 struct SummaryPublish {
     window: String,
     summary: StatsResponse,
+}
+
+fn should_collect_late_broadcast_state(
+    receiver_count: usize,
+    collected_broadcast_state: bool,
+) -> bool {
+    receiver_count > 0 && !collected_broadcast_state
+}
+
+async fn collect_broadcast_state_snapshots(
+    pool: &Pool<Sqlite>,
+    relay: Option<&CrsStatsConfig>,
+) -> Result<(Vec<SummaryPublish>, Option<QuotaSnapshotResponse>)> {
+    Ok((
+        collect_summary_snapshots(pool, relay).await?,
+        QuotaSnapshotResponse::fetch_latest(pool).await?,
+    ))
 }
 
 async fn fetch_and_store(
@@ -755,10 +792,7 @@ async fn fetch_and_store(
     }
 
     let (summaries, quota_payload) = if collect_broadcast_state {
-        (
-            collect_summary_snapshots(&state.pool, relay_config.as_ref()).await?,
-            QuotaSnapshotResponse::fetch_latest(&state.pool).await?,
-        )
+        collect_broadcast_state_snapshots(&state.pool, relay_config.as_ref()).await?
     } else {
         (Vec::new(), None)
     };
@@ -771,6 +805,7 @@ async fn fetch_and_store(
         },
         summaries,
         quota_snapshot: quota_payload,
+        collected_broadcast_state: collect_broadcast_state,
     })
 }
 
@@ -17262,6 +17297,14 @@ mod tests {
 
         assert!(publish.summaries.is_empty());
         assert!(publish.quota_snapshot.is_none());
+        assert!(!publish.collected_broadcast_state);
+    }
+
+    #[test]
+    fn should_collect_late_broadcast_state_when_subscribers_arrive_mid_poll() {
+        assert!(should_collect_late_broadcast_state(1, false));
+        assert!(!should_collect_late_broadcast_state(0, false));
+        assert!(!should_collect_late_broadcast_state(1, true));
     }
 
     #[tokio::test]
