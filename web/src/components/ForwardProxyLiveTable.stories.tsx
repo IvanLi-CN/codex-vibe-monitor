@@ -99,6 +99,83 @@ const stats: ForwardProxyLiveStatsResponse = {
   ],
 }
 
+
+
+const sharedScaleStats: ForwardProxyLiveStatsResponse = {
+  rangeStart: '2026-03-01T00:00:00.000Z',
+  rangeEnd: '2026-03-02T00:00:00.000Z',
+  bucketSeconds: 3600,
+  nodes: [
+    {
+      key: 'tiny-traffic',
+      source: 'manual',
+      displayName: 'tiny-traffic',
+      weight: 0.4,
+      penalized: false,
+      stats: {
+        oneMinute: { attempts: 1, successRate: 1, avgLatencyMs: 120 },
+        fifteenMinutes: { attempts: 4, successRate: 1, avgLatencyMs: 130 },
+        oneHour: { attempts: 8, successRate: 1, avgLatencyMs: 140 },
+        oneDay: { attempts: 32, successRate: 0.97, avgLatencyMs: 150 },
+        sevenDays: { attempts: 180, successRate: 0.96, avgLatencyMs: 160 },
+      },
+      last24h: [
+        { bucketStart: '2026-03-01T00:00:00.000Z', bucketEnd: '2026-03-01T01:00:00.000Z', successCount: 2, failureCount: 0 },
+        { bucketStart: '2026-03-01T01:00:00.000Z', bucketEnd: '2026-03-01T02:00:00.000Z', successCount: 1, failureCount: 0 },
+        ...Array.from({ length: 22 }, (_, index) => ({
+          bucketStart: new Date(Date.parse('2026-03-01T02:00:00.000Z') + index * 3600_000).toISOString(),
+          bucketEnd: new Date(Date.parse('2026-03-01T03:00:00.000Z') + index * 3600_000).toISOString(),
+          successCount: 0,
+          failureCount: 0,
+        })),
+      ],
+      weight24h: Array.from({ length: 24 }, (_, index) => ({
+        bucketStart: new Date(Date.parse('2026-03-01T00:00:00.000Z') + index * 3600_000).toISOString(),
+        bucketEnd: new Date(Date.parse('2026-03-01T01:00:00.000Z') + index * 3600_000).toISOString(),
+        sampleCount: 1,
+        minWeight: 0.35,
+        maxWeight: 0.45,
+        avgWeight: 0.4,
+        lastWeight: 0.4 + (index % 3 === 0 ? 0.02 : 0),
+      })),
+    },
+    {
+      key: 'burst-traffic',
+      source: 'manual',
+      displayName: 'burst-traffic',
+      weight: 2.4,
+      penalized: false,
+      stats: {
+        oneMinute: { attempts: 18, successRate: 0.94, avgLatencyMs: 210 },
+        fifteenMinutes: { attempts: 120, successRate: 0.93, avgLatencyMs: 220 },
+        oneHour: { attempts: 480, successRate: 0.92, avgLatencyMs: 240 },
+        oneDay: { attempts: 4800, successRate: 0.91, avgLatencyMs: 260 },
+        sevenDays: { attempts: 32000, successRate: 0.9, avgLatencyMs: 280 },
+      },
+      last24h: [
+        { bucketStart: '2026-03-01T00:00:00.000Z', bucketEnd: '2026-03-01T01:00:00.000Z', successCount: 22, failureCount: 1 },
+        { bucketStart: '2026-03-01T01:00:00.000Z', bucketEnd: '2026-03-01T02:00:00.000Z', successCount: 18, failureCount: 2 },
+        { bucketStart: '2026-03-01T02:00:00.000Z', bucketEnd: '2026-03-01T03:00:00.000Z', successCount: 30, failureCount: 4 },
+        ...Array.from({ length: 21 }, (_, index) => ({
+          bucketStart: new Date(Date.parse('2026-03-01T03:00:00.000Z') + index * 3600_000).toISOString(),
+          bucketEnd: new Date(Date.parse('2026-03-01T04:00:00.000Z') + index * 3600_000).toISOString(),
+          successCount: index % 4 === 0 ? 12 : 4,
+          failureCount: index % 6 === 0 ? 2 : 0,
+        })),
+      ],
+      weight24h: Array.from({ length: 24 }, (_, index) => ({
+        bucketStart: new Date(Date.parse('2026-03-01T00:00:00.000Z') + index * 3600_000).toISOString(),
+        bucketEnd: new Date(Date.parse('2026-03-01T01:00:00.000Z') + index * 3600_000).toISOString(),
+        sampleCount: 3,
+        minWeight: 1.8,
+        maxWeight: 2.4,
+        avgWeight: 2.1,
+        lastWeight: 2.4 - (index % 5 === 0 ? 0.3 : 0.1),
+      })),
+    },
+  ],
+}
+
 const meta = {
   title: 'Monitoring/ForwardProxyLiveTable',
   component: ForwardProxyLiveTable,
@@ -143,3 +220,12 @@ export const Empty: Story = {
     error: null,
   },
 }
+
+export const SharedScaleComparison: Story = {
+  args: {
+    stats: sharedScaleStats,
+    isLoading: false,
+    error: null,
+  },
+}
+
