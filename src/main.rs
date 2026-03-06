@@ -16229,6 +16229,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new_models() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("in-memory sqlite");
+        ensure_schema(&pool).await.expect("ensure schema");
+
+        // Simulate a legacy default catalog version so startup seeding will call
+        // ensure_pricing_models_present, which must not overwrite existing rows.
+        sqlx::query(
+            r#"
+            UPDATE pricing_settings_meta
+            SET catalog_version = ?1
+            WHERE id = ?2
+            "#,
+        )
+        .bind(LEGACY_DEFAULT_PRICING_CATALOG_VERSION)
+        .bind(PRICING_SETTINGS_SINGLETON_ID)
+        .execute(&pool)
+        .await
+        .expect("set legacy pricing catalog version for test");
+
+        sqlx::query(
+            r#"
+            UPDATE pricing_settings_models
+            SET input_per_1m = ?1,
+                output_per_1m = ?2,
+                cache_input_per_1m = ?3,
+                source = 'custom'
+            WHERE model = 'gpt-5.4'
+            "#,
+        )
+        .bind(99.0)
+        .bind(199.0)
+        .bind(Some(9.9))
+        .execute(&pool)
+        .await
+        .expect("override gpt-5.4 pricing for test");
+
+        sqlx::query(
+            r#"
+            UPDATE pricing_settings_models
+            SET input_per_1m = ?1,
+                output_per_1m = ?2,
+                source = 'custom'
+            WHERE model = 'gpt-5.4-pro'
+            "#,
+        )
+        .bind(88.0)
+        .bind(188.0)
+        .execute(&pool)
+        .await
+        .expect("override gpt-5.4-pro pricing for test");
+
+        let catalog = load_pricing_catalog(&pool)
+            .await
+            .expect("load pricing catalog should succeed");
+        let gpt_5_4 = catalog.models.get("gpt-5.4").expect("gpt-5.4 should exist");
+        assert_eq!(gpt_5_4.input_per_1m, 99.0);
+        assert_eq!(gpt_5_4.output_per_1m, 199.0);
+        assert_eq!(gpt_5_4.cache_input_per_1m, Some(9.9));
+        assert_eq!(gpt_5_4.source, "custom");
+
+        let gpt_5_4_pro = catalog
+            .models
+            .get("gpt-5.4-pro")
+            .expect("gpt-5.4-pro should exist");
+        assert_eq!(gpt_5_4_pro.input_per_1m, 88.0);
+        assert_eq!(gpt_5_4_pro.output_per_1m, 188.0);
+        assert_eq!(gpt_5_4_pro.cache_input_per_1m, None);
+        assert_eq!(gpt_5_4_pro.source, "custom");
+    }
+
+    #[tokio::test]
     async fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
         let (upstream_base, upstream_handle) = spawn_test_upstream().await;
         let state = test_state_with_openai_base(
@@ -16300,6 +16373,42 @@ mod tests {
             ids,
             vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()]
         );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
+        let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        {
+            let mut settings = state.proxy_model_settings.write().await;
+            *settings = ProxyModelSettings {
+                hijack_enabled: true,
+                merge_upstream_enabled: false,
+                enabled_preset_models: vec!["gpt-5.4".to_string(), "gpt-5.4-pro".to_string()],
+            };
+        }
+
+        let response = proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("decode hijacked payload");
+        let ids = extract_model_ids(&payload);
+        assert_eq!(ids, vec!["gpt-5.4".to_string(), "gpt-5.4-pro".to_string()]);
 
         upstream_handle.abort();
     }
