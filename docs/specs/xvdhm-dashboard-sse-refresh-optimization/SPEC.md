@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（5/6）
+- Status: 已完成（6/6）
 - Created: 2026-03-07
 - Last: 2026-03-07
 
@@ -157,7 +157,7 @@ None
 - [x] M3: `useSummary` / `useTimeseries` 收敛 dashboard 相关刷新策略并补请求去重保护。
 - [x] M4: 补齐 Rust / Vitest 自动化回归。
 - [x] M5: 完成浏览器验证并确认 Dashboard records 更新、no-storm 与 reconnect backfill 行为。
-- [ ] M6: 完成 fast-track PR、checks 跟踪与 review-loop 收敛。
+- [x] M6: 完成 fast-track PR、checks 跟踪与 review-loop 收敛。
 
 ## 方案概述（Approach, high-level）
 
@@ -176,6 +176,7 @@ None
 - 2026-03-07: 创建规格并冻结优化边界、验收标准与快车道交付目标。
 - 2026-03-07: 完成后端 changed-only 广播与前端 summary/timeseries 刷新策略收敛，`cargo test`、`cd web && npm test`、`cd web && npm run build` 通过。
 - 2026-03-07: 浏览器实测 `/dashboard`，确认 records 推送后 recent table / `today` / `24h` / `7d` / `90d` 当前桶可见更新，且 reconnect 仅触发一轮静默 backfill 请求。
+- 2026-03-07: 创建 PR #90，补齐 `type:patch` + `channel:stable` labels，并确认 Label Gate / CI Pipeline 全绿；review 复查未发现阻塞项。
 
 ## 参考（References）
 
