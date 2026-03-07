@@ -14598,7 +14598,7 @@ mod tests {
             status: "success".to_string(),
             error_message: None,
             payload: Some(
-                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\"}"
+                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\",\"reasoningEffort\":\"high\"}"
                     .to_string(),
             ),
             raw_response: "{}".to_string(),
@@ -17442,6 +17442,7 @@ mod tests {
         assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
         assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
         assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-broadcast-1"));
+        assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
         assert!(record.failure_kind.is_none());
     }
 
