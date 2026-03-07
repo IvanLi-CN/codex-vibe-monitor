@@ -36,6 +36,7 @@ export interface ApiInvocation {
   outputTokens?: number
   cacheInputTokens?: number
   reasoningTokens?: number
+  reasoningEffort?: string
   totalTokens?: number
   cost?: number
   status?: string

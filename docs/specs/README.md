@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------- |
+| rupn7 | InvocationTable 推理强度与详情 reasoningTokens                            | 已完成          | `rupn7-invocation-table-reasoning-effort/SPEC.md`        | 2026-03-07 | fast-track           |
 | xvdhm | Dashboard SSE 更新链路优化                                                | 已完成（6/6）   | `xvdhm-dashboard-sse-refresh-optimization/SPEC.md`       | 2026-03-07 | fast-track / PR #90  |
 | 7272y | 内置 GPT-5.4 系列计费规则与下游模型列表                                   | 已完成（4/4）   | `7272y-gpt-5-4-pricing/SPEC.md`                          | 2026-03-06 | fast-track / PR #89  |
 | rzxey | Dashboard：修复 UsageCalendar 加载骨架右偏 + 首行骨架按真实两卡布局       | 已完成（5/5）   | `rzxey-dashboard-usage-calendar-skeleton-shift/SPEC.md`  | 2026-03-05 | fast-track / PR #88  |
