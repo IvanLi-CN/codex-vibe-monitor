@@ -4,6 +4,7 @@ import { I18nProvider } from '../i18n'
 import type { ApiInvocation } from '../lib/api'
 import { formatProxyWeightDelta, formatServiceTier, isPriorityServiceTier } from '../lib/invocation'
 import { InvocationTable } from './InvocationTable'
+import { getReasoningEffortTone } from './invocation-table-reasoning'
 
 function renderTable(records: ApiInvocation[]) {
   return renderToStaticMarkup(
@@ -51,6 +52,23 @@ describe('service tier helpers', () => {
     expect(isPriorityServiceTier(' Priority ')).toBe(true)
     expect(isPriorityServiceTier('flex')).toBe(false)
     expect(isPriorityServiceTier(undefined)).toBe(false)
+  })
+})
+
+describe('getReasoningEffortTone', () => {
+  it('maps standard effort values onto the visual ladder', () => {
+    expect(getReasoningEffortTone('none')).toBe('none')
+    expect(getReasoningEffortTone(' minimal ')).toBe('minimal')
+    expect(getReasoningEffortTone('LOW')).toBe('low')
+    expect(getReasoningEffortTone('medium')).toBe('medium')
+    expect(getReasoningEffortTone('high')).toBe('high')
+    expect(getReasoningEffortTone('xhigh')).toBe('xhigh')
+  })
+
+  it('treats unknown raw strings as unknown tone', () => {
+    expect(getReasoningEffortTone('custom-tier')).toBe('unknown')
+    expect(getReasoningEffortTone('constructor')).toBe('unknown')
+    expect(getReasoningEffortTone('__proto__')).toBe('unknown')
   })
 })
 
@@ -106,6 +124,37 @@ describe('InvocationTable', () => {
     expect(html).toContain('推理 —')
     expect(html).toContain('/v1/responses')
     expect(html).toContain('/v1/chat/completions')
+    expect(html).toContain('data-reasoning-effort-tone="high"')
+    expect(html).toContain('border-warning/45')
     expect(html).toContain('>—</span>')
+  })
+
+  it('renders unknown reasoning effort values as dashed neutral badges', () => {
+    const html = renderTable([
+      {
+        id: 3,
+        invokeId: 'invocation-reasoning-unknown',
+        occurredAt: '2026-03-07T03:13:54Z',
+        createdAt: '2026-03-07T03:13:54Z',
+        source: 'proxy',
+        proxyDisplayName: 'sfo-edge-3',
+        endpoint: '/v1/responses',
+        model: 'custom-reasoning-model',
+        status: 'success',
+        inputTokens: 512,
+        cacheInputTokens: 128,
+        outputTokens: 64,
+        reasoningTokens: 12,
+        reasoningEffort: 'custom-tier',
+        totalTokens: 576,
+        cost: 0.0012,
+        tUpstreamTtfbMs: 98.4,
+        tTotalMs: 404.4,
+      },
+    ])
+
+    expect(html).toContain('custom-tier')
+    expect(html).toContain('data-reasoning-effort-tone="unknown"')
+    expect(html).toContain('border-dashed')
   })
 })

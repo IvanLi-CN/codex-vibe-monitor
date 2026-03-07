@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                              |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------- |
+| hbqe3 | InvocationTable 推理强度徽标色阶优化                                      | 已完成（4/4）   | `hbqe3-invocation-reasoning-effort-badge-colors/SPEC.md` | 2026-03-07 | fast-track / PR #94 / checks green |
 | rw32e | 请求列表 Fast 模式标识（service tier 版）                                 | 已完成（5/5）   | `rw32e-invocation-fast-mode-indicator/SPEC.md`           | 2026-03-07 | fast-track / PR #93 / checks green |
 | rupn7 | InvocationTable 推理强度与详情 reasoningTokens                            | 已完成          | `rupn7-invocation-table-reasoning-effort/SPEC.md`        | 2026-03-07 | fast-track / PR #92                |
 | xvdhm | Dashboard SSE 更新链路优化                                                | 已完成（6/6）   | `xvdhm-dashboard-sse-refresh-optimization/SPEC.md`       | 2026-03-07 | fast-track / PR #90                |
