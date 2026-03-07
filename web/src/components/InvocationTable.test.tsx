@@ -1,5 +1,17 @@
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { I18nProvider } from '../i18n'
+import type { ApiInvocation } from '../lib/api'
 import { formatProxyWeightDelta } from '../lib/invocation'
+import { InvocationTable } from './InvocationTable'
+
+function renderTable(records: ApiInvocation[]) {
+  return renderToStaticMarkup(
+    <I18nProvider>
+      <InvocationTable records={records} isLoading={false} error={null} />
+    </I18nProvider>,
+  )
+}
 
 describe('formatProxyWeightDelta', () => {
   it('formats positive deltas as up direction with absolute value', () => {
@@ -20,5 +32,61 @@ describe('formatProxyWeightDelta', () => {
     expect(formatProxyWeightDelta(undefined)).toEqual({ direction: 'missing', value: '—' })
     expect(formatProxyWeightDelta(null)).toEqual({ direction: 'missing', value: '—' })
     expect(formatProxyWeightDelta(Number.NaN)).toEqual({ direction: 'missing', value: '—' })
+  })
+})
+
+describe('InvocationTable', () => {
+  it('renders reasoning effort and reasoning-token output breakdown in the summary rows', () => {
+    const records: ApiInvocation[] = [
+      {
+        id: 1,
+        invokeId: 'invocation-reasoning-high',
+        occurredAt: '2026-03-07T03:13:59Z',
+        createdAt: '2026-03-07T03:13:59Z',
+        source: 'proxy',
+        proxyDisplayName: 'tokyo-edge-1',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        inputTokens: 45559,
+        cacheInputTokens: 43520,
+        outputTokens: 83,
+        reasoningTokens: 41,
+        reasoningEffort: 'high',
+        totalTokens: 45642,
+        cost: 0.0172,
+        tUpstreamTtfbMs: 149.5,
+        tTotalMs: 7794.1,
+      },
+      {
+        id: 2,
+        invokeId: 'invocation-reasoning-missing',
+        occurredAt: '2026-03-07T03:13:56Z',
+        createdAt: '2026-03-07T03:13:56Z',
+        source: 'proxy',
+        proxyDisplayName: 'singapore-edge-2',
+        endpoint: '/v1/chat/completions',
+        model: 'gpt-5.4',
+        status: 'failed',
+        inputTokens: 61402,
+        cacheInputTokens: 41216,
+        outputTokens: 286,
+        totalTokens: 61688,
+        errorMessage: 'upstream timeout',
+        tUpstreamTtfbMs: 186.5,
+        tTotalMs: 8444.2,
+      },
+    ]
+
+    const html = renderTable(records)
+
+    expect(html).toContain('推理强度')
+    expect(html).toContain('推理 Tokens')
+    expect(html).toContain('high')
+    expect(html).toContain('推理 41')
+    expect(html).toContain('推理 —')
+    expect(html).toContain('/v1/responses')
+    expect(html).toContain('/v1/chat/completions')
+    expect(html).toContain('>—</span>')
   })
 })

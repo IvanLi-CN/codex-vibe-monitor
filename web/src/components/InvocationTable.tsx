@@ -42,6 +42,40 @@ function formatOptionalNumber(value: number | null | undefined, formatter: Intl.
   return formatter.format(value)
 }
 
+function formatOptionalText(value: string | null | undefined) {
+  const normalized = value?.trim()
+  return normalized ? normalized : FALLBACK_CELL
+}
+
+function reasoningEffortVariant(value: string) {
+  switch (value.trim().toLowerCase()) {
+    case 'high':
+      return 'warning' as const
+    case 'medium':
+      return 'default' as const
+    case 'low':
+      return 'secondary' as const
+    default:
+      return 'secondary' as const
+  }
+}
+
+function renderReasoningEffortBadge(value: string) {
+  if (value === FALLBACK_CELL) {
+    return <span className="font-mono text-sm text-base-content/70">{FALLBACK_CELL}</span>
+  }
+
+  return (
+    <Badge
+      variant={reasoningEffortVariant(value)}
+      className="max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold"
+      title={value}
+    >
+      <span className="block max-w-full truncate whitespace-nowrap">{value}</span>
+    </Badge>
+  )
+}
+
 function resolveProxyDisplayName(record: ApiInvocation) {
   const payloadProxyName = record.proxyDisplayName?.trim()
   if (payloadProxyName) return payloadProxyName
@@ -62,6 +96,9 @@ interface InvocationRowViewModel {
   inputTokensValue: string
   cacheInputTokensValue: string
   outputTokensValue: string
+  outputReasoningBreakdownValue: string
+  reasoningTokensValue: string
+  reasoningEffortValue: string
   totalTokensValue: string
   endpointValue: string
   errorMessage: string
@@ -167,6 +204,9 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const errorMessage = record.errorMessage?.trim() ?? ''
         const endpointValue = record.endpoint?.trim() || FALLBACK_CELL
         const proxyDisplayName = resolveProxyDisplayName(record)
+        const reasoningEffortValue = formatOptionalText(record.reasoningEffort)
+        const reasoningTokensValue = formatOptionalNumber(record.reasoningTokens, numberFormatter)
+        const outputReasoningBreakdownValue = `${t('table.column.reasoningTokensShort')} ${reasoningTokensValue}`
         const latencySummary = `${formatMilliseconds(record.tUpstreamTtfbMs)} / ${formatMilliseconds(record.tTotalMs)}`
         const latencyCompactSummary = `${formatMillisecondsCompact(record.tUpstreamTtfbMs)}/${formatMillisecondsCompact(record.tTotalMs)}`
         const occurredValid = !Number.isNaN(occurred.getTime())
@@ -216,6 +256,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           { label: 'table.details.endpoint', value: record.endpoint || FALLBACK_CELL },
           { label: 'table.details.requesterIp', value: record.requesterIp || FALLBACK_CELL },
           { label: 'table.details.promptCacheKey', value: record.promptCacheKey || FALLBACK_CELL },
+          { label: 'table.details.reasoningEffort', value: renderReasoningEffortBadge(reasoningEffortValue) },
+          { label: 'table.details.reasoningTokens', value: reasoningTokensValue },
           { label: 'table.details.proxyWeightDelta', value: proxyWeightDeltaValue },
           { label: 'table.details.failureKind', value: record.failureKind || FALLBACK_CELL },
         ]
@@ -242,6 +284,9 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           inputTokensValue: formatOptionalNumber(record.inputTokens, numberFormatter),
           cacheInputTokensValue: formatOptionalNumber(record.cacheInputTokens, numberFormatter),
           outputTokensValue: formatOptionalNumber(record.outputTokens, numberFormatter),
+          outputReasoningBreakdownValue,
+          reasoningTokensValue,
+          reasoningEffortValue,
           totalTokensValue: formatOptionalNumber(record.totalTokens, numberFormatter),
           endpointValue,
           errorMessage,
@@ -268,7 +313,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           {detailPairs.map((entry) => (
             <div key={entry.label} className="flex items-start gap-2">
               <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60 md:min-w-36">{t(entry.label)}</span>
-              <span className="break-all font-mono text-sm">{entry.value}</span>
+              <div className="min-w-0 break-all font-mono text-sm">{entry.value}</div>
             </div>
           ))}
         </div>
@@ -376,9 +421,21 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                 <dt className="text-base-content/65">{t('table.column.cacheInputTokens')}</dt>
                 <dd className="truncate text-right font-mono">{row.cacheInputTokensValue}</dd>
                 <dt className="text-base-content/65">{t('table.column.outputTokens')}</dt>
-                <dd className="truncate text-right font-mono">{row.outputTokensValue}</dd>
+                <dd className="text-right">
+                  <div className="flex flex-col items-end gap-0.5 leading-tight">
+                    <span className="truncate font-mono">{row.outputTokensValue}</span>
+                    <span
+                      className="truncate text-[11px] text-base-content/70"
+                      title={`${t('table.details.reasoningTokens')}: ${row.reasoningTokensValue}`}
+                    >
+                      {row.outputReasoningBreakdownValue}
+                    </span>
+                  </div>
+                </dd>
                 <dt className="text-base-content/65">{t('table.column.totalTokens')}</dt>
                 <dd className="truncate text-right font-mono">{row.totalTokensValue}</dd>
+                <dt className="text-base-content/65">{t('table.column.reasoningEffort')}</dt>
+                <dd className="flex justify-end">{renderReasoningEffortBadge(row.reasoningEffortValue)}</dd>
               </dl>
 
               <div className="mt-3 space-y-1 border-t border-base-300/65 pt-2">
@@ -430,8 +487,22 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="w-[10%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[9%] xl:px-3">{t('table.column.outputTokens')}</th>
-                <th className="w-[13%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[10%] xl:px-3">{t('table.column.totalTokens')}</th>
+                <th className="w-[12%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[11%] xl:px-3">
+                  <div className="flex flex-col leading-tight">
+                    <span>{t('table.column.outputTokens')}</span>
+                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
+                      {t('table.details.reasoningTokens')}
+                    </span>
+                  </div>
+                </th>
+                <th className="w-[14%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[12%] xl:px-3">
+                  <div className="flex flex-col leading-tight">
+                    <span>{t('table.column.totalTokens')}</span>
+                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
+                      {t('table.column.reasoningEffort')}
+                    </span>
+                  </div>
+                </th>
                 <th className="hidden w-[18%] px-2 py-2.5 text-left font-semibold xl:table-cell xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.error')}</span>
@@ -498,11 +569,22 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                           </span>
                         </div>
                       </td>
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-right font-mono tabular-nums xl:px-3">
-                        <span className="block truncate whitespace-nowrap">{row.outputTokensValue}</span>
+                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-right xl:px-3">
+                        <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
+                          <span className="block w-full truncate whitespace-nowrap font-mono tabular-nums">{row.outputTokensValue}</span>
+                          <span
+                            className="block w-full truncate whitespace-nowrap text-[11px] text-base-content/70"
+                            title={`${t('table.details.reasoningTokens')}: ${row.reasoningTokensValue}`}
+                          >
+                            {row.outputReasoningBreakdownValue}
+                          </span>
+                        </div>
                       </td>
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-right font-mono tabular-nums xl:px-3">
-                        <span className="block truncate whitespace-nowrap">{row.totalTokensValue}</span>
+                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-right xl:px-3">
+                        <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
+                          <span className="block w-full truncate whitespace-nowrap font-mono tabular-nums">{row.totalTokensValue}</span>
+                          <div className="flex w-full justify-end">{renderReasoningEffortBadge(row.reasoningEffortValue)}</div>
+                        </div>
                       </td>
                       <td className="hidden min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:table-cell xl:px-3">
                         <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">

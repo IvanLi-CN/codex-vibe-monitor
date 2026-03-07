@@ -336,6 +336,16 @@ async fn main() -> Result<()> {
         skipped_missing_key = prompt_cache_summary.skipped_missing_key,
         "proxy prompt cache key startup backfill finished"
     );
+    let reasoning_effort_summary =
+        backfill_proxy_reasoning_efforts(&pool, raw_path_fallback_root).await?;
+    info!(
+        scanned = reasoning_effort_summary.scanned,
+        updated = reasoning_effort_summary.updated,
+        skipped_missing_file = reasoning_effort_summary.skipped_missing_file,
+        skipped_invalid_json = reasoning_effort_summary.skipped_invalid_json,
+        skipped_missing_effort = reasoning_effort_summary.skipped_missing_effort,
+        "proxy reasoning effort startup backfill finished"
+    );
     let failure_summary = backfill_failure_classification(&pool).await?;
     info!(
         scanned = failure_summary.scanned,
@@ -3354,7 +3364,9 @@ async fn list_invocations(
         "SELECT id, invoke_id, occurred_at, source, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
          model, input_tokens, output_tokens, \
-         cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, \
+         cache_input_tokens, reasoning_tokens, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort, \
+         total_tokens, cost, status, error_message, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
          COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind, \
          failure_class, is_actionable, \
@@ -5489,6 +5501,7 @@ async fn proxy_openai_v1_capture_target(
                     read_err.status,
                     request_info.is_stream,
                     None,
+                    request_info.reasoning_effort.as_deref(),
                     None,
                     None,
                     request_info.parse_error.as_deref(),
@@ -5617,6 +5630,7 @@ async fn proxy_openai_v1_capture_target(
                     status,
                     request_info.is_stream,
                     None,
+                    request_info.reasoning_effort.as_deref(),
                     None,
                     None,
                     request_info.parse_error.as_deref(),
@@ -5686,6 +5700,7 @@ async fn proxy_openai_v1_capture_target(
                     StatusCode::BAD_GATEWAY,
                     request_info.is_stream,
                     None,
+                    request_info.reasoning_effort.as_deref(),
                     None,
                     None,
                     request_info.parse_error.as_deref(),
@@ -5760,6 +5775,7 @@ async fn proxy_openai_v1_capture_target(
                     StatusCode::BAD_GATEWAY,
                     request_info.is_stream,
                     None,
+                    request_info.reasoning_effort.as_deref(),
                     None,
                     None,
                     request_info.parse_error.as_deref(),
@@ -5967,6 +5983,7 @@ async fn proxy_openai_v1_capture_target(
             upstream_status,
             request_info_for_task.is_stream,
             request_info_for_task.model.as_deref(),
+            request_info_for_task.reasoning_effort.as_deref(),
             response_info.model.as_deref(),
             response_info.usage_missing_reason.as_deref(),
             request_info_for_task.parse_error.as_deref(),
@@ -6121,6 +6138,7 @@ fn prepare_target_request_body(
     let mut info = RequestCaptureInfo {
         model: None,
         prompt_cache_key: None,
+        reasoning_effort: None,
         is_stream: false,
         parse_error: None,
     };
@@ -6142,6 +6160,7 @@ fn prepare_target_request_body(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     info.prompt_cache_key = extract_prompt_cache_key_from_request_body(&value);
+    info.reasoning_effort = extract_reasoning_effort_from_request_body(target, &value);
     info.is_stream = value
         .get("stream")
         .and_then(|v| v.as_bool())
@@ -6199,6 +6218,27 @@ fn extract_prompt_cache_key_from_request_body(value: &Value) -> Option<String> {
         }
     }
     None
+}
+
+fn extract_reasoning_effort_from_request_body(
+    target: ProxyCaptureTarget,
+    value: &Value,
+) -> Option<String> {
+    let raw = match target {
+        ProxyCaptureTarget::Responses => {
+            value.pointer("/reasoning/effort").and_then(|v| v.as_str())
+        }
+        ProxyCaptureTarget::ChatCompletions => {
+            value.get("reasoning_effort").and_then(|v| v.as_str())
+        }
+    }?;
+
+    let normalized = raw.trim();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
 }
 
 fn parse_target_response_payload(
@@ -6471,6 +6511,7 @@ fn build_proxy_payload_summary(
     status: StatusCode,
     is_stream: bool,
     request_model: Option<&str>,
+    reasoning_effort: Option<&str>,
     response_model: Option<&str>,
     usage_missing_reason: Option<&str>,
     request_parse_error: Option<&str>,
@@ -6489,6 +6530,7 @@ fn build_proxy_payload_summary(
         "statusCode": status.as_u16(),
         "isStream": is_stream,
         "requestModel": request_model,
+        "reasoningEffort": reasoning_effort,
         "responseModel": response_model,
         "usageMissingReason": usage_missing_reason,
         "requestParseError": request_parse_error,
@@ -6992,6 +7034,7 @@ async fn persist_proxy_capture_record(
             output_tokens,
             cache_input_tokens,
             reasoning_tokens,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort,
             total_tokens,
             cost,
             status,
@@ -7522,6 +7565,124 @@ async fn backfill_proxy_prompt_cache_keys(
     }
 
     Ok(summary)
+}
+
+async fn backfill_proxy_reasoning_efforts(
+    pool: &Pool<Sqlite>,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<ProxyReasoningEffortBackfillSummary> {
+    let mut summary = ProxyReasoningEffortBackfillSummary::default();
+    let mut last_seen_id = 0_i64;
+
+    loop {
+        let candidates = sqlx::query_as::<_, ProxyReasoningEffortBackfillCandidate>(
+            r#"
+            SELECT id, request_raw_path
+            FROM codex_invocations
+            WHERE source = ?1
+              AND request_raw_path IS NOT NULL
+              AND id > ?2
+              AND (
+                payload IS NULL
+                OR NOT json_valid(payload)
+                OR json_extract(payload, '$.reasoningEffort') IS NULL
+                OR TRIM(CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)) = ''
+              )
+            ORDER BY id ASC
+            LIMIT ?3
+            "#,
+        )
+        .bind(SOURCE_PROXY)
+        .bind(last_seen_id)
+        .bind(BACKFILL_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        for candidate in candidates {
+            last_seen_id = candidate.id;
+            summary.scanned += 1;
+
+            let raw_request = match read_proxy_raw_bytes(
+                &candidate.request_raw_path,
+                raw_path_fallback_root,
+            ) {
+                Ok(content) => content,
+                Err(err) => {
+                    summary.skipped_missing_file += 1;
+                    warn!(
+                        id = candidate.id,
+                        path = %candidate.request_raw_path,
+                        error = %err,
+                        "proxy reasoning effort backfill skipped because request raw file is unavailable"
+                    );
+                    continue;
+                }
+            };
+
+            let request_payload = match serde_json::from_slice::<Value>(&raw_request) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    summary.skipped_invalid_json += 1;
+                    warn!(
+                        id = candidate.id,
+                        path = %candidate.request_raw_path,
+                        error = %err,
+                        "proxy reasoning effort backfill skipped because request raw file is not valid JSON"
+                    );
+                    continue;
+                }
+            };
+
+            let Some(reasoning_effort) = extract_reasoning_effort_from_request_body(
+                infer_proxy_capture_target_from_payload(&request_payload),
+                &request_payload,
+            ) else {
+                summary.skipped_missing_effort += 1;
+                continue;
+            };
+
+            let affected = sqlx::query(
+                r#"
+                UPDATE codex_invocations
+                SET payload = json_set(
+                    CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+                    '$.reasoningEffort',
+                    ?1
+                )
+                WHERE id = ?2
+                  AND source = ?3
+                  AND request_raw_path IS NOT NULL
+                  AND (
+                    payload IS NULL
+                    OR NOT json_valid(payload)
+                    OR json_extract(payload, '$.reasoningEffort') IS NULL
+                    OR TRIM(CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)) = ''
+                  )
+                "#,
+            )
+            .bind(reasoning_effort)
+            .bind(candidate.id)
+            .bind(SOURCE_PROXY)
+            .execute(pool)
+            .await?
+            .rows_affected();
+            summary.updated += affected;
+        }
+    }
+
+    Ok(summary)
+}
+
+fn infer_proxy_capture_target_from_payload(value: &Value) -> ProxyCaptureTarget {
+    if value.get("messages").is_some() || value.get("reasoning_effort").is_some() {
+        ProxyCaptureTarget::ChatCompletions
+    } else {
+        ProxyCaptureTarget::Responses
+    }
 }
 
 #[derive(Debug, FromRow)]
@@ -9492,6 +9653,8 @@ struct ApiInvocation {
     output_tokens: Option<i64>,
     cache_input_tokens: Option<i64>,
     reasoning_tokens: Option<i64>,
+    #[sqlx(default)]
+    reasoning_effort: Option<String>,
     total_tokens: Option<i64>,
     cost: Option<f64>,
     status: Option<String>,
@@ -11595,6 +11758,7 @@ struct RawPayloadMeta {
 struct RequestCaptureInfo {
     model: Option<String>,
     prompt_cache_key: Option<String>,
+    reasoning_effort: Option<String>,
     is_stream: bool,
     parse_error: Option<String>,
 }
@@ -11683,6 +11847,15 @@ struct ProxyPromptCacheKeyBackfillSummary {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
+struct ProxyReasoningEffortBackfillSummary {
+    scanned: u64,
+    updated: u64,
+    skipped_missing_file: u64,
+    skipped_invalid_json: u64,
+    skipped_missing_effort: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
 struct FailureClassificationBackfillSummary {
     scanned: u64,
     updated: u64,
@@ -11744,6 +11917,12 @@ struct ProxyCostBackfillCandidate {
 
 #[derive(Debug, FromRow)]
 struct ProxyPromptCacheKeyBackfillCandidate {
+    id: i64,
+    request_raw_path: String,
+}
+
+#[derive(Debug, FromRow)]
+struct ProxyReasoningEffortBackfillCandidate {
     id: i64,
     request_raw_path: String,
 }
@@ -14184,20 +14363,49 @@ mod tests {
     }
 
     fn write_backfill_request_payload(path: &Path, prompt_cache_key: Option<&str>) {
-        let payload = if let Some(key) = prompt_cache_key {
-            json!({
-                "model": "gpt-5.3-codex",
-                "stream": true,
-                "metadata": {
-                    "prompt_cache_key": key
+        write_backfill_request_payload_with_reasoning(
+            path,
+            prompt_cache_key,
+            None,
+            ProxyCaptureTarget::Responses,
+        );
+    }
+
+    fn write_backfill_request_payload_with_reasoning(
+        path: &Path,
+        prompt_cache_key: Option<&str>,
+        reasoning_effort: Option<&str>,
+        target: ProxyCaptureTarget,
+    ) {
+        let payload = match target {
+            ProxyCaptureTarget::Responses => {
+                let mut payload = json!({
+                    "model": "gpt-5.3-codex",
+                    "stream": true,
+                    "metadata": {},
+                });
+                if let Some(key) = prompt_cache_key {
+                    payload["metadata"]["prompt_cache_key"] = Value::String(key.to_string());
                 }
-            })
-        } else {
-            json!({
-                "model": "gpt-5.3-codex",
-                "stream": true,
-                "metadata": {}
-            })
+                if let Some(effort) = reasoning_effort {
+                    payload["reasoning"] = json!({ "effort": effort });
+                }
+                payload
+            }
+            ProxyCaptureTarget::ChatCompletions => {
+                let mut payload = json!({
+                    "model": "gpt-5.3-codex",
+                    "stream": true,
+                    "messages": [{"role": "user", "content": "hello"}],
+                });
+                if let Some(key) = prompt_cache_key {
+                    payload["metadata"] = json!({ "prompt_cache_key": key });
+                }
+                if let Some(effort) = reasoning_effort {
+                    payload["reasoning_effort"] = Value::String(effort.to_string());
+                }
+                payload
+            }
         };
         let encoded = serde_json::to_vec(&payload).expect("serialize request payload");
         fs::write(path, encoded).expect("write request payload");
@@ -14390,7 +14598,7 @@ mod tests {
             status: "success".to_string(),
             error_message: None,
             payload: Some(
-                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\"}"
+                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\",\"reasoningEffort\":\"high\"}"
                     .to_string(),
             ),
             raw_response: "{}".to_string(),
@@ -17234,6 +17442,7 @@ mod tests {
         assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
         assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
         assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-broadcast-1"));
+        assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
         assert!(record.failure_kind.is_none());
     }
 
@@ -18188,6 +18397,39 @@ mod tests {
     }
 
     #[test]
+    fn prepare_target_request_body_extracts_reasoning_effort_for_responses() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "stream": true,
+            "reasoning": {
+                "effort": "high"
+            }
+        }))
+        .expect("serialize request body");
+
+        let (_rewritten, info, _did_rewrite) =
+            prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
+
+        assert_eq!(info.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn prepare_target_request_body_extracts_reasoning_effort_for_chat_completions() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "medium"
+        }))
+        .expect("serialize request body");
+
+        let (_rewritten, info, _did_rewrite) =
+            prepare_target_request_body(ProxyCaptureTarget::ChatCompletions, body, true);
+
+        assert_eq!(info.reasoning_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
     fn extract_requester_ip_uses_expected_header_priority() {
         let mut preferred = HeaderMap::new();
         preferred.insert(
@@ -18858,7 +19100,7 @@ mod tests {
         .bind(SOURCE_PROXY)
         .bind("failed")
         .bind(
-            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-list-1\",\"proxyDisplayName\":\"jp-relay-01\",\"proxyWeightDelta\":-0.68}",
+            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-list-1\",\"proxyDisplayName\":\"jp-relay-01\",\"proxyWeightDelta\":-0.68,\"reasoningEffort\":\"high\"}",
         )
         .bind("{}")
         .execute(&state.pool)
@@ -18890,6 +19132,7 @@ mod tests {
         assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-list-1"));
         assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
         assert_eq!(record.proxy_weight_delta, Some(-0.68));
+        assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[tokio::test]
@@ -18943,6 +19186,7 @@ mod tests {
         assert_eq!(record.requester_ip, None);
         assert_eq!(record.prompt_cache_key, None);
         assert_eq!(record.proxy_weight_delta, None);
+        assert_eq!(record.reasoning_effort, None);
     }
 
     #[tokio::test]
@@ -19482,6 +19726,146 @@ mod tests {
                 .expect("query backfilled payload");
         let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
         assert_eq!(payload_json["promptCacheKey"], "pck-backfill-ok");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_reasoning_efforts_updates_payload_and_is_idempotent() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("proxy-reasoning-effort-backfill");
+        let request_path = temp_dir.join("request.json");
+        write_backfill_request_payload_with_reasoning(
+            &request_path,
+            Some("pck-reasoning"),
+            Some("high"),
+            ProxyCaptureTarget::Responses,
+        );
+
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-reasoning-backfill-1",
+            &request_path,
+            r#"{"endpoint":"/v1/responses","requesterIp":"198.51.100.77"}"#,
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-reasoning-backfill-ready",
+            &request_path,
+            r#"{"endpoint":"/v1/responses","reasoningEffort":"medium"}"#,
+        )
+        .await;
+
+        let summary_first = backfill_proxy_reasoning_efforts(&pool, None)
+            .await
+            .expect("first reasoning effort backfill should succeed");
+        assert_eq!(summary_first.scanned, 1);
+        assert_eq!(summary_first.updated, 1);
+        assert_eq!(summary_first.skipped_missing_file, 0);
+        assert_eq!(summary_first.skipped_invalid_json, 0);
+        assert_eq!(summary_first.skipped_missing_effort, 0);
+
+        let payload: String =
+            sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-reasoning-backfill-1")
+                .fetch_one(&pool)
+                .await
+                .expect("query reasoning backfilled payload");
+        let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
+        assert_eq!(payload_json["reasoningEffort"], "high");
+
+        let summary_second = backfill_proxy_reasoning_efforts(&pool, None)
+            .await
+            .expect("second reasoning effort backfill should succeed");
+        assert_eq!(summary_second.scanned, 0);
+        assert_eq!(summary_second.updated, 0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_reasoning_efforts_tracks_skip_counters_and_chat_payloads() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("proxy-reasoning-effort-backfill-skips");
+        let ok_chat_path = temp_dir.join("request-chat-ok.json");
+        let missing_effort_path = temp_dir.join("request-missing-effort.json");
+        let invalid_json_path = temp_dir.join("request-invalid-json.json");
+        let missing_file_path = temp_dir.join("request-missing.json");
+
+        write_backfill_request_payload_with_reasoning(
+            &ok_chat_path,
+            None,
+            Some("medium"),
+            ProxyCaptureTarget::ChatCompletions,
+        );
+        write_backfill_request_payload_with_reasoning(
+            &missing_effort_path,
+            None,
+            None,
+            ProxyCaptureTarget::Responses,
+        );
+        fs::write(&invalid_json_path, b"not-json").expect("write invalid request payload");
+
+        let base_payload = r#"{"endpoint":"/v1/chat/completions"}"#;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-reasoning-chat-ok",
+            &ok_chat_path,
+            base_payload,
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-reasoning-missing-file",
+            &missing_file_path,
+            base_payload,
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-reasoning-invalid-json",
+            &invalid_json_path,
+            base_payload,
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-reasoning-missing-effort",
+            &missing_effort_path,
+            r#"{"endpoint":"/v1/responses"}"#,
+        )
+        .await;
+
+        let summary = backfill_proxy_reasoning_efforts(&pool, None)
+            .await
+            .expect("reasoning effort backfill should succeed");
+        assert_eq!(summary.scanned, 4);
+        assert_eq!(summary.updated, 1);
+        assert_eq!(summary.skipped_missing_file, 1);
+        assert_eq!(summary.skipped_invalid_json, 1);
+        assert_eq!(summary.skipped_missing_effort, 1);
+
+        let payload: String =
+            sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-reasoning-chat-ok")
+                .fetch_one(&pool)
+                .await
+                .expect("query chat reasoning payload");
+        let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
+        assert_eq!(payload_json["reasoningEffort"], "medium");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
