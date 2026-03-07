@@ -99,8 +99,7 @@
 
 - 2026-03-07: 初始化规格，锁定“推理强度颜色梯度优化 + Storybook/测试同步”范围。
 - 2026-03-07: 完成徽标色阶实现与 Storybook 文档更新；已通过 `cd web && npm run test -- --run src/components/InvocationTable.test.tsx`、`cd web && npm run build`、`cd web && npm run build-storybook`。
-- 2026-03-07: 快车道推进到 PR #94，修复 review-loop 暴露的 Tailwind opacity/token key 边界问题，当前 checks 全绿。
-- 2026-03-07: 按 review-loop 修复 Tailwind opacity token 发射缺口与原型链键误命中问题；PR #94 checks 全绿。
+- 2026-03-07: 快车道推进到 PR #94，并按 review-loop 修复 Tailwind opacity token 发射缺口与原型链键误命中问题；当前 checks 全绿。
 
 ## 参考（References）
 
