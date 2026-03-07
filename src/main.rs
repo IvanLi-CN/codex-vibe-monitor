@@ -3204,12 +3204,11 @@ async fn persist_records(
                     failure_kind,
                     failure_class,
                     is_actionable,
-                    CASE WHEN json_valid(payload)
-                      AND COALESCE(json_type(payload, '$.serviceTier'), json_type(payload, '$.service_tier')) = 'text'
-                      THEN COALESCE(
-                        json_extract(payload, '$.serviceTier'),
-                        json_extract(payload, '$.service_tier')
-                      )
+                    CASE
+                      WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'
+                        THEN json_extract(payload, '$.serviceTier')
+                      WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
+                        THEN json_extract(payload, '$.service_tier')
                     END AS service_tier,
                     created_at
                 FROM codex_invocations
@@ -3381,9 +3380,11 @@ async fn list_invocations(
          failure_class, is_actionable, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
-         CASE WHEN json_valid(payload) \
-           AND COALESCE(json_type(payload, '$.serviceTier'), json_type(payload, '$.service_tier')) = 'text' \
-           THEN COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) END AS service_tier, \
+         CASE \
+           WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
+             THEN json_extract(payload, '$.serviceTier') \
+           WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
+             THEN json_extract(payload, '$.service_tier') END AS service_tier, \
          CASE WHEN json_valid(payload) \
            AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real') \
            THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta, \
@@ -7082,9 +7083,11 @@ async fn persist_proxy_capture_record(
             is_actionable,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key,
-            CASE WHEN json_valid(payload)
-              AND COALESCE(json_type(payload, '$.serviceTier'), json_type(payload, '$.service_tier')) = 'text'
-              THEN COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) END AS service_tier,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'
+                THEN json_extract(payload, '$.serviceTier')
+              WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
+                THEN json_extract(payload, '$.service_tier') END AS service_tier,
             CASE WHEN json_valid(payload)
               AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real')
               THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta,
@@ -19140,7 +19143,7 @@ mod tests {
         .bind(SOURCE_PROXY)
         .bind("failed")
         .bind(
-            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-list-1\",\"serviceTier\":\"priority\",\"proxyDisplayName\":\"jp-relay-01\",\"proxyWeightDelta\":-0.68}",
+            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-list-1\",\"serviceTier\":null,\"service_tier\":\"priority\",\"proxyDisplayName\":\"jp-relay-01\",\"proxyWeightDelta\":-0.68}",
         )
         .bind("{}")
         .execute(&state.pool)
