@@ -127,6 +127,12 @@
 
 - `docs/specs/README.md`: 新增本 spec 索引并更新状态。
 
+## Visual Evidence (PR)
+
+![InvocationTable 默认列表（完整裁剪版）](./assets/invocation-table-default.png)
+
+![InvocationTable 展开详情](./assets/invocation-table-expanded.png)
+
 ## 计划资产（Plan assets）
 
 - Directory: `docs/specs/rupn7-invocation-table-reasoning-effort/assets/`
@@ -160,6 +166,7 @@
 
 - 2026-03-07: 初始化规格，冻结“主列表展示推理强度 + 详情展示推理强度与 reasoningTokens + 历史 raw-file best-effort 回填”口径。
 - 2026-03-07: 完成后端 `reasoningEffort` 采集/回填、InvocationTable 展示与回归测试，并通过 PR #92 提交。
+- 2026-03-07: 补充 Storybook 视觉证据截图，并将默认列表态与展开详情态写入 spec/PR 证据链。
 
 ## 参考（References）
 
