@@ -47,6 +47,7 @@ export interface ApiInvocation {
   endpoint?: string
   requesterIp?: string
   promptCacheKey?: string
+  serviceTier?: string
   proxyWeightDelta?: number
   costEstimated?: number
   priceVersion?: string

@@ -336,6 +336,15 @@ async fn main() -> Result<()> {
         skipped_missing_key = prompt_cache_summary.skipped_missing_key,
         "proxy prompt cache key startup backfill finished"
     );
+    let service_tier_summary =
+        backfill_invocation_service_tiers(&pool, raw_path_fallback_root).await?;
+    info!(
+        scanned = service_tier_summary.scanned,
+        updated = service_tier_summary.updated,
+        skipped_missing_file = service_tier_summary.skipped_missing_file,
+        skipped_missing_tier = service_tier_summary.skipped_missing_tier,
+        "invocation service tier startup backfill finished"
+    );
     let reasoning_effort_summary =
         backfill_proxy_reasoning_efforts(&pool, raw_path_fallback_root).await?;
     info!(
@@ -3121,6 +3130,10 @@ async fn persist_records(
             Some(record.status.as_str()),
             Some(record.error_message.as_str()),
         );
+        let service_tier = record
+            .service_tier
+            .as_deref()
+            .and_then(normalize_service_tier);
         let payload_json = json!({
             "model": record.model,
             "inputTokens": record.input_tokens,
@@ -3131,6 +3144,7 @@ async fn persist_records(
             "cost": record.cost,
             "status": record.status,
             "errorMessage": record.error_message,
+            "serviceTier": service_tier,
         });
 
         let payload_text = serde_json::to_string(&payload_json)?;
@@ -3200,6 +3214,12 @@ async fn persist_records(
                     failure_kind,
                     failure_class,
                     is_actionable,
+                    CASE
+                      WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'
+                        THEN json_extract(payload, '$.serviceTier')
+                      WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
+                        THEN json_extract(payload, '$.service_tier')
+                    END AS service_tier,
                     created_at
                 FROM codex_invocations
                 WHERE invoke_id = ?1 AND occurred_at = ?2
@@ -3372,6 +3392,11 @@ async fn list_invocations(
          failure_class, is_actionable, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
+         CASE \
+           WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
+             THEN json_extract(payload, '$.serviceTier') \
+           WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
+             THEN json_extract(payload, '$.service_tier') END AS service_tier, \
          CASE WHEN json_valid(payload) \
            AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real') \
            THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta, \
@@ -5508,6 +5533,7 @@ async fn proxy_openai_v1_capture_target(
                     Some(read_err.failure_kind),
                     requester_ip.as_deref(),
                     header_prompt_cache_key.as_deref(),
+                    None,
                     Some(selected_proxy.display_name.as_str()),
                     None,
                 )),
@@ -5637,6 +5663,7 @@ async fn proxy_openai_v1_capture_target(
                     Some(failure_kind),
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
+                    None,
                     Some(selected_proxy.display_name.as_str()),
                     proxy_attempt_update.delta(),
                 )),
@@ -5707,6 +5734,7 @@ async fn proxy_openai_v1_capture_target(
                     Some(failure_kind),
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
+                    None,
                     Some(selected_proxy.display_name.as_str()),
                     proxy_attempt_update.delta(),
                 )),
@@ -5782,6 +5810,7 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
+                    None,
                     Some(selected_proxy.display_name.as_str()),
                     proxy_attempt_update.delta(),
                 )),
@@ -5990,6 +6019,7 @@ async fn proxy_openai_v1_capture_target(
             failure_kind,
             requester_ip_for_task.as_deref(),
             prompt_cache_key_for_task.as_deref(),
+            response_info.service_tier.as_deref(),
             Some(selected_proxy_display_name.as_str()),
             proxy_attempt_update.delta(),
         );
@@ -6252,13 +6282,14 @@ fn parse_target_response_payload(
             model: None,
             usage: ParsedUsage::default(),
             usage_missing_reason: Some("empty_response".to_string()),
+            service_tier: None,
         };
     }
 
     let (decoded_bytes, decode_failure_reason) =
         decode_response_payload_for_parse(bytes, content_encoding);
     let parse_bytes = decoded_bytes.as_ref();
-    let looks_like_stream = request_is_stream || parse_bytes.starts_with(b"data:");
+    let looks_like_stream = request_is_stream || response_payload_looks_like_sse(parse_bytes);
     let mut response_info = if looks_like_stream {
         parse_stream_response_payload(parse_bytes)
     } else {
@@ -6266,6 +6297,7 @@ fn parse_target_response_payload(
             Ok(value) => {
                 let model = extract_model_from_payload(&value);
                 let usage = extract_usage_from_payload(&value).unwrap_or_default();
+                let service_tier = extract_service_tier_from_payload(&value);
                 let usage_missing_reason = if usage.total_tokens.is_none()
                     && usage.input_tokens.is_none()
                     && usage.output_tokens.is_none()
@@ -6278,12 +6310,14 @@ fn parse_target_response_payload(
                     model,
                     usage,
                     usage_missing_reason,
+                    service_tier,
                 }
             }
             Err(_) => ResponseCaptureInfo {
                 model: None,
                 usage: ParsedUsage::default(),
                 usage_missing_reason: Some("response_not_json".to_string()),
+                service_tier: None,
             },
         }
     };
@@ -6298,6 +6332,25 @@ fn parse_target_response_payload(
     }
 
     response_info
+}
+
+fn response_payload_looks_like_sse(bytes: &[u8]) -> bool {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(
+                    trimmed.starts_with("data:")
+                        || trimmed.starts_with("event:")
+                        || trimmed.starts_with("id:")
+                        || trimmed.starts_with("retry:"),
+                )
+            }
+        })
+        .unwrap_or(false)
 }
 
 fn decode_response_payload_for_parse<'a>(
@@ -6345,6 +6398,7 @@ fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
     let text = String::from_utf8_lossy(bytes);
     let mut model: Option<String> = None;
     let mut usage = ParsedUsage::default();
+    let mut service_tier: Option<String> = None;
     let mut usage_found = false;
     let mut parse_error_seen = false;
 
@@ -6361,6 +6415,9 @@ fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
             Ok(value) => {
                 if model.is_none() {
                     model = extract_model_from_payload(&value);
+                }
+                if service_tier.is_none() {
+                    service_tier = extract_service_tier_from_payload(&value);
                 }
                 if let Some(parsed_usage) = extract_usage_from_payload(&value) {
                     usage = parsed_usage;
@@ -6383,6 +6440,7 @@ fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
         } else {
             Some("usage_missing_in_stream".to_string())
         },
+        service_tier,
     }
 }
 
@@ -6427,6 +6485,27 @@ fn extract_model_from_payload(value: &Value) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(|v| v.to_string())
         })
+}
+
+fn normalize_service_tier(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn extract_service_tier_from_payload(value: &Value) -> Option<String> {
+    [
+        "/service_tier",
+        "/serviceTier",
+        "/response/service_tier",
+        "/response/serviceTier",
+    ]
+    .iter()
+    .find_map(|pointer| value.pointer(pointer).and_then(|v| v.as_str()))
+    .and_then(normalize_service_tier)
 }
 
 fn extract_usage_from_payload(value: &Value) -> Option<ParsedUsage> {
@@ -6518,6 +6597,7 @@ fn build_proxy_payload_summary(
     failure_kind: Option<&str>,
     requester_ip: Option<&str>,
     prompt_cache_key: Option<&str>,
+    service_tier: Option<&str>,
     proxy_display_name: Option<&str>,
     proxy_weight_delta: Option<f64>,
 ) -> String {
@@ -6537,6 +6617,7 @@ fn build_proxy_payload_summary(
         "failureKind": failure_kind,
         "requesterIp": requester_ip,
         "promptCacheKey": prompt_cache_key,
+        "serviceTier": service_tier,
         "proxyDisplayName": proxy_display_name,
         "proxyWeightDelta": proxy_weight_delta,
     });
@@ -7045,6 +7126,11 @@ async fn persist_proxy_capture_record(
             is_actionable,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'
+                THEN json_extract(payload, '$.serviceTier')
+              WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
+                THEN json_extract(payload, '$.service_tier') END AS service_tier,
             CASE WHEN json_valid(payload)
               AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real')
               THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta,
@@ -7683,6 +7769,121 @@ fn infer_proxy_capture_target_from_payload(value: &Value) -> ProxyCaptureTarget 
     } else {
         ProxyCaptureTarget::Responses
     }
+}
+
+#[derive(Debug, FromRow)]
+struct InvocationServiceTierBackfillCandidate {
+    id: i64,
+    source: String,
+    raw_response: String,
+    response_raw_path: Option<String>,
+}
+
+async fn backfill_invocation_service_tiers(
+    pool: &Pool<Sqlite>,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<InvocationServiceTierBackfillSummary> {
+    let mut summary = InvocationServiceTierBackfillSummary::default();
+    let mut last_seen_id = 0_i64;
+
+    loop {
+        let candidates = sqlx::query_as::<_, InvocationServiceTierBackfillCandidate>(
+            r#"
+            SELECT id, source, raw_response, response_raw_path
+            FROM codex_invocations
+            WHERE id > ?1
+              AND (
+                payload IS NULL
+                OR NOT json_valid(payload)
+                OR COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) IS NULL
+                OR TRIM(CAST(COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) AS TEXT)) = ''
+              )
+            ORDER BY id ASC
+            LIMIT ?2
+            "#,
+        )
+        .bind(last_seen_id)
+        .bind(BACKFILL_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        for candidate in candidates {
+            last_seen_id = candidate.id;
+            summary.scanned += 1;
+
+            let mut service_tier = parse_target_response_payload(
+                ProxyCaptureTarget::Responses,
+                candidate.raw_response.as_bytes(),
+                false,
+                None,
+            )
+            .service_tier;
+
+            if service_tier.is_none()
+                && candidate.source == SOURCE_PROXY
+                && let Some(path) = candidate.response_raw_path.as_deref()
+            {
+                match read_proxy_raw_bytes(path, raw_path_fallback_root) {
+                    Ok(bytes) => {
+                        let (payload_for_parse, _) =
+                            decode_response_payload_for_usage(&bytes, None);
+                        service_tier = parse_target_response_payload(
+                            ProxyCaptureTarget::Responses,
+                            payload_for_parse.as_ref(),
+                            false,
+                            None,
+                        )
+                        .service_tier;
+                    }
+                    Err(err) => {
+                        summary.skipped_missing_file += 1;
+                        warn!(
+                            id = candidate.id,
+                            path = %path,
+                            error = %err,
+                            "invocation service tier backfill skipped because response raw file is unavailable"
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            let Some(service_tier) = service_tier else {
+                summary.skipped_missing_tier += 1;
+                continue;
+            };
+
+            let affected = sqlx::query(
+                r#"
+                UPDATE codex_invocations
+                SET payload = json_set(
+                    CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+                    '$.serviceTier',
+                    ?1
+                )
+                WHERE id = ?2
+                  AND (
+                    payload IS NULL
+                    OR NOT json_valid(payload)
+                    OR COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) IS NULL
+                    OR TRIM(CAST(COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) AS TEXT)) = ''
+                  )
+                "#,
+            )
+            .bind(&service_tier)
+            .bind(candidate.id)
+            .execute(pool)
+            .await?
+            .rows_affected();
+            summary.updated += affected;
+        }
+    }
+
+    Ok(summary)
 }
 
 #[derive(Debug, FromRow)]
@@ -9671,6 +9872,8 @@ struct ApiInvocation {
     requester_ip: Option<String>,
     #[sqlx(default)]
     prompt_cache_key: Option<String>,
+    #[sqlx(default)]
+    service_tier: Option<String>,
     #[sqlx(default)]
     proxy_weight_delta: Option<f64>,
     #[sqlx(default)]
@@ -11768,6 +11971,7 @@ struct ResponseCaptureInfo {
     model: Option<String>,
     usage: ParsedUsage,
     usage_missing_reason: Option<String>,
+    service_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -11844,6 +12048,14 @@ struct ProxyPromptCacheKeyBackfillSummary {
     skipped_missing_file: u64,
     skipped_invalid_json: u64,
     skipped_missing_key: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct InvocationServiceTierBackfillSummary {
+    scanned: u64,
+    updated: u64,
+    skipped_missing_file: u64,
+    skipped_missing_tier: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -14349,9 +14561,28 @@ mod tests {
     }
 
     fn write_backfill_response_payload(path: &Path) {
-        let raw = [
-            "event: response.completed",
-            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":88,\"output_tokens\":22,\"total_tokens\":110,\"input_tokens_details\":{\"cached_tokens\":9},\"output_tokens_details\":{\"reasoning_tokens\":3}}}}",
+        write_backfill_response_payload_with_service_tier(path, None);
+    }
+
+    fn write_backfill_response_payload_with_service_tier(path: &Path, service_tier: Option<&str>) {
+        let mut response = json!({
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 88,
+                    "output_tokens": 22,
+                    "total_tokens": 110,
+                    "input_tokens_details": { "cached_tokens": 9 },
+                    "output_tokens_details": { "reasoning_tokens": 3 }
+                }
+            }
+        });
+        if let Some(service_tier) = service_tier {
+            response["response"]["service_tier"] = Value::String(service_tier.to_string());
+        }
+        let raw = vec![
+            "event: response.completed".to_string(),
+            format!("data: {response}"),
         ]
         .join("\n");
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -18484,7 +18715,7 @@ mod tests {
     fn parse_stream_response_payload_extracts_usage_and_model() {
         let raw = [
             "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}],\"usage\":null}",
-            "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}",
+            "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"service_tier\":\"priority\",\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}",
             "data: [DONE]",
         ]
         .join("\n");
@@ -18493,6 +18724,7 @@ mod tests {
         assert_eq!(parsed.usage.input_tokens, Some(11));
         assert_eq!(parsed.usage.output_tokens, Some(7));
         assert_eq!(parsed.usage.total_tokens, Some(18));
+        assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
         assert!(parsed.usage_missing_reason.is_none());
     }
 
@@ -18872,7 +19104,7 @@ mod tests {
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}",
             "",
             "event: response.completed",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":2}}}}",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"service_tier\":\"priority\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":2}}}}",
             "",
         ]
         .join("\n");
@@ -18894,6 +19126,7 @@ mod tests {
         assert_eq!(parsed.usage.output_tokens, Some(3));
         assert_eq!(parsed.usage.cache_input_tokens, Some(2));
         assert_eq!(parsed.usage.total_tokens, Some(15));
+        assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
         assert!(parsed.usage_missing_reason.is_none());
     }
 
@@ -18904,7 +19137,7 @@ mod tests {
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}",
             "",
             "event: response.completed",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":2}}}}",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"service_tier\":\"flex\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":2}}}}",
             "",
         ]
         .join("\n");
@@ -18926,7 +19159,59 @@ mod tests {
         assert_eq!(parsed.usage.output_tokens, Some(3));
         assert_eq!(parsed.usage.cache_input_tokens, Some(2));
         assert_eq!(parsed.usage.total_tokens, Some(15));
+        assert_eq!(parsed.service_tier.as_deref(), Some("flex"));
         assert!(parsed.usage_missing_reason.is_none());
+    }
+
+    #[test]
+    fn parse_target_response_payload_detects_sse_without_request_stream_hint() {
+        let raw = [
+            "event: response.completed",
+            r#"data: {"type":"response.completed","response":{"model":"gpt-5.3-codex","service_tier":"priority","usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15}}}"#,
+            "",
+        ]
+        .join("\n");
+
+        let parsed = parse_target_response_payload(
+            ProxyCaptureTarget::Responses,
+            raw.as_bytes(),
+            false,
+            None,
+        );
+
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
+        assert_eq!(parsed.usage.total_tokens, Some(15));
+        assert!(parsed.usage_missing_reason.is_none());
+    }
+
+    #[test]
+    fn parse_target_response_payload_reads_service_tier_from_response_object() {
+        let raw = json!({
+            "id": "resp_json_1",
+            "response": {
+                "model": "gpt-5.3-codex",
+                "service_tier": "priority",
+                "usage": {
+                    "input_tokens": 21,
+                    "output_tokens": 5,
+                    "total_tokens": 26
+                }
+            }
+        });
+
+        let parsed = parse_target_response_payload(
+            ProxyCaptureTarget::Responses,
+            serde_json::to_string(&raw)
+                .expect("serialize raw payload")
+                .as_bytes(),
+            false,
+            None,
+        );
+
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
+        assert_eq!(parsed.usage.total_tokens, Some(26));
     }
 
     #[test]
@@ -19100,7 +19385,7 @@ mod tests {
         .bind(SOURCE_PROXY)
         .bind("failed")
         .bind(
-            "{\"endpoint\":\"/v1/responses\",\"failureKind\":\"upstream_stream_error\",\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-list-1\",\"proxyDisplayName\":\"jp-relay-01\",\"proxyWeightDelta\":-0.68,\"reasoningEffort\":\"high\"}",
+            r#"{"endpoint":"/v1/responses","failureKind":"upstream_stream_error","requesterIp":"198.51.100.77","promptCacheKey":"pck-list-1","serviceTier":null,"service_tier":"priority","proxyDisplayName":"jp-relay-01","proxyWeightDelta":-0.68,"reasoningEffort":"high"}"#,
         )
         .bind("{}")
         .execute(&state.pool)
@@ -19130,6 +19415,7 @@ mod tests {
         );
         assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
         assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-list-1"));
+        assert_eq!(record.service_tier.as_deref(), Some("priority"));
         assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
         assert_eq!(record.proxy_weight_delta, Some(-0.68));
         assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
@@ -19185,6 +19471,7 @@ mod tests {
         assert_eq!(record.failure_kind, None);
         assert_eq!(record.requester_ip, None);
         assert_eq!(record.prompt_cache_key, None);
+        assert_eq!(record.service_tier, None);
         assert_eq!(record.proxy_weight_delta, None);
         assert_eq!(record.reasoning_effort, None);
     }
@@ -19239,6 +19526,37 @@ mod tests {
             .expect("inserted invocation should be present");
         assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-02"));
         assert_eq!(record.proxy_weight_delta, None);
+    }
+
+    #[tokio::test]
+    async fn persist_records_projects_service_tier_from_quota_records() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+
+        let inserted = persist_records(
+            &state.pool,
+            &[CodexRecord {
+                request_id: "quota-service-tier-1".to_string(),
+                request_time: "2026-02-25 10:03:00".to_string(),
+                model: "gpt-5.3-codex".to_string(),
+                input_tokens: 12,
+                output_tokens: 4,
+                cache_input_tokens: 0,
+                reasoning_tokens: 0,
+                total_tokens: 16,
+                cost: 0.0042,
+                status: "success".to_string(),
+                error_message: String::new(),
+                service_tier: Some("priority".to_string()),
+            }],
+        )
+        .await
+        .expect("persist records should succeed");
+
+        assert_eq!(inserted.len(), 1);
+        assert_eq!(inserted[0].service_tier.as_deref(), Some("priority"));
     }
 
     #[test]
@@ -19914,6 +20232,148 @@ mod tests {
         assert_eq!(payload_json["promptCacheKey"], "pck-fallback-1");
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_invocation_service_tiers_updates_payload_and_is_idempotent() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("invocation-service-tier-backfill");
+        let response_path = temp_dir.join("response.bin");
+        write_backfill_response_payload_with_service_tier(&response_path, Some("priority"));
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind("quota-service-tier-backfill")
+        .bind("2026-02-23 00:00:00")
+        .bind(SOURCE_XY)
+        .bind("success")
+        .bind("{}")
+        .bind(r#"{"service_tier":"priority"}"#)
+        .execute(&pool)
+        .await
+        .expect("insert quota service tier row");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response, response_raw_path
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind("proxy-service-tier-backfill")
+        .bind("2026-02-23 00:00:01")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(r#"{"endpoint":"/v1/responses"}"#)
+        .bind("{}")
+        .bind(response_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("insert proxy service tier row");
+
+        let summary_first = backfill_invocation_service_tiers(&pool, None)
+            .await
+            .expect("first service tier backfill should succeed");
+        assert_eq!(summary_first.scanned, 2);
+        assert_eq!(summary_first.updated, 2);
+        assert_eq!(summary_first.skipped_missing_file, 0);
+        assert_eq!(summary_first.skipped_missing_tier, 0);
+
+        let quota_payload: String =
+            sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("quota-service-tier-backfill")
+                .fetch_one(&pool)
+                .await
+                .expect("query quota payload");
+        let quota_payload_json: Value =
+            serde_json::from_str(&quota_payload).expect("decode quota payload JSON");
+        assert_eq!(quota_payload_json["serviceTier"], "priority");
+
+        let proxy_payload: String =
+            sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-service-tier-backfill")
+                .fetch_one(&pool)
+                .await
+                .expect("query proxy payload");
+        let proxy_payload_json: Value =
+            serde_json::from_str(&proxy_payload).expect("decode proxy payload JSON");
+        assert_eq!(proxy_payload_json["serviceTier"], "priority");
+
+        let summary_second = backfill_invocation_service_tiers(&pool, None)
+            .await
+            .expect("second service tier backfill should be idempotent");
+        assert_eq!(summary_second.scanned, 0);
+        assert_eq!(summary_second.updated, 0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_invocation_service_tiers_tracks_skip_counters() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind("service-tier-missing")
+        .bind("2026-02-23 00:00:00")
+        .bind(SOURCE_XY)
+        .bind("success")
+        .bind("{}")
+        .bind(r#"{"status":"success"}"#)
+        .execute(&pool)
+        .await
+        .expect("insert missing tier row");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response, response_raw_path
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind("service-tier-missing-file")
+        .bind("2026-02-23 00:00:01")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(r#"{"endpoint":"/v1/responses"}"#)
+        .bind("{}")
+        .bind("/tmp/does-not-exist-response.bin")
+        .execute(&pool)
+        .await
+        .expect("insert missing file row");
+
+        let summary = backfill_invocation_service_tiers(&pool, None)
+            .await
+            .expect("service tier backfill skip run should succeed");
+        assert_eq!(summary.scanned, 2);
+        assert_eq!(summary.updated, 0);
+        assert_eq!(summary.skipped_missing_file, 1);
+        assert_eq!(summary.skipped_missing_tier, 1);
     }
 
     #[tokio::test]
@@ -21610,6 +22070,8 @@ struct CodexRecord {
     status: String,
     #[serde(default)]
     error_message: String,
+    #[serde(default, alias = "service_tier")]
+    service_tier: Option<String>,
 }
 
 #[derive(Debug)]

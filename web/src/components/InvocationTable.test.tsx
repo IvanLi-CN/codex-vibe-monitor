@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { I18nProvider } from '../i18n'
 import type { ApiInvocation } from '../lib/api'
-import { formatProxyWeightDelta } from '../lib/invocation'
+import { formatProxyWeightDelta, formatServiceTier, isPriorityServiceTier } from '../lib/invocation'
 import { InvocationTable } from './InvocationTable'
 
 function renderTable(records: ApiInvocation[]) {
@@ -32,6 +32,25 @@ describe('formatProxyWeightDelta', () => {
     expect(formatProxyWeightDelta(undefined)).toEqual({ direction: 'missing', value: '—' })
     expect(formatProxyWeightDelta(null)).toEqual({ direction: 'missing', value: '—' })
     expect(formatProxyWeightDelta(Number.NaN)).toEqual({ direction: 'missing', value: '—' })
+  })
+})
+
+describe('service tier helpers', () => {
+  it('normalizes and formats service tiers', () => {
+    expect(formatServiceTier(' Priority ')).toBe('priority')
+    expect(formatServiceTier('FLEX')).toBe('flex')
+  })
+
+  it('falls back to em dash for empty or missing service tiers', () => {
+    expect(formatServiceTier(undefined)).toBe('—')
+    expect(formatServiceTier('   ')).toBe('—')
+  })
+
+  it('treats only priority as fast mode', () => {
+    expect(isPriorityServiceTier('priority')).toBe(true)
+    expect(isPriorityServiceTier(' Priority ')).toBe(true)
+    expect(isPriorityServiceTier('flex')).toBe(false)
+    expect(isPriorityServiceTier(undefined)).toBe(false)
   })
 })
 
