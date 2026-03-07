@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-07
 - Last: 2026-03-07
 
@@ -148,7 +148,7 @@
 - [x] M2: 启动回填补齐可恢复的历史 `payload.serviceTier`，跳过无法解析的记录。
 - [x] M3: InvocationTable 模型列追加 Fast 闪电图标，详情区新增 `Service tier` 字段，并补齐 i18n / Storybook / fixture。
 - [x] M4: Rust、Vitest、前端构建与 invocation table Playwright 回归全部通过。
-- [ ] M5: 完成 fast-track 交付（commit / push / PR / checks / review-loop / plan-sync）。
+- [x] M5: 完成 fast-track 交付（commit / push / PR / checks / review-loop / plan-sync）。
 
 ## 方案概述（Approach, high-level）
 
@@ -166,7 +166,7 @@
 
 - 2026-03-07: 创建规格，冻结“仅实际 `service_tier=priority` 算 Fast”口径，并要求以 payload-only + 启动回填实现。
 - 2026-03-07: 已完成后端 service tier 采集 / 回填、InvocationTable 图标与详情展示，以及 `cargo test`、`cargo check`、`cd web && npm run test`、`cd web && npm run build`、`cd web && npm run test:e2e -- invocation-table-layout.spec.ts` 验证。
-- 2026-03-07: 已创建 PR #93，review-loop 发现并修复了 legacy `serviceTier=null` 时未回退 `service_tier` 的投影问题；远端 checks 仍待 GitHub 报告。
+- 2026-03-07: 已创建 PR #93，review-loop 发现并修复了 legacy `serviceTier=null` 时未回退 `service_tier` 的投影问题；合并 `main` 后重新推送，PR 已恢复 `mergeable_state=clean` 且 checks 全部通过。
 
 ## 参考（References）
 
