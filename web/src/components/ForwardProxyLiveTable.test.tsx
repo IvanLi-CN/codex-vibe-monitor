@@ -121,6 +121,242 @@ describe('ForwardProxyLiveTable', () => {
     expect(html).toContain('近 24 小时请求量')
   })
 
+  it('shares request and weight trend scales across proxy rows', () => {
+    const stats: ForwardProxyLiveStatsResponse = {
+      rangeStart: '2026-03-01T00:00:00Z',
+      rangeEnd: '2026-03-02T00:00:00Z',
+      bucketSeconds: 3600,
+      nodes: [
+        {
+          key: 'proxy-low',
+          source: 'manual',
+          displayName: 'Proxy Low',
+          weight: 0.5,
+          penalized: false,
+          stats: {
+            oneMinute: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            fifteenMinutes: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            oneHour: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            oneDay: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            sevenDays: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+          },
+          last24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              successCount: 1,
+              failureCount: 0,
+            },
+          ],
+          weight24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              sampleCount: 1,
+              minWeight: 0.5,
+              maxWeight: 0.5,
+              avgWeight: 0.5,
+              lastWeight: 0.5,
+            },
+          ],
+        },
+        {
+          key: 'proxy-high',
+          source: 'manual',
+          displayName: 'Proxy High',
+          weight: 2,
+          penalized: false,
+          stats: {
+            oneMinute: { attempts: 4, successRate: 1, avgLatencyMs: 100 },
+            fifteenMinutes: { attempts: 4, successRate: 1, avgLatencyMs: 100 },
+            oneHour: { attempts: 4, successRate: 1, avgLatencyMs: 100 },
+            oneDay: { attempts: 4, successRate: 1, avgLatencyMs: 100 },
+            sevenDays: { attempts: 4, successRate: 1, avgLatencyMs: 100 },
+          },
+          last24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              successCount: 4,
+              failureCount: 0,
+            },
+          ],
+          weight24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              sampleCount: 1,
+              minWeight: 2,
+              maxWeight: 2,
+              avgWeight: 2,
+              lastWeight: 2,
+            },
+          ],
+        },
+      ],
+    }
+
+    const html = renderTable(stats)
+
+    expect(html).toContain('Proxy Low')
+    expect(html).toContain('style="height:10px"')
+    expect(html).toContain('cy="30"')
+  })
+
+
+  it('keeps tiny non-zero request buckets visible on a shared scale', () => {
+    const stats: ForwardProxyLiveStatsResponse = {
+      rangeStart: '2026-03-01T00:00:00Z',
+      rangeEnd: '2026-03-02T00:00:00Z',
+      bucketSeconds: 3600,
+      nodes: [
+        {
+          key: 'proxy-tiny',
+          source: 'manual',
+          displayName: 'Proxy Tiny',
+          weight: 0.8,
+          penalized: false,
+          stats: {
+            oneMinute: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            fifteenMinutes: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            oneHour: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            oneDay: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            sevenDays: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+          },
+          last24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              successCount: 1,
+              failureCount: 0,
+            },
+          ],
+          weight24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              sampleCount: 1,
+              minWeight: 0.8,
+              maxWeight: 0.8,
+              avgWeight: 0.8,
+              lastWeight: 0.8,
+            },
+          ],
+        },
+        {
+          key: 'proxy-huge',
+          source: 'manual',
+          displayName: 'Proxy Huge',
+          weight: 1.2,
+          penalized: false,
+          stats: {
+            oneMinute: { attempts: 1000, successRate: 1, avgLatencyMs: 100 },
+            fifteenMinutes: { attempts: 1000, successRate: 1, avgLatencyMs: 100 },
+            oneHour: { attempts: 1000, successRate: 1, avgLatencyMs: 100 },
+            oneDay: { attempts: 1000, successRate: 1, avgLatencyMs: 100 },
+            sevenDays: { attempts: 1000, successRate: 1, avgLatencyMs: 100 },
+          },
+          last24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              successCount: 1000,
+              failureCount: 0,
+            },
+          ],
+          weight24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              sampleCount: 1,
+              minWeight: 1.2,
+              maxWeight: 1.2,
+              avgWeight: 1.2,
+              lastWeight: 1.2,
+            },
+          ],
+        },
+      ],
+    }
+
+    const html = renderTable(stats)
+
+    expect(html).toContain('Proxy Tiny')
+    expect(html).toContain('style="height:1px"')
+  })
+
+  it('ignores synthetic fallback weights when real history exists on the page', () => {
+    const stats: ForwardProxyLiveStatsResponse = {
+      rangeStart: '2026-03-01T00:00:00Z',
+      rangeEnd: '2026-03-02T00:00:00Z',
+      bucketSeconds: 3600,
+      nodes: [
+        {
+          key: 'proxy-real',
+          source: 'manual',
+          displayName: 'Proxy Real',
+          weight: 1.1,
+          penalized: false,
+          stats: {
+            oneMinute: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            fifteenMinutes: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            oneHour: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            oneDay: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            sevenDays: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+          },
+          last24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              successCount: 1,
+              failureCount: 0,
+            },
+          ],
+          weight24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              sampleCount: 1,
+              minWeight: 0.9,
+              maxWeight: 0.9,
+              avgWeight: 0.9,
+              lastWeight: 0.9,
+            },
+          ],
+        },
+        {
+          key: 'proxy-fallback',
+          source: 'manual',
+          displayName: 'Proxy Fallback',
+          weight: 100,
+          penalized: false,
+          stats: {
+            oneMinute: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            fifteenMinutes: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            oneHour: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            oneDay: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            sevenDays: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+          },
+          last24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              successCount: 0,
+              failureCount: 0,
+            },
+          ],
+          weight24h: [],
+        },
+      ],
+    }
+
+    const html = renderTable(stats)
+
+    expect(html).toContain('cy="0"')
+    expect(html).not.toContain('cy="-')
+  })
+
+
   it('uses different colors for positive and negative weight regions', () => {
     const stats: ForwardProxyLiveStatsResponse = {
       rangeStart: '2026-03-01T00:00:00Z',

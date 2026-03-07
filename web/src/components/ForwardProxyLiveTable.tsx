@@ -52,6 +52,46 @@ function resolveWeightBuckets(node: ForwardProxyLiveNode): ForwardProxyWeightBuc
   }))
 }
 
+function buildVisibleBarHeights(successCount: number, failureCount: number, scaleMax: number, totalHeightPx: number) {
+  if (scaleMax <= 0 || totalHeightPx <= 0) {
+    return { empty: totalHeightPx, failure: 0, success: 0 }
+  }
+
+  let success = successCount > 0 ? Math.max((successCount / scaleMax) * totalHeightPx, 1) : 0
+  let failure = failureCount > 0 ? Math.max((failureCount / scaleMax) * totalHeightPx, 1) : 0
+  const maxVisible = Math.max(totalHeightPx, 0)
+  let overflow = success + failure - maxVisible
+
+  const shrink = (value: number, minVisible: number, amount: number) => {
+    if (amount <= 0 || value <= minVisible) return { nextValue: value, remaining: amount }
+    const delta = Math.min(value - minVisible, amount)
+    return { nextValue: value - delta, remaining: amount - delta }
+  }
+
+  if (overflow > 0) {
+    const first = success >= failure ? 'success' : 'failure'
+    const second = first == 'success' ? 'failure' : 'success'
+    for (const key of [first, second] as const) {
+      const minVisible = key == 'success' ? (successCount > 0 ? 1 : 0) : failureCount > 0 ? 1 : 0
+      const current = key == 'success' ? success : failure
+      const result = shrink(current, minVisible, overflow)
+      if (key == 'success') {
+        success = result.nextValue
+      } else {
+        failure = result.nextValue
+      }
+      overflow = result.remaining
+    }
+  }
+
+  const used = Math.min(success + failure, maxVisible)
+  return {
+    empty: Math.max(maxVisible - used, 0),
+    failure,
+    success,
+  }
+}
+
 function bucketTooltipLabel(bucket: ForwardProxyHourlyBucket, localeTag: string, successLabel: string, failureLabel: string) {
   const start = new Date(bucket.bucketStart)
   const end = new Date(bucket.bucketEnd)
@@ -105,17 +145,22 @@ interface WeightTrendGeometry {
   points: Array<{ x: number; y: number }>
 }
 
-function buildWeightTrendGeometry(buckets: ForwardProxyWeightBucket[]): WeightTrendGeometry | null {
+interface WeightTrendScale {
+  minValue: number
+  maxValue: number
+}
+
+function buildWeightTrendGeometry(buckets: ForwardProxyWeightBucket[], scale: WeightTrendScale): WeightTrendGeometry | null {
   if (buckets.length === 0) return null
   const chartWidth = 216
   const chartHeight = 40
   const values = buckets.map((bucket) => bucket.lastWeight)
-  const minValue = Math.min(...values, 0)
-  const maxValue = Math.max(...values, 0)
+  const minValue = scale.minValue
+  const maxValue = scale.maxValue
   const span = Math.max(maxValue - minValue, Number.EPSILON)
   const bucketWidth = chartWidth / buckets.length
   const points = values.map((value, index) => {
-    const ratio = (value - minValue) / span
+    const ratio = Math.max(0, Math.min(1, (value - minValue) / span))
     const x = bucketWidth * index + bucketWidth / 2
     const y = chartHeight - ratio * chartHeight
     return { x, y }
@@ -153,18 +198,20 @@ function WindowCell({ value }: { value: ForwardProxyWindowStats }) {
 
 function WeightTrendCell({
   buckets,
+  scale,
   localeTag,
   tooltipLabels,
   ariaLabel,
   clipId,
 }: {
   buckets: ForwardProxyWeightBucket[]
+  scale: WeightTrendScale
   localeTag: string
   tooltipLabels: WeightTooltipLabels
   ariaLabel: string
   clipId: string
 }) {
-  const geometry = buildWeightTrendGeometry(buckets)
+  const geometry = buildWeightTrendGeometry(buckets, scale)
   if (!geometry) {
     return <div className="text-[11px] text-base-content/55">—</div>
   }
@@ -259,17 +306,33 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
     [t],
   )
 
-  const rowData = useMemo(
-    () =>
-      (stats?.nodes ?? []).map((node) => ({
+  const { rowData, requestBucketScaleMax, weightTrendScale } = useMemo(() => {
+    const rows = (stats?.nodes ?? []).map((node) => {
+      const weightBuckets = resolveWeightBuckets(node)
+      return {
         node,
         windows: [node.stats.oneMinute, node.stats.fifteenMinutes, node.stats.oneHour, node.stats.oneDay, node.stats.sevenDays],
         total24h: sumLast24h(node),
-        weightBuckets: resolveWeightBuckets(node),
-        maxBucketTotal24h: Math.max(...node.last24h.map((bucket) => bucket.successCount + bucket.failureCount), 0),
-      })),
-    [stats?.nodes],
-  )
+        weightBuckets,
+      }
+    })
+    const requestBucketScaleMax = Math.max(
+      ...rows.flatMap(({ node }) => node.last24h.map((bucket) => bucket.successCount + bucket.failureCount)),
+      0,
+    )
+    const actualWeightValues = (stats?.nodes ?? []).flatMap((node) => node.weight24h.map((bucket) => bucket.lastWeight))
+    const fallbackWeightValues = rows.flatMap(({ weightBuckets }) => weightBuckets.map((bucket) => bucket.lastWeight))
+    const scaleWeightValues = actualWeightValues.length > 0 ? actualWeightValues : fallbackWeightValues
+    const weightTrendScale = {
+      minValue: Math.min(...scaleWeightValues, 0),
+      maxValue: Math.max(...scaleWeightValues, 0),
+    }
+    return {
+      rowData: rows,
+      requestBucketScaleMax,
+      weightTrendScale,
+    }
+  }, [stats?.nodes])
 
   if (error) {
     return (
@@ -323,7 +386,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
           </tr>
         </thead>
         <tbody className="divide-y divide-base-300/65">
-          {rowData.map(({ node, windows, total24h, weightBuckets, maxBucketTotal24h }) => (
+          {rowData.map(({ node, windows, total24h, weightBuckets }) => (
             <tr key={node.key} className={cn('transition-colors hover:bg-primary/6', node.penalized && 'bg-warning/8')}>
               <td className="max-w-0 px-2 py-2 align-middle sm:px-3 sm:py-3">
                 <div className="min-w-0">
@@ -359,9 +422,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                   <div className="flex h-11 items-end gap-px sm:gap-[1.5px] md:gap-[2px]">
                     {node.last24h.map((bucket, index) => {
                       const total = bucket.successCount + bucket.failureCount
-                      const successHeight = maxBucketTotal24h > 0 ? (bucket.successCount / maxBucketTotal24h) * 100 : 0
-                      const failureHeight = maxBucketTotal24h > 0 ? (bucket.failureCount / maxBucketTotal24h) * 100 : 0
-                      const emptyHeight = Math.max(0, 100 - Math.round(successHeight + failureHeight))
+                      const heights = buildVisibleBarHeights(bucket.successCount, bucket.failureCount, requestBucketScaleMax, 40)
                       return (
                         <div
                           key={`${node.key}-${index}`}
@@ -373,17 +434,14 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                             t('stats.cards.failures'),
                           )}
                         >
-                          <div
-                            className="bg-transparent"
-                            style={{ height: `${emptyHeight}%` }}
-                          />
+                          <div className="bg-transparent" style={{ height: `${heights.empty}px` }} />
                           <div
                             className={cn(total > 0 ? 'bg-error/85' : 'bg-transparent')}
-                            style={{ height: `${Math.round(failureHeight)}%` }}
+                            style={{ height: `${heights.failure}px` }}
                           />
                           <div
                             className={cn(total > 0 ? 'bg-success/85' : 'bg-transparent')}
-                            style={{ height: `${Math.round(successHeight)}%` }}
+                            style={{ height: `${heights.success}px` }}
                           />
                         </div>
                       )
@@ -394,6 +452,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
               <td className="px-2 py-2 align-middle sm:px-3 sm:py-3">
                 <WeightTrendCell
                   buckets={weightBuckets}
+                  scale={weightTrendScale}
                   localeTag={localeTag}
                   tooltipLabels={weightTooltipLabels}
                   ariaLabel={weightTrendAriaLabel}

@@ -93,6 +93,77 @@ const stats: PromptCacheConversationsResponse = {
   ],
 }
 
+
+
+const sharedScaleStats: PromptCacheConversationsResponse = {
+  rangeStart: '2026-03-02T00:00:00.000Z',
+  rangeEnd: '2026-03-03T00:00:00.000Z',
+  conversations: [
+    {
+      promptCacheKey: 'pck-low-volume',
+      requestCount: 3,
+      totalTokens: 420,
+      totalCost: 0.01,
+      createdAt: '2026-03-02T03:00:00.000Z',
+      lastActivityAt: '2026-03-02T05:00:00.000Z',
+      last24hRequests: [
+        {
+          occurredAt: '2026-03-02T03:00:00.000Z',
+          status: 'completed',
+          isSuccess: true,
+          requestTokens: 100,
+          cumulativeTokens: 100,
+        },
+        {
+          occurredAt: '2026-03-02T05:00:00.000Z',
+          status: 'completed',
+          isSuccess: true,
+          requestTokens: 120,
+          cumulativeTokens: 220,
+        },
+      ],
+    },
+    {
+      promptCacheKey: 'pck-high-volume',
+      requestCount: 8,
+      totalTokens: 8600,
+      totalCost: 0.21,
+      createdAt: '2026-03-02T02:30:00.000Z',
+      lastActivityAt: '2026-03-02T23:40:00.000Z',
+      last24hRequests: [
+        {
+          occurredAt: '2026-03-02T02:30:00.000Z',
+          status: 'completed',
+          isSuccess: true,
+          requestTokens: 1200,
+          cumulativeTokens: 1200,
+        },
+        {
+          occurredAt: '2026-03-02T09:10:00.000Z',
+          status: 'completed',
+          isSuccess: true,
+          requestTokens: 1800,
+          cumulativeTokens: 3000,
+        },
+        {
+          occurredAt: '2026-03-02T18:50:00.000Z',
+          status: 'upstream_stream_error',
+          isSuccess: false,
+          requestTokens: 900,
+          cumulativeTokens: 3900,
+        },
+        {
+          occurredAt: '2026-03-02T23:40:00.000Z',
+          status: 'completed',
+          isSuccess: true,
+          requestTokens: 2200,
+          cumulativeTokens: 6100,
+        },
+      ],
+    },
+  ],
+}
+
 const meta = {
   title: 'Monitoring/PromptCacheConversationTable',
   component: PromptCacheConversationTable,
@@ -152,3 +223,12 @@ export const ErrorState: Story = {
     error: 'Network error',
   },
 }
+
+export const SharedScaleComparison: Story = {
+  args: {
+    stats: sharedScaleStats,
+    isLoading: false,
+    error: null,
+  },
+}
+
