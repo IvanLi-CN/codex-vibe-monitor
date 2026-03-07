@@ -12,7 +12,7 @@ export type ReasoningEffortTone = keyof typeof REASONING_EFFORT_TONE_CLASSNAMES
 
 export function getReasoningEffortTone(value: string): ReasoningEffortTone {
   const normalized = value.trim().toLowerCase()
-  if (normalized in REASONING_EFFORT_TONE_CLASSNAMES && normalized !== 'unknown') {
+  if (Object.hasOwn(REASONING_EFFORT_TONE_CLASSNAMES, normalized) && normalized !== 'unknown') {
     return normalized as Exclude<ReasoningEffortTone, 'unknown'>
   }
   return 'unknown'

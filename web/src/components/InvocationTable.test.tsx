@@ -67,6 +67,8 @@ describe('getReasoningEffortTone', () => {
 
   it('treats unknown raw strings as unknown tone', () => {
     expect(getReasoningEffortTone('custom-tier')).toBe('unknown')
+    expect(getReasoningEffortTone('constructor')).toBe('unknown')
+    expect(getReasoningEffortTone('__proto__')).toBe('unknown')
   })
 })
 
