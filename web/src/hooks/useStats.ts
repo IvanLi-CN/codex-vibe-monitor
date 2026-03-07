@@ -8,7 +8,9 @@ interface UseSummaryOptions {
 }
 
 const SUPPORTED_SSE_WINDOWS = new Set(['all', '30m', '1h', '1d', '1mo'])
+const CALENDAR_SUMMARY_WINDOWS = new Set(['today', 'thisWeek', 'thisMonth'])
 export const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000
+export const CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 1_000
 export const CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 600
 export const CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS = 3_000
 export const CURRENT_SUMMARY_REQUEST_TIMEOUT_MS = 10_000
@@ -36,6 +38,10 @@ export function createUnsupportedRefreshGate(): UnsupportedRefreshGate {
   return { inFlight: false, lastTriggerAt: 0 }
 }
 
+export function isCalendarSummaryWindow(window: string) {
+  return CALENDAR_SUMMARY_WINDOWS.has(window)
+}
+
 export function getCurrentSummarySseRefreshDelay(lastRefreshAt: number, now: number) {
   return Math.max(0, CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS - (now - lastRefreshAt))
 }
@@ -50,7 +56,7 @@ export function shouldTriggerCurrentSummaryOpenResync(lastResyncAt: number, now:
 }
 
 export function shouldHandleUnsupportedSummaryRefresh(payloadWindow: string, currentWindow: string, supportsSse: boolean): boolean {
-  return payloadWindow !== currentWindow && !supportsSse && currentWindow !== 'current'
+  return payloadWindow !== currentWindow && !supportsSse && currentWindow !== 'current' && !isCalendarSummaryWindow(currentWindow)
 }
 
 export function shouldRetryCurrentSummaryError(error: string): boolean {
@@ -71,12 +77,13 @@ function resolvePendingLoad(pending: PendingLoad | null) {
   pending.waiters.forEach((resolve) => resolve())
 }
 
-export async function runUnsupportedSummaryRefresh(
+async function runThrottledSummaryRefresh(
   gate: UnsupportedRefreshGate,
   now: number,
+  refreshIntervalMs: number,
   refresh: () => Promise<void>,
 ): Promise<boolean> {
-  if (gate.inFlight || now - gate.lastTriggerAt < UNSUPPORTED_SSE_REFRESH_INTERVAL_MS) {
+  if (gate.inFlight || now - gate.lastTriggerAt < refreshIntervalMs) {
     return false
   }
 
@@ -92,11 +99,28 @@ export async function runUnsupportedSummaryRefresh(
   return true
 }
 
+export async function runUnsupportedSummaryRefresh(
+  gate: UnsupportedRefreshGate,
+  now: number,
+  refresh: () => Promise<void>,
+): Promise<boolean> {
+  return runThrottledSummaryRefresh(gate, now, UNSUPPORTED_SSE_REFRESH_INTERVAL_MS, refresh)
+}
+
+export async function runCalendarSummaryRefresh(
+  gate: UnsupportedRefreshGate,
+  now: number,
+  refresh: () => Promise<void>,
+): Promise<boolean> {
+  return runThrottledSummaryRefresh(gate, now, CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS, refresh)
+}
+
 export function useSummary(window: string, options?: UseSummaryOptions) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const unsupportedRefreshRef = useRef<UnsupportedRefreshGate>(createUnsupportedRefreshGate())
+  const calendarRefreshRef = useRef<UnsupportedRefreshGate>(createUnsupportedRefreshGate())
   const summaryContextRef = useRef<{ window: string; limit?: number }>({
     window,
     limit: options?.limit,
@@ -241,10 +265,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     refreshTimerRef.current = setTimeout(run, delay)
   }, [clearPendingRefreshTimer, load])
 
-  const triggerCurrentOpenResync = useCallback(() => {
-    if (window !== 'current') {
-      return
-    }
+  const triggerOpenResync = useCallback(() => {
     if (!hasHydratedRef.current) {
       pendingOpenResyncRef.current = true
       return
@@ -255,7 +276,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     }
     lastOpenResyncAtRef.current = now
     void load({ silent: true, force: true })
-  }, [load, window])
+  }, [load])
 
   useEffect(() => {
     // Invalidate prior async loads when summary query context changes.
@@ -265,6 +286,8 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     lastCurrentRecordsRefreshAtRef.current = 0
     lastOpenResyncAtRef.current = 0
     currentRetryAttemptRef.current = 0
+    unsupportedRefreshRef.current = createUnsupportedRefreshGate()
+    calendarRefreshRef.current = createUnsupportedRefreshGate()
     clearPendingLoad()
     clearPendingRefreshTimer()
     void load({ force: true })
@@ -299,6 +322,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   )
 
   const supportsSse = useMemo(() => SUPPORTED_SSE_WINDOWS.has(window), [window])
+  const isCalendarWindow = useMemo(() => isCalendarSummaryWindow(window), [window])
 
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
@@ -309,23 +333,27 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
           setError(null)
           setIsLoading(false)
         } else if (shouldHandleUnsupportedSummaryRefresh(payload.window, window, supportsSse)) {
-          // Unsupported windows (e.g. today) are refreshed at a fixed cadence to avoid request storms.
           void runUnsupportedSummaryRefresh(unsupportedRefreshRef.current, Date.now(), () => load({ silent: true }))
         }
-      } else if (payload.type === 'records' && window === 'current') {
-        // current 窗口通过节流静默刷新，避免高频事件导致闪烁。
-        triggerCurrentWindowRefresh()
+      } else if (payload.type === 'records') {
+        if (window === 'current') {
+          // current 窗口通过节流静默刷新，避免高频事件导致闪烁。
+          triggerCurrentWindowRefresh()
+        } else if (isCalendarWindow) {
+          // calendar windows 依旧通过 HTTP 计算，但 records 到达时以 1s 节流静默补拉。
+          void runCalendarSummaryRefresh(calendarRefreshRef.current, Date.now(), () => load({ silent: true }))
+        }
       }
     })
     return unsubscribe
-  }, [load, supportsSse, triggerCurrentWindowRefresh, window])
+  }, [isCalendarWindow, load, supportsSse, triggerCurrentWindowRefresh, window])
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
-      triggerCurrentOpenResync()
+      triggerOpenResync()
     })
     return unsubscribe
-  }, [triggerCurrentOpenResync])
+  }, [triggerOpenResync])
 
   return {
     summary: stats,

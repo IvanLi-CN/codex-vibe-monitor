@@ -367,6 +367,7 @@ async fn main() -> Result<()> {
         pool,
         http_clients,
         broadcaster: tx.clone(),
+        broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         semaphore: semaphore.clone(),
@@ -540,16 +541,37 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
     let state_clone = state.clone();
 
     let handle = tokio::spawn(async move {
-        let fut = fetch_and_store(&state_clone, force_new_connection);
+        let collect_broadcast_state = state_clone.broadcaster.receiver_count() > 0;
+        let fut = fetch_and_store(&state_clone, force_new_connection, collect_broadcast_state);
         match timeout(state_clone.config.request_timeout, fut).await {
             Ok(Ok(publish)) => {
                 let PublishResult {
                     records,
-                    summaries,
-                    quota_snapshot,
+                    mut summaries,
+                    mut quota_snapshot,
+                    collected_broadcast_state,
                 } = publish;
 
-                if let Some(records) = records.filter(|v| !v.is_empty())
+                let receiver_count = state_clone.broadcaster.receiver_count();
+                if should_collect_late_broadcast_state(receiver_count, collected_broadcast_state) {
+                    match collect_broadcast_state_snapshots(
+                        &state_clone.pool,
+                        state_clone.config.crs_stats.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok((latest_summaries, latest_quota_snapshot)) => {
+                            summaries = latest_summaries;
+                            quota_snapshot = latest_quota_snapshot;
+                        }
+                        Err(err) => {
+                            warn!(?err, "failed to collect late-subscriber broadcast state");
+                        }
+                    }
+                }
+
+                if receiver_count > 0
+                    && let Some(records) = records.filter(|v| !v.is_empty())
                     && let Err(err) = state_clone
                         .broadcaster
                         .send(BroadcastPayload::Records { records })
@@ -558,18 +580,25 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
                 }
 
                 for summary in summaries {
-                    if let Err(err) = state_clone.broadcaster.send(BroadcastPayload::Summary {
-                        window: summary.window,
-                        summary: summary.summary,
-                    }) {
+                    if let Err(err) = broadcast_summary_if_changed(
+                        &state_clone.broadcaster,
+                        state_clone.broadcast_state_cache.as_ref(),
+                        &summary.window,
+                        summary.summary,
+                    )
+                    .await
+                    {
                         warn!(?err, "failed to broadcast summary payload");
                     }
                 }
 
                 if let Some(snapshot) = quota_snapshot
-                    && let Err(err) = state_clone.broadcaster.send(BroadcastPayload::Quota {
-                        snapshot: Box::new(snapshot),
-                    })
+                    && let Err(err) = broadcast_quota_if_changed(
+                        &state_clone.broadcaster,
+                        state_clone.broadcast_state_cache.as_ref(),
+                        snapshot,
+                    )
+                    .await
                 {
                     warn!(?err, "failed to broadcast quota snapshot");
                 }
@@ -691,6 +720,7 @@ struct PublishResult {
     records: Option<Vec<ApiInvocation>>,
     summaries: Vec<SummaryPublish>,
     quota_snapshot: Option<QuotaSnapshotResponse>,
+    collected_broadcast_state: bool,
 }
 
 struct SummaryPublish {
@@ -698,7 +728,28 @@ struct SummaryPublish {
     summary: StatsResponse,
 }
 
-async fn fetch_and_store(state: &AppState, force_new_connection: bool) -> Result<PublishResult> {
+fn should_collect_late_broadcast_state(
+    receiver_count: usize,
+    collected_broadcast_state: bool,
+) -> bool {
+    receiver_count > 0 && !collected_broadcast_state
+}
+
+async fn collect_broadcast_state_snapshots(
+    pool: &Pool<Sqlite>,
+    relay: Option<&CrsStatsConfig>,
+) -> Result<(Vec<SummaryPublish>, Option<QuotaSnapshotResponse>)> {
+    Ok((
+        collect_summary_snapshots(pool, relay).await?,
+        QuotaSnapshotResponse::fetch_latest(pool).await?,
+    ))
+}
+
+async fn fetch_and_store(
+    state: &AppState,
+    force_new_connection: bool,
+    collect_broadcast_state: bool,
+) -> Result<PublishResult> {
     let client = state
         .http_clients
         .client_for_parallelism(force_new_connection)?;
@@ -740,8 +791,11 @@ async fn fetch_and_store(state: &AppState, force_new_connection: bool) -> Result
         }
     }
 
-    let summaries = collect_summary_snapshots(&state.pool, relay_config.as_ref()).await?;
-    let quota_payload = QuotaSnapshotResponse::fetch_latest(&state.pool).await?;
+    let (summaries, quota_payload) = if collect_broadcast_state {
+        collect_broadcast_state_snapshots(&state.pool, relay_config.as_ref()).await?
+    } else {
+        (Vec::new(), None)
+    };
 
     Ok(PublishResult {
         records: if inserted.is_empty() {
@@ -751,6 +805,7 @@ async fn fetch_and_store(state: &AppState, force_new_connection: bool) -> Result
         },
         summaries,
         quota_snapshot: quota_payload,
+        collected_broadcast_state: collect_broadcast_state,
     })
 }
 
@@ -4766,6 +4821,51 @@ async fn latest_quota_snapshot(
         .unwrap_or_else(QuotaSnapshotResponse::degraded_default);
     Ok(Json(snapshot))
 }
+
+async fn broadcast_summary_if_changed(
+    broadcaster: &broadcast::Sender<BroadcastPayload>,
+    cache: &Mutex<BroadcastStateCache>,
+    window: &str,
+    summary: StatsResponse,
+) -> Result<bool, broadcast::error::SendError<BroadcastPayload>> {
+    let mut cache = cache.lock().await;
+    if cache
+        .summaries
+        .get(window)
+        .is_some_and(|current| current == &summary)
+    {
+        return Ok(false);
+    }
+
+    broadcaster.send(BroadcastPayload::Summary {
+        window: window.to_string(),
+        summary: summary.clone(),
+    })?;
+    cache.summaries.insert(window.to_string(), summary);
+    Ok(true)
+}
+
+async fn broadcast_quota_if_changed(
+    broadcaster: &broadcast::Sender<BroadcastPayload>,
+    cache: &Mutex<BroadcastStateCache>,
+    snapshot: QuotaSnapshotResponse,
+) -> Result<bool, broadcast::error::SendError<BroadcastPayload>> {
+    let mut cache = cache.lock().await;
+    if cache
+        .quota
+        .as_ref()
+        .is_some_and(|current| current == &snapshot)
+    {
+        return Ok(false);
+    }
+
+    broadcaster.send(BroadcastPayload::Quota {
+        snapshot: Box::new(snapshot.clone()),
+    })?;
+    cache.quota = Some(snapshot);
+    Ok(true)
+}
+
 async fn sse_stream(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
@@ -6673,6 +6773,7 @@ async fn persist_and_broadcast_proxy_capture(
     let broadcast_running = state.proxy_summary_quota_broadcast_running.clone();
     let pool = state.pool.clone();
     let broadcaster = state.broadcaster.clone();
+    let broadcast_state_cache = state.broadcast_state_cache.clone();
     let relay_config = state.config.crs_stats.clone();
     tokio::spawn(async move {
         let mut synced_seq = 0_u64;
@@ -6698,10 +6799,14 @@ async fn persist_and_broadcast_proxy_capture(
             match collect_summary_snapshots(&pool, relay_config.as_ref()).await {
                 Ok(summaries) => {
                     for summary in summaries {
-                        if let Err(err) = broadcaster.send(BroadcastPayload::Summary {
-                            window: summary.window.clone(),
-                            summary: summary.summary,
-                        }) {
+                        if let Err(err) = broadcast_summary_if_changed(
+                            &broadcaster,
+                            broadcast_state_cache.as_ref(),
+                            &summary.window,
+                            summary.summary,
+                        )
+                        .await
+                        {
                             warn!(
                                 ?err,
                                 invoke_id = %invoke_id,
@@ -6726,9 +6831,13 @@ async fn persist_and_broadcast_proxy_capture(
 
             match QuotaSnapshotResponse::fetch_latest(&pool).await {
                 Ok(Some(snapshot)) => {
-                    if let Err(err) = broadcaster.send(BroadcastPayload::Quota {
-                        snapshot: Box::new(snapshot),
-                    }) {
+                    if let Err(err) = broadcast_quota_if_changed(
+                        &broadcaster,
+                        broadcast_state_cache.as_ref(),
+                        snapshot,
+                    )
+                    .await
+                    {
                         warn!(
                             ?err,
                             invoke_id = %invoke_id,
@@ -9329,6 +9438,7 @@ struct AppState {
     pool: Pool<Sqlite>,
     http_clients: HttpClients,
     broadcaster: broadcast::Sender<BroadcastPayload>,
+    broadcast_state_cache: Arc<Mutex<BroadcastStateCache>>,
     proxy_summary_quota_broadcast_seq: Arc<AtomicU64>,
     proxy_summary_quota_broadcast_running: Arc<AtomicBool>,
     semaphore: Arc<Semaphore>,
@@ -9341,6 +9451,12 @@ struct AppState {
     pricing_settings_update_lock: Arc<Mutex<()>>,
     pricing_catalog: Arc<RwLock<PricingCatalog>>,
     prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
+}
+
+#[derive(Debug, Default)]
+struct BroadcastStateCache {
+    summaries: HashMap<String, StatsResponse>,
+    quota: Option<QuotaSnapshotResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -9442,7 +9558,7 @@ struct ListResponse {
     records: Vec<ApiInvocation>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StatsResponse {
     total_count: i64,
@@ -9534,7 +9650,7 @@ struct TimeseriesPoint {
     first_byte_p95_ms: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct QuotaSnapshotResponse {
     #[serde(serialize_with = "serialize_local_or_utc_to_utc_iso")]
@@ -14219,6 +14335,7 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
             proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
             proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
@@ -16773,6 +16890,7 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
             proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
             proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
@@ -17165,6 +17283,201 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_and_store_skips_summary_and_quota_collection_when_broadcast_state_disabled() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
+        )
+        .await;
+        let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        seed_quota_snapshot(&state.pool, &now_local).await;
+
+        let publish = fetch_and_store(state.as_ref(), false, false)
+            .await
+            .expect("fetch_and_store should succeed");
+
+        assert!(publish.summaries.is_empty());
+        assert!(publish.quota_snapshot.is_none());
+        assert!(!publish.collected_broadcast_state);
+    }
+
+    #[test]
+    fn should_collect_late_broadcast_state_when_subscribers_arrive_mid_poll() {
+        assert!(should_collect_late_broadcast_state(1, false));
+        assert!(!should_collect_late_broadcast_state(0, false));
+        assert!(!should_collect_late_broadcast_state(1, true));
+    }
+
+    #[tokio::test]
+    async fn broadcast_summary_if_changed_skips_duplicate_payloads() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
+        )
+        .await;
+        let mut rx = state.broadcaster.subscribe();
+        let first = StatsResponse {
+            total_count: 1,
+            success_count: 1,
+            failure_count: 0,
+            total_cost: 0.5,
+            total_tokens: 42,
+        };
+
+        assert!(
+            broadcast_summary_if_changed(
+                &state.broadcaster,
+                state.broadcast_state_cache.as_ref(),
+                "1d",
+                first.clone(),
+            )
+            .await
+            .expect("first summary broadcast should succeed")
+        );
+
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for first summary payload")
+            .expect("broadcast should stay open");
+        match payload {
+            BroadcastPayload::Summary { window, summary } => {
+                assert_eq!(window, "1d");
+                assert_eq!(summary, first);
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+
+        assert!(
+            !broadcast_summary_if_changed(
+                &state.broadcaster,
+                state.broadcast_state_cache.as_ref(),
+                "1d",
+                first.clone(),
+            )
+            .await
+            .expect("duplicate summary broadcast should succeed")
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err()
+        );
+
+        let updated = StatsResponse {
+            total_count: 2,
+            ..first
+        };
+        assert!(
+            broadcast_summary_if_changed(
+                &state.broadcaster,
+                state.broadcast_state_cache.as_ref(),
+                "1d",
+                updated.clone(),
+            )
+            .await
+            .expect("changed summary broadcast should succeed")
+        );
+
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for updated summary payload")
+            .expect("broadcast should stay open");
+        match payload {
+            BroadcastPayload::Summary { window, summary } => {
+                assert_eq!(window, "1d");
+                assert_eq!(summary, updated);
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn broadcast_quota_if_changed_skips_duplicate_payloads() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
+        )
+        .await;
+        let mut rx = state.broadcaster.subscribe();
+        let first = QuotaSnapshotResponse {
+            captured_at: "2026-03-07 10:00:00".to_string(),
+            amount_limit: Some(100.0),
+            used_amount: Some(10.0),
+            remaining_amount: Some(90.0),
+            period: Some("monthly".to_string()),
+            period_reset_time: Some("2026-04-01 00:00:00".to_string()),
+            expire_time: None,
+            is_active: true,
+            total_cost: 10.0,
+            total_requests: 9,
+            total_tokens: 150,
+            last_request_time: Some("2026-03-07 10:00:00".to_string()),
+            billing_type: Some("prepaid".to_string()),
+            remaining_count: Some(91),
+            used_count: Some(9),
+            sub_type_name: Some("unit".to_string()),
+        };
+
+        assert!(
+            broadcast_quota_if_changed(
+                &state.broadcaster,
+                state.broadcast_state_cache.as_ref(),
+                first.clone(),
+            )
+            .await
+            .expect("first quota broadcast should succeed")
+        );
+
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for first quota payload")
+            .expect("broadcast should stay open");
+        match payload {
+            BroadcastPayload::Quota { snapshot } => {
+                assert_eq!(*snapshot, first);
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+
+        assert!(
+            !broadcast_quota_if_changed(
+                &state.broadcaster,
+                state.broadcast_state_cache.as_ref(),
+                first.clone(),
+            )
+            .await
+            .expect("duplicate quota broadcast should succeed")
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err()
+        );
+
+        let updated = QuotaSnapshotResponse {
+            total_requests: 10,
+            ..first
+        };
+        assert!(
+            broadcast_quota_if_changed(
+                &state.broadcaster,
+                state.broadcast_state_cache.as_ref(),
+                updated.clone(),
+            )
+            .await
+            .expect("changed quota broadcast should succeed")
+        );
+
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for updated quota payload")
+            .expect("broadcast should stay open");
+        match payload {
+            BroadcastPayload::Quota { snapshot } => {
+                assert_eq!(*snapshot, updated);
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn read_request_body_timeout_returns_408() {
         #[derive(sqlx::FromRow)]
         struct PersistedRow {
@@ -17421,6 +17734,7 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
             proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
             proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
@@ -17548,6 +17862,7 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
             proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
             proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
@@ -17717,6 +18032,7 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
             proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
             proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
@@ -17785,6 +18101,7 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
             proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
             proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
@@ -20023,6 +20340,7 @@ mod tests {
             pool,
             http_clients,
             broadcaster,
+            broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
             proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
             proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
             semaphore,
