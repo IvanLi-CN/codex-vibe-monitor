@@ -86,22 +86,39 @@ function buildSegments(
   return segments
 }
 
+function resolveRangeEpochs(rangeStart: string, rangeEnd: string) {
+  const rangeStartEpoch = parseEpoch(rangeStart)
+  const rangeEndEpoch = parseEpoch(rangeEnd)
+  if (rangeStartEpoch == null || rangeEndEpoch == null || rangeEndEpoch <= rangeStartEpoch) return null
+  return { rangeStartEpoch, rangeEndEpoch }
+}
+
+function findVisibleConversationChartMax(conversations: PromptCacheConversation[], rangeStart: string, rangeEnd: string) {
+  const range = resolveRangeEpochs(rangeStart, rangeEnd)
+  if (!range) return 0
+  return Math.max(
+    ...conversations.flatMap((conversation) =>
+      buildSegments(conversation.last24hRequests, range.rangeStartEpoch, range.rangeEndEpoch).map((segment) => segment.cumulativeTokens),
+    ),
+    0,
+  )
+}
+
 function buildGeometry(
   points: PromptCacheConversationRequestPoint[],
   rangeStart: string,
   rangeEnd: string,
   maxCumulativeTokens: number,
 ): ConversationChartGeometry | null {
-  const rangeStartEpoch = parseEpoch(rangeStart)
-  const rangeEndEpoch = parseEpoch(rangeEnd)
-  if (rangeStartEpoch == null || rangeEndEpoch == null || rangeEndEpoch <= rangeStartEpoch) return null
+  const range = resolveRangeEpochs(rangeStart, rangeEnd)
+  if (!range) return null
 
-  const segments = buildSegments(points, rangeStartEpoch, rangeEndEpoch)
+  const segments = buildSegments(points, range.rangeStartEpoch, range.rangeEndEpoch)
   if (segments.length === 0) return null
 
   const maxCumulative = Math.max(maxCumulativeTokens, ...segments.map((segment) => segment.cumulativeTokens), 1)
-  const span = rangeEndEpoch - rangeStartEpoch
-  const xForEpoch = (epoch: number) => ((epoch - rangeStartEpoch) / span) * CHART_WIDTH
+  const span = range.rangeEndEpoch - range.rangeStartEpoch
+  const xForEpoch = (epoch: number) => ((epoch - range.rangeStartEpoch) / span) * CHART_WIDTH
   const yForTokens = (tokens: number) => CHART_HEIGHT - (tokens / maxCumulative) * CHART_HEIGHT
 
   const positioned = segments.map((segment) => ({
@@ -265,14 +282,8 @@ export function PromptCacheConversationTable({ stats, isLoading, error }: Prompt
   const rangeStart = stats?.rangeStart ?? ''
   const rangeEnd = stats?.rangeEnd ?? ''
   const conversationChartMax = useMemo(
-    () =>
-      Math.max(
-        ...(stats?.conversations ?? []).flatMap((conversation) =>
-          conversation.last24hRequests.map((point) => Math.max(point.cumulativeTokens, 0)),
-        ),
-        0,
-      ),
-    [stats?.conversations],
+    () => findVisibleConversationChartMax(stats?.conversations ?? [], rangeStart, rangeEnd),
+    [rangeEnd, rangeStart, stats?.conversations],
   )
 
   if (error) {
