@@ -174,7 +174,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring/InvocationTable/Default
   state: summary-priority-vs-flex-vs-missing
   evidence_note: verifies the model column shows the lightning icon only for the `priority` record while `flex` and missing tiers remain unlit.
@@ -185,7 +185,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring/InvocationTable/Default
   state: expanded-priority-service-tier-detail
   evidence_note: verifies the expanded details panel includes the dedicated `Service tier` field and preserves the raw `priority` value.
