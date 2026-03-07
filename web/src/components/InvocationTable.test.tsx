@@ -36,7 +36,7 @@ describe('formatProxyWeightDelta', () => {
 })
 
 describe('InvocationTable', () => {
-  it('renders reasoning effort in the summary rows', () => {
+  it('renders reasoning effort and reasoning-token output breakdown in the summary rows', () => {
     const records: ApiInvocation[] = [
       {
         id: 1,
@@ -81,7 +81,10 @@ describe('InvocationTable', () => {
     const html = renderTable(records)
 
     expect(html).toContain('推理强度')
+    expect(html).toContain('推理 Tokens')
     expect(html).toContain('high')
+    expect(html).toContain('推理 41')
+    expect(html).toContain('推理 —')
     expect(html).toContain('/v1/responses')
     expect(html).toContain('/v1/chat/completions')
     expect(html).toContain('>—</span>')

@@ -96,6 +96,7 @@ interface InvocationRowViewModel {
   inputTokensValue: string
   cacheInputTokensValue: string
   outputTokensValue: string
+  outputReasoningBreakdownValue: string
   reasoningTokensValue: string
   reasoningEffortValue: string
   totalTokensValue: string
@@ -205,6 +206,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const proxyDisplayName = resolveProxyDisplayName(record)
         const reasoningEffortValue = formatOptionalText(record.reasoningEffort)
         const reasoningTokensValue = formatOptionalNumber(record.reasoningTokens, numberFormatter)
+        const outputReasoningBreakdownValue = `${t('table.column.reasoningTokensShort')} ${reasoningTokensValue}`
         const latencySummary = `${formatMilliseconds(record.tUpstreamTtfbMs)} / ${formatMilliseconds(record.tTotalMs)}`
         const latencyCompactSummary = `${formatMillisecondsCompact(record.tUpstreamTtfbMs)}/${formatMillisecondsCompact(record.tTotalMs)}`
         const occurredValid = !Number.isNaN(occurred.getTime())
@@ -282,6 +284,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           inputTokensValue: formatOptionalNumber(record.inputTokens, numberFormatter),
           cacheInputTokensValue: formatOptionalNumber(record.cacheInputTokens, numberFormatter),
           outputTokensValue: formatOptionalNumber(record.outputTokens, numberFormatter),
+          outputReasoningBreakdownValue,
           reasoningTokensValue,
           reasoningEffortValue,
           totalTokensValue: formatOptionalNumber(record.totalTokens, numberFormatter),
@@ -418,7 +421,17 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                 <dt className="text-base-content/65">{t('table.column.cacheInputTokens')}</dt>
                 <dd className="truncate text-right font-mono">{row.cacheInputTokensValue}</dd>
                 <dt className="text-base-content/65">{t('table.column.outputTokens')}</dt>
-                <dd className="truncate text-right font-mono">{row.outputTokensValue}</dd>
+                <dd className="text-right">
+                  <div className="flex flex-col items-end gap-0.5 leading-tight">
+                    <span className="truncate font-mono">{row.outputTokensValue}</span>
+                    <span
+                      className="truncate text-[11px] text-base-content/70"
+                      title={`${t('table.details.reasoningTokens')}: ${row.reasoningTokensValue}`}
+                    >
+                      {row.outputReasoningBreakdownValue}
+                    </span>
+                  </div>
+                </dd>
                 <dt className="text-base-content/65">{t('table.column.totalTokens')}</dt>
                 <dd className="truncate text-right font-mono">{row.totalTokensValue}</dd>
                 <dt className="text-base-content/65">{t('table.column.reasoningEffort')}</dt>
@@ -474,7 +487,14 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="w-[10%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[9%] xl:px-3">{t('table.column.outputTokens')}</th>
+                <th className="w-[12%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[11%] xl:px-3">
+                  <div className="flex flex-col leading-tight">
+                    <span>{t('table.column.outputTokens')}</span>
+                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
+                      {t('table.details.reasoningTokens')}
+                    </span>
+                  </div>
+                </th>
                 <th className="w-[14%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[12%] xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.totalTokens')}</span>
@@ -549,8 +569,16 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                           </span>
                         </div>
                       </td>
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-right font-mono tabular-nums xl:px-3">
-                        <span className="block truncate whitespace-nowrap">{row.outputTokensValue}</span>
+                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-right xl:px-3">
+                        <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
+                          <span className="block w-full truncate whitespace-nowrap font-mono tabular-nums">{row.outputTokensValue}</span>
+                          <span
+                            className="block w-full truncate whitespace-nowrap text-[11px] text-base-content/70"
+                            title={`${t('table.details.reasoningTokens')}: ${row.reasoningTokensValue}`}
+                          >
+                            {row.outputReasoningBreakdownValue}
+                          </span>
+                        </div>
                       </td>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-right xl:px-3">
                         <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
