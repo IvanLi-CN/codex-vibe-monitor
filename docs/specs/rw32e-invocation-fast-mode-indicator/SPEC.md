@@ -168,6 +168,30 @@
 - 2026-03-07: 已完成后端 service tier 采集 / 回填、InvocationTable 图标与详情展示，以及 `cargo test`、`cargo check`、`cd web && npm run test`、`cd web && npm run build`、`cd web && npm run test:e2e -- invocation-table-layout.spec.ts` 验证。
 - 2026-03-07: 已创建 PR #93，review-loop 发现并修复了 legacy `serviceTier=null` 时未回退 `service_tier` 的投影问题；合并 `main` 后重新推送，PR 已恢复 `mergeable_state=clean` 且 checks 全部通过。
 
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Monitoring/InvocationTable/Default
+  state: summary-priority-vs-flex-vs-missing
+  evidence_note: verifies the model column shows the lightning icon only for the `priority` record while `flex` and missing tiers remain unlit.
+  image:
+  ![InvocationTable priority fast indicator summary](./assets/invocation-fast-priority-summary.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Monitoring/InvocationTable/Default
+  state: expanded-priority-service-tier-detail
+  evidence_note: verifies the expanded details panel includes the dedicated `Service tier` field and preserves the raw `priority` value.
+  image:
+  ![InvocationTable priority service tier detail](./assets/invocation-fast-priority-detail.png)
+
 ## 参考（References）
 
 - `docs/specs/hrvtt-invocation-proxy-weight-delta/SPEC.md`
