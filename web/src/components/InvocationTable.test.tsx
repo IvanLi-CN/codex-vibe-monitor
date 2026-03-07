@@ -123,7 +123,7 @@ describe('InvocationTable', () => {
     expect(html).toContain('/v1/responses')
     expect(html).toContain('/v1/chat/completions')
     expect(html).toContain('data-reasoning-effort-tone="high"')
-    expect(html).toContain('border-warning/42')
+    expect(html).toContain('border-warning/45')
     expect(html).toContain('>—</span>')
   })
 
