@@ -7,6 +7,8 @@ import type { TranslationKey } from '../i18n'
 import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
 import { Spinner } from './ui/spinner'
+import { cn } from '../lib/utils'
+import { getReasoningEffortTone, REASONING_EFFORT_TONE_CLASSNAMES } from './invocation-table-reasoning'
 
 interface InvocationTableProps {
   records: ApiInvocation[]
@@ -47,29 +49,22 @@ function formatOptionalText(value: string | null | undefined) {
   return normalized ? normalized : FALLBACK_CELL
 }
 
-function reasoningEffortVariant(value: string) {
-  switch (value.trim().toLowerCase()) {
-    case 'high':
-      return 'warning' as const
-    case 'medium':
-      return 'default' as const
-    case 'low':
-      return 'secondary' as const
-    default:
-      return 'secondary' as const
-  }
-}
-
 function renderReasoningEffortBadge(value: string) {
   if (value === FALLBACK_CELL) {
     return <span className="font-mono text-sm text-base-content/70">{FALLBACK_CELL}</span>
   }
 
+  const tone = getReasoningEffortTone(value)
+
   return (
     <Badge
-      variant={reasoningEffortVariant(value)}
-      className="max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold"
+      variant="secondary"
+      className={cn(
+        'max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]',
+        REASONING_EFFORT_TONE_CLASSNAMES[tone],
+      )}
       title={value}
+      data-reasoning-effort-tone={tone}
     >
       <span className="block max-w-full truncate whitespace-nowrap">{value}</span>
     </Badge>

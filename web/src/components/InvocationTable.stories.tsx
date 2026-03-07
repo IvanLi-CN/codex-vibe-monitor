@@ -265,7 +265,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Shows recent invocation records with status, cost, token usage, proxy metadata, and expandable request details. The default story includes both a `/v1/responses` record with `reasoningTokens` and a `/v1/chat/completions` record that falls back to `—` when `reasoningTokens` is absent. The output summary shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, and the expanded detail section for request metadata, timing stages, reasoning effort, and reasoning tokens.',
+          'Shows recent invocation records with status, cost, token usage, proxy metadata, and expandable request details. The default story includes both a `/v1/responses` record with `reasoningTokens` and a `/v1/chat/completions` record that falls back to `—` when `reasoningTokens` is absent. The output summary shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, and the expanded detail section for request metadata, timing stages, reasoning effort, and reasoning tokens.',
       },
     },
   },
@@ -340,7 +340,7 @@ export const ReasoningEffortStates: Story = {
     docs: {
       description: {
         story:
-          'Matrix story for visually checking every reasoning effort state the table may show: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and an unknown raw string. Supported API-level values were verified against the OpenAI API docs on 2026-03-07; actual model support remains model-dependent.',
+          'Matrix story for visually checking every reasoning effort state the table may show: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and an unknown raw string. Supported API-level values were verified against the OpenAI API docs on 2026-03-07; actual model support remains model-dependent. The intended color ladder is neutral -> cool -> primary -> warning -> error, with unknown values rendered as dashed neutral badges.',
       },
     },
   },
