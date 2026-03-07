@@ -31,6 +31,7 @@ const INVOCATION_FIXTURE = {
       cacheInputTokens: 109568,
       totalTokens: 113449,
       cost: 0.0281,
+      serviceTier: 'priority',
       proxyWeightDelta: 0.55,
       tUpstreamTtfbMs: 105.5,
       tTotalMs: 7969.3,
@@ -50,6 +51,7 @@ const INVOCATION_FIXTURE = {
       cacheInputTokens: 99072,
       totalTokens: 99319,
       cost: 0.0186,
+      serviceTier: 'flex',
       proxyWeightDelta: -0.68,
       tUpstreamTtfbMs: 102.2,
       tTotalMs: 7348.7,
@@ -166,6 +168,19 @@ async function mockInvocations(page: Page) {
       return
     }
 
+    if (pathname === '/api/stats/prompt-cache-conversations') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          rangeStart: '2026-03-02T00:00:00Z',
+          rangeEnd: '2026-03-02T12:00:00Z',
+          conversations: [],
+        }),
+      })
+      return
+    }
+
     if (pathname === '/api/stats/forward-proxy') {
       await route.fulfill({
         status: 200,
@@ -246,12 +261,21 @@ test.describe('InvocationTable layout regression', () => {
           await expect(page.getByTestId('invocation-list-item')).toHaveCount(INVOCATION_FIXTURE.records.length)
           await expect(page.getByTestId('invocation-table-scroll')).toBeHidden()
 
+          const items = page.getByTestId('invocation-list-item')
+          await expect(items.first().getByTestId('invocation-fast-icon')).toHaveCount(1)
+          await expect(items.nth(1).getByTestId('invocation-fast-icon')).toHaveCount(0)
+
           const listToggle = mobileList.locator('button[aria-expanded]').first()
           await expect(listToggle).toBeVisible()
           await listToggle.click()
           await expect(listToggle).toHaveAttribute('aria-expanded', 'true')
-          await expect(page.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/)).toBeVisible()
-          await expect(page.getByText('0.55')).toBeVisible()
+          const listDetailId = await listToggle.getAttribute('aria-controls')
+          if (!listDetailId) throw new Error('Missing mobile invocation detail panel id')
+          const listDetailPanel = page.locator(`#${listDetailId}`)
+          await expect(listDetailPanel.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/)).toBeVisible()
+          await expect(listDetailPanel.getByText(/Service tier/i)).toBeVisible()
+          await expect(listDetailPanel.getByText('priority')).toBeVisible()
+          await expect(listDetailPanel.getByText('0.55')).toBeVisible()
 
           const viewportOverflow = await readViewportOverflow(page)
           test.info().annotations.push({
@@ -261,12 +285,22 @@ test.describe('InvocationTable layout regression', () => {
           expect(viewportOverflow).toBeLessThanOrEqual(1)
         } else {
           await expect(page.getByTestId('invocation-list')).toBeHidden()
+          const tableRows = page.getByTestId('invocation-table-scroll').locator('tbody tr')
+          await expect(tableRows.first().getByTestId('invocation-fast-icon')).toHaveCount(1)
+          await expect(tableRows.nth(1).getByTestId('invocation-fast-icon')).toHaveCount(0)
+
           const metricsBeforeExpand = await readTableMetrics(page)
           const firstToggle = page.getByTestId('invocation-table-scroll').locator('tbody tr button').first()
+          await expect(firstToggle).toBeVisible()
           await firstToggle.click()
           await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
-          await expect(page.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/)).toBeVisible()
-          await expect(page.getByText('0.55')).toBeVisible()
+          const tableDetailId = await firstToggle.getAttribute('aria-controls')
+          if (!tableDetailId) throw new Error('Missing desktop invocation detail panel id')
+          const tableDetailPanel = page.locator(`#${tableDetailId}`)
+          await expect(tableDetailPanel.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/)).toBeVisible()
+          await expect(tableDetailPanel.getByText(/Service tier/i)).toBeVisible()
+          await expect(tableDetailPanel.getByText('priority')).toBeVisible()
+          await expect(tableDetailPanel.getByText('0.55')).toBeVisible()
           const metricsAfterExpand = await readTableMetrics(page)
 
           test.info().annotations.push({

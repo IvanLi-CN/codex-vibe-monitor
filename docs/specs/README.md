@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------- |
+| rw32e | 请求列表 Fast 模式标识（service tier 版）                                 | 部分完成（4/5） | `rw32e-invocation-fast-mode-indicator/SPEC.md`           | 2026-03-07 | fast-track           |
 | xvdhm | Dashboard SSE 更新链路优化                                                | 已完成（6/6）   | `xvdhm-dashboard-sse-refresh-optimization/SPEC.md`       | 2026-03-07 | fast-track / PR #90  |
 | 7272y | 内置 GPT-5.4 系列计费规则与下游模型列表                                   | 已完成（4/4）   | `7272y-gpt-5-4-pricing/SPEC.md`                          | 2026-03-06 | fast-track / PR #89  |
 | rzxey | Dashboard：修复 UsageCalendar 加载骨架右偏 + 首行骨架按真实两卡布局       | 已完成（5/5）   | `rzxey-dashboard-usage-calendar-skeleton-shift/SPEC.md`  | 2026-03-05 | fast-track / PR #88  |

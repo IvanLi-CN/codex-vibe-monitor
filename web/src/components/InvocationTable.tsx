@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { Icon } from '@iconify/react'
 import type { ApiInvocation } from '../lib/api'
-import { formatProxyWeightDelta } from '../lib/invocation'
+import { formatProxyWeightDelta, formatServiceTier, isPriorityServiceTier } from '../lib/invocation'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { Alert } from './ui/alert'
@@ -58,6 +58,8 @@ interface InvocationRowViewModel {
   occurredDate: string
   proxyDisplayName: string
   modelValue: string
+  serviceTierValue: string
+  showsFastIndicator: boolean
   costValue: string
   inputTokensValue: string
   cacheInputTokensValue: string
@@ -167,6 +169,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const errorMessage = record.errorMessage?.trim() ?? ''
         const endpointValue = record.endpoint?.trim() || FALLBACK_CELL
         const proxyDisplayName = resolveProxyDisplayName(record)
+        const serviceTierValue = formatServiceTier(record.serviceTier)
+        const showsFastIndicator = isPriorityServiceTier(record.serviceTier)
         const latencySummary = `${formatMilliseconds(record.tUpstreamTtfbMs)} / ${formatMilliseconds(record.tTotalMs)}`
         const latencyCompactSummary = `${formatMillisecondsCompact(record.tUpstreamTtfbMs)}/${formatMillisecondsCompact(record.tTotalMs)}`
         const occurredValid = !Number.isNaN(occurred.getTime())
@@ -216,6 +220,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           { label: 'table.details.endpoint', value: record.endpoint || FALLBACK_CELL },
           { label: 'table.details.requesterIp', value: record.requesterIp || FALLBACK_CELL },
           { label: 'table.details.promptCacheKey', value: record.promptCacheKey || FALLBACK_CELL },
+          { label: 'table.details.serviceTier', value: serviceTierValue },
           { label: 'table.details.proxyWeightDelta', value: proxyWeightDeltaValue },
           { label: 'table.details.failureKind', value: record.failureKind || FALLBACK_CELL },
         ]
@@ -238,6 +243,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           occurredDate,
           proxyDisplayName,
           modelValue: record.model ?? FALLBACK_CELL,
+          serviceTierValue,
+          showsFastIndicator,
           costValue: typeof record.cost === 'number' ? currencyFormatter.format(record.cost) : FALLBACK_CELL,
           inputTokensValue: formatOptionalNumber(record.inputTokens, numberFormatter),
           cacheInputTokensValue: formatOptionalNumber(record.cacheInputTokens, numberFormatter),
@@ -368,7 +375,22 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                 <dt className="text-base-content/65">{t('table.column.model')}</dt>
-                <dd className="truncate text-right" title={row.modelValue}>{row.modelValue}</dd>
+                <dd className="min-w-0">
+                  <div className="flex items-start justify-end gap-1 text-right" title={row.modelValue}>
+                    <span className="min-w-0 flex-1 truncate">{row.modelValue}</span>
+                    {row.showsFastIndicator && (
+                      <span
+                        className="mt-0.5 inline-flex h-3.5 w-3.5 flex-none text-amber-500"
+                        title={t('table.model.fastPriorityTitle')}
+                        aria-label={t('table.model.fastPriorityAria')}
+                        data-testid="invocation-fast-icon"
+                        role="img"
+                      >
+                        <Icon icon="mdi:lightning-bolt" className="h-3.5 w-3.5" aria-hidden />
+                      </span>
+                    )}
+                  </div>
+                </dd>
                 <dt className="text-base-content/65">{t('table.column.costUsd')}</dt>
                 <dd className="truncate text-right font-mono">{row.costValue}</dd>
                 <dt className="text-base-content/65">{t('table.column.inputTokens')}</dt>
@@ -480,9 +502,22 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </td>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
                         <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
-                          <span className="w-full truncate whitespace-nowrap text-base-content/85" title={row.modelValue}>
-                            {row.modelValue}
-                          </span>
+                          <div className="flex w-full items-start justify-end gap-1">
+                            <span className="min-w-0 flex-1 truncate whitespace-nowrap text-base-content/85" title={row.modelValue}>
+                              {row.modelValue}
+                            </span>
+                            {row.showsFastIndicator && (
+                              <span
+                                className="mt-0.5 inline-flex h-3.5 w-3.5 flex-none text-amber-500"
+                                title={t('table.model.fastPriorityTitle')}
+                                aria-label={t('table.model.fastPriorityAria')}
+                                data-testid="invocation-fast-icon"
+                                role="img"
+                              >
+                                <Icon icon="mdi:lightning-bolt" className="h-3.5 w-3.5" aria-hidden />
+                              </span>
+                            )}
+                          </div>
                           <span className="w-full truncate whitespace-nowrap font-mono tabular-nums text-base-content/70">
                             {row.costValue}
                           </span>
