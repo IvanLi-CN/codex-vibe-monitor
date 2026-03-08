@@ -1,0 +1,152 @@
+import { type ReactNode, useId, useLayoutEffect, useMemo, useState } from 'react'
+import { cn } from '../../lib/utils'
+import { useInlineChartInteraction } from './use-inline-chart-interaction'
+
+const TOOLTIP_OFFSET = 12
+const TOOLTIP_PADDING = 8
+
+type TooltipTone = 'neutral' | 'success' | 'error' | 'accent'
+
+interface TooltipPosition {
+  x: number
+  y: number
+  placementX: 'left' | 'right'
+  placementY: 'top' | 'bottom'
+}
+
+export interface InlineChartTooltipRow {
+  label: string
+  value: string
+  tone?: TooltipTone
+}
+
+export interface InlineChartTooltipData {
+  title: string
+  rows: InlineChartTooltipRow[]
+}
+
+interface InlineChartTooltipSurfaceProps {
+  items: InlineChartTooltipData[]
+  defaultIndex: number
+  ariaLabel: string
+  interactionHint: string
+  className?: string
+  chartClassName?: string
+  children: (api: {
+    activeIndex: number | null
+    getItemProps: ReturnType<typeof useInlineChartInteraction>['getItemProps']
+  }) => ReactNode
+}
+
+function toneClasses(tone: TooltipTone | undefined) {
+  switch (tone) {
+    case 'success':
+      return 'bg-success/80'
+    case 'error':
+      return 'bg-error/80'
+    case 'accent':
+      return 'bg-primary/80'
+    default:
+      return 'bg-base-content/30'
+  }
+}
+
+export function InlineChartTooltipSurface({
+  items,
+  defaultIndex,
+  ariaLabel,
+  interactionHint,
+  className,
+  chartClassName,
+  children,
+}: InlineChartTooltipSurfaceProps) {
+  const hintId = useId()
+  const { containerRef, tooltipRef, state, anchor, getContainerProps, getItemProps } = useInlineChartInteraction({
+    itemCount: items.length,
+    defaultIndex,
+  })
+  const [position, setPosition] = useState<TooltipPosition | null>(null)
+
+  const activeTooltip = useMemo(() => {
+    if (state.activeIndex == null) return null
+    return items[state.activeIndex] ?? null
+  }, [items, state.activeIndex])
+
+  useLayoutEffect(() => {
+    if (!state.isOpen || !anchor || !containerRef.current || !tooltipRef.current) {
+      setPosition(null)
+      return
+    }
+
+    const containerRect = containerRef.current.getBoundingClientRect()
+    const tooltipRect = tooltipRef.current.getBoundingClientRect()
+    let nextX = anchor.x + TOOLTIP_OFFSET
+    let nextY = anchor.y + TOOLTIP_OFFSET
+    let placementX: TooltipPosition['placementX'] = 'right'
+    let placementY: TooltipPosition['placementY'] = 'bottom'
+
+    if (nextX + tooltipRect.width > containerRect.width - TOOLTIP_PADDING) {
+      nextX = anchor.x - tooltipRect.width - TOOLTIP_OFFSET
+      placementX = 'left'
+    }
+    if (nextY + tooltipRect.height > containerRect.height - TOOLTIP_PADDING) {
+      nextY = anchor.y - tooltipRect.height - TOOLTIP_OFFSET
+      placementY = 'top'
+    }
+
+    const maxX = Math.max(TOOLTIP_PADDING, containerRect.width - tooltipRect.width - TOOLTIP_PADDING)
+    const maxY = Math.max(TOOLTIP_PADDING, containerRect.height - tooltipRect.height - TOOLTIP_PADDING)
+
+    setPosition({
+      x: Math.min(Math.max(nextX, TOOLTIP_PADDING), maxX),
+      y: Math.min(Math.max(nextY, TOOLTIP_PADDING), maxY),
+      placementX,
+      placementY,
+    })
+  }, [anchor, activeTooltip, containerRef, state.isOpen, tooltipRef])
+
+  return (
+    <div
+      ref={containerRef}
+      className={cn('relative overflow-visible rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70', className)}
+      {...getContainerProps({ ariaLabel, describedBy: hintId })}
+    >
+      <span id={hintId} className="sr-only">
+        {interactionHint}
+      </span>
+      <div className={cn('relative', chartClassName)}>{children({ activeIndex: state.activeIndex, getItemProps })}</div>
+      {activeTooltip ? (
+        <div
+          ref={tooltipRef}
+          data-inline-chart-tooltip="true"
+          data-active-index={state.activeIndex ?? undefined}
+          className={cn(
+            'pointer-events-none absolute z-30 min-w-[11rem] max-w-[14rem] rounded-xl border border-base-300/70 bg-base-100/95 px-3 py-2 text-[11px] leading-tight text-base-content shadow-[0_14px_36px_rgba(2,6,23,0.28)] backdrop-blur-md transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none',
+            position?.placementX === 'right' ? 'origin-left' : 'origin-right',
+            position?.placementY === 'bottom' ? 'origin-top' : 'origin-bottom',
+            position ? 'opacity-100' : 'opacity-0',
+          )}
+          style={{
+            left: position?.x ?? 0,
+            top: position?.y ?? 0,
+            transform: 'translateZ(0)',
+            visibility: position ? 'visible' : 'hidden',
+          }}
+        >
+          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">{activeTooltip.title}</div>
+          <dl className="mt-2 space-y-1.5">
+            {activeTooltip.rows.map((row) => (
+              <div key={`${row.label}-${row.value}`} className="flex items-start gap-2">
+                <span className={cn('mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full', toneClasses(row.tone))} aria-hidden="true" />
+                <div className="min-w-0 flex-1">
+                  <dt className="text-base-content/62">{row.label}</dt>
+                  <dd className="mt-0.5 font-mono text-[12px] font-semibold tracking-tight text-base-content">{row.value}</dd>
+                </div>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ) : null}
+    </div>
+  )
+}
