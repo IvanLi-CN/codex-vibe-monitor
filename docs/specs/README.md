@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                              |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------- |
+| fq45q | 启动就绪保护与历史回填解耦                                                | 实现中          | `fq45q-startup-readiness-backfill-gating/SPEC.md`        | 2026-03-09 | fast-track / local tests green     |
 | 9aucy | 数据分层保留、离线归档与长周期汇总                                        | 已完成          | `9aucy-db-retention-archive/SPEC.md`                     | 2026-03-08 | fast-track / PR #96                |
 | ww6et | 请求侧 Fast 情报与中性闪电标识                                            | 已完成（5/5）   | `ww6et-requested-fast-intel-neutral-bolt/SPEC.md`        | 2026-03-08 | fast-track / PR #95 / checks green |
 | hbqe3 | InvocationTable 推理强度徽标色阶优化                                      | 已完成（4/4）   | `hbqe3-invocation-reasoning-effort-badge-colors/SPEC.md` | 2026-03-07 | fast-track / PR #94 / checks green |

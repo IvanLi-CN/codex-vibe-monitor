@@ -63,7 +63,7 @@ ARG APP_EFFECTIVE_VERSION
 ARG FRONTEND_EFFECTIVE_VERSION
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 \
+    && apt-get install -y --no-install-recommends ca-certificates curl libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv/app
@@ -84,5 +84,7 @@ LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION}
 
 VOLUME ["/srv/app/data"]
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=6 CMD curl --fail --silent http://127.0.0.1:8080/health || exit 1
 
 CMD ["codex-vibe-monitor"]

@@ -41,6 +41,46 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 3. Traefik 路由按固定 Host 转发到应用服务。
 4. 不允许旁路访问应用容器（安全组、防火墙、网络策略）。
 
+## Readiness And Container Health
+
+`GET /health` 现在表示 readiness，而不是“进程活着”：
+
+- 应用完成数据库连接、schema 校验、运行时初始化并成功开始监听 `:8080` 后，返回 `200 ok`。
+- 在此之前返回 `503 starting`。
+- 历史补数（usage/cost/service tier/reasoning/failure classification）会在启动后后台有界执行，不再阻塞 `/health`。
+
+推荐在 Compose 中为容器显式配置 healthcheck：
+
+```yaml
+services:
+  ai-codex-vibe-monitor:
+    image: ghcr.io/ivanli-cn/codex-vibe-monitor:latest
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+      start_interval: 5s
+```
+
+说明：
+
+- 运行镜像已内置 `curl`，镜像级 `HEALTHCHECK` 也会探测相同地址；Compose 显式配置的目的是把 `interval` / `start_period` / `start_interval` 固定到部署清单里，便于 101 与 shared-testbox 一致化验证。
+- Traefik 默认可直接利用 Docker health 状态，只有当容器 ready 后才把流量导入。
+- 如果现场 Docker provider 显式开启了 `allowEmptyServices=true`，则必须再加一层 Traefik service-level active healthcheck，避免未 ready 实例仍被纳入路由。
+
+Traefik 兜底示例（仅在 `allowEmptyServices=true` 时需要）：
+
+```yaml
+labels:
+  - traefik.enable=true
+  - traefik.http.services.codex-vibe-monitor.loadbalancer.server.port=8080
+  - traefik.http.services.codex-vibe-monitor.loadbalancer.healthcheck.path=/health
+  - traefik.http.services.codex-vibe-monitor.loadbalancer.healthcheck.interval=10s
+  - traefik.http.services.codex-vibe-monitor.loadbalancer.healthcheck.timeout=3s
+```
+
 ## Proxy Capture Runtime
 
 建议在部署清单中显式配置以下变量（未配置时使用服务默认值）：
@@ -48,7 +88,7 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 - `PROXY_RAW_MAX_BYTES`：单次请求/响应原文采集上限；默认 `0=unlimited`（支持显式配置正整数上限）。
 - `PROXY_RAW_RETENTION_DAYS`：原文留存天数（到期清理原文字段/文件，不影响结构化统计）。
 - `PROXY_ENFORCE_STREAM_INCLUDE_USAGE`：是否在 `chat.completions` 流式请求中强制注入 `stream_options.include_usage=true`。
-- `PROXY_USAGE_BACKFILL_ON_STARTUP`：启动时是否回填历史 `proxy` 空 token 记录（默认开启，建议保留）。
+- `PROXY_USAGE_BACKFILL_ON_STARTUP`：兼容保留的历史补数开关说明；当前版本的历史补数已经改为后台有界执行，不再阻塞 readiness。
 - `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：上游握手超时（默认 `300` 秒，建议内网链路可降到 `120` 秒）。
 - `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`：请求体读取总超时（默认 `180` 秒；超时返回 `408`）。
 - `XY_LEGACY_POLL_ENABLED`：legacy 轮询写入开关（默认关闭；开启后会并行写入旧来源统计）。
@@ -97,9 +137,10 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 部署后至少检查：
 
 1. 外部无法直接访问应用监听端口（例如 `:8080`）。
-2. 通过网关域名访问应用页面和 API 正常。
-3. 正常同源写入（页面设置保存）返回成功。
-4. 非同源 `Origin` 请求写入返回 `403`。
+2. 容器启动时，`curl -fsS http://127.0.0.1:8080/health` 会先返回 `503 starting`，待监听完成后切到 `200 ok`。
+3. 通过网关域名访问应用页面和 API 正常，且重启窗口内不会被提前转发到未 ready 实例。
+4. 正常同源写入（页面设置保存）返回成功。
+5. 非同源 `Origin` 请求写入返回 `403`。
 
 ## Runtime Troubleshooting（代理断流）
 
