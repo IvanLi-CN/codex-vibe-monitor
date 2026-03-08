@@ -298,7 +298,7 @@ describe('ForwardProxyLiveTable', () => {
           key: 'proxy-flat',
           source: 'manual',
           displayName: 'Proxy Flat',
-          weight: 0.9,
+          weight: 100,
           penalized: false,
           stats: {
             oneMinute: { attempts: 1, successRate: 1, avgLatencyMs: 100 },

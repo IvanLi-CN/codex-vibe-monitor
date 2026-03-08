@@ -51,6 +51,11 @@ function toneClasses(tone: TooltipTone | undefined) {
   }
 }
 
+function serializeTooltipForAssistiveTech(tooltip: InlineChartTooltipData | null) {
+  if (!tooltip) return null
+  return [tooltip.title, ...tooltip.rows.map((row) => `${row.label} ${row.value}`)].join(', ')
+}
+
 export function InlineChartTooltipSurface({
   items,
   defaultIndex,
@@ -61,6 +66,8 @@ export function InlineChartTooltipSurface({
   children,
 }: InlineChartTooltipSurfaceProps) {
   const hintId = useId()
+  const tooltipId = useId()
+  const liveRegionId = useId()
   const { containerRef, tooltipRef, state, anchor, getContainerProps, getItemProps } = useInlineChartInteraction({
     itemCount: items.length,
     defaultIndex,
@@ -71,6 +78,11 @@ export function InlineChartTooltipSurface({
     if (state.activeIndex == null) return null
     return items[state.activeIndex] ?? null
   }, [items, state.activeIndex])
+  const activeTooltipAnnouncement = useMemo(() => serializeTooltipForAssistiveTech(activeTooltip), [activeTooltip])
+  const describedBy = useMemo(
+    () => [hintId, activeTooltipAnnouncement ? liveRegionId : null].filter(Boolean).join(' '),
+    [activeTooltipAnnouncement, hintId, liveRegionId],
+  )
 
   useLayoutEffect(() => {
     if (!state.isOpen || !anchor || !containerRef.current || !tooltipRef.current) {
@@ -109,15 +121,23 @@ export function InlineChartTooltipSurface({
     <div
       ref={containerRef}
       className={cn('relative overflow-visible rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70', className)}
-      {...getContainerProps({ ariaLabel, describedBy: hintId })}
+      {...getContainerProps({ ariaLabel, describedBy })}
     >
       <span id={hintId} className="sr-only">
         {interactionHint}
       </span>
+      {activeTooltipAnnouncement ? (
+        <span id={liveRegionId} className="sr-only" aria-live="polite" aria-atomic="true">
+          {activeTooltipAnnouncement}
+        </span>
+      ) : null}
       <div className={cn('relative', chartClassName)}>{children({ activeIndex: state.activeIndex, getItemProps })}</div>
       {activeTooltip ? (
         <div
+          id={tooltipId}
           ref={tooltipRef}
+          role="tooltip"
+          aria-hidden={!position}
           data-inline-chart-tooltip="true"
           data-active-index={state.activeIndex ?? undefined}
           className={cn(

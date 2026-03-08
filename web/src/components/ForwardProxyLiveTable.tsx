@@ -467,7 +467,10 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
       ...rows.flatMap(({ node }) => node.last24h.map((bucket) => bucket.successCount + bucket.failureCount)),
       0,
     )
-    const allWeightValues = rows.flatMap(({ weightBuckets }) => weightBuckets.flatMap((bucket) => [bucket.minWeight, bucket.maxWeight, bucket.lastWeight]))
+    const hasRealWeightHistory = rows.some(({ node }) => node.weight24h.length > 0)
+    const allWeightValues = (hasRealWeightHistory ? rows.flatMap(({ node }) => node.weight24h) : rows.flatMap(({ weightBuckets }) => weightBuckets)).flatMap(
+      (bucket) => [bucket.minWeight, bucket.maxWeight, bucket.lastWeight],
+    )
     const minValue = Math.min(...allWeightValues, 0)
     const maxValue = Math.max(...allWeightValues, 0)
     const padding = Math.max((maxValue - minValue) * 0.08, 0.2)

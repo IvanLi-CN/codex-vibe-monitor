@@ -2,6 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { InlineChartTooltipSurface } from './ui/inline-chart-tooltip'
 import { useInlineChartInteraction } from './ui/use-inline-chart-interaction'
 
 class MockPointerEvent extends MouseEvent {
@@ -123,6 +124,29 @@ function state() {
   return node ? JSON.parse(node.textContent ?? '{}') : null
 }
 
+function TooltipHarness() {
+  return (
+    <InlineChartTooltipSurface
+      items={[
+        { title: 'Window A', rows: [{ label: 'Success', value: '2' }] },
+        { title: 'Window B', rows: [{ label: 'Success', value: '4' }, { label: 'Failure', value: '1' }] },
+      ]}
+      defaultIndex={1}
+      ariaLabel="Harness tooltip chart"
+      interactionHint="Use arrow keys to switch"
+    >
+      {({ getItemProps }) => (
+        <div data-testid="tooltip-surface" className="relative h-20 w-40">
+          {Array.from({ length: 2 }, (_, index) => {
+            const { ref, ...itemProps } = getItemProps(index)
+            return <div key={index} data-testid={`tooltip-item-${index}`} ref={ref} {...itemProps} />
+          })}
+        </div>
+      )}
+    </InlineChartTooltipSurface>
+  )
+}
+
 describe('Live inline chart tooltip interactions', () => {
   it('tracks hover open, move, and close for the request chart flow', () => {
     render(<InteractionHarness itemCount={2} defaultIndex={1} />)
@@ -179,5 +203,33 @@ describe('Live inline chart tooltip interactions', () => {
 
     pointerDownOutside()
     expect(state()).toMatchObject({ activeIndex: null, isOpen: false, isPinned: false, anchor: null })
+  })
+
+  it('exposes the active tooltip content to assistive technologies', () => {
+    render(<TooltipHarness />)
+
+    const surface = document.querySelector('[data-testid="tooltip-surface"]') as HTMLElement
+    const container = document.querySelector('[aria-label="Harness tooltip chart"]') as HTMLElement
+    const item0 = document.querySelector('[data-testid="tooltip-item-0"]') as HTMLElement
+    const item1 = document.querySelector('[data-testid="tooltip-item-1"]') as HTMLElement
+    mockRect(container, { left: 0, top: 0, width: 220, height: 96 })
+    mockRect(surface, { left: 0, top: 0, width: 220, height: 96 })
+    mockRect(item0, { left: 20, top: 24, width: 24, height: 40 })
+    mockRect(item1, { left: 92, top: 24, width: 24, height: 40 })
+
+    act(() => {
+      container.focus()
+    })
+
+    const tooltip = document.querySelector('[role="tooltip"]') as HTMLElement | null
+    const liveRegion = Array.from(document.querySelectorAll('.sr-only')).find((node) => node.textContent?.includes('Window B')) as HTMLElement | undefined
+    const describedBy = container.getAttribute('aria-describedby') ?? ''
+
+    expect(tooltip).not.toBeNull()
+    expect(tooltip?.textContent).toContain('Window B')
+    expect(tooltip?.getAttribute('aria-hidden')).toBe('false')
+    expect(liveRegion?.getAttribute('aria-live')).toBe('polite')
+    expect(liveRegion?.textContent).toContain('Failure 1')
+    expect(describedBy).toContain(liveRegion?.id ?? '')
   })
 })
