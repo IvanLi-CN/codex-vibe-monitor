@@ -1772,14 +1772,24 @@ fn shanghai_month_key_from_utc_naive(value: &str) -> Result<String> {
     Ok(utc.with_timezone(&Shanghai).format("%Y-%m").to_string())
 }
 
+fn resolved_archive_dir(config: &AppConfig) -> PathBuf {
+    if config.archive_dir.is_absolute() {
+        return config.archive_dir.clone();
+    }
+
+    match config.database_path.parent() {
+        Some(parent) => parent.join(&config.archive_dir),
+        None => config.archive_dir.clone(),
+    }
+}
+
 fn archive_batch_file_path(config: &AppConfig, dataset: &str, month_key: &str) -> Result<PathBuf> {
     let year = month_key
         .split('-')
         .next()
         .filter(|segment| segment.len() == 4)
         .ok_or_else(|| anyhow!("invalid month key: {month_key}"))?;
-    Ok(config
-        .archive_dir
+    Ok(resolved_archive_dir(config)
         .join(dataset)
         .join(year)
         .join(format!("{dataset}-{month_key}.sqlite.gz")))
@@ -16134,6 +16144,23 @@ mod tests {
         ));
         fs::create_dir_all(&dir).expect("create temp test dir");
         dir
+    }
+
+    #[test]
+    fn archive_batch_file_path_resolves_relative_archive_dir_from_database_parent() {
+        let mut config = test_config();
+        config.database_path = PathBuf::from("/tmp/codex-retention/codex_vibe_monitor.db");
+        config.archive_dir = PathBuf::from("archives");
+
+        let path = archive_batch_file_path(&config, "codex_invocations", "2026-03")
+            .expect("resolve archive batch path");
+
+        assert_eq!(
+            path,
+            PathBuf::from(
+                "/tmp/codex-retention/archives/codex_invocations/2026/codex_invocations-2026-03.sqlite.gz",
+            )
+        );
     }
 
     fn sqlite_url_for_path(path: &Path) -> String {
