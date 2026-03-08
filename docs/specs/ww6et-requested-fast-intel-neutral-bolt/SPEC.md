@@ -133,6 +133,22 @@
 - [x] M4: Rust、Vitest、前端构建与 Playwright 回归通过。
 - [x] M5: 快车道交付完成（commit / push / PR / checks / review-loop 收敛）。
 
+## Visual Evidence (PR)
+
+- source_type: `storybook_canvas`
+  story_id_or_title: `Monitoring/InvocationTable / Fast Indicator States`
+  state: `matrix`
+  evidence_note: 验证 `effective / requested_only / none` 三态在同一 Story 中同时成立，实际命中 priority 时保持琥珀色闪电，请求想要 Fast 但未命中时显示中性色闪电。
+
+![Fast indicator states](./assets/fast-indicator-states.png)
+
+- source_type: `storybook_canvas`
+  story_id_or_title: `Monitoring/InvocationTable / Fast Indicator States`
+  state: `requested_only details expanded`
+  evidence_note: 验证 `requested_only` 行展开后，详情区同时显示 `Requested service tier` 与 `Service tier`，并呈现 `priority -> auto` 的未命中场景。
+
+![Fast indicator requested-only details](./assets/fast-indicator-requested-only-details.png)
+
 ## 变更记录（Change log）
 
 - 2026-03-08: 创建规格，冻结请求侧 tier 口径、三态闪电语义与历史回填范围。
