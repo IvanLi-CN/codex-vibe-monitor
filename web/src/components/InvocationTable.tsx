@@ -29,6 +29,8 @@ const STATUS_META: Record<
 const FALLBACK_STATUS_META = { variant: 'secondary', key: 'table.status.unknown' as TranslationKey }
 const FALLBACK_CELL = '—'
 
+type InvocationDetailLevel = 'full' | 'structured_only'
+
 function formatMilliseconds(value: number | null | undefined) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
   return `${value.toFixed(1)} ms`
@@ -47,6 +49,20 @@ function formatOptionalNumber(value: number | null | undefined, formatter: Intl.
 function formatOptionalText(value: string | null | undefined) {
   const normalized = value?.trim()
   return normalized ? normalized : FALLBACK_CELL
+}
+
+function normalizeDetailLevel(value: ApiInvocation['detailLevel']): InvocationDetailLevel {
+  return value === 'structured_only' ? 'structured_only' : 'full'
+}
+
+function formatDetailTimestamp(value: string | null | undefined) {
+  const normalized = value?.trim()
+  if (!normalized) return FALLBACK_CELL
+
+  const parsed = new Date(normalized)
+  if (Number.isNaN(parsed.getTime())) return normalized
+
+  return parsed.toISOString().replace('.000Z', 'Z').replace('T', ' ')
 }
 
 function renderReasoningEffortBadge(value: string) {
@@ -101,8 +117,14 @@ interface InvocationRowViewModel {
   errorMessage: string
   latencySummary: string
   latencyCompactSummary: string
-  detailPairs: Array<{ label: TranslationKey; value: ReactNode }>
-  timingPairs: Array<{ label: TranslationKey; value: string }>
+  detailLevel: InvocationDetailLevel
+  detailLevelBadgeLabel: string
+  detailLevelBadgeVariant: 'secondary' | 'warning'
+  detailLevelTooltip: string
+  detailPrunedSummary: string | null
+  detailNotice: string | null
+  detailPairs: Array<{ label: string; value: ReactNode }>
+  timingPairs: Array<{ label: string; value: string }>
 }
 
 export function InvocationTable({ records, isLoading, error }: InvocationTableProps) {
@@ -130,6 +152,32 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
       hide: 'Hide details',
       expanded: 'Expanded',
       collapsed: 'Collapsed',
+    }
+  }, [locale])
+
+  const detailLabels = useMemo(() => {
+    if (locale === 'zh') {
+      return {
+        full: 'Full',
+        structuredOnly: 'Structured only',
+        level: '细节层级',
+        prunedAt: '精简时间',
+        pruneReason: '精简原因',
+        fullHint: '完整调试细节仍在当前在线保留窗口内。',
+        structuredHint: '该记录仅保留结构化字段；完整历史需查离线归档。',
+        prunedPrefix: '精简于',
+      }
+    }
+
+    return {
+      full: 'Full',
+      structuredOnly: 'Structured only',
+      level: 'Detail level',
+      prunedAt: 'Detail pruned at',
+      pruneReason: 'Detail prune reason',
+      fullHint: 'Full troubleshooting detail is still available inside the online retention window.',
+      structuredHint: 'Only structured fields remain online for this record. Use the offline archive for the full history.',
+      prunedPrefix: 'Pruned at',
     }
   }, [locale])
 
@@ -248,28 +296,60 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
             </span>
           )
 
-        const detailPairs: Array<{ label: TranslationKey; value: ReactNode }> = [
-          { label: 'table.details.invokeId', value: record.invokeId || FALLBACK_CELL },
-          { label: 'table.details.source', value: record.source || FALLBACK_CELL },
-          { label: 'table.details.proxy', value: proxyDisplayName },
-          { label: 'table.details.endpoint', value: record.endpoint || FALLBACK_CELL },
-          { label: 'table.details.requesterIp', value: record.requesterIp || FALLBACK_CELL },
-          { label: 'table.details.promptCacheKey', value: record.promptCacheKey || FALLBACK_CELL },
-          { label: 'table.details.serviceTier', value: serviceTierValue },
-          { label: 'table.details.reasoningEffort', value: renderReasoningEffortBadge(reasoningEffortValue) },
-          { label: 'table.details.reasoningTokens', value: reasoningTokensValue },
-          { label: 'table.details.proxyWeightDelta', value: proxyWeightDeltaValue },
-          { label: 'table.details.failureKind', value: record.failureKind || FALLBACK_CELL },
+        const detailLevel = normalizeDetailLevel(record.detailLevel)
+        const detailPrunedAtValue = formatDetailTimestamp(record.detailPrunedAt)
+        const detailPruneReasonValue = formatOptionalText(record.detailPruneReason)
+        const detailLevelBadgeLabel = detailLevel === 'structured_only' ? detailLabels.structuredOnly : detailLabels.full
+        const detailLevelBadgeVariant = detailLevel === 'structured_only' ? 'warning' : 'secondary'
+        const detailNotice = detailLevel === 'structured_only' ? detailLabels.structuredHint : null
+        const detailPrunedSummary =
+          detailLevel === 'structured_only' && detailPrunedAtValue !== FALLBACK_CELL
+            ? `${detailLabels.prunedPrefix} ${detailPrunedAtValue}`
+            : null
+        const detailLevelTooltip =
+          detailLevel === 'structured_only'
+            ? detailPrunedSummary
+              ? `${detailLabels.structuredHint} ${detailPrunedSummary}.`
+              : detailLabels.structuredHint
+            : detailLabels.fullHint
+
+        const detailPairs: Array<{ label: string; value: ReactNode }> = [
+          { label: t('table.details.invokeId'), value: record.invokeId || FALLBACK_CELL },
+          { label: t('table.details.source'), value: record.source || FALLBACK_CELL },
+          { label: t('table.details.proxy'), value: proxyDisplayName },
+          { label: t('table.details.endpoint'), value: record.endpoint || FALLBACK_CELL },
+          { label: t('table.details.requesterIp'), value: record.requesterIp || FALLBACK_CELL },
+          { label: t('table.details.promptCacheKey'), value: record.promptCacheKey || FALLBACK_CELL },
+          { label: t('table.details.serviceTier'), value: serviceTierValue },
+          { label: t('table.details.reasoningEffort'), value: renderReasoningEffortBadge(reasoningEffortValue) },
+          { label: t('table.details.reasoningTokens'), value: reasoningTokensValue },
+          { label: t('table.details.proxyWeightDelta'), value: proxyWeightDeltaValue },
+          { label: t('table.details.failureKind'), value: record.failureKind || FALLBACK_CELL },
+          {
+            label: detailLabels.level,
+            value: (
+              <Badge
+                variant={detailLevelBadgeVariant}
+                className="max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]"
+                title={detailLevelTooltip}
+                data-testid="invocation-detail-level-badge"
+              >
+                <span className="block max-w-full truncate whitespace-nowrap">{detailLevelBadgeLabel}</span>
+              </Badge>
+            ),
+          },
+          { label: detailLabels.prunedAt, value: detailPrunedAtValue },
+          { label: detailLabels.pruneReason, value: detailPruneReasonValue },
         ]
-        const timingPairs: Array<{ label: TranslationKey; value: string }> = [
-          { label: 'table.details.stage.requestRead', value: formatMilliseconds(record.tReqReadMs) },
-          { label: 'table.details.stage.requestParse', value: formatMilliseconds(record.tReqParseMs) },
-          { label: 'table.details.stage.upstreamConnect', value: formatMilliseconds(record.tUpstreamConnectMs) },
-          { label: 'table.details.stage.upstreamFirstByte', value: formatMilliseconds(record.tUpstreamTtfbMs) },
-          { label: 'table.details.stage.upstreamStream', value: formatMilliseconds(record.tUpstreamStreamMs) },
-          { label: 'table.details.stage.responseParse', value: formatMilliseconds(record.tRespParseMs) },
-          { label: 'table.details.stage.persistence', value: formatMilliseconds(record.tPersistMs) },
-          { label: 'table.details.stage.total', value: formatMilliseconds(record.tTotalMs) },
+        const timingPairs: Array<{ label: string; value: string }> = [
+          { label: t('table.details.stage.requestRead'), value: formatMilliseconds(record.tReqReadMs) },
+          { label: t('table.details.stage.requestParse'), value: formatMilliseconds(record.tReqParseMs) },
+          { label: t('table.details.stage.upstreamConnect'), value: formatMilliseconds(record.tUpstreamConnectMs) },
+          { label: t('table.details.stage.upstreamFirstByte'), value: formatMilliseconds(record.tUpstreamTtfbMs) },
+          { label: t('table.details.stage.upstreamStream'), value: formatMilliseconds(record.tUpstreamStreamMs) },
+          { label: t('table.details.stage.responseParse'), value: formatMilliseconds(record.tRespParseMs) },
+          { label: t('table.details.stage.persistence'), value: formatMilliseconds(record.tPersistMs) },
+          { label: t('table.details.stage.total'), value: formatMilliseconds(record.tTotalMs) },
         ]
 
         return {
@@ -294,27 +374,40 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           errorMessage,
           latencySummary,
           latencyCompactSummary,
+          detailLevel,
+          detailLevelBadgeLabel,
+          detailLevelBadgeVariant,
+          detailLevelTooltip,
+          detailPrunedSummary,
+          detailNotice,
           detailPairs,
           timingPairs,
         }
       }),
-    [records, currencyFormatter, dateFormatter, numberFormatter, t, timeFormatter],
+    [records, currencyFormatter, dateFormatter, detailLabels, numberFormatter, t, timeFormatter],
   )
 
   const renderExpandedContent = (
     detailId: string,
-    detailPairs: Array<{ label: TranslationKey; value: ReactNode }>,
-    timingPairs: Array<{ label: TranslationKey; value: string }>,
+    detailPairs: Array<{ label: string; value: ReactNode }>,
+    timingPairs: Array<{ label: string; value: string }>,
     errorMessage: string,
+    detailNotice: string | null,
     size: 'compact' | 'default',
   ) => (
     <div id={detailId} className={`flex flex-col gap-4 ${size === 'compact' ? 'p-3' : 'p-4'}`}>
+      {detailNotice && (
+        <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning" data-testid="invocation-detail-notice">
+          {detailNotice}
+        </div>
+      )}
+
       <div className="flex flex-col gap-2">
         <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">{t('table.detailsTitle')}</span>
         <div className="grid gap-2 md:grid-cols-2">
           {detailPairs.map((entry) => (
             <div key={entry.label} className="flex items-start gap-2">
-              <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60 md:min-w-36">{t(entry.label)}</span>
+              <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60 md:min-w-36">{entry.label}</span>
               <div className="min-w-0 break-all font-mono text-sm">{entry.value}</div>
             </div>
           ))}
@@ -328,7 +421,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         <div className="grid gap-2 md:grid-cols-2">
           {timingPairs.map((entry) => (
             <div key={entry.label} className="flex items-start gap-2">
-              <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60 md:min-w-36">{t(entry.label)}</span>
+              <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60 md:min-w-36">{entry.label}</span>
               <span className="font-mono text-sm">{entry.value}</span>
             </div>
           ))}
@@ -402,12 +495,26 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                 </button>
               </div>
 
-              <div className="mt-2 flex min-w-0 items-center gap-2">
+              <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
                 <Badge variant={row.meta.variant}>{t(row.meta.key)}</Badge>
+                <Badge
+                  variant={row.detailLevelBadgeVariant}
+                  className="px-2 py-0 text-[10px] font-semibold tracking-[0.01em]"
+                  title={row.detailLevelTooltip}
+                  data-testid="invocation-detail-level-badge"
+                >
+                  {row.detailLevelBadgeLabel}
+                </Badge>
                 <span className="min-w-0 truncate text-xs text-base-content/75" title={row.proxyDisplayName}>
                   {row.proxyDisplayName}
                 </span>
               </div>
+
+              {row.detailPrunedSummary && (
+                <div className="mt-1 text-[11px] text-warning" title={row.detailLevelTooltip} data-testid="invocation-detail-pruned-at">
+                  {row.detailPrunedSummary}
+                </div>
+              )}
 
               <div className="mt-2 text-xs font-mono text-base-content/70" title={row.latencySummary}>
                 {row.latencySummary}
@@ -463,7 +570,14 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               {isExpanded && (
                 <div className="mt-3 rounded-lg border border-base-300/70 bg-base-200/58">
-                  {renderExpandedContent(listDetailId, row.detailPairs, row.timingPairs, row.errorMessage, 'compact')}
+                  {renderExpandedContent(
+                    listDetailId,
+                    row.detailPairs,
+                    row.timingPairs,
+                    row.errorMessage,
+                    row.detailNotice,
+                    'compact',
+                  )}
                 </div>
               )}
             </article>
@@ -558,12 +672,25 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                             </span>
                             <span className="sr-only">{t(row.meta.key)}</span>
                           </Badge>
+                          <Badge
+                            variant={row.detailLevelBadgeVariant}
+                            className="max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]"
+                            title={row.detailLevelTooltip}
+                            data-testid="invocation-detail-level-badge"
+                          >
+                            <span className="block max-w-full truncate whitespace-nowrap">{row.detailLevelBadgeLabel}</span>
+                          </Badge>
                           <span className="hidden whitespace-nowrap font-mono text-[11px] text-base-content/70 lg:block" title={row.latencySummary}>
                             {row.latencySummary}
                           </span>
                           <span className="whitespace-nowrap font-mono text-[11px] text-base-content/70 lg:hidden" title={row.latencySummary}>
                             {row.latencyCompactSummary}
                           </span>
+                          {row.detailPrunedSummary && (
+                            <span className="whitespace-nowrap text-[10px] text-warning" title={row.detailLevelTooltip} data-testid="invocation-detail-pruned-at">
+                              {row.detailPrunedSummary}
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
@@ -647,7 +774,14 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     {isExpanded && (
                       <tr className="bg-base-200/68">
                         <td colSpan={isXlUp ? 8 : 7} className="border-t border-base-300/65 px-2 py-2.5 xl:px-3">
-                          {renderExpandedContent(tableDetailId, row.detailPairs, row.timingPairs, row.errorMessage, 'default')}
+                          {renderExpandedContent(
+                            tableDetailId,
+                            row.detailPairs,
+                            row.timingPairs,
+                            row.errorMessage,
+                            row.detailNotice,
+                            'default',
+                          )}
                         </td>
                       </tr>
                     )}

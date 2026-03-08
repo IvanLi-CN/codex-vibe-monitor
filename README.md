@@ -88,6 +88,16 @@ XY_LIST_LIMIT_MAX=200                          # (200)
 XY_USER_AGENT=codex-vibe-monitor/0.2.0         # (自动)
 XY_STATIC_DIR=web/dist                         # (存在时自动使用)
 XY_SNAPSHOT_MIN_INTERVAL_SECS=300              # (300)
+XY_RETENTION_ENABLED=true                      # (true)
+XY_RETENTION_DRY_RUN=false                     # (false)
+XY_RETENTION_INTERVAL_SECS=3600                # (3600)
+XY_RETENTION_BATCH_ROWS=1000                   # (1000)
+XY_ARCHIVE_DIR=archives                        # (archives，相对 XY_DATABASE_PATH 同级目录解析)
+XY_INVOCATION_SUCCESS_FULL_DAYS=30             # (30，上海自然日)
+XY_INVOCATION_MAX_DAYS=90                      # (90，超窗后归档并清理主库)
+XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS=30    # (30，上海自然日)
+XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS=30    # (30，上海自然日)
+XY_QUOTA_SNAPSHOT_FULL_DAYS=30                 # (30，上海自然日)
 # 注意：XY_FORWARD_PROXY_ALGO 已移除，配置将直接失败，请改用 FORWARD_PROXY_ALGO
 
 # CRS 日统计源（可选；未配置则禁用）
@@ -109,6 +119,27 @@ cargo run -- \
   --poll-interval-secs 5
 ```
 
+## 数据分层保留与离线归档
+
+- `codex_invocations` 的成功记录超过 30 个上海自然日后，会把原始 payload / raw response / raw file 引用精简为 `structured_only`，但保留结构化统计字段用于在线排障。
+- 任意调用记录超过 90 个上海自然日后，会先归档到 `XY_ARCHIVE_DIR/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`，写入 `archive_batches` 清单后，再从主库删除。
+- `forward_proxy_attempts` 与 `stats_source_snapshots` 只保留最近 30 个上海自然日在线明细；更老数据同样执行“先归档、再清理”。
+- `codex_quota_snapshots` 保留最近 30 天全量，更老日期在主库内压缩为“每个上海自然日最后一条”，被折叠掉的行进入离线归档。
+- `stats_source_deltas` 长期在线保留；`/api/stats` 与 `GET /api/stats/summary?window=all` 通过“在线明细 + invocation_rollup_daily”保证长期 totals 不缩水。
+- 原始 payload / preview / raw file 只保证短期排障；超过在线窗口后的完整明细需要查离线归档文件，现有 Web UI 不提供 archived 明细在线浏览。
+
+首次清理建议先做 dry-run：
+
+```bash
+cargo run -- --retention-run-once --retention-dry-run
+```
+
+确认数量与 archive 路径后，再在维护窗口执行真实清理：
+
+```bash
+cargo run -- --retention-run-once
+```
+
 ## HTTP API 与 SSE
 
 - 统计相关接口默认合并全部来源（`xy + proxy`）；若开启 legacy 轮询（`XY_LEGACY_POLL_ENABLED=true`）会继续写入并参与聚合。
@@ -117,9 +148,9 @@ cargo run -- \
 - `GET /api/settings`：获取统一设置（`proxy + pricing`）。
 - `PUT /api/settings/proxy`：更新 `/v1/models` 劫持与上游合并开关状态（全局持久化）。
 - `PUT /api/settings/pricing`：更新价格目录（全量覆盖、全局持久化、实时生效于新请求成本估算）。
-- `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `XY_LIST_LIMIT_MAX` 控制）。
-- `GET /api/stats`：全量聚合统计。
-- `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计。
+- `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `XY_LIST_LIMIT_MAX` 控制）；每条记录额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记在线明细是否仍完整。
+- `GET /api/stats`：全量聚合统计；长期 totals 会合并在线明细与 `invocation_rollup_daily`。
+- `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计；`window=all` 会承接归档前回填的日汇总。
 - `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）。
 - `GET /api/stats/perf`：代理链路阶段耗时统计（count/avg/P50/P90/P99/max）。
 - `GET /api/quota/latest`：最近一次配额快照。

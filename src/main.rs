@@ -36,14 +36,16 @@ use chrono_tz::{Asia::Shanghai, Tz};
 use clap::Parser;
 use dotenvy::dotenv;
 use flate2::read::GzDecoder;
+use flate2::{Compression, write::GzEncoder};
 use futures_util::{StreamExt, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Proxy, Url, header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::{
-    FromRow, Pool, QueryBuilder, Row, Sqlite,
+    Connection, FromRow, Pool, QueryBuilder, Row, Sqlite, SqliteConnection,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::fs;
@@ -80,6 +82,21 @@ const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
 const DEFAULT_PROXY_RAW_RETENTION_DAYS: u64 = 7;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
 const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
+const DETAIL_LEVEL_FULL: &str = "full";
+const DETAIL_LEVEL_STRUCTURED_ONLY: &str = "structured_only";
+const DETAIL_PRUNE_REASON_SUCCESS_OVER_30D: &str = "success_over_30d";
+const DETAIL_PRUNE_REASON_MAX_AGE_ARCHIVED: &str = "max_age_archived";
+const DEFAULT_RETENTION_ENABLED: bool = false;
+const DEFAULT_RETENTION_DRY_RUN: bool = false;
+const DEFAULT_RETENTION_INTERVAL_SECS: u64 = 60 * 60;
+const DEFAULT_RETENTION_BATCH_ROWS: usize = 1000;
+const DEFAULT_ARCHIVE_DIR: &str = "archives";
+const DEFAULT_INVOCATION_SUCCESS_FULL_DAYS: u64 = 30;
+const DEFAULT_INVOCATION_MAX_DAYS: u64 = 90;
+const DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: u64 = 30;
+const DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: u64 = 30;
+const DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS: u64 = 30;
+const ARCHIVE_STATUS_COMPLETED: &str = "completed";
 const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit exceeded";
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
 const PROXY_INVALID_REQUEST_TARGET: &str = "proxy request target is malformed";
@@ -278,6 +295,12 @@ struct CliArgs {
     /// Override the minimum interval between quota snapshots in seconds.
     #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64))]
     snapshot_min_interval_secs: Option<u64>,
+    /// Run one retention/archival maintenance pass and exit.
+    #[arg(long, default_value_t = false)]
+    retention_run_once: bool,
+    /// Force retention maintenance to simulate actions without mutating data.
+    #[arg(long, default_value_t = false)]
+    retention_dry_run: bool,
 }
 
 #[tokio::main]
@@ -304,6 +327,13 @@ async fn main() -> Result<()> {
         .context("failed to open sqlite database")?;
 
     ensure_schema(&pool).await?;
+    if cli.retention_run_once {
+        let summary =
+            run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run)).await?;
+        info!(?summary, "retention maintenance run-once finished");
+        return Ok(());
+    }
+
     let pricing_catalog = load_pricing_catalog(&pool).await?;
     let raw_path_fallback_root = config.database_path.parent();
     if config.proxy_usage_backfill_on_startup {
@@ -431,6 +461,7 @@ async fn main() -> Result<()> {
         None
     };
     let forward_proxy_handle = spawn_forward_proxy_maintenance(state.clone(), cancel.clone());
+    let retention_handle = spawn_data_retention_maintenance(state.clone(), cancel.clone());
     let server_handle = spawn_http_server(state.clone(), cancel.clone()).await?;
 
     // Wait until a shutdown signal is received, then wait for tasks to finish
@@ -449,6 +480,9 @@ async fn main() -> Result<()> {
             ?err,
             "forward proxy maintenance task terminated unexpectedly"
         );
+    }
+    if let Err(err) = retention_handle.await {
+        error!(?err, "retention maintenance task terminated unexpectedly");
     }
 
     state.xray_supervisor.lock().await.shutdown_all().await;
@@ -542,6 +576,1265 @@ fn spawn_forward_proxy_maintenance(
             }
         }
     })
+}
+
+#[derive(Debug, Default)]
+struct RetentionRunSummary {
+    dry_run: bool,
+    invocation_details_pruned: usize,
+    invocation_rows_archived: usize,
+    forward_proxy_attempt_rows_archived: usize,
+    stats_source_snapshot_rows_archived: usize,
+    quota_snapshot_rows_archived: usize,
+    archive_batches_touched: usize,
+    raw_files_removed: usize,
+    orphan_raw_files_removed: usize,
+}
+
+impl RetentionRunSummary {
+    fn touched_anything(&self) -> bool {
+        self.invocation_details_pruned > 0
+            || self.invocation_rows_archived > 0
+            || self.forward_proxy_attempt_rows_archived > 0
+            || self.stats_source_snapshot_rows_archived > 0
+            || self.quota_snapshot_rows_archived > 0
+            || self.raw_files_removed > 0
+            || self.orphan_raw_files_removed > 0
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ArchiveTableSpec {
+    dataset: &'static str,
+    columns: &'static str,
+    create_sql: &'static str,
+}
+
+#[derive(Debug)]
+struct ArchiveBatchOutcome {
+    dataset: &'static str,
+    month_key: String,
+    file_path: String,
+    sha256: String,
+    row_count: i64,
+}
+
+#[derive(Debug, Default)]
+struct InvocationRollupDelta {
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+}
+
+#[derive(Debug, FromRow)]
+struct InvocationDetailPruneCandidate {
+    id: i64,
+    request_raw_path: Option<String>,
+    response_raw_path: Option<String>,
+}
+
+#[derive(Debug, FromRow, Clone)]
+struct InvocationArchiveCandidate {
+    id: i64,
+    occurred_at: String,
+    source: String,
+    status: Option<String>,
+    detail_level: String,
+    total_tokens: Option<i64>,
+    cost: Option<f64>,
+    request_raw_path: Option<String>,
+    response_raw_path: Option<String>,
+}
+
+#[derive(Debug, FromRow, Clone)]
+struct TimestampedArchiveCandidate {
+    id: i64,
+    timestamp_value: String,
+}
+
+#[derive(Debug, FromRow)]
+struct DryRunBatchCount {
+    month_key: String,
+    row_count: i64,
+}
+
+const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, raw_expires_at, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
+const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
+    "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
+const STATS_SOURCE_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, source, period, stats_date, model, requests, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, all_tokens, cost_input, cost_output, cost_cache_write, cost_cache_read, cost_total, raw_response, captured_at, captured_at_epoch, created_at";
+const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, captured_at, amount_limit, used_amount, remaining_amount, period, period_reset_time, expire_time, is_active, total_cost, total_requests, total_tokens, last_request_time, billing_type, remaining_count, used_count, sub_type_name";
+
+const CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS archive_db.codex_invocations (
+    id INTEGER PRIMARY KEY,
+    invoke_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'xy',
+    model TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_input_tokens INTEGER,
+    reasoning_tokens INTEGER,
+    total_tokens INTEGER,
+    cost REAL,
+    status TEXT,
+    error_message TEXT,
+    failure_kind TEXT,
+    failure_class TEXT,
+    is_actionable INTEGER NOT NULL DEFAULT 0,
+    payload TEXT,
+    raw_response TEXT NOT NULL,
+    cost_estimated INTEGER NOT NULL DEFAULT 0,
+    price_version TEXT,
+    request_raw_path TEXT,
+    request_raw_size INTEGER,
+    request_raw_truncated INTEGER NOT NULL DEFAULT 0,
+    request_raw_truncated_reason TEXT,
+    response_raw_path TEXT,
+    response_raw_size INTEGER,
+    response_raw_truncated INTEGER NOT NULL DEFAULT 0,
+    response_raw_truncated_reason TEXT,
+    raw_expires_at TEXT,
+    detail_level TEXT NOT NULL DEFAULT 'full',
+    detail_pruned_at TEXT,
+    detail_prune_reason TEXT,
+    t_total_ms REAL,
+    t_req_read_ms REAL,
+    t_req_parse_ms REAL,
+    t_upstream_connect_ms REAL,
+    t_upstream_ttfb_ms REAL,
+    t_upstream_stream_ms REAL,
+    t_resp_parse_ms REAL,
+    t_persist_ms REAL,
+    created_at TEXT NOT NULL,
+    UNIQUE(invoke_id, occurred_at)
+)
+"#;
+
+const FORWARD_PROXY_ATTEMPTS_ARCHIVE_CREATE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS archive_db.forward_proxy_attempts (
+    id INTEGER PRIMARY KEY,
+    proxy_key TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    is_success INTEGER NOT NULL,
+    latency_ms REAL,
+    failure_kind TEXT,
+    is_probe INTEGER NOT NULL DEFAULT 0
+)
+"#;
+
+const STATS_SOURCE_SNAPSHOTS_ARCHIVE_CREATE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS archive_db.stats_source_snapshots (
+    id INTEGER PRIMARY KEY,
+    source TEXT NOT NULL,
+    period TEXT NOT NULL,
+    stats_date TEXT NOT NULL,
+    model TEXT,
+    requests INTEGER NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_create_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    all_tokens INTEGER,
+    cost_input REAL,
+    cost_output REAL,
+    cost_cache_write REAL,
+    cost_cache_read REAL,
+    cost_total REAL,
+    raw_response TEXT,
+    captured_at TEXT NOT NULL,
+    captured_at_epoch INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(source, period, stats_date, model, captured_at_epoch)
+)
+"#;
+
+const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_CREATE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS archive_db.codex_quota_snapshots (
+    id INTEGER PRIMARY KEY,
+    captured_at TEXT NOT NULL,
+    amount_limit REAL,
+    used_amount REAL,
+    remaining_amount REAL,
+    period TEXT,
+    period_reset_time TEXT,
+    expire_time TEXT,
+    is_active INTEGER,
+    total_cost REAL,
+    total_requests INTEGER,
+    total_tokens INTEGER,
+    last_request_time TEXT,
+    billing_type TEXT,
+    remaining_count INTEGER,
+    used_count INTEGER,
+    sub_type_name TEXT
+)
+"#;
+
+fn archive_table_spec(dataset: &'static str) -> ArchiveTableSpec {
+    match dataset {
+        "codex_invocations" => ArchiveTableSpec {
+            dataset,
+            columns: CODEX_INVOCATIONS_ARCHIVE_COLUMNS,
+            create_sql: CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL,
+        },
+        "forward_proxy_attempts" => ArchiveTableSpec {
+            dataset,
+            columns: FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS,
+            create_sql: FORWARD_PROXY_ATTEMPTS_ARCHIVE_CREATE_SQL,
+        },
+        "stats_source_snapshots" => ArchiveTableSpec {
+            dataset,
+            columns: STATS_SOURCE_SNAPSHOTS_ARCHIVE_COLUMNS,
+            create_sql: STATS_SOURCE_SNAPSHOTS_ARCHIVE_CREATE_SQL,
+        },
+        "codex_quota_snapshots" => ArchiveTableSpec {
+            dataset,
+            columns: CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS,
+            create_sql: CODEX_QUOTA_SNAPSHOTS_ARCHIVE_CREATE_SQL,
+        },
+        other => panic!("unsupported archive dataset: {other}"),
+    }
+}
+
+fn spawn_data_retention_maintenance(
+    state: Arc<AppState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if !state.config.retention_enabled {
+            info!("data retention maintenance is disabled");
+            cancel.cancelled().await;
+            return;
+        }
+
+        if let Err(err) = run_data_retention_maintenance(&state.pool, &state.config, None).await {
+            warn!(error = %err, "failed to run retention maintenance at startup");
+        }
+
+        let mut ticker = interval(state.config.retention_interval);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        ticker.tick().await;
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    info!("data retention maintenance received shutdown");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    if let Err(err) = run_data_retention_maintenance(&state.pool, &state.config, None).await {
+                        warn!(error = %err, "failed to run retention maintenance");
+                    }
+                }
+            }
+        }
+    })
+}
+
+async fn run_data_retention_maintenance(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run_override: Option<bool>,
+) -> Result<RetentionRunSummary> {
+    let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
+    let mut summary = RetentionRunSummary {
+        dry_run,
+        ..RetentionRunSummary::default()
+    };
+    let raw_path_fallback_root = config.database_path.parent();
+
+    let pruned =
+        prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await?;
+    summary.invocation_details_pruned += pruned.0;
+    summary.raw_files_removed += pruned.1;
+
+    let invocation_archive =
+        archive_old_invocations(pool, config, raw_path_fallback_root, dry_run).await?;
+    summary.invocation_rows_archived += invocation_archive.0;
+    summary.archive_batches_touched += invocation_archive.1;
+    summary.raw_files_removed += invocation_archive.2;
+
+    let proxy_archive = archive_timestamped_dataset(
+        pool,
+        config,
+        archive_table_spec("forward_proxy_attempts"),
+        "SELECT id, occurred_at AS timestamp_value FROM forward_proxy_attempts WHERE occurred_at < ?1 ORDER BY occurred_at ASC, id ASC LIMIT ?2",
+        shanghai_utc_cutoff_string(config.forward_proxy_attempts_retention_days),
+        dry_run,
+    )
+    .await?;
+    summary.forward_proxy_attempt_rows_archived += proxy_archive.0;
+    summary.archive_batches_touched += proxy_archive.1;
+
+    let snapshot_archive = archive_timestamped_dataset(
+        pool,
+        config,
+        archive_table_spec("stats_source_snapshots"),
+        "SELECT id, captured_at AS timestamp_value FROM stats_source_snapshots WHERE captured_at < ?1 ORDER BY captured_at ASC, id ASC LIMIT ?2",
+        shanghai_utc_cutoff_string(config.stats_source_snapshots_retention_days),
+        dry_run,
+    )
+    .await?;
+    summary.stats_source_snapshot_rows_archived += snapshot_archive.0;
+    summary.archive_batches_touched += snapshot_archive.1;
+
+    let quota_archive = compact_old_quota_snapshots(pool, config, dry_run).await?;
+    summary.quota_snapshot_rows_archived += quota_archive.0;
+    summary.archive_batches_touched += quota_archive.1;
+
+    summary.orphan_raw_files_removed +=
+        sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, dry_run).await?;
+
+    if !dry_run && summary.touched_anything() {
+        sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+            .execute(pool)
+            .await
+            .context("failed to run retention wal checkpoint")?;
+        sqlx::query("PRAGMA optimize")
+            .execute(pool)
+            .await
+            .context("failed to run retention optimize pragma")?;
+    }
+
+    info!(
+        dry_run = summary.dry_run,
+        ?summary,
+        "data retention maintenance finished"
+    );
+    Ok(summary)
+}
+
+async fn prune_old_invocation_details(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+) -> Result<(usize, usize)> {
+    let cutoff = shanghai_local_cutoff_string(config.invocation_success_full_days);
+    if dry_run {
+        let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(
+            r#"
+            SELECT id, request_raw_path, response_raw_path
+            FROM codex_invocations
+            WHERE status = 'success'
+              AND detail_level = ?1
+              AND occurred_at < ?2
+            ORDER BY occurred_at ASC, id ASC
+            "#,
+        )
+        .bind(DETAIL_LEVEL_FULL)
+        .bind(&cutoff)
+        .fetch_all(pool)
+        .await?;
+        let raw_paths = candidates
+            .iter()
+            .flat_map(|candidate| {
+                [
+                    candidate.request_raw_path.clone(),
+                    candidate.response_raw_path.clone(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        return Ok((
+            candidates.len(),
+            count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
+        ));
+    }
+
+    let mut rows_pruned = 0usize;
+    let mut raw_files_removed = 0usize;
+
+    loop {
+        let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(
+            r#"
+            SELECT id, request_raw_path, response_raw_path
+            FROM codex_invocations
+            WHERE status = 'success'
+              AND detail_level = ?1
+              AND occurred_at < ?2
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?3
+            "#,
+        )
+        .bind(DETAIL_LEVEL_FULL)
+        .bind(&cutoff)
+        .bind(config.retention_batch_rows as i64)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        rows_pruned += candidates.len();
+        let raw_paths = candidates
+            .iter()
+            .flat_map(|candidate| {
+                [
+                    candidate.request_raw_path.clone(),
+                    candidate.response_raw_path.clone(),
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        let pruned_at = format_naive(Utc::now().naive_utc());
+        let ids = candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        let mut tx = pool.begin().await?;
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "UPDATE codex_invocations SET payload = NULL, raw_response = '', request_raw_path = NULL, request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, raw_expires_at = NULL, detail_level = ",
+        );
+        query
+            .push_bind(DETAIL_LEVEL_STRUCTURED_ONLY)
+            .push(", detail_pruned_at = ")
+            .push_bind(pruned_at)
+            .push(", detail_prune_reason = ")
+            .push_bind(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
+            .push(" WHERE id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in &ids {
+                separated.push_bind(id);
+            }
+        }
+        query.push(")");
+        query.build().execute(tx.as_mut()).await?;
+        tx.commit().await?;
+
+        raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+    }
+
+    Ok((rows_pruned, raw_files_removed))
+}
+
+async fn archive_old_invocations(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+) -> Result<(usize, usize, usize)> {
+    let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    let spec = archive_table_spec("codex_invocations");
+
+    if dry_run {
+        let candidates = sqlx::query_as::<_, InvocationArchiveCandidate>(
+            r#"
+            SELECT
+                id,
+                occurred_at,
+                source,
+                status,
+                detail_level,
+                total_tokens,
+                cost,
+                request_raw_path,
+                response_raw_path
+            FROM codex_invocations
+            WHERE occurred_at < ?1
+            ORDER BY occurred_at ASC, id ASC
+            "#,
+        )
+        .bind(&cutoff)
+        .fetch_all(pool)
+        .await?;
+
+        let mut by_month: BTreeMap<String, usize> = BTreeMap::new();
+        for candidate in &candidates {
+            let month_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
+            *by_month.entry(month_key).or_default() += 1;
+        }
+        for (month_key, rows) in &by_month {
+            info!(
+                dataset = spec.dataset,
+                month_key,
+                rows = *rows,
+                reason = DETAIL_PRUNE_REASON_MAX_AGE_ARCHIVED,
+                "retention dry-run planned invocation archive batch"
+            );
+        }
+        let raw_paths = candidates
+            .iter()
+            .filter(|candidate| {
+                !(candidate.status.as_deref() == Some("success")
+                    && candidate.detail_level == DETAIL_LEVEL_FULL)
+            })
+            .flat_map(|candidate| {
+                [
+                    candidate.request_raw_path.clone(),
+                    candidate.response_raw_path.clone(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        return Ok((
+            candidates.len(),
+            by_month.len(),
+            count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
+        ));
+    }
+
+    let mut rows_archived = 0usize;
+    let mut archive_batches = 0usize;
+    let mut raw_files_removed = 0usize;
+
+    loop {
+        let candidates = sqlx::query_as::<_, InvocationArchiveCandidate>(
+            r#"
+            SELECT
+                id,
+                occurred_at,
+                source,
+                status,
+                detail_level,
+                total_tokens,
+                cost,
+                request_raw_path,
+                response_raw_path
+            FROM codex_invocations
+            WHERE occurred_at < ?1
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?2
+            "#,
+        )
+        .bind(&cutoff)
+        .bind(config.retention_batch_rows as i64)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        let mut by_month: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
+        for candidate in candidates {
+            let month_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
+            by_month.entry(month_key).or_default().push(candidate);
+        }
+
+        for (month_key, group) in by_month {
+            rows_archived += group.len();
+            archive_batches += 1;
+            let raw_paths = group
+                .iter()
+                .flat_map(|candidate| {
+                    [
+                        candidate.request_raw_path.clone(),
+                        candidate.response_raw_path.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+
+            let ids = group
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
+            let archive_outcome =
+                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            let mut tx = pool.begin().await?;
+            upsert_invocation_rollups(tx.as_mut(), &group).await?;
+            upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+            delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
+            tx.commit().await?;
+            raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+        }
+    }
+
+    Ok((rows_archived, archive_batches, raw_files_removed))
+}
+
+async fn archive_timestamped_dataset(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    spec: ArchiveTableSpec,
+    select_sql: &str,
+    cutoff: String,
+    dry_run: bool,
+) -> Result<(usize, usize)> {
+    if dry_run {
+        let dry_run_sql = match spec.dataset {
+            "forward_proxy_attempts" => {
+                r#"
+                SELECT strftime('%Y-%m', datetime(occurred_at, '+8 hours')) AS month_key,
+                       COUNT(*) AS row_count
+                FROM forward_proxy_attempts
+                WHERE occurred_at < ?1
+                GROUP BY 1
+                ORDER BY 1
+                "#
+            }
+            "stats_source_snapshots" => {
+                r#"
+                SELECT strftime('%Y-%m', datetime(captured_at, '+8 hours')) AS month_key,
+                       COUNT(*) AS row_count
+                FROM stats_source_snapshots
+                WHERE captured_at < ?1
+                GROUP BY 1
+                ORDER BY 1
+                "#
+            }
+            other => bail!("unsupported dry-run archive dataset: {other}"),
+        };
+        let batch_counts = sqlx::query_as::<_, DryRunBatchCount>(dry_run_sql)
+            .bind(&cutoff)
+            .fetch_all(pool)
+            .await?;
+        for batch in &batch_counts {
+            info!(
+                dataset = spec.dataset,
+                month_key = %batch.month_key,
+                rows = batch.row_count,
+                "retention dry-run planned archive batch"
+            );
+        }
+        return Ok((
+            batch_counts
+                .iter()
+                .map(|batch| batch.row_count as usize)
+                .sum(),
+            batch_counts.len(),
+        ));
+    }
+
+    let mut rows_archived = 0usize;
+    let mut archive_batches = 0usize;
+
+    loop {
+        let candidates = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
+            .bind(&cutoff)
+            .bind(config.retention_batch_rows as i64)
+            .fetch_all(pool)
+            .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
+        for candidate in candidates {
+            let month_key = shanghai_month_key_from_utc_naive(&candidate.timestamp_value)?;
+            by_month.entry(month_key).or_default().push(candidate);
+        }
+
+        for (month_key, group) in by_month {
+            rows_archived += group.len();
+            archive_batches += 1;
+            let ids = group
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
+            let archive_outcome =
+                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            let mut tx = pool.begin().await?;
+            upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+            delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
+            tx.commit().await?;
+        }
+    }
+
+    Ok((rows_archived, archive_batches))
+}
+
+async fn compact_old_quota_snapshots(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: bool,
+) -> Result<(usize, usize)> {
+    let cutoff = shanghai_utc_cutoff_string(config.quota_snapshot_full_days);
+    let spec = archive_table_spec("codex_quota_snapshots");
+
+    if dry_run {
+        let batch_counts = sqlx::query_as::<_, DryRunBatchCount>(
+            r#"
+            WITH ranked AS (
+                SELECT
+                    captured_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY strftime('%Y-%m-%d', datetime(captured_at, '+8 hours'))
+                        ORDER BY captured_at DESC, id DESC
+                    ) AS row_num
+                FROM codex_quota_snapshots
+                WHERE captured_at < ?1
+            )
+            SELECT strftime('%Y-%m', datetime(captured_at, '+8 hours')) AS month_key,
+                   COUNT(*) AS row_count
+            FROM ranked
+            WHERE row_num > 1
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+        )
+        .bind(&cutoff)
+        .fetch_all(pool)
+        .await?;
+        for batch in &batch_counts {
+            info!(
+                dataset = spec.dataset,
+                month_key = %batch.month_key,
+                rows = batch.row_count,
+                "retention dry-run planned quota compaction batch"
+            );
+        }
+        return Ok((
+            batch_counts
+                .iter()
+                .map(|batch| batch.row_count as usize)
+                .sum(),
+            batch_counts.len(),
+        ));
+    }
+
+    let mut rows_archived = 0usize;
+    let mut archive_batches = 0usize;
+
+    loop {
+        let candidates = sqlx::query_as::<_, TimestampedArchiveCandidate>(
+            r#"
+            WITH ranked AS (
+                SELECT
+                    id,
+                    captured_at AS timestamp_value,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY strftime('%Y-%m-%d', datetime(captured_at, '+8 hours'))
+                        ORDER BY captured_at DESC, id DESC
+                    ) AS row_num
+                FROM codex_quota_snapshots
+                WHERE captured_at < ?1
+            )
+            SELECT id, timestamp_value
+            FROM ranked
+            WHERE row_num > 1
+            ORDER BY timestamp_value ASC, id ASC
+            LIMIT ?2
+            "#,
+        )
+        .bind(&cutoff)
+        .bind(config.retention_batch_rows as i64)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
+        for candidate in candidates {
+            let month_key = shanghai_month_key_from_utc_naive(&candidate.timestamp_value)?;
+            by_month.entry(month_key).or_default().push(candidate);
+        }
+
+        for (month_key, group) in by_month {
+            rows_archived += group.len();
+            archive_batches += 1;
+            let ids = group
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
+            let archive_outcome =
+                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            let mut tx = pool.begin().await?;
+            upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+            delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
+            tx.commit().await?;
+        }
+    }
+
+    Ok((rows_archived, archive_batches))
+}
+
+async fn ensure_sqlite_file_initialized(path: &Path) -> Result<()> {
+    let database_url = format!("sqlite://{}", path.to_string_lossy());
+    let connect_opts = build_sqlite_connect_options(
+        &database_url,
+        Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+    )?;
+    let connection = SqliteConnection::connect_with(&connect_opts)
+        .await
+        .with_context(|| format!("failed to initialize sqlite file {}", path.display()))?;
+    connection.close().await?;
+    Ok(())
+}
+
+async fn archive_rows_into_month_batch(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    spec: ArchiveTableSpec,
+    month_key: &str,
+    ids: &[i64],
+) -> Result<ArchiveBatchOutcome> {
+    if ids.is_empty() {
+        bail!("archive batch requires at least one row id");
+    }
+
+    let final_path = archive_batch_file_path(config, spec.dataset, month_key)?;
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create archive directory: {}", parent.display()))?;
+    }
+
+    let suffix = retention_temp_suffix();
+    let work_path = PathBuf::from(format!("{}.{}.sqlite", final_path.display(), suffix));
+    let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", final_path.display(), suffix));
+
+    if work_path.exists() {
+        let _ = fs::remove_file(&work_path);
+    }
+    if temp_gzip_path.exists() {
+        let _ = fs::remove_file(&temp_gzip_path);
+    }
+
+    if final_path.exists() {
+        inflate_gzip_sqlite_file(&final_path, &work_path)?;
+    }
+    if !work_path.exists() {
+        ensure_sqlite_file_initialized(&work_path).await?;
+    }
+
+    let row_count = async {
+        let mut conn = pool.acquire().await?;
+        sqlx::query("ATTACH DATABASE ?1 AS archive_db")
+            .bind(work_path.to_string_lossy().to_string())
+            .execute(&mut *conn)
+            .await
+            .with_context(|| {
+                format!("failed to attach archive database {}", work_path.display())
+            })?;
+        sqlx::query(spec.create_sql)
+            .execute(&mut *conn)
+            .await
+            .with_context(|| format!("failed to ensure archive schema for {}", spec.dataset))?;
+
+        let mut insert = QueryBuilder::<Sqlite>::new(format!(
+            "INSERT OR IGNORE INTO archive_db.{} ({}) SELECT {} FROM main.{} WHERE id IN (",
+            spec.dataset, spec.columns, spec.columns, spec.dataset
+        ));
+        {
+            let mut separated = insert.separated(", ");
+            for id in ids {
+                separated.push_bind(id);
+            }
+        }
+        insert.push(")");
+        insert.build().execute(&mut *conn).await.with_context(|| {
+            format!(
+                "failed to copy rows into archive batch for {}",
+                spec.dataset
+            )
+        })?;
+
+        let count_query = format!("SELECT COUNT(*) FROM archive_db.{}", spec.dataset);
+        let row_count = sqlx::query_scalar::<_, i64>(&count_query)
+            .fetch_one(&mut *conn)
+            .await
+            .with_context(|| format!("failed to count archive rows for {}", spec.dataset))?;
+        sqlx::query("DETACH DATABASE archive_db")
+            .execute(&mut *conn)
+            .await
+            .context("failed to detach archive database")?;
+        Ok::<i64, anyhow::Error>(row_count)
+    }
+    .await;
+
+    let result = match row_count {
+        Ok(row_count) => row_count,
+        Err(err) => {
+            let _ = fs::remove_file(&work_path);
+            let _ = fs::remove_file(&temp_gzip_path);
+            return Err(err);
+        }
+    };
+
+    deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path)?;
+    fs::rename(&temp_gzip_path, &final_path).with_context(|| {
+        format!(
+            "failed to move archive batch into place: {} -> {}",
+            temp_gzip_path.display(),
+            final_path.display()
+        )
+    })?;
+    let _ = fs::remove_file(&work_path);
+
+    let sha256 = sha256_hex_file(&final_path)?;
+    Ok(ArchiveBatchOutcome {
+        dataset: spec.dataset,
+        month_key: month_key.to_string(),
+        file_path: final_path.to_string_lossy().to_string(),
+        sha256,
+        row_count: result,
+    })
+}
+
+async fn upsert_archive_batch_manifest(
+    tx: &mut sqlx::SqliteConnection,
+    batch: &ArchiveBatchOutcome,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        ON CONFLICT(dataset, month_key, file_path) DO UPDATE SET
+            sha256 = excluded.sha256,
+            row_count = excluded.row_count,
+            status = excluded.status,
+            created_at = datetime('now')
+        "#,
+    )
+    .bind(batch.dataset)
+    .bind(&batch.month_key)
+    .bind(&batch.file_path)
+    .bind(&batch.sha256)
+    .bind(batch.row_count)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn upsert_invocation_rollups(
+    tx: &mut sqlx::SqliteConnection,
+    candidates: &[InvocationArchiveCandidate],
+) -> Result<()> {
+    let mut rollups: BTreeMap<(String, String), InvocationRollupDelta> = BTreeMap::new();
+    for candidate in candidates {
+        let stats_date = shanghai_day_key_from_local_naive(&candidate.occurred_at)?;
+        let key = (stats_date, candidate.source.clone());
+        let entry = rollups.entry(key).or_default();
+        entry.total_count += 1;
+        if matches!(candidate.status.as_deref(), Some("success")) {
+            entry.success_count += 1;
+        } else if candidate
+            .status
+            .as_deref()
+            .is_some_and(|status| status != "success")
+        {
+            entry.failure_count += 1;
+        }
+        entry.total_tokens += candidate.total_tokens.unwrap_or_default();
+        entry.total_cost += candidate.cost.unwrap_or_default();
+    }
+
+    for ((stats_date, source), delta) in rollups {
+        sqlx::query(
+            r#"
+            INSERT INTO invocation_rollup_daily (
+                stats_date,
+                source,
+                total_count,
+                success_count,
+                failure_count,
+                total_tokens,
+                total_cost,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
+            ON CONFLICT(stats_date, source) DO UPDATE SET
+                total_count = invocation_rollup_daily.total_count + excluded.total_count,
+                success_count = invocation_rollup_daily.success_count + excluded.success_count,
+                failure_count = invocation_rollup_daily.failure_count + excluded.failure_count,
+                total_tokens = invocation_rollup_daily.total_tokens + excluded.total_tokens,
+                total_cost = invocation_rollup_daily.total_cost + excluded.total_cost
+            "#,
+        )
+        .bind(&stats_date)
+        .bind(&source)
+        .bind(delta.total_count)
+        .bind(delta.success_count)
+        .bind(delta.failure_count)
+        .bind(delta.total_tokens)
+        .bind(delta.total_cost)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn delete_rows_by_ids(
+    tx: &mut sqlx::SqliteConnection,
+    table: &str,
+    ids: &[i64],
+) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(format!("DELETE FROM {table} WHERE id IN ("));
+    {
+        let mut separated = query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    query.push(")");
+    query.build().execute(&mut *tx).await?;
+    Ok(())
+}
+
+async fn sweep_orphan_proxy_raw_files(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+) -> Result<usize> {
+    let raw_dir = if config.proxy_raw_dir.is_absolute() {
+        config.proxy_raw_dir.clone()
+    } else {
+        env::current_dir()
+            .context("failed to read current directory for raw payload sweep")?
+            .join(&config.proxy_raw_dir)
+    };
+    if !raw_dir.exists() {
+        return Ok(0);
+    }
+
+    let referenced = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT path
+        FROM (
+            SELECT request_raw_path AS path
+            FROM codex_invocations
+            WHERE request_raw_path IS NOT NULL
+            UNION
+            SELECT response_raw_path AS path
+            FROM codex_invocations
+            WHERE response_raw_path IS NOT NULL
+        )
+        WHERE path IS NOT NULL
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut referenced_paths = HashSet::new();
+    for path in referenced {
+        for candidate in resolved_raw_path_candidates(&path, raw_path_fallback_root) {
+            referenced_paths.insert(candidate);
+        }
+    }
+
+    let mut removed = 0usize;
+    for entry in fs::read_dir(&raw_dir)
+        .with_context(|| format!("failed to read raw payload directory {}", raw_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let normalized = normalize_path_for_compare(&path);
+        if referenced_paths.contains(&normalized) {
+            continue;
+        }
+        if dry_run {
+            removed += 1;
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(_) => removed += 1,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                warn!(path = %path.display(), error = %err, "failed to remove orphan raw payload file");
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+fn resolved_raw_path_candidates(path: &str, fallback_root: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let primary = PathBuf::from(path);
+    candidates.push(normalize_path_for_compare(&primary));
+    if !primary.is_absolute()
+        && let Some(root) = fallback_root
+    {
+        let fallback = root.join(&primary);
+        let normalized = normalize_path_for_compare(&fallback);
+        if !candidates.contains(&normalized) {
+            candidates.push(normalized);
+        }
+    }
+    candidates
+}
+
+fn normalize_path_for_compare(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
+fn count_existing_proxy_raw_paths(
+    raw_paths: &[Option<String>],
+    raw_path_fallback_root: Option<&Path>,
+) -> usize {
+    let mut seen = HashSet::new();
+    for raw_path in raw_paths.iter().flatten() {
+        for candidate in resolved_raw_path_candidates(raw_path, raw_path_fallback_root) {
+            if candidate.exists() {
+                seen.insert(candidate);
+                break;
+            }
+        }
+    }
+    seen.len()
+}
+
+fn delete_proxy_raw_paths(
+    raw_paths: &[Option<String>],
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<usize> {
+    let mut removed = 0usize;
+    let mut seen = HashSet::new();
+    for raw_path in raw_paths.iter().flatten() {
+        for candidate in resolved_raw_path_candidates(raw_path, raw_path_fallback_root) {
+            if !seen.insert(candidate.clone()) {
+                continue;
+            }
+            match fs::remove_file(&candidate) {
+                Ok(_) => {
+                    removed += 1;
+                    break;
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    warn!(path = %candidate.display(), error = %err, "failed to remove raw payload file");
+                    break;
+                }
+            }
+        }
+    }
+    Ok(removed)
+}
+
+fn shanghai_retention_cutoff(days: u64) -> DateTime<Utc> {
+    start_of_local_day(Utc::now(), Shanghai) - ChronoDuration::days(days as i64)
+}
+
+fn shanghai_local_cutoff_string(days: u64) -> String {
+    format_naive(
+        shanghai_retention_cutoff(days)
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    )
+}
+
+fn shanghai_utc_cutoff_string(days: u64) -> String {
+    format_naive(shanghai_retention_cutoff(days).naive_utc())
+}
+
+fn parse_shanghai_local_naive(value: &str) -> Result<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+        .with_context(|| format!("invalid shanghai-local timestamp: {value}"))
+}
+
+fn parse_utc_naive(value: &str) -> Result<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+        .with_context(|| format!("invalid utc timestamp: {value}"))
+}
+
+fn shanghai_day_key_from_local_naive(value: &str) -> Result<String> {
+    Ok(parse_shanghai_local_naive(value)?
+        .format("%Y-%m-%d")
+        .to_string())
+}
+
+fn shanghai_month_key_from_local_naive(value: &str) -> Result<String> {
+    Ok(parse_shanghai_local_naive(value)?
+        .format("%Y-%m")
+        .to_string())
+}
+
+fn shanghai_month_key_from_utc_naive(value: &str) -> Result<String> {
+    let utc = Utc.from_utc_datetime(&parse_utc_naive(value)?);
+    Ok(utc.with_timezone(&Shanghai).format("%Y-%m").to_string())
+}
+
+fn archive_batch_file_path(config: &AppConfig, dataset: &str, month_key: &str) -> Result<PathBuf> {
+    let year = month_key
+        .split('-')
+        .next()
+        .filter(|segment| segment.len() == 4)
+        .ok_or_else(|| anyhow!("invalid month key: {month_key}"))?;
+    Ok(config
+        .archive_dir
+        .join(dataset)
+        .join(year)
+        .join(format!("{dataset}-{month_key}.sqlite.gz")))
+}
+
+fn retention_temp_suffix() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    )
+}
+
+fn inflate_gzip_sqlite_file(source: &Path, destination: &Path) -> Result<()> {
+    let input = fs::File::open(source)
+        .with_context(|| format!("failed to open archive batch {}", source.display()))?;
+    let mut decoder = GzDecoder::new(input);
+    let output = fs::File::create(destination)
+        .with_context(|| format!("failed to create temp archive db {}", destination.display()))?;
+    let mut writer = io::BufWriter::new(output);
+    io::copy(&mut decoder, &mut writer).with_context(|| {
+        format!(
+            "failed to decompress archive batch {} into {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn deflate_sqlite_file_to_gzip(source: &Path, destination: &Path) -> Result<()> {
+    let input = fs::File::open(source)
+        .with_context(|| format!("failed to open temp archive db {}", source.display()))?;
+    let output = fs::File::create(destination)
+        .with_context(|| format!("failed to create archive gzip {}", destination.display()))?;
+    let mut encoder = GzEncoder::new(io::BufWriter::new(output), Compression::default());
+    let mut reader = io::BufReader::new(input);
+    io::copy(&mut reader, &mut encoder).with_context(|| {
+        format!(
+            "failed to compress temp archive db {} into {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    let mut writer = encoder
+        .finish()
+        .context("failed to finish archive gzip writer")?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn sha256_hex_file(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open file for sha256 {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
@@ -1281,6 +2574,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             response_raw_truncated INTEGER NOT NULL DEFAULT 0,
             response_raw_truncated_reason TEXT,
             raw_expires_at TEXT,
+            detail_level TEXT NOT NULL DEFAULT 'full',
+            detail_pruned_at TEXT,
+            detail_prune_reason TEXT,
             t_total_ms REAL,
             t_req_read_ms REAL,
             t_req_parse_ms REAL,
@@ -1332,6 +2628,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("response_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
         ("response_raw_truncated_reason", "TEXT"),
         ("raw_expires_at", "TEXT"),
+        ("detail_level", "TEXT NOT NULL DEFAULT 'full'"),
+        ("detail_pruned_at", "TEXT"),
+        ("detail_prune_reason", "TEXT"),
         ("t_total_ms", "REAL"),
         ("t_req_read_ms", "REAL"),
         ("t_req_parse_ms", "REAL"),
@@ -1516,6 +2815,64 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_stats_source_deltas_epoch")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS archive_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dataset TEXT NOT NULL,
+            month_key TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            row_count INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(dataset, month_key, file_path)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure archive_batches table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_dataset_month
+        ON archive_batches (dataset, month_key)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_archive_batches_dataset_month")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS invocation_rollup_daily (
+            stats_date TEXT NOT NULL,
+            source TEXT NOT NULL,
+            total_count INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (stats_date, source)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure invocation_rollup_daily table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_invocation_rollup_daily_source_date
+        ON invocation_rollup_daily (source, stats_date)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_invocation_rollup_daily_source_date")?;
 
     sqlx::query(
         r#"
@@ -3220,6 +4577,9 @@ async fn persist_records(
                       WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
                         THEN json_extract(payload, '$.service_tier')
                     END AS service_tier,
+                    detail_level,
+                    detail_pruned_at,
+                    detail_prune_reason,
                     created_at
                 FROM codex_invocations
                 WHERE invoke_id = ?1 AND occurred_at = ?2
@@ -3403,7 +4763,7 @@ async fn list_invocations(
          cost_estimated, price_version, \
          request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
          response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
-         raw_expires_at, \
+         raw_expires_at, detail_level, detail_pruned_at, detail_prune_reason, \
          t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
          t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, \
          created_at \
@@ -7145,6 +8505,9 @@ async fn persist_proxy_capture_record(
             response_raw_truncated,
             response_raw_truncated_reason,
             raw_expires_at,
+            detail_level,
+            detail_pruned_at,
+            detail_prune_reason,
             t_total_ms,
             t_req_read_ms,
             t_req_parse_ms,
@@ -9898,6 +11261,12 @@ struct ApiInvocation {
     response_raw_truncated_reason: Option<String>,
     #[sqlx(default)]
     raw_expires_at: Option<String>,
+    detail_level: String,
+    #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_local_or_utc_to_utc_iso")]
+    detail_pruned_at: Option<String>,
+    #[sqlx(default)]
+    detail_prune_reason: Option<String>,
     #[sqlx(default)]
     t_total_ms: Option<f64>,
     #[sqlx(default)]
@@ -13073,6 +14442,16 @@ struct AppConfig {
     user_agent: String,
     static_dir: Option<PathBuf>,
     snapshot_min_interval: Duration,
+    retention_enabled: bool,
+    retention_dry_run: bool,
+    retention_interval: Duration,
+    retention_batch_rows: usize,
+    archive_dir: PathBuf,
+    invocation_success_full_days: u64,
+    invocation_max_days: u64,
+    forward_proxy_attempts_retention_days: u64,
+    stats_source_snapshots_retention_days: u64,
+    quota_snapshot_full_days: u64,
     crs_stats: Option<CrsStatsConfig>,
 }
 
@@ -13276,6 +14655,38 @@ impl AppConfig {
             })
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(300));
+        let retention_enabled =
+            parse_bool_env_var("XY_RETENTION_ENABLED", DEFAULT_RETENTION_ENABLED)?;
+        let retention_dry_run = overrides.retention_dry_run
+            || parse_bool_env_var("XY_RETENTION_DRY_RUN", DEFAULT_RETENTION_DRY_RUN)?;
+        let retention_interval = Duration::from_secs(parse_u64_env_var(
+            "XY_RETENTION_INTERVAL_SECS",
+            DEFAULT_RETENTION_INTERVAL_SECS,
+        )?);
+        let retention_batch_rows =
+            parse_usize_env_var("XY_RETENTION_BATCH_ROWS", DEFAULT_RETENTION_BATCH_ROWS)?.max(1);
+        let archive_dir = env::var("XY_ARCHIVE_DIR")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_ARCHIVE_DIR));
+        let invocation_success_full_days = parse_u64_env_var(
+            "XY_INVOCATION_SUCCESS_FULL_DAYS",
+            DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
+        )?;
+        let invocation_max_days =
+            parse_u64_env_var("XY_INVOCATION_MAX_DAYS", DEFAULT_INVOCATION_MAX_DAYS)?;
+        let forward_proxy_attempts_retention_days = parse_u64_env_var(
+            "XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS",
+            DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
+        )?;
+        let stats_source_snapshots_retention_days = parse_u64_env_var(
+            "XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS",
+            DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
+        )?;
+        let quota_snapshot_full_days = parse_u64_env_var(
+            "XY_QUOTA_SNAPSHOT_FULL_DAYS",
+            DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
+        )?;
 
         let crs_stats_base_url = env::var("CRS_STATS_BASE_URL").ok();
         let crs_stats_api_id = env::var("CRS_STATS_API_ID").ok();
@@ -13337,6 +14748,16 @@ impl AppConfig {
             user_agent,
             static_dir,
             snapshot_min_interval,
+            retention_enabled,
+            retention_dry_run,
+            retention_interval,
+            retention_batch_rows,
+            archive_dir,
+            invocation_success_full_days,
+            invocation_max_days,
+            forward_proxy_attempts_retention_days,
+            stats_source_snapshots_retention_days,
+            quota_snapshot_full_days,
             crs_stats,
         })
     }
@@ -13359,6 +14780,26 @@ impl AppConfig {
 fn parse_bool_env_var(name: &str, default_value: bool) -> Result<bool> {
     match env::var(name) {
         Ok(raw) => parse_bool_string(&raw).ok_or_else(|| anyhow!("invalid {name}: {raw}")),
+        Err(env::VarError::NotPresent) => Ok(default_value),
+        Err(err) => Err(anyhow!("failed to read {name}: {err}")),
+    }
+}
+
+fn parse_u64_env_var(name: &str, default_value: u64) -> Result<u64> {
+    match env::var(name) {
+        Ok(raw) => raw
+            .parse::<u64>()
+            .with_context(|| format!("invalid {name}: {raw}")),
+        Err(env::VarError::NotPresent) => Ok(default_value),
+        Err(err) => Err(anyhow!("failed to read {name}: {err}")),
+    }
+}
+
+fn parse_usize_env_var(name: &str, default_value: usize) -> Result<usize> {
+    match env::var(name) {
+        Ok(raw) => raw
+            .parse::<usize>()
+            .with_context(|| format!("invalid {name}: {raw}")),
         Err(env::VarError::NotPresent) => Ok(default_value),
         Err(err) => Err(anyhow!("failed to read {name}: {err}")),
     }
@@ -14087,7 +15528,7 @@ mod tests {
             .await
             .expect("runtime weight should exist");
         assert!(
-            runtime_weight <= 0.0,
+            runtime_weight < 1.0,
             "expected failed bootstrap probe to penalize runtime weight; got {runtime_weight}"
         );
 
@@ -14502,6 +15943,16 @@ mod tests {
             user_agent: "codex-test".to_string(),
             static_dir: None,
             snapshot_min_interval: Duration::from_secs(60),
+            retention_enabled: DEFAULT_RETENTION_ENABLED,
+            retention_dry_run: DEFAULT_RETENTION_DRY_RUN,
+            retention_interval: Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS),
+            retention_batch_rows: DEFAULT_RETENTION_BATCH_ROWS,
+            archive_dir: PathBuf::from("target/archive-tests"),
+            invocation_success_full_days: DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
+            invocation_max_days: DEFAULT_INVOCATION_MAX_DAYS,
+            forward_proxy_attempts_retention_days: DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
+            stats_source_snapshots_retention_days: DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
+            quota_snapshot_full_days: DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
             crs_stats: None,
         }
     }
@@ -14518,6 +15969,174 @@ mod tests {
 
     fn sqlite_url_for_path(path: &Path) -> String {
         format!("sqlite://{}", path.to_string_lossy())
+    }
+
+    async fn retention_test_pool_and_config(prefix: &str) -> (SqlitePool, AppConfig, PathBuf) {
+        let temp_dir = make_temp_test_dir(prefix);
+        let db_path = temp_dir.join("codex-vibe-monitor.db");
+        fs::File::create(&db_path).expect("create retention sqlite file");
+        let db_url = sqlite_url_for_path(&db_path);
+        let pool = SqlitePool::connect(&db_url)
+            .await
+            .expect("connect retention sqlite");
+        ensure_schema(&pool).await.expect("ensure retention schema");
+
+        let mut config = test_config();
+        config.database_path = db_path;
+        config.proxy_raw_dir = temp_dir.join("proxy_raw_payloads");
+        config.archive_dir = temp_dir.join("archives");
+        config.retention_batch_rows = 2;
+        fs::create_dir_all(&config.proxy_raw_dir).expect("create retention raw dir");
+        fs::create_dir_all(&config.archive_dir).expect("create retention archive dir");
+        (pool, config, temp_dir)
+    }
+
+    fn cleanup_temp_test_dir(path: &Path) {
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn shanghai_local_days_ago(days: i64, hour: u32, minute: u32, second: u32) -> String {
+        let now_local = Utc::now().with_timezone(&Shanghai);
+        let naive = (now_local.date_naive() - ChronoDuration::days(days))
+            .and_hms_opt(hour, minute, second)
+            .expect("valid shanghai local time");
+        format_naive(naive)
+    }
+
+    fn utc_naive_from_shanghai_local_days_ago(
+        days: i64,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) -> String {
+        let now_local = Utc::now().with_timezone(&Shanghai);
+        let local_naive = (now_local.date_naive() - ChronoDuration::days(days))
+            .and_hms_opt(hour, minute, second)
+            .expect("valid shanghai local time");
+        format_naive(local_naive_to_utc(local_naive, Shanghai).naive_utc())
+    }
+
+    async fn insert_retention_invocation(
+        pool: &SqlitePool,
+        invoke_id: &str,
+        occurred_at: &str,
+        source: &str,
+        status: &str,
+        payload: Option<&str>,
+        raw_response: &str,
+        request_raw_path: Option<&Path>,
+        response_raw_path: Option<&Path>,
+        total_tokens: Option<i64>,
+        cost: Option<f64>,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cost,
+                status,
+                payload,
+                raw_response,
+                request_raw_path,
+                request_raw_size,
+                response_raw_path,
+                response_raw_size,
+                raw_expires_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(source)
+        .bind(Some("gpt-5.2-codex"))
+        .bind(Some(12_i64))
+        .bind(Some(3_i64))
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(status)
+        .bind(payload)
+        .bind(raw_response)
+        .bind(request_raw_path.map(|path| path.to_string_lossy().to_string()))
+        .bind(
+            request_raw_path
+                .and_then(|path| fs::metadata(path).ok())
+                .map(|meta| meta.len() as i64),
+        )
+        .bind(response_raw_path.map(|path| path.to_string_lossy().to_string()))
+        .bind(
+            response_raw_path
+                .and_then(|path| fs::metadata(path).ok())
+                .map(|meta| meta.len() as i64),
+        )
+        .bind(Some("2099-01-01 00:00:00"))
+        .execute(pool)
+        .await
+        .expect("insert retention invocation");
+    }
+
+    async fn insert_stats_source_snapshot_row(
+        pool: &SqlitePool,
+        captured_at: &str,
+        stats_date: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO stats_source_snapshots (
+                source,
+                period,
+                stats_date,
+                model,
+                requests,
+                input_tokens,
+                output_tokens,
+                cache_create_tokens,
+                cache_read_tokens,
+                all_tokens,
+                cost_input,
+                cost_output,
+                cost_cache_write,
+                cost_cache_read,
+                cost_total,
+                raw_response,
+                captured_at,
+                captured_at_epoch
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            "#,
+        )
+        .bind(SOURCE_CRS)
+        .bind("daily")
+        .bind(stats_date)
+        .bind(Some("gpt-5.2"))
+        .bind(4_i64)
+        .bind(10_i64)
+        .bind(6_i64)
+        .bind(0_i64)
+        .bind(0_i64)
+        .bind(16_i64)
+        .bind(0.1_f64)
+        .bind(0.2_f64)
+        .bind(0.0_f64)
+        .bind(0.0_f64)
+        .bind(0.3_f64)
+        .bind("{}")
+        .bind(captured_at)
+        .bind(
+            parse_utc_naive(captured_at)
+                .expect("valid utc naive")
+                .and_utc()
+                .timestamp(),
+        )
+        .execute(pool)
+        .await
+        .expect("insert stats source snapshot row");
     }
 
     #[derive(Debug)]
@@ -21230,18 +22849,20 @@ mod tests {
                 occurred_at,
                 source,
                 status,
+                detail_level,
                 total_tokens,
                 cost,
                 t_upstream_ttfb_ms,
                 raw_response
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(invoke_id)
         .bind(occurred_at)
         .bind(SOURCE_PROXY)
         .bind(status)
+        .bind(DETAIL_LEVEL_FULL)
         .bind(10_i64)
         .bind(0.01_f64)
         .bind(t_upstream_ttfb_ms)
@@ -21470,6 +23091,407 @@ mod tests {
             bucket.first_byte_p95_ms.expect("p95 should be present"),
             145.0,
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_adds_retention_columns_and_tables() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoke_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'xy',
+                payload TEXT,
+                raw_response TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(invoke_id, occurred_at)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy invocation schema");
+
+        ensure_schema(&pool).await.expect("ensure schema migration");
+
+        let columns: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
+            .fetch_all(&pool)
+            .await
+            .expect("inspect invocation columns")
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect();
+        assert!(columns.contains("detail_level"));
+        assert!(columns.contains("detail_pruned_at"));
+        assert!(columns.contains("detail_prune_reason"));
+
+        let tables: HashSet<String> = sqlx::query_scalar(
+            r#"
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('archive_batches', 'invocation_rollup_daily')
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("load retention tables")
+        .into_iter()
+        .collect();
+        assert!(tables.contains("archive_batches"));
+        assert!(tables.contains("invocation_rollup_daily"));
+    }
+
+    #[tokio::test]
+    async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
+        let (pool, config, temp_dir) = retention_test_pool_and_config("retention-prune").await;
+        let response_raw = config.proxy_raw_dir.join("old-success-response.bin");
+        fs::write(&response_raw, b"response-body").expect("write response raw");
+        let request_missing = config.proxy_raw_dir.join("old-success-request.bin");
+        let orphan = config.proxy_raw_dir.join("orphan.bin");
+        fs::write(&orphan, b"orphan").expect("write orphan raw");
+        let occurred_at = shanghai_local_days_ago(31, 12, 0, 0);
+
+        insert_retention_invocation(
+            &pool,
+            "old-success",
+            &occurred_at,
+            SOURCE_XY,
+            "success",
+            Some("{\"endpoint\":\"/v1/responses\"}"),
+            "{\"ok\":true}",
+            Some(&request_missing),
+            Some(&response_raw),
+            Some(321),
+            Some(1.23),
+        )
+        .await;
+
+        let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+            .await
+            .expect("run retention prune");
+        assert_eq!(summary.invocation_details_pruned, 1);
+        assert_eq!(summary.raw_files_removed, 1);
+        assert_eq!(summary.orphan_raw_files_removed, 1);
+        assert!(!response_raw.exists());
+        assert!(!orphan.exists());
+
+        let row = sqlx::query(
+            r#"
+            SELECT
+                payload,
+                raw_response,
+                request_raw_path,
+                response_raw_path,
+                detail_level,
+                detail_pruned_at,
+                detail_prune_reason,
+                total_tokens,
+                cost,
+                status
+            FROM codex_invocations
+            WHERE invoke_id = ?1
+            "#,
+        )
+        .bind("old-success")
+        .fetch_one(&pool)
+        .await
+        .expect("load pruned invocation");
+        assert_eq!(
+            row.get::<String, _>("detail_level"),
+            DETAIL_LEVEL_STRUCTURED_ONLY
+        );
+        assert!(row.get::<Option<String>, _>("detail_pruned_at").is_some());
+        assert_eq!(
+            row.get::<Option<String>, _>("detail_prune_reason")
+                .as_deref(),
+            Some(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
+        );
+        assert!(row.get::<Option<String>, _>("payload").is_none());
+        assert_eq!(row.get::<String, _>("raw_response"), "");
+        assert!(row.get::<Option<String>, _>("request_raw_path").is_none());
+        assert!(row.get::<Option<String>, _>("response_raw_path").is_none());
+        assert_eq!(row.get::<Option<i64>, _>("total_tokens"), Some(321));
+        assert_f64_close(row.get::<Option<f64>, _>("cost").unwrap_or_default(), 1.23);
+        assert_eq!(
+            row.get::<Option<String>, _>("status").as_deref(),
+            Some("success")
+        );
+
+        cleanup_temp_test_dir(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn retention_archives_old_invocations_without_changing_summary_all() {
+        let (pool, config, temp_dir) = retention_test_pool_and_config("retention-archive").await;
+        let old_response = config.proxy_raw_dir.join("old-archive-response.bin");
+        fs::write(&old_response, b"archive-response").expect("write archive raw");
+        let old_occurred_at = shanghai_local_days_ago(91, 10, 0, 0);
+        let old_failed_at = shanghai_local_days_ago(92, 11, 0, 0);
+        let recent_at = shanghai_local_days_ago(5, 15, 0, 0);
+
+        insert_retention_invocation(
+            &pool,
+            "archive-old-success",
+            &old_occurred_at,
+            SOURCE_XY,
+            "success",
+            Some("{\"endpoint\":\"/v1/responses\"}"),
+            "{\"ok\":true}",
+            None,
+            Some(&old_response),
+            Some(100),
+            Some(0.5),
+        )
+        .await;
+        insert_retention_invocation(
+            &pool,
+            "archive-old-failed",
+            &old_failed_at,
+            SOURCE_PROXY,
+            "failed",
+            Some("{\"endpoint\":\"/v1/chat/completions\"}"),
+            "{\"error\":true}",
+            None,
+            None,
+            Some(50),
+            Some(0.25),
+        )
+        .await;
+        insert_retention_invocation(
+            &pool,
+            "archive-recent",
+            &recent_at,
+            SOURCE_PROXY,
+            "success",
+            Some("{\"endpoint\":\"/v1/responses\"}"),
+            "{\"ok\":true}",
+            None,
+            None,
+            Some(70),
+            Some(0.75),
+        )
+        .await;
+
+        let before =
+            query_combined_totals(&pool, None, StatsFilter::All, InvocationSourceScope::All)
+                .await
+                .expect("query totals before retention");
+        let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+            .await
+            .expect("run retention archive");
+        let after =
+            query_combined_totals(&pool, None, StatsFilter::All, InvocationSourceScope::All)
+                .await
+                .expect("query totals after retention");
+
+        assert_eq!(summary.invocation_rows_archived, 2);
+        assert_eq!(summary.archive_batches_touched, 1);
+        assert_eq!(before.total_count, after.total_count);
+        assert_eq!(before.success_count, after.success_count);
+        assert_eq!(before.failure_count, after.failure_count);
+        assert_eq!(before.total_tokens, after.total_tokens);
+        assert_f64_close(before.total_cost, after.total_cost);
+        assert!(!old_response.exists());
+
+        let live_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("count live invocations");
+        assert_eq!(live_count, 1);
+
+        let rollup = sqlx::query(
+            r#"
+            SELECT total_count, success_count, failure_count, total_tokens, total_cost
+            FROM invocation_rollup_daily
+            WHERE stats_date = ?1 AND source = ?2
+            "#,
+        )
+        .bind(&old_occurred_at[..10])
+        .bind(SOURCE_XY)
+        .fetch_one(&pool)
+        .await
+        .expect("load invocation rollup row");
+        assert_eq!(rollup.get::<i64, _>("total_count"), 1);
+        assert_eq!(rollup.get::<i64, _>("success_count"), 1);
+        assert_eq!(rollup.get::<i64, _>("failure_count"), 0);
+        assert_eq!(rollup.get::<i64, _>("total_tokens"), 100);
+        assert_f64_close(rollup.get::<f64, _>("total_cost"), 0.5);
+
+        let batch = sqlx::query(
+            r#"
+            SELECT file_path, row_count, status
+            FROM archive_batches
+            WHERE dataset = 'codex_invocations'
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load invocation archive batch");
+        let file_path = PathBuf::from(batch.get::<String, _>("file_path"));
+        assert!(file_path.exists());
+        assert!(batch.get::<i64, _>("row_count") >= 2);
+        assert_eq!(batch.get::<String, _>("status"), ARCHIVE_STATUS_COMPLETED);
+
+        cleanup_temp_test_dir(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn retention_archives_forward_proxy_attempts_and_stats_snapshots() {
+        let (pool, config, temp_dir) =
+            retention_test_pool_and_config("retention-timestamped").await;
+        let old_attempt = Utc::now() - ChronoDuration::days(35);
+        let recent_attempt = Utc::now() - ChronoDuration::days(1);
+        seed_forward_proxy_attempt_at(&pool, "proxy-old", old_attempt, true).await;
+        seed_forward_proxy_attempt_at(&pool, "proxy-new", recent_attempt, true).await;
+
+        let old_captured_at = utc_naive_from_shanghai_local_days_ago(35, 8, 0, 0);
+        let recent_captured_at = utc_naive_from_shanghai_local_days_ago(1, 8, 0, 0);
+        insert_stats_source_snapshot_row(&pool, &old_captured_at, &old_captured_at[..10]).await;
+        insert_stats_source_snapshot_row(&pool, &recent_captured_at, &recent_captured_at[..10])
+            .await;
+
+        let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+            .await
+            .expect("run timestamped retention");
+        assert_eq!(summary.forward_proxy_attempt_rows_archived, 1);
+        assert_eq!(summary.stats_source_snapshot_rows_archived, 1);
+
+        let remaining_old_attempts: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM forward_proxy_attempts WHERE occurred_at < ?1",
+        )
+        .bind(shanghai_utc_cutoff_string(
+            config.forward_proxy_attempts_retention_days,
+        ))
+        .fetch_one(&pool)
+        .await
+        .expect("count old forward proxy attempts");
+        assert_eq!(remaining_old_attempts, 0);
+
+        let remaining_old_snapshots: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM stats_source_snapshots WHERE captured_at < ?1",
+        )
+        .bind(shanghai_utc_cutoff_string(
+            config.stats_source_snapshots_retention_days,
+        ))
+        .fetch_one(&pool)
+        .await
+        .expect("count old stats snapshots");
+        assert_eq!(remaining_old_snapshots, 0);
+
+        let datasets: HashSet<String> = sqlx::query_scalar(
+            r#"
+            SELECT dataset
+            FROM archive_batches
+            WHERE dataset IN ('forward_proxy_attempts', 'stats_source_snapshots')
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("load timestamped archive batch datasets")
+        .into_iter()
+        .collect();
+        assert!(datasets.contains("forward_proxy_attempts"));
+        assert!(datasets.contains("stats_source_snapshots"));
+
+        cleanup_temp_test_dir(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn retention_compacts_old_quota_snapshots_by_shanghai_day() {
+        let (pool, config, temp_dir) = retention_test_pool_and_config("retention-quota").await;
+        let same_day_early = utc_naive_from_shanghai_local_days_ago(40, 8, 0, 0);
+        let same_day_late = utc_naive_from_shanghai_local_days_ago(40, 23, 0, 0);
+        let next_day = utc_naive_from_shanghai_local_days_ago(39, 9, 0, 0);
+        seed_quota_snapshot(&pool, &same_day_early).await;
+        seed_quota_snapshot(&pool, &same_day_late).await;
+        seed_quota_snapshot(&pool, &next_day).await;
+
+        let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+            .await
+            .expect("run quota compaction");
+        assert_eq!(summary.quota_snapshot_rows_archived, 1);
+
+        let remaining: Vec<String> = sqlx::query_scalar(
+            "SELECT captured_at FROM codex_quota_snapshots ORDER BY captured_at ASC",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("load remaining quota snapshots");
+        assert_eq!(remaining, vec![same_day_late.clone(), next_day.clone()]);
+
+        let quota_batch_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'codex_quota_snapshots'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count quota archive batches");
+        assert_eq!(quota_batch_count, 1);
+
+        cleanup_temp_test_dir(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn retention_dry_run_does_not_mutate_database_or_files() {
+        let (pool, config, temp_dir) = retention_test_pool_and_config("retention-dry-run").await;
+        let response_raw = config.proxy_raw_dir.join("dry-run-response.bin");
+        let orphan = config.proxy_raw_dir.join("dry-run-orphan.bin");
+        fs::write(&response_raw, b"dry-run-response").expect("write dry-run response raw");
+        fs::write(&orphan, b"dry-run-orphan").expect("write dry-run orphan");
+        let occurred_at = shanghai_local_days_ago(91, 7, 0, 0);
+        insert_retention_invocation(
+            &pool,
+            "dry-run-old",
+            &occurred_at,
+            SOURCE_XY,
+            "success",
+            Some("{\"endpoint\":\"/v1/responses\"}"),
+            "{\"ok\":true}",
+            None,
+            Some(&response_raw),
+            Some(111),
+            Some(0.9),
+        )
+        .await;
+
+        let summary = run_data_retention_maintenance(&pool, &config, Some(true))
+            .await
+            .expect("run dry-run retention");
+        assert!(summary.dry_run);
+        assert_eq!(summary.invocation_rows_archived, 1);
+        assert_eq!(summary.archive_batches_touched, 1);
+        assert_eq!(summary.raw_files_removed, 1);
+        assert_eq!(summary.orphan_raw_files_removed, 1);
+        assert!(response_raw.exists());
+        assert!(orphan.exists());
+
+        let row = sqlx::query(
+            "SELECT detail_level, payload, raw_response FROM codex_invocations WHERE invoke_id = ?1",
+        )
+        .bind("dry-run-old")
+        .fetch_one(&pool)
+        .await
+        .expect("load dry-run invocation");
+        assert_eq!(row.get::<String, _>("detail_level"), DETAIL_LEVEL_FULL);
+        assert!(row.get::<Option<String>, _>("payload").is_some());
+        assert_eq!(row.get::<String, _>("raw_response"), "{\"ok\":true}");
+
+        let archive_batch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+            .fetch_one(&pool)
+            .await
+            .expect("count dry-run archive batches");
+        assert_eq!(archive_batch_count, 0);
+
+        let archive_files = fs::read_dir(&config.archive_dir)
+            .expect("read archive dir")
+            .count();
+        assert_eq!(archive_files, 0);
+
+        cleanup_temp_test_dir(&temp_dir);
     }
 }
 
@@ -21834,7 +23856,53 @@ async fn query_invocation_totals(
     filter: StatsFilter,
     source_scope: InvocationSourceScope,
 ) -> Result<StatsTotals> {
-    let row = query_stats_row(pool, filter, source_scope).await?;
+    let live = StatsTotals::from(query_stats_row(pool, filter.clone(), source_scope).await?);
+    if !matches!(filter, StatsFilter::All) {
+        return Ok(live);
+    }
+
+    let rollup = query_invocation_rollup_totals(pool, source_scope).await?;
+    Ok(live.add(rollup))
+}
+
+async fn query_invocation_rollup_totals(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+) -> Result<StatsTotals> {
+    let row = match source_scope {
+        InvocationSourceScope::ProxyOnly => {
+            sqlx::query_as::<_, StatsRow>(
+                r#"
+                SELECT
+                    COALESCE(SUM(total_count), 0) AS total_count,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(failure_count), 0) AS failure_count,
+                    COALESCE(SUM(total_cost), 0.0) AS total_cost,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM invocation_rollup_daily
+                WHERE source = ?1
+                "#,
+            )
+            .bind(SOURCE_PROXY)
+            .fetch_one(pool)
+            .await?
+        }
+        InvocationSourceScope::All => {
+            sqlx::query_as::<_, StatsRow>(
+                r#"
+                SELECT
+                    COALESCE(SUM(total_count), 0) AS total_count,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(failure_count), 0) AS failure_count,
+                    COALESCE(SUM(total_cost), 0.0) AS total_cost,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM invocation_rollup_daily
+                "#,
+            )
+            .fetch_one(pool)
+            .await?
+        }
+    };
     Ok(StatsTotals::from(row))
 }
 

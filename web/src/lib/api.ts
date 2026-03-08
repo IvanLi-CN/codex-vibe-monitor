@@ -63,6 +63,9 @@ export interface ApiInvocation {
   rawMetadata?: ApiInvocationRawMetadata
   proxyTimings?: ApiInvocationTimings
   proxyRawMetadata?: ApiInvocationRawMetadata
+  detailLevel?: 'full' | 'structured_only'
+  detailPrunedAt?: string | null
+  detailPruneReason?: string | null
   createdAt: string
 }
 
