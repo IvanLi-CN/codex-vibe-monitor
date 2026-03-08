@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-08
 - Last: 2026-03-08
 
@@ -59,7 +59,7 @@
 - [x] M2: 新增共享 inline chart tooltip 原语、定位逻辑与 pointer/tap/keyboard 交互 hook。
 - [x] M3: ForwardProxyLiveTable 与 PromptCacheConversationTable 接入统一 tooltip / 高亮 / aria 文案。
 - [x] M4: 补齐 Vitest SSR + jsdom 交互覆盖，并更新 Storybook 场景。
-- [ ] M5: 完成本地验证、浏览器复核、fast-track PR 与 spec 同步。
+- [x] M5: 完成本地验证、浏览器复核、fast-track PR 与 spec 同步。
 
 ## 进度备注
 
@@ -69,6 +69,7 @@
 - 交互测试使用 Vitest + jsdom 文件级环境，不引入新的测试框架。
 - 本地已通过 `cd web && npm run lint && npm run test && npm run build`。
 - 已用 Storybook mock + chrome-devtools 复核 hover / keyboard / tap 三套交互，未见原生 tooltip 残留。
+- Fast-track PR: `#97 feat(web): unify live inline chart tooltips`。
 
 ## 参考
 
