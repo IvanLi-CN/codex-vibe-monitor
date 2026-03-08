@@ -91,6 +91,7 @@ const DEFAULT_RETENTION_DRY_RUN: bool = false;
 const DEFAULT_RETENTION_INTERVAL_SECS: u64 = 60 * 60;
 const DEFAULT_RETENTION_BATCH_ROWS: usize = 1000;
 const DEFAULT_ARCHIVE_DIR: &str = "archives";
+const DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS: u64 = 24 * 60 * 60;
 const DEFAULT_INVOCATION_SUCCESS_FULL_DAYS: u64 = 30;
 const DEFAULT_INVOCATION_MAX_DAYS: u64 = 90;
 const DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: u64 = 30;
@@ -1660,6 +1661,7 @@ async fn sweep_orphan_proxy_raw_files(
         }
     }
 
+    let min_file_age = Duration::from_secs(DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS);
     let mut removed = 0usize;
     for entry in fs::read_dir(&raw_dir)
         .with_context(|| format!("failed to read raw payload directory {}", raw_dir.display()))?
@@ -1667,6 +1669,16 @@ async fn sweep_orphan_proxy_raw_files(
         let entry = entry?;
         let path = entry.path();
         if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let age = match entry.metadata().and_then(|metadata| metadata.modified()) {
+            Ok(modified) => modified.elapsed().unwrap_or_default(),
+            Err(err) => {
+                warn!(path = %path.display(), error = %err, "failed to inspect orphan raw payload file age");
+                continue;
+            }
+        };
+        if age < min_file_age {
             continue;
         }
         let normalized = normalize_path_for_compare(&path);
@@ -16175,6 +16187,12 @@ mod tests {
         dir
     }
 
+    fn set_file_mtime_seconds_ago(path: &Path, seconds: u64) {
+        let modified_at = std::time::SystemTime::now() - Duration::from_secs(seconds);
+        let modified_at = filetime::FileTime::from_system_time(modified_at);
+        filetime::set_file_mtime(path, modified_at).expect("set file mtime");
+    }
+
     #[test]
     fn archive_batch_file_path_resolves_relative_archive_dir_from_database_parent() {
         let mut config = test_config();
@@ -23586,6 +23604,7 @@ mod tests {
         let request_missing = config.proxy_raw_dir.join("old-success-request.bin");
         let orphan = config.proxy_raw_dir.join("orphan.bin");
         fs::write(&orphan, b"orphan").expect("write orphan raw");
+        set_file_mtime_seconds_ago(&orphan, DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS + 60);
         let occurred_at = shanghai_local_days_ago(31, 12, 0, 0);
 
         insert_retention_invocation(
@@ -23932,12 +23951,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retention_orphan_sweep_skips_fresh_raw_files() {
+        let (pool, config, temp_dir) =
+            retention_test_pool_and_config("retention-orphan-grace").await;
+        let orphan = config.proxy_raw_dir.join("fresh-orphan.bin");
+        fs::write(&orphan, b"fresh-orphan").expect("write fresh orphan");
+
+        let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+            .await
+            .expect("run retention with fresh orphan");
+        assert_eq!(summary.orphan_raw_files_removed, 0);
+        assert!(orphan.exists());
+
+        cleanup_temp_test_dir(&temp_dir);
+    }
+
+    #[tokio::test]
     async fn retention_dry_run_does_not_mutate_database_or_files() {
         let (pool, config, temp_dir) = retention_test_pool_and_config("retention-dry-run").await;
         let response_raw = config.proxy_raw_dir.join("dry-run-response.bin");
         let orphan = config.proxy_raw_dir.join("dry-run-orphan.bin");
         fs::write(&response_raw, b"dry-run-response").expect("write dry-run response raw");
         fs::write(&orphan, b"dry-run-orphan").expect("write dry-run orphan");
+        set_file_mtime_seconds_ago(&orphan, DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS + 60);
         let occurred_at = shanghai_local_days_ago(91, 7, 0, 0);
         insert_retention_invocation(
             &pool,

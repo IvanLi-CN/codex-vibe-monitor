@@ -78,7 +78,7 @@
   - `detailLevel`: `full | structured_only`
   - `detailPrunedAt?: string`
   - `detailPruneReason?: string`
-- `InvocationTable` 必须显示 `Full` / `Structured only` 徽标；若记录已精简，还要显示精简时间并提示“离线 archive 保留归档行，超窗 raw file 不保证继续可用”。
+- `InvocationTable` 必须显示 `Full` / `Structured only` 徽标；若记录已精简，还要显示精简时间并提示“离线 archive 保留归档行，超窗 raw file 不保证继续可用”。orphan sweep 只清理超过宽限期的未引用文件，避免误删进行中的请求落盘文件。
 - 旧记录缺少新字段时按 `detailLevel=full` 兼容渲染。
 
 ### 查询边界

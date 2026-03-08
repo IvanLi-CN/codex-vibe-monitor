@@ -126,7 +126,7 @@ cargo run -- \
 - `forward_proxy_attempts` 与 `stats_source_snapshots` 只保留最近 30 个上海自然日在线明细；更老数据同样执行“先归档、再清理”。
 - `codex_quota_snapshots` 保留最近 30 天全量，更老日期在主库内压缩为“每个上海自然日最后一条”，被折叠掉的行进入离线归档。
 - `stats_source_deltas` 长期在线保留；`/api/stats` 与 `GET /api/stats/summary?window=all` 通过“在线明细 + invocation_rollup_daily”保证长期 totals 不缩水。
-- 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，现有 Web UI 不提供 archived 明细在线浏览。
+- 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，现有 Web UI 不提供 archived 明细在线浏览；orphan sweep 只清理超过宽限期的未引用文件。
 
 首次清理建议先做 dry-run：
 

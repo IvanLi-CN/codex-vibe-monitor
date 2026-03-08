@@ -126,5 +126,5 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 - archive 文件按上海自然月切分，路径形如 `XY_ARCHIVE_DIR/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`。
 - `codex_invocations` 成功记录超过 30 个上海自然日后，会先把完整行写入离线 archive，再在主库内精简为 `structured_only`；任意调用超过 90 天后清理主库明细。
 - `forward_proxy_attempts`、`stats_source_snapshots` 只保留近 30 天在线明细；`codex_quota_snapshots` 近 30 天逐条保留，更老日期压缩为每天最后一条。
-- 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，而不是在线 UI。
+- 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，而不是在线 UI。orphan sweep 只会清理超过宽限期的未引用文件，以避免误删进行中的请求落盘文件。
 - 常驻 maintenance 只做 `wal_checkpoint(PASSIVE)` 与 `PRAGMA optimize`；首次真实 cleanup 完成后，再在维护窗口人工执行一次 `VACUUM`。
