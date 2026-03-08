@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                              |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------- |
+| ww6et | 请求侧 Fast 情报与中性闪电标识                                            | 实现完成（4/5） | `ww6et-requested-fast-intel-neutral-bolt/SPEC.md`        | 2026-03-08 | fast-track / 验证通过，待 PR 收口  |
 | hbqe3 | InvocationTable 推理强度徽标色阶优化                                      | 已完成（4/4）   | `hbqe3-invocation-reasoning-effort-badge-colors/SPEC.md` | 2026-03-07 | fast-track / PR #94 / checks green |
 | rw32e | 请求列表 Fast 模式标识（service tier 版）                                 | 已完成（5/5）   | `rw32e-invocation-fast-mode-indicator/SPEC.md`           | 2026-03-07 | fast-track / PR #93 / checks green |
 | rupn7 | InvocationTable 推理强度与详情 reasoningTokens                            | 已完成          | `rupn7-invocation-table-reasoning-effort/SPEC.md`        | 2026-03-07 | fast-track / PR #92                |
