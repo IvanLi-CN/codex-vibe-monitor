@@ -25,6 +25,7 @@ const records: ApiInvocation[] = [
     cost: 0.0037,
     requesterIp: '203.0.113.42',
     promptCacheKey: 'pck_6f35b9b20f0348af',
+    requestedServiceTier: 'priority',
     serviceTier: 'priority',
     proxyWeightDelta: 0.55,
     tReqReadMs: 1.8,
@@ -54,7 +55,8 @@ const records: ApiInvocation[] = [
     totalTokens: 884,
     errorMessage: 'upstream timeout while waiting first byte',
     failureKind: 'upstream_timeout',
-    serviceTier: 'flex',
+    requestedServiceTier: 'priority',
+    serviceTier: 'auto',
     proxyWeightDelta: -0.68,
     tReqReadMs: 1.1,
     tReqParseMs: 2.3,
@@ -82,6 +84,7 @@ const records: ApiInvocation[] = [
     cost: 0.0051,
     requesterIp: '203.0.113.77',
     promptCacheKey: 'pck_82c89c811a',
+    requestedServiceTier: 'priority',
     proxyWeightDelta: 0,
     tReqReadMs: 1.4,
     tReqParseMs: 2.8,
@@ -94,6 +97,103 @@ const records: ApiInvocation[] = [
   },
 ]
 
+
+const fastIndicatorRecords: ApiInvocation[] = [
+  {
+    id: 1101,
+    invokeId: 'inv_fast_effective',
+    occurredAt: '2026-02-25T10:30:00Z',
+    createdAt: '2026-02-25T10:30:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Fast-effective',
+    endpoint: '/v1/responses',
+    model: 'gpt-5-mini',
+    status: 'success',
+    requestedServiceTier: 'priority',
+    serviceTier: 'priority',
+    inputTokens: 1200,
+    outputTokens: 240,
+    totalTokens: 1440,
+    cost: 0.0032,
+    tUpstreamTtfbMs: 118.3,
+    tTotalMs: 640.2,
+  },
+  {
+    id: 1102,
+    invokeId: 'inv_fast_requested_auto',
+    occurredAt: '2026-02-25T10:31:00Z',
+    createdAt: '2026-02-25T10:31:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Fast-requested-auto',
+    endpoint: '/v1/responses',
+    model: 'gpt-5',
+    status: 'failed',
+    requestedServiceTier: 'priority',
+    serviceTier: 'auto',
+    inputTokens: 980,
+    outputTokens: 0,
+    totalTokens: 980,
+    errorMessage: 'upstream timeout while waiting first byte',
+    tUpstreamTtfbMs: null,
+    tTotalMs: 30010.5,
+  },
+  {
+    id: 1103,
+    invokeId: 'inv_fast_requested_missing',
+    occurredAt: '2026-02-25T10:32:00Z',
+    createdAt: '2026-02-25T10:32:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Fast-requested-missing',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'success',
+    requestedServiceTier: 'priority',
+    inputTokens: 1024,
+    outputTokens: 196,
+    totalTokens: 1220,
+    cost: 0.0038,
+    tUpstreamTtfbMs: 142.6,
+    tTotalMs: 702.1,
+  },
+  {
+    id: 1104,
+    invokeId: 'inv_fast_effective_auto_request',
+    occurredAt: '2026-02-25T10:33:00Z',
+    createdAt: '2026-02-25T10:33:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Fast-effective-auto-request',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'success',
+    requestedServiceTier: 'auto',
+    serviceTier: 'priority',
+    inputTokens: 1188,
+    outputTokens: 202,
+    totalTokens: 1390,
+    cost: 0.0041,
+    tUpstreamTtfbMs: 104.4,
+    tTotalMs: 611.9,
+  },
+  {
+    id: 1105,
+    invokeId: 'inv_fast_none_flex',
+    occurredAt: '2026-02-25T10:34:00Z',
+    createdAt: '2026-02-25T10:34:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Fast-none-flex',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'success',
+    requestedServiceTier: 'flex',
+    serviceTier: 'flex',
+    inputTokens: 1160,
+    outputTokens: 188,
+    totalTokens: 1348,
+    cost: 0.0035,
+    tUpstreamTtfbMs: 156.8,
+    tTotalMs: 734.7,
+  },
+]
 
 const reasoningEffortRecords: ApiInvocation[] = [
   {
@@ -334,6 +434,22 @@ export const Default: Story = {
   },
 }
 
+
+export const FastIndicatorStates: Story = {
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Covers the fast indicator matrix: effective priority, requested-only fallback, requested priority with missing response tier, effective priority despite non-priority request, and a flex request with no lightning icon.',
+      },
+    },
+  },
+  args: {
+    records: fastIndicatorRecords,
+    isLoading: false,
+    error: null,
+  },
+}
 
 export const ReasoningEffortStates: Story = {
   parameters: {

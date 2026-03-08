@@ -2,7 +2,12 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { I18nProvider } from '../i18n'
 import type { ApiInvocation } from '../lib/api'
-import { formatProxyWeightDelta, formatServiceTier, isPriorityServiceTier } from '../lib/invocation'
+import {
+  formatProxyWeightDelta,
+  formatServiceTier,
+  getFastIndicatorState,
+  isPriorityServiceTier,
+} from '../lib/invocation'
 import { InvocationTable } from './InvocationTable'
 import { getReasoningEffortTone } from './invocation-table-reasoning'
 
@@ -52,6 +57,14 @@ describe('service tier helpers', () => {
     expect(isPriorityServiceTier(' Priority ')).toBe(true)
     expect(isPriorityServiceTier('flex')).toBe(false)
     expect(isPriorityServiceTier(undefined)).toBe(false)
+  })
+
+  it('resolves fast indicator states from requested and effective tiers', () => {
+    expect(getFastIndicatorState('priority', 'priority')).toBe('effective')
+    expect(getFastIndicatorState('priority', 'auto')).toBe('requested_only')
+    expect(getFastIndicatorState('priority', undefined)).toBe('requested_only')
+    expect(getFastIndicatorState('auto', 'priority')).toBe('effective')
+    expect(getFastIndicatorState('flex', 'auto')).toBe('none')
   })
 })
 
@@ -156,6 +169,84 @@ describe('InvocationTable', () => {
     expect(html).toContain('custom-tier')
     expect(html).toContain('data-reasoning-effort-tone="unknown"')
     expect(html).toContain('border-dashed')
+  })
+
+  it('renders effective and requested-only fast indicators with distinct states', () => {
+    const html = renderTable([
+      {
+        id: 11,
+        invokeId: 'priority-priority',
+        occurredAt: '2026-03-07T03:13:59Z',
+        createdAt: '2026-03-07T03:13:59Z',
+        source: 'proxy',
+        proxyDisplayName: 'tokyo-edge-1',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        requestedServiceTier: 'priority',
+        serviceTier: 'priority',
+        totalTokens: 42,
+      },
+      {
+        id: 12,
+        invokeId: 'priority-auto',
+        occurredAt: '2026-03-07T03:14:00Z',
+        createdAt: '2026-03-07T03:14:00Z',
+        source: 'proxy',
+        proxyDisplayName: 'seoul-edge-2',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        requestedServiceTier: 'priority',
+        serviceTier: 'auto',
+        totalTokens: 43,
+      },
+      {
+        id: 13,
+        invokeId: 'priority-missing',
+        occurredAt: '2026-03-07T03:14:01Z',
+        createdAt: '2026-03-07T03:14:01Z',
+        source: 'proxy',
+        proxyDisplayName: 'sfo-edge-3',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        requestedServiceTier: 'priority',
+        totalTokens: 44,
+      },
+      {
+        id: 14,
+        invokeId: 'auto-priority',
+        occurredAt: '2026-03-07T03:14:02Z',
+        createdAt: '2026-03-07T03:14:02Z',
+        source: 'proxy',
+        proxyDisplayName: 'singapore-edge-4',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        requestedServiceTier: 'auto',
+        serviceTier: 'priority',
+        totalTokens: 45,
+      },
+      {
+        id: 15,
+        invokeId: 'flex-none',
+        occurredAt: '2026-03-07T03:14:03Z',
+        createdAt: '2026-03-07T03:14:03Z',
+        source: 'proxy',
+        proxyDisplayName: 'nyc-edge-5',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        requestedServiceTier: 'flex',
+        totalTokens: 46,
+      },
+    ])
+
+    expect(html.match(/data-fast-state="effective"/g)?.length ?? 0).toBe(4)
+    expect(html.match(/data-fast-state="requested_only"/g)?.length ?? 0).toBe(4)
+    expect(html).toContain('Fast 模式（Priority processing）')
+    expect(html).toContain('请求想要 Fast，但实际未命中 Priority processing')
   })
 
   it('renders structured-only detail badges and prune timestamps for retained records', () => {

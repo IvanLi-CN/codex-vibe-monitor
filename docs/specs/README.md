@@ -9,6 +9,7 @@
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                              |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------- |
 | 9aucy | 数据分层保留、离线归档与长周期汇总                                        | 进行中          | `9aucy-db-retention-archive/SPEC.md`                     | 2026-03-08 | fast-track / retention + archive   |
+| ww6et | 请求侧 Fast 情报与中性闪电标识                                            | 已完成（5/5）   | `ww6et-requested-fast-intel-neutral-bolt/SPEC.md`        | 2026-03-08 | fast-track / PR #95 / checks green |
 | hbqe3 | InvocationTable 推理强度徽标色阶优化                                      | 已完成（4/4）   | `hbqe3-invocation-reasoning-effort-badge-colors/SPEC.md` | 2026-03-07 | fast-track / PR #94 / checks green |
 | rw32e | 请求列表 Fast 模式标识（service tier 版）                                 | 已完成（5/5）   | `rw32e-invocation-fast-mode-indicator/SPEC.md`           | 2026-03-07 | fast-track / PR #93 / checks green |
 | rupn7 | InvocationTable 推理强度与详情 reasoningTokens                            | 已完成          | `rupn7-invocation-table-reasoning-effort/SPEC.md`        | 2026-03-07 | fast-track / PR #92                |

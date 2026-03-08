@@ -366,6 +366,16 @@ async fn main() -> Result<()> {
         skipped_missing_key = prompt_cache_summary.skipped_missing_key,
         "proxy prompt cache key startup backfill finished"
     );
+    let requested_service_tier_summary =
+        backfill_proxy_requested_service_tiers(&pool, raw_path_fallback_root).await?;
+    info!(
+        scanned = requested_service_tier_summary.scanned,
+        updated = requested_service_tier_summary.updated,
+        skipped_missing_file = requested_service_tier_summary.skipped_missing_file,
+        skipped_invalid_json = requested_service_tier_summary.skipped_invalid_json,
+        skipped_missing_tier = requested_service_tier_summary.skipped_missing_tier,
+        "proxy requested service tier startup backfill finished"
+    );
     let service_tier_summary =
         backfill_invocation_service_tiers(&pool, raw_path_fallback_root).await?;
     info!(
@@ -4572,6 +4582,12 @@ async fn persist_records(
                     failure_class,
                     is_actionable,
                     CASE
+                      WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text'
+                        THEN json_extract(payload, '$.requestedServiceTier')
+                      WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text'
+                        THEN json_extract(payload, '$.requested_service_tier')
+                    END AS requested_service_tier,
+                    CASE
                       WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'
                         THEN json_extract(payload, '$.serviceTier')
                       WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
@@ -4752,6 +4768,11 @@ async fn list_invocations(
          failure_class, is_actionable, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
+         CASE \
+           WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
+             THEN json_extract(payload, '$.requestedServiceTier') \
+           WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
+             THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
          CASE \
            WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
              THEN json_extract(payload, '$.serviceTier') \
@@ -6886,6 +6907,7 @@ async fn proxy_openai_v1_capture_target(
                     read_err.status,
                     request_info.is_stream,
                     None,
+                    request_info.requested_service_tier.as_deref(),
                     request_info.reasoning_effort.as_deref(),
                     None,
                     None,
@@ -7016,6 +7038,7 @@ async fn proxy_openai_v1_capture_target(
                     status,
                     request_info.is_stream,
                     None,
+                    request_info.requested_service_tier.as_deref(),
                     request_info.reasoning_effort.as_deref(),
                     None,
                     None,
@@ -7087,6 +7110,7 @@ async fn proxy_openai_v1_capture_target(
                     StatusCode::BAD_GATEWAY,
                     request_info.is_stream,
                     None,
+                    request_info.requested_service_tier.as_deref(),
                     request_info.reasoning_effort.as_deref(),
                     None,
                     None,
@@ -7163,6 +7187,7 @@ async fn proxy_openai_v1_capture_target(
                     StatusCode::BAD_GATEWAY,
                     request_info.is_stream,
                     None,
+                    request_info.requested_service_tier.as_deref(),
                     request_info.reasoning_effort.as_deref(),
                     None,
                     None,
@@ -7372,6 +7397,7 @@ async fn proxy_openai_v1_capture_target(
             upstream_status,
             request_info_for_task.is_stream,
             request_info_for_task.model.as_deref(),
+            request_info_for_task.requested_service_tier.as_deref(),
             request_info_for_task.reasoning_effort.as_deref(),
             response_info.model.as_deref(),
             response_info.usage_missing_reason.as_deref(),
@@ -7528,6 +7554,7 @@ fn prepare_target_request_body(
     let mut info = RequestCaptureInfo {
         model: None,
         prompt_cache_key: None,
+        requested_service_tier: None,
         reasoning_effort: None,
         is_stream: false,
         parse_error: None,
@@ -7550,6 +7577,7 @@ fn prepare_target_request_body(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     info.prompt_cache_key = extract_prompt_cache_key_from_request_body(&value);
+    info.requested_service_tier = extract_requested_service_tier_from_request_body(&value);
     info.reasoning_effort = extract_reasoning_effort_from_request_body(target, &value);
     info.is_stream = value
         .get("stream")
@@ -7608,6 +7636,13 @@ fn extract_prompt_cache_key_from_request_body(value: &Value) -> Option<String> {
         }
     }
     None
+}
+
+fn extract_requested_service_tier_from_request_body(value: &Value) -> Option<String> {
+    ["/service_tier", "/serviceTier"]
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(|entry| entry.as_str()))
+        .and_then(normalize_service_tier)
 }
 
 fn extract_reasoning_effort_from_request_body(
@@ -7950,6 +7985,7 @@ fn build_proxy_payload_summary(
     status: StatusCode,
     is_stream: bool,
     request_model: Option<&str>,
+    requested_service_tier: Option<&str>,
     reasoning_effort: Option<&str>,
     response_model: Option<&str>,
     usage_missing_reason: Option<&str>,
@@ -7970,6 +8006,7 @@ fn build_proxy_payload_summary(
         "statusCode": status.as_u16(),
         "isStream": is_stream,
         "requestModel": request_model,
+        "requestedServiceTier": requested_service_tier,
         "reasoningEffort": reasoning_effort,
         "responseModel": response_model,
         "usageMissingReason": usage_missing_reason,
@@ -8486,6 +8523,11 @@ async fn persist_proxy_capture_record(
             is_actionable,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text'
+                THEN json_extract(payload, '$.requestedServiceTier')
+              WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text'
+                THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier,
             CASE
               WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'
                 THEN json_extract(payload, '$.serviceTier')
@@ -9004,6 +9046,115 @@ async fn backfill_proxy_prompt_cache_keys(
                 "#,
             )
             .bind(prompt_cache_key)
+            .bind(candidate.id)
+            .bind(SOURCE_PROXY)
+            .execute(pool)
+            .await?
+            .rows_affected();
+            summary.updated += affected;
+        }
+    }
+
+    Ok(summary)
+}
+
+async fn backfill_proxy_requested_service_tiers(
+    pool: &Pool<Sqlite>,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<ProxyRequestedServiceTierBackfillSummary> {
+    let mut summary = ProxyRequestedServiceTierBackfillSummary::default();
+    let mut last_seen_id = 0_i64;
+
+    loop {
+        let candidates = sqlx::query_as::<_, ProxyRequestedServiceTierBackfillCandidate>(
+            r#"
+            SELECT id, request_raw_path
+            FROM codex_invocations
+            WHERE source = ?1
+              AND request_raw_path IS NOT NULL
+              AND id > ?2
+              AND (
+                payload IS NULL
+                OR NOT json_valid(payload)
+                OR json_extract(payload, '$.requestedServiceTier') IS NULL
+                OR TRIM(CAST(json_extract(payload, '$.requestedServiceTier') AS TEXT)) = ''
+              )
+            ORDER BY id ASC
+            LIMIT ?3
+            "#,
+        )
+        .bind(SOURCE_PROXY)
+        .bind(last_seen_id)
+        .bind(BACKFILL_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        for candidate in candidates {
+            last_seen_id = candidate.id;
+            summary.scanned += 1;
+
+            let raw_request = match read_proxy_raw_bytes(
+                &candidate.request_raw_path,
+                raw_path_fallback_root,
+            ) {
+                Ok(content) => content,
+                Err(err) => {
+                    summary.skipped_missing_file += 1;
+                    warn!(
+                        id = candidate.id,
+                        path = %candidate.request_raw_path,
+                        error = %err,
+                        "proxy requested service tier backfill skipped because request raw file is unavailable"
+                    );
+                    continue;
+                }
+            };
+
+            let request_payload = match serde_json::from_slice::<Value>(&raw_request) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    summary.skipped_invalid_json += 1;
+                    warn!(
+                        id = candidate.id,
+                        path = %candidate.request_raw_path,
+                        error = %err,
+                        "proxy requested service tier backfill skipped because request raw file is not valid JSON"
+                    );
+                    continue;
+                }
+            };
+
+            let Some(requested_service_tier) =
+                extract_requested_service_tier_from_request_body(&request_payload)
+            else {
+                summary.skipped_missing_tier += 1;
+                continue;
+            };
+
+            let affected = sqlx::query(
+                r#"
+                UPDATE codex_invocations
+                SET payload = json_set(
+                    CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+                    '$.requestedServiceTier',
+                    ?1
+                )
+                WHERE id = ?2
+                  AND source = ?3
+                  AND request_raw_path IS NOT NULL
+                  AND (
+                    payload IS NULL
+                    OR NOT json_valid(payload)
+                    OR json_extract(payload, '$.requestedServiceTier') IS NULL
+                    OR TRIM(CAST(json_extract(payload, '$.requestedServiceTier') AS TEXT)) = ''
+                  )
+                "#,
+            )
+            .bind(requested_service_tier)
             .bind(candidate.id)
             .bind(SOURCE_PROXY)
             .execute(pool)
@@ -11236,6 +11387,8 @@ struct ApiInvocation {
     #[sqlx(default)]
     prompt_cache_key: Option<String>,
     #[sqlx(default)]
+    requested_service_tier: Option<String>,
+    #[sqlx(default)]
     service_tier: Option<String>,
     #[sqlx(default)]
     proxy_weight_delta: Option<f64>,
@@ -13330,6 +13483,7 @@ struct RawPayloadMeta {
 struct RequestCaptureInfo {
     model: Option<String>,
     prompt_cache_key: Option<String>,
+    requested_service_tier: Option<String>,
     reasoning_effort: Option<String>,
     is_stream: bool,
     parse_error: Option<String>,
@@ -13420,6 +13574,15 @@ struct ProxyPromptCacheKeyBackfillSummary {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
+struct ProxyRequestedServiceTierBackfillSummary {
+    scanned: u64,
+    updated: u64,
+    skipped_missing_file: u64,
+    skipped_invalid_json: u64,
+    skipped_missing_tier: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
 struct InvocationServiceTierBackfillSummary {
     scanned: u64,
     updated: u64,
@@ -13498,6 +13661,12 @@ struct ProxyCostBackfillCandidate {
 
 #[derive(Debug, FromRow)]
 struct ProxyPromptCacheKeyBackfillCandidate {
+    id: i64,
+    request_raw_path: String,
+}
+
+#[derive(Debug, FromRow)]
+struct ProxyRequestedServiceTierBackfillCandidate {
     id: i64,
     request_raw_path: String,
 }
@@ -16213,11 +16382,26 @@ mod tests {
     }
 
     fn write_backfill_request_payload(path: &Path, prompt_cache_key: Option<&str>) {
-        write_backfill_request_payload_with_reasoning(
+        write_backfill_request_payload_with_fields(
             path,
             prompt_cache_key,
             None,
+            None,
             ProxyCaptureTarget::Responses,
+        );
+    }
+
+    fn write_backfill_request_payload_with_requested_service_tier(
+        path: &Path,
+        requested_service_tier: Option<&str>,
+        target: ProxyCaptureTarget,
+    ) {
+        write_backfill_request_payload_with_fields(
+            path,
+            None,
+            None,
+            requested_service_tier,
+            target,
         );
     }
 
@@ -16225,6 +16409,22 @@ mod tests {
         path: &Path,
         prompt_cache_key: Option<&str>,
         reasoning_effort: Option<&str>,
+        target: ProxyCaptureTarget,
+    ) {
+        write_backfill_request_payload_with_fields(
+            path,
+            prompt_cache_key,
+            reasoning_effort,
+            None,
+            target,
+        );
+    }
+
+    fn write_backfill_request_payload_with_fields(
+        path: &Path,
+        prompt_cache_key: Option<&str>,
+        reasoning_effort: Option<&str>,
+        requested_service_tier: Option<&str>,
         target: ProxyCaptureTarget,
     ) {
         let payload = match target {
@@ -16240,6 +16440,9 @@ mod tests {
                 if let Some(effort) = reasoning_effort {
                     payload["reasoning"] = json!({ "effort": effort });
                 }
+                if let Some(service_tier) = requested_service_tier {
+                    payload["service_tier"] = Value::String(service_tier.to_string());
+                }
                 payload
             }
             ProxyCaptureTarget::ChatCompletions => {
@@ -16253,6 +16456,9 @@ mod tests {
                 }
                 if let Some(effort) = reasoning_effort {
                     payload["reasoning_effort"] = Value::String(effort.to_string());
+                }
+                if let Some(service_tier) = requested_service_tier {
+                    payload["serviceTier"] = Value::String(service_tier.to_string());
                 }
                 payload
             }
@@ -16448,7 +16654,7 @@ mod tests {
             status: "success".to_string(),
             error_message: None,
             payload: Some(
-                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\",\"reasoningEffort\":\"high\"}"
+                "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\",\"requestedServiceTier\":\"priority\",\"reasoningEffort\":\"high\"}"
                     .to_string(),
             ),
             raw_response: "{}".to_string(),
@@ -19292,6 +19498,7 @@ mod tests {
         assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
         assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
         assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-broadcast-1"));
+        assert_eq!(record.requested_service_tier.as_deref(), Some("priority"));
         assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
         assert!(record.failure_kind.is_none());
     }
@@ -20247,6 +20454,21 @@ mod tests {
     }
 
     #[test]
+    fn prepare_target_request_body_extracts_requested_service_tier() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "serviceTier": " Priority ",
+            "stream": false
+        }))
+        .expect("serialize request body");
+
+        let (_rewritten, info, _did_rewrite) =
+            prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
+
+        assert_eq!(info.requested_service_tier.as_deref(), Some("priority"));
+    }
+
+    #[test]
     fn prepare_target_request_body_extracts_reasoning_effort_for_responses() {
         let body = serde_json::to_vec(&json!({
             "model": "gpt-5.3-codex",
@@ -20277,6 +20499,44 @@ mod tests {
             prepare_target_request_body(ProxyCaptureTarget::ChatCompletions, body, true);
 
         assert_eq!(info.reasoning_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn extract_requested_service_tier_from_request_body_reads_top_level_aliases() {
+        let snake_case = json!({ "service_tier": " Priority " });
+        let camel_case = json!({ "serviceTier": "PRIORITY" });
+
+        assert_eq!(
+            extract_requested_service_tier_from_request_body(&snake_case).as_deref(),
+            Some("priority")
+        );
+        assert_eq!(
+            extract_requested_service_tier_from_request_body(&camel_case).as_deref(),
+            Some("priority")
+        );
+    }
+
+    #[test]
+    fn extract_requested_service_tier_from_request_body_ignores_nested_or_non_string_values() {
+        let nested = json!({
+            "response": { "service_tier": "priority" },
+            "metadata": { "serviceTier": "priority" }
+        });
+        let non_string = json!({ "service_tier": true });
+        let blank = json!({ "serviceTier": "   " });
+
+        assert_eq!(
+            extract_requested_service_tier_from_request_body(&nested),
+            None
+        );
+        assert_eq!(
+            extract_requested_service_tier_from_request_body(&non_string),
+            None
+        );
+        assert_eq!(
+            extract_requested_service_tier_from_request_body(&blank),
+            None
+        );
     }
 
     #[test]
@@ -21004,7 +21264,7 @@ mod tests {
         .bind(SOURCE_PROXY)
         .bind("failed")
         .bind(
-            r#"{"endpoint":"/v1/responses","failureKind":"upstream_stream_error","requesterIp":"198.51.100.77","promptCacheKey":"pck-list-1","serviceTier":null,"service_tier":"priority","proxyDisplayName":"jp-relay-01","proxyWeightDelta":-0.68,"reasoningEffort":"high"}"#,
+            r#"{"endpoint":"/v1/responses","failureKind":"upstream_stream_error","requesterIp":"198.51.100.77","promptCacheKey":"pck-list-1","requestedServiceTier":"priority","serviceTier":null,"service_tier":"priority","proxyDisplayName":"jp-relay-01","proxyWeightDelta":-0.68,"reasoningEffort":"high"}"#,
         )
         .bind("{}")
         .execute(&state.pool)
@@ -21034,6 +21294,7 @@ mod tests {
         );
         assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
         assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-list-1"));
+        assert_eq!(record.requested_service_tier.as_deref(), Some("priority"));
         assert_eq!(record.service_tier.as_deref(), Some("priority"));
         assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
         assert_eq!(record.proxy_weight_delta, Some(-0.68));
@@ -21090,6 +21351,7 @@ mod tests {
         assert_eq!(record.failure_kind, None);
         assert_eq!(record.requester_ip, None);
         assert_eq!(record.prompt_cache_key, None);
+        assert_eq!(record.requested_service_tier, None);
         assert_eq!(record.service_tier, None);
         assert_eq!(record.proxy_weight_delta, None);
         assert_eq!(record.reasoning_effort, None);
@@ -21175,6 +21437,7 @@ mod tests {
         .expect("persist records should succeed");
 
         assert_eq!(inserted.len(), 1);
+        assert_eq!(inserted[0].requested_service_tier, None);
         assert_eq!(inserted[0].service_tier.as_deref(), Some("priority"));
     }
 
@@ -21663,6 +21926,121 @@ mod tests {
                 .expect("query backfilled payload");
         let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
         assert_eq!(payload_json["promptCacheKey"], "pck-backfill-ok");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_requested_service_tiers_updates_payload_and_is_idempotent() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("proxy-requested-service-tier-backfill");
+        let request_path = temp_dir.join("request.json");
+        write_backfill_request_payload_with_requested_service_tier(
+            &request_path,
+            Some("priority"),
+            ProxyCaptureTarget::Responses,
+        );
+
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-requested-tier-backfill-1",
+            &request_path,
+            r#"{"endpoint":"/v1/responses"}"#,
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-requested-tier-backfill-ready",
+            &request_path,
+            r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority"}"#,
+        )
+        .await;
+
+        let summary_first = backfill_proxy_requested_service_tiers(&pool, None)
+            .await
+            .expect("first requested service tier backfill should succeed");
+        assert_eq!(summary_first.scanned, 1);
+        assert_eq!(summary_first.updated, 1);
+        assert_eq!(summary_first.skipped_missing_file, 0);
+        assert_eq!(summary_first.skipped_invalid_json, 0);
+        assert_eq!(summary_first.skipped_missing_tier, 0);
+
+        let payload: String =
+            sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+                .bind("proxy-requested-tier-backfill-1")
+                .fetch_one(&pool)
+                .await
+                .expect("query backfilled payload");
+        let payload_json: Value = serde_json::from_str(&payload).expect("decode payload JSON");
+        assert_eq!(payload_json["requestedServiceTier"], "priority");
+
+        let summary_second = backfill_proxy_requested_service_tiers(&pool, None)
+            .await
+            .expect("second requested service tier backfill should be idempotent");
+        assert_eq!(summary_second.scanned, 0);
+        assert_eq!(summary_second.updated, 0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn backfill_proxy_requested_service_tiers_tracks_skip_counters() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect in-memory sqlite");
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let temp_dir = make_temp_test_dir("proxy-requested-service-tier-backfill-skips");
+        let missing_tier_request_path = temp_dir.join("request-missing-tier.json");
+        let invalid_json_request_path = temp_dir.join("request-invalid-json.json");
+        let missing_file_request_path = temp_dir.join("request-missing.json");
+
+        write_backfill_request_payload_with_requested_service_tier(
+            &missing_tier_request_path,
+            None,
+            ProxyCaptureTarget::Responses,
+        );
+        fs::write(&invalid_json_request_path, b"not-json").expect("write invalid request payload");
+
+        let base_payload = r#"{"endpoint":"/v1/responses"}"#;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-requested-tier-missing-file",
+            &missing_file_request_path,
+            base_payload,
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-requested-tier-invalid-json",
+            &invalid_json_request_path,
+            base_payload,
+        )
+        .await;
+        insert_proxy_prompt_cache_backfill_row(
+            &pool,
+            "proxy-requested-tier-missing-tier",
+            &missing_tier_request_path,
+            base_payload,
+        )
+        .await;
+
+        let summary = backfill_proxy_requested_service_tiers(&pool, None)
+            .await
+            .expect("requested service tier backfill should succeed");
+        assert_eq!(summary.scanned, 3);
+        assert_eq!(summary.updated, 0);
+        assert_eq!(summary.skipped_missing_file, 1);
+        assert_eq!(summary.skipped_invalid_json, 1);
+        assert_eq!(summary.skipped_missing_tier, 1);
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
