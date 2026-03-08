@@ -78,7 +78,7 @@
   - `detailLevel`: `full | structured_only`
   - `detailPrunedAt?: string`
   - `detailPruneReason?: string`
-- `InvocationTable` 必须显示 `Full` / `Structured only` 徽标；若记录已精简，还要显示精简时间并提示“离线 archive 保留归档行，超窗 raw file 不保证继续可用”。orphan sweep 只清理超过宽限期的未引用文件，避免误删进行中的请求落盘文件。
+- `InvocationTable` 仅在展开详情中显示 `Full` / `Structured only` 徽标；若记录已精简，还要在详情中显示精简时间，并提示“离线 archive 保留归档行，超窗 raw file 不保证继续可用”。列表摘要不展示 detail level。orphan sweep 只清理超过宽限期的未引用文件，避免误删进行中的请求落盘文件。
 - 旧记录缺少新字段时按 `detailLevel=full` 兼容渲染。
 
 ### 查询边界
@@ -137,7 +137,7 @@
 - 超过 90 天的调用明细、超过 30 天的代理尝试与统计快照，在归档文件与 `archive_batches` 清单成功生成后，才能从主库删除。
 - `summary?window=all` 与总量统计在归档前后完全一致；长期 totals 依赖 `invocation_rollup_daily` 与 `stats_source_deltas`，而不是 archived 明细在线回查。
 - 最近 30 天的 `codex_quota_snapshots` 逐条保留，更老日期只保留每天最后一条在线记录。
-- 前端旧 payload 缺失新字段时仍能稳定渲染，并默认按 `Full` 展示。
+- 前端旧 payload 缺失新字段时仍能稳定渲染，并在展开详情中默认按 `Full` 展示。
 
 ## 101 Rollout Gate
 
