@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 实现完成（4/5，待快车道收口）
+- Status: 已完成（5/5）
 - Created: 2026-03-08
 - Last: 2026-03-08
 
@@ -131,9 +131,10 @@
 - [x] M2: 后端新增 `requestedServiceTier` 采集、投影与历史回填。
 - [x] M3: InvocationTable 完成三态闪电与详情字段展示。
 - [x] M4: Rust、Vitest、前端构建与 Playwright 回归通过。
-- [ ] M5: 快车道交付完成（commit / push / PR / checks / review-loop 收敛）。
+- [x] M5: 快车道交付完成（commit / push / PR / checks / review-loop 收敛）。
 
 ## 变更记录（Change log）
 
 - 2026-03-08: 创建规格，冻结请求侧 tier 口径、三态闪电语义与历史回填范围。
 - 2026-03-08: 完成后端请求侧 tier 采集/回填与前端三态闪电落地，验证通过（M1-M4）。
+- 2026-03-08: PR #95 checks 全绿，review-loop 收敛，无新增阻塞项，规格收口完成（M5）。
