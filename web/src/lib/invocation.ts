@@ -2,6 +2,7 @@ const DEFAULT_FALLBACK = '—'
 const PRIORITY_SERVICE_TIER = 'priority'
 
 export type ProxyWeightDeltaDirection = 'up' | 'down' | 'flat' | 'missing'
+export type FastIndicatorState = 'effective' | 'requested_only' | 'none'
 
 export interface ProxyWeightDeltaView {
   direction: ProxyWeightDeltaDirection
@@ -23,6 +24,15 @@ export function formatServiceTier(
 
 export function isPriorityServiceTier(value: string | null | undefined): boolean {
   return normalizeServiceTier(value) === PRIORITY_SERVICE_TIER
+}
+
+export function getFastIndicatorState(
+  requestedServiceTier: string | null | undefined,
+  effectiveServiceTier: string | null | undefined,
+): FastIndicatorState {
+  if (isPriorityServiceTier(effectiveServiceTier)) return 'effective'
+  if (isPriorityServiceTier(requestedServiceTier)) return 'requested_only'
+  return 'none'
 }
 
 export function formatProxyWeightDelta(

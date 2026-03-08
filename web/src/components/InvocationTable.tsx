@@ -1,7 +1,12 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { Icon } from '@iconify/react'
 import type { ApiInvocation } from '../lib/api'
-import { formatProxyWeightDelta, formatServiceTier, isPriorityServiceTier } from '../lib/invocation'
+import {
+  formatProxyWeightDelta,
+  formatServiceTier,
+  getFastIndicatorState,
+  type FastIndicatorState,
+} from '../lib/invocation'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { Alert } from './ui/alert'
@@ -79,6 +84,34 @@ function resolveProxyDisplayName(record: ApiInvocation) {
   return FALLBACK_CELL
 }
 
+function renderFastIndicator(state: FastIndicatorState, t: (key: TranslationKey) => string) {
+  if (state === 'none') return null
+
+  const isEffective = state === 'effective'
+  const titleKey: TranslationKey = isEffective
+    ? 'table.model.fastPriorityTitle'
+    : 'table.model.fastRequestedOnlyTitle'
+  const ariaKey: TranslationKey = isEffective
+    ? 'table.model.fastPriorityAria'
+    : 'table.model.fastRequestedOnlyAria'
+
+  return (
+    <span
+      className={cn(
+        'mt-0.5 inline-flex h-3.5 w-3.5 flex-none',
+        isEffective ? 'text-amber-500' : 'text-base-content/50',
+      )}
+      title={t(titleKey)}
+      aria-label={t(ariaKey)}
+      data-testid="invocation-fast-icon"
+      data-fast-state={state}
+      role="img"
+    >
+      <Icon icon="mdi:lightning-bolt" className="h-3.5 w-3.5" aria-hidden />
+    </span>
+  )
+}
+
 interface InvocationRowViewModel {
   record: ApiInvocation
   recordId: number
@@ -87,8 +120,9 @@ interface InvocationRowViewModel {
   occurredDate: string
   proxyDisplayName: string
   modelValue: string
+  requestedServiceTierValue: string
   serviceTierValue: string
-  showsFastIndicator: boolean
+  fastIndicatorState: FastIndicatorState
   costValue: string
   inputTokensValue: string
   cacheInputTokensValue: string
@@ -201,8 +235,9 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const errorMessage = record.errorMessage?.trim() ?? ''
         const endpointValue = record.endpoint?.trim() || FALLBACK_CELL
         const proxyDisplayName = resolveProxyDisplayName(record)
+        const requestedServiceTierValue = formatServiceTier(record.requestedServiceTier)
         const serviceTierValue = formatServiceTier(record.serviceTier)
-        const showsFastIndicator = isPriorityServiceTier(record.serviceTier)
+        const fastIndicatorState = getFastIndicatorState(record.requestedServiceTier, record.serviceTier)
         const reasoningEffortValue = formatOptionalText(record.reasoningEffort)
         const reasoningTokensValue = formatOptionalNumber(record.reasoningTokens, numberFormatter)
         const outputReasoningBreakdownValue = `${t('table.column.reasoningTokensShort')} ${reasoningTokensValue}`
@@ -255,6 +290,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           { label: 'table.details.endpoint', value: record.endpoint || FALLBACK_CELL },
           { label: 'table.details.requesterIp', value: record.requesterIp || FALLBACK_CELL },
           { label: 'table.details.promptCacheKey', value: record.promptCacheKey || FALLBACK_CELL },
+          { label: 'table.details.requestedServiceTier', value: requestedServiceTierValue },
           { label: 'table.details.serviceTier', value: serviceTierValue },
           { label: 'table.details.reasoningEffort', value: renderReasoningEffortBadge(reasoningEffortValue) },
           { label: 'table.details.reasoningTokens', value: reasoningTokensValue },
@@ -280,8 +316,9 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           occurredDate,
           proxyDisplayName,
           modelValue: record.model ?? FALLBACK_CELL,
+          requestedServiceTierValue,
           serviceTierValue,
-          showsFastIndicator,
+          fastIndicatorState,
           costValue: typeof record.cost === 'number' ? currencyFormatter.format(record.cost) : FALLBACK_CELL,
           inputTokensValue: formatOptionalNumber(record.inputTokens, numberFormatter),
           cacheInputTokensValue: formatOptionalNumber(record.cacheInputTokens, numberFormatter),
@@ -418,17 +455,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                 <dd className="min-w-0">
                   <div className="flex items-start justify-end gap-1 text-right" title={row.modelValue}>
                     <span className="min-w-0 flex-1 truncate">{row.modelValue}</span>
-                    {row.showsFastIndicator && (
-                      <span
-                        className="mt-0.5 inline-flex h-3.5 w-3.5 flex-none text-amber-500"
-                        title={t('table.model.fastPriorityTitle')}
-                        aria-label={t('table.model.fastPriorityAria')}
-                        data-testid="invocation-fast-icon"
-                        role="img"
-                      >
-                        <Icon icon="mdi:lightning-bolt" className="h-3.5 w-3.5" aria-hidden />
-                      </span>
-                    )}
+                    {renderFastIndicator(row.fastIndicatorState, t)}
                   </div>
                 </dd>
                 <dt className="text-base-content/65">{t('table.column.costUsd')}</dt>
@@ -572,17 +599,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                             <span className="min-w-0 flex-1 truncate whitespace-nowrap text-base-content/85" title={row.modelValue}>
                               {row.modelValue}
                             </span>
-                            {row.showsFastIndicator && (
-                              <span
-                                className="mt-0.5 inline-flex h-3.5 w-3.5 flex-none text-amber-500"
-                                title={t('table.model.fastPriorityTitle')}
-                                aria-label={t('table.model.fastPriorityAria')}
-                                data-testid="invocation-fast-icon"
-                                role="img"
-                              >
-                                <Icon icon="mdi:lightning-bolt" className="h-3.5 w-3.5" aria-hidden />
-                              </span>
-                            )}
+                            {renderFastIndicator(row.fastIndicatorState, t)}
                           </div>
                           <span className="w-full truncate whitespace-nowrap font-mono tabular-nums text-base-content/70">
                             {row.costValue}
