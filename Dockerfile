@@ -44,10 +44,11 @@ ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/* \
-    && case "${TARGETARCH}" in \
+    && ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" \
+    && case "${ARCH}" in \
         amd64) XRAY_ZIP="Xray-linux-64.zip" ;; \
         arm64) XRAY_ZIP="Xray-linux-arm64-v8a.zip" ;; \
-        *) echo "Unsupported TARGETARCH=${TARGETARCH} for Xray-core" >&2; exit 1 ;; \
+        *) echo "Unsupported TARGETARCH=${TARGETARCH} resolved_arch=${ARCH} for Xray-core" >&2; exit 1 ;; \
       esac \
     && curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_CORE_VERSION}/${XRAY_ZIP}" \
     && unzip -q /tmp/xray.zip -d /tmp/xray \

@@ -248,4 +248,52 @@ describe('InvocationTable', () => {
     expect(html).toContain('Fast 模式（Priority processing）')
     expect(html).toContain('请求想要 Fast，但实际未命中 Priority processing')
   })
+
+  it('renders structured-only detail badges and prune timestamps for retained records', () => {
+    const html = renderTable([
+      {
+        id: 4,
+        invokeId: 'invocation-detail-pruned',
+        occurredAt: '2026-03-07T03:13:52Z',
+        createdAt: '2026-03-07T03:13:52Z',
+        source: 'proxy',
+        proxyDisplayName: 'hkg-edge-4',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        inputTokens: 1024,
+        outputTokens: 64,
+        totalTokens: 1088,
+        cost: 0.0021,
+        detailLevel: 'structured_only',
+        detailPrunedAt: '2026-02-01T12:34:56Z',
+        detailPruneReason: 'success_over_30d',
+      },
+    ])
+
+    expect(html).toContain('data-testid="invocation-detail-level-badge"')
+    expect(html).toContain('Structured only')
+    expect(html).toContain('精简于 2026-02-01 12:34:56Z')
+  })
+
+  it('treats old records without retention fields as full-detail records', () => {
+    const html = renderTable([
+      {
+        id: 5,
+        invokeId: 'invocation-detail-full-default',
+        occurredAt: '2026-03-07T03:13:50Z',
+        createdAt: '2026-03-07T03:13:50Z',
+        source: 'xy',
+        endpoint: '/v1/chat/completions',
+        model: 'gpt-4.1',
+        status: 'failed',
+        errorMessage: 'legacy row still renders',
+      },
+    ])
+
+    expect(html).toContain('Full')
+    expect(html).not.toContain('Structured only')
+    expect(html).not.toContain('精简于')
+    expect(html).toContain('legacy row still renders')
+  })
 })
