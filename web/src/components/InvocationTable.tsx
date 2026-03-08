@@ -19,7 +19,6 @@ interface InvocationTableProps {
   records: ApiInvocation[]
   isLoading: boolean
   error?: string | null
-  initialExpandedId?: number | null
 }
 
 const STATUS_META: Record<
@@ -157,10 +156,10 @@ interface InvocationRowViewModel {
   timingPairs: Array<{ label: string; value: string }>
 }
 
-export function InvocationTable({ records, isLoading, error, initialExpandedId = null }: InvocationTableProps) {
+export function InvocationTable({ records, isLoading, error }: InvocationTableProps) {
   const { t, locale } = useTranslation()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
-  const [expandedId, setExpandedId] = useState<number | null>(initialExpandedId)
+  const [expandedId, setExpandedId] = useState<number | null>(null)
   const [isXlUp, setIsXlUp] = useState(() => {
     if (typeof window === 'undefined') return false
     return window.matchMedia('(min-width: 1280px)').matches

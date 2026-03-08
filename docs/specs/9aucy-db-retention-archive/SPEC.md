@@ -15,7 +15,7 @@
 ### Goals
 
 - 为 `codex_invocations`、`forward_proxy_attempts`、`stats_source_snapshots`、`codex_quota_snapshots` 建立按上海自然日 / 自然月切分的冷热分层策略。
-- 让 `/api/invocations` 与 `InvocationTable` 明确告知记录当前是 `Full` 还是 `Structured only`，避免误判细节完整性。
+- 让 `/api/invocations` 与 `InvocationTable` 在展开详情中明确告知记录当前是 `Full` 还是 `Structured only`，避免误判细节完整性。
 - 通过 `invocation_rollup_daily` 承接被归档删除的调用总量，确保 `/api/stats` 与 `summary?window=all` 在清理前后 totals 一致。
 - 固化离线归档格式、运维开关、执行顺序与 101 首次 rollout 验证口径，保证维护任务可重试、可核查、可回滚。
 

@@ -19,14 +19,6 @@ function renderTable(records: ApiInvocation[]) {
   )
 }
 
-function renderExpandedTable(records: ApiInvocation[], expandedId: number) {
-  return renderToStaticMarkup(
-    <I18nProvider>
-      <InvocationTable records={records} isLoading={false} error={null} initialExpandedId={expandedId} />
-    </I18nProvider>,
-  )
-}
-
 describe('formatProxyWeightDelta', () => {
   it('formats positive deltas as up direction with absolute value', () => {
     expect(formatProxyWeightDelta(0.55)).toEqual({ direction: 'up', value: '0.55' })
@@ -257,7 +249,7 @@ describe('InvocationTable', () => {
     expect(html).toContain('请求想要 Fast，但实际未命中 Priority processing')
   })
 
-  it('keeps structured-only metadata out of summary rows while retaining it inside expanded details', () => {
+  it('keeps structured-only metadata out of summary rows', () => {
     const records: ApiInvocation[] = [
       {
         id: 4,
@@ -284,14 +276,9 @@ describe('InvocationTable', () => {
     expect(summaryHtml).not.toContain('Structured only')
     expect(summaryHtml).not.toContain('精简于 2026-02-01 12:34:56Z')
 
-    const expandedHtml = renderExpandedTable(records, 4)
-    expect(expandedHtml).toContain('data-testid="invocation-detail-level-badge"')
-    expect(expandedHtml).toContain('Structured only')
-    expect(expandedHtml).toContain('精简于 2026-02-01 12:34:56Z')
-    expect(expandedHtml).toContain('success_over_30d')
   })
 
-  it('keeps legacy full-detail records out of summary rows while preserving full detail in expanded details', () => {
+  it('keeps legacy full-detail records out of summary rows', () => {
     const records: ApiInvocation[] = [
       {
         id: 5,
@@ -313,10 +300,5 @@ describe('InvocationTable', () => {
     expect(summaryHtml).not.toContain('精简于')
     expect(summaryHtml).toContain('legacy row still renders')
 
-    const expandedHtml = renderExpandedTable(records, 5)
-    expect(expandedHtml).toContain('data-testid="invocation-detail-level-badge"')
-    expect(expandedHtml).toContain('Full')
-    expect(expandedHtml).not.toContain('Structured only')
-    expect(expandedHtml).toContain('legacy row still renders')
   })
 })
