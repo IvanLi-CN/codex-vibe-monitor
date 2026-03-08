@@ -1,0 +1,179 @@
+name: Review Policy
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - labeled
+      - unlabeled
+  pull_request_review:
+    types:
+      - submitted
+      - dismissed
+      - edited
+  workflow_dispatch:
+    inputs:
+      pull_number:
+        description: Pull request number to evaluate
+        required: true
+        type: number
+
+concurrency:
+  group: review-policy-${{ github.event.pull_request.number || inputs.pull_number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  REVIEW_POLICY_CHECK_NAME: Review Policy Gate
+  REVIEW_POLICY_REQUIRED_APPROVALS: "1"
+  REVIEW_POLICY_EXEMPT_PERMISSIONS: '["admin", "maintain"]'
+  REVIEW_POLICY_REVIEWER_PERMISSIONS: '["write", "maintain", "admin"]'
+  REVIEW_POLICY_EXEMPT_REPOSITORY_OWNER: "true"
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  review-policy:
+    name: Review Policy Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate review policy
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`
+            const exemptPermissions = new Set(JSON.parse(process.env.REVIEW_POLICY_EXEMPT_PERMISSIONS || '[]'))
+            const reviewerPermissions = new Set(JSON.parse(process.env.REVIEW_POLICY_REVIEWER_PERMISSIONS || '[]'))
+            const requiredApprovals = Number(process.env.REVIEW_POLICY_REQUIRED_APPROVALS || '1')
+            const exemptRepositoryOwner = (process.env.REVIEW_POLICY_EXEMPT_REPOSITORY_OWNER || '').toLowerCase() === 'true'
+            const checkName = process.env.REVIEW_POLICY_CHECK_NAME || 'Review Policy Gate'
+            const rawInput = core.getInput('pull_number')
+            const pullNumber = context.payload.pull_request?.number ?? (rawInput ? Number(rawInput) : NaN)
+
+            if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
+              core.setFailed('Missing valid pull request number')
+              return
+            }
+
+            async function getPermission(username) {
+              if (!username) {
+                return 'none'
+              }
+              if (exemptRepositoryOwner && username.toLowerCase() === owner.toLowerCase()) {
+                return 'admin'
+              }
+              try {
+                const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner,
+                  repo,
+                  username,
+                })
+                return data.permission || 'none'
+              } catch (error) {
+                if (error.status === 404) {
+                  return 'none'
+                }
+                throw error
+              }
+            }
+
+            const { data: pull } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber,
+            })
+
+            const author = pull.user?.login
+            const headSha = pull.head?.sha
+            if (!author || !headSha) {
+              core.setFailed('Pull request payload is missing author or head SHA')
+              return
+            }
+
+            const authorPermission = await getPermission(author)
+            const isExemptAuthor = exemptPermissions.has(authorPermission)
+            let pass = false
+            let description = ''
+
+            if (isExemptAuthor) {
+              pass = true
+              description = `Author @${author} has ${authorPermission} permission; approval not required.`
+            } else {
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner,
+                repo,
+                pull_number: pullNumber,
+                per_page: 100,
+              })
+
+              reviews.sort((a, b) => {
+                const aTime = a.submitted_at ? Date.parse(a.submitted_at) : 0
+                const bTime = b.submitted_at ? Date.parse(b.submitted_at) : 0
+                return aTime - bTime
+              })
+
+              const latestByUser = new Map()
+              for (const review of reviews) {
+                const reviewer = review.user?.login
+                if (!reviewer || review.state === 'PENDING') {
+                  continue
+                }
+                latestByUser.set(reviewer, review)
+              }
+
+              const approvals = []
+              for (const [reviewer, review] of latestByUser.entries()) {
+                if (review.state !== 'APPROVED' || reviewer === author) {
+                  continue
+                }
+                const permission = await getPermission(reviewer)
+                if (!reviewerPermissions.has(permission)) {
+                  continue
+                }
+                approvals.push(`@${reviewer} (${permission})`)
+              }
+
+              pass = approvals.length >= requiredApprovals
+              if (pass) {
+                description = `Approval satisfied by ${approvals.join(', ')}.`
+              } else {
+                description = `Author @${author} has ${authorPermission} permission; at least ${requiredApprovals} approval(s) from ${Array.from(reviewerPermissions).join('/')} reviewer(s) required.`
+              }
+            }
+
+            await github.rest.repos.createCommitStatus({
+              owner,
+              repo,
+              sha: headSha,
+              state: pass ? 'success' : 'failure',
+              context: checkName,
+              description: description.slice(0, 140),
+              target_url: runUrl,
+            })
+
+            core.summary
+              .addHeading('Review policy result')
+              .addRaw(`PR #${pullNumber}`)
+              .addEOL()
+              .addRaw(`Author: @${author}`)
+              .addEOL()
+              .addRaw(`Author permission: ${authorPermission}`)
+              .addEOL()
+              .addRaw(`Result: ${pass ? 'pass' : 'fail'}`)
+              .addEOL()
+              .addRaw(description)
+              .addEOL()
+            await core.summary.write()
+
+            if (pass) {
+              core.notice(description)
+            } else {
+              core.setFailed(description)
+            }

@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "baseline_policy": "explicit-waiver-required",
+    "require_signed_commits": true,
+    "branch_protection": {
+      "protected_branches": [
+        "main"
+      ],
+      "require_pull_request": true,
+      "disallow_direct_pushes": true
+    },
+    "review_policy": {
+      "mode": "conditional-required",
+      "required_approvals": 1,
+      "exempt_repository_owner": true,
+      "exempt_author_permissions": [
+        "admin",
+        "maintain"
+      ],
+      "allowed_reviewer_permissions": [
+        "write",
+        "maintain",
+        "admin"
+      ],
+      "enforcement": {
+        "mode": "required-check",
+        "check_name": "Review Policy Gate"
+      }
+    }
+  },
+  "required_checks": [
+    "Validate PR labels",
+    "Lint & Format Check",
+    "Backend Tests",
+    "Build Artifacts",
+    "Review Policy Gate"
+  ],
+  "informational_checks": [
+    "Release Meta (intent + version + tags)",
+    "Build + Smoke + Push Candidate (linux/amd64)",
+    "Build + Smoke + Push Candidate (linux/arm64)"
+  ],
+  "waivers": [],
+  "expected_pr_workflows": [
+    {
+      "workflow": "Label Gate",
+      "jobs": [
+        "Validate PR labels"
+      ]
+    },
+    {
+      "workflow": "CI Pipeline",
+      "jobs": [
+        "Lint & Format Check",
+        "Backend Tests",
+        "Build Artifacts",
+        "Release Meta (intent + version + tags)",
+        "Build + Smoke + Push Candidate (linux/amd64)",
+        "Build + Smoke + Push Candidate (linux/arm64)"
+      ]
+    },
+    {
+      "workflow": "Review Policy",
+      "jobs": [
+        "Review Policy Gate"
+      ]
+    }
+  ]
+}
