@@ -198,7 +198,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         prunedAt: '精简时间',
         pruneReason: '精简原因',
         fullHint: '完整调试细节仍在当前在线保留窗口内。',
-        structuredHint: '该记录仅保留结构化字段；完整历史需查离线归档。',
+        structuredHint: '该记录仅保留结构化字段；离线归档保留归档行，超窗 raw file 不保证继续可用。',
         prunedPrefix: '精简于',
       }
     }
@@ -210,7 +210,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
       prunedAt: 'Detail pruned at',
       pruneReason: 'Detail prune reason',
       fullHint: 'Full troubleshooting detail is still available inside the online retention window.',
-      structuredHint: 'Only structured fields remain online for this record. Use the offline archive for the full history.',
+      structuredHint: 'Only structured fields remain online for this record. Offline archives keep the archived row, but aged raw files may no longer be available.',
       prunedPrefix: 'Pruned at',
     }
   }, [locale])

@@ -88,7 +88,7 @@ XY_LIST_LIMIT_MAX=200                          # (200)
 XY_USER_AGENT=codex-vibe-monitor/0.2.0         # (自动)
 XY_STATIC_DIR=web/dist                         # (存在时自动使用)
 XY_SNAPSHOT_MIN_INTERVAL_SECS=300              # (300)
-XY_RETENTION_ENABLED=true                      # (true)
+XY_RETENTION_ENABLED=false                     # (false，需要显式开启后台保留任务)
 XY_RETENTION_DRY_RUN=false                     # (false)
 XY_RETENTION_INTERVAL_SECS=3600                # (3600)
 XY_RETENTION_BATCH_ROWS=1000                   # (1000)
@@ -121,12 +121,12 @@ cargo run -- \
 
 ## 数据分层保留与离线归档
 
-- `codex_invocations` 的成功记录超过 30 个上海自然日后，会把原始 payload / raw response / raw file 引用精简为 `structured_only`，但保留结构化统计字段用于在线排障。
+- `codex_invocations` 的成功记录超过 30 个上海自然日后，会先把完整行写入对应月份的离线 archive，再把主库内的原始 payload / raw response / raw file 引用精简为 `structured_only`，但保留结构化统计字段用于在线排障。
 - 任意调用记录超过 90 个上海自然日后，会先归档到 `XY_ARCHIVE_DIR/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`，写入 `archive_batches` 清单后，再从主库删除。
 - `forward_proxy_attempts` 与 `stats_source_snapshots` 只保留最近 30 个上海自然日在线明细；更老数据同样执行“先归档、再清理”。
 - `codex_quota_snapshots` 保留最近 30 天全量，更老日期在主库内压缩为“每个上海自然日最后一条”，被折叠掉的行进入离线归档。
 - `stats_source_deltas` 长期在线保留；`/api/stats` 与 `GET /api/stats/summary?window=all` 通过“在线明细 + invocation_rollup_daily”保证长期 totals 不缩水。
-- 原始 payload / preview / raw file 只保证短期排障；超过在线窗口后的完整明细需要查离线归档文件，现有 Web UI 不提供 archived 明细在线浏览。
+- 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，现有 Web UI 不提供 archived 明细在线浏览。
 
 首次清理建议先做 dry-run：
 

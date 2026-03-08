@@ -641,6 +641,7 @@ struct InvocationRollupDelta {
 #[derive(Debug, FromRow)]
 struct InvocationDetailPruneCandidate {
     id: i64,
+    occurred_at: String,
     request_raw_path: Option<String>,
     response_raw_path: Option<String>,
 }
@@ -651,7 +652,6 @@ struct InvocationArchiveCandidate {
     occurred_at: String,
     source: String,
     status: Option<String>,
-    detail_level: String,
     total_tokens: Option<i64>,
     cost: Option<f64>,
     request_raw_path: Option<String>,
@@ -858,7 +858,8 @@ async fn run_data_retention_maintenance(
     let pruned =
         prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await?;
     summary.invocation_details_pruned += pruned.0;
-    summary.raw_files_removed += pruned.1;
+    summary.archive_batches_touched += pruned.1;
+    summary.raw_files_removed += pruned.2;
 
     let invocation_archive =
         archive_old_invocations(pool, config, raw_path_fallback_root, dry_run).await?;
@@ -921,23 +922,41 @@ async fn prune_old_invocation_details(
     config: &AppConfig,
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
-) -> Result<(usize, usize)> {
-    let cutoff = shanghai_local_cutoff_string(config.invocation_success_full_days);
+) -> Result<(usize, usize, usize)> {
+    let prune_cutoff = shanghai_local_cutoff_string(config.invocation_success_full_days);
+    let archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    let spec = archive_table_spec("codex_invocations");
     if dry_run {
         let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(
             r#"
-            SELECT id, request_raw_path, response_raw_path
+            SELECT id, occurred_at, request_raw_path, response_raw_path
             FROM codex_invocations
             WHERE status = 'success'
               AND detail_level = ?1
               AND occurred_at < ?2
+              AND occurred_at >= ?3
             ORDER BY occurred_at ASC, id ASC
             "#,
         )
         .bind(DETAIL_LEVEL_FULL)
-        .bind(&cutoff)
+        .bind(&prune_cutoff)
+        .bind(&archive_cutoff)
         .fetch_all(pool)
         .await?;
+        let mut by_month: BTreeMap<String, usize> = BTreeMap::new();
+        for candidate in &candidates {
+            let month_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
+            *by_month.entry(month_key).or_default() += 1;
+        }
+        for (month_key, rows) in &by_month {
+            info!(
+                dataset = spec.dataset,
+                month_key,
+                rows = *rows,
+                reason = DETAIL_PRUNE_REASON_SUCCESS_OVER_30D,
+                "retention dry-run planned invocation detail prune archive batch"
+            );
+        }
         let raw_paths = candidates
             .iter()
             .flat_map(|candidate| {
@@ -949,27 +968,31 @@ async fn prune_old_invocation_details(
             .collect::<Vec<_>>();
         return Ok((
             candidates.len(),
+            by_month.len(),
             count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
         ));
     }
 
     let mut rows_pruned = 0usize;
+    let mut archive_batches = 0usize;
     let mut raw_files_removed = 0usize;
 
     loop {
         let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(
             r#"
-            SELECT id, request_raw_path, response_raw_path
+            SELECT id, occurred_at, request_raw_path, response_raw_path
             FROM codex_invocations
             WHERE status = 'success'
               AND detail_level = ?1
               AND occurred_at < ?2
+              AND occurred_at >= ?3
             ORDER BY occurred_at ASC, id ASC
-            LIMIT ?3
+            LIMIT ?4
             "#,
         )
         .bind(DETAIL_LEVEL_FULL)
-        .bind(&cutoff)
+        .bind(&prune_cutoff)
+        .bind(&archive_cutoff)
         .bind(config.retention_batch_rows as i64)
         .fetch_all(pool)
         .await?;
@@ -978,47 +1001,59 @@ async fn prune_old_invocation_details(
             break;
         }
 
-        rows_pruned += candidates.len();
-        let raw_paths = candidates
-            .iter()
-            .flat_map(|candidate| {
-                [
-                    candidate.request_raw_path.clone(),
-                    candidate.response_raw_path.clone(),
-                ]
-            })
-            .collect::<Vec<_>>();
-
-        let pruned_at = format_naive(Utc::now().naive_utc());
-        let ids = candidates
-            .iter()
-            .map(|candidate| candidate.id)
-            .collect::<Vec<_>>();
-        let mut tx = pool.begin().await?;
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "UPDATE codex_invocations SET payload = NULL, raw_response = '', request_raw_path = NULL, request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, raw_expires_at = NULL, detail_level = ",
-        );
-        query
-            .push_bind(DETAIL_LEVEL_STRUCTURED_ONLY)
-            .push(", detail_pruned_at = ")
-            .push_bind(pruned_at)
-            .push(", detail_prune_reason = ")
-            .push_bind(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
-            .push(" WHERE id IN (");
-        {
-            let mut separated = query.separated(", ");
-            for id in &ids {
-                separated.push_bind(id);
-            }
+        let mut by_month: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
+        for candidate in candidates {
+            let month_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
+            by_month.entry(month_key).or_default().push(candidate);
         }
-        query.push(")");
-        query.build().execute(tx.as_mut()).await?;
-        tx.commit().await?;
 
-        raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+        for (month_key, group) in by_month {
+            rows_pruned += group.len();
+            archive_batches += 1;
+            let raw_paths = group
+                .iter()
+                .flat_map(|candidate| {
+                    [
+                        candidate.request_raw_path.clone(),
+                        candidate.response_raw_path.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+
+            let ids = group
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
+            let archive_outcome =
+                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+            let mut tx = pool.begin().await?;
+            upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "UPDATE codex_invocations SET payload = NULL, raw_response = '', request_raw_path = NULL, request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, raw_expires_at = NULL, detail_level = ",
+            );
+            query
+                .push_bind(DETAIL_LEVEL_STRUCTURED_ONLY)
+                .push(", detail_pruned_at = ")
+                .push_bind(pruned_at)
+                .push(", detail_prune_reason = ")
+                .push_bind(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
+                .push(" WHERE id IN (");
+            {
+                let mut separated = query.separated(", ");
+                for id in &ids {
+                    separated.push_bind(id);
+                }
+            }
+            query.push(")");
+            query.build().execute(tx.as_mut()).await?;
+            tx.commit().await?;
+
+            raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+        }
     }
 
-    Ok((rows_pruned, raw_files_removed))
+    Ok((rows_pruned, archive_batches, raw_files_removed))
 }
 
 async fn archive_old_invocations(
@@ -1038,7 +1073,6 @@ async fn archive_old_invocations(
                 occurred_at,
                 source,
                 status,
-                detail_level,
                 total_tokens,
                 cost,
                 request_raw_path,
@@ -1068,10 +1102,6 @@ async fn archive_old_invocations(
         }
         let raw_paths = candidates
             .iter()
-            .filter(|candidate| {
-                !(candidate.status.as_deref() == Some("success")
-                    && candidate.detail_level == DETAIL_LEVEL_FULL)
-            })
             .flat_map(|candidate| {
                 [
                     candidate.request_raw_path.clone(),
@@ -1098,7 +1128,6 @@ async fn archive_old_invocations(
                 occurred_at,
                 source,
                 status,
-                detail_level,
                 total_tokens,
                 cost,
                 request_raw_path,
@@ -23254,20 +23283,18 @@ mod tests {
                 occurred_at,
                 source,
                 status,
-                detail_level,
                 total_tokens,
                 cost,
                 t_upstream_ttfb_ms,
                 raw_response
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             "#,
         )
         .bind(invoke_id)
         .bind(occurred_at)
         .bind(SOURCE_PROXY)
         .bind(status)
-        .bind(DETAIL_LEVEL_FULL)
         .bind(10_i64)
         .bind(0.01_f64)
         .bind(t_upstream_ttfb_ms)
@@ -23576,10 +23603,13 @@ mod tests {
         )
         .await;
 
+        let before_pruned_at = Utc::now() - ChronoDuration::seconds(5);
         let summary = run_data_retention_maintenance(&pool, &config, Some(false))
             .await
             .expect("run retention prune");
+        let after_pruned_at = Utc::now() + ChronoDuration::seconds(5);
         assert_eq!(summary.invocation_details_pruned, 1);
+        assert_eq!(summary.archive_batches_touched, 1);
         assert_eq!(summary.raw_files_removed, 1);
         assert_eq!(summary.orphan_raw_files_removed, 1);
         assert!(!response_raw.exists());
@@ -23626,6 +23656,67 @@ mod tests {
             row.get::<Option<String>, _>("status").as_deref(),
             Some("success")
         );
+
+        let detail_pruned_at = row
+            .get::<Option<String>, _>("detail_pruned_at")
+            .expect("detail_pruned_at should be populated");
+        let detail_pruned_at = local_naive_to_utc(
+            parse_shanghai_local_naive(&detail_pruned_at)
+                .expect("detail_pruned_at should be shanghai-local"),
+            Shanghai,
+        )
+        .with_timezone(&Utc);
+        assert!(detail_pruned_at >= before_pruned_at);
+        assert!(detail_pruned_at <= after_pruned_at);
+
+        let batch = sqlx::query(
+            r#"
+            SELECT file_path, row_count, status
+            FROM archive_batches
+            WHERE dataset = 'codex_invocations'
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load prune archive batch");
+        let file_path = PathBuf::from(batch.get::<String, _>("file_path"));
+        assert!(file_path.exists());
+        assert_eq!(batch.get::<String, _>("status"), ARCHIVE_STATUS_COMPLETED);
+        assert_eq!(batch.get::<i64, _>("row_count"), 1);
+
+        let archive_db_path = temp_dir.join("retention-prune-archive.sqlite");
+        inflate_gzip_sqlite_file(&file_path, &archive_db_path).expect("inflate prune archive");
+        let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+            .await
+            .expect("open prune archive sqlite");
+        let archived = sqlx::query(
+            r#"
+            SELECT payload, raw_response, detail_level, detail_pruned_at, detail_prune_reason
+            FROM codex_invocations
+            WHERE invoke_id = ?1
+            "#,
+        )
+        .bind("old-success")
+        .fetch_one(&archive_pool)
+        .await
+        .expect("load archived pre-prune invocation");
+        assert_eq!(
+            archived.get::<Option<String>, _>("payload").as_deref(),
+            Some("{\"endpoint\":\"/v1/responses\"}")
+        );
+        assert_eq!(archived.get::<String, _>("raw_response"), "{\"ok\":true}");
+        assert_eq!(archived.get::<String, _>("detail_level"), DETAIL_LEVEL_FULL);
+        assert!(
+            archived
+                .get::<Option<String>, _>("detail_pruned_at")
+                .is_none()
+        );
+        assert!(
+            archived
+                .get::<Option<String>, _>("detail_prune_reason")
+                .is_none()
+        );
+        archive_pool.close().await;
 
         cleanup_temp_test_dir(&temp_dir);
     }

@@ -47,7 +47,7 @@
 
 ### `codex_invocations`
 
-- 成功记录超过 30 个上海自然日后，主库仅保留结构化统计字段；原始 payload、raw response、request/response raw file 引用与 `raw_expires_at` 清空，并写入：
+- 成功记录超过 30 个上海自然日后，先把该月完整记录写入离线 archive，再让主库仅保留结构化统计字段；原始 payload、raw response、request/response raw file 引用与 `raw_expires_at` 清空，并写入：
   - `detail_level='structured_only'`
   - `detail_pruned_at=<maintenance timestamp>`
   - `detail_prune_reason='success_over_30d'`
@@ -78,7 +78,7 @@
   - `detailLevel`: `full | structured_only`
   - `detailPrunedAt?: string`
   - `detailPruneReason?: string`
-- `InvocationTable` 必须显示 `Full` / `Structured only` 徽标；若记录已精简，还要显示精简时间并提示“完整历史需查离线归档”。
+- `InvocationTable` 必须显示 `Full` / `Structured only` 徽标；若记录已精简，还要显示精简时间并提示“离线 archive 保留归档行，超窗 raw file 不保证继续可用”。
 - 旧记录缺少新字段时按 `detailLevel=full` 兼容渲染。
 
 ### 查询边界
