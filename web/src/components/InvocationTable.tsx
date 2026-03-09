@@ -151,11 +151,6 @@ interface InvocationRowViewModel {
   errorMessage: string
   latencySummary: string
   latencyCompactSummary: string
-  detailLevel: InvocationDetailLevel
-  detailLevelBadgeLabel: string
-  detailLevelBadgeVariant: 'secondary' | 'warning'
-  detailLevelTooltip: string
-  detailPrunedSummary: string | null
   detailNotice: string | null
   detailPairs: Array<{ label: string; value: ReactNode }>
   timingPairs: Array<{ label: string; value: string }>
@@ -411,11 +406,6 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           errorMessage,
           latencySummary,
           latencyCompactSummary,
-          detailLevel,
-          detailLevelBadgeLabel,
-          detailLevelBadgeVariant,
-          detailLevelTooltip,
-          detailPrunedSummary,
           detailNotice,
           detailPairs,
           timingPairs,
@@ -534,24 +524,10 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
                 <Badge variant={row.meta.variant}>{t(row.meta.key)}</Badge>
-                <Badge
-                  variant={row.detailLevelBadgeVariant}
-                  className="px-2 py-0 text-[10px] font-semibold tracking-[0.01em]"
-                  title={row.detailLevelTooltip}
-                  data-testid="invocation-detail-level-badge"
-                >
-                  {row.detailLevelBadgeLabel}
-                </Badge>
                 <span className="min-w-0 truncate text-xs text-base-content/75" title={row.proxyDisplayName}>
                   {row.proxyDisplayName}
                 </span>
               </div>
-
-              {row.detailPrunedSummary && (
-                <div className="mt-1 text-[11px] text-warning" title={row.detailLevelTooltip} data-testid="invocation-detail-pruned-at">
-                  {row.detailPrunedSummary}
-                </div>
-              )}
 
               <div className="mt-2 text-xs font-mono text-base-content/70" title={row.latencySummary}>
                 {row.latencySummary}
@@ -699,25 +675,12 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                             </span>
                             <span className="sr-only">{t(row.meta.key)}</span>
                           </Badge>
-                          <Badge
-                            variant={row.detailLevelBadgeVariant}
-                            className="max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]"
-                            title={row.detailLevelTooltip}
-                            data-testid="invocation-detail-level-badge"
-                          >
-                            <span className="block max-w-full truncate whitespace-nowrap">{row.detailLevelBadgeLabel}</span>
-                          </Badge>
                           <span className="hidden whitespace-nowrap font-mono text-[11px] text-base-content/70 lg:block" title={row.latencySummary}>
                             {row.latencySummary}
                           </span>
                           <span className="whitespace-nowrap font-mono text-[11px] text-base-content/70 lg:hidden" title={row.latencySummary}>
                             {row.latencyCompactSummary}
                           </span>
-                          {row.detailPrunedSummary && (
-                            <span className="whitespace-nowrap text-[10px] text-warning" title={row.detailLevelTooltip} data-testid="invocation-detail-pruned-at">
-                              {row.detailPrunedSummary}
-                            </span>
-                          )}
                         </div>
                       </td>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
