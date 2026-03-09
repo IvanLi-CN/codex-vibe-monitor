@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-08
-- Last: 2026-03-08
+- Last: 2026-03-09
 
 ## 背景 / 问题陈述
 
@@ -19,6 +19,7 @@
 - 为 Live 页上述 3 类微图引入统一的自定义 tooltip 原语与交互模型。
 - 保持现有后端 API、聚合口径与图表数据结构不变，仅升级前端交互和视觉呈现。
 - 支持桌面悬停、触屏点按、键盘聚焦后用方向键切换明细，并为当前数据点提供高亮与导引线。
+- 同一代理行内的请求量柱图与权重趋势图按共享时间桶联动高亮，避免 tooltip 与目标点割裂。
 - Tooltip 风格与现有暗色玻璃卡片语言一致，避免浏览器原生 tooltip 与自定义 tooltip 双开。
 
 ### Non-goals
@@ -48,6 +49,7 @@
 
 - Given Live 代理请求量柱图，When 用户悬停某个桶，Then 指针旁显示统一样式 tooltip，内容包含时间范围、成功数、失败数、总请求数，且当前桶高亮。
 - Given Live 代理权重趋势图，When 用户悬停或键盘切换某个点，Then 指针/焦点旁显示时间范围、样本、最小、最大、平均、末值，且当前点与垂直导引线高亮。
+- Given Live 代理请求量柱图或权重趋势图，When 用户在同一代理行激活任一时间桶，Then 另一张微图同步高亮对应时间桶，但仅当前交互中的图表显示 tooltip。
 - Given Prompt Cache Token 累计 sparkline，When 用户悬停或点按某段，Then 显示时间、状态、本次 Tokens、累计 Tokens，并高亮当前段与参考线。
 - Given 图表获得键盘焦点，When 使用 `ArrowLeft` / `ArrowRight` / `Home` / `End` / `Escape`，Then 可切换或关闭 tooltip，且整张图只占用一个 tab stop。
 - Given 触屏点击某个数据点，When tooltip 打开后再次点击同点或点击外部，Then tooltip 关闭；不存在浏览器原生 tooltip。
@@ -69,7 +71,12 @@
 - 交互测试使用 Vitest + jsdom 文件级环境，不引入新的测试框架。
 - 本地已通过 `cd web && npm run lint && npm run test && npm run build`。
 - 已用 Storybook mock + chrome-devtools 复核 hover / keyboard / tap 三套交互，未见原生 tooltip 残留。
+- 已补同一代理行的请求量/权重微图联动高亮：请求柱与权重点按 `bucketStart` 同步，桌面 hover 与键盘切换均保持一致。
 - Fast-track PR: `#97 feat(web): unify live inline chart tooltips`。
+
+## Change log
+
+- 2026-03-09：补充同一代理行请求量/权重微图联动高亮要求，并同步实现与验证记录。
 
 ## 参考
 

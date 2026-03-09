@@ -9,7 +9,7 @@
 | ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                              |
 | ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------- |
 | 9aucy | 数据分层保留、离线归档与长周期汇总                                        | 已完成          | `9aucy-db-retention-archive/SPEC.md`                     | 2026-03-08 | fast-track / PR #96                |
-| jk3hm | Live 小图表悬浮详情统一升级                                               | 已完成（5/5）   | `jk3hm-live-chart-hover-tooltips/SPEC.md`                | 2026-03-08 | fast-track / PR #97                |
+| jk3hm | Live 小图表悬浮详情统一升级                                               | 已完成（5/5）   | `jk3hm-live-chart-hover-tooltips/SPEC.md`                | 2026-03-09 | fast-track / PR #97 / linked sync  |
 | ww6et | 请求侧 Fast 情报与中性闪电标识                                            | 已完成（5/5）   | `ww6et-requested-fast-intel-neutral-bolt/SPEC.md`        | 2026-03-08 | fast-track / PR #95 / checks green |
 | hbqe3 | InvocationTable 推理强度徽标色阶优化                                      | 已完成（4/4）   | `hbqe3-invocation-reasoning-effort-badge-colors/SPEC.md` | 2026-03-07 | fast-track / PR #94 / checks green |
 | rw32e | 请求列表 Fast 模式标识（service tier 版）                                 | 已完成（5/5）   | `rw32e-invocation-fast-mode-indicator/SPEC.md`           | 2026-03-07 | fast-track / PR #93 / checks green |
