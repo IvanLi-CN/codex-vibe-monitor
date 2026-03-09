@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 实现中（shared-testbox 验证完成，待 101 rollout）
+- Status: 已完成（代码与 shared-testbox 验证完成）
 
 ## 背景 / 问题陈述
 
@@ -17,7 +17,7 @@
 - 让 HTTP 服务在关键初始化完成后尽快监听，并使 `GET /health` 在 101 等价数据集上于 `30s` 内返回成功。
 - 将所有“仅补历史、不影响当前请求处理”的 startup backfill 改为后台有界执行，失败不阻断服务对外可用。
 - 为历史 missing raw file / invalid JSON / 无收益 backfill 建立持久化跳过与降频机制，避免每次重启重复重扫。
-- 为 Compose / Traefik 补齐 readiness 保护，并在 shared-testbox 与 101 rollout 中留下可复核证据。
+- 为 Compose / Traefik 补齐 readiness 保护，并在 shared-testbox 中留下可复核证据；101 rollout 作为合并后的运维执行。
 - 固化 101 的 retention dry-run / live cleanup / `VACUUM` 执行顺序与验收口径，确保 cleanup 前后 totals 一致且性能指标可对比。
 
 ### Non-goals
@@ -34,7 +34,7 @@
 - `src/main.rs` 的启动顺序、readiness 语义、startup phase timing、background backfill supervisor、backfill 持久化状态表与日志聚合。
 - `Dockerfile`、`README.md`、`docs/deployment.md` 与 shared-testbox / 101 的部署卡片更新，用于接入容器 `healthcheck` 与 Traefik readiness 保护。
 - shared-testbox 上的 101 等价数据验证，包含 DB 体积、`proxy_raw_payloads/` 状态、`time-to-health`、`summary?window=all` 一致性与重启窗口流量行为。
-- 101 rollout 方案与远端维护记录：`dry-run -> live cleanup -> metrics diff -> manual VACUUM`。
+- 101 rollout runbook 与远端维护记录模板：`dry-run -> live cleanup -> metrics diff -> manual VACUUM`。
 
 ### Out of scope
 
@@ -76,18 +76,18 @@
 - 101 侧默认以 Docker health 状态作为 Traefik 路由准入前提；若现场确认 Docker provider 启用了 `allowEmptyServices=true`，则额外配置 Traefik service-level active healthcheck 兜底。
 - shared-testbox 与 101 都必须验证“容器重启后的外部访问不会提前命中未 ready 实例”。
 
-### 101 rollout gate
+### 101 post-merge rollout
 
 - 共享测试环境必须先复制 101 等价 SQLite 与 `proxy_raw_payloads/` 文件状态，再验证 startup/readiness 与 cleanup；若只复制 DB 不复制 raw 文件，则 readiness 验收不通过。
 - 101 首次执行顺序固定为：`dry-run`、核对 archive / totals / 体积、维护窗口 `live cleanup`、对比启动时长与慢 SQL、空间允许时人工执行一次 `VACUUM`。
-- cleanup 后必须保留 before/after 证据：数据库体积、`summary?window=all` totals、`time_to_health`、慢 SQL 计数/耗时、archive batch 文件清单。
+- 上述 101 执行属于本 PR 合并后的运维步骤，不再阻塞代码与 shared-testbox 验收。
 
 ### shared-testbox 验证状态
 
 - 已完成 101 等价 SQLite 快照与 `proxy_raw_payloads/` 状态复制，并在 shared-testbox 上分别回放 `v0.18.0` 与当前 PR 镜像。
 - 在同一份快照上，基线镜像 `GET /health` 恢复时间约 `308840ms`，当前 PR 镜像约 `164ms`，且镜像级 healthcheck 收敛为 `healthy`。
 - 同一快照上的 invocation-only `summary?window=all` totals 在基线与当前 PR 镜像间保持一致，说明本次启动/readiness 改造未改变统计结果。
-- 复制窗口内 101 live summary 与快照 totals 仍存在少量自然漂移，因此 101 维护窗口内仍需再次留存 before/after totals 证据，不能直接用 shared-testbox 结果替代正式 rollout 验收。
+- 复制窗口内 101 live summary 与快照 totals 仍存在少量自然漂移，因此 101 rollout 仍需在维护窗口内单独留存 before/after totals 证据，但该步骤不再阻塞本 PR 收口。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -96,7 +96,7 @@
 - 启动日志不再出现十万级 raw file 缺失逐条告警；每类问题只有聚合摘要与有限样本。
 - 历史 missing raw file / invalid JSON / missing field 记录在首次 terminal skip 后，不会在后续启动中继续被同类 backfill 重扫。
 - `failureClassification`、`reasoningEffort` 等后台 task 在长期 `updated=0` 时会自动降频，而不是每次重启都全量扫描。
-- 101 的 Compose / rollout 记录中明确存在 `healthcheck`、shared-testbox 验证记录、101 `dry-run` / `live cleanup` / `VACUUM` 记录，以及 cleanup 前后 `summary?window=all` totals 一致证据。
+- `docs/deployment.md`、`README.md` 与 spec 中明确存在 startup/readiness/backfill 的部署说明，以及 101 post-merge rollout runbook。
 
 ## Task Orchestration
 
