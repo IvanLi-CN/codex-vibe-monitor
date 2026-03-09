@@ -67,5 +67,5 @@ Use non-blocking runtime management for long-lived services, but do not require 
 ## Security & Configuration Tips
 
 - Store authentication cookies and secrets in `.env.local`; the file is ignored—never commit credentials.
-- SQLite files default to `codex_vibe_monitor.db` in the repo root; add alternate paths via `XY_DATABASE_PATH` if running in containers.
+- SQLite files default to `codex_vibe_monitor.db` in the repo root; add alternate paths via `DATABASE_PATH` if running in containers.
 - SSE and HTTP clients depend on stable polling; monitor logs (`RUST_LOG=info cargo run`) when adjusting concurrency or timeouts.

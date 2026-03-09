@@ -101,6 +101,8 @@ const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
 const DEFAULT_PROXY_RAW_RETENTION_DAYS: u64 = 7;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
 const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
+const ENV_DATABASE_PATH: &str = "DATABASE_PATH";
+const LEGACY_ENV_DATABASE_PATH: &str = "XY_DATABASE_PATH";
 const DETAIL_LEVEL_FULL: &str = "full";
 const DETAIL_LEVEL_STRUCTURED_ONLY: &str = "structured_only";
 const DETAIL_PRUNE_REASON_SUCCESS_OVER_30D: &str = "success_over_30d";
@@ -274,7 +276,7 @@ fn resolve_forward_proxy_algo_config(
     disable_help_subcommand = true
 )]
 struct CliArgs {
-    /// Override the SQLite database path; falls back to env or default.
+    /// Override the SQLite database path; falls back to DATABASE_PATH or default.
     #[arg(long, value_name = "PATH")]
     database_path: Option<PathBuf>,
     /// Override the polling interval in seconds.
@@ -355,10 +357,11 @@ async fn main() -> Result<()> {
         forward_proxy_runtime,
         config.forward_proxy_algo,
     )));
-    fs::create_dir_all(&config.proxy_raw_dir).with_context(|| {
+    let resolved_proxy_raw_dir = config.resolved_proxy_raw_dir();
+    fs::create_dir_all(&resolved_proxy_raw_dir).with_context(|| {
         format!(
             "failed to create proxy raw payload directory: {}",
-            config.proxy_raw_dir.display()
+            resolved_proxy_raw_dir.display()
         )
     })?;
     let pricing_catalog = Arc::new(RwLock::new(pricing_catalog));
@@ -2248,13 +2251,7 @@ async fn sweep_orphan_proxy_raw_files(
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
 ) -> Result<usize> {
-    let raw_dir = if config.proxy_raw_dir.is_absolute() {
-        config.proxy_raw_dir.clone()
-    } else {
-        env::current_dir()
-            .context("failed to read current directory for raw payload sweep")?
-            .join(&config.proxy_raw_dir)
-    };
+    let raw_dir = config.resolved_proxy_raw_dir();
     if !raw_dir.exists() {
         return Ok(0);
     }
@@ -2437,13 +2434,17 @@ fn shanghai_month_key_from_utc_naive(value: &str) -> Result<String> {
 }
 
 fn resolved_archive_dir(config: &AppConfig) -> PathBuf {
-    if config.archive_dir.is_absolute() {
-        return config.archive_dir.clone();
+    resolve_path_from_database_parent(&config.database_path, &config.archive_dir)
+}
+
+fn resolve_path_from_database_parent(database_path: &Path, configured_path: &Path) -> PathBuf {
+    if configured_path.is_absolute() {
+        return configured_path.to_path_buf();
     }
 
-    match config.database_path.parent() {
-        Some(parent) => parent.join(&config.archive_dir),
-        None => config.archive_dir.clone(),
+    match database_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(configured_path),
+        _ => configured_path.to_path_buf(),
     }
 }
 
@@ -8651,14 +8652,16 @@ fn store_raw_payload_file(
     }
     let content = &bytes[..write_len];
 
-    if let Err(err) = fs::create_dir_all(&config.proxy_raw_dir) {
+    let raw_dir = config.resolved_proxy_raw_dir();
+
+    if let Err(err) = fs::create_dir_all(&raw_dir) {
         meta.truncated = true;
         meta.truncated_reason = Some(format!("write_failed:{err}"));
         return meta;
     }
 
     let filename = format!("{invoke_id}-{kind}.bin");
-    let path = config.proxy_raw_dir.join(filename);
+    let path = raw_dir.join(filename);
     match fs::File::create(&path).and_then(|mut f| f.write_all(content)) {
         Ok(_) => {
             meta.path = Some(path.to_string_lossy().to_string());
@@ -15389,12 +15392,15 @@ struct CrsStatsConfig {
 
 impl AppConfig {
     fn from_sources(overrides: &CliArgs) -> Result<Self> {
+        if env::var_os(LEGACY_ENV_DATABASE_PATH).is_some() {
+            bail!("{LEGACY_ENV_DATABASE_PATH} is not supported; rename it to {ENV_DATABASE_PATH}");
+        }
         let openai_upstream_base_url = env::var("OPENAI_UPSTREAM_BASE_URL")
             .unwrap_or_else(|_| DEFAULT_OPENAI_UPSTREAM_BASE_URL.to_string());
         let database_path = overrides
             .database_path
             .clone()
-            .or_else(|| env::var("XY_DATABASE_PATH").ok().map(PathBuf::from))
+            .or_else(|| env::var(ENV_DATABASE_PATH).ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("codex_vibe_monitor.db"));
         let poll_interval = overrides
             .poll_interval_secs
@@ -15639,6 +15645,10 @@ impl AppConfig {
     fn database_url(&self) -> String {
         format!("sqlite://{}", self.database_path.to_string_lossy())
     }
+
+    fn resolved_proxy_raw_dir(&self) -> PathBuf {
+        resolve_path_from_database_parent(&self.database_path, &self.proxy_raw_dir)
+    }
 }
 
 fn parse_bool_env_var(name: &str, default_value: bool) -> Result<bool> {
@@ -15707,6 +15717,24 @@ mod tests {
 
     static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<StdMutex<()>> =
         once_cell::sync::Lazy::new(|| StdMutex::new(()));
+
+    struct CurrentDirGuard {
+        original: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn change_to(path: &Path) -> Self {
+            let original = env::current_dir().expect("read current dir");
+            env::set_current_dir(path).expect("set current dir");
+            Self { original }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.original);
+        }
+    }
 
     #[test]
     fn named_range_today_end_respects_dst() {
@@ -16809,6 +16837,62 @@ mod tests {
         assert_eq!(config.database_path, PathBuf::from("codex_vibe_monitor.db"));
     }
 
+    #[test]
+    fn app_config_from_sources_reads_database_path_env() {
+        let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+        let previous_database = env::var_os(ENV_DATABASE_PATH);
+        let previous_legacy = env::var_os(LEGACY_ENV_DATABASE_PATH);
+
+        unsafe {
+            env::remove_var(LEGACY_ENV_DATABASE_PATH);
+            env::set_var(ENV_DATABASE_PATH, "/tmp/codex-env.sqlite");
+        }
+
+        let result = AppConfig::from_sources(&CliArgs::default());
+
+        match previous_database {
+            Some(value) => unsafe { env::set_var(ENV_DATABASE_PATH, value) },
+            None => unsafe { env::remove_var(ENV_DATABASE_PATH) },
+        }
+        match previous_legacy {
+            Some(value) => unsafe { env::set_var(LEGACY_ENV_DATABASE_PATH, value) },
+            None => unsafe { env::remove_var(LEGACY_ENV_DATABASE_PATH) },
+        }
+
+        let config = result.expect("DATABASE_PATH should configure the database path");
+        assert_eq!(config.database_path, PathBuf::from("/tmp/codex-env.sqlite"));
+    }
+
+    #[test]
+    fn app_config_from_sources_rejects_legacy_database_path_env() {
+        let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+        let previous_database = env::var_os(ENV_DATABASE_PATH);
+        let previous_legacy = env::var_os(LEGACY_ENV_DATABASE_PATH);
+
+        unsafe {
+            env::set_var(ENV_DATABASE_PATH, "/tmp/codex-env.sqlite");
+            env::set_var(LEGACY_ENV_DATABASE_PATH, "/tmp/codex-legacy.sqlite");
+        }
+
+        let result = AppConfig::from_sources(&CliArgs::default());
+
+        match previous_database {
+            Some(value) => unsafe { env::set_var(ENV_DATABASE_PATH, value) },
+            None => unsafe { env::remove_var(ENV_DATABASE_PATH) },
+        }
+        match previous_legacy {
+            Some(value) => unsafe { env::set_var(LEGACY_ENV_DATABASE_PATH, value) },
+            None => unsafe { env::remove_var(LEGACY_ENV_DATABASE_PATH) },
+        }
+
+        let err = result.expect_err("legacy database env should fail fast");
+        assert!(
+            err.to_string()
+                .contains("XY_DATABASE_PATH is not supported; rename it to DATABASE_PATH"),
+            "error should point to the DATABASE_PATH migration"
+        );
+    }
+
     fn test_config() -> AppConfig {
         AppConfig {
             openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
@@ -16882,6 +16966,78 @@ mod tests {
                 "/tmp/codex-retention/archives/codex_invocations/2026/codex_invocations-2026-03.sqlite.gz",
             )
         );
+    }
+
+    #[test]
+    fn resolved_proxy_raw_dir_resolves_relative_dir_from_database_parent() {
+        let mut config = test_config();
+        config.database_path = PathBuf::from("/tmp/codex-retention/codex_vibe_monitor.db");
+        config.proxy_raw_dir = PathBuf::from("proxy_raw_payloads");
+
+        assert_eq!(
+            config.resolved_proxy_raw_dir(),
+            PathBuf::from("/tmp/codex-retention/proxy_raw_payloads")
+        );
+    }
+
+    #[test]
+    fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
+        let _guard = APP_CONFIG_ENV_LOCK.lock().expect("cwd lock");
+        let temp_dir = make_temp_test_dir("proxy-raw-store-db-parent");
+        let cwd = temp_dir.join("cwd");
+        let db_root = temp_dir.join("db-root");
+        fs::create_dir_all(&cwd).expect("create cwd dir");
+        fs::create_dir_all(&db_root).expect("create db root");
+        let _cwd_guard = CurrentDirGuard::change_to(&cwd);
+
+        let mut config = test_config();
+        config.database_path = db_root.join("codex_vibe_monitor.db");
+        config.proxy_raw_dir = PathBuf::from("proxy_raw_payloads");
+
+        let meta = store_raw_payload_file(&config, "proxy-test", "request", b"{\"ok\":true}");
+        let expected = db_root.join("proxy_raw_payloads/proxy-test-request.bin");
+
+        assert_eq!(
+            meta.path.as_deref(),
+            Some(expected.to_string_lossy().as_ref())
+        );
+        assert!(
+            expected.exists(),
+            "raw payload should be written beside the database"
+        );
+        assert!(
+            !cwd.join("proxy_raw_payloads/proxy-test-request.bin")
+                .exists(),
+            "raw payload should not follow the current working directory"
+        );
+
+        cleanup_temp_test_dir(&temp_dir);
+    }
+
+    #[test]
+    fn read_proxy_raw_bytes_keeps_current_dir_compat_for_legacy_relative_paths() {
+        let _guard = APP_CONFIG_ENV_LOCK.lock().expect("cwd lock");
+        let temp_dir = make_temp_test_dir("proxy-raw-read-legacy-cwd");
+        let cwd = temp_dir.join("cwd");
+        let fallback_root = temp_dir.join("fallback");
+        let relative_path = PathBuf::from("proxy_raw_payloads/legacy-request.bin");
+        let cwd_path = cwd.join(&relative_path);
+        let fallback_path = fallback_root.join(&relative_path);
+        fs::create_dir_all(cwd_path.parent().expect("cwd parent")).expect("create cwd raw dir");
+        fs::create_dir_all(fallback_path.parent().expect("fallback parent"))
+            .expect("create fallback raw dir");
+        fs::write(&cwd_path, b"cwd-copy").expect("write cwd raw file");
+        fs::write(&fallback_path, b"fallback-copy").expect("write fallback raw file");
+        let _cwd_guard = CurrentDirGuard::change_to(&cwd);
+
+        let raw = read_proxy_raw_bytes(
+            relative_path.to_str().expect("utf-8 path"),
+            Some(&fallback_root),
+        )
+        .expect("read legacy cwd-relative raw file");
+
+        assert_eq!(raw, b"cwd-copy");
+        cleanup_temp_test_dir(&temp_dir);
     }
 
     fn sqlite_url_for_path(path: &Path) -> String {
@@ -25708,6 +25864,57 @@ mod tests {
         assert_eq!(summary.orphan_raw_files_removed, 0);
         assert!(orphan.exists());
 
+        cleanup_temp_test_dir(&temp_dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn retention_orphan_sweep_anchors_relative_raw_dir_to_database_parent() {
+        let _guard = APP_CONFIG_ENV_LOCK.lock().expect("cwd lock");
+        let temp_dir = make_temp_test_dir("retention-orphan-db-parent");
+        let db_root = temp_dir.join("db-root");
+        let cwd_root = temp_dir.join("cwd-root");
+        fs::create_dir_all(&db_root).expect("create db root");
+        fs::create_dir_all(&cwd_root).expect("create cwd root");
+        let _cwd_guard = CurrentDirGuard::change_to(&cwd_root);
+
+        let db_path = db_root.join("codex-vibe-monitor.db");
+        fs::File::create(&db_path).expect("create sqlite file");
+        let pool = SqlitePool::connect(&sqlite_url_for_path(&db_path))
+            .await
+            .expect("connect retention sqlite");
+        ensure_schema(&pool).await.expect("ensure retention schema");
+
+        let mut config = test_config();
+        config.database_path = db_path;
+        config.proxy_raw_dir = PathBuf::from("proxy_raw_payloads");
+
+        let anchored_dir = config.resolved_proxy_raw_dir();
+        fs::create_dir_all(&anchored_dir).expect("create anchored raw dir");
+        let anchored_orphan = anchored_dir.join("anchored-orphan.bin");
+        fs::write(&anchored_orphan, b"anchored-orphan").expect("write anchored orphan");
+        set_file_mtime_seconds_ago(&anchored_orphan, DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS + 60);
+
+        let cwd_raw_dir = cwd_root.join("proxy_raw_payloads");
+        fs::create_dir_all(&cwd_raw_dir).expect("create cwd raw dir");
+        let cwd_orphan = cwd_raw_dir.join("cwd-orphan.bin");
+        fs::write(&cwd_orphan, b"cwd-orphan").expect("write cwd orphan");
+        set_file_mtime_seconds_ago(&cwd_orphan, DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS + 60);
+
+        let removed = sweep_orphan_proxy_raw_files(&pool, &config, None, false)
+            .await
+            .expect("run orphan sweep");
+
+        assert_eq!(removed, 1);
+        assert!(
+            !anchored_orphan.exists(),
+            "orphan sweep should clean the database-anchored raw dir"
+        );
+        assert!(
+            cwd_orphan.exists(),
+            "orphan sweep should stop scanning cwd-relative stray files"
+        );
+
+        pool.close().await;
         cleanup_temp_test_dir(&temp_dir);
     }
 

@@ -9,6 +9,7 @@
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                        |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------------------------------- |
 | 2uaxk | 移除 XYAI 采集，仅保留历史读取                                                | 已完成（4/4）   | `2uaxk-remove-xyai-legacy-ingest/SPEC.md`                | 2026-03-09 | PR #101 / CI + review-loop                   |
+| bh43j | 数据库环境变量重命名与 raw 路径锚点修复                                       | 待实现          | `bh43j-database-path-raw-dir-anchor/SPEC.md`             | 2026-03-09 | fast-track                                   |
 | g3amk | Codex 远程压缩请求记录、展示与计费接入                                        | 已完成（5/5）   | `g3amk-codex-remote-compact-observability/SPEC.md`       | 2026-03-09 | fast-track / PR #103 / checks green          |
 | dvwja | 反向代理 Fast 模式请求改写（三态设置，`requestedServiceTier`=上游实际请求值） | 已完成（4/4）   | `dvwja-proxy-fast-mode-request-rewrite/SPEC.md`          | 2026-03-09 | fast-track / PR #102 / checks green          |
 | fq45q | 启动就绪保护与历史回填解耦                                                    | 已完成          | `fq45q-startup-readiness-backfill-gating/SPEC.md`        | 2026-03-09 | fast-track / PR #100 / shared-testbox 已验证 |
