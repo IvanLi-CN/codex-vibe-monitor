@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（3/4）
+- Status: 已完成
 
 ## 背景 / 问题陈述
 
@@ -90,7 +90,12 @@
 
 - `cargo fmt`
 - `cargo check`
+- `cargo check --tests`
+- `cargo clippy -- -D warnings`
 - `cargo test`
+- `cd web && npm run lint -- --max-warnings=0`
+- `cd web && npx tsc -b`
+- `codex --sandbox read-only -a never review --base origin/main`
 
 ## 文档更新（Docs to Update）
 
@@ -102,7 +107,7 @@
 - [x] M1: 建立 spec、登记基线与前端后续优先级。
 - [x] M2: 抽离 `src/tests/` 并保持白盒测试可运行。
 - [x] M3: 抽离 `src/forward_proxy/` 与 `src/api/` / `src/stats/`，回收 `src/main.rs`。
-- [ ] M4: 完成格式化、验证、PR 与 review-loop 收敛。
+- [x] M4: 完成格式化、验证、PR 与 review-loop 收敛。
 
 ## 方案概述（Approach, high-level）
 
@@ -121,6 +126,7 @@
 
 - 2026-03-09: 创建 spec，冻结首波“后端优先源码结构收敛”范围与验收口径。
 - 2026-03-09: 完成 `src/tests/`、`src/forward_proxy/`、`src/api/`、`src/stats/` 首波拆分，`src/main.rs` 收窄到 9990 行。
+- 2026-03-09: PR #104 已创建并打上 `type:skip` / `channel:stable`；本地验证、CI checks 与 `codex review` 均已收敛为通过/无阻塞。
 
 ## 参考（References）
 
