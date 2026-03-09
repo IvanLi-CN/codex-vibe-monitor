@@ -54,7 +54,7 @@ jobs:
             const requiredApprovals = Number(process.env.REVIEW_POLICY_REQUIRED_APPROVALS || '1')
             const exemptRepositoryOwner = (process.env.REVIEW_POLICY_EXEMPT_REPOSITORY_OWNER || '').toLowerCase() === 'true'
             const checkName = process.env.REVIEW_POLICY_CHECK_NAME || 'Review Policy Gate'
-            const rawInput = core.getInput('pull_number')
+            const rawInput = context.payload.inputs?.pull_number ?? core.getInput('pull_number')
             const pullNumber = context.payload.pull_request?.number ?? (rawInput ? Number(rawInput) : NaN)
 
             if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
