@@ -77,6 +77,7 @@
 - 若请求体不是合法 JSON，Fast rewrite 不生效，`requestedServiceTier` 保持按现有逻辑缺失。
 - 若请求体已有 `service_tier: 'auto'/'default'/'flex'/'scale'`：`fill_missing` 不覆盖；`force_priority` 覆盖为 `priority`。
 - 若请求体只携带 `serviceTier`：`fill_missing` 视为“已有 tier”；`force_priority` 覆盖为标准字段 `service_tier=priority`。
+- 当模式为 `disabled` 时，请求体字段形状保持原样透传；只有 `fill_missing` / `force_priority` 命中时，才统一输出顶层 `service_tier` 并清理 `serviceTier` 别名。
 - 非目标端点继续保持完全透明透传，不读取 body JSON。
 
 ## 接口契约（Interfaces & Contracts）
@@ -130,3 +131,4 @@
 
 - 2026-03-09: 创建规格，冻结三态 Fast rewrite 语义、双接口范围与 `requestedServiceTier` 最终请求值口径。
 - 2026-03-09: 完成 SQLite 设置迁移、双接口 tier 改写与 `requestedServiceTier` 最终值回写，补齐 Settings UI、Storybook mock、Vitest 与 Playwright 覆盖，并通过 `cargo test`、`cargo check`、`cd web && npm run test`、`cd web && npm run build`。
+- 2026-03-09: 根据 review 调整 `disabled` 模式为真正透明透传；仅在 `fill_missing` / `force_priority` 生效时才标准化 `service_tier` 字段形状，并补充对应回归测试。

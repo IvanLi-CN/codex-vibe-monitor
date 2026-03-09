@@ -7379,9 +7379,7 @@ fn rewrite_request_service_tier_for_fast_mode(
     fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
 ) -> bool {
     let target_service_tier = match fast_mode_rewrite_mode {
-        ProxyFastModeRewriteMode::Disabled => {
-            extract_requested_service_tier_from_request_body(value)
-        }
+        ProxyFastModeRewriteMode::Disabled => return false,
         ProxyFastModeRewriteMode::FillMissing => {
             extract_requested_service_tier_from_request_body(value)
                 .or_else(|| Some("priority".to_string()))
@@ -20552,22 +20550,26 @@ mod tests {
     }
 
     #[test]
-    fn prepare_target_request_body_extracts_requested_service_tier() {
-        let body = serde_json::to_vec(&json!({
+    fn prepare_target_request_body_extracts_requested_service_tier_without_rewriting_when_disabled()
+    {
+        let expected = json!({
             "model": "gpt-5.3-codex",
             "serviceTier": " Priority ",
             "stream": false
-        }))
-        .expect("serialize request body");
+        });
+        let body = serde_json::to_vec(&expected).expect("serialize request body");
 
-        let (_rewritten, info, _did_rewrite) = prepare_target_request_body(
+        let (rewritten, info, did_rewrite) = prepare_target_request_body(
             ProxyCaptureTarget::Responses,
             body,
             true,
             DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
         );
 
+        assert!(!did_rewrite);
         assert_eq!(info.requested_service_tier.as_deref(), Some("priority"));
+        let payload: Value = serde_json::from_slice(&rewritten).expect("decode body");
+        assert_eq!(payload, expected);
     }
 
     #[test]
