@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（3/4）
+- Status: 已完成
 - Created: 2026-03-09
 - Last: 2026-03-09
 
@@ -132,7 +132,7 @@ None
 - [x] M1: 修复桌面代理列 badge 宽度约束，恢复长代理名省略显示。
 - [x] M2: 为 proxy badge/name 增加稳定测试选择器，并统一 Story/单测/E2E 的长代理名样例。
 - [x] M3: 前端测试、build、storybook build 与 E2E 回归全部通过。
-- [ ] M4: 快车道完成本地提交、PR、checks 与 review-loop 收敛。
+- [x] M4: 快车道完成本地提交、PR、checks 与 review-loop 收敛。
 
 ## 方案概述（Approach, high-level）
 
@@ -151,6 +151,7 @@ None
 
 - 2026-03-09: 创建 hotfix spec，冻结根因、修复边界、回归样例与快车道发布口径。
 - 2026-03-09: 已完成桌面代理列热修、长代理名回归断言与本地 `vitest/build/storybook/playwright` 验证，等待 PR/checks/review-loop 收敛。
+- 2026-03-09: 快车道完成 PR [#105](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/105) 创建、标签收敛、checks 通过与本地 codex review 清零。
 
 ## 参考（References）
 
