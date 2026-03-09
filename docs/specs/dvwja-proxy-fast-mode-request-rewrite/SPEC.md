@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（3/4）
+- Status: 已完成（4/4）
 - Created: 2026-03-09
 - Last: 2026-03-09
 
@@ -125,10 +125,11 @@
 - [x] M1: 新规格建档并在 `docs/specs/README.md` 建立索引。
 - [x] M2: 后端设置存储、API 合约与双接口 Fast rewrite 完成。
 - [x] M3: 设置页三态 UI、类型与测试完成。
-- [ ] M4: 本地验证、spec sync、快车道提交与 PR 收敛完成。
+- [x] M4: 本地验证、spec sync、快车道提交与 PR 收敛完成。
 
 ## 变更记录（Change log）
 
 - 2026-03-09: 创建规格，冻结三态 Fast rewrite 语义、双接口范围与 `requestedServiceTier` 最终请求值口径。
 - 2026-03-09: 完成 SQLite 设置迁移、双接口 tier 改写与 `requestedServiceTier` 最终值回写，补齐 Settings UI、Storybook mock、Vitest 与 Playwright 覆盖，并通过 `cargo test`、`cargo check`、`cd web && npm run test`、`cd web && npm run build`。
 - 2026-03-09: 根据 review 调整 `disabled` 模式为真正透明透传；仅在 `fill_missing` / `force_priority` 生效时才标准化 `service_tier` 字段形状，并补充对应回归测试。
+- 2026-03-09: 创建 PR #102，补齐 release labels，并在变基到最新 `main` 后确认本地验证与 GitHub Actions checks 全部通过。
