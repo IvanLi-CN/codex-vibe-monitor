@@ -6548,6 +6548,7 @@ fn capture_target_for_request(path: &str, method: &Method) -> Option<ProxyCaptur
     match path {
         "/v1/chat/completions" => Some(ProxyCaptureTarget::ChatCompletions),
         "/v1/responses" => Some(ProxyCaptureTarget::Responses),
+        "/v1/responses/compact" => Some(ProxyCaptureTarget::ResponsesCompact),
         _ => None,
     }
 }
@@ -7310,9 +7311,12 @@ fn prepare_target_request_body(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let mut rewritten =
-        rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode);
-    if target == ProxyCaptureTarget::ChatCompletions
+    let mut rewritten = if target.allows_fast_mode_rewrite() {
+        rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode)
+    } else {
+        false
+    };
+    if target.should_auto_include_usage()
         && info.is_stream
         && auto_include_usage
         && let Some(object) = value.as_object_mut()
@@ -7413,7 +7417,7 @@ fn extract_reasoning_effort_from_request_body(
     value: &Value,
 ) -> Option<String> {
     let raw = match target {
-        ProxyCaptureTarget::Responses => {
+        ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact => {
             value.pointer("/reasoning/effort").and_then(|v| v.as_str())
         }
         ProxyCaptureTarget::ChatCompletions => {
@@ -7760,12 +7764,8 @@ fn build_proxy_payload_summary(
     proxy_display_name: Option<&str>,
     proxy_weight_delta: Option<f64>,
 ) -> String {
-    let endpoint = match target {
-        ProxyCaptureTarget::ChatCompletions => "/v1/chat/completions",
-        ProxyCaptureTarget::Responses => "/v1/responses",
-    };
     let payload = json!({
-        "endpoint": endpoint,
+        "endpoint": target.endpoint(),
         "statusCode": status.as_u16(),
         "isStream": is_stream,
         "requestModel": request_model,
@@ -9043,6 +9043,8 @@ async fn backfill_proxy_reasoning_efforts(
 fn infer_proxy_capture_target_from_payload(value: &Value) -> ProxyCaptureTarget {
     if value.get("messages").is_some() || value.get("reasoning_effort").is_some() {
         ProxyCaptureTarget::ChatCompletions
+    } else if value.get("previous_response_id").is_some() {
+        ProxyCaptureTarget::ResponsesCompact
     } else {
         ProxyCaptureTarget::Responses
     }
@@ -9297,11 +9299,7 @@ fn parse_proxy_capture_summary(payload: Option<&str>) -> (ProxyCaptureTarget, bo
     };
 
     if let Some(endpoint) = value.get("endpoint").and_then(|v| v.as_str()) {
-        target = match endpoint {
-            "/v1/chat/completions" => ProxyCaptureTarget::ChatCompletions,
-            "/v1/responses" => ProxyCaptureTarget::Responses,
-            _ => ProxyCaptureTarget::Responses,
-        };
+        target = ProxyCaptureTarget::from_endpoint(endpoint);
     }
     if let Some(stream) = value.get("isStream").and_then(|v| v.as_bool()) {
         is_stream = stream;
@@ -13304,6 +13302,34 @@ struct RequestBodyReadError {
 enum ProxyCaptureTarget {
     ChatCompletions,
     Responses,
+    ResponsesCompact,
+}
+
+impl ProxyCaptureTarget {
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "/v1/chat/completions",
+            Self::Responses => "/v1/responses",
+            Self::ResponsesCompact => "/v1/responses/compact",
+        }
+    }
+
+    fn allows_fast_mode_rewrite(self) -> bool {
+        matches!(self, Self::ChatCompletions | Self::Responses)
+    }
+
+    fn should_auto_include_usage(self) -> bool {
+        matches!(self, Self::ChatCompletions)
+    }
+
+    fn from_endpoint(endpoint: &str) -> Self {
+        match endpoint {
+            "/v1/chat/completions" => Self::ChatCompletions,
+            "/v1/responses/compact" => Self::ResponsesCompact,
+            "/v1/responses" => Self::Responses,
+            _ => Self::Responses,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16223,7 +16249,7 @@ mod tests {
         target: ProxyCaptureTarget,
     ) {
         let payload = match target {
-            ProxyCaptureTarget::Responses => {
+            ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact => {
                 let mut payload = json!({
                     "model": "gpt-5.3-codex",
                     "stream": true,
@@ -16922,6 +16948,35 @@ mod tests {
             test_upstream_stream_mid_error().await.into_response()
         }
     }
+
+    async fn test_upstream_responses_compact() -> impl IntoResponse {
+        (
+            StatusCode::OK,
+            Json(json!({
+                "id": "resp_compact_test",
+                "object": "response.compaction",
+                "output": [
+                    {
+                        "id": "cmp_001",
+                        "type": "compaction",
+                        "encrypted_content": "encrypted-summary"
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 139,
+                    "input_tokens_details": {
+                        "cached_tokens": 11
+                    },
+                    "output_tokens": 438,
+                    "output_tokens_details": {
+                        "reasoning_tokens": 64
+                    },
+                    "total_tokens": 577
+                }
+            })),
+        )
+    }
+
     async fn test_upstream_models(uri: Uri) -> impl IntoResponse {
         if uri
             .query()
@@ -17015,7 +17070,11 @@ mod tests {
                 "/v1/chat/completions",
                 any(test_upstream_chat_external_redirect),
             )
-            .route("/v1/responses", any(test_upstream_responses));
+            .route("/v1/responses", any(test_upstream_responses))
+            .route(
+                "/v1/responses/compact",
+                post(test_upstream_responses_compact),
+            );
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -17054,6 +17113,41 @@ mod tests {
         )
     }
 
+    async fn test_upstream_capture_target_compact_echo(
+        State(captured): State<Arc<Mutex<Vec<Value>>>>,
+        body: Bytes,
+    ) -> impl IntoResponse {
+        let payload: Value = serde_json::from_slice(&body).expect("decode upstream captured body");
+        captured.lock().await.push(payload.clone());
+
+        (
+            StatusCode::OK,
+            Json(json!({
+                "id": "resp_compact_test",
+                "object": "response.compaction",
+                "output": [
+                    {
+                        "id": "cmp_001",
+                        "type": "compaction",
+                        "encrypted_content": "encrypted-summary"
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 139,
+                    "input_tokens_details": {
+                        "cached_tokens": 11
+                    },
+                    "output_tokens": 438,
+                    "output_tokens_details": {
+                        "reasoning_tokens": 64
+                    },
+                    "total_tokens": 577
+                },
+                "received": payload,
+            })),
+        )
+    }
+
     async fn spawn_capture_target_body_upstream() -> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>)
     {
         let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -17063,6 +17157,10 @@ mod tests {
                 post(test_upstream_capture_target_echo),
             )
             .route("/v1/responses", post(test_upstream_capture_target_echo))
+            .route(
+                "/v1/responses/compact",
+                post(test_upstream_capture_target_compact_echo),
+            )
             .with_state(captured.clone());
 
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -20067,6 +20165,189 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_without_rewrite() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedCompactRow {
+            endpoint: Option<String>,
+            model: Option<String>,
+            requested_service_tier: Option<String>,
+            input_tokens: Option<i64>,
+            cache_input_tokens: Option<i64>,
+            output_tokens: Option<i64>,
+            reasoning_tokens: Option<i64>,
+            total_tokens: Option<i64>,
+            cost: Option<f64>,
+            price_version: Option<String>,
+        }
+
+        let (upstream_base, captured_requests, upstream_handle) =
+            spawn_capture_target_body_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        {
+            let mut settings = state.proxy_model_settings.write().await;
+            settings.fast_mode_rewrite_mode = ProxyFastModeRewriteMode::ForcePriority;
+        }
+        {
+            let mut pricing = state.pricing_catalog.write().await;
+            *pricing = PricingCatalog {
+                version: "compact-unit-test".to_string(),
+                models: HashMap::from([(
+                    "gpt-5.1-codex-max".to_string(),
+                    ModelPricing {
+                        input_per_1m: 2.0,
+                        output_per_1m: 3.0,
+                        cache_input_per_1m: Some(0.5),
+                        reasoning_per_1m: Some(7.0),
+                        source: "custom".to_string(),
+                    },
+                )]),
+            };
+        }
+
+        let request_body = serde_json::to_vec(&json!({
+            "model": "gpt-5.1-codex-max",
+            "serviceTier": "flex",
+            "previous_response_id": "resp_prev_001",
+            "input": [{
+                "role": "user",
+                "content": "compact this thread"
+            }]
+        }))
+        .expect("serialize compact request body");
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses/compact".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from(request_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let _response_body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read proxy response body");
+        let captured = captured_requests.lock().await;
+        let captured_request = captured
+            .first()
+            .cloned()
+            .expect("upstream should receive a compact request body");
+        drop(captured);
+        assert_eq!(captured_request["serviceTier"], "flex");
+        assert!(captured_request.get("service_tier").is_none());
+
+        let mut row: Option<PersistedCompactRow> = None;
+        for _ in 0..20 {
+            row = sqlx::query_as::<_, PersistedCompactRow>(
+                r#"
+                SELECT
+                    CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint,
+                    model,
+                    CASE
+                      WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text'
+                        THEN json_extract(payload, '$.requestedServiceTier')
+                      WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text'
+                        THEN json_extract(payload, '$.requested_service_tier')
+                    END AS requested_service_tier,
+                    input_tokens,
+                    cache_input_tokens,
+                    output_tokens,
+                    reasoning_tokens,
+                    total_tokens,
+                    cost,
+                    price_version
+                FROM codex_invocations
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query compact capture record");
+            if row.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let row = row.expect("compact capture record should be persisted");
+        assert_eq!(row.endpoint.as_deref(), Some("/v1/responses/compact"));
+        assert_eq!(row.model.as_deref(), Some("gpt-5.1-codex-max"));
+        assert_eq!(row.requested_service_tier.as_deref(), Some("flex"));
+        assert_eq!(row.input_tokens, Some(139));
+        assert_eq!(row.cache_input_tokens, Some(11));
+        assert_eq!(row.output_tokens, Some(438));
+        assert_eq!(row.reasoning_tokens, Some(64));
+        assert_eq!(row.total_tokens, Some(577));
+        assert_eq!(row.price_version.as_deref(), Some("compact-unit-test"));
+        assert_f64_close(row.cost.expect("compact cost should be present"), 0.0020235);
+
+        let Json(stats) = fetch_stats(State(state.clone()))
+            .await
+            .expect("compact fetch_stats should succeed");
+        assert_eq!(stats.total_count, 1);
+        assert_eq!(stats.success_count, 1);
+        assert_eq!(stats.failure_count, 0);
+        assert_eq!(stats.total_tokens, 577);
+        assert_f64_close(stats.total_cost, 0.0020235);
+
+        let Json(summary) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: None,
+            }),
+        )
+        .await
+        .expect("compact fetch_summary should succeed");
+        assert_eq!(summary.total_count, 1);
+        assert_eq!(summary.total_tokens, 577);
+        assert_f64_close(summary.total_cost, 0.0020235);
+
+        let Json(timeseries) = fetch_timeseries(
+            State(state),
+            Query(TimeseriesQuery {
+                range: "1d".to_string(),
+                bucket: Some("1h".to_string()),
+                settlement_hour: None,
+                time_zone: None,
+            }),
+        )
+        .await
+        .expect("compact fetch_timeseries should succeed");
+        assert_eq!(
+            timeseries
+                .points
+                .iter()
+                .map(|point| point.total_count)
+                .sum::<i64>(),
+            1
+        );
+        assert_eq!(
+            timeseries
+                .points
+                .iter()
+                .map(|point| point.total_tokens)
+                .sum::<i64>(),
+            577
+        );
+        assert_f64_close(
+            timeseries
+                .points
+                .iter()
+                .map(|point| point.total_cost)
+                .sum::<f64>(),
+            0.0020235,
+        );
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
     async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         let (upstream_base, upstream_handle) = spawn_test_upstream().await;
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -20694,6 +20975,34 @@ mod tests {
         let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
         assert_eq!(payload["service_tier"], "priority");
         assert!(payload.get("serviceTier").is_none());
+    }
+
+    #[test]
+    fn prepare_target_request_body_compact_skips_fast_mode_rewrite() {
+        let expected = json!({
+            "model": "gpt-5.1-codex-max",
+            "serviceTier": "flex",
+            "previous_response_id": "resp_prev_001",
+            "input": [{
+                "role": "user",
+                "content": "compact this thread"
+            }]
+        });
+        let body = serde_json::to_vec(&expected).expect("serialize request body");
+
+        let (rewritten, info, did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::ResponsesCompact,
+            body,
+            true,
+            ProxyFastModeRewriteMode::ForcePriority,
+        );
+
+        assert!(!did_rewrite);
+        assert_eq!(info.model.as_deref(), Some("gpt-5.1-codex-max"));
+        assert_eq!(info.requested_service_tier.as_deref(), Some("flex"));
+        let payload: Value = serde_json::from_slice(&rewritten).expect("decode body");
+        assert_eq!(payload, expected);
+        assert!(payload.get("service_tier").is_none());
     }
 
     #[test]

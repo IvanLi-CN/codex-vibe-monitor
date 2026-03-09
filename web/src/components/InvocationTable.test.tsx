@@ -142,6 +142,41 @@ describe('InvocationTable', () => {
     expect(html).toContain('>—</span>')
   })
 
+  it('marks compact requests in summary rows while preserving the raw endpoint text', () => {
+    const html = renderTable([
+      {
+        id: 21,
+        invokeId: 'invocation-compact-marker',
+        occurredAt: '2026-03-07T03:13:53Z',
+        createdAt: '2026-03-07T03:13:53Z',
+        source: 'proxy',
+        proxyDisplayName: 'codex-compact-edge',
+        endpoint: '/v1/responses/compact',
+        model: 'gpt-5.3-codex',
+        status: 'success',
+        totalTokens: 2048,
+        cost: 0.0042,
+      },
+      {
+        id: 22,
+        invokeId: 'invocation-standard-marker',
+        occurredAt: '2026-03-07T03:13:52Z',
+        createdAt: '2026-03-07T03:13:52Z',
+        source: 'proxy',
+        proxyDisplayName: 'codex-standard-edge',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.3-codex',
+        status: 'success',
+        totalTokens: 1024,
+        cost: 0.0021,
+      },
+    ])
+
+    expect(html.match(/data-testid="invocation-compact-badge"/g)?.length ?? 0).toBe(2)
+    expect(html).toContain('远程压缩')
+    expect(html).toContain('/v1/responses/compact')
+  })
+
   it('renders unknown reasoning effort values as dashed neutral badges', () => {
     const html = renderTable([
       {

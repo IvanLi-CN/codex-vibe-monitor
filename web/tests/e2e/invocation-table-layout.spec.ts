@@ -23,7 +23,7 @@ const INVOCATION_FIXTURE = {
       createdAt: '2026-02-26T02:35:52Z',
       source: 'proxy',
       proxyDisplayName: 'sg-relay-edge-01',
-      endpoint: '/v1/responses',
+      endpoint: '/v1/responses/compact',
       model: 'gpt-5.3-codex',
       status: 'success',
       requestedServiceTier: 'priority',
@@ -328,6 +328,8 @@ test.describe('InvocationTable layout regression', () => {
           const items = page.getByTestId('invocation-list-item')
           await expect(mobileList.locator('[data-testid="invocation-fast-icon"][data-fast-state="effective"]')).toHaveCount(2)
           await expect(mobileList.locator('[data-testid="invocation-fast-icon"][data-fast-state="requested_only"]')).toHaveCount(2)
+          await expect(mobileList.locator('[data-testid="invocation-compact-badge"]')).toHaveCount(1)
+          await expect(items.nth(0).getByTestId('invocation-compact-badge')).toContainText(/远程压缩|Compact/)
           await expect(items.nth(0).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'effective')
           await expect(items.nth(1).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'requested_only')
           await expect(items.nth(2).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'requested_only')
@@ -344,6 +346,7 @@ test.describe('InvocationTable layout regression', () => {
           await expect(listDetailPanel.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/)).toBeVisible()
           await expect(listDetailPanel.getByText(/Requested service tier/i)).toBeVisible()
           await expect(listDetailPanel.getByText(/^Service tier$/i)).toBeVisible()
+          await expect(listDetailPanel.getByText('/v1/responses/compact')).toBeVisible()
           await expect(listDetailPanel.getByText('priority')).toHaveCount(2)
           await expect(listDetailPanel.getByText('0.55')).toBeVisible()
 
@@ -359,6 +362,8 @@ test.describe('InvocationTable layout regression', () => {
           const tableRows = tableScroll.locator('tbody tr')
           await expect(tableScroll.locator('[data-testid="invocation-fast-icon"][data-fast-state="effective"]')).toHaveCount(2)
           await expect(tableScroll.locator('[data-testid="invocation-fast-icon"][data-fast-state="requested_only"]')).toHaveCount(2)
+          await expect(tableScroll.locator('[data-testid="invocation-compact-badge"]')).toHaveCount(1)
+          await expect(tableRows.nth(0).getByTestId('invocation-compact-badge')).toContainText(/远程压缩|Compact/)
           await expect(tableRows.nth(0).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'effective')
           await expect(tableRows.nth(1).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'requested_only')
           await expect(tableRows.nth(2).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'requested_only')
@@ -376,6 +381,7 @@ test.describe('InvocationTable layout regression', () => {
           await expect(tableDetailPanel.getByText(/代理权重变化（本次）|Proxy weight delta \(this call\)/)).toBeVisible()
           await expect(tableDetailPanel.getByText(/Requested service tier/i)).toBeVisible()
           await expect(tableDetailPanel.getByText(/^Service tier$/i)).toBeVisible()
+          await expect(tableDetailPanel.getByText('/v1/responses/compact')).toBeVisible()
           await expect(tableDetailPanel.getByText('priority')).toHaveCount(2)
           await expect(tableDetailPanel.getByText('0.55')).toBeVisible()
           const metricsAfterExpand = await readTableMetrics(page)

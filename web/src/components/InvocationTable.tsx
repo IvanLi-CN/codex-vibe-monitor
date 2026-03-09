@@ -33,6 +33,7 @@ const STATUS_META: Record<
 
 const FALLBACK_STATUS_META = { variant: 'secondary', key: 'table.status.unknown' as TranslationKey }
 const FALLBACK_CELL = '—'
+const COMPACT_ENDPOINT = '/v1/responses/compact'
 
 type InvocationDetailLevel = 'full' | 'structured_only'
 
@@ -128,6 +129,27 @@ function renderFastIndicator(state: FastIndicatorState, t: (key: TranslationKey)
   )
 }
 
+function isCompactEndpoint(endpoint: string | null | undefined) {
+  return endpoint?.trim() === COMPACT_ENDPOINT
+}
+
+function renderCompactBadge(t: (key: TranslationKey) => string, className?: string) {
+  return (
+    <Badge
+      variant="secondary"
+      className={cn(
+        'max-w-full gap-1 overflow-hidden border-info/45 bg-info/10 px-2 py-0 text-[10px] font-semibold tracking-[0.06em] text-info',
+        className,
+      )}
+      title={t('table.endpoint.compactHint')}
+      data-testid="invocation-compact-badge"
+    >
+      <Icon icon="mdi:arrow-collapse-horizontal" className="h-3 w-3 flex-none" aria-hidden />
+      <span className="block max-w-full truncate whitespace-nowrap">{t('table.endpoint.compactBadge')}</span>
+    </Badge>
+  )
+}
+
 interface InvocationRowViewModel {
   record: ApiInvocation
   recordId: number
@@ -148,6 +170,7 @@ interface InvocationRowViewModel {
   reasoningEffortValue: string
   totalTokensValue: string
   endpointValue: string
+  isCompactEndpoint: boolean
   errorMessage: string
   latencySummary: string
   latencyCompactSummary: string
@@ -277,6 +300,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const recordId = record.id
         const errorMessage = record.errorMessage?.trim() ?? ''
         const endpointValue = record.endpoint?.trim() || FALLBACK_CELL
+        const isCompactEndpointValue = isCompactEndpoint(record.endpoint)
         const proxyDisplayName = resolveProxyDisplayName(record)
         const requestedServiceTierValue = formatServiceTier(record.requestedServiceTier)
         const serviceTierValue = formatServiceTier(record.serviceTier)
@@ -403,6 +427,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           reasoningEffortValue,
           totalTokensValue: formatOptionalNumber(record.totalTokens, numberFormatter),
           endpointValue,
+          isCompactEndpoint: isCompactEndpointValue,
           errorMessage,
           latencySummary,
           latencyCompactSummary,
@@ -524,6 +549,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
                 <Badge variant={row.meta.variant}>{t(row.meta.key)}</Badge>
+                {row.isCompactEndpoint ? renderCompactBadge(t, 'shrink-0') : null}
                 <span className="min-w-0 truncate text-xs text-base-content/75" title={row.proxyDisplayName}>
                   {row.proxyDisplayName}
                 </span>
@@ -669,12 +695,15 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </td>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-center xl:px-3">
                         <div className="flex min-w-0 flex-col items-center justify-center gap-1 leading-tight">
-                          <Badge variant={row.meta.variant} className="max-w-full justify-center overflow-hidden">
-                            <span className="block max-w-full truncate whitespace-nowrap text-center" title={row.proxyDisplayName}>
-                              {row.proxyDisplayName}
-                            </span>
-                            <span className="sr-only">{t(row.meta.key)}</span>
-                          </Badge>
+                          <div className="flex min-w-0 flex-wrap items-center justify-center gap-1">
+                            <Badge variant={row.meta.variant} className="max-w-full justify-center overflow-hidden">
+                              <span className="block max-w-full truncate whitespace-nowrap text-center" title={row.proxyDisplayName}>
+                                {row.proxyDisplayName}
+                              </span>
+                              <span className="sr-only">{t(row.meta.key)}</span>
+                            </Badge>
+                            {row.isCompactEndpoint ? renderCompactBadge(t, 'shrink-0') : null}
+                          </div>
                           <span className="hidden whitespace-nowrap font-mono text-[11px] text-base-content/70 lg:block" title={row.latencySummary}>
                             {row.latencySummary}
                           </span>
