@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成（5/5）
 - Created: 2026-03-09
 - Last: 2026-03-09
 
@@ -123,11 +123,11 @@
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: 新增规格并冻结 `DATABASE_PATH` / fail-fast / 路径锚点语义。
-- [ ] M2: 后端配置解析切换到 `DATABASE_PATH`，并阻断 `XY_DATABASE_PATH`。
-- [ ] M3: raw/archive 相对路径统一锚定数据库目录，修复写入与 orphan sweep。
-- [ ] M4: Rust 回归测试与构建检查通过。
-- [ ] M5: 完成 fast-track 远端交付（push / PR / checks / review-loop 状态明确）。
+- [x] M1: 新增规格并冻结 `DATABASE_PATH` / fail-fast / 路径锚点语义。
+- [x] M2: 后端配置解析切换到 `DATABASE_PATH`，并阻断 `XY_DATABASE_PATH`。
+- [x] M3: raw/archive 相对路径统一锚定数据库目录，修复写入与 orphan sweep。
+- [x] M4: Rust 回归测试与构建检查通过。
+- [x] M5: 完成 fast-track 远端交付（push / PR / checks / review-loop 状态明确）。
 
 ## 方案概述（Approach, high-level）
 

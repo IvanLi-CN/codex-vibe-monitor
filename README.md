@@ -121,7 +121,7 @@ cargo run -- \
 ## 数据分层保留与离线归档
 
 - `codex_invocations` 的成功记录超过 30 个上海自然日后，会先把完整行写入对应月份的离线 archive，再把主库内的原始 payload / raw response / raw file 引用精简为 `structured_only`，但保留结构化统计字段用于在线排障。
-- 任意调用记录超过 90 个上海自然日后，会先归档到 `XY_ARCHIVE_DIR/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`，写入 `archive_batches` 清单后，再从主库删除。
+- 任意调用记录超过 90 个上海自然日后，会先归档到 `XY_ARCHIVE_DIR/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`；若 `XY_ARCHIVE_DIR` 使用相对路径，则实际位置位于 `<DATABASE_PATH 同级目录>/<XY_ARCHIVE_DIR 的值>/...`，写入 `archive_batches` 清单后，再从主库删除。
 - `forward_proxy_attempts` 与 `stats_source_snapshots` 只保留最近 30 个上海自然日在线明细；更老数据同样执行“先归档、再清理”。
 - `codex_quota_snapshots` 保留最近 30 天全量，更老日期在主库内压缩为“每个上海自然日最后一条”，被折叠掉的行进入离线归档。
 - `stats_source_deltas` 长期在线保留；`/api/stats` 与 `GET /api/stats/summary?window=all` 通过“在线明细 + invocation_rollup_daily”保证长期 totals 不缩水。

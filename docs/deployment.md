@@ -166,7 +166,7 @@ labels:
 
 - 首次 backlog cleanup 先执行 `cargo run -- --retention-run-once --retention-dry-run`，确认预计归档行数、目标 archive 路径与磁盘变化。
 - 正式清理使用 `cargo run -- --retention-run-once`；执行顺序必须保持 `导出成功 -> archive_batches manifest 成功 -> 删除源数据`。
-- archive 文件按上海自然月切分；若 `XY_ARCHIVE_DIR` 为相对路径，则实际目录形如 `<DATABASE_PATH 同级目录>/XY_ARCHIVE_DIR/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`。
+- archive 文件按上海自然月切分；若 `XY_ARCHIVE_DIR` 为相对路径，则实际目录形如 `<DATABASE_PATH 同级目录>/<XY_ARCHIVE_DIR 的值>/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`（例如 `archives/...`）。
 - `codex_invocations` 成功记录超过 30 个上海自然日后，会先把完整行写入离线 archive，再在主库内精简为 `structured_only`；任意调用超过 90 天后清理主库明细。
 - `forward_proxy_attempts`、`stats_source_snapshots` 只保留近 30 天在线明细；`codex_quota_snapshots` 近 30 天逐条保留，更老日期压缩为每天最后一条。
 - 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，而不是在线 UI。orphan sweep 只会清理超过宽限期的未引用文件，以避免误删进行中的请求落盘文件。
