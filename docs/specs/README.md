@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                        |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------------------------------- |
+| 5gqdb | InvocationTable 桌面代理名省略回归热修                                        | 部分完成（3/4） | `5gqdb-invocation-proxy-name-truncation-hotfix/SPEC.md`  | 2026-03-09 | fast-track / local checks passed             |
 | 2uaxk | 移除 XYAI 采集，仅保留历史读取                                                | 已完成（4/4）   | `2uaxk-remove-xyai-legacy-ingest/SPEC.md`                | 2026-03-09 | PR #101 / CI + review-loop                   |
 | g3amk | Codex 远程压缩请求记录、展示与计费接入                                        | 已完成（5/5）   | `g3amk-codex-remote-compact-observability/SPEC.md`       | 2026-03-09 | fast-track / PR #103 / checks green          |
 | dvwja | 反向代理 Fast 模式请求改写（三态设置，`requestedServiceTier`=上游实际请求值） | 已完成（4/4）   | `dvwja-proxy-fast-mode-request-rewrite/SPEC.md`          | 2026-03-09 | fast-track / PR #102 / checks green          |

@@ -11,6 +11,8 @@ import {
 import { InvocationTable } from './InvocationTable'
 import { getReasoningEffortTone } from './invocation-table-reasoning'
 
+const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
+
 function renderTable(records: ApiInvocation[]) {
   return renderToStaticMarkup(
     <I18nProvider>
@@ -163,7 +165,7 @@ describe('InvocationTable', () => {
         occurredAt: '2026-03-07T03:13:52Z',
         createdAt: '2026-03-07T03:13:52Z',
         source: 'proxy',
-        proxyDisplayName: 'codex-standard-edge',
+        proxyDisplayName: LONG_PROXY_NAME,
         endpoint: '/v1/responses',
         model: 'gpt-5.3-codex',
         status: 'success',
@@ -177,6 +179,28 @@ describe('InvocationTable', () => {
     expect(html.match(/data-endpoint-kind="compact"/g)?.length ?? 0).toBe(2)
     expect(html).toContain('text-info')
     expect(html).toContain('/v1/responses/compact')
+  })
+
+  it('renders stable proxy selectors for long proxy-name truncation coverage', () => {
+    const html = renderTable([
+      {
+        id: 23,
+        invokeId: 'invocation-long-proxy-name',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        proxyDisplayName: LONG_PROXY_NAME,
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        totalTokens: 4096,
+        cost: 0.0084,
+      },
+    ])
+
+    expect(html.match(/data-testid="invocation-proxy-name"/g)?.length ?? 0).toBe(2)
+    expect(html.match(/data-testid="invocation-proxy-badge"/g)?.length ?? 0).toBe(1)
+    expect(html).toContain(`title="${LONG_PROXY_NAME}"`)
   })
 
   it('renders unknown reasoning effort values as dashed neutral badges', () => {

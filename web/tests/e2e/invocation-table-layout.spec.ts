@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
+const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
+
 const VIEWPORTS = [
   { width: 375, height: 900 },
   { width: 768, height: 900 },
@@ -43,7 +45,7 @@ const INVOCATION_FIXTURE = {
       occurredAt: '2026-02-26T02:34:52Z',
       createdAt: '2026-02-26T02:34:52Z',
       source: 'proxy',
-      proxyDisplayName: 'tokyo-super-long-relay-name-for-overflow-regression-verify',
+      proxyDisplayName: LONG_PROXY_NAME,
       endpoint: '/v1/responses/' + 'very-long-segment-'.repeat(12),
       model: 'gpt-5.3-codex',
       status: 'failed',
@@ -132,6 +134,9 @@ interface TableMetrics {
   overflowDelta: number
   firstToggleHiddenRightPx: number
   firstRowTrailingGapPx: number
+  secondRowProxyNameOverflowPx: number
+  secondRowProxyBadgeVsModelLeftPx: number
+  secondRowProxyNameTitle: string | null
 }
 
 async function mockInvocations(page: Page) {
@@ -279,13 +284,21 @@ async function readTableMetrics(page: Page): Promise<TableMetrics> {
 
   return tableScroll.evaluate((node) => {
     const container = node as HTMLElement
-    const firstDataRow = container.querySelector('tbody tr')
+    const dataRows = Array.from(container.querySelectorAll('tbody tr')).filter((row) => row.querySelector('button[aria-expanded]'))
+    const firstDataRow = dataRows[0] as HTMLElement | undefined
+    const secondDataRow = dataRows[1] as HTMLElement | undefined
     const firstToggle = firstDataRow?.querySelector('button') as HTMLElement | null
     const firstDataCells = firstDataRow ? Array.from(firstDataRow.querySelectorAll('td')) : []
     const lastDataCell = firstDataCells.length > 0 ? (firstDataCells[firstDataCells.length - 1] as HTMLElement) : null
+    const secondProxyBadge = secondDataRow?.querySelector('[data-testid="invocation-proxy-badge"]') as HTMLElement | null
+    const secondProxyName = secondDataRow?.querySelector('[data-testid="invocation-proxy-name"]') as HTMLElement | null
+    const secondDataCells = secondDataRow ? Array.from(secondDataRow.querySelectorAll('td')) : []
+    const secondModelCell = secondDataCells.length > 2 ? (secondDataCells[2] as HTMLElement) : null
     const containerRect = container.getBoundingClientRect()
     const toggleRect = firstToggle?.getBoundingClientRect()
     const lastDataCellRect = lastDataCell?.getBoundingClientRect()
+    const secondProxyBadgeRect = secondProxyBadge?.getBoundingClientRect()
+    const secondModelCellRect = secondModelCell?.getBoundingClientRect()
 
     return {
       clientWidth: container.clientWidth,
@@ -297,6 +310,13 @@ async function readTableMetrics(page: Page): Promise<TableMetrics> {
       firstRowTrailingGapPx: lastDataCellRect
         ? Math.max(0, containerRect.right - lastDataCellRect.right)
         : Number.POSITIVE_INFINITY,
+      secondRowProxyNameOverflowPx: secondProxyName
+        ? secondProxyName.scrollWidth - secondProxyName.clientWidth
+        : Number.NEGATIVE_INFINITY,
+      secondRowProxyBadgeVsModelLeftPx: secondProxyBadgeRect && secondModelCellRect
+        ? secondProxyBadgeRect.right - secondModelCellRect.left
+        : Number.POSITIVE_INFINITY,
+      secondRowProxyNameTitle: secondProxyName?.getAttribute('title') ?? null,
     }
   })
 }
@@ -377,7 +397,7 @@ test.describe('InvocationTable layout regression', () => {
           await expect(tableRows.nth(4).getByTestId('invocation-fast-icon')).toHaveCount(0)
 
           const metricsBeforeExpand = await readTableMetrics(page)
-          const firstToggle = page.getByTestId('invocation-table-scroll').locator('tbody tr button').first()
+          const firstToggle = tableRows.nth(0).locator('button[aria-expanded]')
           await expect(firstToggle).toBeVisible()
           await firstToggle.click()
           await expect(firstToggle).toHaveAttribute('aria-expanded', 'true')
@@ -407,6 +427,14 @@ test.describe('InvocationTable layout regression', () => {
           expect(metricsAfterExpand.firstToggleHiddenRightPx).toBeLessThanOrEqual(0)
           expect(metricsBeforeExpand.firstRowTrailingGapPx).toBeLessThanOrEqual(1)
           expect(metricsAfterExpand.firstRowTrailingGapPx).toBeLessThanOrEqual(1)
+          if (viewport.width >= 1280) {
+            expect(metricsBeforeExpand.secondRowProxyNameTitle).toBe(LONG_PROXY_NAME)
+            expect(metricsAfterExpand.secondRowProxyNameTitle).toBe(LONG_PROXY_NAME)
+            expect(metricsBeforeExpand.secondRowProxyNameOverflowPx).toBeGreaterThan(0)
+            expect(metricsAfterExpand.secondRowProxyNameOverflowPx).toBeGreaterThan(0)
+            expect(metricsBeforeExpand.secondRowProxyBadgeVsModelLeftPx).toBeLessThanOrEqual(1)
+            expect(metricsAfterExpand.secondRowProxyBadgeVsModelLeftPx).toBeLessThanOrEqual(1)
+          }
         }
       })
     }

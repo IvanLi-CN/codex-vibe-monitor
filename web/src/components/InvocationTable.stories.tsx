@@ -4,6 +4,7 @@ import { InvocationTable } from './InvocationTable'
 import type { ApiInvocation } from '../lib/api'
 
 const baseOccurredAt = '2026-02-25T10:15:30Z'
+const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
 
 const records: ApiInvocation[] = [
   {
@@ -44,7 +45,7 @@ const records: ApiInvocation[] = [
     occurredAt: '2026-02-25T10:18:11Z',
     createdAt: '2026-02-25T10:18:11Z',
     source: 'proxy',
-    proxyDisplayName: 'Singapore-Very-Long-Relay-Name-For-Overflow-Demo',
+    proxyDisplayName: LONG_PROXY_NAME,
     endpoint: '/v1/chat/completions',
     model: 'gpt-5',
     status: 'failed',
