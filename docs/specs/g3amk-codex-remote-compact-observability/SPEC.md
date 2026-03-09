@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-09
 - Last: 2026-03-09
 
@@ -139,7 +139,7 @@
 - [x] M2: compact 复用现有 usage / pricing 链路，自动进入 tokens / cost / summary / timeseries 统计。
 - [x] M3: InvocationTable 主列表新增 compact 标记，设置页补充“按模型单价估算”的说明文案。
 - [x] M4: Rust / Vitest / build / Playwright 回归通过，确认 compact 标记未引入新的布局回归。
-- [ ] M5: 完成 fast-track 远端交付（push / PR / checks 结果明确 / review-loop 收敛）。
+- [x] M5: 完成 fast-track 远端交付（push / PR / checks 结果明确 / review-loop 收敛）。
 
 ## 方案概述（Approach, high-level）
 
@@ -158,7 +158,7 @@
 
 - 2026-03-09: 创建规格，冻结 compact 识别、统计口径、计费口径与“不注入 `service_tier`”边界。
 - 2026-03-09: 已完成后端 compact capture / pricing / stats 接入，以及 InvocationTable compact 标记与 settings 文案改动。
-- 2026-03-09: 已完成本地 Rust / web 验证与 review-loop 审查；GitHub MCP 不可用，远端 fast-track 交付仍待继续。
+- 2026-03-09: 已完成本地 Rust / web 验证与 review-loop 审查；远端 PR、checks 与 merge readiness 已收敛。
 
 ## 参考（References）
 
