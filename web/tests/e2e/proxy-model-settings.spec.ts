@@ -10,12 +10,15 @@ const PRESET_MODELS = [
 
 const BACKEND_BASE_URL = process.env.E2E_BACKEND_URL ?? 'http://127.0.0.1:8080'
 
+type ProxyFastModeRewriteMode = 'disabled' | 'fill_missing' | 'force_priority'
+
 interface ProxySettings {
   hijackEnabled: boolean
   mergeUpstreamEnabled: boolean
   defaultHijackEnabled: boolean
   models: string[]
   enabledModels: string[]
+  fastModeRewriteMode: ProxyFastModeRewriteMode
 }
 
 interface PricingEntry {
@@ -45,7 +48,7 @@ async function getSettings(request: APIRequestContext): Promise<SettingsPayload>
 
 async function putProxySettings(
   request: APIRequestContext,
-  payload: Pick<ProxySettings, 'hijackEnabled' | 'mergeUpstreamEnabled' | 'enabledModels'>,
+  payload: Pick<ProxySettings, 'hijackEnabled' | 'mergeUpstreamEnabled' | 'enabledModels' | 'fastModeRewriteMode'>,
 ): Promise<ProxySettings> {
   const response = await request.put(`${BACKEND_BASE_URL}/api/settings/proxy`, { data: payload })
   expect(response.ok()).toBeTruthy()
@@ -77,6 +80,7 @@ test.describe.serial('settings e2e', () => {
       hijackEnabled: initialSettings.proxy.hijackEnabled,
       mergeUpstreamEnabled: initialSettings.proxy.mergeUpstreamEnabled,
       enabledModels: initialSettings.proxy.enabledModels,
+      fastModeRewriteMode: initialSettings.proxy.fastModeRewriteMode,
     })
     await putPricingSettings(request, initialSettings.pricing)
   })
@@ -92,6 +96,7 @@ test.describe.serial('settings e2e', () => {
       hijackEnabled: true,
       mergeUpstreamEnabled: false,
       enabledModels: [...PRESET_MODELS],
+      fastModeRewriteMode: 'disabled',
     })
 
     const settingsPage = await openSettingsPage(page)
@@ -104,6 +109,35 @@ test.describe.serial('settings e2e', () => {
         return settings.proxy.enabledModels.includes('gpt-5.3-codex')
       })
       .toBeFalsy()
+  })
+
+  test('fast mode rewrite tri-state auto-saves and persists after reload', async ({ page, request }) => {
+    await putProxySettings(request, {
+      hijackEnabled: true,
+      mergeUpstreamEnabled: false,
+      enabledModels: [...PRESET_MODELS],
+      fastModeRewriteMode: 'disabled',
+    })
+
+    let settingsPage = await openSettingsPage(page)
+    let rewriteModeSelect = settingsPage.locator('#proxy-fast-mode-rewrite')
+    await expect(rewriteModeSelect).toHaveValue('disabled')
+
+    for (const mode of ['fill_missing', 'force_priority', 'disabled'] as const) {
+      await rewriteModeSelect.selectOption(mode)
+
+      await expect
+        .poll(async () => {
+          const settings = await getSettings(request)
+          return settings.proxy.fastModeRewriteMode
+        })
+        .toBe(mode)
+
+      await page.reload()
+      settingsPage = await openSettingsPage(page)
+      rewriteModeSelect = settingsPage.locator('#proxy-fast-mode-rewrite')
+      await expect(rewriteModeSelect).toHaveValue(mode)
+    }
   })
 
   test('pricing change auto-saves and persists after reload', async ({ page, request }) => {
