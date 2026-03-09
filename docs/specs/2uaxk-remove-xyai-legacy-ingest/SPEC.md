@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（3/4）
+- Status: 已完成（4/4）
 
 ## 背景 / 问题陈述
 
@@ -105,7 +105,7 @@
 - [x] M1: 删除 XYAI-only 配置解析、legacy scheduler 分支与新写入逻辑。
 - [x] M2: 更新后端测试，覆盖历史 `xy` 读取兼容与 quota latest 只读行为。
 - [x] M3: 清理 README/规格索引并完成本地验证。
-- [ ] M4: 创建 PR、等待 checks 明确并完成 review 收敛。
+- [x] M4: 创建 PR、等待 checks 明确并完成 review 收敛。
 
 ## 方案概述（Approach, high-level）
 
@@ -123,6 +123,7 @@
 
 - 2026-03-09: 新建规格，冻结“移除 XYAI 采集、保留历史读取”的范围与验收口径。
 - 2026-03-09: 完成本地代码清理与验证（`cargo fmt`、`cargo test`、`cd web && npm run test`、`cargo run -- --help`）。
+- 2026-03-09: 创建 PR #101，CI Pipeline 明确通过，review-loop 复核无阻塞 findings。
 
 ## 参考（References）
 
