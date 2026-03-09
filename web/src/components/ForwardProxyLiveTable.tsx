@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from '../i18n'
 import type {
   ForwardProxyHourlyBucket,
@@ -227,6 +227,84 @@ function WindowCell({ value }: { value: ForwardProxyWindowStats }) {
   )
 }
 
+function resolveLinkedActiveIndex<T extends { bucketStart: string }>(buckets: T[], activeBucketStart: string | null) {
+  if (!activeBucketStart) return null
+  const index = buckets.findIndex((bucket) => bucket.bucketStart === activeBucketStart)
+  return index >= 0 ? index : null
+}
+
+function ProxyTrendCells({
+  node,
+  weightBuckets,
+  requestBucketScaleMax,
+  weightTrendScale,
+  localeTag,
+  requestTooltipLabels,
+  weightTooltipLabels,
+  requestTrendAriaLabel,
+  weightTrendAriaLabel,
+  chartInteractionHint,
+}: {
+  node: ForwardProxyLiveNode
+  weightBuckets: ForwardProxyWeightBucket[]
+  requestBucketScaleMax: number
+  weightTrendScale: WeightTrendScale
+  localeTag: string
+  requestTooltipLabels: RequestTooltipLabels
+  weightTooltipLabels: WeightTooltipLabels
+  requestTrendAriaLabel: string
+  weightTrendAriaLabel: string
+  chartInteractionHint: string
+}) {
+  const [activeBucketStart, setActiveBucketStart] = useState<string | null>(null)
+  const linkedRequestIndex = useMemo(() => resolveLinkedActiveIndex(node.last24h, activeBucketStart), [activeBucketStart, node.last24h])
+  const linkedWeightIndex = useMemo(() => resolveLinkedActiveIndex(weightBuckets, activeBucketStart), [activeBucketStart, weightBuckets])
+
+  const handleRequestActiveIndexChange = useCallback(
+    (index: number | null) => {
+      setActiveBucketStart(index == null ? null : node.last24h[index]?.bucketStart ?? null)
+    },
+    [node.last24h],
+  )
+
+  const handleWeightActiveIndexChange = useCallback(
+    (index: number | null) => {
+      setActiveBucketStart(index == null ? null : weightBuckets[index]?.bucketStart ?? null)
+    },
+    [weightBuckets],
+  )
+
+  return (
+    <>
+      <td className="px-2 py-2 align-middle sm:px-3 sm:py-3">
+        <RequestTrendCell
+          buckets={node.last24h}
+          scaleMax={requestBucketScaleMax}
+          localeTag={localeTag}
+          tooltipLabels={requestTooltipLabels}
+          ariaLabel={`${node.displayName} ${requestTrendAriaLabel}`}
+          interactionHint={chartInteractionHint}
+          linkedActiveIndex={linkedRequestIndex}
+          onActiveIndexChange={handleRequestActiveIndexChange}
+        />
+      </td>
+      <td className="px-2 py-2 align-middle sm:px-3 sm:py-3">
+        <WeightTrendCell
+          buckets={weightBuckets}
+          scale={weightTrendScale}
+          localeTag={localeTag}
+          tooltipLabels={weightTooltipLabels}
+          ariaLabel={`${node.displayName} ${weightTrendAriaLabel}`}
+          interactionHint={chartInteractionHint}
+          clipId={`weight-trend-${node.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`}
+          linkedActiveIndex={linkedWeightIndex}
+          onActiveIndexChange={handleWeightActiveIndexChange}
+        />
+      </td>
+    </>
+  )
+}
+
 function RequestTrendCell({
   buckets,
   scaleMax,
@@ -234,6 +312,8 @@ function RequestTrendCell({
   tooltipLabels,
   ariaLabel,
   interactionHint,
+  linkedActiveIndex,
+  onActiveIndexChange,
 }: {
   buckets: ForwardProxyHourlyBucket[]
   scaleMax: number
@@ -241,6 +321,8 @@ function RequestTrendCell({
   tooltipLabels: RequestTooltipLabels
   ariaLabel: string
   interactionHint: string
+  linkedActiveIndex?: number | null
+  onActiveIndexChange?: (index: number | null) => void
 }) {
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
   const tooltipData = useMemo(
@@ -259,15 +341,17 @@ function RequestTrendCell({
       defaultIndex={defaultIndex}
       ariaLabel={ariaLabel}
       interactionHint={interactionHint}
+      linkedActiveIndex={linkedActiveIndex}
+      onActiveIndexChange={onActiveIndexChange}
       className="py-0.5"
       chartClassName="flex h-11 items-end"
     >
-      {({ activeIndex, getItemProps }) => (
+      {({ highlightedIndex, getItemProps }) => (
         <div className="flex h-11 items-end gap-px sm:gap-[1.5px] md:gap-[2px]" data-chart-kind="proxy-request-trend">
           {buckets.map((bucket, index) => {
             const total = bucket.successCount + bucket.failureCount
             const heights = buildVisibleBarHeights(bucket.successCount, bucket.failureCount, scaleMax, 40)
-            const isActive = activeIndex === index
+            const isActive = highlightedIndex === index
             return (
               <div
                 key={`${bucket.bucketStart}-bar`}
@@ -298,6 +382,8 @@ function WeightTrendCell({
   ariaLabel,
   interactionHint,
   clipId,
+  linkedActiveIndex,
+  onActiveIndexChange,
 }: {
   buckets: ForwardProxyWeightBucket[]
   scale: WeightTrendScale
@@ -306,6 +392,8 @@ function WeightTrendCell({
   ariaLabel: string
   interactionHint: string
   clipId: string
+  linkedActiveIndex?: number | null
+  onActiveIndexChange?: (index: number | null) => void
 }) {
   const geometry = buildWeightTrendGeometry(buckets, scale)
   const tooltipData = useMemo(() => buckets.map((bucket) => buildWeightTooltipData(bucket, localeTag, tooltipLabels)), [buckets, localeTag, tooltipLabels])
@@ -325,12 +413,14 @@ function WeightTrendCell({
       defaultIndex={defaultIndex}
       ariaLabel={ariaLabel}
       interactionHint={interactionHint}
+      linkedActiveIndex={linkedActiveIndex}
+      onActiveIndexChange={onActiveIndexChange}
       className="py-0.5"
       chartClassName="flex h-11 items-end"
     >
-      {({ activeIndex, getItemProps }) => {
-        const activePoint = activeIndex != null ? geometry.points[activeIndex] : null
-        const activeBucket = activeIndex != null ? buckets[activeIndex] : null
+      {({ highlightedIndex, getItemProps }) => {
+        const activePoint = highlightedIndex != null ? geometry.points[highlightedIndex] : null
+        const activeBucket = highlightedIndex != null ? buckets[highlightedIndex] : null
         return (
           <svg
             viewBox={`0 0 ${geometry.chartWidth} ${geometry.chartHeight}`}
@@ -385,7 +475,7 @@ function WeightTrendCell({
               strokeLinecap="round"
             />
             {geometry.points.map((point, index) => {
-              const isActive = activeIndex === index
+              const isActive = highlightedIndex === index
               const isPositive = (buckets[index]?.lastWeight ?? 0) >= 0
               return (
                 <circle
@@ -563,27 +653,18 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
                   <WindowCell value={window} />
                 </td>
               ))}
-              <td className="px-2 py-2 align-middle sm:px-3 sm:py-3">
-                <RequestTrendCell
-                  buckets={node.last24h}
-                  scaleMax={requestBucketScaleMax}
-                  localeTag={localeTag}
-                  tooltipLabels={requestTooltipLabels}
-                  ariaLabel={`${node.displayName} ${requestTrendAriaLabel}`}
-                  interactionHint={chartInteractionHint}
-                />
-              </td>
-              <td className="px-2 py-2 align-middle sm:px-3 sm:py-3">
-                <WeightTrendCell
-                  buckets={weightBuckets}
-                  scale={weightTrendScale}
-                  localeTag={localeTag}
-                  tooltipLabels={weightTooltipLabels}
-                  ariaLabel={`${node.displayName} ${weightTrendAriaLabel}`}
-                  interactionHint={chartInteractionHint}
-                  clipId={`weight-trend-${node.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`}
-                />
-              </td>
+              <ProxyTrendCells
+                node={node}
+                weightBuckets={weightBuckets}
+                requestBucketScaleMax={requestBucketScaleMax}
+                weightTrendScale={weightTrendScale}
+                localeTag={localeTag}
+                requestTooltipLabels={requestTooltipLabels}
+                weightTooltipLabels={weightTooltipLabels}
+                requestTrendAriaLabel={requestTrendAriaLabel}
+                weightTrendAriaLabel={weightTrendAriaLabel}
+                chartInteractionHint={chartInteractionHint}
+              />
             </tr>
           ))}
         </tbody>
