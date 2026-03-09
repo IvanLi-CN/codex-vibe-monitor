@@ -1406,7 +1406,10 @@ export default function SettingsPage() {
           <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
             <div className="space-y-1.5">
               <CardTitle>{t('settings.pricing.title')}</CardTitle>
-              <CardDescription>{t('settings.pricing.description')}</CardDescription>
+              <div className="space-y-1">
+                <CardDescription>{t('settings.pricing.description')}</CardDescription>
+                <p className="text-xs text-base-content/65">{t('settings.pricing.compactNote')}</p>
+              </div>
             </div>
             <Button type="button" size="sm" className="h-9 gap-1.5 px-3.5" onClick={handleAddPricingEntry}>
               <Icon icon="mdi:plus" className="h-[18px] w-[18px]" aria-hidden />

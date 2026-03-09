@@ -33,6 +33,7 @@ const STATUS_META: Record<
 
 const FALLBACK_STATUS_META = { variant: 'secondary', key: 'table.status.unknown' as TranslationKey }
 const FALLBACK_CELL = '—'
+const COMPACT_ENDPOINT = '/v1/responses/compact'
 
 type InvocationDetailLevel = 'full' | 'structured_only'
 
@@ -128,6 +129,32 @@ function renderFastIndicator(state: FastIndicatorState, t: (key: TranslationKey)
   )
 }
 
+function isCompactEndpoint(endpoint: string | null | undefined) {
+  return endpoint?.trim() === COMPACT_ENDPOINT
+}
+
+function renderEndpointPath(
+  endpointValue: string,
+  isCompactEndpointValue: boolean,
+  t: (key: TranslationKey) => string,
+  className?: string,
+) {
+  return (
+    <span
+      className={cn(
+        'block truncate whitespace-nowrap font-mono',
+        isCompactEndpointValue ? 'font-medium text-info' : 'text-base-content/70',
+        className,
+      )}
+      title={isCompactEndpointValue ? `${endpointValue} · ${t('table.endpoint.compactHint')}` : endpointValue}
+      data-testid="invocation-endpoint-path"
+      data-endpoint-kind={isCompactEndpointValue ? 'compact' : 'default'}
+    >
+      {endpointValue}
+    </span>
+  )
+}
+
 interface InvocationRowViewModel {
   record: ApiInvocation
   recordId: number
@@ -148,6 +175,7 @@ interface InvocationRowViewModel {
   reasoningEffortValue: string
   totalTokensValue: string
   endpointValue: string
+  isCompactEndpoint: boolean
   errorMessage: string
   latencySummary: string
   latencyCompactSummary: string
@@ -277,6 +305,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const recordId = record.id
         const errorMessage = record.errorMessage?.trim() ?? ''
         const endpointValue = record.endpoint?.trim() || FALLBACK_CELL
+        const isCompactEndpointValue = isCompactEndpoint(record.endpoint)
         const proxyDisplayName = resolveProxyDisplayName(record)
         const requestedServiceTierValue = formatServiceTier(record.requestedServiceTier)
         const serviceTierValue = formatServiceTier(record.serviceTier)
@@ -403,6 +432,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           reasoningEffortValue,
           totalTokensValue: formatOptionalNumber(record.totalTokens, numberFormatter),
           endpointValue,
+          isCompactEndpoint: isCompactEndpointValue,
           errorMessage,
           latencySummary,
           latencyCompactSummary,
@@ -567,7 +597,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <div className="mt-3 space-y-1 border-t border-base-300/65 pt-2">
                 <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">{t('table.details.endpoint')}</div>
-                <div className="truncate text-xs text-base-content/75" title={row.endpointValue}>{row.endpointValue}</div>
+                {renderEndpointPath(row.endpointValue, row.isCompactEndpoint, t, 'text-xs')}
                 <div className="truncate text-xs" title={row.errorMessage || undefined}>{row.errorMessage || FALLBACK_CELL}</div>
               </div>
 
@@ -669,12 +699,14 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </td>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-center xl:px-3">
                         <div className="flex min-w-0 flex-col items-center justify-center gap-1 leading-tight">
-                          <Badge variant={row.meta.variant} className="max-w-full justify-center overflow-hidden">
-                            <span className="block max-w-full truncate whitespace-nowrap text-center" title={row.proxyDisplayName}>
-                              {row.proxyDisplayName}
-                            </span>
-                            <span className="sr-only">{t(row.meta.key)}</span>
-                          </Badge>
+                          <div className="flex min-w-0 flex-wrap items-center justify-center gap-1">
+                            <Badge variant={row.meta.variant} className="max-w-full justify-center overflow-hidden">
+                              <span className="block max-w-full truncate whitespace-nowrap text-center" title={row.proxyDisplayName}>
+                                {row.proxyDisplayName}
+                              </span>
+                              <span className="sr-only">{t(row.meta.key)}</span>
+                            </Badge>
+                          </div>
                           <span className="hidden whitespace-nowrap font-mono text-[11px] text-base-content/70 lg:block" title={row.latencySummary}>
                             {row.latencySummary}
                           </span>
@@ -725,9 +757,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </td>
                       <td className="hidden min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:table-cell xl:px-3">
                         <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
-                          <span className="block truncate whitespace-nowrap text-base-content/70" title={row.endpointValue}>
-                            {row.endpointValue}
-                          </span>
+                          {renderEndpointPath(row.endpointValue, row.isCompactEndpoint, t)}
                           <span className="block truncate whitespace-nowrap" title={row.errorMessage || undefined}>
                             {row.errorMessage || FALLBACK_CELL}
                           </span>
