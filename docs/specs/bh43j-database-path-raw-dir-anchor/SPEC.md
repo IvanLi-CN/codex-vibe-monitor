@@ -142,6 +142,11 @@
 - 假设：当前生产与主要部署路径都能接受 `DATABASE_PATH` 这一命名，不需要再引入别名过渡。
 - 开放问题：101 的最终 live rollout 依赖新镜像可部署；若 PR 阶段尚未合并发布，只能先完成 PR / review 收敛与预部署验证。
 
+## 变更记录（Change log）
+
+- 2026-03-09: 创建规格，冻结 `DATABASE_PATH` 替代 `XY_DATABASE_PATH`、legacy env fail-fast 与 raw/archive 相对路径锚定数据库目录的边界。
+- 2026-03-09: 完成后端实现、文档迁移、PR #106 与 review-loop 收敛；在合并最新 `main` 后继续保持回归测试落在 `src/tests/mod.rs`。
+
 ## 参考（References）
 
 - `docs/specs/2uaxk-remove-xyai-legacy-ingest/SPEC.md`
