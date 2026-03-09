@@ -1,130 +1,83 @@
 # 系统设计概览
 
-本项目目标是每 10 秒抓取一次 `https://new.xychatai.com/pastel/#/vibe-code/dashboard` 页面中「最近 20 条调用记录 - Codex」的数据，并将结果写入 SQLite 数据库，为后续分析或报警提供基础。
+本项目当前定位为：通过 OpenAI 兼容 `/v1/*` 代理捕获调用记录，可选轮询 CRS 日统计并写入 SQLite，再通过 REST API 与 SSE 为前端仪表盘提供实时与历史视图。历史 `xy` 调用记录与历史 quota snapshot 继续只读可查，但服务不再从 XYAI 上游抓取新数据。
 
-## 1. 数据来源定位
+## 1. 数据来源
 
-1. 使用 Chrome DevTools 打开目标页面，进入 Network 面板。
-2. 在页面加载完成后，根据关键字 `vibe-code`、`codex` 或 `list` 过滤网络请求，观察最近 20 条记录所对应的 XHR/fetch 请求。
-3. 记录该请求的：
-   - URL（通常为 RESTful 或 GraphQL 端点）
-   - HTTP 方法
-   - Query 参数或请求体结构
-   - 必要的 Header（尤其是 `Authorization`、`Cookie`、`x-token` 等自定义字段）
-4. 确认响应 JSON 中包含的字段，并与页面显示的列（时间、ID、调用状态、消耗等）对应，写出字段映射表。
+### 1.1 OpenAI 兼容代理链路（主写入来源）
 
-### 1.1 Claude Relay 日统计（无明细）
+- 服务暴露 `ANY /v1/*`，透明转发到上游 OpenAI 兼容接口。
+- 在代理链路中解析请求、响应、usage 与耗时信息，并将调用明细写入本地 SQLite。
+- 新产生的在线记录以 `source='proxy'` 标记，作为当前系统的主要实时数据来源。
 
-- 入口页面：`/admin-next/api-stats?apiId=<id>`（仅用于 UI）
-- 实际数据接口：`POST /apiStats/api/user-model-stats`
-  - Body: `{ apiId, period: "daily" }`
-  - 返回模型级日统计（requests/tokens/costs），需在本地汇总为当日总量
-- 该源仅提供“当日累计”，需高频轮询并做增量计算；不包含调用明细。
+### 1.2 CRS 日统计源（可选）
 
-## 2. 认证与会话维持
+- 通过 `CRS_STATS_BASE_URL` 与 `CRS_STATS_API_ID` 配置外部日统计来源。
+- 实际采集接口为 CRS 的模型级日统计接口，本地按日期与模型做快照与增量聚合。
+- 该源只提供汇总数据，不包含调用明细；写入 `stats_source_snapshots` / `stats_source_deltas`。
 
-- 账号登录后，使用 DevTools 的「Copy as cURL」功能导出请求，提取其中的 Cookie 和 Header。
-- 将关键认证信息（如 Cookie、Bearer Token）保存到 `.env` 或 `config.toml` 中，项目将通过 `dotenvy` 读取。
-- 设计刷新策略：
-  - 若接口返回 401/403，需要提示人工重新导出 Cookie。
-  - 为避免 Cookie 泄露，建议将配置文件加入 `.gitignore`，并在 `README` 中说明。
+### 1.3 历史 XY 数据（只读兼容）
 
-## 3. 轮询与调度策略
+- 已存在的 `codex_invocations.source='xy'` 记录继续参与 `/api/invocations` 与 `/api/stats*` 查询。
+- 已存在的 `codex_quota_snapshots` 继续通过 `/api/quota/latest` 暴露最新快照。
+- 运行时不再依赖 XYAI cookie、base URL 或 quota endpoint，也不会新增新的 `xy` 调用记录或 quota snapshot。
 
-- 使用 `tokio::time::interval` 实现严格的 10 秒固定轮询节奏，不做指数退避，确保时间轴上不会跳过窗口。
-- 单次请求设置 60 秒超时；结合 `tokio::Semaphore` 控制并行上限为 6（`timeout / interval`），避免超时堆积失控。
-- `reqwest` 客户端启用 HTTP/2。当并发超过 2 条请求时，针对站点限制优先新建连接，其他情况下复用连接以减少握手开销（可通过自定义客户端池/`pool_max_idle_per_host` 实现）。
-- 请求与解析逻辑拆分为独立模块，便于单元测试和后续替换。
-- 若接口提供分页或 cursor，仅拉取最新 20 条，并与数据库最新记录比较，避免重复插入。
+## 2. 配置与认证
 
-## 4. 数据入库设计
+- 代理链路使用标准 OpenAI 兼容请求模型；上游地址通过 `OPENAI_UPSTREAM_BASE_URL` 控制。
+- CRS 为可选能力，要求 `CRS_STATS_BASE_URL` 与 `CRS_STATS_API_ID` 成对配置。
+- 数据库、HTTP 监听、并发度、超时与 retention 均通过 `.env.local` 中的通用配置项管理。
+- 不再保留 XYAI 专属认证配置；部署时无需再提供历史的 XYAI cookie / quota 抓取参数。
 
-### 4.1 驱动选型
+## 3. 调度与运行策略
 
-- 使用 `sqlx` 作为 SQLite 异步驱动，开启 `sqlite`、`runtime-tokio`、`macros`、`json` 等特性，确保全链路 `async/await` 风格与编译期 SQL 校验。
-- `sqlx` 内部通过轻量线程池与 `libsqlite3` 交互，满足 SQLite 单写者模型下的本地嵌入式需求，不额外引入 Turso/libSQL 远端依赖。
-- 后续若迁移到云端或需要复制，可再评估切换至 `libsql` 系列驱动，但当前版本以本地 SQLite 为主。
+- 使用 `tokio::time::interval` 作为后台节拍器，但调度器只服务 CRS 统计轮询与相关汇总刷新。
+- 单次请求设置超时，并结合信号量限制并发，避免外部统计源抖动导致任务堆积。
+- OpenAI `/v1/*` 代理路径按请求驱动写入，不依赖后台轮询。
+- 当前运行期不存在任何 XYAI legacy poll 分支、配额抓取或快照写入逻辑。
 
-- 依赖 `sqlx`（启用 `sqlite`、`runtime-tokio`、`macros`、`json` 特性）。
-- 表结构建议：
+## 4. 数据持久化设计
+
+- 使用 `sqlx + SQLite` 保存调用记录、统计快照、转发代理尝试记录与配额历史快照。
+- `codex_invocations` 保留统一明细表，通过 `source` 区分历史 `xy` 与当前 `proxy` 数据。
+- `stats_source_snapshots` 与 `stats_source_deltas` 用于承载 CRS 汇总快照与增量。
+- `codex_quota_snapshots` 保留历史快照表，仅作为查询接口的数据来源，不再由运行时主动追加。
+
+示意结构：
 
 ```sql
 CREATE TABLE IF NOT EXISTS codex_invocations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     invoke_id TEXT NOT NULL,
     occurred_at TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'xy',
+    source TEXT NOT NULL,
     payload JSON,
     raw_response JSON,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(invoke_id, occurred_at)
 );
 
--- 外部日统计快照与增量（简化示意）
 CREATE TABLE IF NOT EXISTS stats_source_snapshots (...);
 CREATE TABLE IF NOT EXISTS stats_source_deltas (...);
+CREATE TABLE IF NOT EXISTS codex_quota_snapshots (...);
 ```
-
-- `payload` 用于存储提取后的关键字段，`raw_response` 保留原始 JSON 便于调试。
-
-### 4.2 接口说明
-
-- **请求**：`GET https://new.xychatai.com/frontend-api/vibe-code/quota`
-  - 依赖 `share-session=<token>` Cookie，已保存在 `.env.local` 的 `XY_SESSION_COOKIE_VALUE`。
-  - 响应体中 `data.codex.recentRecords` 即页面「最近20条调用记录 - Codex」数据；`currentUsage` 与 `subscriptions` 则可填充统计卡片。
-- **字段对照**（`recentRecords`）
-  - `requestTime` → 表格时间列。
-  - `model` → 模型。
-  - `inputTokens`、`outputTokens`、`cacheInputTokens`、`reasoningTokens`、`totalTokens` 对应数值列。
-  - `cost` → 费用。
-  - `status` / `errorMessage` → 成功或失败状态及错误详情。
 
 ## 5. HTTP API 与实时分发
 
-- 在 Rust 服务中集成 Web 框架（推荐 `axum`）：
-  - `GET /api/invocations`：支持分页、按状态/模型筛选。
-  - `GET /api/stats`：返回调用次数、费用、Token 累计等聚合信息。
-- 提供 `GET /events` SSE 端点，推送新增记录及统计增量，供前端实时订阅。
-- API 与轮询在同进程运行，复用连接池：读操作使用只读事务，保持轻量。
+- `GET /api/invocations`：返回历史与当前调用记录，支持分页、筛选与只读兼容历史 `xy` 数据。
+- `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries`：聚合历史 `xy`、当前 `proxy` 与启用时的 `crs` 数据源。
+- `GET /api/quota/latest`：读取数据库中最新的历史 quota snapshot；空库时返回 degraded default。
+- `GET /events`：以 SSE 推送代理写入与统计更新，供前端实时订阅。
 
 ## 6. Web SPA 界面
 
-- 在仓库根目录新增 `web/`，使用 `Vite + React + TypeScript` 组合构建支持 hash 路由的单页应用。
-- UI 基于 `Tailwind CSS + shadcn 风格基础组件`，提供一致的主题与组件库；打包时保留 `PostCSS` 配置以支持按需裁剪样式。
-- 界面包含两种视图：
-  - **图表模式**：折线/柱状展示调用频次、费用趋势，首选 `Recharts`，如需更复杂图表可平滑切换至 `ECharts`。
-  - **列表模式**：以表格展现最新记录，包含状态标签、错误信息、搜索过滤。
-- 数据层：初次加载通过 HTTP API 获取历史数据，随后使用 `EventSource` 订阅 SSE 实时刷新；若浏览器不支持 SSE，保留降级轮询方案。Dashboard 会通过新增的 `/api/quota/latest` 接口拉取订阅额度快照（默认 5 分钟采样一次）。
-- 本地开发时使用 Vite 反向代理到 Rust 服务 (`/api`, `/events`)，生产构建产物打包进 Docker 镜像，由后端静态托管（`XY_STATIC_DIR` 缺省指向 `web/dist`）。
+- 前端位于 `web/`，使用 `Vite + React + TypeScript` 构建单页应用。
+- Dashboard / Stats / Live / Settings 保持现有结构，展示调用记录、趋势图、配额卡片与代理设置。
+- 页面通过 HTTP API 获取历史数据，再使用 `EventSource` 订阅 `/events` 实时刷新。
+- 配额卡片展示的是数据库中已有的历史快照，而不是实时抓取 XYAI 上游结果。
 
-## 7. Docker 化部署
+## 7. 部署与扩展
 
-- 提供多阶段 `Dockerfile`：
-  1. 编译 Rust 二进制。
-  2. 构建 `web/` 前端资源。
-  3. 组装精简运行镜像（例如基于 `gcr.io/distroless/cc`）。
-- 通过环境变量配置 Cookie、轮询参数、数据库路径；将 SQLite 文件挂载为卷或映射到宿主。
-- 可附带 `docker-compose.yml`，暴露 HTTP/SSE 端口并定义日志/数据卷策略。
-
-## 8. 配置与可扩展性
-
-- `Config` 结构体：管理基础 URL、轮询间隔、数据库路径、最大并行度、HTTP 客户端参数等。
-- 未来可扩展：
-  - 将数据推送到 Prometheus/Grafana。
-  - 增加 Webhook 通知异常调用。
-  - 引入 `tracing` 框架输出结构化日志。
-
-## 9. 开发里程碑
-
-1. **MVP**：完成接口抓包、配置读取、固定节奏轮询与 SQLite 落库。
-2. **稳定性**：实现并行上限控制、超时处理、日志与健康检查。
-3. **可视化**：上线 HTTP API、SSE 服务与前端 SPA（图表 + 列表）。
-4. **部署**：交付 Docker 镜像与编排示例，支持生产部署。
-
-## 10. 安全注意事项
-
-- Cookie/Bearer Token 为敏感信息，切勿提交到版本控制。
-- 若后续自动化登录，需要评估是否违反站点服务条款。
-- 确保数据库文件权限仅对当前用户可读写。
-
-按照以上设计逐步实现，即可满足主人提出的高频监控需求喵。
+- 后端与前端通过多阶段 `Dockerfile` 一体化构建，运行时静态托管 `web/dist`。
+- 生产部署重点关注 SQLite 挂载、代理上游可达性、CRS 凭据与 retention 策略。
+- 后续扩展应围绕 proxy 可观测性、CRS 聚合与历史查询体验展开，而不是恢复 XYAI 采集链路。
