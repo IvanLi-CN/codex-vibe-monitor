@@ -1,10 +1,20 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { I18nProvider } from '../i18n'
 import SettingsPage from '../pages/Settings'
-import type { ForwardProxyNode, ForwardProxyNodeStats, ForwardProxySettings, PricingEntry, ProxySettings, SettingsPayload } from '../lib/api'
+import type {
+  ForwardProxyNode,
+  ForwardProxyNodeStats,
+  ForwardProxySettings,
+  PricingEntry,
+  PricingSettings,
+  ProxyFastModeRewriteMode,
+  ProxySettings,
+  SettingsPayload,
+} from '../lib/api'
 
 const PRESET_MODELS = ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5.1-codex-mini', 'gpt-5.2']
+const STORYBOOK_SETTINGS_STORAGE_PREFIX = 'storybook.settings-page.mock'
 
 const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   hijackEnabled: true,
@@ -12,6 +22,7 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   defaultHijackEnabled: false,
   models: PRESET_MODELS,
   enabledModels: ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-mini'],
+  fastModeRewriteMode: 'disabled',
 }
 
 const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
@@ -41,6 +52,16 @@ const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
   },
 ]
 
+const DEFAULT_FORWARD_PROXY_SETTINGS: Omit<ForwardProxySettings, 'nodes'> = {
+  proxyUrls: [
+    'vless://11111111-1111-1111-1111-111111111111@manual.example.com:443?encryption=none&security=tls&type=ws&host=cdn.manual.example.com&path=%2Fmanual#manual-vless',
+    'socks5://127.0.0.1:1080',
+  ],
+  subscriptionUrls: ['https://example.com/subscription.base64'],
+  subscriptionUpdateIntervalSecs: 3600,
+  insertDirect: true,
+}
+
 const MOCK_SUBSCRIPTION_NODE_TEMPLATES: Array<Pick<ForwardProxyNode, 'displayName' | 'endpointUrl'>> = [
   {
     displayName: 'edge-vless',
@@ -57,6 +78,12 @@ const MOCK_SUBSCRIPTION_NODE_TEMPLATES: Array<Pick<ForwardProxyNode, 'displayNam
     endpointUrl: 'ss://YWVzLTI1Ni1nY206c3Rvcnlib29rLXBhc3M=@ss.example.com:8388#ss-main',
   },
 ]
+
+type StorySettingsOverrides = {
+  proxy?: Partial<ProxySettings>
+  forwardProxy?: Partial<Omit<ForwardProxySettings, 'nodes'>>
+  pricing?: Partial<PricingSettings>
+}
 
 function statsPreset(index: number): ForwardProxyNodeStats {
   const base = Math.max(1, 24 - index * 3)
@@ -79,6 +106,10 @@ function labelFromProxyUrl(rawUrl: string): string {
   } catch {
     return rawUrl
   }
+}
+
+function normalizeProxyFastModeRewriteMode(value: unknown): ProxyFastModeRewriteMode {
+  return value === 'fill_missing' || value === 'force_priority' ? value : 'disabled'
 }
 
 function buildNodesFromSettings(settings: ForwardProxySettings): ForwardProxyNode[] {
@@ -125,34 +156,88 @@ function cloneSettings(payload: SettingsPayload): SettingsPayload {
   return JSON.parse(JSON.stringify(payload)) as SettingsPayload
 }
 
-function StorybookSettingsMock({ children }: { children: React.ReactNode }) {
-  const settingsRef = useRef<SettingsPayload>({
-    proxy: DEFAULT_PROXY_SETTINGS,
-    forwardProxy: {
-      proxyUrls: [
-        'vless://11111111-1111-1111-1111-111111111111@manual.example.com:443?encryption=none&security=tls&type=ws&host=cdn.manual.example.com&path=%2Fmanual#manual-vless',
-        'socks5://127.0.0.1:1080',
-      ],
-      subscriptionUrls: ['https://example.com/subscription.base64'],
-      subscriptionUpdateIntervalSecs: 3600,
-      insertDirect: true,
-      nodes: [],
-    },
-    pricing: {
-      catalogVersion: 'storybook-2026-02-27',
-      entries: DEFAULT_PRICING_ENTRIES,
-    },
-  })
+function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayload {
+  const proxy: ProxySettings = {
+    ...DEFAULT_PROXY_SETTINGS,
+    ...overrides?.proxy,
+    models: overrides?.proxy?.models ? [...overrides.proxy.models] : [...DEFAULT_PROXY_SETTINGS.models],
+    enabledModels: overrides?.proxy?.enabledModels
+      ? [...overrides.proxy.enabledModels]
+      : [...DEFAULT_PROXY_SETTINGS.enabledModels],
+    fastModeRewriteMode: normalizeProxyFastModeRewriteMode(overrides?.proxy?.fastModeRewriteMode),
+  }
+
+  const forwardProxyBase = {
+    ...DEFAULT_FORWARD_PROXY_SETTINGS,
+    ...overrides?.forwardProxy,
+    proxyUrls: overrides?.forwardProxy?.proxyUrls
+      ? [...overrides.forwardProxy.proxyUrls]
+      : [...DEFAULT_FORWARD_PROXY_SETTINGS.proxyUrls],
+    subscriptionUrls: overrides?.forwardProxy?.subscriptionUrls
+      ? [...overrides.forwardProxy.subscriptionUrls]
+      : [...DEFAULT_FORWARD_PROXY_SETTINGS.subscriptionUrls],
+  }
+  const forwardProxy: ForwardProxySettings = {
+    ...forwardProxyBase,
+    nodes: [],
+  }
+  forwardProxy.nodes = buildNodesFromSettings(forwardProxy)
+
+  const pricing: PricingSettings = {
+    catalogVersion: overrides?.pricing?.catalogVersion ?? 'storybook-2026-02-27',
+    entries: overrides?.pricing?.entries ? [...overrides.pricing.entries] : DEFAULT_PRICING_ENTRIES,
+  }
+
+  return {
+    proxy,
+    forwardProxy,
+    pricing,
+  }
+}
+
+function loadPersistedSettings(storageKey: string, fallback: SettingsPayload): SettingsPayload {
+  if (typeof window === 'undefined') return cloneSettings(fallback)
+  try {
+    const raw = window.sessionStorage.getItem(storageKey)
+    if (!raw) return cloneSettings(fallback)
+    return JSON.parse(raw) as SettingsPayload
+  } catch {
+    return cloneSettings(fallback)
+  }
+}
+
+function persistSettings(storageKey: string, payload: SettingsPayload) {
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.setItem(storageKey, JSON.stringify(payload))
+  } catch {
+    // ignore session storage write failures inside Storybook mock
+  }
+}
+
+function StorybookSettingsMock({
+  children,
+  initialSettings,
+  storageKey,
+}: {
+  children: ReactNode
+  initialSettings?: SettingsPayload
+  storageKey: string
+}) {
+  const fallbackSettings = initialSettings ? cloneSettings(initialSettings) : createStorySettings()
+  const settingsRef = useRef<SettingsPayload>(loadPersistedSettings(storageKey, fallbackSettings))
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const mockInstalledRef = useRef(false)
 
   if (typeof window !== 'undefined' && !mockInstalledRef.current) {
     mockInstalledRef.current = true
-    const initial = settingsRef.current.forwardProxy
-    settingsRef.current.forwardProxy = {
-      ...initial,
-      nodes: buildNodesFromSettings(initial),
+    if (!Array.isArray(settingsRef.current.forwardProxy.nodes) || settingsRef.current.forwardProxy.nodes.length === 0) {
+      settingsRef.current.forwardProxy = {
+        ...settingsRef.current.forwardProxy,
+        nodes: buildNodesFromSettings(settingsRef.current.forwardProxy),
+      }
     }
+    persistSettings(storageKey, settingsRef.current)
 
     originalFetchRef.current = window.fetch.bind(window)
     const mockedFetch: typeof window.fetch = async (input, init) => {
@@ -184,10 +269,16 @@ function StorybookSettingsMock({ children }: { children: React.ReactNode }) {
       }
 
       if (path === '/api/settings/proxy' && method === 'PUT') {
-        const body = parseBody<{ hijackEnabled: boolean; mergeUpstreamEnabled: boolean; enabledModels: string[] }>({
+        const body = parseBody<{
+          hijackEnabled: boolean
+          mergeUpstreamEnabled: boolean
+          enabledModels: string[]
+          fastModeRewriteMode: ProxyFastModeRewriteMode
+        }>({
           hijackEnabled: false,
           mergeUpstreamEnabled: false,
           enabledModels: [],
+          fastModeRewriteMode: 'disabled',
         })
         const normalizedEnabledModels = settingsRef.current.proxy.models.filter((model) =>
           (body.enabledModels || []).includes(model),
@@ -197,7 +288,9 @@ function StorybookSettingsMock({ children }: { children: React.ReactNode }) {
           hijackEnabled: Boolean(body.hijackEnabled),
           mergeUpstreamEnabled: Boolean(body.hijackEnabled && body.mergeUpstreamEnabled),
           enabledModels: normalizedEnabledModels,
+          fastModeRewriteMode: normalizeProxyFastModeRewriteMode(body.fastModeRewriteMode),
         }
+        persistSettings(storageKey, settingsRef.current)
         return jsonResponse(settingsRef.current.proxy)
       }
 
@@ -224,6 +317,7 @@ function StorybookSettingsMock({ children }: { children: React.ReactNode }) {
         }
         nextForwardProxy.nodes = buildNodesFromSettings(nextForwardProxy)
         settingsRef.current.forwardProxy = nextForwardProxy
+        persistSettings(storageKey, settingsRef.current)
         return jsonResponse(nextForwardProxy)
       }
 
@@ -290,6 +384,7 @@ function StorybookSettingsMock({ children }: { children: React.ReactNode }) {
           catalogVersion: String(body.catalogVersion || 'storybook'),
           entries: [...(body.entries || [])].sort((a, b) => a.model.localeCompare(b.model)),
         }
+        persistSettings(storageKey, settingsRef.current)
         return jsonResponse(settingsRef.current.pricing)
       }
 
@@ -311,6 +406,10 @@ function StorybookSettingsMock({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+type SettingsStoryParameters = {
+  mockSettings?: SettingsPayload
+}
+
 const meta = {
   title: 'Settings/SettingsPage',
   component: SettingsPage,
@@ -318,15 +417,21 @@ const meta = {
     layout: 'fullscreen',
   },
   decorators: [
-    (Story) => (
-      <I18nProvider>
-        <StorybookSettingsMock>
-          <div data-theme="light" className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-            <Story />
-          </div>
-        </StorybookSettingsMock>
-      </I18nProvider>
-    ),
+    (Story, context) => {
+      const mockSettings = (context.parameters as SettingsStoryParameters).mockSettings
+      return (
+        <I18nProvider>
+          <StorybookSettingsMock
+            initialSettings={mockSettings}
+            storageKey={`${STORYBOOK_SETTINGS_STORAGE_PREFIX}.${context.id}`}
+          >
+            <div data-theme="light" className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+              <Story />
+            </div>
+          </StorybookSettingsMock>
+        </I18nProvider>
+      )
+    },
   ],
 } satisfies Meta<typeof SettingsPage>
 
@@ -335,6 +440,28 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
+  render: () => <SettingsPage />,
+}
+
+export const FastModeFillMissing: Story = {
+  parameters: {
+    mockSettings: createStorySettings({
+      proxy: {
+        fastModeRewriteMode: 'fill_missing',
+      },
+    }),
+  },
+  render: () => <SettingsPage />,
+}
+
+export const FastModeForcePriority: Story = {
+  parameters: {
+    mockSettings: createStorySettings({
+      proxy: {
+        fastModeRewriteMode: 'force_priority',
+      },
+    }),
+  },
   render: () => <SettingsPage />,
 }
 

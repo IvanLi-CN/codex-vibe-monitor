@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchForwardProxyLiveStats, fetchSummary, validateForwardProxyCandidate } from './api'
+import {
+  fetchForwardProxyLiveStats,
+  fetchSettings,
+  fetchSummary,
+  updateProxySettings,
+  validateForwardProxyCandidate,
+} from './api'
 
 function abortError(): Error {
   const error = new Error('aborted')
@@ -214,5 +220,82 @@ describe('fetchSummary', () => {
     expect(firstCall).toBeDefined()
     const init = firstCall?.[1] as RequestInit | undefined
     expect(init?.signal).toBe(controller.signal)
+  })
+})
+
+
+describe('proxy fast mode rewrite settings', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('defaults invalid fast rewrite mode to disabled when fetching settings', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            proxy: {
+              hijackEnabled: true,
+              mergeUpstreamEnabled: true,
+              defaultHijackEnabled: false,
+              models: ['gpt-5.3-codex'],
+              enabledModels: ['gpt-5.3-codex'],
+              fastModeRewriteMode: 'wat',
+            },
+            forwardProxy: {
+              proxyUrls: [],
+              subscriptionUrls: [],
+              subscriptionUpdateIntervalSecs: 3600,
+              insertDirect: true,
+              nodes: [],
+            },
+            pricing: {
+              catalogVersion: 'v1',
+              entries: [],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }) as typeof fetch,
+    )
+
+    const settings = await fetchSettings()
+    expect(settings.proxy.fastModeRewriteMode).toBe('disabled')
+  })
+
+  it('sends fast rewrite mode in proxy settings update payload', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe('PUT')
+      expect(typeof init?.body).toBe('string')
+      expect(JSON.parse(String(init?.body))).toEqual({
+        hijackEnabled: true,
+        mergeUpstreamEnabled: false,
+        enabledModels: ['gpt-5.3-codex'],
+        fastModeRewriteMode: 'force_priority',
+      })
+      return new Response(
+        JSON.stringify({
+          hijackEnabled: true,
+          mergeUpstreamEnabled: false,
+          defaultHijackEnabled: false,
+          models: ['gpt-5.3-codex'],
+          enabledModels: ['gpt-5.3-codex'],
+          fastModeRewriteMode: 'force_priority',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock as typeof fetch)
+
+    const response = await updateProxySettings({
+      hijackEnabled: true,
+      mergeUpstreamEnabled: false,
+      enabledModels: ['gpt-5.3-codex'],
+      fastModeRewriteMode: 'force_priority',
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(response.fastModeRewriteMode).toBe('force_priority')
   })
 })

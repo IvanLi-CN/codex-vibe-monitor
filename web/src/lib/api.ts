@@ -227,12 +227,15 @@ export interface VersionResponse {
   frontend: string
 }
 
+export type ProxyFastModeRewriteMode = 'disabled' | 'fill_missing' | 'force_priority'
+
 export interface ProxySettings {
   hijackEnabled: boolean
   mergeUpstreamEnabled: boolean
   models: string[]
   enabledModels: string[]
   defaultHijackEnabled: boolean
+  fastModeRewriteMode: ProxyFastModeRewriteMode
 }
 
 export interface PricingEntry {
@@ -373,6 +376,10 @@ function normalizeFiniteNumber(value: unknown): number | undefined {
   return value
 }
 
+function normalizeProxyFastModeRewriteMode(value: unknown): ProxyFastModeRewriteMode {
+  return value === 'fill_missing' || value === 'force_priority' ? value : 'disabled'
+}
+
 function normalizeProxySettings(raw: unknown): ProxySettings {
   const payload = (raw ?? {}) as Record<string, unknown>
   const models = normalizeStringArray(payload.models)
@@ -387,6 +394,7 @@ function normalizeProxySettings(raw: unknown): ProxySettings {
     models,
     enabledModels,
     defaultHijackEnabled: Boolean(payload.defaultHijackEnabled),
+    fastModeRewriteMode: normalizeProxyFastModeRewriteMode(payload.fastModeRewriteMode ?? payload.fast_mode_rewrite_mode),
   }
 }
 
@@ -640,6 +648,7 @@ export async function updateProxySettings(payload: {
   hijackEnabled: boolean
   mergeUpstreamEnabled: boolean
   enabledModels: string[]
+  fastModeRewriteMode: ProxyFastModeRewriteMode
 }): Promise<ProxySettings> {
   const response = await fetchJson<unknown>('/api/settings/proxy', {
     method: 'PUT',
