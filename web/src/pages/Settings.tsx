@@ -14,6 +14,9 @@ import {
   type ForwardProxySettings,
   type PricingEntry,
   type PricingSettings,
+  type ProxyFastModeRewriteMode,
+  type ProxySettings,
+  updateProxySettings,
 } from '../lib/api'
 import { cn } from '../lib/utils'
 import { useTranslation } from '../i18n'
@@ -352,21 +355,68 @@ function emptyForwardProxyNodeStats(): ForwardProxyNodeStats {
   }
 }
 
+const PROXY_FAST_MODE_REWRITE_COPY = {
+  zh: {
+    label: 'Fast 模式请求改写',
+    hint: '仅作用于 POST /v1/responses 与 POST /v1/chat/completions。命中改写后，requestedServiceTier 会显示最终发给上游的 tier。',
+    modes: {
+      disabled: {
+        label: '关闭改写',
+        description: '保持请求体原样透传，不注入也不覆盖 tier。',
+      },
+      fill_missing: {
+        label: '仅补齐缺失 tier',
+        description: '只有在请求未显式携带 tier 时，才补写 service_tier=priority。',
+      },
+      force_priority: {
+        label: '强制 priority',
+        description: '无条件覆盖现有 tier，并以 service_tier=priority 发给上游。',
+      },
+    },
+  },
+  en: {
+    label: 'Fast request rewrite',
+    hint: 'Only applies to POST /v1/responses and POST /v1/chat/completions. When rewrite hits, requestedServiceTier shows the final tier sent upstream.',
+    modes: {
+      disabled: {
+        label: 'Disabled',
+        description: 'Pass the request body through without injecting or overriding the tier.',
+      },
+      fill_missing: {
+        label: 'Fill missing tier',
+        description: 'Inject service_tier=priority only when the request does not specify a tier.',
+      },
+      force_priority: {
+        label: 'Force priority',
+        description: 'Always overwrite the request tier and send service_tier=priority upstream.',
+      },
+    },
+  },
+} satisfies Record<
+  'zh' | 'en',
+  {
+    label: string
+    hint: string
+    modes: Record<ProxyFastModeRewriteMode, { label: string; description: string }>
+  }
+>
+
 export default function SettingsPage() {
-  const { t } = useTranslation()
+  const { t, locale } = useTranslation()
   const {
     settings,
     isLoading,
-    isProxySaving,
     isForwardProxySaving,
     isPricingSaving,
     pricingRollbackVersion,
     error,
-    saveProxy,
     saveForwardProxy,
     savePricing,
   } = useSettings()
 
+  const [proxyDraft, setProxyDraft] = useState<ProxySettings | null>(null)
+  const [proxySaveError, setProxySaveError] = useState<string | null>(null)
+  const [isProxySaving, setIsProxySaving] = useState(false)
   const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null)
   const [pricingErrorKey, setPricingErrorKey] = useState<string | null>(null)
   const [forwardProxyUrls, setForwardProxyUrls] = useState<string[]>([])
@@ -384,6 +434,7 @@ export default function SettingsPage() {
   const forwardProxySubscriptionUrlsRef = useRef<string[]>([])
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const forwardProxyBatchValidationRunRef = useRef(0)
+  const lastConfirmedProxyRef = useRef<ProxySettings | null>(null)
   const lastSyncedPricingKeyRef = useRef<string | null>(null)
   const lastHandledRollbackVersionRef = useRef(pricingRollbackVersion)
 
@@ -450,7 +501,13 @@ export default function SettingsPage() {
     settings?.forwardProxy,
   ])
 
-  const currentProxy = settings?.proxy ?? null
+  useEffect(() => {
+    if (!settings?.proxy) return
+    lastConfirmedProxyRef.current = settings.proxy
+    setProxyDraft((current) => current ?? settings.proxy)
+  }, [settings?.proxy])
+
+  const currentProxy = proxyDraft ?? settings?.proxy ?? null
   const currentForwardProxy = settings?.forwardProxy ?? null
   const forwardProxyTableNodes = useMemo<ForwardProxyTableNode[]>(() => {
     const persistedNodes = currentForwardProxy?.nodes ?? []
@@ -499,6 +556,36 @@ export default function SettingsPage() {
   const enabledPresetModelSet = useMemo(
     () => new Set(currentProxy?.enabledModels ?? []),
     [currentProxy?.enabledModels],
+  )
+  const proxyFastModeRewriteCopy = useMemo(
+    () => PROXY_FAST_MODE_REWRITE_COPY[locale === 'zh' ? 'zh' : 'en'],
+    [locale],
+  )
+  const proxyFastModeRewriteOptions = useMemo(
+    () => [
+      {
+        value: 'disabled' as const,
+        label: proxyFastModeRewriteCopy.modes.disabled.label,
+        description: proxyFastModeRewriteCopy.modes.disabled.description,
+      },
+      {
+        value: 'fill_missing' as const,
+        label: proxyFastModeRewriteCopy.modes.fill_missing.label,
+        description: proxyFastModeRewriteCopy.modes.fill_missing.description,
+      },
+      {
+        value: 'force_priority' as const,
+        label: proxyFastModeRewriteCopy.modes.force_priority.label,
+        description: proxyFastModeRewriteCopy.modes.force_priority.description,
+      },
+    ],
+    [proxyFastModeRewriteCopy],
+  )
+  const currentProxyFastModeRewriteOption = useMemo(
+    () =>
+      proxyFastModeRewriteOptions.find((option) => option.value === currentProxy?.fastModeRewriteMode) ??
+      proxyFastModeRewriteOptions[0],
+    [currentProxy?.fastModeRewriteMode, proxyFastModeRewriteOptions],
   )
   const forwardProxyIntervalOptions = useMemo(
     () => [
@@ -569,24 +656,51 @@ export default function SettingsPage() {
     }
   }, [pricingDraft, triggerPricingSave])
 
+  const persistProxy = useCallback(
+    async (nextProxy: ProxySettings) => {
+      const normalizedProxy: ProxySettings = {
+        ...nextProxy,
+        mergeUpstreamEnabled: nextProxy.hijackEnabled ? nextProxy.mergeUpstreamEnabled : false,
+        enabledModels: nextProxy.models.filter((candidate) => nextProxy.enabledModels.includes(candidate)),
+      }
+
+      setProxyDraft(normalizedProxy)
+      setProxySaveError(null)
+      setIsProxySaving(true)
+      try {
+        const savedProxy = await updateProxySettings({
+          hijackEnabled: normalizedProxy.hijackEnabled,
+          mergeUpstreamEnabled: normalizedProxy.mergeUpstreamEnabled,
+          enabledModels: normalizedProxy.enabledModels,
+          fastModeRewriteMode: normalizedProxy.fastModeRewriteMode,
+        })
+        lastConfirmedProxyRef.current = savedProxy
+        setProxyDraft(savedProxy)
+      } catch (err) {
+        setProxyDraft(lastConfirmedProxyRef.current)
+        setProxySaveError(err instanceof Error ? err.message : 'Failed to save proxy settings')
+      } finally {
+        setIsProxySaving(false)
+      }
+    },
+    [],
+  )
+
   const handleToggleHijack = useCallback(() => {
     if (!currentProxy) return
-    void saveProxy({
+    void persistProxy({
       ...currentProxy,
       hijackEnabled: !currentProxy.hijackEnabled,
-      mergeUpstreamEnabled: currentProxy.mergeUpstreamEnabled,
-      enabledModels: currentProxy.enabledModels,
     })
-  }, [currentProxy, saveProxy])
+  }, [currentProxy, persistProxy])
 
   const handleToggleMergeUpstream = useCallback(() => {
     if (!currentProxy || !currentProxy.hijackEnabled) return
-    void saveProxy({
+    void persistProxy({
       ...currentProxy,
       mergeUpstreamEnabled: !currentProxy.mergeUpstreamEnabled,
-      enabledModels: currentProxy.enabledModels,
     })
-  }, [currentProxy, saveProxy])
+  }, [currentProxy, persistProxy])
 
   const handleTogglePresetModel = useCallback(
     (modelId: string) => {
@@ -597,12 +711,23 @@ export default function SettingsPage() {
       } else {
         enabled.add(modelId)
       }
-      void saveProxy({
+      void persistProxy({
         ...currentProxy,
         enabledModels: currentProxy.models.filter((candidate) => enabled.has(candidate)),
       })
     },
-    [currentProxy, saveProxy],
+    [currentProxy, persistProxy],
+  )
+
+  const handleProxyFastModeRewriteModeChange = useCallback(
+    (value: ProxyFastModeRewriteMode) => {
+      if (!currentProxy || currentProxy.fastModeRewriteMode === value) return
+      void persistProxy({
+        ...currentProxy,
+        fastModeRewriteMode: value,
+      })
+    },
+    [currentProxy, persistProxy],
   )
 
   const handlePricingFieldChange = useCallback(
@@ -1207,6 +1332,32 @@ export default function SettingsPage() {
             </label>
 
             <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+              <div className="space-y-1">
+                <label htmlFor="proxy-fast-mode-rewrite" className="block font-medium">
+                  {proxyFastModeRewriteCopy.label}
+                </label>
+                <p className="text-sm leading-snug text-base-content/70">{proxyFastModeRewriteCopy.hint}</p>
+              </div>
+              <select
+                id="proxy-fast-mode-rewrite"
+                aria-label={proxyFastModeRewriteCopy.label}
+                className="mt-3 h-10 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 text-sm outline-none transition focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-70"
+                value={currentProxy.fastModeRewriteMode}
+                disabled={isProxySaving}
+                onChange={(event) => handleProxyFastModeRewriteModeChange(event.target.value as ProxyFastModeRewriteMode)}
+              >
+                {proxyFastModeRewriteOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-3 rounded-lg border border-base-300/70 bg-base-100/78 px-3 py-2 text-xs leading-5 text-base-content/72">
+                {currentProxyFastModeRewriteOption.description}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
               <div className="mb-3 flex items-center justify-between gap-2">
                 <div className="font-medium">{t('settings.proxy.presetModels')}</div>
                 <span className="text-xs text-base-content/70">
@@ -1246,6 +1397,7 @@ export default function SettingsPage() {
               )}
             </div>
 
+            {proxySaveError && <Alert variant="error" className="text-sm">{proxySaveError}</Alert>}
             <div className="text-xs text-base-content/70">{isProxySaving ? t('settings.saving') : t('settings.autoSaved')}</div>
           </CardContent>
         </Card>

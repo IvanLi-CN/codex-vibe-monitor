@@ -66,6 +66,7 @@ use tower_http::{
 };
 use tracing::{debug, error, info, warn};
 
+#[cfg_attr(not(test), allow(dead_code))]
 const SOURCE_XY: &str = "xy";
 const SOURCE_CRS: &str = "crs";
 const SOURCE_PROXY: &str = "proxy";
@@ -184,9 +185,10 @@ const XRAY_PROXY_READY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-03-06";
 const LEGACY_DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-02-23";
 const DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE: bool = true;
-const DEFAULT_XY_LEGACY_POLL_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
+const DEFAULT_PROXY_FAST_MODE_REWRITE_MODE: ProxyFastModeRewriteMode =
+    ProxyFastModeRewriteMode::Disabled;
 const DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP: bool = true;
 const GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS: i64 = 272_000;
 const ENV_CORS_ALLOWED_ORIGINS: &str = "XY_CORS_ALLOWED_ORIGINS";
@@ -272,18 +274,6 @@ fn resolve_forward_proxy_algo_config(
     disable_help_subcommand = true
 )]
 struct CliArgs {
-    /// Override the base URL used for upstream requests.
-    #[arg(long, value_name = "URL")]
-    base_url: Option<String>,
-    /// Override the quota endpoint path or URL.
-    #[arg(long, value_name = "ENDPOINT")]
-    quota_endpoint: Option<String>,
-    /// Override the session cookie name.
-    #[arg(long, value_name = "NAME")]
-    session_cookie_name: Option<String>,
-    /// Override the session cookie value.
-    #[arg(long, value_name = "VALUE")]
-    session_cookie_value: Option<String>,
     /// Override the SQLite database path; falls back to env or default.
     #[arg(long, value_name = "PATH")]
     database_path: Option<PathBuf>,
@@ -311,9 +301,6 @@ struct CliArgs {
     /// Override the static directory served by the HTTP server.
     #[arg(long, value_name = "PATH")]
     static_dir: Option<PathBuf>,
-    /// Override the minimum interval between quota snapshots in seconds.
-    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64))]
-    snapshot_min_interval_secs: Option<u64>,
     /// Run one retention/archival maintenance pass and exit.
     #[arg(long, default_value_t = false)]
     retention_run_once: bool,
@@ -425,10 +412,10 @@ async fn main() -> Result<()> {
         info!("shutdown signal received; beginning graceful shutdown");
     });
 
-    let poller_handle = if state.config.legacy_poll_enabled || state.config.crs_stats.is_some() {
+    let poller_handle = if state.config.crs_stats.is_some() {
         Some(spawn_scheduler(state.clone(), cancel.clone()))
     } else {
-        info!("legacy poller is disabled; scheduler will not start");
+        info!("crs stats relay is disabled; scheduler will not start");
         None
     };
     let forward_proxy_handle = spawn_forward_proxy_maintenance(state.clone(), cancel.clone());
@@ -2555,7 +2542,6 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
         match timeout(state_clone.config.request_timeout, fut).await {
             Ok(Ok(publish)) => {
                 let PublishResult {
-                    records,
                     mut summaries,
                     mut quota_snapshot,
                     collected_broadcast_state,
@@ -2577,15 +2563,6 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
                             warn!(?err, "failed to collect late-subscriber broadcast state");
                         }
                     }
-                }
-
-                if receiver_count > 0
-                    && let Some(records) = records.filter(|v| !v.is_empty())
-                    && let Err(err) = state_clone
-                        .broadcaster
-                        .send(BroadcastPayload::Records { records })
-                {
-                    warn!(?err, "failed to broadcast new records");
                 }
 
                 for summary in summaries {
@@ -2616,7 +2593,7 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
                 warn!(?err, "poll execution failed");
             }
             Err(_) => {
-                warn!("quota fetch timed out");
+                warn!("scheduler fetch timed out");
             }
         }
 
@@ -2727,7 +2704,6 @@ async fn shutdown_listener() {
 }
 
 struct PublishResult {
-    records: Option<Vec<ApiInvocation>>,
     summaries: Vec<SummaryPublish>,
     quota_snapshot: Option<QuotaSnapshotResponse>,
     collected_broadcast_state: bool,
@@ -2764,27 +2740,6 @@ async fn fetch_and_store(
         .http_clients
         .client_for_parallelism(force_new_connection)?;
     let relay_config = state.config.crs_stats.clone();
-    let mut inserted = Vec::new();
-
-    if state.config.legacy_poll_enabled {
-        let QuotaFetch {
-            records,
-            usage,
-            subscription,
-        } = fetch_quota(&client, &state.config).await?;
-
-        maybe_persist_snapshot(
-            &state.pool,
-            usage,
-            subscription,
-            state.config.snapshot_min_interval,
-        )
-        .await?;
-
-        if !records.is_empty() {
-            inserted = persist_records(&state.pool, &records).await?;
-        }
-    }
 
     if let Some(relay) = relay_config.as_ref()
         && should_poll_crs_stats(&state.pool, relay).await?
@@ -2808,11 +2763,6 @@ async fn fetch_and_store(
     };
 
     Ok(PublishResult {
-        records: if inserted.is_empty() {
-            None
-        } else {
-            Some(inserted)
-        },
         summaries,
         quota_snapshot: quota_payload,
         collected_broadcast_state: collect_broadcast_state,
@@ -2886,43 +2836,6 @@ async fn collect_summary_snapshots(
     }
 
     Ok(summaries)
-}
-
-async fn fetch_quota(client: &Client, config: &AppConfig) -> Result<QuotaFetch> {
-    let url = config.quota_url()?;
-    let cookie_header = format!("{}={}", config.cookie_name, config.cookie_value);
-
-    let response = client
-        .get(url)
-        .header(header::COOKIE, cookie_header)
-        .send()
-        .await
-        .context("failed to send quota request")?
-        .error_for_status()
-        .context("quota request returned error status")?;
-
-    let payload: QuotaResponse = response
-        .json()
-        .await
-        .context("failed to decode quota response JSON")?;
-
-    let mut records = Vec::new();
-    let mut usage = None;
-    let mut subscription = None;
-
-    if let Some(data) = payload.data
-        && let Some(service) = data.codex
-    {
-        records = service.recent_records;
-        usage = service.current_usage;
-        subscription = service.subscriptions;
-    }
-
-    Ok(QuotaFetch {
-        records,
-        usage,
-        subscription,
-    })
 }
 
 async fn should_poll_crs_stats(pool: &Pool<Sqlite>, relay: &CrsStatsConfig) -> Result<bool> {
@@ -3578,6 +3491,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             id INTEGER PRIMARY KEY CHECK (id = 1),
             hijack_enabled INTEGER NOT NULL DEFAULT 0,
             merge_upstream_enabled INTEGER NOT NULL DEFAULT 0,
+            fast_mode_rewrite_mode TEXT NOT NULL DEFAULT 'disabled',
             enabled_preset_models_json TEXT,
             preset_models_migrated INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -3604,6 +3518,19 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     if let Err(err) = sqlx::query(
         r#"
         ALTER TABLE proxy_model_settings
+        ADD COLUMN fast_mode_rewrite_mode TEXT NOT NULL DEFAULT 'disabled'
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context("failed to ensure fast_mode_rewrite_mode column");
+    }
+
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE proxy_model_settings
         ADD COLUMN preset_models_migrated INTEGER NOT NULL DEFAULT 0
         "#,
     )
@@ -3623,14 +3550,16 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             id,
             hijack_enabled,
             merge_upstream_enabled,
+            fast_mode_rewrite_mode,
             enabled_preset_models_json
         )
-        VALUES (?1, ?2, ?3, ?4)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         "#,
     )
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
     .bind(DEFAULT_PROXY_MODELS_HIJACK_ENABLED as i64)
     .bind(DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED as i64)
+    .bind(DEFAULT_PROXY_FAST_MODE_REWRITE_MODE.as_str())
     .bind(default_enabled_models_json)
     .execute(pool)
     .await
@@ -3846,7 +3775,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSettings> {
     let row = sqlx::query_as::<_, ProxyModelSettingsRow>(
         r#"
-        SELECT hijack_enabled, merge_upstream_enabled, enabled_preset_models_json
+        SELECT hijack_enabled, merge_upstream_enabled, fast_mode_rewrite_mode, enabled_preset_models_json
         FROM proxy_model_settings
         WHERE id = ?1
         LIMIT 1
@@ -3874,13 +3803,15 @@ async fn save_proxy_model_settings(
         UPDATE proxy_model_settings
         SET hijack_enabled = ?1,
             merge_upstream_enabled = ?2,
-            enabled_preset_models_json = ?3,
+            fast_mode_rewrite_mode = ?3,
+            enabled_preset_models_json = ?4,
             updated_at = datetime('now')
-        WHERE id = ?4
+        WHERE id = ?5
         "#,
     )
     .bind(settings.hijack_enabled as i64)
     .bind(settings.merge_upstream_enabled as i64)
+    .bind(settings.fast_mode_rewrite_mode.as_str())
     .bind(enabled_models_json)
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
     .execute(pool)
@@ -5190,268 +5121,6 @@ fn default_pricing_catalog() -> PricingCatalog {
         version: DEFAULT_PRICING_CATALOG_VERSION.to_string(),
         models,
     }
-}
-
-async fn persist_records(
-    pool: &Pool<Sqlite>,
-    records: &[CodexRecord],
-) -> Result<Vec<ApiInvocation>> {
-    let mut tx = pool.begin().await?;
-    let mut inserted = Vec::new();
-
-    for record in records {
-        let failure = classify_invocation_failure(
-            Some(record.status.as_str()),
-            Some(record.error_message.as_str()),
-        );
-        let service_tier = record
-            .service_tier
-            .as_deref()
-            .and_then(normalize_service_tier);
-        let payload_json = json!({
-            "model": record.model,
-            "inputTokens": record.input_tokens,
-            "outputTokens": record.output_tokens,
-            "cacheInputTokens": record.cache_input_tokens,
-            "reasoningTokens": record.reasoning_tokens,
-            "totalTokens": record.total_tokens,
-            "cost": record.cost,
-            "status": record.status,
-            "errorMessage": record.error_message,
-            "serviceTier": service_tier,
-        });
-
-        let payload_text = serde_json::to_string(&payload_json)?;
-        let raw_text = serde_json::to_string(record)?;
-
-        let result = sqlx::query(
-            r#"
-            INSERT OR IGNORE INTO codex_invocations (
-                invoke_id,
-                occurred_at,
-                source,
-                model,
-                input_tokens,
-                output_tokens,
-                cache_input_tokens,
-                reasoning_tokens,
-                total_tokens,
-                cost,
-                status,
-                error_message,
-                failure_kind,
-                failure_class,
-                is_actionable,
-                payload,
-                raw_response
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
-            "#,
-        )
-        .bind(&record.request_id)
-        .bind(&record.request_time)
-        .bind(SOURCE_XY)
-        .bind(&record.model)
-        .bind(record.input_tokens)
-        .bind(record.output_tokens)
-        .bind(record.cache_input_tokens)
-        .bind(record.reasoning_tokens)
-        .bind(record.total_tokens)
-        .bind(record.cost)
-        .bind(&record.status)
-        .bind(&record.error_message)
-        .bind(failure.failure_kind.as_deref())
-        .bind(failure.failure_class.as_str())
-        .bind(failure.is_actionable as i64)
-        .bind(payload_text)
-        .bind(raw_text)
-        .execute(&mut *tx)
-        .await?;
-
-        if result.rows_affected() > 0 {
-            let row = sqlx::query_as::<_, ApiInvocation>(
-                r#"
-                SELECT
-                    id,
-                    invoke_id,
-                    occurred_at,
-                    source,
-                    model,
-                    input_tokens,
-                    output_tokens,
-                    cache_input_tokens,
-                    reasoning_tokens,
-                    total_tokens,
-                    cost,
-                    status,
-                    error_message,
-                    failure_kind,
-                    failure_class,
-                    is_actionable,
-                    CASE
-                      WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text'
-                        THEN json_extract(payload, '$.requestedServiceTier')
-                      WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text'
-                        THEN json_extract(payload, '$.requested_service_tier')
-                    END AS requested_service_tier,
-                    CASE
-                      WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'
-                        THEN json_extract(payload, '$.serviceTier')
-                      WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
-                        THEN json_extract(payload, '$.service_tier')
-                    END AS service_tier,
-                    detail_level,
-                    detail_pruned_at,
-                    detail_prune_reason,
-                    created_at
-                FROM codex_invocations
-                WHERE invoke_id = ?1 AND occurred_at = ?2
-                "#,
-            )
-            .bind(&record.request_id)
-            .bind(&record.request_time)
-            .fetch_one(&mut *tx)
-            .await?;
-
-            inserted.push(row);
-        }
-    }
-
-    tx.commit().await?;
-    Ok(inserted)
-}
-
-async fn maybe_persist_snapshot(
-    pool: &Pool<Sqlite>,
-    usage: Option<CurrentUsage>,
-    subscription: Option<Subscription>,
-    min_interval: Duration,
-) -> Result<Option<QuotaSnapshotResponse>> {
-    let usage = match usage {
-        Some(usage) => usage,
-        None => return Ok(None),
-    };
-    let subscription = match subscription {
-        Some(subscription) => subscription,
-        None => return Ok(None),
-    };
-
-    let last_row = sqlx::query_as::<_, QuotaSnapshotRow>(
-        r#"
-        SELECT
-            captured_at,
-            amount_limit,
-            used_amount,
-            remaining_amount,
-            period,
-            period_reset_time,
-            expire_time,
-            is_active,
-            total_cost,
-            total_requests,
-            total_tokens,
-            last_request_time,
-            billing_type,
-            remaining_count,
-            used_count,
-            sub_type_name
-        FROM codex_quota_snapshots
-        ORDER BY captured_at DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_optional(pool)
-    .await?;
-
-    let now = Utc::now().naive_utc();
-    let min_interval =
-        ChronoDuration::from_std(min_interval).unwrap_or_else(|_| ChronoDuration::minutes(5));
-
-    if let Some(ref last) = last_row
-        && let Ok(last_captured) =
-            NaiveDateTime::parse_from_str(&last.captured_at, "%Y-%m-%d %H:%M:%S")
-    {
-        let recent_enough = now - last_captured < min_interval;
-        let cost_close = (usage.total_cost - last.total_cost).abs() < 0.000_001;
-        let requests_same = usage.total_requests == last.total_requests;
-        let tokens_same = usage.total_tokens == last.total_tokens;
-        let subs_used = subscription.used_amount.unwrap_or(0.0);
-        let last_used = last.used_amount.unwrap_or(0.0);
-        let usage_same = (subs_used - last_used).abs() < 0.000_001;
-
-        if recent_enough && cost_close && requests_same && tokens_same && usage_same {
-            return Ok(None);
-        }
-    }
-
-    sqlx::query(
-        r#"
-        INSERT INTO codex_quota_snapshots (
-            amount_limit,
-            used_amount,
-            remaining_amount,
-            period,
-            period_reset_time,
-            expire_time,
-            is_active,
-            total_cost,
-            total_requests,
-            total_tokens,
-            last_request_time,
-            billing_type,
-            remaining_count,
-            used_count,
-            sub_type_name
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
-        "#,
-    )
-    .bind(subscription.amount_limit.or(subscription.limit))
-    .bind(subscription.used_amount)
-    .bind(subscription.remaining_amount)
-    .bind(subscription.period)
-    .bind(subscription.period_reset_time)
-    .bind(subscription.expire_time)
-    .bind(subscription.is_active.unwrap_or(false) as i64)
-    .bind(usage.total_cost)
-    .bind(usage.total_requests)
-    .bind(usage.total_tokens)
-    .bind(usage.last_request_time)
-    .bind(subscription.billing_type)
-    .bind(subscription.remaining_count)
-    .bind(subscription.used_count)
-    .bind(subscription.sub_type_name)
-    .execute(pool)
-    .await?;
-
-    let row = sqlx::query_as::<_, QuotaSnapshotRow>(
-        r#"
-        SELECT
-            captured_at,
-            amount_limit,
-            used_amount,
-            remaining_amount,
-            period,
-            period_reset_time,
-            expire_time,
-            is_active,
-            total_cost,
-            total_requests,
-            total_tokens,
-            last_request_time,
-            billing_type,
-            remaining_count,
-            used_count,
-            sub_type_name
-        FROM codex_quota_snapshots
-        ORDER BY captured_at DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(row.map(Into::into))
 }
 
 async fn list_invocations(
@@ -7655,11 +7324,17 @@ async fn proxy_openai_v1_capture_target(
     };
     let t_req_read_ms = elapsed_ms(req_read_started);
 
+    let proxy_fast_mode_rewrite_mode = state
+        .proxy_model_settings
+        .read()
+        .await
+        .fast_mode_rewrite_mode;
     let req_parse_started = Instant::now();
     let (upstream_body, request_info, body_rewritten) = prepare_target_request_body(
         capture_target,
         request_body_bytes,
         state.config.proxy_enforce_stream_include_usage,
+        proxy_fast_mode_rewrite_mode,
     );
     let prompt_cache_key = request_info
         .prompt_cache_key
@@ -8261,6 +7936,7 @@ fn prepare_target_request_body(
     target: ProxyCaptureTarget,
     body: Vec<u8>,
     auto_include_usage: bool,
+    fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
 ) -> (Vec<u8>, RequestCaptureInfo, bool) {
     let mut info = RequestCaptureInfo {
         model: None,
@@ -8288,14 +7964,14 @@ fn prepare_target_request_body(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     info.prompt_cache_key = extract_prompt_cache_key_from_request_body(&value);
-    info.requested_service_tier = extract_requested_service_tier_from_request_body(&value);
     info.reasoning_effort = extract_reasoning_effort_from_request_body(target, &value);
     info.is_stream = value
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let mut rewritten = false;
+    let mut rewritten =
+        rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode);
     if target == ProxyCaptureTarget::ChatCompletions
         && info.is_stream
         && auto_include_usage
@@ -8315,6 +7991,8 @@ fn prepare_target_request_body(
             rewritten = true;
         }
     }
+
+    info.requested_service_tier = extract_requested_service_tier_from_request_body(&value);
 
     if rewritten {
         match serde_json::to_vec(&value) {
@@ -8354,6 +8032,40 @@ fn extract_requested_service_tier_from_request_body(value: &Value) -> Option<Str
         .iter()
         .find_map(|pointer| value.pointer(pointer).and_then(|entry| entry.as_str()))
         .and_then(normalize_service_tier)
+}
+
+fn rewrite_request_service_tier_for_fast_mode(
+    value: &mut Value,
+    fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
+) -> bool {
+    let target_service_tier = match fast_mode_rewrite_mode {
+        ProxyFastModeRewriteMode::Disabled => return false,
+        ProxyFastModeRewriteMode::FillMissing => {
+            extract_requested_service_tier_from_request_body(value)
+                .or_else(|| Some("priority".to_string()))
+        }
+        ProxyFastModeRewriteMode::ForcePriority => Some("priority".to_string()),
+    };
+
+    let Some(target_service_tier) = target_service_tier else {
+        return false;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return false;
+    };
+
+    let mut rewritten = object.remove("serviceTier").is_some();
+    if object.get("service_tier").and_then(|entry| entry.as_str())
+        != Some(target_service_tier.as_str())
+    {
+        object.insert(
+            "service_tier".to_string(),
+            Value::String(target_service_tier),
+        );
+        rewritten = true;
+    }
+
+    rewritten
 }
 
 fn extract_reasoning_effort_from_request_body(
@@ -10905,6 +10617,7 @@ async fn put_proxy_settings(
     let next = ProxyModelSettings {
         hijack_enabled: payload.hijack_enabled,
         merge_upstream_enabled: payload.merge_upstream_enabled,
+        fast_mode_rewrite_mode: payload.fast_mode_rewrite_mode,
         enabled_preset_models: payload.enabled_models,
     }
     .normalized();
@@ -14706,7 +14419,40 @@ struct PromptCacheConversationsQuery {
 struct ProxyModelSettings {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
+    fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
     enabled_preset_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProxyFastModeRewriteMode {
+    #[default]
+    Disabled,
+    FillMissing,
+    ForcePriority,
+}
+
+impl ProxyFastModeRewriteMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::FillMissing => "fill_missing",
+            Self::ForcePriority => "force_priority",
+        }
+    }
+}
+
+fn decode_proxy_fast_mode_rewrite_mode(raw: Option<&str>) -> ProxyFastModeRewriteMode {
+    match raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("fill_missing") => ProxyFastModeRewriteMode::FillMissing,
+        Some("force_priority") => ProxyFastModeRewriteMode::ForcePriority,
+        _ => DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+    }
 }
 
 impl Default for ProxyModelSettings {
@@ -14714,6 +14460,7 @@ impl Default for ProxyModelSettings {
         Self {
             hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             merge_upstream_enabled: DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED,
+            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
             enabled_preset_models: default_enabled_preset_models(),
         }
     }
@@ -14729,6 +14476,7 @@ impl ProxyModelSettings {
         Self {
             hijack_enabled: self.hijack_enabled,
             merge_upstream_enabled,
+            fast_mode_rewrite_mode: self.fast_mode_rewrite_mode,
             enabled_preset_models: normalize_enabled_preset_models(self.enabled_preset_models),
         }
     }
@@ -14738,6 +14486,7 @@ impl ProxyModelSettings {
 struct ProxyModelSettingsRow {
     hijack_enabled: i64,
     merge_upstream_enabled: i64,
+    fast_mode_rewrite_mode: Option<String>,
     enabled_preset_models_json: Option<String>,
 }
 
@@ -14746,6 +14495,9 @@ impl From<ProxyModelSettingsRow> for ProxyModelSettings {
         Self {
             hijack_enabled: value.hijack_enabled != 0,
             merge_upstream_enabled: value.merge_upstream_enabled != 0,
+            fast_mode_rewrite_mode: decode_proxy_fast_mode_rewrite_mode(
+                value.fast_mode_rewrite_mode.as_deref(),
+            ),
             enabled_preset_models: decode_enabled_preset_models(
                 value.enabled_preset_models_json.as_deref(),
             ),
@@ -14759,6 +14511,8 @@ impl From<ProxyModelSettingsRow> for ProxyModelSettings {
 struct ProxyModelSettingsUpdateRequest {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
+    #[serde(default)]
+    fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
     #[serde(default = "default_enabled_preset_models")]
     enabled_models: Vec<String>,
 }
@@ -14768,6 +14522,7 @@ struct ProxyModelSettingsUpdateRequest {
 struct ProxyModelSettingsResponse {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
+    fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
     default_hijack_enabled: bool,
     models: Vec<String>,
     enabled_models: Vec<String>,
@@ -14778,6 +14533,7 @@ impl From<ProxyModelSettings> for ProxyModelSettingsResponse {
         Self {
             hijack_enabled: value.hijack_enabled,
             merge_upstream_enabled: value.merge_upstream_enabled,
+            fast_mode_rewrite_mode: value.fast_mode_rewrite_mode,
             default_hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             models: PROXY_PRESET_MODEL_IDS
                 .iter()
@@ -15561,12 +15317,7 @@ impl HttpClients {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppConfig {
-    legacy_poll_enabled: bool,
-    base_url: Url,
     openai_upstream_base_url: Url,
-    quota_endpoint: String,
-    cookie_name: String,
-    cookie_value: String,
     database_path: PathBuf,
     poll_interval: Duration,
     request_timeout: Duration,
@@ -15588,7 +15339,6 @@ struct AppConfig {
     list_limit_max: usize,
     user_agent: String,
     static_dir: Option<PathBuf>,
-    snapshot_min_interval: Duration,
     retention_enabled: bool,
     retention_dry_run: bool,
     retention_interval: Duration,
@@ -15613,42 +15363,8 @@ struct CrsStatsConfig {
 
 impl AppConfig {
     fn from_sources(overrides: &CliArgs) -> Result<Self> {
-        let legacy_poll_enabled =
-            parse_bool_env_var("XY_LEGACY_POLL_ENABLED", DEFAULT_XY_LEGACY_POLL_ENABLED)?;
-        let base_url_raw_opt = overrides
-            .base_url
-            .clone()
-            .or_else(|| env::var("XY_BASE_URL").ok());
-        let base_url_raw = if legacy_poll_enabled {
-            base_url_raw_opt.ok_or_else(|| anyhow!("XY_BASE_URL is not set"))?
-        } else {
-            base_url_raw_opt.unwrap_or_else(|| "http://127.0.0.1/".to_string())
-        };
         let openai_upstream_base_url = env::var("OPENAI_UPSTREAM_BASE_URL")
             .unwrap_or_else(|_| DEFAULT_OPENAI_UPSTREAM_BASE_URL.to_string());
-        let quota_endpoint = overrides
-            .quota_endpoint
-            .clone()
-            .or_else(|| env::var("XY_VIBE_QUOTA_ENDPOINT").ok())
-            .unwrap_or_else(|| "/frontend-api/vibe-code/quota".to_string());
-        let cookie_name_opt = overrides
-            .session_cookie_name
-            .clone()
-            .or_else(|| env::var("XY_SESSION_COOKIE_NAME").ok());
-        let cookie_value_opt = overrides
-            .session_cookie_value
-            .clone()
-            .or_else(|| env::var("XY_SESSION_COOKIE_VALUE").ok());
-        let cookie_name = if legacy_poll_enabled {
-            cookie_name_opt.ok_or_else(|| anyhow!("XY_SESSION_COOKIE_NAME is not set"))?
-        } else {
-            cookie_name_opt.unwrap_or_else(|| "xy_session".to_string())
-        };
-        let cookie_value = if legacy_poll_enabled {
-            cookie_value_opt.ok_or_else(|| anyhow!("XY_SESSION_COOKIE_VALUE is not set"))?
-        } else {
-            cookie_value_opt.unwrap_or_default()
-        };
         let database_path = overrides
             .database_path
             .clone()
@@ -15793,15 +15509,6 @@ impl AppConfig {
                     None
                 }
             });
-        let snapshot_min_interval = overrides
-            .snapshot_min_interval_secs
-            .or_else(|| {
-                env::var("XY_SNAPSHOT_MIN_INTERVAL_SECS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-            })
-            .map(Duration::from_secs)
-            .unwrap_or_else(|| Duration::from_secs(300));
         let retention_enabled =
             parse_bool_env_var("XY_RETENTION_ENABLED", DEFAULT_RETENTION_ENABLED)?;
         let retention_dry_run = overrides.retention_dry_run
@@ -15866,13 +15573,8 @@ impl AppConfig {
         };
 
         Ok(Self {
-            legacy_poll_enabled,
-            base_url: Url::parse(&base_url_raw).context("invalid XY_BASE_URL")?,
             openai_upstream_base_url: Url::parse(&openai_upstream_base_url)
                 .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
-            quota_endpoint,
-            cookie_name,
-            cookie_value,
             database_path,
             poll_interval,
             request_timeout,
@@ -15894,7 +15596,6 @@ impl AppConfig {
             list_limit_max,
             user_agent,
             static_dir,
-            snapshot_min_interval,
             retention_enabled,
             retention_dry_run,
             retention_interval,
@@ -15907,16 +15608,6 @@ impl AppConfig {
             quota_snapshot_full_days,
             crs_stats,
         })
-    }
-
-    fn quota_url(&self) -> Result<Url> {
-        if self.quota_endpoint.starts_with("http") {
-            Url::parse(&self.quota_endpoint).context("invalid XY_VIBE_QUOTA_ENDPOINT URL")
-        } else {
-            self.base_url
-                .join(self.quota_endpoint.trim_start_matches('/'))
-                .context("failed to join quota endpoint onto base URL")
-        }
     }
 
     fn database_url(&self) -> String {
@@ -15969,7 +15660,7 @@ mod tests {
         extract::{Query, State},
         http::{HeaderValue, Method, StatusCode, Uri, header as http_header},
         response::IntoResponse,
-        routing::{any, get},
+        routing::{any, get, post},
     };
     use chrono::Timelike;
     use flate2::{Compression, write::GzEncoder};
@@ -15979,14 +15670,17 @@ mod tests {
     use std::{
         borrow::Cow,
         collections::HashSet,
-        fs,
+        env, fs,
         path::{Path, PathBuf},
-        sync::Arc,
+        sync::{Arc, Mutex as StdMutex},
         time::Duration,
     };
     use tokio::net::TcpListener;
     use tokio::sync::{Semaphore, broadcast};
     use tokio::task::JoinHandle;
+
+    static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<StdMutex<()>> =
+        once_cell::sync::Lazy::new(|| StdMutex::new(()));
 
     #[test]
     fn named_range_today_end_respects_dst() {
@@ -17056,14 +16750,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn app_config_from_sources_ignores_removed_xyai_env_vars() {
+        let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+        let cases = [
+            ("XY_BASE_URL", "not-a-valid-url"),
+            ("XY_VIBE_QUOTA_ENDPOINT", "%%%"),
+            ("XY_SESSION_COOKIE_NAME", "legacy-cookie"),
+            ("XY_SESSION_COOKIE_VALUE", "legacy-secret"),
+            ("XY_LEGACY_POLL_ENABLED", "definitely-not-bool"),
+            ("XY_SNAPSHOT_MIN_INTERVAL_SECS", "not-a-number"),
+        ];
+        let previous = cases
+            .iter()
+            .map(|(name, _)| ((*name).to_string(), env::var_os(name)))
+            .collect::<Vec<_>>();
+
+        for (name, value) in cases {
+            unsafe { env::set_var(name, value) };
+        }
+
+        let result = AppConfig::from_sources(&CliArgs::default());
+
+        for (name, value) in previous {
+            match value {
+                Some(value) => unsafe { env::set_var(name, value) },
+                None => unsafe { env::remove_var(name) },
+            }
+        }
+
+        let config = result.expect("removed XYAI env vars should be ignored");
+        assert_eq!(config.database_path, PathBuf::from("codex_vibe_monitor.db"));
+    }
+
     fn test_config() -> AppConfig {
         AppConfig {
-            legacy_poll_enabled: false,
-            base_url: Url::parse("https://example.com/").expect("valid url"),
             openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
-            quota_endpoint: "/quota".to_string(),
-            cookie_name: "session".to_string(),
-            cookie_value: "test".to_string(),
             database_path: PathBuf::from(":memory:"),
             poll_interval: Duration::from_secs(10),
             request_timeout: Duration::from_secs(30),
@@ -17089,7 +16811,6 @@ mod tests {
             list_limit_max: 100,
             user_agent: "codex-test".to_string(),
             static_dir: None,
-            snapshot_min_interval: Duration::from_secs(60),
             retention_enabled: DEFAULT_RETENTION_ENABLED,
             retention_dry_run: DEFAULT_RETENTION_DRY_RUN,
             retention_interval: Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS),
@@ -18239,6 +17960,56 @@ mod tests {
         (format!("http://{addr}/"), handle)
     }
 
+    async fn test_upstream_capture_target_echo(
+        State(captured): State<Arc<Mutex<Vec<Value>>>>,
+        body: Bytes,
+    ) -> impl IntoResponse {
+        let payload: Value = serde_json::from_slice(&body).expect("decode upstream captured body");
+        captured.lock().await.push(payload.clone());
+
+        (
+            StatusCode::OK,
+            Json(json!({
+                "id": "resp_test",
+                "object": "response",
+                "model": "gpt-5.3-codex",
+                "service_tier": "priority",
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 3,
+                    "total_tokens": 15
+                },
+                "received": payload,
+            })),
+        )
+    }
+
+    async fn spawn_capture_target_body_upstream() -> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>)
+    {
+        let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let app = Router::new()
+            .route(
+                "/v1/chat/completions",
+                post(test_upstream_capture_target_echo),
+            )
+            .route("/v1/responses", post(test_upstream_capture_target_echo))
+            .with_state(captured.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind capture-target upstream test server");
+        let addr = listener
+            .local_addr()
+            .expect("capture-target upstream local addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("capture-target upstream test server should run");
+        });
+
+        (format!("http://{addr}/"), captured, handle)
+    }
+
     fn extract_model_ids(payload: &Value) -> Vec<String> {
         payload
             .get("data")
@@ -18703,6 +18474,10 @@ mod tests {
             .expect("get settings should succeed");
         assert!(!initial.proxy.hijack_enabled);
         assert!(!initial.proxy.merge_upstream_enabled);
+        assert_eq!(
+            initial.proxy.fast_mode_rewrite_mode,
+            ProxyFastModeRewriteMode::Disabled
+        );
         assert_eq!(initial.proxy.models.len(), PROXY_PRESET_MODEL_IDS.len());
         assert_eq!(
             initial.proxy.enabled_models,
@@ -18718,6 +18493,7 @@ mod tests {
             Json(ProxyModelSettingsUpdateRequest {
                 hijack_enabled: true,
                 merge_upstream_enabled: true,
+                fast_mode_rewrite_mode: ProxyFastModeRewriteMode::FillMissing,
                 enabled_models: vec!["gpt-5.2-codex".to_string(), "unknown-model".to_string()],
             }),
         )
@@ -18725,6 +18501,10 @@ mod tests {
         .expect("put settings should succeed");
         assert!(updated.hijack_enabled);
         assert!(updated.merge_upstream_enabled);
+        assert_eq!(
+            updated.fast_mode_rewrite_mode,
+            ProxyFastModeRewriteMode::FillMissing
+        );
         assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
 
         let persisted = load_proxy_model_settings(&state.pool)
@@ -18732,6 +18512,10 @@ mod tests {
             .expect("settings should persist");
         assert!(persisted.hijack_enabled);
         assert!(persisted.merge_upstream_enabled);
+        assert_eq!(
+            persisted.fast_mode_rewrite_mode,
+            ProxyFastModeRewriteMode::FillMissing
+        );
         assert_eq!(
             persisted.enabled_preset_models,
             vec!["gpt-5.2-codex".to_string()]
@@ -18743,6 +18527,7 @@ mod tests {
             Json(ProxyModelSettingsUpdateRequest {
                 hijack_enabled: false,
                 merge_upstream_enabled: true,
+                fast_mode_rewrite_mode: ProxyFastModeRewriteMode::ForcePriority,
                 enabled_models: Vec::new(),
             }),
         )
@@ -18750,7 +18535,70 @@ mod tests {
         .expect("put settings should normalize payload");
         assert!(!normalized.hijack_enabled);
         assert!(!normalized.merge_upstream_enabled);
+        assert_eq!(
+            normalized.fast_mode_rewrite_mode,
+            ProxyFastModeRewriteMode::ForcePriority
+        );
         assert!(normalized.enabled_models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_adds_fast_mode_rewrite_mode_with_disabled_default() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("in-memory sqlite");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE proxy_model_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                hijack_enabled INTEGER NOT NULL DEFAULT 0,
+                merge_upstream_enabled INTEGER NOT NULL DEFAULT 0,
+                enabled_preset_models_json TEXT,
+                preset_models_migrated INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy proxy_model_settings table");
+
+        sqlx::query(
+            r#"
+            INSERT INTO proxy_model_settings (
+                id,
+                hijack_enabled,
+                merge_upstream_enabled,
+                enabled_preset_models_json,
+                preset_models_migrated
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+        .bind(1_i64)
+        .bind(0_i64)
+        .bind(
+            serde_json::to_string(&default_enabled_preset_models())
+                .expect("serialize default enabled models"),
+        )
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("insert legacy proxy_model_settings row");
+
+        ensure_schema(&pool)
+            .await
+            .expect("ensure schema migration run");
+
+        let settings = load_proxy_model_settings(&pool)
+            .await
+            .expect("load proxy model settings");
+        assert_eq!(
+            settings.fast_mode_rewrite_mode,
+            ProxyFastModeRewriteMode::Disabled
+        );
     }
 
     #[tokio::test]
@@ -18968,6 +18816,7 @@ mod tests {
             Json(ProxyModelSettingsUpdateRequest {
                 hijack_enabled: true,
                 merge_upstream_enabled: true,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_models: vec!["gpt-5.2-codex".to_string()],
             }),
         )
@@ -19004,6 +18853,7 @@ mod tests {
             Json(ProxyModelSettingsUpdateRequest {
                 hijack_enabled: true,
                 merge_upstream_enabled: false,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_models: vec!["gpt-5.2-codex".to_string()],
             }),
         )
@@ -19036,6 +18886,7 @@ mod tests {
             Json(ProxyModelSettingsUpdateRequest {
                 hijack_enabled: true,
                 merge_upstream_enabled: false,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_models: vec!["gpt-5.2-codex".to_string()],
             }),
         )
@@ -19082,6 +18933,7 @@ mod tests {
             Json(ProxyModelSettingsUpdateRequest {
                 hijack_enabled: true,
                 merge_upstream_enabled: false,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_models: vec!["gpt-5.2-codex".to_string()],
             }),
         )
@@ -19132,6 +18984,7 @@ mod tests {
             Json(ProxyModelSettingsUpdateRequest {
                 hijack_enabled: true,
                 merge_upstream_enabled: false,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_models: vec!["gpt-5.2-codex".to_string()],
             }),
         )
@@ -19166,6 +19019,7 @@ mod tests {
             Json(ProxyModelSettingsUpdateRequest {
                 hijack_enabled: true,
                 merge_upstream_enabled: false,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_models: vec!["gpt-5.2-codex".to_string()],
             }),
         )
@@ -19974,6 +19828,7 @@ mod tests {
             *settings = ProxyModelSettings {
                 hijack_enabled: true,
                 merge_upstream_enabled: false,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_preset_models: vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()],
             };
         }
@@ -20019,6 +19874,7 @@ mod tests {
             *settings = ProxyModelSettings {
                 hijack_enabled: true,
                 merge_upstream_enabled: false,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_preset_models: vec!["gpt-5.4".to_string(), "gpt-5.4-pro".to_string()],
             };
         }
@@ -20055,6 +19911,7 @@ mod tests {
             *settings = ProxyModelSettings {
                 hijack_enabled: true,
                 merge_upstream_enabled: true,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_preset_models: vec![
                     "gpt-5.2-codex".to_string(),
                     "gpt-5.1-codex-mini".to_string(),
@@ -20108,6 +19965,7 @@ mod tests {
             *settings = ProxyModelSettings {
                 hijack_enabled: true,
                 merge_upstream_enabled: true,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
             };
         }
@@ -20166,6 +20024,7 @@ mod tests {
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
                 hijack_enabled: true,
                 merge_upstream_enabled: true,
+                fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
                 enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
             })),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -20984,6 +20843,161 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_capture_target_fill_missing_rewrites_priority_for_responses() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedRow {
+            payload: Option<String>,
+        }
+
+        let (upstream_base, captured_requests, upstream_handle) =
+            spawn_capture_target_body_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        {
+            let mut settings = state.proxy_model_settings.write().await;
+            settings.fast_mode_rewrite_mode = ProxyFastModeRewriteMode::FillMissing;
+        }
+
+        let request_body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "stream": false,
+            "input": "hello"
+        }))
+        .expect("serialize request body");
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from(request_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let _response_body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read proxy response body");
+        let captured = captured_requests.lock().await;
+        let captured_request = captured
+            .first()
+            .cloned()
+            .expect("upstream should receive a request body");
+        drop(captured);
+        assert_eq!(captured_request["service_tier"], "priority");
+        assert!(captured_request.get("serviceTier").is_none());
+
+        let mut row: Option<PersistedRow> = None;
+        for _ in 0..20 {
+            row = sqlx::query_as::<_, PersistedRow>(
+                r#"
+                SELECT payload
+                FROM codex_invocations
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query capture record");
+            if row.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let row = row.expect("capture record should be persisted");
+        let payload_json: Value = serde_json::from_str(
+            row.payload
+                .as_deref()
+                .expect("capture payload should be present"),
+        )
+        .expect("decode capture payload");
+        assert_eq!(payload_json["requestedServiceTier"], "priority");
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn proxy_capture_target_force_priority_overrides_existing_chat_tier() {
+        #[derive(sqlx::FromRow)]
+        struct PersistedRow {
+            payload: Option<String>,
+        }
+
+        let (upstream_base, captured_requests, upstream_handle) =
+            spawn_capture_target_body_upstream().await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        {
+            let mut settings = state.proxy_model_settings.write().await;
+            settings.fast_mode_rewrite_mode = ProxyFastModeRewriteMode::ForcePriority;
+        }
+
+        let request_body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "stream": false,
+            "serviceTier": "flex",
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .expect("serialize request body");
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from(request_body),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let _response_body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read proxy response body");
+        let captured = captured_requests.lock().await;
+        let captured_request = captured
+            .first()
+            .cloned()
+            .expect("upstream should receive a request body");
+        drop(captured);
+        assert_eq!(captured_request["service_tier"], "priority");
+        assert!(captured_request.get("serviceTier").is_none());
+
+        let mut row: Option<PersistedRow> = None;
+        for _ in 0..20 {
+            row = sqlx::query_as::<_, PersistedRow>(
+                r#"
+                SELECT payload
+                FROM codex_invocations
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query capture record");
+            if row.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let row = row.expect("capture record should be persisted");
+        let payload_json: Value = serde_json::from_str(
+            row.payload
+                .as_deref()
+                .expect("capture payload should be present"),
+        )
+        .expect("decode capture payload");
+        assert_eq!(payload_json["requestedServiceTier"], "priority");
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
     async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         let (upstream_base, upstream_handle) = spawn_test_upstream().await;
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -21431,8 +21445,12 @@ mod tests {
             "messages": [{"role":"user","content":"hi"}]
         }))
         .expect("serialize request body");
-        let (rewritten, info, did_rewrite) =
-            prepare_target_request_body(ProxyCaptureTarget::ChatCompletions, body, true);
+        let (rewritten, info, did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::ChatCompletions,
+            body,
+            true,
+            DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+        );
         assert!(did_rewrite);
         assert!(info.is_stream);
         assert_eq!(info.model.as_deref(), Some("gpt-4o-mini"));
@@ -21456,25 +21474,161 @@ mod tests {
         }))
         .expect("serialize request body");
 
-        let (_rewritten, info, _did_rewrite) =
-            prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
+        let (_rewritten, info, _did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::Responses,
+            body,
+            true,
+            DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+        );
 
         assert_eq!(info.prompt_cache_key.as_deref(), Some("pck-from-body"));
     }
 
     #[test]
-    fn prepare_target_request_body_extracts_requested_service_tier() {
-        let body = serde_json::to_vec(&json!({
+    fn prepare_target_request_body_extracts_requested_service_tier_without_rewriting_when_disabled()
+    {
+        let expected = json!({
             "model": "gpt-5.3-codex",
             "serviceTier": " Priority ",
             "stream": false
+        });
+        let body = serde_json::to_vec(&expected).expect("serialize request body");
+
+        let (rewritten, info, did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::Responses,
+            body,
+            true,
+            DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+        );
+
+        assert!(!did_rewrite);
+        assert_eq!(info.requested_service_tier.as_deref(), Some("priority"));
+        let payload: Value = serde_json::from_slice(&rewritten).expect("decode body");
+        assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn prepare_target_request_body_fill_missing_injects_priority_for_responses() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "stream": false,
+            "input": "hi"
         }))
         .expect("serialize request body");
 
-        let (_rewritten, info, _did_rewrite) =
-            prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
+        let (rewritten, info, did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::Responses,
+            body,
+            true,
+            ProxyFastModeRewriteMode::FillMissing,
+        );
 
+        assert!(did_rewrite);
         assert_eq!(info.requested_service_tier.as_deref(), Some("priority"));
+        let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
+        assert_eq!(payload["service_tier"].as_str(), Some("priority"));
+        assert!(payload.get("serviceTier").is_none());
+    }
+
+    #[test]
+    fn prepare_target_request_body_force_priority_overrides_existing_alias() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "stream": true,
+            "messages": [{"role":"user","content":"hi"}],
+            "serviceTier": "default"
+        }))
+        .expect("serialize request body");
+
+        let (rewritten, info, did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::ChatCompletions,
+            body,
+            false,
+            ProxyFastModeRewriteMode::ForcePriority,
+        );
+
+        assert!(did_rewrite);
+        assert_eq!(info.requested_service_tier.as_deref(), Some("priority"));
+        let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
+        assert_eq!(payload["service_tier"].as_str(), Some("priority"));
+        assert!(payload.get("serviceTier").is_none());
+    }
+
+    #[test]
+    fn prepare_target_request_body_fill_missing_preserves_existing_tier() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "stream": false,
+            "service_tier": "flex"
+        }))
+        .expect("serialize request body");
+
+        let (rewritten, info, did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::Responses,
+            body,
+            true,
+            ProxyFastModeRewriteMode::FillMissing,
+        );
+
+        assert!(!did_rewrite);
+        assert_eq!(info.requested_service_tier.as_deref(), Some("flex"));
+        assert_eq!(
+            rewritten,
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.3-codex",
+                "stream": false,
+                "service_tier": "flex"
+            }))
+            .expect("serialize expected body")
+        );
+    }
+
+    #[test]
+    fn prepare_target_request_body_fill_missing_preserves_existing_alias_and_normalizes_field_name()
+    {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "stream": false,
+            "serviceTier": "flex"
+        }))
+        .expect("serialize request body");
+
+        let (rewritten, info, did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::Responses,
+            body,
+            true,
+            ProxyFastModeRewriteMode::FillMissing,
+        );
+
+        assert!(did_rewrite);
+        assert_eq!(info.requested_service_tier.as_deref(), Some("flex"));
+        let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
+        assert_eq!(payload["service_tier"].as_str(), Some("flex"));
+        assert!(payload.get("serviceTier").is_none());
+    }
+
+    #[test]
+    fn prepare_target_request_body_force_priority_overrides_existing_tier() {
+        let body = serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "stream": false,
+            "serviceTier": "flex",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .expect("serialize request body");
+
+        let (rewritten, info, did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::ChatCompletions,
+            body,
+            true,
+            ProxyFastModeRewriteMode::ForcePriority,
+        );
+
+        assert!(did_rewrite);
+        assert_eq!(info.requested_service_tier.as_deref(), Some("priority"));
+        let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
+        assert_eq!(payload["service_tier"], "priority");
+        assert!(payload.get("serviceTier").is_none());
     }
 
     #[test]
@@ -21488,8 +21642,12 @@ mod tests {
         }))
         .expect("serialize request body");
 
-        let (_rewritten, info, _did_rewrite) =
-            prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
+        let (_rewritten, info, _did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::Responses,
+            body,
+            true,
+            DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+        );
 
         assert_eq!(info.reasoning_effort.as_deref(), Some("high"));
     }
@@ -21504,8 +21662,12 @@ mod tests {
         }))
         .expect("serialize request body");
 
-        let (_rewritten, info, _did_rewrite) =
-            prepare_target_request_body(ProxyCaptureTarget::ChatCompletions, body, true);
+        let (_rewritten, info, _did_rewrite) = prepare_target_request_body(
+            ProxyCaptureTarget::ChatCompletions,
+            body,
+            true,
+            DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+        );
 
         assert_eq!(info.reasoning_effort.as_deref(), Some("medium"));
     }
@@ -22419,35 +22581,157 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persist_records_projects_service_tier_from_quota_records() {
+    async fn list_invocations_preserves_historical_xy_records() {
         let state = test_state_with_openai_base(
             Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         )
         .await;
 
-        let inserted = persist_records(
-            &state.pool,
-            &[CodexRecord {
-                request_id: "quota-service-tier-1".to_string(),
-                request_time: "2026-02-25 10:03:00".to_string(),
-                model: "gpt-5.3-codex".to_string(),
-                input_tokens: 12,
-                output_tokens: 4,
-                cache_input_tokens: 0,
-                reasoning_tokens: 0,
-                total_tokens: 16,
-                cost: 0.0042,
-                status: "success".to_string(),
-                error_message: String::new(),
-                service_tier: Some("priority".to_string()),
-            }],
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                total_tokens,
+                cost,
+                status,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind("xy-history-1")
+        .bind("2026-02-25 10:03:00")
+        .bind(SOURCE_XY)
+        .bind("gpt-5.3-codex")
+        .bind(16_i64)
+        .bind(0.0042_f64)
+        .bind("success")
+        .bind(r#"{"serviceTier":"priority"}"#)
+        .bind(r#"{"legacy":true}"#)
+        .execute(&state.pool)
+        .await
+        .expect("insert historical xy invocation");
+
+        let Json(response) = list_invocations(
+            State(state.clone()),
+            Query(ListQuery {
+                limit: Some(10),
+                model: None,
+                status: None,
+            }),
         )
         .await
-        .expect("persist records should succeed");
+        .expect("list invocations should keep historical xy rows");
 
-        assert_eq!(inserted.len(), 1);
-        assert_eq!(inserted[0].requested_service_tier, None);
-        assert_eq!(inserted[0].service_tier.as_deref(), Some("priority"));
+        let record = response
+            .records
+            .into_iter()
+            .find(|item| item.invoke_id == "xy-history-1")
+            .expect("historical xy row should be returned");
+        assert_eq!(record.source, SOURCE_XY);
+        assert_eq!(record.service_tier.as_deref(), Some("priority"));
+        assert_eq!(record.requested_service_tier, None);
+    }
+
+    #[tokio::test]
+    async fn stats_endpoints_preserve_historical_xy_records() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                total_tokens,
+                cost,
+                status,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind("xy-history-stats-1")
+        .bind(&occurred_at)
+        .bind(SOURCE_XY)
+        .bind(16_i64)
+        .bind(0.0042_f64)
+        .bind("success")
+        .bind(r#"{"serviceTier":"priority"}"#)
+        .bind(r#"{"legacy":true}"#)
+        .execute(&state.pool)
+        .await
+        .expect("insert historical xy stats row");
+
+        let Json(stats) = fetch_stats(State(state.clone()))
+            .await
+            .expect("fetch_stats should include historical xy rows");
+        assert_eq!(stats.total_count, 1);
+        assert_eq!(stats.success_count, 1);
+        assert_eq!(stats.failure_count, 0);
+        assert_eq!(stats.total_tokens, 16);
+        assert_f64_close(stats.total_cost, 0.0042);
+
+        let Json(summary) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: None,
+            }),
+        )
+        .await
+        .expect("fetch_summary should include historical xy rows");
+        assert_eq!(summary.total_count, 1);
+        assert_eq!(summary.success_count, 1);
+        assert_eq!(summary.failure_count, 0);
+        assert_eq!(summary.total_tokens, 16);
+        assert_f64_close(summary.total_cost, 0.0042);
+
+        let Json(timeseries) = fetch_timeseries(
+            State(state),
+            Query(TimeseriesQuery {
+                range: "1d".to_string(),
+                bucket: Some("1h".to_string()),
+                settlement_hour: None,
+                time_zone: None,
+            }),
+        )
+        .await
+        .expect("fetch_timeseries should include historical xy rows");
+        assert_eq!(
+            timeseries
+                .points
+                .iter()
+                .map(|point| point.total_count)
+                .sum::<i64>(),
+            1
+        );
+        assert_eq!(
+            timeseries
+                .points
+                .iter()
+                .map(|point| point.total_tokens)
+                .sum::<i64>(),
+            16
+        );
+        assert_f64_close(
+            timeseries
+                .points
+                .iter()
+                .map(|point| point.total_cost)
+                .sum::<f64>(),
+            0.0042,
+        );
     }
 
     #[test]
@@ -24223,6 +24507,32 @@ mod tests {
         assert_eq!(snapshot.total_cost, 0.0);
     }
 
+    #[tokio::test]
+    async fn quota_latest_returns_seeded_historical_snapshot() {
+        let state = test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let captured_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        seed_quota_snapshot(&state.pool, &captured_at).await;
+
+        let Json(snapshot) = latest_quota_snapshot(State(state))
+            .await
+            .expect("route should return seeded quota snapshot");
+
+        assert_eq!(snapshot.captured_at, captured_at);
+        let snapshot_json = serde_json::to_value(&snapshot).expect("serialize quota snapshot");
+        assert!(
+            snapshot_json["capturedAt"]
+                .as_str()
+                .is_some_and(|value| value.ends_with('Z')),
+            "serialized quota snapshot should emit UTC ISO timestamps"
+        );
+        assert!(snapshot.is_active);
+        assert_eq!(snapshot.total_requests, 9);
+        assert_f64_close(snapshot.total_cost, 10.0);
+    }
+
     async fn insert_timeseries_invocation(
         pool: &SqlitePool,
         invoke_id: &str,
@@ -25657,29 +25967,6 @@ async fn query_crs_deltas(
     .map_err(Into::into)
 }
 
-#[derive(Debug, Deserialize)]
-struct QuotaResponse {
-    #[allow(dead_code)]
-    code: i32,
-    data: Option<QuotaData>,
-}
-
-#[derive(Debug, Deserialize)]
-struct QuotaData {
-    codex: Option<ServiceQuota>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ServiceQuota {
-    #[serde(default)]
-    recent_records: Vec<CodexRecord>,
-    #[serde(default)]
-    current_usage: Option<CurrentUsage>,
-    #[serde(default)]
-    subscriptions: Option<Subscription>,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CrsStatsResponse {
@@ -25726,78 +26013,6 @@ struct CrsTotals {
     cost_output: f64,
     cost_cache_write: f64,
     cost_cache_read: f64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CurrentUsage {
-    #[serde(default)]
-    last_request_time: Option<String>,
-    #[serde(default)]
-    total_cost: f64,
-    #[serde(default)]
-    total_requests: i64,
-    #[serde(default)]
-    total_tokens: i64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Subscription {
-    #[serde(default)]
-    amount_limit: Option<f64>,
-    #[serde(default)]
-    billing_type: Option<String>,
-    #[serde(default)]
-    expire_time: Option<String>,
-    #[serde(default)]
-    id: Option<i64>,
-    #[serde(default)]
-    is_active: Option<bool>,
-    #[serde(default)]
-    limit: Option<f64>,
-    #[serde(default)]
-    period: Option<String>,
-    #[serde(default)]
-    period_reset_time: Option<String>,
-    #[serde(default)]
-    remaining_amount: Option<f64>,
-    #[serde(default)]
-    remaining_count: Option<i64>,
-    #[serde(default)]
-    sub_type_id: Option<i64>,
-    #[serde(default)]
-    sub_type_name: Option<String>,
-    #[serde(default)]
-    used_amount: Option<f64>,
-    #[serde(default)]
-    used_count: Option<i64>,
-}
-
-#[derive(Debug)]
-struct QuotaFetch {
-    records: Vec<CodexRecord>,
-    usage: Option<CurrentUsage>,
-    subscription: Option<Subscription>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CodexRecord {
-    request_id: String,
-    request_time: String,
-    model: String,
-    input_tokens: i64,
-    output_tokens: i64,
-    cache_input_tokens: i64,
-    reasoning_tokens: i64,
-    total_tokens: i64,
-    cost: f64,
-    status: String,
-    #[serde(default)]
-    error_message: String,
-    #[serde(default, alias = "service_tier")]
-    service_tier: Option<String>,
 }
 
 #[derive(Debug)]

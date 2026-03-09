@@ -91,7 +91,6 @@ labels:
 - `PROXY_USAGE_BACKFILL_ON_STARTUP`：兼容保留的历史补数开关说明；当前版本的历史补数已经改为后台有界执行，不再阻塞 readiness。
 - `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：上游握手超时（默认 `300` 秒，建议内网链路可降到 `120` 秒）。
 - `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`：请求体读取总超时（默认 `180` 秒；超时返回 `408`）。
-- `XY_LEGACY_POLL_ENABLED`：legacy 轮询写入开关（默认关闭；开启后会并行写入旧来源统计）。
 - `XY_RETENTION_ENABLED`：是否启用后台 retention/archive 维护任务，默认 `false`，上线时需要显式开启。
 - `XY_RETENTION_DRY_RUN`：全局 dry-run 开关；开启后 maintenance 只输出计划与计数，不删除数据。
 - `XY_RETENTION_INTERVAL_SECS`：常驻 maintenance 执行间隔；默认按小时调度。
@@ -108,7 +107,8 @@ labels:
 
 统计接口行为：
 
-- `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries` 默认合并 `xy + proxy` 全部来源。
+- `GET /api/quota/latest`：读取数据库里最近一条历史 quota snapshot；本服务不再从外部 XYAI 上游抓取新 quota。
+- `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries` 默认合并数据库中的历史 `xy`、当前 `proxy`，以及启用时的 `crs` 来源。
 - `GET /api/stats/perf` 返回代理链路阶段耗时聚合统计。
 - `/api/invocations` 会额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记当前在线记录是否仍保留完整原始细节。
 - `GET /api/stats` 与 `GET /api/stats/summary?window=all` 会合并在线明细与 `invocation_rollup_daily`，确保 archive/purge 后 totals 保持一致。
