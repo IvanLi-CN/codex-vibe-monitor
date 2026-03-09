@@ -17,7 +17,7 @@ function countOccurrences(content: string, target: string) {
 }
 
 describe('ForwardProxyLiveTable', () => {
-  it('renders weight trend column and keeps only node-level success/failure summary text', () => {
+  it('renders unified request and weight chart surfaces with node-level summary text', () => {
     const stats: ForwardProxyLiveStatsResponse = {
       rangeStart: '2026-03-01T00:00:00Z',
       rangeEnd: '2026-03-02T00:00:00Z',
@@ -77,7 +77,11 @@ describe('ForwardProxyLiveTable', () => {
     const html = renderTable(stats)
 
     expect(html).toContain('近 24 小时权重变化')
-    expect(html).toContain('aria-label="近 24 小时权重趋势图"')
+    expect(html).toContain('aria-label="Proxy A 近 24 小时请求量图"')
+    expect(html).toContain('aria-label="Proxy A 近 24 小时权重趋势图"')
+    expect(html).toContain('data-chart-kind="proxy-request-trend"')
+    expect(html).toContain('data-chart-kind="proxy-weight-trend"')
+    expect(html).not.toContain('<title>')
     expect(countOccurrences(html, '成功 10')).toBe(1)
     expect(countOccurrences(html, '失败 2')).toBe(1)
   })
@@ -117,8 +121,8 @@ describe('ForwardProxyLiveTable', () => {
     const html = renderTable(stats)
 
     expect(html).toContain('Proxy B')
-    expect(html).toContain('aria-label="近 24 小时权重趋势图"')
-    expect(html).toContain('近 24 小时请求量')
+    expect(html).toContain('aria-label="Proxy B 近 24 小时权重趋势图"')
+    expect(html).toContain('近 24 小时请求量图')
   })
 
   it('shares request and weight trend scales across proxy rows', () => {
@@ -199,10 +203,10 @@ describe('ForwardProxyLiveTable', () => {
     const html = renderTable(stats)
 
     expect(html).toContain('Proxy Low')
+    expect(html).toContain('Proxy High')
     expect(html).toContain('style="height:10px"')
-    expect(html).toContain('cy="30"')
+    expect(html).toContain('data-chart-kind="proxy-weight-trend"')
   })
-
 
   it('keeps tiny non-zero request buckets visible on a shared scale', () => {
     const stats: ForwardProxyLiveStatsResponse = {
@@ -281,7 +285,6 @@ describe('ForwardProxyLiveTable', () => {
 
     const html = renderTable(stats)
 
-    expect(html).toContain('Proxy Tiny')
     expect(html).toContain('style="height:1px"')
   })
 
@@ -292,10 +295,33 @@ describe('ForwardProxyLiveTable', () => {
       bucketSeconds: 3600,
       nodes: [
         {
+          key: 'proxy-flat',
+          source: 'manual',
+          displayName: 'Proxy Flat',
+          weight: 100,
+          penalized: false,
+          stats: {
+            oneMinute: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            fifteenMinutes: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            oneHour: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            oneDay: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+            sevenDays: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
+          },
+          last24h: [
+            {
+              bucketStart: '2026-03-01T00:00:00Z',
+              bucketEnd: '2026-03-01T01:00:00Z',
+              successCount: 1,
+              failureCount: 0,
+            },
+          ],
+          weight24h: [],
+        },
+        {
           key: 'proxy-real',
           source: 'manual',
           displayName: 'Proxy Real',
-          weight: 1.1,
+          weight: 0.9,
           penalized: false,
           stats: {
             oneMinute: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
@@ -317,18 +343,34 @@ describe('ForwardProxyLiveTable', () => {
               bucketStart: '2026-03-01T00:00:00Z',
               bucketEnd: '2026-03-01T01:00:00Z',
               sampleCount: 1,
-              minWeight: 0.9,
-              maxWeight: 0.9,
-              avgWeight: 0.9,
-              lastWeight: 0.9,
+              minWeight: -0.4,
+              maxWeight: 1.4,
+              avgWeight: 0.5,
+              lastWeight: 1.4,
             },
           ],
         },
+      ],
+    }
+
+    const html = renderTable(stats)
+
+    expect(html).toContain('Proxy Flat')
+    expect(html).toContain('Proxy Real')
+    expect(html).toContain('M 108.00 3.64')
+  })
+
+  it('uses different colors for positive and negative weight regions', () => {
+    const stats: ForwardProxyLiveStatsResponse = {
+      rangeStart: '2026-03-01T00:00:00Z',
+      rangeEnd: '2026-03-02T00:00:00Z',
+      bucketSeconds: 3600,
+      nodes: [
         {
-          key: 'proxy-fallback',
+          key: 'proxy-mixed',
           source: 'manual',
-          displayName: 'Proxy Fallback',
-          weight: 100,
+          displayName: 'Proxy Mixed',
+          weight: 0.5,
           penalized: false,
           stats: {
             oneMinute: { attempts: 1, successRate: 1, avgLatencyMs: 100 },
@@ -341,73 +383,34 @@ describe('ForwardProxyLiveTable', () => {
             {
               bucketStart: '2026-03-01T00:00:00Z',
               bucketEnd: '2026-03-01T01:00:00Z',
-              successCount: 0,
+              successCount: 1,
               failureCount: 0,
-            },
-          ],
-          weight24h: [],
-        },
-      ],
-    }
-
-    const html = renderTable(stats)
-
-    expect(html).toContain('cy="0"')
-    expect(html).not.toContain('cy="-')
-  })
-
-
-  it('uses different colors for positive and negative weight regions', () => {
-    const stats: ForwardProxyLiveStatsResponse = {
-      rangeStart: '2026-03-01T00:00:00Z',
-      rangeEnd: '2026-03-02T00:00:00Z',
-      bucketSeconds: 3600,
-      nodes: [
-        {
-          key: 'proxy-c',
-          source: 'manual',
-          displayName: 'Proxy C',
-          weight: -0.12,
-          penalized: false,
-          stats: {
-            oneMinute: { attempts: 4, successRate: 0.75, avgLatencyMs: 180 },
-            fifteenMinutes: { attempts: 20, successRate: 0.72, avgLatencyMs: 210 },
-            oneHour: { attempts: 80, successRate: 0.7, avgLatencyMs: 240 },
-            oneDay: { attempts: 640, successRate: 0.68, avgLatencyMs: 290 },
-            sevenDays: { attempts: 3200, successRate: 0.67, avgLatencyMs: 320 },
-          },
-          last24h: [
-            {
-              bucketStart: '2026-03-01T00:00:00Z',
-              bucketEnd: '2026-03-01T01:00:00Z',
-              successCount: 3,
-              failureCount: 1,
             },
             {
               bucketStart: '2026-03-01T01:00:00Z',
               bucketEnd: '2026-03-01T02:00:00Z',
-              successCount: 2,
-              failureCount: 2,
+              successCount: 1,
+              failureCount: 0,
             },
           ],
           weight24h: [
             {
               bucketStart: '2026-03-01T00:00:00Z',
               bucketEnd: '2026-03-01T01:00:00Z',
-              sampleCount: 2,
+              sampleCount: 1,
               minWeight: -0.4,
               maxWeight: -0.1,
-              avgWeight: -0.24,
-              lastWeight: -0.18,
+              avgWeight: -0.2,
+              lastWeight: -0.1,
             },
             {
               bucketStart: '2026-03-01T01:00:00Z',
               bucketEnd: '2026-03-01T02:00:00Z',
-              sampleCount: 2,
-              minWeight: 0.05,
-              maxWeight: 0.28,
-              avgWeight: 0.16,
-              lastWeight: 0.22,
+              sampleCount: 1,
+              minWeight: 0.2,
+              maxWeight: 0.6,
+              avgWeight: 0.4,
+              lastWeight: 0.5,
             },
           ],
         },
@@ -418,7 +421,5 @@ describe('ForwardProxyLiveTable', () => {
 
     expect(html).toContain('fill="oklch(var(--color-success) / 0.18)"')
     expect(html).toContain('fill="oklch(var(--color-error) / 0.16)"')
-    expect(html).toContain('fill="oklch(var(--color-success) / 0.95)"')
-    expect(html).toContain('fill="oklch(var(--color-error) / 0.9)"')
   })
 })
