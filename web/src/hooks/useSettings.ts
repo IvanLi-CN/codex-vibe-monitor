@@ -74,7 +74,8 @@ export function useSettings() {
       const normalizedProxy = {
         hijackEnabled: nextProxy.hijackEnabled,
         mergeUpstreamEnabled: nextProxy.hijackEnabled ? nextProxy.mergeUpstreamEnabled : false,
-        enabledModels: nextProxy.enabledModels,
+        enabledModels: nextProxy.models.filter((candidate) => nextProxy.enabledModels.includes(candidate)),
+        fastModeRewriteMode: nextProxy.fastModeRewriteMode,
       }
       setSettings((current) => {
         if (!current) return current

@@ -6,40 +6,42 @@
 
 ## Index
 
-| ID    | Title                                                                     | Status          | Spec                                                     | Last       | Notes                              |
-| ----- | ------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------- |
-| 9aucy | 数据分层保留、离线归档与长周期汇总                                        | 已完成          | `9aucy-db-retention-archive/SPEC.md`                     | 2026-03-08 | fast-track / PR #96                |
-| jk3hm | Live 小图表悬浮详情统一升级                                               | 已完成（5/5）   | `jk3hm-live-chart-hover-tooltips/SPEC.md`                | 2026-03-09 | fast-track / PR #97 / linked sync  |
-| ww6et | 请求侧 Fast 情报与中性闪电标识                                            | 已完成（5/5）   | `ww6et-requested-fast-intel-neutral-bolt/SPEC.md`        | 2026-03-08 | fast-track / PR #95 / checks green |
-| hbqe3 | InvocationTable 推理强度徽标色阶优化                                      | 已完成（4/4）   | `hbqe3-invocation-reasoning-effort-badge-colors/SPEC.md` | 2026-03-07 | fast-track / PR #94 / checks green |
-| rw32e | 请求列表 Fast 模式标识（service tier 版）                                 | 已完成（5/5）   | `rw32e-invocation-fast-mode-indicator/SPEC.md`           | 2026-03-07 | fast-track / PR #93 / checks green |
-| rupn7 | InvocationTable 推理强度与详情 reasoningTokens                            | 已完成          | `rupn7-invocation-table-reasoning-effort/SPEC.md`        | 2026-03-07 | fast-track / PR #92                |
-| xvdhm | Dashboard SSE 更新链路优化                                                | 已完成（6/6）   | `xvdhm-dashboard-sse-refresh-optimization/SPEC.md`       | 2026-03-07 | fast-track / PR #90                |
-| 7272y | 内置 GPT-5.4 系列计费规则与下游模型列表                                   | 已完成（4/4）   | `7272y-gpt-5-4-pricing/SPEC.md`                          | 2026-03-06 | fast-track / PR #89                |
-| rzxey | Dashboard：修复 UsageCalendar 加载骨架右偏 + 首行骨架按真实两卡布局       | 已完成（5/5）   | `rzxey-dashboard-usage-calendar-skeleton-shift/SPEC.md`  | 2026-03-05 | fast-track / PR #88                |
-| 4kkpp | Live 对话统计（按 Prompt Cache Key）— 无统计表方案（索引 + 轻缓存）       | 已完成（5/5）   | `4kkpp-live-prompt-cache-conversations/SPEC.md`          | 2026-03-03 | fast-track                         |
-| hrvtt | 请求详情补齐代理信息与本次权重变化                                        | 已完成（4/4）   | `hrvtt-invocation-proxy-weight-delta/SPEC.md`            | 2026-03-02 | fast-track                         |
-| t7m4h | Live 代理运行态：新增 24h 权重趋势列与断点适配                            | 已完成（5/5）   | `t7m4h-live-proxy-weight-trend/SPEC.md`                  | 2026-03-02 | fast-track / PR #83                |
-| rkc7k | 修复 Live 实时统计闪烁与数字滚动被打断                                    | 已完成（6/6）   | `rkc7k-live-summary-flicker-fix/SPEC.md`                 | 2026-03-02 | fast-track / PR #80                |
-| c58kc | 实况页新增“代理”统计表与 24h 成败示意图                                   | 已完成（5/5）   | `c58kc-live-forward-proxy-table/SPEC.md`                 | 2026-03-02 | fast-track / PR #77                |
-| wv3m7 | Forward Proxy 新增后异步首轮探测补齐                                      | 已完成（3/3）   | `wv3m7-forward-proxy-bootstrap-probe/SPEC.md`            | 2026-03-02 | fast-track                         |
-| r8m3k | InvocationTable 响应式修复：lg+ 无横向滚动、sm 及以下列表化               | 已完成（5/5）   | `r8m3k-invocation-table-responsive-no-overflow/SPEC.md`  | 2026-03-02 | fast-track / PR #79                |
-| k52tw | Forward proxy 验证放宽：404 视为可达（proxyUrl + subscriptionUrl）        | 已完成（3/3）   | `k52tw-forward-proxy-validation-allow-404/SPEC.md`       | 2026-03-01 | fast-track / hotfix                |
-| zanzr | Release 构建加速：arm64 迁移到 GitHub-hosted ARM runner                   | 部分完成（3/4） | `zanzr-release-arm64-native-runner/SPEC.md`              | 2026-03-01 | fast-track                         |
-| wtwsn | GHCR 发布切换多架构 manifest（amd64 + arm64）                             | 已完成（5/5）   | `wtwsn-ghcr-multiarch-release-manifest/SPEC.md`          | 2026-03-01 | fast-track / hotfix                |
-| m96jw | 修复订阅验证路径下 xray 运行目录缺失导致添加失败                          | 已完成（3/3）   | `m96jw-subscription-validation-xray-runtime-dir/SPEC.md` | 2026-03-01 | PR #71 / fast-track                |
-| c5yag | 订阅验证超时改为 60 秒（单条验证保持 5 秒）                               | 已完成（3/3）   | `c5yag-subscription-validation-timeout-60/SPEC.md`       | 2026-03-01 | fast-track                         |
-| 9anzf | Docker 镜像内置 Xray-core（xray）以支持订阅代理验证                       | 部分完成（2/3） | `9anzf-bundle-xray-in-image/SPEC.md`                     | 2026-03-01 | hotfix                             |
-| vdukd | 修复 GHCR 镜像 GLIBC 漂移导致 bookworm runtime 启动失败                   | 已完成（3/3）   | `vdukd-ghcr-glibc-drift-fix/SPEC.md`                     | 2026-03-01 | fast-track / hotfix                |
-| 9mbsz | Release 前 Docker Smoke Gate（Push 镜像前先验证）                         | 已完成          | `9mbsz-release-docker-smoke-gate/SPEC.md`                | 2026-03-01 | PR #66 / fast-track                |
-| zrxcd | Sticky Footer 修复：页脚在短页面贴底                                      | 已完成          | `zrxcd-sticky-footer-layout/SPEC.md`                     | 2026-03-01 | PR #65 / fast-track                |
-| ykn4w | 日期后缀模型成本回退与历史空成本补算                                      | 已完成          | `ykn4w-pricing-alias-backfill/SPEC.md`                   | 2026-02-28 | fast-track                         |
-| 8dun3 | 统计页成功/失败图增加首字耗时折线与悬浮统计（均值 + P95）                 | 已完成          | `8dun3-stats-success-failure-ttfb/SPEC.md`               | 2026-02-27 | PR #61                             |
-| 67acu | 修复更新提示可读性（更新横幅 + 同类透明度语义 + 可访问性回归）            | 已完成          | `67acu-update-banner-readability/SPEC.md`                | 2026-02-27 | 补按钮交互回归断言                 |
-| 26knq | 修复 InvocationTable 异常横向滚动并补 E2E 回归                            | 已完成          | `26knq-invocation-table-overflow/SPEC.md`                | 2026-02-26 | PR #56 / fast-track                |
-| s8d2w | Dashboard 顶部替换“配额概览”为“今日统计信息”（Bento）                     | 已完成          | `s8d2w-dashboard-today-stats-bento/SPEC.md`              | 2026-02-26 | PR #58                             |
-| 5932d | SSE 驱动的请求记录与统计实时更新                                          | 已完成          | `5932d-sse-proxy-live-sync/SPEC.md`                      | 2026-02-25 | PR #52                             |
-| jpg66 | 设置页切换为 shadcn 风格并优化亮/暗主题可读性                             | 已完成          | `jpg66-settings-shadcn-refresh/SPEC.md`                  | 2026-02-25 | 已完成并通过视觉确认               |
-| q86c7 | 接入 ui-ux-pro-max（Codex）并修正 .gitignore 追踪策略                     | 已完成          | `q86c7-setup-uipro-codex/SPEC.md`                        | 2026-02-24 | PR #50                             |
-| gwpsb | 线上失败请求分类治理与可观测性增强                                        | 已完成          | `gwpsb-proxy-failure-hardening/SPEC.md`                  | 2026-02-24 | PR #51                             |
-| z9h7v | 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key） | 已完成          | `z9h7v-invocation-log-observability/SPEC.md`             | 2026-02-25 | PR #57                             |
+| ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                               |
+| ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ----------------------------------- |
+| 2uaxk | 移除 XYAI 采集，仅保留历史读取                                                | 已完成（4/4）   | `2uaxk-remove-xyai-legacy-ingest/SPEC.md`                | 2026-03-09 | PR #101 / CI + review-loop          |
+| dvwja | 反向代理 Fast 模式请求改写（三态设置，`requestedServiceTier`=上游实际请求值） | 已完成（4/4）   | `dvwja-proxy-fast-mode-request-rewrite/SPEC.md`          | 2026-03-09 | fast-track / PR #102 / checks green |
+| 9aucy | 数据分层保留、离线归档与长周期汇总                                            | 已完成          | `9aucy-db-retention-archive/SPEC.md`                     | 2026-03-08 | fast-track / PR #96 / detail view   |
+| jk3hm | Live 小图表悬浮详情统一升级                                                   | 已完成（5/5）   | `jk3hm-live-chart-hover-tooltips/SPEC.md`                | 2026-03-09 | fast-track / PR #97 / linked sync   |
+| ww6et | 请求侧 Fast 情报与中性闪电标识                                                | 已完成（5/5）   | `ww6et-requested-fast-intel-neutral-bolt/SPEC.md`        | 2026-03-08 | fast-track / PR #95 / checks green  |
+| hbqe3 | InvocationTable 推理强度徽标色阶优化                                          | 已完成（4/4）   | `hbqe3-invocation-reasoning-effort-badge-colors/SPEC.md` | 2026-03-07 | fast-track / PR #94 / checks green  |
+| rw32e | 请求列表 Fast 模式标识（service tier 版）                                     | 已完成（5/5）   | `rw32e-invocation-fast-mode-indicator/SPEC.md`           | 2026-03-07 | fast-track / PR #93 / checks green  |
+| rupn7 | InvocationTable 推理强度与详情 reasoningTokens                                | 已完成          | `rupn7-invocation-table-reasoning-effort/SPEC.md`        | 2026-03-07 | fast-track / PR #92                 |
+| xvdhm | Dashboard SSE 更新链路优化                                                    | 已完成（6/6）   | `xvdhm-dashboard-sse-refresh-optimization/SPEC.md`       | 2026-03-07 | fast-track / PR #90                 |
+| 7272y | 内置 GPT-5.4 系列计费规则与下游模型列表                                       | 已完成（4/4）   | `7272y-gpt-5-4-pricing/SPEC.md`                          | 2026-03-06 | fast-track / PR #89                 |
+| rzxey | Dashboard：修复 UsageCalendar 加载骨架右偏 + 首行骨架按真实两卡布局           | 已完成（5/5）   | `rzxey-dashboard-usage-calendar-skeleton-shift/SPEC.md`  | 2026-03-05 | fast-track / PR #88                 |
+| 4kkpp | Live 对话统计（按 Prompt Cache Key）— 无统计表方案（索引 + 轻缓存）           | 已完成（5/5）   | `4kkpp-live-prompt-cache-conversations/SPEC.md`          | 2026-03-03 | fast-track                          |
+| hrvtt | 请求详情补齐代理信息与本次权重变化                                            | 已完成（4/4）   | `hrvtt-invocation-proxy-weight-delta/SPEC.md`            | 2026-03-02 | fast-track                          |
+| t7m4h | Live 代理运行态：新增 24h 权重趋势列与断点适配                                | 已完成（5/5）   | `t7m4h-live-proxy-weight-trend/SPEC.md`                  | 2026-03-02 | fast-track / PR #83                 |
+| rkc7k | 修复 Live 实时统计闪烁与数字滚动被打断                                        | 已完成（6/6）   | `rkc7k-live-summary-flicker-fix/SPEC.md`                 | 2026-03-02 | fast-track / PR #80                 |
+| c58kc | 实况页新增“代理”统计表与 24h 成败示意图                                       | 已完成（5/5）   | `c58kc-live-forward-proxy-table/SPEC.md`                 | 2026-03-02 | fast-track / PR #77                 |
+| wv3m7 | Forward Proxy 新增后异步首轮探测补齐                                          | 已完成（3/3）   | `wv3m7-forward-proxy-bootstrap-probe/SPEC.md`            | 2026-03-02 | fast-track                          |
+| r8m3k | InvocationTable 响应式修复：lg+ 无横向滚动、sm 及以下列表化                   | 已完成（5/5）   | `r8m3k-invocation-table-responsive-no-overflow/SPEC.md`  | 2026-03-02 | fast-track / PR #79                 |
+| k52tw | Forward proxy 验证放宽：404 视为可达（proxyUrl + subscriptionUrl）            | 已完成（3/3）   | `k52tw-forward-proxy-validation-allow-404/SPEC.md`       | 2026-03-01 | fast-track / hotfix                 |
+| zanzr | Release 构建加速：arm64 迁移到 GitHub-hosted ARM runner                       | 部分完成（3/4） | `zanzr-release-arm64-native-runner/SPEC.md`              | 2026-03-01 | fast-track                          |
+| wtwsn | GHCR 发布切换多架构 manifest（amd64 + arm64）                                 | 已完成（5/5）   | `wtwsn-ghcr-multiarch-release-manifest/SPEC.md`          | 2026-03-01 | fast-track / hotfix                 |
+| m96jw | 修复订阅验证路径下 xray 运行目录缺失导致添加失败                              | 已完成（3/3）   | `m96jw-subscription-validation-xray-runtime-dir/SPEC.md` | 2026-03-01 | PR #71 / fast-track                 |
+| c5yag | 订阅验证超时改为 60 秒（单条验证保持 5 秒）                                   | 已完成（3/3）   | `c5yag-subscription-validation-timeout-60/SPEC.md`       | 2026-03-01 | fast-track                          |
+| 9anzf | Docker 镜像内置 Xray-core（xray）以支持订阅代理验证                           | 部分完成（2/3） | `9anzf-bundle-xray-in-image/SPEC.md`                     | 2026-03-01 | hotfix                              |
+| vdukd | 修复 GHCR 镜像 GLIBC 漂移导致 bookworm runtime 启动失败                       | 已完成（3/3）   | `vdukd-ghcr-glibc-drift-fix/SPEC.md`                     | 2026-03-01 | fast-track / hotfix                 |
+| 9mbsz | Release 前 Docker Smoke Gate（Push 镜像前先验证）                             | 已完成          | `9mbsz-release-docker-smoke-gate/SPEC.md`                | 2026-03-01 | PR #66 / fast-track                 |
+| zrxcd | Sticky Footer 修复：页脚在短页面贴底                                          | 已完成          | `zrxcd-sticky-footer-layout/SPEC.md`                     | 2026-03-01 | PR #65 / fast-track                 |
+| ykn4w | 日期后缀模型成本回退与历史空成本补算                                          | 已完成          | `ykn4w-pricing-alias-backfill/SPEC.md`                   | 2026-02-28 | fast-track                          |
+| 8dun3 | 统计页成功/失败图增加首字耗时折线与悬浮统计（均值 + P95）                     | 已完成          | `8dun3-stats-success-failure-ttfb/SPEC.md`               | 2026-02-27 | PR #61                              |
+| 67acu | 修复更新提示可读性（更新横幅 + 同类透明度语义 + 可访问性回归）                | 已完成          | `67acu-update-banner-readability/SPEC.md`                | 2026-02-27 | 补按钮交互回归断言                  |
+| 26knq | 修复 InvocationTable 异常横向滚动并补 E2E 回归                                | 已完成          | `26knq-invocation-table-overflow/SPEC.md`                | 2026-02-26 | PR #56 / fast-track                 |
+| s8d2w | Dashboard 顶部替换“配额概览”为“今日统计信息”（Bento）                         | 已完成          | `s8d2w-dashboard-today-stats-bento/SPEC.md`              | 2026-02-26 | PR #58                              |
+| 5932d | SSE 驱动的请求记录与统计实时更新                                              | 已完成          | `5932d-sse-proxy-live-sync/SPEC.md`                      | 2026-02-25 | PR #52                              |
+| jpg66 | 设置页切换为 shadcn 风格并优化亮/暗主题可读性                                 | 已完成          | `jpg66-settings-shadcn-refresh/SPEC.md`                  | 2026-02-25 | 已完成并通过视觉确认                |
+| q86c7 | 接入 ui-ux-pro-max（Codex）并修正 .gitignore 追踪策略                         | 已完成          | `q86c7-setup-uipro-codex/SPEC.md`                        | 2026-02-24 | PR #50                              |
+| gwpsb | 线上失败请求分类治理与可观测性增强                                            | 已完成          | `gwpsb-proxy-failure-hardening/SPEC.md`                  | 2026-02-24 | PR #51                              |
+| z9h7v | 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key）     | 已完成          | `z9h7v-invocation-log-observability/SPEC.md`             | 2026-02-25 | PR #57                              |
