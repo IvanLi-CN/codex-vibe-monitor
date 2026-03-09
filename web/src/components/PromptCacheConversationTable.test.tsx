@@ -13,7 +13,7 @@ function renderTable(stats: PromptCacheConversationsResponse) {
 }
 
 describe('PromptCacheConversationTable', () => {
-  it('renders conversation metrics and 24h chart segments', () => {
+  it('renders conversation metrics and unified 24h sparkline surfaces', () => {
     const stats: PromptCacheConversationsResponse = {
       rangeStart: '2026-03-02T00:00:00Z',
       rangeEnd: '2026-03-03T00:00:00Z',
@@ -52,6 +52,9 @@ describe('PromptCacheConversationTable', () => {
     expect(html).toContain('24h Token 累计')
     expect(html).toContain('sm:hidden')
     expect(html).toContain('sm:table')
+    expect(html).toContain('data-chart-kind="prompt-cache-sparkline"')
+    expect(html).toContain('aria-label="pck-chat-001 24 小时 Token 累计图"')
+    expect(html).not.toContain('<title>')
     expect(html).toContain('stroke="oklch(var(--color-success) / 0.95)"')
     expect(html).toContain('stroke="oklch(var(--color-error) / 0.92)"')
   })
@@ -100,10 +103,9 @@ describe('PromptCacheConversationTable', () => {
 
     const html = renderTable(stats)
 
-    expect(html).toContain('aria-label="pck-low"')
+    expect(html).toContain('aria-label="pck-low 24 小时 Token 累计图"')
     expect(html).toContain('y1="24"')
   })
-
 
   it('ignores malformed timestamps when computing the shared chart scale', () => {
     const stats: PromptCacheConversationsResponse = {
@@ -156,10 +158,9 @@ describe('PromptCacheConversationTable', () => {
 
     const html = renderTable(stats)
 
-    expect(html).toContain('aria-label="pck-low-valid"')
+    expect(html).toContain('aria-label="pck-low-valid 24 小时 Token 累计图"')
     expect(html).toContain('y1="24"')
   })
-
 
   it('renders empty state when there are no conversations', () => {
     const stats: PromptCacheConversationsResponse = {

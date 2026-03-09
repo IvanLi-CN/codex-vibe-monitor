@@ -232,3 +232,18 @@ export const SharedScaleComparison: Story = {
   },
 }
 
+export const TooltipEdgeDensity: Story = {
+  args: {
+    stats,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Hover or tap the final token segment to verify the shared tooltip flips inward near the right table edge without clipping.',
+      },
+    },
+  },
+}

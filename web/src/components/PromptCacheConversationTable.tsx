@@ -6,6 +6,7 @@ import type {
   PromptCacheConversationsResponse,
 } from '../lib/api'
 import { Alert } from './ui/alert'
+import { InlineChartTooltipSurface, type InlineChartTooltipData } from './ui/inline-chart-tooltip'
 import { Spinner } from './ui/spinner'
 
 interface PromptCacheConversationTableProps {
@@ -144,7 +145,7 @@ function buildGeometry(
   }
 }
 
-function chartTooltip(
+function buildConversationTooltipData(
   point: PromptCacheConversationRequestPoint,
   localeTag: string,
   labels: {
@@ -152,19 +153,27 @@ function chartTooltip(
     requestTokens: string
     cumulativeTokens: string
   },
-) {
+  numberFormatter: Intl.NumberFormat,
+): InlineChartTooltipData {
   const occurredAt = new Date(point.occurredAt)
   const timeLabel = Number.isNaN(occurredAt.getTime())
     ? point.occurredAt
     : occurredAt.toLocaleString(localeTag, {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    })
-  return `${timeLabel}\n${labels.status}: ${point.status}\n${labels.requestTokens}: ${point.requestTokens}\n${labels.cumulativeTokens}: ${point.cumulativeTokens}`
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      })
+  return {
+    title: timeLabel,
+    rows: [
+      { label: labels.status, value: point.status, tone: point.isSuccess ? 'success' : 'error' },
+      { label: labels.requestTokens, value: numberFormatter.format(point.requestTokens), tone: 'accent' },
+      { label: labels.cumulativeTokens, value: numberFormatter.format(point.cumulativeTokens), tone: point.isSuccess ? 'success' : 'error' },
+    ],
+  }
 }
 
 function ConversationSparkline({
@@ -174,6 +183,8 @@ function ConversationSparkline({
   maxCumulativeTokens,
   localeTag,
   tooltipLabels,
+  interactionHint,
+  ariaLabel,
 }: {
   conversation: PromptCacheConversation
   rangeStart: string
@@ -185,67 +196,112 @@ function ConversationSparkline({
     requestTokens: string
     cumulativeTokens: string
   }
+  interactionHint: string
+  ariaLabel: string
 }) {
   const geometry = useMemo(
     () => buildGeometry(conversation.last24hRequests, rangeStart, rangeEnd, maxCumulativeTokens),
     [conversation.last24hRequests, maxCumulativeTokens, rangeEnd, rangeStart],
+  )
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
+  const tooltipData = useMemo(
+    () =>
+      geometry?.segments.map((segment) => buildConversationTooltipData(segment.point, localeTag, tooltipLabels, numberFormatter)) ?? [],
+    [geometry?.segments, localeTag, numberFormatter, tooltipLabels],
   )
 
   if (!geometry) {
     return <div className="text-[11px] text-base-content/55">{FALLBACK_CELL}</div>
   }
 
+  const defaultIndex = Math.max(0, geometry.segments.length - 1)
+
   return (
-    <div className="h-12">
-      <svg
-        viewBox={`0 0 ${geometry.width} ${geometry.height}`}
-        className="h-11 w-full rounded-md border border-base-300/55 bg-base-100/35"
-        role="img"
-        aria-label={conversation.promptCacheKey}
-      >
-        <line
-          x1={0}
-          y1={geometry.height}
-          x2={geometry.width}
-          y2={geometry.height}
-          stroke="oklch(var(--color-base-content) / 0.16)"
-          strokeWidth="1"
-        />
-        {geometry.jumps.map((jump, index) => (
-          <line
-            key={`jump-${index}`}
-            x1={jump.x}
-            y1={jump.y1}
-            x2={jump.x}
-            y2={jump.y2}
-            stroke="oklch(var(--color-base-content) / 0.28)"
-            strokeWidth="1"
-          />
-        ))}
-        {geometry.segments.map((segment, index) => (
-          <g key={`${conversation.promptCacheKey}-segment-${index}`}>
+    <InlineChartTooltipSurface
+      items={tooltipData}
+      defaultIndex={defaultIndex}
+      ariaLabel={ariaLabel}
+      interactionHint={interactionHint}
+      className="h-12 py-0.5"
+      chartClassName="h-12"
+    >
+      {({ activeIndex, getItemProps }) => {
+        const activeSegment = activeIndex != null ? geometry.segments[activeIndex] : null
+        return (
+          <svg
+            viewBox={`0 0 ${geometry.width} ${geometry.height}`}
+            className="h-11 w-full rounded-md border border-base-300/55 bg-base-100/35"
+            data-chart-kind="prompt-cache-sparkline"
+          >
             <line
-              x1={segment.x1}
-              y1={segment.y}
-              x2={segment.x2}
-              y2={segment.y}
-              stroke={segment.isSuccess ? 'oklch(var(--color-success) / 0.95)' : 'oklch(var(--color-error) / 0.92)'}
-              strokeWidth="2.8"
-              strokeLinecap="round"
+              x1={0}
+              y1={geometry.height}
+              x2={geometry.width}
+              y2={geometry.height}
+              stroke="oklch(var(--color-base-content) / 0.16)"
+              strokeWidth="1"
             />
-            <rect
-              x={Math.min(segment.x1, segment.x2)}
-              y={0}
-              width={Math.max(Math.abs(segment.x2 - segment.x1), 2)}
-              height={geometry.height}
-              fill="transparent"
-            >
-              <title>{chartTooltip(segment.point, localeTag, tooltipLabels)}</title>
-            </rect>
-          </g>
-        ))}
-      </svg>
-    </div>
+            {activeSegment ? (
+              <line
+                x1={activeSegment.x1}
+                y1={0}
+                x2={activeSegment.x1}
+                y2={geometry.height}
+                stroke="oklch(var(--color-primary) / 0.45)"
+                strokeWidth="1"
+                strokeDasharray="3 2"
+              />
+            ) : null}
+            {geometry.jumps.map((jump, index) => (
+              <line
+                key={`jump-${index}`}
+                x1={jump.x}
+                y1={jump.y1}
+                x2={jump.x}
+                y2={jump.y2}
+                stroke="oklch(var(--color-base-content) / 0.28)"
+                strokeWidth="1"
+              />
+            ))}
+            {geometry.segments.map((segment, index) => {
+              const isActive = activeIndex === index
+              return (
+                <g key={`${conversation.promptCacheKey}-segment-${index}`}>
+                  <line
+                    x1={segment.x1}
+                    y1={segment.y}
+                    x2={segment.x2}
+                    y2={segment.y}
+                    stroke={segment.isSuccess ? 'oklch(var(--color-success) / 0.95)' : 'oklch(var(--color-error) / 0.92)'}
+                    strokeWidth={isActive ? '4' : '2.8'}
+                    strokeLinecap="round"
+                  />
+                  {isActive ? (
+                    <circle
+                      cx={segment.x1}
+                      cy={segment.y}
+                      r="3"
+                      fill={segment.isSuccess ? 'oklch(var(--color-success) / 0.95)' : 'oklch(var(--color-error) / 0.92)'}
+                      stroke="oklch(var(--color-base-100) / 0.95)"
+                      strokeWidth="1.2"
+                    />
+                  ) : null}
+                  <rect
+                    x={Math.min(segment.x1, segment.x2)}
+                    y={0}
+                    width={Math.max(Math.abs(segment.x2 - segment.x1), 2)}
+                    height={geometry.height}
+                    fill="transparent"
+                    className="cursor-pointer"
+                    {...getItemProps(index)}
+                  />
+                </g>
+              )
+            })}
+          </svg>
+        )
+      }}
+    </InlineChartTooltipSurface>
   )
 }
 
@@ -278,6 +334,8 @@ export function PromptCacheConversationTable({ stats, isLoading, error }: Prompt
     }),
     [t],
   )
+  const chartInteractionHint = t('live.chart.tooltip.instructions')
+  const chartAriaLabel = t('live.conversations.chartAria')
 
   const rangeStart = stats?.rangeStart ?? ''
   const rangeEnd = stats?.rangeEnd ?? ''
@@ -371,6 +429,8 @@ export function PromptCacheConversationTable({ stats, isLoading, error }: Prompt
                   maxCumulativeTokens={conversationChartMax}
                   localeTag={localeTag}
                   tooltipLabels={tooltipLabels}
+                  interactionHint={chartInteractionHint}
+                  ariaLabel={`${conversation.promptCacheKey} ${chartAriaLabel}`}
                 />
               </div>
             </article>
@@ -435,6 +495,8 @@ export function PromptCacheConversationTable({ stats, isLoading, error }: Prompt
                     maxCumulativeTokens={conversationChartMax}
                     localeTag={localeTag}
                     tooltipLabels={tooltipLabels}
+                    interactionHint={chartInteractionHint}
+                    ariaLabel={`${conversation.promptCacheKey} ${chartAriaLabel}`}
                   />
                 </td>
               </tr>

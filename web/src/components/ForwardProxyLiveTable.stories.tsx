@@ -229,3 +229,18 @@ export const SharedScaleComparison: Story = {
   },
 }
 
+export const TooltipEdgeDensity: Story = {
+  args: {
+    stats,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Use the rightmost request bucket and weight point to verify tooltip flip positioning against the table edge and dense hover targets.',
+      },
+    },
+  },
+}
