@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-03-09
-- Last: 2026-03-09
+- Last: 2026-03-10
 
 ## 背景 / 问题陈述
 
@@ -102,7 +102,7 @@
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/InvocationTable.stories.tsx`
-- Visual regression baseline changes (if any): 无需新增 PR 图片；如需人工复核，可本地打开 Dashboard / Live 查看真实长代理名行。
+- Visual regression baseline changes (if any): 已补充组件 DOM 截图 `./assets/invocation-table-hotfix-dom.png`，用于 PR 与 spec 复核。
 
 ### Quality checks
 
@@ -116,12 +116,15 @@
 ## 计划资产（Plan assets）
 
 - Directory: `docs/specs/5gqdb-invocation-proxy-name-truncation-hotfix/assets/`
-- In-plan references: 如需后续补图，使用 `![...](./assets/<file>.png)`
-- PR visual evidence source: 本 hotfix 默认不要求新增 PR 图片。
+- In-plan references: `![InvocationTable DOM screenshot](./assets/invocation-table-hotfix-dom.png)`
+- PR visual evidence source: 使用当前 hotfix 的组件 DOM 截图作为审查证据。
 
 ## Visual Evidence (PR)
 
-本次默认不放 PR 图片；若后续需要补充浏览器证据，只允许引用本目录 `./assets/` 下文件。
+![InvocationTable DOM screenshot](./assets/invocation-table-hotfix-dom.png)
+
+- 该截图来自当前分支 Storybook 的 `InvocationTable` DOM 区域截图，直接覆盖长代理名回归行。
+- 可见长代理名 `ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD` 已在代理列内省略，未再压到 model 列。
 
 ## 资产晋升（Asset promotion）
 
@@ -152,6 +155,7 @@ None
 - 2026-03-09: 创建 hotfix spec，冻结根因、修复边界、回归样例与快车道发布口径。
 - 2026-03-09: 已完成桌面代理列热修、长代理名回归断言与本地 `vitest/build/storybook/playwright` 验证，等待 PR/checks/review-loop 收敛。
 - 2026-03-09: 快车道完成 PR [#105](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/105) 创建、标签收敛、checks 通过与本地 codex review 清零。
+- 2026-03-10: 补充 `InvocationTable` DOM 区域截图到 spec 资产与 PR 视觉证据，便于直接复核长代理名省略效果。
 
 ## 参考（References）
 
