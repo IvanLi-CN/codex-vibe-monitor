@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 实现中（本地验证完成，待 shared-testbox / 101 rollout）
+- Status: 实现中（shared-testbox 验证完成，待 101 rollout）
 
 ## 背景 / 问题陈述
 
@@ -81,6 +81,13 @@
 - 共享测试环境必须先复制 101 等价 SQLite 与 `proxy_raw_payloads/` 文件状态，再验证 startup/readiness 与 cleanup；若只复制 DB 不复制 raw 文件，则 readiness 验收不通过。
 - 101 首次执行顺序固定为：`dry-run`、核对 archive / totals / 体积、维护窗口 `live cleanup`、对比启动时长与慢 SQL、空间允许时人工执行一次 `VACUUM`。
 - cleanup 后必须保留 before/after 证据：数据库体积、`summary?window=all` totals、`time_to_health`、慢 SQL 计数/耗时、archive batch 文件清单。
+
+### shared-testbox 验证状态
+
+- 已完成 101 等价 SQLite 快照与 `proxy_raw_payloads/` 状态复制，并在 shared-testbox 上分别回放 `v0.18.0` 与当前 PR 镜像。
+- 在同一份快照上，基线镜像 `GET /health` 恢复时间约 `308840ms`，当前 PR 镜像约 `164ms`，且镜像级 healthcheck 收敛为 `healthy`。
+- 同一快照上的 invocation-only `summary?window=all` totals 在基线与当前 PR 镜像间保持一致，说明本次启动/readiness 改造未改变统计结果。
+- 复制窗口内 101 live summary 与快照 totals 仍存在少量自然漂移，因此 101 维护窗口内仍需再次留存 before/after totals 证据，不能直接用 shared-testbox 结果替代正式 rollout 验收。
 
 ## 验收标准（Acceptance Criteria）
 
