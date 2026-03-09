@@ -44,7 +44,7 @@
 cargo run
 ```
 
-默认监听 `127.0.0.1:8080`。健康检查：`GET /health`。
+默认监听 `127.0.0.1:8080`。`GET /health` 现在表示 readiness：核心初始化完成并开始监听后返回 `200 ok`，否则返回 `503 starting`。历史补数会在启动后后台有界执行，不再阻塞 readiness。
 
 优雅停机：按下 `Ctrl+C` 或发送 `SIGTERM` 将触发有序关闭 —— HTTP 服务器停止接受新连接，调度器停止新一轮轮询并等待在途任务完成后退出。
 
@@ -73,7 +73,7 @@ OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=268435456  # (256MiB)
 PROXY_RAW_MAX_BYTES=0                          # (0=unlimited, set >0 to cap)
 PROXY_RAW_RETENTION_DAYS=7                     # (7)
 PROXY_ENFORCE_STREAM_INCLUDE_USAGE=true        # (true)
-PROXY_USAGE_BACKFILL_ON_STARTUP=true           # (true，启动时回填历史 proxy 空 token 记录)
+PROXY_USAGE_BACKFILL_ON_STARTUP=true           # (兼容保留；当前历史补数改为后台有界执行，不再阻塞 /health)
 FORWARD_PROXY_ALGO=v2                          # (v2，正向代理权重算法开关: v1|v2)
 XY_MAX_PARALLEL_POLLS=6                        # (6)
 XY_SHARED_CONNECTION_PARALLELISM=2             # (2)
@@ -102,7 +102,7 @@ CRS_STATS_POLL_INTERVAL_SECS=10                # (10，默认跟随 XY_POLL_INTE
 ```
 
 价格配置已迁移到数据库持久化（可在 Web 设置页 `/settings` 在线编辑）；服务启动会自动写入默认模型价格模板。
-成本估算默认采用“精确模型优先 + 日期后缀模型回退”（如 `gpt-5.2-2025-12-11 -> gpt-5.2`），并在启动时对历史 `cost IS NULL` 的成功代理记录执行增量补算（仅回填空成本，不覆盖已有值）。
+成本估算默认采用“精确模型优先 + 日期后缀模型回退”（如 `gpt-5.2-2025-12-11 -> gpt-5.2`），历史 `cost IS NULL` 的成功代理记录会在启动后由后台任务按批次增量补算（仅回填空成本，不覆盖已有值）。
 
 服务不再读取 XYAI 上游 cookie / base URL / quota endpoint；`/api/quota/latest` 仅返回数据库中已有的历史快照。
 
@@ -139,7 +139,7 @@ cargo run -- --retention-run-once
 ## HTTP API 与 SSE
 
 - 统计相关接口默认合并数据库中已有的历史 `xy`、当前 `proxy`，以及启用时的 `crs` 来源。
-- `GET /health`：健康检查，返回 `ok`。
+- `GET /health`：readiness 检查；核心初始化完成并开始监听后返回 `200 ok`，否则返回 `503 starting`。
 - `GET /api/version`：返回 `{ backend, frontend }`。
 - `GET /api/settings`：获取统一设置（`proxy + pricing`）。
 - `PUT /api/settings/proxy`：更新 `/v1/models` 劫持与上游合并开关状态（全局持久化）。
@@ -176,7 +176,24 @@ docker run --rm \
   ghcr.io/ivanli-cn/codex-vibe-monitor:latest
 ```
 
-容器内默认：`XY_DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db`，`XY_HTTP_BIND=0.0.0.0:8080`，`XY_STATIC_DIR=/srv/app/web`。
+容器内默认：`XY_DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db`，`XY_HTTP_BIND=0.0.0.0:8080`，`XY_STATIC_DIR=/srv/app/web`。运行镜像已内置 `curl` 与镜像级 `HEALTHCHECK`，会探测 `http://127.0.0.1:8080/health`。
+
+推荐在 Compose 中显式覆盖 healthcheck 参数，确保启动窗口内也能正确等待 readiness：
+
+```yaml
+services:
+  ai-codex-vibe-monitor:
+    image: ghcr.io/ivanli-cn/codex-vibe-monitor:latest
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+      start_interval: 5s
+```
+
+Traefik 部署默认依赖 Docker health 结果决定是否把流量送到容器；如果现场 Docker provider 显式开启了 `allowEmptyServices=true`，还需要额外配置 Traefik service-level active healthcheck，对 `/health` 做兜底探测。更完整的网关示例见 [`docs/deployment.md`](docs/deployment.md)。
 
 GHCR 发布镜像默认提供多架构 manifest（`linux/amd64` + `linux/arm64`），`stable` 会同步更新 `${image}:latest`。
 
