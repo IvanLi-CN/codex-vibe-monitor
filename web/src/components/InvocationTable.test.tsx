@@ -249,8 +249,8 @@ describe('InvocationTable', () => {
     expect(html).toContain('请求想要 Fast，但实际未命中 Priority processing')
   })
 
-  it('renders structured-only detail badges and prune timestamps for retained records', () => {
-    const html = renderTable([
+  it('keeps structured-only metadata out of summary rows', () => {
+    const records: ApiInvocation[] = [
       {
         id: 4,
         invokeId: 'invocation-detail-pruned',
@@ -269,15 +269,17 @@ describe('InvocationTable', () => {
         detailPrunedAt: '2026-02-01T12:34:56Z',
         detailPruneReason: 'success_over_30d',
       },
-    ])
+    ]
 
-    expect(html).toContain('data-testid="invocation-detail-level-badge"')
-    expect(html).toContain('Structured only')
-    expect(html).toContain('精简于 2026-02-01 12:34:56Z')
+    const summaryHtml = renderTable(records)
+    expect(summaryHtml).not.toContain('data-testid="invocation-detail-level-badge"')
+    expect(summaryHtml).not.toContain('Structured only')
+    expect(summaryHtml).not.toContain('精简于 2026-02-01 12:34:56Z')
+
   })
 
-  it('treats old records without retention fields as full-detail records', () => {
-    const html = renderTable([
+  it('keeps legacy full-detail records out of summary rows', () => {
+    const records: ApiInvocation[] = [
       {
         id: 5,
         invokeId: 'invocation-detail-full-default',
@@ -289,11 +291,14 @@ describe('InvocationTable', () => {
         status: 'failed',
         errorMessage: 'legacy row still renders',
       },
-    ])
+    ]
 
-    expect(html).toContain('Full')
-    expect(html).not.toContain('Structured only')
-    expect(html).not.toContain('精简于')
-    expect(html).toContain('legacy row still renders')
+    const summaryHtml = renderTable(records)
+    expect(summaryHtml).not.toContain('data-testid="invocation-detail-level-badge"')
+    expect(summaryHtml).not.toContain('Full')
+    expect(summaryHtml).not.toContain('Structured only')
+    expect(summaryHtml).not.toContain('精简于')
+    expect(summaryHtml).toContain('legacy row still renders')
+
   })
 })
