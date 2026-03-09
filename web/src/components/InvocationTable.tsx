@@ -133,20 +133,25 @@ function isCompactEndpoint(endpoint: string | null | undefined) {
   return endpoint?.trim() === COMPACT_ENDPOINT
 }
 
-function renderCompactBadge(t: (key: TranslationKey) => string, className?: string) {
+function renderEndpointPath(
+  endpointValue: string,
+  isCompactEndpointValue: boolean,
+  t: (key: TranslationKey) => string,
+  className?: string,
+) {
   return (
-    <Badge
-      variant="secondary"
+    <span
       className={cn(
-        'max-w-full gap-1 overflow-hidden border-info/45 bg-info/10 px-2 py-0 text-[10px] font-semibold tracking-[0.06em] text-info',
+        'block truncate whitespace-nowrap font-mono',
+        isCompactEndpointValue ? 'font-medium text-info' : 'text-base-content/70',
         className,
       )}
-      title={t('table.endpoint.compactHint')}
-      data-testid="invocation-compact-badge"
+      title={isCompactEndpointValue ? `${endpointValue} · ${t('table.endpoint.compactHint')}` : endpointValue}
+      data-testid="invocation-endpoint-path"
+      data-endpoint-kind={isCompactEndpointValue ? 'compact' : 'default'}
     >
-      <Icon icon="mdi:arrow-collapse-horizontal" className="h-3 w-3 flex-none" aria-hidden />
-      <span className="block max-w-full truncate whitespace-nowrap">{t('table.endpoint.compactBadge')}</span>
-    </Badge>
+      {endpointValue}
+    </span>
   )
 }
 
@@ -549,7 +554,6 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
                 <Badge variant={row.meta.variant}>{t(row.meta.key)}</Badge>
-                {row.isCompactEndpoint ? renderCompactBadge(t, 'shrink-0') : null}
                 <span className="min-w-0 truncate text-xs text-base-content/75" title={row.proxyDisplayName}>
                   {row.proxyDisplayName}
                 </span>
@@ -593,7 +597,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <div className="mt-3 space-y-1 border-t border-base-300/65 pt-2">
                 <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">{t('table.details.endpoint')}</div>
-                <div className="truncate text-xs text-base-content/75" title={row.endpointValue}>{row.endpointValue}</div>
+                {renderEndpointPath(row.endpointValue, row.isCompactEndpoint, t, 'text-xs')}
                 <div className="truncate text-xs" title={row.errorMessage || undefined}>{row.errorMessage || FALLBACK_CELL}</div>
               </div>
 
@@ -702,7 +706,6 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                               </span>
                               <span className="sr-only">{t(row.meta.key)}</span>
                             </Badge>
-                            {row.isCompactEndpoint ? renderCompactBadge(t, 'shrink-0') : null}
                           </div>
                           <span className="hidden whitespace-nowrap font-mono text-[11px] text-base-content/70 lg:block" title={row.latencySummary}>
                             {row.latencySummary}
@@ -754,9 +757,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </td>
                       <td className="hidden min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:table-cell xl:px-3">
                         <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
-                          <span className="block truncate whitespace-nowrap text-base-content/70" title={row.endpointValue}>
-                            {row.endpointValue}
-                          </span>
+                          {renderEndpointPath(row.endpointValue, row.isCompactEndpoint, t)}
                           <span className="block truncate whitespace-nowrap" title={row.errorMessage || undefined}>
                             {row.errorMessage || FALLBACK_CELL}
                           </span>

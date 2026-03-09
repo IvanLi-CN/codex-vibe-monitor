@@ -142,7 +142,7 @@ describe('InvocationTable', () => {
     expect(html).toContain('>—</span>')
   })
 
-  it('marks compact requests in summary rows while preserving the raw endpoint text', () => {
+  it('colors compact endpoint paths without adding extra summary badges', () => {
     const html = renderTable([
       {
         id: 21,
@@ -172,8 +172,10 @@ describe('InvocationTable', () => {
       },
     ])
 
-    expect(html.match(/data-testid="invocation-compact-badge"/g)?.length ?? 0).toBe(2)
-    expect(html).toContain('远程压缩')
+    expect(html).not.toContain('data-testid="invocation-compact-badge"')
+    expect(html.match(/data-testid="invocation-endpoint-path"/g)?.length ?? 0).toBe(4)
+    expect(html.match(/data-endpoint-kind="compact"/g)?.length ?? 0).toBe(2)
+    expect(html).toContain('text-info')
     expect(html).toContain('/v1/responses/compact')
   })
 
