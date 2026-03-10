@@ -48,6 +48,7 @@ export interface UseInvocationRecordsResult {
 interface SearchState {
   filters: Omit<InvocationRecordsQuery, 'page' | 'pageSize' | 'sortBy' | 'sortOrder' | 'snapshotId'>
   snapshotId: number
+  generation: number
 }
 
 export function shouldPollRecordsSummary() {
@@ -157,7 +158,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       if (requestSeq !== searchSeqRef.current) return
 
       listLoaded = true
-      appliedRef.current = { filters, snapshotId: listResponse.snapshotId }
+      appliedRef.current = { filters, snapshotId: listResponse.snapshotId, generation: requestSeq }
       setRecords(listResponse)
       setPageState(listResponse.page)
       setPageSizeState(listResponse.pageSize)
@@ -229,12 +230,15 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       if (!shouldPollRecordsSummary()) return
       const applied = appliedRef.current
       if (!applied) return
+      const generation = applied.generation
       void fetchInvocationRecordsNewCount({
         ...applied.filters,
         snapshotId: applied.snapshotId,
       })
         .then((response: InvocationRecordsNewCountResponse) => {
-          if (!appliedRef.current || appliedRef.current.snapshotId !== response.snapshotId) return
+          const latest = appliedRef.current
+          if (!latest || latest.generation !== generation) return
+          if (latest.snapshotId !== response.snapshotId) return
           setSummary((current) => {
             if (!current) return current
             return { ...current, newRecordsCount: response.newRecordsCount }

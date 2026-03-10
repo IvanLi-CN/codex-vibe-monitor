@@ -322,6 +322,67 @@ describe('useInvocationRecords', () => {
     expect(searchSummaryQuery?.model).toBe('next-model')
   })
 
+  it('ignores stale new-count responses after a search even when snapshotId repeats', async () => {
+    vi.useFakeTimers()
+
+    let resolvePoll: ((value: InvocationRecordsNewCountResponse) => void) | null = null
+    const pollPromise = new Promise<InvocationRecordsNewCountResponse>((resolve) => {
+      resolvePoll = resolve
+    })
+
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      if (query.model === 'next-model') {
+        return createListResponse({
+          snapshotId: 42,
+          total: 1,
+          page: 1,
+          pageSize: query.pageSize ?? 20,
+          records: [
+            {
+              id: 9,
+              invokeId: 'invoke-next',
+              occurredAt: '2026-03-10T01:00:00Z',
+              createdAt: '2026-03-10T01:00:00Z',
+              model: 'next-model',
+              status: 'success',
+            },
+          ],
+        })
+      }
+
+      return createListResponse({ snapshotId: 42 })
+    })
+
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }))
+    apiMocks.fetchInvocationRecordsNewCount.mockImplementation(async () => pollPromise)
+
+    render(<Probe />)
+    await flushAsync()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
+    })
+
+    expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1)
+
+    click('draft-model')
+    click('search')
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('42')
+    expect(text('model')).toBe('next-model')
+    expect(text('new-count')).toBe('0')
+
+    if (!resolvePoll) {
+      throw new Error('poll resolver missing')
+    }
+    const resolvePollFn = resolvePoll as (value: InvocationRecordsNewCountResponse) => void
+    resolvePollFn(createNewCountResponse({ snapshotId: 42, newRecordsCount: 7 }))
+    await flushAsync()
+
+    expect(text('new-count')).toBe('0')
+  })
+
 
   it('shows records as soon as the list resolves even if the summary is still pending', async () => {
     let resolveSummary: ((value: InvocationRecordsSummaryResponse) => void) | null = null
