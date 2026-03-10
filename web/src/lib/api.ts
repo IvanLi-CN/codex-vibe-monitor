@@ -168,6 +168,25 @@ export interface InvocationRecordsNewCountResponse {
   newRecordsCount: number
 }
 
+export interface InvocationSuggestionItem {
+  value: string
+  count: number
+}
+
+export interface InvocationSuggestionBucket {
+  items: InvocationSuggestionItem[]
+  hasMore: boolean
+}
+
+export interface InvocationSuggestionsResponse {
+  model: InvocationSuggestionBucket
+  proxy: InvocationSuggestionBucket
+  endpoint: InvocationSuggestionBucket
+  failureKind: InvocationSuggestionBucket
+  promptCacheKey: InvocationSuggestionBucket
+  requesterIp: InvocationSuggestionBucket
+}
+
 export interface StatsResponse {
   totalCount: number
   successCount: number
@@ -334,6 +353,12 @@ export async function fetchInvocationRecordsNewCount(query: InvocationRecordsQue
   const search = new URLSearchParams()
   appendInvocationRecordsQuery(search, query)
   return fetchJson<InvocationRecordsNewCountResponse>(`/api/invocations/new-count?${search.toString()}`)
+}
+
+export async function fetchInvocationSuggestions(query: InvocationRecordsQuery) {
+  const search = new URLSearchParams()
+  appendInvocationRecordsQuery(search, query)
+  return fetchJson<InvocationSuggestionsResponse>(`/api/invocations/suggestions?${search.toString()}`)
 }
 
 export async function fetchStats() {

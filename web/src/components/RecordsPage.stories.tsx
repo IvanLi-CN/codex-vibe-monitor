@@ -121,6 +121,40 @@ function paginateRecords(records: ApiInvocation[], query: InvocationRecordsQuery
   return { page, pageSize, paged }
 }
 
+function buildSuggestionBucket(records: ApiInvocation[], extract: (record: ApiInvocation) => string | null | undefined) {
+  const counts = new Map<string, number>()
+  for (const record of records) {
+    const rawValue = extract(record)
+    const value = rawValue?.trim() ?? ''
+    if (!value) continue
+    counts.set(value, (counts.get(value) ?? 0) + 1)
+  }
+
+  const sorted = Array.from(counts.entries())
+    .map(([value, count]) => ({ value, count }))
+    .sort((left, right) => {
+      if (right.count !== left.count) return right.count - left.count
+      return left.value.localeCompare(right.value)
+    })
+
+  const limit = 30
+  return {
+    items: sorted.slice(0, limit),
+    hasMore: sorted.length > limit,
+  }
+}
+
+function buildSuggestions(records: ApiInvocation[]) {
+  return {
+    model: buildSuggestionBucket(records, (record) => record.model),
+    proxy: buildSuggestionBucket(records, (record) => record.proxyDisplayName ?? record.source),
+    endpoint: buildSuggestionBucket(records, (record) => record.endpoint),
+    failureKind: buildSuggestionBucket(records, (record) => record.failureKind),
+    promptCacheKey: buildSuggestionBucket(records, (record) => record.promptCacheKey),
+    requesterIp: buildSuggestionBucket(records, (record) => record.requesterIp),
+  }
+}
+
 function jsonResponse(payload: unknown) {
   return new Response(JSON.stringify(payload), {
     status: 200,
@@ -187,6 +221,10 @@ function StorybookRecordsPageMock({ children, newRecordsCount = 17 }: StorybookR
             exception: summary.exception,
           }),
         )
+      }
+
+      if (path === '/api/invocations/suggestions') {
+        return jsonResponse(buildSuggestions(filtered))
       }
 
       if (path === '/api/invocations/new-count') {

@@ -2640,6 +2640,10 @@ async fn spawn_http_server(
         .route("/api/invocations", get(list_invocations))
         .route("/api/invocations/summary", get(fetch_invocation_summary))
         .route(
+            "/api/invocations/suggestions",
+            get(fetch_invocation_suggestions),
+        )
+        .route(
             "/api/invocations/new-count",
             get(fetch_invocation_new_records_count),
         )

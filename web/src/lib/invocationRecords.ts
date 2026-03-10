@@ -88,11 +88,16 @@ function normalizeInteger(value: string, fieldName: string) {
   return parsed
 }
 
-export function resolveRangeBounds(rangePreset: InvocationRangePreset, draft: InvocationRecordsDraftFilters, now = new Date()) {
+export function resolveRangeBoundsFromValues(
+  rangePreset: InvocationRangePreset,
+  customFrom: string,
+  customTo: string,
+  now = new Date(),
+) {
   if (rangePreset === 'custom') {
     return {
-      from: draft.customFrom ? toIsoString(new Date(draft.customFrom)) : undefined,
-      to: draft.customTo ? toIsoString(new Date(draft.customTo)) : undefined,
+      from: customFrom ? toIsoString(new Date(customFrom)) : undefined,
+      to: customTo ? toIsoString(new Date(customTo)) : undefined,
     }
   }
 
@@ -121,6 +126,10 @@ export function resolveRangeBounds(rangePreset: InvocationRangePreset, draft: In
     from: toIsoString(start),
     to: toIsoString(end),
   }
+}
+
+export function resolveRangeBounds(rangePreset: InvocationRangePreset, draft: InvocationRecordsDraftFilters, now = new Date()) {
+  return resolveRangeBoundsFromValues(rangePreset, draft.customFrom, draft.customTo, now)
 }
 
 export function buildAppliedInvocationFilters(

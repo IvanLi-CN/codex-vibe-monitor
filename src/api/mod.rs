@@ -209,6 +209,31 @@ pub(crate) struct InvocationNewRecordsCountResponse {
     pub(crate) new_records_count: i64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationSuggestionItem {
+    pub(crate) value: String,
+    pub(crate) count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationSuggestionBucket {
+    pub(crate) items: Vec<InvocationSuggestionItem>,
+    pub(crate) has_more: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationSuggestionsResponse {
+    pub(crate) model: InvocationSuggestionBucket,
+    pub(crate) proxy: InvocationSuggestionBucket,
+    pub(crate) endpoint: InvocationSuggestionBucket,
+    pub(crate) failure_kind: InvocationSuggestionBucket,
+    pub(crate) prompt_cache_key: InvocationSuggestionBucket,
+    pub(crate) requester_ip: InvocationSuggestionBucket,
+}
+
 fn normalize_query_text(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
@@ -537,6 +562,57 @@ async fn query_invocation_new_records_count(
         .total)
 }
 
+async fn query_invocation_suggestion_bucket(
+    pool: &Pool<Sqlite>,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    sql_expr: &str,
+    limit: i64,
+) -> Result<InvocationSuggestionBucket> {
+    #[derive(Debug, FromRow)]
+    struct SuggestionRow {
+        value: Option<String>,
+        count: i64,
+    }
+
+    let mut query = QueryBuilder::new("SELECT MIN(TRIM(COALESCE(");
+    query.push(sql_expr);
+    query.push(", ''))) AS value, COUNT(*) AS count FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(&mut query, filters, source_scope, None);
+    query.push(" AND TRIM(COALESCE(");
+    query.push(sql_expr);
+    query.push(", '')) != ''");
+    query.push(" GROUP BY LOWER(TRIM(COALESCE(");
+    query.push(sql_expr);
+    query.push(", '')))");
+    query.push(" ORDER BY count DESC, value ASC");
+    query.push(" LIMIT ").push_bind(limit.saturating_add(1));
+
+    let rows = query
+        .build_query_as::<SuggestionRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let has_more = rows.len() as i64 > limit;
+    let items = rows
+        .into_iter()
+        .take(limit.max(0) as usize)
+        .filter_map(|row| {
+            let value = row.value?.trim().to_string();
+            if value.is_empty() {
+                None
+            } else {
+                Some(InvocationSuggestionItem {
+                    value,
+                    count: row.count,
+                })
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(InvocationSuggestionBucket { items, has_more })
+}
+
 fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
     params.limit.is_some()
         && params.page.is_none()
@@ -788,6 +864,73 @@ pub(crate) async fn fetch_invocation_new_records_count(
     Ok(Json(InvocationNewRecordsCountResponse {
         snapshot_id,
         new_records_count,
+    }))
+}
+
+pub(crate) async fn fetch_invocation_suggestions(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListQuery>,
+) -> Result<Json<InvocationSuggestionsResponse>, ApiError> {
+    const SUGGESTION_LIMIT: i64 = 30;
+    let filters = build_invocation_filters(&params)?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+
+    let model = query_invocation_suggestion_bucket(
+        &state.pool,
+        &filters,
+        source_scope,
+        "model",
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let proxy = query_invocation_suggestion_bucket(
+        &state.pool,
+        &filters,
+        source_scope,
+        INVOCATION_PROXY_DISPLAY_SQL,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let endpoint = query_invocation_suggestion_bucket(
+        &state.pool,
+        &filters,
+        source_scope,
+        INVOCATION_ENDPOINT_SQL,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let failure_kind = query_invocation_suggestion_bucket(
+        &state.pool,
+        &filters,
+        source_scope,
+        INVOCATION_FAILURE_KIND_SQL,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let prompt_cache_key = query_invocation_suggestion_bucket(
+        &state.pool,
+        &filters,
+        source_scope,
+        INVOCATION_PROMPT_CACHE_KEY_SQL,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+    let requester_ip = query_invocation_suggestion_bucket(
+        &state.pool,
+        &filters,
+        source_scope,
+        INVOCATION_REQUESTER_IP_SQL,
+        SUGGESTION_LIMIT,
+    )
+    .await?;
+
+    Ok(Json(InvocationSuggestionsResponse {
+        model,
+        proxy,
+        endpoint,
+        failure_kind,
+        prompt_cache_key,
+        requester_ip,
     }))
 }
 

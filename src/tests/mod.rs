@@ -7778,6 +7778,90 @@ async fn fetch_invocation_new_records_count_uses_snapshot_boundary() {
 }
 
 #[tokio::test]
+async fn fetch_invocation_suggestions_orders_by_count_and_respects_time_bounds() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at, model) in [
+        (
+            "suggest-alpha-1",
+            "2026-03-10 09:00:00",
+            Some("model-alpha"),
+        ),
+        (
+            "suggest-alpha-2",
+            "2026-03-10 09:05:00",
+            Some("model-alpha"),
+        ),
+        ("suggest-beta-1", "2026-03-10 09:06:00", Some("model-beta")),
+        ("suggest-old-1", "2026-03-09 09:00:00", Some("model-old")),
+        ("suggest-null", "2026-03-10 09:08:00", None),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert suggestion invocation row");
+    }
+
+    let Json(suggestions) = fetch_invocation_suggestions(
+        State(state),
+        Query(ListQuery {
+            from: Some("2026-03-10T00:00:00Z".to_string()),
+            to: Some("2026-03-11T00:00:00Z".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("suggestions query should succeed");
+
+    assert!(
+        suggestions
+            .model
+            .items
+            .iter()
+            .all(|item| item.value != "model-old"),
+        "model suggestions should exclude rows outside the time window"
+    );
+
+    let first = suggestions
+        .model
+        .items
+        .first()
+        .expect("model suggestions should include matching rows");
+    assert_eq!(first.value, "model-alpha");
+    assert_eq!(first.count, 2);
+    assert!(
+        suggestions
+            .model
+            .items
+            .iter()
+            .all(|item| !item.value.is_empty()),
+        "suggestions should not contain empty values"
+    );
+    assert!(!suggestions.model.has_more);
+}
+
+#[tokio::test]
 async fn stats_endpoints_preserve_historical_xy_records() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
