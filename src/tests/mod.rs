@@ -10572,6 +10572,35 @@ async fn run_runtime_until_shutdown_waits_for_inflight_scheduler_poll() {
 }
 
 #[tokio::test]
+async fn run_runtime_until_shutdown_skips_startup_work_when_shutdown_is_already_requested() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let release_request = Arc::new(Notify::new());
+    let (crs_base, crs_handle) =
+        spawn_test_crs_stats_server(release_request.clone(), request_count.clone()).await;
+
+    let mut config = test_config();
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse(&crs_base).expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    config.request_timeout = Duration::from_secs(5);
+    config.poll_interval = Duration::from_millis(25);
+    config.max_parallel_polls = 1;
+    let state = test_state_from_config(config, false).await;
+
+    run_runtime_until_shutdown(state.clone(), Instant::now(), async {})
+        .await
+        .expect("runtime should exit cleanly when shutdown is already requested");
+
+    assert!(state.shutdown.is_cancelled());
+    assert_eq!(request_count.load(Ordering::SeqCst), 0);
+    release_request.notify_waiters();
+    crs_handle.abort();
+}
+
+#[tokio::test]
 async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::OK).await;
     let normalized_proxy =
@@ -10609,7 +10638,7 @@ async fn persist_and_broadcast_proxy_capture_skips_summary_worker_during_shutdow
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let _rx = state.broadcaster.subscribe();
+    let mut rx = state.broadcaster.subscribe();
     state.shutdown.cancel();
 
     persist_and_broadcast_proxy_capture(
@@ -10620,6 +10649,12 @@ async fn persist_and_broadcast_proxy_capture_skips_summary_worker_during_shutdow
     .await
     .expect("persist proxy capture during shutdown");
 
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .is_err(),
+        "shutdown path should not emit partial live broadcasts"
+    );
     assert!(
         !state
             .proxy_summary_quota_broadcast_running

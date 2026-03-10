@@ -432,9 +432,25 @@ async fn run_runtime_until_shutdown<F>(
     shutdown_signal: F,
 ) -> Result<()>
 where
-    F: Future<Output = ()> + Send,
+    F: Future<Output = ()> + Send + 'static,
 {
     let cancel = state.shutdown.clone();
+    let shutdown_cancel = cancel.clone();
+    let shutdown_watcher = tokio::spawn(async move {
+        shutdown_signal.await;
+        if !shutdown_cancel.is_cancelled() {
+            info!("shutdown signal received; beginning graceful shutdown");
+            shutdown_cancel.cancel();
+        }
+    });
+
+    tokio::task::yield_now().await;
+    if cancel.is_cancelled() {
+        let _ = shutdown_watcher.await;
+        info!("shutdown complete");
+        return Ok(());
+    }
+
     let poller_handle = if state.config.crs_stats.is_some() {
         Some(spawn_scheduler(state.clone(), cancel.clone()))
     } else {
@@ -452,9 +468,8 @@ where
     );
     let startup_backfill_handle = spawn_startup_backfill_maintenance(state.clone(), cancel.clone());
 
-    shutdown_signal.await;
-    info!("shutdown signal received; beginning graceful shutdown");
-    cancel.cancel();
+    cancel.cancelled().await;
+    let _ = shutdown_watcher.await;
 
     info!("http server graceful drain started");
     if let Err(err) = server_handle.await {
@@ -1143,6 +1158,11 @@ fn spawn_startup_backfill_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        if cancel.is_cancelled() {
+            info!("startup backfill maintenance skipped because shutdown is already in progress");
+            return;
+        }
+
         run_startup_backfill_maintenance_pass(state.clone()).await;
 
         let mut ticker = interval(Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
@@ -1165,6 +1185,11 @@ fn spawn_startup_backfill_maintenance(
 
 fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandle<()> {
     tokio::spawn(async move {
+        if cancel.is_cancelled() {
+            info!("scheduler startup skipped because shutdown is already in progress");
+            return;
+        }
+
         // Track in-flight tasks so we can wait for them on shutdown
         let mut inflight: Vec<JoinHandle<()>> = Vec::new();
         match schedule_poll(state.clone()).await {
@@ -1209,6 +1234,11 @@ fn spawn_forward_proxy_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        if cancel.is_cancelled() {
+            info!("forward proxy maintenance skipped because shutdown is already in progress");
+            return;
+        }
+
         let startup_known_subscription_keys = {
             let manager = state.forward_proxy.lock().await;
             snapshot_known_subscription_proxy_keys(&manager)
@@ -1467,6 +1497,11 @@ fn spawn_data_retention_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        if cancel.is_cancelled() {
+            info!("data retention maintenance skipped because shutdown is already in progress");
+            return;
+        }
+
         if !state.config.retention_enabled {
             info!("data retention maintenance is disabled");
             cancel.cancelled().await;
@@ -6493,6 +6528,14 @@ async fn persist_and_broadcast_proxy_capture(
     }
 
     let invoke_id = inserted_record.invoke_id.clone();
+    if state.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %invoke_id,
+            "skipping live proxy capture broadcasts because shutdown is in progress"
+        );
+        return Ok(());
+    }
+
     if let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
         records: vec![inserted_record],
     }) {
@@ -6501,14 +6544,6 @@ async fn persist_and_broadcast_proxy_capture(
             invoke_id = %invoke_id,
             "failed to broadcast new proxy capture record"
         );
-    }
-
-    if state.shutdown.is_cancelled() {
-        info!(
-            invoke_id = %invoke_id,
-            "skipping summary/quota broadcast worker because shutdown is in progress"
-        );
-        return Ok(());
     }
 
     state
