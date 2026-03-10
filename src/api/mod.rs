@@ -1618,6 +1618,7 @@ pub(crate) async fn put_proxy_settings(
         hijack_enabled: payload.hijack_enabled,
         merge_upstream_enabled: payload.merge_upstream_enabled,
         fast_mode_rewrite_mode: payload.fast_mode_rewrite_mode,
+        upstream_429_max_retries: payload.upstream_429_max_retries,
         enabled_preset_models: payload.enabled_models,
     }
     .normalized();

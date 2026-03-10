@@ -76,6 +76,7 @@ export function useSettings() {
         mergeUpstreamEnabled: nextProxy.hijackEnabled ? nextProxy.mergeUpstreamEnabled : false,
         enabledModels: nextProxy.models.filter((candidate) => nextProxy.enabledModels.includes(candidate)),
         fastModeRewriteMode: nextProxy.fastModeRewriteMode,
+        upstream429MaxRetries: nextProxy.upstream429MaxRetries,
       }
       setSettings((current) => {
         if (!current) return current

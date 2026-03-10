@@ -1500,33 +1500,56 @@ pub(crate) fn spawn_penalized_forward_proxy_probe(
 
 pub(crate) async fn fetch_upstream_models_payload(
     state: Arc<AppState>,
-    selected_proxy: SelectedForwardProxy,
     target_url: Url,
     headers: &HeaderMap,
+    upstream_429_max_retries: u8,
 ) -> Result<Value> {
-    let client = state
-        .http_clients
-        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())?;
-    let mut upstream_request = client.request(Method::GET, target_url);
-    let request_connection_scoped = connection_scoped_header_names(headers);
-    for (name, value) in headers {
-        if should_forward_proxy_header(name, &request_connection_scoped) {
-            upstream_request = upstream_request.header(name, value);
-        }
-    }
-
-    let started = Instant::now();
     let handshake_timeout = state.config.openai_proxy_handshake_timeout;
-    let upstream_response = timeout(handshake_timeout, upstream_request.send())
-        .await
-        .map_err(|_| {
-            anyhow!(
-                "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
-                handshake_timeout.as_millis()
+    let upstream_response = match send_forward_proxy_request_with_429_retry(
+        state.clone(),
+        Method::GET,
+        target_url,
+        headers,
+        None,
+        handshake_timeout,
+        upstream_429_max_retries,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            record_forward_proxy_attempt(
+                state.clone(),
+                err.selected_proxy,
+                false,
+                Some(err.connect_latency_ms),
+                Some(err.attempt_failure_kind),
+                false,
             )
-        })?
-        .context("failed to contact upstream")?;
-    let latency_ms = Some(elapsed_ms(started));
+            .await;
+            return Err(anyhow!(err.message));
+        }
+    };
+
+    let selected_proxy = upstream_response.selected_proxy;
+    let latency_ms = Some(upstream_response.connect_latency_ms);
+    let attempt_already_recorded = upstream_response.attempt_recorded;
+    let upstream_response = upstream_response.response;
+
+    if upstream_response.status() == StatusCode::TOO_MANY_REQUESTS {
+        if !attempt_already_recorded {
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy,
+                false,
+                latency_ms,
+                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429),
+                false,
+            )
+            .await;
+        }
+        bail!("upstream /v1/models returned status 429");
+    }
 
     if upstream_response.status().is_server_error() {
         record_forward_proxy_attempt(
@@ -1544,18 +1567,15 @@ pub(crate) async fn fetch_upstream_models_payload(
         );
     }
 
-    let payload = timeout(
-        handshake_timeout,
-        upstream_response.json::<Value>(),
-    )
-    .await
-    .map_err(|_| {
-        anyhow!(
-            "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms while decoding upstream /v1/models response",
-            handshake_timeout.as_millis()
-        )
-    })?
-    .context("failed to decode upstream /v1/models response as JSON")?;
+    let payload = timeout(handshake_timeout, upstream_response.json::<Value>())
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms while decoding upstream /v1/models response",
+                handshake_timeout.as_millis()
+            )
+        })?
+        .context("failed to decode upstream /v1/models response as JSON")?;
 
     payload
         .get("data")

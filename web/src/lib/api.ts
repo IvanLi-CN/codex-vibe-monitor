@@ -229,6 +229,9 @@ export interface VersionResponse {
 
 export type ProxyFastModeRewriteMode = 'disabled' | 'fill_missing' | 'force_priority'
 
+const DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES = 3
+const MAX_PROXY_UPSTREAM_429_MAX_RETRIES = 5
+
 export interface ProxySettings {
   hijackEnabled: boolean
   mergeUpstreamEnabled: boolean
@@ -236,6 +239,7 @@ export interface ProxySettings {
   enabledModels: string[]
   defaultHijackEnabled: boolean
   fastModeRewriteMode: ProxyFastModeRewriteMode
+  upstream429MaxRetries: number
 }
 
 export interface PricingEntry {
@@ -380,6 +384,12 @@ function normalizeProxyFastModeRewriteMode(value: unknown): ProxyFastModeRewrite
   return value === 'fill_missing' || value === 'force_priority' ? value : 'disabled'
 }
 
+function normalizeProxyUpstream429MaxRetries(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES
+  const normalized = Math.trunc(value)
+  return Math.min(MAX_PROXY_UPSTREAM_429_MAX_RETRIES, Math.max(0, normalized))
+}
+
 function normalizeProxySettings(raw: unknown): ProxySettings {
   const payload = (raw ?? {}) as Record<string, unknown>
   const models = normalizeStringArray(payload.models)
@@ -395,6 +405,9 @@ function normalizeProxySettings(raw: unknown): ProxySettings {
     enabledModels,
     defaultHijackEnabled: Boolean(payload.defaultHijackEnabled),
     fastModeRewriteMode: normalizeProxyFastModeRewriteMode(payload.fastModeRewriteMode ?? payload.fast_mode_rewrite_mode),
+    upstream429MaxRetries: normalizeProxyUpstream429MaxRetries(
+      payload.upstream429MaxRetries ?? payload.upstream_429_max_retries,
+    ),
   }
 }
 
@@ -649,6 +662,7 @@ export async function updateProxySettings(payload: {
   mergeUpstreamEnabled: boolean
   enabledModels: string[]
   fastModeRewriteMode: ProxyFastModeRewriteMode
+  upstream429MaxRetries: number
 }): Promise<ProxySettings> {
   const response = await fetchJson<unknown>('/api/settings/proxy', {
     method: 'PUT',
