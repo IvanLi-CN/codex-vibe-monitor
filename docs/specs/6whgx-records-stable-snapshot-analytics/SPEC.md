@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-10
 - Last: 2026-03-10
 
@@ -120,7 +120,7 @@
 - [x] M2: 后端完成稳定快照列表查询、汇总接口与新索引。
 - [x] M3: 前端完成记录页数据层、KPI 卡片、新数据提示与聚焦表格。
 - [x] M4: 补齐 Rust / Vitest / 浏览器验收。
-- [ ] M5: 完成快车道 PR、checks 与 review-loop 收敛。
+- [x] M5: 完成快车道 PR、checks 与 review-loop 收敛。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -135,6 +135,7 @@
 - 2026-03-10: 完成前后端实现、Rust/Vitest 覆盖与浏览器冒烟；待 PR/checks/review-loop 收尾。
 - 2026-03-10: 浏览器复查补齐记录页筛选与排序表单字段的 name 属性，清除表单字段缺少 name/id 的可访问性告警。
 - 2026-03-10: 根据 review 收敛空结果 summary 零值、搜索并发失效保护、轻量 new-count 轮询接口，以及搜索后新数据提示复位。
+- 2026-03-10: PR #107 已更新并通过 checks，review-loop 收敛完成；补上搜索按钮回归与 `new-count` 强制 `snapshotId` 校验后，规格状态切换为已完成。
 
 ## 参考（References）
 

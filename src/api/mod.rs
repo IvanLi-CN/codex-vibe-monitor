@@ -776,7 +776,7 @@ pub(crate) async fn fetch_invocation_new_records_count(
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let snapshot_id = request
         .snapshot_id
-        .unwrap_or(resolve_invocation_snapshot_id(&state.pool, source_scope).await?);
+        .ok_or_else(|| ApiError(anyhow!("snapshotId is required")))?;
     let new_records_count = query_invocation_new_records_count(
         &state.pool,
         &request.filters,

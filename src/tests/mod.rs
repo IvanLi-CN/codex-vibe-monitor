@@ -7675,6 +7675,20 @@ async fn fetch_invocation_summary_returns_zero_values_for_empty_results() {
 }
 
 #[tokio::test]
+async fn fetch_invocation_new_records_count_requires_snapshot_id() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let error = fetch_invocation_new_records_count(State(state), Query(ListQuery::default()))
+        .await
+        .expect_err("new-count query should reject missing snapshot id");
+
+    assert_eq!(error.0.to_string(), "snapshotId is required");
+}
+
+#[tokio::test]
 async fn fetch_invocation_new_records_count_uses_snapshot_boundary() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

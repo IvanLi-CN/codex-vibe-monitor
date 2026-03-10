@@ -130,7 +130,7 @@ export default function RecordsPage() {
                 <Button type="button" variant="ghost" onClick={handleClearDraft} disabled={isSearching}>
                   {t('records.filters.clearDraft')}
                 </Button>
-                <Button type="button" onClick={handleSearch} disabled={isSearching || isRecordsLoading}>
+                <Button type="button" onClick={handleSearch} disabled={isSearching}>
                   {isSearching ? t('records.filters.searching') : t('records.filters.search')}
                 </Button>
               </div>
