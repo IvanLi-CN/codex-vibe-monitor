@@ -2845,6 +2845,32 @@ async fn test_upstream_stream_mid_error() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_429_mid_error() -> impl IntoResponse {
+    let chunks = stream::unfold(0usize, |state| async move {
+        match state {
+            0 => Some((
+                Ok::<Bytes, io::Error>(Bytes::from_static(
+                    br#"{"error":{"message":"rate limited"}}"#,
+                )),
+                1,
+            )),
+            1 => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Some((
+                    Err::<Bytes, io::Error>(io::Error::other("upstream-429-mid-stream-error")),
+                    2,
+                ))
+            }
+            _ => None,
+        }
+    });
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(http_header::RETRY_AFTER, HeaderValue::from_static("0"))],
+        Body::from_stream(chunks),
+    )
+}
+
 async fn test_upstream_slow_stream() -> impl IntoResponse {
     let chunks = stream::unfold(0usize, |state| async move {
         match state {
@@ -3076,6 +3102,7 @@ async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
             any(test_upstream_stream_first_error),
         )
         .route("/v1/stream-mid-error", any(test_upstream_stream_mid_error))
+        .route("/v1/429-mid-error", any(test_upstream_429_mid_error))
         .route("/v1/slow-stream", any(test_upstream_slow_stream))
         .route("/v1/hang", any(test_upstream_hang))
         .route("/v1/models", get(test_upstream_models))
@@ -3702,6 +3729,64 @@ async fn proxy_openai_v1_replays_non_capture_body_across_429_retries() {
         .await,
         1
     );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_records_stream_error_when_final_429_stream_fails() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 1;
+    }
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/429-mid-error".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::new(),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let err = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect_err("upstream 429 stream should fail mid-body");
+    assert!(
+        err.to_string().contains("upstream stream error"),
+        "unexpected stream error text: {err}"
+    );
+
+    let mut attempt_count: i64 = 0;
+    let mut rate_limit_count: i64 = 0;
+    let mut stream_error_count: i64 = 0;
+    for _ in 0..20 {
+        attempt_count = count_request_forward_proxy_attempts(&state.pool).await;
+        rate_limit_count = count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        )
+        .await;
+        stream_error_count = count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_STREAM_ERROR,
+        )
+        .await;
+
+        if attempt_count == 2 && rate_limit_count == 1 && stream_error_count == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    assert_eq!(attempt_count, 2);
+    assert_eq!(rate_limit_count, 1);
+    assert_eq!(stream_error_count, 1);
 
     upstream_handle.abort();
 }

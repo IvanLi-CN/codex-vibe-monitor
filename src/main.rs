@@ -4835,43 +4835,46 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
             });
         }
 
-        let attempt_update = record_forward_proxy_attempt(
-            state.clone(),
-            selected_proxy.clone(),
-            false,
-            Some(connect_latency_ms),
-            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429),
-            false,
-        )
-        .await;
+        if attempt < upstream_429_max_retries {
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy.clone(),
+                false,
+                Some(connect_latency_ms),
+                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429),
+                false,
+            )
+            .await;
 
-        if attempt == upstream_429_max_retries {
-            return Ok(ForwardProxyUpstreamResponse {
-                selected_proxy,
-                response,
-                connect_latency_ms,
-                attempt_started_at: connect_started,
-                attempt_recorded: true,
-                attempt_update: Some(attempt_update),
-            });
+            let retry_delay = response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(parse_retry_after_delay)
+                .unwrap_or_else(|| fallback_proxy_429_retry_delay(u32::from(attempt) + 1));
+            info!(
+                proxy_key_ref = %forward_proxy_log_ref(&selected_proxy.key),
+                proxy_source = selected_proxy.source,
+                proxy_label = selected_proxy.display_name,
+                proxy_url_ref = %forward_proxy_log_ref_option(selected_proxy.endpoint_url_raw.as_deref()),
+                retry_index = attempt + 1,
+                max_429_retries = upstream_429_max_retries,
+                retry_after_ms = retry_delay.as_millis(),
+                "upstream responded 429; retrying forward proxy request"
+            );
+            sleep(retry_delay).await;
+            continue;
         }
 
-        let retry_delay = response
-            .headers()
-            .get(header::RETRY_AFTER)
-            .and_then(parse_retry_after_delay)
-            .unwrap_or_else(|| fallback_proxy_429_retry_delay(u32::from(attempt) + 1));
-        info!(
-            proxy_key_ref = %forward_proxy_log_ref(&selected_proxy.key),
-            proxy_source = selected_proxy.source,
-            proxy_label = selected_proxy.display_name,
-            proxy_url_ref = %forward_proxy_log_ref_option(selected_proxy.endpoint_url_raw.as_deref()),
-            retry_index = attempt + 1,
-            max_429_retries = upstream_429_max_retries,
-            retry_after_ms = retry_delay.as_millis(),
-            "upstream responded 429; retrying forward proxy request"
-        );
-        sleep(retry_delay).await;
+        // Final 429: defer attempt recording until the caller finishes consuming / forwarding
+        // the response body, so a later stream error can override this classification.
+        return Ok(ForwardProxyUpstreamResponse {
+            selected_proxy,
+            response,
+            connect_latency_ms,
+            attempt_started_at: connect_started,
+            attempt_recorded: false,
+            attempt_update: None,
+        });
     }
 
     unreachable!("429 retry loop should always return a response or error")
