@@ -4748,21 +4748,11 @@ fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
         )));
     }
 
-    let retry_at = DateTime::parse_from_rfc2822(text).ok()?.with_timezone(&Utc);
-    let now = Utc::now();
-    if retry_at <= now {
-        return None;
-    }
-
-    retry_at
-        .signed_duration_since(now)
-        .to_std()
-        .ok()
-        .map(|delay| {
-            delay.min(Duration::from_secs(
-                MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS,
-            ))
-        })
+    let retry_at = httpdate::parse_http_date(text).ok()?;
+    let delay = retry_at.duration_since(std::time::SystemTime::now()).ok()?;
+    Some(delay.min(Duration::from_secs(
+        MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS,
+    )))
 }
 
 pub(crate) async fn send_forward_proxy_request_with_429_retry(

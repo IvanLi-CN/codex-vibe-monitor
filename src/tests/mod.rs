@@ -298,11 +298,18 @@ fn parse_retry_after_delay_supports_seconds_and_http_date() {
         Some(Duration::from_secs(2))
     );
 
-    let retry_at = (Utc::now() + chrono::Duration::seconds(2)).to_rfc2822();
-    let http_date = HeaderValue::from_str(&retry_at).expect("valid retry-after date header");
-    let parsed = parse_retry_after_delay(&http_date).expect("http-date retry-after should parse");
-    assert!(parsed >= Duration::from_secs(1));
-    assert!(parsed <= Duration::from_secs(2));
+    let retry_at = Utc::now() + chrono::Duration::seconds(5);
+    let imf_fixdate = retry_at.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+    let rfc850 = retry_at.format("%A, %d-%b-%y %H:%M:%S GMT").to_string();
+    let asctime = retry_at.format("%a %b %e %H:%M:%S %Y").to_string();
+
+    for raw in [imf_fixdate, rfc850, asctime] {
+        let http_date = HeaderValue::from_str(&raw).expect("valid retry-after date header");
+        let parsed =
+            parse_retry_after_delay(&http_date).expect("http-date retry-after should parse");
+        assert!(parsed >= Duration::from_secs(1));
+        assert!(parsed <= Duration::from_secs(5));
+    }
 }
 
 #[test]
@@ -315,7 +322,9 @@ fn parse_retry_after_delay_clamps_large_values() {
         ))
     );
 
-    let huge_date = (Utc::now() + chrono::Duration::seconds(3600)).to_rfc2822();
+    let huge_date = (Utc::now() + chrono::Duration::seconds(3600))
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string();
     let huge_header = HeaderValue::from_str(&huge_date).expect("valid retry-after date header");
     assert_eq!(
         parse_retry_after_delay(&huge_header),
@@ -333,7 +342,9 @@ fn parse_retry_after_delay_rejects_invalid_or_past_values() {
     let blank = HeaderValue::from_static("   ");
     assert_eq!(parse_retry_after_delay(&blank), None);
 
-    let past = (Utc::now() - chrono::Duration::seconds(1)).to_rfc2822();
+    let past = (Utc::now() - chrono::Duration::seconds(1))
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string();
     let past_header = HeaderValue::from_str(&past).expect("valid past retry-after date header");
     assert_eq!(parse_retry_after_delay(&past_header), None);
 }
