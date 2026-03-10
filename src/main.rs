@@ -4694,6 +4694,9 @@ pub(crate) struct ForwardProxyUpstreamResponse {
     pub(crate) selected_proxy: SelectedForwardProxy,
     pub(crate) response: reqwest::Response,
     pub(crate) connect_latency_ms: f64,
+    /// `Instant` captured right before sending the upstream request for the final attempt.
+    /// Used to record end-to-end latency once streaming finishes.
+    pub(crate) attempt_started_at: Instant,
     pub(crate) attempt_recorded: bool,
     pub(crate) attempt_update: Option<ForwardProxyAttemptUpdate>,
 }
@@ -4836,6 +4839,7 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                 selected_proxy,
                 response,
                 connect_latency_ms,
+                attempt_started_at: connect_started,
                 attempt_recorded: false,
                 attempt_update: None,
             });
@@ -4856,6 +4860,7 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                 selected_proxy,
                 response,
                 connect_latency_ms,
+                attempt_started_at: connect_started,
                 attempt_recorded: true,
                 attempt_update: Some(attempt_update),
             });
@@ -5101,6 +5106,7 @@ async fn proxy_openai_v1_inner(
             selected_proxy,
             response: upstream_response,
             connect_latency_ms: elapsed_ms(connect_started),
+            attempt_started_at: connect_started,
             attempt_recorded: false,
             attempt_update: None,
         })
@@ -5140,6 +5146,7 @@ async fn proxy_openai_v1_inner(
             }
         }
     }?;
+    let upstream_attempt_started_at = upstream.attempt_started_at;
     let selected_proxy = upstream.selected_proxy;
     let t_upstream_connect_ms = upstream.connect_latency_ms;
     let attempt_already_recorded = upstream.attempt_recorded;
@@ -5201,7 +5208,7 @@ async fn proxy_openai_v1_inner(
                     state.clone(),
                     selected_proxy.clone(),
                     false,
-                    Some(t_upstream_connect_ms),
+                    Some(elapsed_ms(upstream_attempt_started_at)),
                     Some(FORWARD_PROXY_FAILURE_STREAM_ERROR),
                     false,
                 )
@@ -5224,7 +5231,7 @@ async fn proxy_openai_v1_inner(
                     state.clone(),
                     selected_proxy.clone(),
                     success,
-                    Some(t_upstream_connect_ms),
+                    Some(elapsed_ms(upstream_attempt_started_at)),
                     proxy_forward_response_failure_kind(upstream_status, false),
                     false,
                 )
@@ -5248,6 +5255,7 @@ async fn proxy_openai_v1_inner(
     let state_for_record = state.clone();
     let selected_proxy_for_record = selected_proxy.clone();
     let upstream_status_for_record = upstream_status;
+    let upstream_attempt_started_at_for_record = upstream_attempt_started_at;
     let attempt_already_recorded_for_response = attempt_already_recorded;
     tokio::spawn(async move {
         let mut forwarded_chunks = 0usize;
@@ -5322,7 +5330,7 @@ async fn proxy_openai_v1_inner(
                 state_for_record,
                 selected_proxy_for_record,
                 success,
-                Some(t_upstream_connect_ms),
+                Some(elapsed_ms(upstream_attempt_started_at_for_record)),
                 proxy_forward_response_failure_kind(
                     upstream_status_for_record,
                     stream_error_happened,

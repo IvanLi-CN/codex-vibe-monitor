@@ -1463,7 +1463,9 @@ pub(crate) fn spawn_penalized_forward_proxy_probe(
             .await
             .map_err(|_| anyhow!("probe timed out"))?
             .context("probe request failed")?;
-            let success = !response.status().is_server_error();
+            let status = response.status();
+            // Treat 429 as a probe failure so we don't "recover" a still-rate-limited proxy.
+            let success = is_validation_probe_reachable_status(status);
             let latency_ms = Some(elapsed_ms(started));
             record_forward_proxy_attempt(
                 state.clone(),
@@ -1472,8 +1474,12 @@ pub(crate) fn spawn_penalized_forward_proxy_probe(
                 latency_ms,
                 if success {
                     None
-                } else {
+                } else if status == StatusCode::TOO_MANY_REQUESTS {
+                    Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+                } else if status.is_server_error() {
                     Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+                } else {
+                    Some(FORWARD_PROXY_FAILURE_SEND_ERROR)
                 },
                 true,
             )

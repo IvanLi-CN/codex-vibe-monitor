@@ -2400,6 +2400,16 @@ async fn count_request_forward_proxy_attempts_with_failure_kind(
     .expect("count request forward proxy attempts by failure kind")
 }
 
+async fn latest_request_forward_proxy_attempt_latency_ms(pool: &SqlitePool) -> Option<f64> {
+    sqlx::query_scalar::<_, Option<f64>>(
+        "SELECT latency_ms FROM forward_proxy_attempts WHERE is_probe = 0 ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .expect("fetch latest request forward proxy latency")
+    .flatten()
+}
+
 async fn count_codex_invocations(pool: &SqlitePool) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
         .fetch_one(pool)
@@ -3740,6 +3750,44 @@ async fn proxy_openai_v1_streams_request_body_when_429_retry_is_disabled() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_records_end_to_end_latency_for_non_capture_streams() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 1;
+    }
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/slow-stream".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::new(),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    assert_eq!(body, Bytes::from_static(b"chunk-achunk-b"));
+
+    assert_eq!(count_request_forward_proxy_attempts(&state.pool).await, 1);
+    let latency_ms = latest_request_forward_proxy_attempt_latency_ms(&state.pool)
+        .await
+        .expect("latency should be recorded");
+    assert!(
+        latency_ms >= 350.0,
+        "expected end-to-end latency to include streaming delay, got {latency_ms}ms"
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_returns_final_429_body_and_headers_after_retry_exhaustion() {
     let (upstream_base, attempts, seen_bodies, upstream_handle) =
         spawn_retrying_echo_upstream(99, Some("0")).await;
@@ -3797,6 +3845,26 @@ async fn proxy_openai_v1_returns_final_429_body_and_headers_after_retry_exhausti
         )
         .await,
         3
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn forward_proxy_penalized_probe_treats_429_as_failure() {
+    let (upstream_base, upstream_handle) =
+        spawn_test_forward_proxy_status(StatusCode::TOO_MANY_REQUESTS).await;
+    let state = test_state_with_openai_base(
+        Url::parse(&format!("{upstream_base}/")).expect("valid upstream base url"),
+    )
+    .await;
+    let candidate = SelectedForwardProxy::from_endpoint(&ForwardProxyEndpoint::direct());
+
+    spawn_penalized_forward_proxy_probe(state.clone(), candidate.clone());
+    wait_for_forward_proxy_probe_attempts(&state.pool, &candidate.key, 1).await;
+    assert_eq!(
+        count_forward_proxy_probe_attempts(&state.pool, &candidate.key, Some(false)).await,
+        1
     );
 
     upstream_handle.abort();
