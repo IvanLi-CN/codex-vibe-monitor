@@ -10653,11 +10653,13 @@ async fn persist_and_broadcast_proxy_capture_skips_summary_worker_during_shutdow
     .await
     .expect("persist proxy capture during shutdown");
 
+    let payload = tokio::time::timeout(Duration::from_millis(100), rx.recv())
+        .await
+        .expect("shutdown path should still emit the persisted record")
+        .expect("broadcast channel should stay open");
     assert!(
-        tokio::time::timeout(Duration::from_millis(100), rx.recv())
-            .await
-            .is_err(),
-        "shutdown path should not emit partial live broadcasts"
+        matches!(payload, BroadcastPayload::Records { .. }),
+        "shutdown path should keep the live record event aligned with persisted data"
     );
     assert!(
         !state

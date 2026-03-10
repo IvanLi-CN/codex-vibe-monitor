@@ -6655,6 +6655,73 @@ fn compute_raw_expires_at(now_utc: DateTime<Utc>, retention: Duration) -> Option
         .map(|d| format_naive((now_utc + d).naive_utc()))
 }
 
+async fn broadcast_proxy_capture_follow_up(
+    pool: &Pool<Sqlite>,
+    broadcaster: &broadcast::Sender<BroadcastPayload>,
+    broadcast_state_cache: &Mutex<BroadcastStateCache>,
+    relay_config: Option<&CrsStatsConfig>,
+    invoke_id: &str,
+) {
+    if broadcaster.receiver_count() == 0 {
+        return;
+    }
+
+    match collect_summary_snapshots(pool, relay_config).await {
+        Ok(summaries) => {
+            for summary in summaries {
+                if let Err(err) = broadcast_summary_if_changed(
+                    broadcaster,
+                    broadcast_state_cache,
+                    &summary.window,
+                    summary.summary,
+                )
+                .await
+                {
+                    warn!(
+                        ?err,
+                        invoke_id = %invoke_id,
+                        window = %summary.window,
+                        "failed to broadcast proxy summary payload"
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            warn!(
+                ?err,
+                invoke_id = %invoke_id,
+                "failed to collect summary snapshots after proxy capture persistence"
+            );
+        }
+    }
+
+    if broadcaster.receiver_count() == 0 {
+        return;
+    }
+
+    match QuotaSnapshotResponse::fetch_latest(pool).await {
+        Ok(Some(snapshot)) => {
+            if let Err(err) =
+                broadcast_quota_if_changed(broadcaster, broadcast_state_cache, snapshot).await
+            {
+                warn!(
+                    ?err,
+                    invoke_id = %invoke_id,
+                    "failed to broadcast proxy quota snapshot"
+                );
+            }
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(
+                ?err,
+                invoke_id = %invoke_id,
+                "failed to fetch latest quota snapshot after proxy capture persistence"
+            );
+        }
+    }
+}
+
 async fn persist_and_broadcast_proxy_capture(
     state: &AppState,
     capture_started: Instant,
@@ -6669,14 +6736,6 @@ async fn persist_and_broadcast_proxy_capture(
     }
 
     let invoke_id = inserted_record.invoke_id.clone();
-    if state.shutdown.is_cancelled() {
-        info!(
-            invoke_id = %invoke_id,
-            "skipping live proxy capture broadcasts because shutdown is in progress"
-        );
-        return Ok(());
-    }
-
     if let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
         records: vec![inserted_record],
     }) {
@@ -6685,6 +6744,22 @@ async fn persist_and_broadcast_proxy_capture(
             invoke_id = %invoke_id,
             "failed to broadcast new proxy capture record"
         );
+    }
+
+    if state.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %invoke_id,
+            "broadcasting final summary/quota snapshots inline because shutdown is in progress"
+        );
+        broadcast_proxy_capture_follow_up(
+            &state.pool,
+            &state.broadcaster,
+            state.broadcast_state_cache.as_ref(),
+            state.config.crs_stats.as_ref(),
+            &invoke_id,
+        )
+        .await;
+        return Ok(());
     }
 
     state

@@ -1083,13 +1083,6 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
             let started = Instant::now();
             let probe_result =
                 probe_forward_proxy_endpoint(state.as_ref(), &endpoint, validation_timeout).await;
-            if shutdown.is_cancelled() {
-                info!(
-                    trigger,
-                    "forward proxy bootstrap probe round stopped after shutdown cleanup"
-                );
-                break;
-            }
             match probe_result {
                 Ok(latency_ms) => {
                     record_forward_proxy_attempt(
@@ -1467,49 +1460,51 @@ pub(crate) fn spawn_penalized_forward_proxy_probe(
 ) {
     tokio::spawn(async move {
         let shutdown = state.shutdown.clone();
-        let probe_result = tokio::select! {
-            _ = shutdown.cancelled() => {
-                info!(
-                    proxy_key_ref = %forward_proxy_log_ref(&candidate.key),
-                    "skipping penalized forward proxy probe because shutdown is in progress"
-                );
-                Ok(())
-            }
-            result = async {
-                let target = state
-                    .config
-                    .openai_upstream_base_url
-                    .join("v1/models")
-                    .context("failed to build probe target url")?;
-                let client = state
-                    .http_clients
-                    .client_for_forward_proxy(candidate.endpoint_url.as_ref())?;
-                let started = Instant::now();
-                let response = timeout(
-                    state.config.openai_proxy_handshake_timeout,
-                    client.get(target).send(),
-                )
-                .await
-                .map_err(|_| anyhow!("probe timed out"))?
-                .context("probe request failed")?;
-                let success = !response.status().is_server_error();
-                let latency_ms = Some(elapsed_ms(started));
-                record_forward_proxy_attempt(
-                    state.clone(),
-                    candidate.clone(),
-                    success,
-                    latency_ms,
-                    if success {
-                        None
-                    } else {
-                        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
-                    },
-                    true,
-                )
-                .await;
-                Ok::<(), anyhow::Error>(())
-            } => result,
-        };
+        if shutdown.is_cancelled() {
+            info!(
+                proxy_key_ref = %forward_proxy_log_ref(&candidate.key),
+                "skipping penalized forward proxy probe because shutdown is in progress"
+            );
+            let mut manager = state.forward_proxy.lock().await;
+            manager.mark_probe_finished();
+            return;
+        }
+
+        let probe_result = async {
+            let target = state
+                .config
+                .openai_upstream_base_url
+                .join("v1/models")
+                .context("failed to build probe target url")?;
+            let client = state
+                .http_clients
+                .client_for_forward_proxy(candidate.endpoint_url.as_ref())?;
+            let started = Instant::now();
+            let response = timeout(
+                state.config.openai_proxy_handshake_timeout,
+                client.get(target).send(),
+            )
+            .await
+            .map_err(|_| anyhow!("probe timed out"))?
+            .context("probe request failed")?;
+            let success = !response.status().is_server_error();
+            let latency_ms = Some(elapsed_ms(started));
+            record_forward_proxy_attempt(
+                state.clone(),
+                candidate.clone(),
+                success,
+                latency_ms,
+                if success {
+                    None
+                } else {
+                    Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+                },
+                true,
+            )
+            .await;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
 
         if let Err(err) = probe_result {
             warn!(
