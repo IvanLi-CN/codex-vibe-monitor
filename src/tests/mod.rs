@@ -3535,6 +3535,69 @@ async fn proxy_openai_v1_replays_non_capture_body_across_429_retries() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_streams_request_body_when_429_retry_is_disabled() {
+    let (upstream_base, _attempts, _seen_bodies, upstream_handle) =
+        spawn_retrying_echo_upstream(0, None).await;
+    let state = test_state_with_openai_base_body_limit_and_read_timeout(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        Duration::from_millis(50),
+    )
+    .await;
+
+    let uri: Uri = "/v1/echo?mode=slow-body".parse().expect("valid uri");
+
+    // Disabled => should keep legacy stream-through semantics (no eager buffering).
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 0;
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from_static(b"hello"))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"-proxy"))).await;
+    });
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri.clone()),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+    assert_eq!(payload["body"], "hello-proxy");
+
+    // Enabled => buffering path enforces OPENAI_PROXY_REQUEST_READ_TIMEOUT.
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 1;
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from_static(b"hello"))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"-proxy"))).await;
+    });
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_returns_final_429_body_and_headers_after_retry_exhaustion() {
     let (upstream_base, attempts, seen_bodies, upstream_handle) =
         spawn_retrying_echo_upstream(99, Some("0")).await;
