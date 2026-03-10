@@ -82,8 +82,9 @@ const SOURCE_CRS: &str = "crs";
 const SOURCE_PROXY: &str = "proxy";
 const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
-const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 45;
-const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 90;
+const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS: u64 = 180;
+const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
 const BACKFILL_BATCH_SIZE: i64 = 200;
 const STARTUP_BACKFILL_SCAN_LIMIT: u64 = 2_000;
@@ -4727,7 +4728,7 @@ async fn proxy_openai_v1_inner(
     };
 
     let connect_started = Instant::now();
-    let handshake_timeout = state.config.openai_proxy_handshake_timeout;
+    let handshake_timeout = state.config.proxy_upstream_handshake_timeout(None);
     let upstream_response = match timeout(handshake_timeout, upstream_request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
@@ -5149,7 +5150,9 @@ async fn proxy_openai_v1_capture_target(
     };
 
     let connect_started = Instant::now();
-    let handshake_timeout = state.config.openai_proxy_handshake_timeout;
+    let handshake_timeout = state
+        .config
+        .proxy_upstream_handshake_timeout(Some(capture_target));
     let upstream_response = match timeout(handshake_timeout, upstream_request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
@@ -5774,6 +5777,17 @@ fn prepare_target_request_body(
         }
     } else {
         (body, info, false)
+    }
+}
+
+fn proxy_upstream_handshake_timeout_for_capture_target(
+    config: &AppConfig,
+    capture_target: Option<ProxyCaptureTarget>,
+) -> Duration {
+    if capture_target.is_some_and(ProxyCaptureTarget::uses_compact_upstream_timeout) {
+        config.openai_proxy_compact_handshake_timeout
+    } else {
+        config.openai_proxy_handshake_timeout
     }
 }
 
@@ -9663,6 +9677,7 @@ struct AppConfig {
     poll_interval: Duration,
     request_timeout: Duration,
     openai_proxy_handshake_timeout: Duration,
+    openai_proxy_compact_handshake_timeout: Duration,
     openai_proxy_request_read_timeout: Duration,
     openai_proxy_max_request_body_bytes: usize,
     proxy_enforce_stream_include_usage: bool,
@@ -9703,6 +9718,13 @@ struct CrsStatsConfig {
 }
 
 impl AppConfig {
+    fn proxy_upstream_handshake_timeout(
+        &self,
+        capture_target: Option<ProxyCaptureTarget>,
+    ) -> Duration {
+        proxy_upstream_handshake_timeout_for_capture_target(self, capture_target)
+    }
+
     fn from_sources(overrides: &CliArgs) -> Result<Self> {
         if env::var_os(LEGACY_ENV_DATABASE_PATH).is_some() {
             bail!("{LEGACY_ENV_DATABASE_PATH} is not supported; rename it to {ENV_DATABASE_PATH}");
@@ -9738,6 +9760,15 @@ impl AppConfig {
             .filter(|&v| v > 0)
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS));
+        let openai_proxy_compact_handshake_timeout =
+            env::var("OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|&v| v > 0)
+                .map(Duration::from_secs)
+                .unwrap_or_else(|| {
+                    Duration::from_secs(DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS)
+                });
         let openai_proxy_request_read_timeout = env::var("OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -9923,6 +9954,7 @@ impl AppConfig {
             poll_interval,
             request_timeout,
             openai_proxy_handshake_timeout,
+            openai_proxy_compact_handshake_timeout,
             openai_proxy_request_read_timeout,
             openai_proxy_max_request_body_bytes,
             proxy_enforce_stream_include_usage,

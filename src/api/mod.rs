@@ -2186,6 +2186,10 @@ impl ProxyCaptureTarget {
         matches!(self, Self::ChatCompletions)
     }
 
+    pub(crate) fn uses_compact_upstream_timeout(self) -> bool {
+        matches!(self, Self::ResponsesCompact)
+    }
+
     pub(crate) fn from_endpoint(endpoint: &str) -> Self {
         match endpoint {
             "/v1/chat/completions" => Self::ChatCompletions,

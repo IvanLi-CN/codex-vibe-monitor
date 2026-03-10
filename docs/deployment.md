@@ -83,7 +83,7 @@ labels:
 
 ## Proxy Capture Runtime
 
-建议在部署清单中显式配置以下变量（未配置时使用服务默认值）：
+以下变量均为按需覆盖；未配置时使用服务默认值：
 
 - `DATABASE_PATH`：SQLite 主库路径；`XY_DATABASE_PATH` 已移除，若仍配置会直接阻断启动。
 - `PROXY_RAW_DIR`：原始请求/响应落盘目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，避免跟随容器工作目录漂移。
@@ -91,8 +91,9 @@ labels:
 - `PROXY_RAW_RETENTION_DAYS`：原文留存天数（到期清理原文字段/文件，不影响结构化统计）。
 - `PROXY_ENFORCE_STREAM_INCLUDE_USAGE`：是否在 `chat.completions` 流式请求中强制注入 `stream_options.include_usage=true`。
 - `PROXY_USAGE_BACKFILL_ON_STARTUP`：兼容保留的历史补数开关说明；当前版本的历史补数已经改为后台有界执行，不再阻塞 readiness。
-- `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：上游握手超时（默认 `300` 秒，建议内网链路可降到 `120` 秒）。
-- `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`：请求体读取总超时（默认 `180` 秒；超时返回 `408`）。
+- `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：非 compact 代理路径的上游等待超时，默认 `60` 秒。
+- `OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS`：`/v1/responses/compact` 的上游等待超时，可选覆盖；默认 `180` 秒。
+- `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`：请求体读取总超时，默认 `180` 秒；超时返回 `408`。
 - `XY_RETENTION_ENABLED`：是否启用后台 retention/archive 维护任务，默认 `false`，上线时需要显式开启。
 - `XY_RETENTION_DRY_RUN`：全局 dry-run 开关；开启后 maintenance 只输出计划与计数，不删除数据。
 - `XY_RETENTION_INTERVAL_SECS`：常驻 maintenance 执行间隔；默认按小时调度。
@@ -158,9 +159,9 @@ labels:
 2. **确认上游地址是否走内网**
    - Docker Compose 推荐优先使用同网络服务名（例如 `http://ai-claude-relay-service:3000/openai`），避免公网握手放大抖动。
 
-3. **检查超时参数是否合理**
-   - 建议起始值：`OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=120`、`OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180`。
-   - 若慢上传请求合法且频繁超时，可逐步上调 `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`。
+3. **核对超时口径**
+   - 默认值：`OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=60`（非 compact 上游等待超时）、`OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS=180`（`/v1/responses/compact` 上游等待超时）、`OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180`（请求体读取总超时）。
+   - 若部署中显式覆盖这些环境变量，需要确认三者职责没有被混用。
 
 ## Retention And Archive Operations
 
