@@ -89,7 +89,78 @@ export interface ApiInvocationRawMetadata {
 }
 
 export interface ListResponse {
+  snapshotId?: number
+  total?: number
+  page?: number
+  pageSize?: number
   records: ApiInvocation[]
+}
+
+export type InvocationFocus = 'token' | 'network' | 'exception'
+export type InvocationSortBy = 'occurredAt' | 'totalTokens' | 'cost' | 'tTotalMs' | 'tUpstreamTtfbMs' | 'status'
+export type InvocationSortOrder = 'asc' | 'desc'
+export type InvocationRangePreset = 'today' | '1d' | '7d' | '30d' | 'custom'
+
+export interface InvocationRecordsQuery {
+  page?: number
+  pageSize?: number
+  snapshotId?: number
+  sortBy?: InvocationSortBy
+  sortOrder?: InvocationSortOrder
+  rangePreset?: InvocationRangePreset
+  from?: string
+  to?: string
+  model?: string
+  status?: string
+  proxy?: string
+  endpoint?: string
+  failureClass?: string
+  failureKind?: string
+  promptCacheKey?: string
+  requesterIp?: string
+  keyword?: string
+  minTotalTokens?: number
+  maxTotalTokens?: number
+  minTotalMs?: number
+  maxTotalMs?: number
+}
+
+export interface InvocationTokenSummary {
+  requestCount: number
+  totalTokens: number
+  avgTokensPerRequest: number
+  cacheInputTokens: number
+  totalCost: number
+}
+
+export interface InvocationNetworkSummary {
+  avgTtfbMs?: number | null
+  p95TtfbMs?: number | null
+  avgTotalMs?: number | null
+  p95TotalMs?: number | null
+}
+
+export interface InvocationExceptionSummary {
+  failureCount: number
+  serviceFailureCount: number
+  clientFailureCount: number
+  clientAbortCount: number
+  actionableFailureCount: number
+}
+
+export interface InvocationRecordsResponse extends ListResponse {
+  snapshotId: number
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface InvocationRecordsSummaryResponse extends StatsResponse {
+  snapshotId: number
+  newRecordsCount: number
+  token: InvocationTokenSummary
+  network: InvocationNetworkSummary
+  exception: InvocationExceptionSummary
 }
 
 export interface StatsResponse {
@@ -209,6 +280,30 @@ export type BroadcastPayload =
       version: string
     }
 
+function appendInvocationRecordsQuery(search: URLSearchParams, query: InvocationRecordsQuery) {
+  if (query.page != null) search.set('page', String(query.page))
+  if (query.pageSize != null) search.set('pageSize', String(query.pageSize))
+  if (query.snapshotId != null) search.set('snapshotId', String(query.snapshotId))
+  if (query.sortBy) search.set('sortBy', query.sortBy)
+  if (query.sortOrder) search.set('sortOrder', query.sortOrder)
+  if (query.rangePreset) search.set('rangePreset', query.rangePreset)
+  if (query.from) search.set('from', query.from)
+  if (query.to) search.set('to', query.to)
+  if (query.model) search.set('model', query.model)
+  if (query.status) search.set('status', query.status)
+  if (query.proxy) search.set('proxy', query.proxy)
+  if (query.endpoint) search.set('endpoint', query.endpoint)
+  if (query.failureClass) search.set('failureClass', query.failureClass)
+  if (query.failureKind) search.set('failureKind', query.failureKind)
+  if (query.promptCacheKey) search.set('promptCacheKey', query.promptCacheKey)
+  if (query.requesterIp) search.set('requesterIp', query.requesterIp)
+  if (query.keyword) search.set('keyword', query.keyword)
+  if (query.minTotalTokens != null) search.set('minTotalTokens', String(query.minTotalTokens))
+  if (query.maxTotalTokens != null) search.set('maxTotalTokens', String(query.maxTotalTokens))
+  if (query.minTotalMs != null) search.set('minTotalMs', String(query.minTotalMs))
+  if (query.maxTotalMs != null) search.set('maxTotalMs', String(query.maxTotalMs))
+}
+
 export async function fetchInvocations(limit: number, params?: { model?: string; status?: string }) {
   const search = new URLSearchParams()
   search.set('limit', String(limit))
@@ -216,6 +311,18 @@ export async function fetchInvocations(limit: number, params?: { model?: string;
   if (params?.status) search.set('status', params.status)
 
   return fetchJson<ListResponse>(`/api/invocations?${search.toString()}`)
+}
+
+export async function fetchInvocationRecords(query: InvocationRecordsQuery) {
+  const search = new URLSearchParams()
+  appendInvocationRecordsQuery(search, query)
+  return fetchJson<InvocationRecordsResponse>(`/api/invocations?${search.toString()}`)
+}
+
+export async function fetchInvocationRecordsSummary(query: InvocationRecordsQuery) {
+  const search = new URLSearchParams()
+  appendInvocationRecordsQuery(search, query)
+  return fetchJson<InvocationRecordsSummaryResponse>(`/api/invocations/summary?${search.toString()}`)
 }
 
 export async function fetchStats() {

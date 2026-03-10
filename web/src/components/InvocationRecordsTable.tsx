@@ -1,0 +1,342 @@
+import { Fragment, useMemo, useState } from 'react'
+import { Icon } from '@iconify/react'
+import type { ApiInvocation, InvocationFocus } from '../lib/api'
+import { useTranslation } from '../i18n'
+import { Alert } from './ui/alert'
+import { Badge } from './ui/badge'
+import { Spinner } from './ui/spinner'
+
+interface InvocationRecordsTableProps {
+  focus: InvocationFocus
+  records: ApiInvocation[]
+  isLoading: boolean
+  error?: string | null
+}
+
+const FALLBACK_CELL = '—'
+const STATUS_META: Record<string, { variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'; labelKey: string }> = {
+  success: { variant: 'success', labelKey: 'table.status.success' },
+  failed: { variant: 'error', labelKey: 'table.status.failed' },
+  running: { variant: 'default', labelKey: 'table.status.running' },
+  pending: { variant: 'warning', labelKey: 'table.status.pending' },
+}
+
+function formatText(value?: string | null) {
+  const normalized = value?.trim()
+  return normalized ? normalized : FALLBACK_CELL
+}
+
+function formatNumber(value?: number | null) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
+  return new Intl.NumberFormat('en-US').format(value)
+}
+
+function formatMilliseconds(value?: number | null) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
+  return `${Math.round(value)} ms`
+}
+
+function formatCost(value?: number | null) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  }).format(value)
+}
+
+function resolveStatusMeta(status?: string | null) {
+  return STATUS_META[(status ?? '').toLowerCase()] ?? { variant: 'secondary' as const, labelKey: 'table.status.unknown' }
+}
+
+function resolveProxyName(record: ApiInvocation) {
+  const payloadProxyName = record.proxyDisplayName?.trim()
+  if (payloadProxyName) return payloadProxyName
+  const sourceValue = record.source?.trim()
+  if (sourceValue && sourceValue.toLowerCase() !== 'proxy') return sourceValue
+  return FALLBACK_CELL
+}
+
+function resolveFailureClassTone(failureClass?: ApiInvocation['failureClass']) {
+  switch (failureClass) {
+    case 'service_failure':
+      return { variant: 'error' as const, text: 'service_failure' }
+    case 'client_failure':
+      return { variant: 'warning' as const, text: 'client_failure' }
+    case 'client_abort':
+      return { variant: 'secondary' as const, text: 'client_abort' }
+    default:
+      return { variant: 'secondary' as const, text: FALLBACK_CELL }
+  }
+}
+
+export function InvocationRecordsTable({ focus, records, isLoading, error }: InvocationRecordsTableProps) {
+  const { t, locale } = useTranslation()
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
+  const dateTimeFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(localeTag, {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }),
+    [localeTag],
+  )
+
+  if (error) {
+    return <Alert variant="error">{t('records.table.loadError', { error })}</Alert>
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-10">
+        <Spinner size="lg" aria-label={t('records.table.loadingAria')} />
+      </div>
+    )
+  }
+
+  if (records.length === 0) {
+    return <Alert>{t('records.table.empty')}</Alert>
+  }
+
+  const headers = (() => {
+    switch (focus) {
+      case 'network':
+        return [
+          t('records.table.network.endpoint'),
+          t('records.table.network.requesterIp'),
+          t('records.table.network.ttfb'),
+          t('records.table.network.totalMs'),
+        ]
+      case 'exception':
+        return [
+          t('records.table.exception.failureKind'),
+          t('records.table.exception.failureClass'),
+          t('records.table.exception.actionable'),
+          t('records.table.exception.error'),
+        ]
+      case 'token':
+      default:
+        return [
+          t('records.table.token.inputCache'),
+          t('records.table.token.outputReasoning'),
+          t('records.table.token.totalTokens'),
+          t('records.table.token.cost'),
+        ]
+    }
+  })()
+
+  const renderFocusCells = (record: ApiInvocation) => {
+    switch (focus) {
+      case 'network':
+        return (
+          <>
+            <td className="px-3 py-3 align-middle text-left font-mono text-xs">{formatText(record.endpoint)}</td>
+            <td className="px-3 py-3 align-middle text-left font-mono text-xs">{formatText(record.requesterIp)}</td>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatMilliseconds(record.tUpstreamTtfbMs)}</td>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatMilliseconds(record.tTotalMs)}</td>
+          </>
+        )
+      case 'exception': {
+        const failureClass = resolveFailureClassTone(record.failureClass)
+        return (
+          <>
+            <td className="px-3 py-3 align-middle text-left font-mono text-xs">{formatText(record.failureKind)}</td>
+            <td className="px-3 py-3 align-middle text-left text-xs">
+              <Badge variant={failureClass.variant}>{failureClass.text}</Badge>
+            </td>
+            <td className="px-3 py-3 align-middle text-left text-xs">
+              <Badge variant={record.isActionable ? 'warning' : 'secondary'}>
+                {record.isActionable ? t('records.table.exception.actionableYes') : t('records.table.exception.actionableNo')}
+              </Badge>
+            </td>
+            <td className="max-w-[18rem] truncate px-3 py-3 align-middle text-left text-xs" title={record.errorMessage ?? undefined}>
+              {formatText(record.errorMessage)}
+            </td>
+          </>
+        )
+      }
+      case 'token':
+      default:
+        return (
+          <>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">
+              <div>{formatNumber(record.inputTokens)}</div>
+              <div className="text-base-content/60">{formatNumber(record.cacheInputTokens)}</div>
+            </td>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">
+              <div>{formatNumber(record.outputTokens)}</div>
+              <div className="text-base-content/60">{formatNumber(record.reasoningTokens)}</div>
+            </td>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatNumber(record.totalTokens)}</td>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatCost(record.cost)}</td>
+          </>
+        )
+    }
+  }
+
+  const renderMobileFocus = (record: ApiInvocation) => {
+    switch (focus) {
+      case 'network':
+        return (
+          <>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.network.endpoint')}</dt><dd className="truncate font-mono">{formatText(record.endpoint)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.network.requesterIp')}</dt><dd className="truncate font-mono">{formatText(record.requesterIp)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.network.ttfb')}</dt><dd className="font-mono">{formatMilliseconds(record.tUpstreamTtfbMs)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.network.totalMs')}</dt><dd className="font-mono">{formatMilliseconds(record.tTotalMs)}</dd></div>
+          </>
+        )
+      case 'exception':
+        return (
+          <>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.exception.failureKind')}</dt><dd className="truncate font-mono">{formatText(record.failureKind)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.exception.failureClass')}</dt><dd className="truncate font-mono">{formatText(record.failureClass)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.exception.actionable')}</dt><dd>{record.isActionable ? t('records.table.exception.actionableYes') : t('records.table.exception.actionableNo')}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.exception.error')}</dt><dd className="truncate font-mono">{formatText(record.errorMessage)}</dd></div>
+          </>
+        )
+      case 'token':
+      default:
+        return (
+          <>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.inputCache')}</dt><dd className="font-mono">{formatNumber(record.inputTokens)} / {formatNumber(record.cacheInputTokens)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.outputReasoning')}</dt><dd className="font-mono">{formatNumber(record.outputTokens)} / {formatNumber(record.reasoningTokens)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.totalTokens')}</dt><dd className="font-mono">{formatNumber(record.totalTokens)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.cost')}</dt><dd className="font-mono">{formatCost(record.cost)}</dd></div>
+          </>
+        )
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-3 md:hidden">
+        {records.map((record) => {
+          const isExpanded = expandedId === record.id
+          const statusMeta = resolveStatusMeta(record.status)
+          return (
+            <article key={record.id} className="rounded-xl border border-base-300/70 bg-base-100/45 px-4 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold">{dateTimeFormatter.format(new Date(record.occurredAt))}</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <Badge variant={statusMeta.variant}>{t(statusMeta.labelKey)}</Badge>
+                    <span className="truncate text-xs text-base-content/70">{resolveProxyName(record)}</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  onClick={() => setExpandedId((current) => (current === record.id ? null : record.id))}
+                  aria-expanded={isExpanded}
+                  aria-label={isExpanded ? t('records.table.hideDetails') : t('records.table.showDetails')}
+                >
+                  <Icon icon={isExpanded ? 'mdi:chevron-down' : 'mdi:chevron-right'} className="h-5 w-5" aria-hidden />
+                </button>
+              </div>
+              <div className="mt-3 text-sm font-medium">{formatText(record.model)}</div>
+              <dl className="mt-3 space-y-2 text-xs text-base-content/75">{renderMobileFocus(record)}</dl>
+              {isExpanded && (
+                <div className="mt-3 rounded-xl border border-base-300/70 bg-base-200/55 p-3 text-xs">
+                  <div className="grid gap-2">
+                    <div className="flex items-start justify-between gap-3"><span>{t('table.details.invokeId')}</span><span className="break-all font-mono">{record.invokeId}</span></div>
+                    <div className="flex items-start justify-between gap-3"><span>{t('table.details.endpoint')}</span><span className="break-all font-mono">{formatText(record.endpoint)}</span></div>
+                    <div className="flex items-start justify-between gap-3"><span>{t('table.details.promptCacheKey')}</span><span className="break-all font-mono">{formatText(record.promptCacheKey)}</span></div>
+                    <div className="flex items-start justify-between gap-3"><span>{t('table.details.requesterIp')}</span><span className="break-all font-mono">{formatText(record.requesterIp)}</span></div>
+                    <div className="flex items-start justify-between gap-3"><span>{t('table.details.stage.upstreamFirstByte')}</span><span className="font-mono">{formatMilliseconds(record.tUpstreamTtfbMs)}</span></div>
+                    <div className="flex items-start justify-between gap-3"><span>{t('table.details.stage.total')}</span><span className="font-mono">{formatMilliseconds(record.tTotalMs)}</span></div>
+                    <div className="flex items-start justify-between gap-3"><span>{t('table.errorDetailsTitle')}</span><span className="break-all font-mono">{formatText(record.errorMessage)}</span></div>
+                  </div>
+                </div>
+              )}
+            </article>
+          )
+        })}
+      </div>
+
+      <div className="hidden md:block overflow-x-auto rounded-xl border border-base-300/70 bg-base-100/50">
+        <table className="min-w-full table-fixed border-separate border-spacing-0 text-sm">
+          <thead className="bg-base-200/65 text-[11px] uppercase tracking-[0.08em] text-base-content/70">
+            <tr>
+              <th className="px-3 py-3 text-left font-semibold">{t('table.column.time')}</th>
+              <th className="px-3 py-3 text-left font-semibold">{t('table.column.proxy')}</th>
+              <th className="px-3 py-3 text-left font-semibold">{t('table.column.model')}</th>
+              <th className="px-3 py-3 text-left font-semibold">{t('table.column.status')}</th>
+              {headers.map((header) => (
+                <th key={header} className="px-3 py-3 text-left font-semibold">{header}</th>
+              ))}
+              <th className="px-3 py-3 text-right font-semibold">
+                <span className="sr-only">{t('records.table.details')}</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {records.map((record, index) => {
+              const isExpanded = expandedId === record.id
+              const statusMeta = resolveStatusMeta(record.status)
+              return (
+                <Fragment key={record.id}>
+                  <tr className={index % 2 === 0 ? 'bg-base-100/30' : 'bg-base-200/18'}>
+                    <td className="px-3 py-3 align-middle text-left text-xs font-medium">{dateTimeFormatter.format(new Date(record.occurredAt))}</td>
+                    <td className="max-w-[12rem] truncate px-3 py-3 align-middle text-left text-xs" title={resolveProxyName(record)}>{resolveProxyName(record)}</td>
+                    <td className="max-w-[14rem] truncate px-3 py-3 align-middle text-left text-xs" title={record.model ?? undefined}>{formatText(record.model)}</td>
+                    <td className="px-3 py-3 align-middle text-left text-xs"><Badge variant={statusMeta.variant}>{t(statusMeta.labelKey)}</Badge></td>
+                    {renderFocusCells(record)}
+                    <td className="px-3 py-3 align-middle text-right">
+                      <button
+                        type="button"
+                        className="inline-flex items-center justify-center rounded-md text-base-content/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                        onClick={() => setExpandedId((current) => (current === record.id ? null : record.id))}
+                        aria-expanded={isExpanded}
+                        aria-label={isExpanded ? t('records.table.hideDetails') : t('records.table.showDetails')}
+                      >
+                        <Icon icon={isExpanded ? 'mdi:chevron-down' : 'mdi:chevron-right'} className="h-4 w-4" aria-hidden />
+                      </button>
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr className="bg-base-200/55">
+                      <td colSpan={9} className="px-4 py-4">
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 text-xs">
+                          <div className="rounded-lg border border-base-300/70 bg-base-100/55 p-3">
+                            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/60">{t('table.detailsTitle')}</div>
+                            <div className="space-y-2">
+                              <div className="flex items-start justify-between gap-3"><span>{t('table.details.invokeId')}</span><span className="break-all font-mono">{record.invokeId}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('table.details.source')}</span><span className="break-all font-mono">{formatText(record.source)}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('table.details.endpoint')}</span><span className="break-all font-mono">{formatText(record.endpoint)}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('table.details.promptCacheKey')}</span><span className="break-all font-mono">{formatText(record.promptCacheKey)}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('table.details.requesterIp')}</span><span className="break-all font-mono">{formatText(record.requesterIp)}</span></div>
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-base-300/70 bg-base-100/55 p-3">
+                            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/60">{t('records.table.focusTitle')}</div>
+                            <div className="space-y-2">
+                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.token.totalTokens')}</span><span className="font-mono">{formatNumber(record.totalTokens)}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.token.cost')}</span><span className="font-mono">{formatCost(record.cost)}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.network.ttfb')}</span><span className="font-mono">{formatMilliseconds(record.tUpstreamTtfbMs)}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.network.totalMs')}</span><span className="font-mono">{formatMilliseconds(record.tTotalMs)}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.exception.failureKind')}</span><span className="break-all font-mono">{formatText(record.failureKind)}</span></div>
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-base-300/70 bg-base-100/55 p-3 md:col-span-2 xl:col-span-1">
+                            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/60">{t('table.errorDetailsTitle')}</div>
+                            <pre className="whitespace-pre-wrap break-words font-mono text-xs">{formatText(record.errorMessage)}</pre>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}

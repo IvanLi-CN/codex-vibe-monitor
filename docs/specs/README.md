@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                        |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | -------------------------------------------- |
+| 6whgx | 请求记录分析页：稳定快照 + 聚焦分析                                           | 部分完成（4/5） | `6whgx-records-stable-snapshot-analytics/SPEC.md`        | 2026-03-10 | fast-track / impl+tests+browser done         |
 | 5gqdb | InvocationTable 桌面代理名省略回归热修                                        | 已完成          | `5gqdb-invocation-proxy-name-truncation-hotfix/SPEC.md`  | 2026-03-10 | fast-track / PR #105 / screenshot evidence   |
 | 2uaxk | 移除 XYAI 采集，仅保留历史读取                                                | 已完成（4/4）   | `2uaxk-remove-xyai-legacy-ingest/SPEC.md`                | 2026-03-09 | PR #101 / CI + review-loop                   |
 | bh43j | 数据库环境变量重命名与 raw 路径锚点修复                                       | 已完成（5/5）   | `bh43j-database-path-raw-dir-anchor/SPEC.md`             | 2026-03-09 | fast-track / PR #106 / review-loop clear     |

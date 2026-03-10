@@ -7124,6 +7124,7 @@ async fn list_invocations_projects_payload_context_fields() {
             limit: Some(10),
             model: None,
             status: None,
+            ..Default::default()
         }),
     )
     .await
@@ -7184,6 +7185,7 @@ async fn list_invocations_tolerates_malformed_payload_json() {
             limit: Some(10),
             model: None,
             status: None,
+            ..Default::default()
         }),
     )
     .await
@@ -7242,6 +7244,7 @@ async fn list_invocations_ignores_non_numeric_proxy_weight_delta() {
             limit: Some(10),
             model: None,
             status: None,
+            ..Default::default()
         }),
     )
     .await
@@ -7298,6 +7301,7 @@ async fn list_invocations_preserves_historical_xy_records() {
             limit: Some(10),
             model: None,
             status: None,
+            ..Default::default()
         }),
     )
     .await
@@ -7311,6 +7315,226 @@ async fn list_invocations_preserves_historical_xy_records() {
     assert_eq!(record.source, SOURCE_XY);
     assert_eq!(record.service_tier.as_deref(), Some("priority"));
     assert_eq!(record.requested_service_tier, None);
+}
+
+#[tokio::test]
+async fn list_invocations_keeps_snapshot_stable_across_pagination_and_sorting() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at, total_tokens) in [
+        ("snapshot-1", "2026-03-10 08:00:00", 100_i64),
+        ("snapshot-2", "2026-03-10 08:01:00", 200_i64),
+        ("snapshot-3", "2026-03-10 08:02:00", 300_i64),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                total_tokens,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(total_tokens)
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert snapshot seed row");
+    }
+
+    let Json(first_page) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            page: Some(1),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("initial snapshot query should succeed");
+
+    assert_eq!(first_page.snapshot_id, 3);
+    assert_eq!(first_page.total, 3);
+    assert_eq!(first_page.records.len(), 1);
+    assert_eq!(first_page.records[0].invoke_id, "snapshot-3");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("snapshot-4")
+    .bind("2026-03-10 08:03:00")
+    .bind(SOURCE_PROXY)
+    .bind(50_i64)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert newer row after snapshot");
+
+    let Json(second_page) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            page: Some(2),
+            page_size: Some(1),
+            snapshot_id: Some(first_page.snapshot_id),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("second page should honor snapshot");
+    assert_eq!(second_page.snapshot_id, first_page.snapshot_id);
+    assert_eq!(second_page.total, 3);
+    assert_eq!(second_page.records[0].invoke_id, "snapshot-2");
+
+    let Json(sorted_page) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            page: Some(1),
+            page_size: Some(1),
+            snapshot_id: Some(first_page.snapshot_id),
+            sort_by: Some("totalTokens".to_string()),
+            sort_order: Some("asc".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("sorting within snapshot should succeed");
+    assert_eq!(sorted_page.total, 3);
+    assert_eq!(sorted_page.records[0].invoke_id, "snapshot-1");
+}
+
+#[tokio::test]
+async fn fetch_invocation_summary_reports_new_records_count_for_applied_filters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            total_tokens,
+            cache_input_tokens,
+            cost,
+            status,
+            t_upstream_ttfb_ms,
+            t_total_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind("summary-base")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("gpt-5.4")
+    .bind(120_i64)
+    .bind(20_i64)
+    .bind(0.012_f64)
+    .bind("success")
+    .bind(100.0_f64)
+    .bind(250.0_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert base summary row");
+
+    let Json(initial_list) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            model: Some("gpt-5.4".to_string()),
+            page: Some(1),
+            page_size: Some(20),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("seed list query should succeed");
+
+    for (invoke_id, model) in [
+        ("summary-new-match", "gpt-5.4"),
+        ("summary-new-other", "gpt-5.3-codex"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                total_tokens,
+                cache_input_tokens,
+                cost,
+                status,
+                t_upstream_ttfb_ms,
+                t_total_ms,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 09:05:00")
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind(240_i64)
+        .bind(40_i64)
+        .bind(0.024_f64)
+        .bind("failed")
+        .bind(180.0_f64)
+        .bind(500.0_f64)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert post-snapshot row");
+    }
+
+    let Json(summary) = fetch_invocation_summary(
+        State(state),
+        Query(ListQuery {
+            model: Some("gpt-5.4".to_string()),
+            snapshot_id: Some(initial_list.snapshot_id),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("summary query should succeed");
+
+    assert_eq!(summary.snapshot_id, initial_list.snapshot_id);
+    assert_eq!(summary.new_records_count, 1);
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.token.request_count, 1);
+    assert_eq!(summary.token.total_tokens, 120);
+    assert_eq!(summary.token.cache_input_tokens, 20);
+    assert_f64_close(summary.token.avg_tokens_per_request, 120.0);
+    assert_f64_close(summary.network.avg_ttfb_ms.unwrap_or_default(), 100.0);
+    assert_f64_close(summary.network.p95_total_ms.unwrap_or_default(), 250.0);
+    assert_eq!(summary.exception.failure_count, 0);
 }
 
 #[tokio::test]

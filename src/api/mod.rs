@@ -2,72 +2,703 @@ use super::*;
 use crate::forward_proxy::*;
 use crate::stats::*;
 
-pub(crate) async fn list_invocations(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<ListQuery>,
-) -> Result<Json<ListResponse>, ApiError> {
-    let limit = params
-        .limit
-        .unwrap_or(50)
-        .clamp(1, state.config.list_limit_max as i64);
+const INVOCATION_PROXY_DISPLAY_SQL: &str = "COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), ''), CASE WHEN TRIM(source) != 'proxy' THEN TRIM(source) END)";
+const INVOCATION_ENDPOINT_SQL: &str =
+    "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.endpoint') AS TEXT) END";
+const INVOCATION_FAILURE_KIND_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind)";
+const INVOCATION_REQUESTER_IP_SQL: &str =
+    "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
+const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END";
+const INVOCATION_SELECT_SQL: &str = "SELECT id, invoke_id, occurred_at, source, \
+     CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
+     model, input_tokens, output_tokens, \
+     cache_input_tokens, reasoning_tokens, \
+     CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort, \
+     total_tokens, cost, status, error_message, \
+     CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
+     COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind, \
+     failure_class, is_actionable, \
+     CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
+     CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
+     CASE \
+       WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
+         THEN json_extract(payload, '$.requestedServiceTier') \
+       WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
+         THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
+     CASE \
+       WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
+         THEN json_extract(payload, '$.serviceTier') \
+       WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
+         THEN json_extract(payload, '$.service_tier') END AS service_tier, \
+     CASE WHEN json_valid(payload) \
+       AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real') \
+       THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta, \
+     cost_estimated, price_version, \
+     request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
+     response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
+     raw_expires_at, detail_level, detail_pruned_at, detail_prune_reason, \
+     t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
+     t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, \
+     created_at \
+     FROM codex_invocations WHERE 1 = 1";
 
-    let mut query = QueryBuilder::new(
-        "SELECT id, invoke_id, occurred_at, source, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
-         model, input_tokens, output_tokens, \
-         cache_input_tokens, reasoning_tokens, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort, \
-         total_tokens, cost, status, error_message, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
-         COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind, \
-         failure_class, is_actionable, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
-         CASE \
-           WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
-             THEN json_extract(payload, '$.requestedServiceTier') \
-           WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
-             THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
-         CASE \
-           WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
-             THEN json_extract(payload, '$.serviceTier') \
-           WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
-             THEN json_extract(payload, '$.service_tier') END AS service_tier, \
-         CASE WHEN json_valid(payload) \
-           AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real') \
-           THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta, \
-         cost_estimated, price_version, \
-         request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
-         response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
-         raw_expires_at, detail_level, detail_pruned_at, detail_prune_reason, \
-         t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
-         t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, \
-         created_at \
-         FROM codex_invocations WHERE 1 = 1",
-    );
-    let source_scope = resolve_default_source_scope(&state.pool).await?;
+#[derive(Debug, Clone, Copy)]
+enum InvocationSortBy {
+    OccurredAt,
+    TotalTokens,
+    Cost,
+    TotalMs,
+    TtfbMs,
+    Status,
+}
+
+impl InvocationSortBy {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).filter(|value| !value.is_empty()) {
+            Some("totalTokens") => Self::TotalTokens,
+            Some("cost") => Self::Cost,
+            Some("tTotalMs") => Self::TotalMs,
+            Some("tUpstreamTtfbMs") => Self::TtfbMs,
+            Some("status") => Self::Status,
+            _ => Self::OccurredAt,
+        }
+    }
+
+    fn sql_expr(self) -> &'static str {
+        match self {
+            Self::OccurredAt => "occurred_at",
+            Self::TotalTokens => "total_tokens",
+            Self::Cost => "cost",
+            Self::TotalMs => "t_total_ms",
+            Self::TtfbMs => "t_upstream_ttfb_ms",
+            Self::Status => "status",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InvocationSortOrder {
+    Asc,
+    Desc,
+}
+
+impl InvocationSortOrder {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).filter(|value| !value.is_empty()) {
+            Some("asc") => Self::Asc,
+            _ => Self::Desc,
+        }
+    }
+
+    fn sql_keyword(self) -> &'static str {
+        match self {
+            Self::Asc => "ASC",
+            Self::Desc => "DESC",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SnapshotConstraint {
+    UpTo(i64),
+    After(i64),
+}
+
+#[derive(Debug, Clone)]
+struct InvocationRecordsFilters {
+    occurred_from: Option<String>,
+    occurred_to: Option<String>,
+    status: Option<String>,
+    model: Option<String>,
+    proxy: Option<String>,
+    endpoint: Option<String>,
+    failure_class: Option<String>,
+    failure_kind: Option<String>,
+    prompt_cache_key: Option<String>,
+    requester_ip: Option<String>,
+    keyword: Option<String>,
+    min_total_tokens: Option<i64>,
+    max_total_tokens: Option<i64>,
+    min_total_ms: Option<f64>,
+    max_total_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct InvocationListRequest {
+    filters: InvocationRecordsFilters,
+    page: i64,
+    page_size: i64,
+    sort_by: InvocationSortBy,
+    sort_order: InvocationSortOrder,
+    snapshot_id: Option<i64>,
+}
+
+#[derive(Debug, FromRow)]
+struct InvocationSummaryAggRow {
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    cache_input_tokens: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct InvocationNetworkTimingRow {
+    t_upstream_ttfb_ms: Option<f64>,
+    t_total_ms: Option<f64>,
+}
+
+#[derive(Debug, FromRow)]
+struct InvocationFailureSummaryRow {
+    status: Option<String>,
+    error_message: Option<String>,
+    failure_kind: Option<String>,
+    failure_class: Option<String>,
+    is_actionable: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationTokenSummary {
+    pub(crate) request_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) avg_tokens_per_request: f64,
+    pub(crate) cache_input_tokens: i64,
+    pub(crate) total_cost: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationNetworkSummary {
+    pub(crate) avg_ttfb_ms: Option<f64>,
+    pub(crate) p95_ttfb_ms: Option<f64>,
+    pub(crate) avg_total_ms: Option<f64>,
+    pub(crate) p95_total_ms: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationExceptionSummary {
+    pub(crate) failure_count: i64,
+    pub(crate) service_failure_count: i64,
+    pub(crate) client_failure_count: i64,
+    pub(crate) client_abort_count: i64,
+    pub(crate) actionable_failure_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationSummaryResponse {
+    pub(crate) snapshot_id: i64,
+    pub(crate) new_records_count: i64,
+    pub(crate) total_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) token: InvocationTokenSummary,
+    pub(crate) network: InvocationNetworkSummary,
+    pub(crate) exception: InvocationExceptionSummary,
+}
+
+fn normalize_query_text(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn escape_sql_like(raw: &str) -> String {
+    let mut escaped = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '%' | '_' | '\\' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn parse_invocation_bound(raw: Option<&str>, field_name: &str) -> Result<Option<String>> {
+    let Some(raw_value) = normalize_query_text(raw) else {
+        return Ok(None);
+    };
+    let parsed = DateTime::parse_from_rfc3339(&raw_value)
+        .with_context(|| format!("invalid {field_name}: {raw_value}"))?
+        .with_timezone(&Utc);
+    Ok(Some(db_occurred_at_lower_bound(parsed)))
+}
+
+fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilters> {
+    let occurred_from = parse_invocation_bound(params.from.as_deref(), "from")?;
+    let occurred_to = parse_invocation_bound(params.to.as_deref(), "to")?;
+
+    if let (Some(min_tokens), Some(max_tokens)) = (params.min_total_tokens, params.max_total_tokens)
+        && min_tokens > max_tokens
+    {
+        return Err(anyhow!("minTotalTokens must be <= maxTotalTokens"));
+    }
+
+    if let (Some(min_ms), Some(max_ms)) = (params.min_total_ms, params.max_total_ms)
+        && min_ms > max_ms
+    {
+        return Err(anyhow!("minTotalMs must be <= maxTotalMs"));
+    }
+
+    Ok(InvocationRecordsFilters {
+        occurred_from,
+        occurred_to,
+        status: normalize_query_text(params.status.as_deref()),
+        model: normalize_query_text(params.model.as_deref()),
+        proxy: normalize_query_text(params.proxy.as_deref()),
+        endpoint: normalize_query_text(params.endpoint.as_deref()),
+        failure_class: normalize_query_text(params.failure_class.as_deref()),
+        failure_kind: normalize_query_text(params.failure_kind.as_deref()),
+        prompt_cache_key: normalize_query_text(params.prompt_cache_key.as_deref()),
+        requester_ip: normalize_query_text(params.requester_ip.as_deref()),
+        keyword: normalize_query_text(params.keyword.as_deref()),
+        min_total_tokens: params.min_total_tokens,
+        max_total_tokens: params.max_total_tokens,
+        min_total_ms: params.min_total_ms,
+        max_total_ms: params.max_total_ms,
+    })
+}
+
+fn build_invocation_list_request(
+    params: &ListQuery,
+    list_limit_max: i64,
+) -> Result<InvocationListRequest> {
+    let filters = build_invocation_filters(params)?;
+    let page_size = params
+        .page_size
+        .or(params.limit)
+        .unwrap_or(50)
+        .clamp(1, list_limit_max);
+    let page = params.page.unwrap_or(1).max(1);
+    let snapshot_id = params.snapshot_id.filter(|value| *value >= 0);
+    Ok(InvocationListRequest {
+        filters,
+        page,
+        page_size,
+        sort_by: InvocationSortBy::parse(params.sort_by.as_deref()),
+        sort_order: InvocationSortOrder::parse(params.sort_order.as_deref()),
+        snapshot_id,
+    })
+}
+
+fn push_exact_text_filter(query: &mut QueryBuilder<Sqlite>, sql_expr: &str, value: &str) {
+    query.push(" AND LOWER(TRIM(COALESCE(");
+    query.push(sql_expr);
+    query.push(", ''))) = ");
+    query.push_bind(value.to_lowercase());
+}
+
+fn push_keyword_filter(query: &mut QueryBuilder<Sqlite>, keyword: &str) {
+    let like_pattern = format!("%{}%", escape_sql_like(&keyword.to_lowercase()));
+    query.push(" AND (");
+    query
+        .push("LOWER(invoke_id) LIKE ")
+        .push_bind(like_pattern.clone())
+        .push(" ESCAPE '\\\\'");
+    query
+        .push(" OR LOWER(COALESCE(model, '')) LIKE ")
+        .push_bind(like_pattern.clone())
+        .push(" ESCAPE '\\\\'");
+    query.push(" OR LOWER(TRIM(COALESCE(");
+    query.push(INVOCATION_PROXY_DISPLAY_SQL);
+    query.push(", ''))) LIKE ");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push(" OR LOWER(TRIM(COALESCE(");
+    query.push(INVOCATION_ENDPOINT_SQL);
+    query.push(", ''))) LIKE ");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push(" OR LOWER(TRIM(COALESCE(");
+    query.push(INVOCATION_FAILURE_KIND_SQL);
+    query.push(", ''))) LIKE ");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query
+        .push(" OR LOWER(COALESCE(error_message, '')) LIKE ")
+        .push_bind(like_pattern.clone())
+        .push(" ESCAPE '\\\\'");
+    query.push(" OR LOWER(TRIM(COALESCE(");
+    query.push(INVOCATION_PROMPT_CACHE_KEY_SQL);
+    query.push(", ''))) LIKE ");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push(" OR LOWER(TRIM(COALESCE(");
+    query.push(INVOCATION_REQUESTER_IP_SQL);
+    query.push(", ''))) LIKE ");
+    query.push_bind(like_pattern).push(" ESCAPE '\\\\'");
+    query.push(")");
+}
+
+fn apply_invocation_records_filters(
+    query: &mut QueryBuilder<Sqlite>,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot: Option<SnapshotConstraint>,
+) {
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    if let Some(model) = params.model.as_ref() {
-        query.push(" AND model = ").push_bind(model);
+    if let Some(snapshot_constraint) = snapshot {
+        match snapshot_constraint {
+            SnapshotConstraint::UpTo(snapshot_id) => {
+                query.push(" AND id <= ").push_bind(snapshot_id);
+            }
+            SnapshotConstraint::After(snapshot_id) => {
+                query.push(" AND id > ").push_bind(snapshot_id);
+            }
+        }
     }
 
-    if let Some(status) = params.status.as_ref() {
-        query.push(" AND status = ").push_bind(status);
+    if let Some(from_bound) = filters.occurred_from.as_ref() {
+        query
+            .push(" AND occurred_at >= ")
+            .push_bind(from_bound.clone());
     }
 
+    if let Some(to_bound) = filters.occurred_to.as_ref() {
+        query
+            .push(" AND occurred_at < ")
+            .push_bind(to_bound.clone());
+    }
+
+    if let Some(model) = filters.model.as_deref() {
+        push_exact_text_filter(query, "model", model);
+    }
+
+    if let Some(status) = filters.status.as_deref() {
+        push_exact_text_filter(query, "status", status);
+    }
+
+    if let Some(proxy) = filters.proxy.as_deref() {
+        push_exact_text_filter(query, INVOCATION_PROXY_DISPLAY_SQL, proxy);
+    }
+
+    if let Some(endpoint) = filters.endpoint.as_deref() {
+        push_exact_text_filter(query, INVOCATION_ENDPOINT_SQL, endpoint);
+    }
+
+    if let Some(failure_class) = filters.failure_class.as_deref() {
+        push_exact_text_filter(query, "failure_class", failure_class);
+    }
+
+    if let Some(failure_kind) = filters.failure_kind.as_deref() {
+        push_exact_text_filter(query, INVOCATION_FAILURE_KIND_SQL, failure_kind);
+    }
+
+    if let Some(prompt_cache_key) = filters.prompt_cache_key.as_deref() {
+        push_exact_text_filter(query, INVOCATION_PROMPT_CACHE_KEY_SQL, prompt_cache_key);
+    }
+
+    if let Some(requester_ip) = filters.requester_ip.as_deref() {
+        push_exact_text_filter(query, INVOCATION_REQUESTER_IP_SQL, requester_ip);
+    }
+
+    if let Some(keyword) = filters.keyword.as_deref() {
+        push_keyword_filter(query, keyword);
+    }
+
+    if let Some(min_total_tokens) = filters.min_total_tokens {
+        query
+            .push(" AND COALESCE(total_tokens, 0) >= ")
+            .push_bind(min_total_tokens);
+    }
+
+    if let Some(max_total_tokens) = filters.max_total_tokens {
+        query
+            .push(" AND COALESCE(total_tokens, 0) <= ")
+            .push_bind(max_total_tokens);
+    }
+
+    if let Some(min_total_ms) = filters.min_total_ms {
+        query
+            .push(" AND COALESCE(t_total_ms, 0) >= ")
+            .push_bind(min_total_ms);
+    }
+
+    if let Some(max_total_ms) = filters.max_total_ms {
+        query
+            .push(" AND COALESCE(t_total_ms, 0) <= ")
+            .push_bind(max_total_ms);
+    }
+}
+
+async fn resolve_invocation_snapshot_id(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+) -> Result<i64> {
+    #[derive(Debug, FromRow)]
+    struct SnapshotRow {
+        snapshot_id: Option<i64>,
+    }
+
+    let mut query =
+        QueryBuilder::new("SELECT MAX(id) AS snapshot_id FROM codex_invocations WHERE 1 = 1");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    let row = query
+        .build_query_as::<SnapshotRow>()
+        .fetch_one(pool)
+        .await?;
+    Ok(row.snapshot_id.unwrap_or(0))
+}
+
+fn append_invocation_order_clause(
+    query: &mut QueryBuilder<Sqlite>,
+    sort_by: InvocationSortBy,
+    sort_order: InvocationSortOrder,
+) {
+    let direction = sort_order.sql_keyword();
+    query.push(" ORDER BY ");
+    query.push(sort_by.sql_expr());
+    query.push(" IS NULL ASC, ");
+    query.push(sort_by.sql_expr());
+    query.push(" ");
+    query.push(direction);
+    match sort_by {
+        InvocationSortBy::OccurredAt => {
+            query.push(", id ");
+            query.push(direction);
+        }
+        _ => {
+            query.push(", occurred_at DESC, id DESC");
+        }
+    }
+}
+
+fn collect_positive_finite(values: impl Iterator<Item = Option<f64>>) -> Vec<f64> {
+    let mut collected = values
+        .flatten()
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .collect::<Vec<_>>();
+    collected.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    collected
+}
+
+fn summarize_network_timings(rows: &[InvocationNetworkTimingRow]) -> InvocationNetworkSummary {
+    let ttfb_values = collect_positive_finite(rows.iter().map(|row| row.t_upstream_ttfb_ms));
+    let total_values = collect_positive_finite(rows.iter().map(|row| row.t_total_ms));
+
+    let avg = |values: &[f64]| {
+        if values.is_empty() {
+            None
+        } else {
+            Some(values.iter().copied().sum::<f64>() / values.len() as f64)
+        }
+    };
+
+    InvocationNetworkSummary {
+        avg_ttfb_ms: avg(&ttfb_values),
+        p95_ttfb_ms: (!ttfb_values.is_empty()).then(|| percentile_sorted_f64(&ttfb_values, 0.95)),
+        avg_total_ms: avg(&total_values),
+        p95_total_ms: (!total_values.is_empty())
+            .then(|| percentile_sorted_f64(&total_values, 0.95)),
+    }
+}
+
+fn summarize_exception_rows(rows: &[InvocationFailureSummaryRow]) -> InvocationExceptionSummary {
+    let mut summary = InvocationExceptionSummary {
+        failure_count: 0,
+        service_failure_count: 0,
+        client_failure_count: 0,
+        client_abort_count: 0,
+        actionable_failure_count: 0,
+    };
+
+    for row in rows {
+        let resolved = resolve_failure_classification(
+            row.status.as_deref(),
+            row.error_message.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+            row.is_actionable,
+        );
+        if resolved.failure_class == FailureClass::None {
+            continue;
+        }
+        summary.failure_count += 1;
+        match resolved.failure_class {
+            FailureClass::ServiceFailure => summary.service_failure_count += 1,
+            FailureClass::ClientFailure => summary.client_failure_count += 1,
+            FailureClass::ClientAbort => summary.client_abort_count += 1,
+            FailureClass::None => {}
+        }
+        if resolved.is_actionable {
+            summary.actionable_failure_count += 1;
+        }
+    }
+
+    summary
+}
+
+pub(crate) async fn list_invocations(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListQuery>,
+) -> Result<Json<ListResponse>, ApiError> {
+    let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let snapshot_id = request
+        .snapshot_id
+        .unwrap_or(resolve_invocation_snapshot_id(&state.pool, source_scope).await?);
+
+    #[derive(Debug, FromRow)]
+    struct CountRow {
+        total: i64,
+    }
+
+    let mut count_query =
+        QueryBuilder::new("SELECT COUNT(*) AS total FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(
+        &mut count_query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    let total = count_query
+        .build_query_as::<CountRow>()
+        .fetch_one(&state.pool)
+        .await?
+        .total;
+
+    let offset = (request.page - 1).saturating_mul(request.page_size);
+    let mut query = QueryBuilder::new(INVOCATION_SELECT_SQL);
+    apply_invocation_records_filters(
+        &mut query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    append_invocation_order_clause(&mut query, request.sort_by, request.sort_order);
     query
-        .push(" ORDER BY occurred_at DESC LIMIT ")
-        .push_bind(limit);
+        .push(" LIMIT ")
+        .push_bind(request.page_size)
+        .push(" OFFSET ")
+        .push_bind(offset);
 
     let records = query
         .build_query_as::<ApiInvocation>()
         .fetch_all(&state.pool)
         .await?;
 
-    Ok(Json(ListResponse { records }))
+    Ok(Json(ListResponse {
+        snapshot_id,
+        total,
+        page: request.page,
+        page_size: request.page_size,
+        records,
+    }))
+}
+
+pub(crate) async fn fetch_invocation_summary(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListQuery>,
+) -> Result<Json<InvocationSummaryResponse>, ApiError> {
+    let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let snapshot_id = request
+        .snapshot_id
+        .unwrap_or(resolve_invocation_snapshot_id(&state.pool, source_scope).await?);
+
+    let mut totals_query = QueryBuilder::new(
+        "SELECT \
+         COUNT(*) AS total_count, \
+         SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count, \
+         SUM(CASE WHEN status IS NOT NULL AND status != 'success' THEN 1 ELSE 0 END) AS failure_count, \
+         COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+         COALESCE(SUM(cost), 0.0) AS total_cost, \
+         COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens \
+         FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters(
+        &mut totals_query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    let totals = totals_query
+        .build_query_as::<InvocationSummaryAggRow>()
+        .fetch_one(&state.pool)
+        .await?;
+
+    let mut timing_query = QueryBuilder::new(
+        "SELECT t_upstream_ttfb_ms, t_total_ms FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters(
+        &mut timing_query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    let timing_rows = timing_query
+        .build_query_as::<InvocationNetworkTimingRow>()
+        .fetch_all(&state.pool)
+        .await?;
+
+    let mut failure_query = QueryBuilder::new("SELECT status, error_message, ");
+    failure_query
+        .push(INVOCATION_FAILURE_KIND_SQL)
+        .push(" AS failure_kind, failure_class, is_actionable FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(
+        &mut failure_query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    let failure_rows = failure_query
+        .build_query_as::<InvocationFailureSummaryRow>()
+        .fetch_all(&state.pool)
+        .await?;
+
+    #[derive(Debug, FromRow)]
+    struct NewCountRow {
+        total: i64,
+    }
+
+    let mut new_count_query =
+        QueryBuilder::new("SELECT COUNT(*) AS total FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(
+        &mut new_count_query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::After(snapshot_id)),
+    );
+    let new_records_count = new_count_query
+        .build_query_as::<NewCountRow>()
+        .fetch_one(&state.pool)
+        .await?
+        .total;
+
+    let avg_tokens_per_request = if totals.total_count <= 0 {
+        0.0
+    } else {
+        totals.total_tokens as f64 / totals.total_count as f64
+    };
+
+    Ok(Json(InvocationSummaryResponse {
+        snapshot_id,
+        new_records_count,
+        total_count: totals.total_count,
+        success_count: totals.success_count,
+        failure_count: totals.failure_count,
+        total_tokens: totals.total_tokens,
+        total_cost: totals.total_cost,
+        token: InvocationTokenSummary {
+            request_count: totals.total_count,
+            total_tokens: totals.total_tokens,
+            avg_tokens_per_request,
+            cache_input_tokens: totals.cache_input_tokens,
+            total_cost: totals.total_cost,
+        },
+        network: summarize_network_timings(&timing_rows),
+        exception: summarize_exception_rows(&failure_rows),
+    }))
 }
 
 pub(crate) async fn fetch_stats(
@@ -1774,6 +2405,10 @@ pub(crate) struct ApiInvocation {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListResponse {
+    pub(crate) snapshot_id: i64,
+    pub(crate) total: i64,
+    pub(crate) page: i64,
+    pub(crate) page_size: i64,
     pub(crate) records: Vec<ApiInvocation>,
 }
 
@@ -2363,12 +2998,32 @@ pub(crate) struct PromptCacheConversationEventRow {
     pub(crate) prompt_cache_key: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListQuery {
     pub(crate) limit: Option<i64>,
+    pub(crate) page: Option<i64>,
+    pub(crate) page_size: Option<i64>,
+    pub(crate) snapshot_id: Option<i64>,
+    pub(crate) sort_by: Option<String>,
+    pub(crate) sort_order: Option<String>,
+    #[allow(dead_code)]
+    pub(crate) range_preset: Option<String>,
+    pub(crate) from: Option<String>,
+    pub(crate) to: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) status: Option<String>,
+    pub(crate) proxy: Option<String>,
+    pub(crate) endpoint: Option<String>,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) requester_ip: Option<String>,
+    pub(crate) keyword: Option<String>,
+    pub(crate) min_total_tokens: Option<i64>,
+    pub(crate) max_total_tokens: Option<i64>,
+    pub(crate) min_total_ms: Option<f64>,
+    pub(crate) max_total_ms: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
