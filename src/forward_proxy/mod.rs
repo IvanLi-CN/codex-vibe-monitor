@@ -1374,7 +1374,11 @@ pub(crate) async fn record_forward_proxy_attempt(
             }
             _ => None,
         };
-        let probe_candidate = if is_probe {
+        let probe_candidate = if is_probe
+            // A 429 already tells us to back off; probing immediately just adds more traffic and
+            // ignores upstream Retry-After guidance.
+            || failure_kind == Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+        {
             None
         } else {
             manager.mark_probe_started()

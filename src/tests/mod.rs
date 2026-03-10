@@ -3846,6 +3846,20 @@ async fn proxy_openai_v1_returns_final_429_body_and_headers_after_retry_exhausti
         .await,
         3
     );
+    // 429 failures should not trigger penalized-proxy probes (they ignore Retry-After and add load).
+    let probe_guard_started = Instant::now();
+    loop {
+        let probe_attempts =
+            count_forward_proxy_probe_attempts(&state.pool, FORWARD_PROXY_DIRECT_KEY, None).await;
+        assert_eq!(
+            probe_attempts, 0,
+            "unexpected penalized-proxy probe attempt spawned after upstream 429 exhaustion"
+        );
+        if probe_guard_started.elapsed() > Duration::from_millis(500) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 
     upstream_handle.abort();
 }
