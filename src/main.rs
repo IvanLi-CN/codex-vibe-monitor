@@ -201,6 +201,7 @@ const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
 const DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES: u8 = 3;
 const MAX_PROXY_UPSTREAM_429_MAX_RETRIES: u8 = 5;
+const MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS: u64 = 30;
 const DEFAULT_PROXY_FAST_MODE_REWRITE_MODE: ProxyFastModeRewriteMode =
     ProxyFastModeRewriteMode::Disabled;
 const DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP: bool = true;
@@ -4634,7 +4635,9 @@ fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     }
 
     if let Ok(seconds) = text.parse::<u64>() {
-        return Some(Duration::from_secs(seconds));
+        return Some(Duration::from_secs(seconds).min(Duration::from_secs(
+            MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS,
+        )));
     }
 
     let retry_at = DateTime::parse_from_rfc2822(text).ok()?.with_timezone(&Utc);
@@ -4643,7 +4646,15 @@ fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
         return None;
     }
 
-    retry_at.signed_duration_since(now).to_std().ok()
+    retry_at
+        .signed_duration_since(now)
+        .to_std()
+        .ok()
+        .map(|delay| {
+            delay.min(Duration::from_secs(
+                MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS,
+            ))
+        })
 }
 
 pub(crate) async fn send_forward_proxy_request_with_429_retry(
@@ -4879,9 +4890,14 @@ async fn proxy_openai_v1_inner(
         .read()
         .await
         .upstream_429_max_retries;
-    let request_body_bytes = read_request_body_without_timeout(body, body_limit, proxy_request_id)
-        .await
-        .map_err(|err| (err.status, err.message))?;
+    let request_body_bytes = read_request_body_with_limit(
+        body,
+        body_limit,
+        state.config.openai_proxy_request_read_timeout,
+        proxy_request_id,
+    )
+    .await
+    .map_err(|err| (err.status, err.message))?;
     let upstream = match send_forward_proxy_request_with_429_retry(
         state.clone(),
         method,
@@ -5733,52 +5749,6 @@ async fn read_request_body_with_limit(
                     status: StatusCode::BAD_REQUEST,
                     message: format!("failed to read request body stream: {err}"),
                     failure_kind: PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
-                    partial_body: data,
-                });
-            }
-        };
-
-        if data.len().saturating_add(chunk.len()) > body_limit {
-            let allowed = body_limit.saturating_sub(data.len());
-            if allowed > 0 {
-                data.extend_from_slice(&chunk[..allowed.min(chunk.len())]);
-            }
-            return Err(RequestBodyReadError {
-                status: StatusCode::PAYLOAD_TOO_LARGE,
-                message: format!("request body exceeds {body_limit} bytes"),
-                failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
-                partial_body: data,
-            });
-        }
-
-        data.extend_from_slice(&chunk);
-    }
-
-    Ok(data)
-}
-
-async fn read_request_body_without_timeout(
-    body: Body,
-    body_limit: usize,
-    proxy_request_id: u64,
-) -> Result<Vec<u8>, RequestBodyReadError> {
-    let mut data = Vec::new();
-    let mut stream = body.into_data_stream();
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(err) => {
-                warn!(
-                    proxy_request_id,
-                    error = %err,
-                    read_bytes = data.len(),
-                    "openai proxy request body stream error"
-                );
-                return Err(RequestBodyReadError {
-                    status: StatusCode::BAD_GATEWAY,
-                    message: format!("failed to read request body stream: {err}"),
-                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                     partial_body: data,
                 });
             }

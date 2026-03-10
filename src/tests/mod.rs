@@ -271,6 +271,26 @@ fn parse_retry_after_delay_supports_seconds_and_http_date() {
 }
 
 #[test]
+fn parse_retry_after_delay_clamps_large_values() {
+    let huge_seconds = HeaderValue::from_static("3600");
+    assert_eq!(
+        parse_retry_after_delay(&huge_seconds),
+        Some(Duration::from_secs(
+            MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS
+        ))
+    );
+
+    let huge_date = (Utc::now() + chrono::Duration::seconds(3600)).to_rfc2822();
+    let huge_header = HeaderValue::from_str(&huge_date).expect("valid retry-after date header");
+    assert_eq!(
+        parse_retry_after_delay(&huge_header),
+        Some(Duration::from_secs(
+            MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS
+        ))
+    );
+}
+
+#[test]
 fn parse_retry_after_delay_rejects_invalid_or_past_values() {
     let invalid = HeaderValue::from_static("not-a-date");
     assert_eq!(parse_retry_after_delay(&invalid), None);
