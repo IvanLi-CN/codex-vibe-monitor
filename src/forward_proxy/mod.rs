@@ -994,7 +994,11 @@ pub(crate) async fn resolve_forward_proxy_probe_endpoint_url(
     let route_url = {
         let mut supervisor = state.xray_supervisor.lock().await;
         supervisor
-            .ensure_instance_with_ready_timeout(&probe_endpoint, validation_timeout)
+            .ensure_instance_with_ready_timeout(
+                &probe_endpoint,
+                validation_timeout,
+                &state.shutdown,
+            )
             .await?
     };
     Ok((Some(route_url), Some(temporary_key)))
@@ -1213,7 +1217,7 @@ pub(crate) async fn sync_forward_proxy_routes(state: &AppState) -> Result<()> {
         let mut manager = state.forward_proxy.lock().await;
         let mut xray_supervisor = state.xray_supervisor.lock().await;
         xray_supervisor
-            .sync_endpoints(&mut manager.endpoints)
+            .sync_endpoints(&mut manager.endpoints, &state.shutdown)
             .await?;
         manager.ensure_non_zero_weight();
         manager.snapshot_runtime()
@@ -2412,6 +2416,7 @@ impl XraySupervisor {
     pub(crate) async fn sync_endpoints(
         &mut self,
         endpoints: &mut [ForwardProxyEndpoint],
+        shutdown: &CancellationToken,
     ) -> Result<()> {
         fs::create_dir_all(&self.runtime_dir).with_context(|| {
             format!(
@@ -2436,10 +2441,14 @@ impl XraySupervisor {
         }
 
         for endpoint in endpoints {
+            if shutdown.is_cancelled() {
+                info!("stopping xray route sync because shutdown is in progress");
+                break;
+            }
             if !endpoint.requires_xray() {
                 continue;
             }
-            match self.ensure_instance(endpoint).await {
+            match self.ensure_instance(endpoint, shutdown).await {
                 Ok(route_url) => endpoint.endpoint_url = Some(route_url),
                 Err(err) => {
                     endpoint.endpoint_url = None;
@@ -2465,10 +2474,15 @@ impl XraySupervisor {
         }
     }
 
-    pub(crate) async fn ensure_instance(&mut self, endpoint: &ForwardProxyEndpoint) -> Result<Url> {
+    pub(crate) async fn ensure_instance(
+        &mut self,
+        endpoint: &ForwardProxyEndpoint,
+        shutdown: &CancellationToken,
+    ) -> Result<Url> {
         self.ensure_instance_with_ready_timeout(
             endpoint,
             Duration::from_millis(XRAY_PROXY_READY_TIMEOUT_MS),
+            shutdown,
         )
         .await
     }
@@ -2477,6 +2491,7 @@ impl XraySupervisor {
         &mut self,
         endpoint: &ForwardProxyEndpoint,
         ready_timeout: Duration,
+        shutdown: &CancellationToken,
     ) -> Result<Url> {
         if let Some(instance) = self.instances.get_mut(&endpoint.key) {
             match instance.child.try_wait() {
@@ -2499,13 +2514,14 @@ impl XraySupervisor {
         }
 
         self.remove_instance(&endpoint.key).await;
-        self.spawn_instance(endpoint, ready_timeout).await
+        self.spawn_instance(endpoint, ready_timeout, shutdown).await
     }
 
     pub(crate) async fn spawn_instance(
         &mut self,
         endpoint: &ForwardProxyEndpoint,
         ready_timeout: Duration,
+        shutdown: &CancellationToken,
     ) -> Result<Url> {
         let outbound = build_xray_outbound_for_endpoint(endpoint)?;
         let local_port = pick_unused_local_port().context("failed to allocate xray local port")?;
@@ -2542,7 +2558,9 @@ impl XraySupervisor {
             }
         };
 
-        if let Err(err) = wait_for_xray_proxy_ready(&mut child, local_port, ready_timeout).await {
+        if let Err(err) =
+            wait_for_xray_proxy_ready(&mut child, local_port, ready_timeout, shutdown).await
+        {
             let _ = terminate_child_process(
                 &mut child,
                 Duration::from_secs(2),
@@ -2714,28 +2732,42 @@ pub(crate) async fn wait_for_xray_proxy_ready(
     child: &mut Child,
     local_port: u16,
     ready_timeout: Duration,
+    shutdown: &CancellationToken,
 ) -> Result<()> {
     let deadline = Instant::now() + ready_timeout;
     loop {
+        if shutdown.is_cancelled() {
+            bail!("xray startup cancelled because shutdown is in progress");
+        }
         if let Some(status) = child
             .try_wait()
             .context("failed to poll xray proxy process status")?
         {
             bail!("xray process exited before ready: {status}");
         }
-        if timeout(
+        let connect_attempt = timeout(
             Duration::from_millis(250),
             TcpStream::connect(("127.0.0.1", local_port)),
-        )
-        .await
-        .is_ok_and(|result| result.is_ok())
-        {
-            return Ok(());
+        );
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                bail!("xray startup cancelled because shutdown is in progress");
+            }
+            result = connect_attempt => {
+                if result.is_ok_and(|connection| connection.is_ok()) {
+                    return Ok(());
+                }
+            }
         }
         if Instant::now() >= deadline {
             bail!("xray local socks endpoint was not ready in time");
         }
-        sleep(Duration::from_millis(100)).await;
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                bail!("xray startup cancelled because shutdown is in progress");
+            }
+            _ = sleep(Duration::from_millis(100)) => {}
+        }
     }
 }
 

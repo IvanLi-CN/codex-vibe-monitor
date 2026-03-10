@@ -5,7 +5,7 @@ use std::{
     convert::Infallible,
     env,
     error::Error as StdError,
-    future::{Future, poll_fn},
+    future::Future,
     hash::{Hash, Hasher},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -38,7 +38,7 @@ use clap::Parser;
 use dotenvy::dotenv;
 use flate2::read::GzDecoder;
 use flate2::{Compression, write::GzEncoder};
-use futures_util::{FutureExt, StreamExt, stream};
+use futures_util::{StreamExt, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Proxy, Url, header};
@@ -359,7 +359,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let runtime_init_started_at = Instant::now();
     let pricing_catalog = load_pricing_catalog(&pool).await?;
     let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
     let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
@@ -412,14 +411,6 @@ async fn main() -> Result<()> {
 
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
 
-    if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
-        warn!(
-            error = %err,
-            "failed to initialize forward proxy xray routes at startup"
-        );
-    }
-    log_startup_phase("runtime_init", runtime_init_started_at);
-
     run_runtime_until_shutdown(state, startup_started_at, async move {
         let _ = signal_listener.await;
     })
@@ -432,57 +423,178 @@ async fn run_runtime_until_shutdown<F>(
     shutdown_signal: F,
 ) -> Result<()>
 where
-    F: Future<Output = ()> + Send + 'static,
+    F: Future<Output = ()> + Send,
 {
     let cancel = state.shutdown.clone();
-    let mut shutdown_signal = Box::pin(shutdown_signal);
-    let shutdown_requested_before_start = poll_fn(|cx| shutdown_signal.as_mut().poll(cx))
-        .now_or_never()
-        .is_some();
-    if shutdown_requested_before_start || cancel.is_cancelled() {
-        if !cancel.is_cancelled() {
-            info!("shutdown signal received; beginning graceful shutdown");
-            cancel.cancel();
+    let runtime_init_started_at = Instant::now();
+    tokio::pin!(shutdown_signal);
+    let mut poller_handle = None;
+    let mut forward_proxy_handle = None;
+    let mut retention_handle = None;
+    let mut server_handle = None;
+    let mut startup_backfill_handle = None;
+
+    tokio::select! {
+        biased;
+        _ = &mut shutdown_signal => {
+            begin_runtime_shutdown(&cancel);
+            return drain_runtime_after_shutdown(
+                state,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            ).await;
         }
-        state.xray_supervisor.lock().await.shutdown_all().await;
-        info!("shutdown complete");
-        return Ok(());
+        result = async { sync_forward_proxy_routes(state.as_ref()).await } => {
+            if let Err(err) = result {
+                warn!(error = %err, "failed to initialize forward proxy xray routes at startup");
+            }
+        }
     }
+    log_startup_phase("runtime_init", runtime_init_started_at);
 
-    let shutdown_cancel = cancel.clone();
-    let shutdown_watcher = tokio::spawn(async move {
-        shutdown_signal.await;
-        if !shutdown_cancel.is_cancelled() {
-            info!("shutdown signal received; beginning graceful shutdown");
-            shutdown_cancel.cancel();
+    if state.config.crs_stats.is_some() {
+        tokio::select! {
+            biased;
+            _ = &mut shutdown_signal => {
+                begin_runtime_shutdown(&cancel);
+                return drain_runtime_after_shutdown(
+                    state,
+                    server_handle,
+                    poller_handle,
+                    forward_proxy_handle,
+                    retention_handle,
+                    startup_backfill_handle,
+                ).await;
+            }
+            _ = std::future::ready(()) => {
+                poller_handle = Some(spawn_scheduler(state.clone(), cancel.clone()));
+            }
         }
-    });
-
-    let poller_handle = if state.config.crs_stats.is_some() {
-        Some(spawn_scheduler(state.clone(), cancel.clone()))
     } else {
         info!("crs stats relay is disabled; scheduler will not start");
-        None
-    };
-    let forward_proxy_handle = spawn_forward_proxy_maintenance(state.clone(), cancel.clone());
-    let retention_handle = spawn_data_retention_maintenance(state.clone(), cancel.clone());
+    }
+
+    tokio::select! {
+        biased;
+        _ = &mut shutdown_signal => {
+            begin_runtime_shutdown(&cancel);
+            return drain_runtime_after_shutdown(
+                state,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            ).await;
+        }
+        _ = std::future::ready(()) => {
+            forward_proxy_handle = Some(spawn_forward_proxy_maintenance(state.clone(), cancel.clone()));
+        }
+    }
+
+    tokio::select! {
+        biased;
+        _ = &mut shutdown_signal => {
+            begin_runtime_shutdown(&cancel);
+            return drain_runtime_after_shutdown(
+                state,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            ).await;
+        }
+        _ = std::future::ready(()) => {
+            retention_handle = Some(spawn_data_retention_maintenance(state.clone(), cancel.clone()));
+        }
+    }
+
     let http_ready_started_at = Instant::now();
-    let (_http_addr, server_handle) = spawn_http_server(state.clone()).await?;
+    tokio::select! {
+        biased;
+        _ = &mut shutdown_signal => {
+            begin_runtime_shutdown(&cancel);
+            return drain_runtime_after_shutdown(
+                state,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            ).await;
+        }
+        result = spawn_http_server(state.clone()) => {
+            let (_http_addr, handle) = result?;
+            server_handle = Some(handle);
+        }
+    }
     log_startup_phase("http_ready", http_ready_started_at);
     info!(
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
         "application readiness reached"
     );
-    let startup_backfill_handle = spawn_startup_backfill_maintenance(state.clone(), cancel.clone());
 
-    cancel.cancelled().await;
-    let _ = shutdown_watcher.await;
-
-    info!("http server graceful drain started");
-    if let Err(err) = server_handle.await {
-        error!(?err, "http server terminated unexpectedly");
+    tokio::select! {
+        biased;
+        _ = &mut shutdown_signal => {
+            begin_runtime_shutdown(&cancel);
+            return drain_runtime_after_shutdown(
+                state,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            ).await;
+        }
+        _ = std::future::ready(()) => {
+            startup_backfill_handle = Some(spawn_startup_backfill_maintenance(state.clone(), cancel.clone()));
+        }
     }
-    info!("http server graceful drain finished");
+
+    tokio::select! {
+        biased;
+        _ = &mut shutdown_signal => begin_runtime_shutdown(&cancel),
+        _ = cancel.cancelled() => {}
+    }
+
+    drain_runtime_after_shutdown(
+        state,
+        server_handle,
+        poller_handle,
+        forward_proxy_handle,
+        retention_handle,
+        startup_backfill_handle,
+    )
+    .await
+}
+
+fn begin_runtime_shutdown(cancel: &CancellationToken) {
+    if !cancel.is_cancelled() {
+        info!("shutdown signal received; beginning graceful shutdown");
+        cancel.cancel();
+    }
+}
+
+async fn drain_runtime_after_shutdown(
+    state: Arc<AppState>,
+    server_handle: Option<JoinHandle<()>>,
+    poller_handle: Option<JoinHandle<()>>,
+    forward_proxy_handle: Option<JoinHandle<()>>,
+    retention_handle: Option<JoinHandle<()>>,
+    startup_backfill_handle: Option<JoinHandle<()>>,
+) -> Result<()> {
+    if let Some(server_handle) = server_handle {
+        info!("http server graceful drain started");
+        if let Err(err) = server_handle.await {
+            error!(?err, "http server terminated unexpectedly");
+        }
+        info!("http server graceful drain finished");
+    }
 
     if let Some(poller_handle) = poller_handle {
         if let Err(err) = poller_handle.await {
@@ -490,16 +602,22 @@ where
         }
         info!("scheduler drained");
     }
-    if let Err(err) = forward_proxy_handle.await {
+    if let Some(forward_proxy_handle) = forward_proxy_handle
+        && let Err(err) = forward_proxy_handle.await
+    {
         error!(
             ?err,
             "forward proxy maintenance task terminated unexpectedly"
         );
     }
-    if let Err(err) = retention_handle.await {
+    if let Some(retention_handle) = retention_handle
+        && let Err(err) = retention_handle.await
+    {
         error!(?err, "retention maintenance task terminated unexpectedly");
     }
-    if let Err(err) = startup_backfill_handle.await {
+    if let Some(startup_backfill_handle) = startup_backfill_handle
+        && let Err(err) = startup_backfill_handle.await
+    {
         error!(
             ?err,
             "startup backfill maintenance task terminated unexpectedly"
@@ -1165,12 +1283,14 @@ fn spawn_startup_backfill_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if cancel.is_cancelled() {
-            info!("startup backfill maintenance skipped because shutdown is already in progress");
-            return;
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                info!("startup backfill maintenance skipped because shutdown is already in progress");
+                return;
+            }
+            _ = async { run_startup_backfill_maintenance_pass(state.clone()).await; } => {}
         }
-
-        run_startup_backfill_maintenance_pass(state.clone()).await;
 
         let mut ticker = interval(Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1192,16 +1312,20 @@ fn spawn_startup_backfill_maintenance(
 
 fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if cancel.is_cancelled() {
-            info!("scheduler startup skipped because shutdown is already in progress");
-            return;
-        }
-
         // Track in-flight tasks so we can wait for them on shutdown
         let mut inflight: Vec<JoinHandle<()>> = Vec::new();
-        match schedule_poll(state.clone()).await {
-            Ok(h) => inflight.push(h),
-            Err(err) => warn!(?err, "initial poll failed"),
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                info!("scheduler startup skipped because shutdown is already in progress");
+                return;
+            }
+            result = schedule_poll(state.clone()) => {
+                match result {
+                    Ok(handle) => inflight.push(handle),
+                    Err(err) => warn!(?err, "initial poll failed"),
+                }
+            }
         }
 
         let mut ticker = interval(state.config.poll_interval);
@@ -1241,23 +1365,25 @@ fn spawn_forward_proxy_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if cancel.is_cancelled() {
-            info!("forward proxy maintenance skipped because shutdown is already in progress");
-            return;
-        }
-
         let startup_known_subscription_keys = {
             let manager = state.forward_proxy.lock().await;
             snapshot_known_subscription_proxy_keys(&manager)
         };
-        if let Err(err) = refresh_forward_proxy_subscriptions(
-            state.clone(),
-            true,
-            Some(startup_known_subscription_keys),
-        )
-        .await
-        {
-            warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                info!("forward proxy maintenance skipped because shutdown is already in progress");
+                return;
+            }
+            result = refresh_forward_proxy_subscriptions(
+                state.clone(),
+                true,
+                Some(startup_known_subscription_keys),
+            ) => {
+                if let Err(err) = result {
+                    warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
+                }
+            }
         }
 
         let mut ticker = interval(Duration::from_secs(60));
@@ -1504,19 +1630,23 @@ fn spawn_data_retention_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if cancel.is_cancelled() {
-            info!("data retention maintenance skipped because shutdown is already in progress");
-            return;
-        }
-
         if !state.config.retention_enabled {
             info!("data retention maintenance is disabled");
             cancel.cancelled().await;
             return;
         }
 
-        if let Err(err) = run_data_retention_maintenance(&state.pool, &state.config, None).await {
-            warn!(error = %err, "failed to run retention maintenance at startup");
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                info!("data retention maintenance skipped because shutdown is already in progress");
+                return;
+            }
+            result = run_data_retention_maintenance(&state.pool, &state.config, None) => {
+                if let Err(err) = result {
+                    warn!(error = %err, "failed to run retention maintenance at startup");
+                }
+            }
         }
 
         let mut ticker = interval(state.config.retention_interval);

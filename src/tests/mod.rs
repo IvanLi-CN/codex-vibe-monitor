@@ -406,7 +406,11 @@ async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path
     ));
 
     let err = supervisor
-        .ensure_instance_with_ready_timeout(&endpoint, Duration::from_millis(50))
+        .ensure_instance_with_ready_timeout(
+            &endpoint,
+            Duration::from_millis(50),
+            &CancellationToken::new(),
+        )
         .await
         .expect_err("non-existent xray binary should fail to start");
     let message = format!("{err:#}");
