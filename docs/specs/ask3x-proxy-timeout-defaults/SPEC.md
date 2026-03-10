@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成
 - Created: 2026-03-10
 - Last: 2026-03-10
 
@@ -96,13 +96,18 @@
 - [x] M2: 代理路径按 compact/非 compact 分流等待超时，既有超时失败分型保持不变。
 - [x] M3: Rust 回归覆盖默认值、override 与 compact/非 compact 的超时命中差异。
 - [x] M4: README、部署文档与历史排障计划的超时口径完成统一清理。
-- [ ] M5: fast-track 交付完成（提交、push、PR、checks、review-loop、spec 状态同步）。
+- [x] M5: fast-track 交付完成（提交、push、PR、checks、review-loop、spec 状态同步）。
 
 ## 风险 / 假设
 
 - 风险：若线上部署已显式覆盖旧的 `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`，代码默认值变更不会自动改变该实例行为；需要依赖部署端自行决定是否保留覆盖。
 - 风险：历史 `docs/plan/**` 属于兼容保留目录，本次只清理会造成当前默认值歧义的条目，不做整批迁移或删除。
 - 假设：`/v1/responses/compact` 继续保持当前精确路径匹配，不引入额外 compact 变体路由。
+
+## 变更记录（Change log）
+
+- 2026-03-10: 创建 spec，冻结 `60s / 180s / 180s` 的默认口径、实现边界与文档清理范围。
+- 2026-03-10: 已完成代码、测试与文档收敛；PR [#108](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/108) 已创建，`Lint & Format Check`、`Backend Tests`、`Build Artifacts` 全部通过，local `codex review --base main` 无阻塞项。
 
 ## 参考（References）
 
