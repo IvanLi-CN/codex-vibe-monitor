@@ -95,6 +95,11 @@
 - 接受与列表一致的已应用筛选参数，允许显式传入 `snapshotId`。
 - 返回：`snapshotId`、`newRecordsCount`、共享 totals、`token`、`network`、`exception` 三组 KPI。
 
+### `GET /api/invocations/new-count`
+
+- 接受与列表一致的已应用筛选参数，必须显式传入当前 `snapshotId`。
+- 仅返回 `snapshotId` 与 `newRecordsCount`，供页面可见时轻量轮询提示使用，避免重复重算整份 summary。
+
 ### 聚焦 KPI 口径
 
 - `token`: 请求数、总 Tokens、单次平均 Tokens、缓存输入 Tokens、总成本。
@@ -129,6 +134,7 @@
 - 2026-03-10: 新建规格，冻结稳定快照语义、接口扩展、聚焦统计与新数据提示口径。
 - 2026-03-10: 完成前后端实现、Rust/Vitest 覆盖与浏览器冒烟；待 PR/checks/review-loop 收尾。
 - 2026-03-10: 浏览器复查补齐记录页筛选与排序表单字段的 name 属性，清除表单字段缺少 name/id 的可访问性告警。
+- 2026-03-10: 根据 review 收敛空结果 summary 零值、搜索并发失效保护、轻量 new-count 轮询接口，以及搜索后新数据提示复位。
 
 ## 参考（References）
 

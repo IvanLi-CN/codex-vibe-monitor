@@ -77,6 +77,17 @@ function normalizeNumber(value: string) {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+function normalizeInteger(value: string, fieldName: string) {
+  const normalized = value.trim()
+  if (!normalized) return undefined
+  const parsed = Number(normalized)
+  if (!Number.isFinite(parsed)) return undefined
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`${fieldName} must be a whole number`)
+  }
+  return parsed
+}
+
 export function resolveRangeBounds(rangePreset: InvocationRangePreset, draft: InvocationRecordsDraftFilters, now = new Date()) {
   if (rangePreset === 'custom') {
     return {
@@ -130,8 +141,8 @@ export function buildAppliedInvocationFilters(
     promptCacheKey: normalizeText(draft.promptCacheKey),
     requesterIp: normalizeText(draft.requesterIp),
     keyword: normalizeText(draft.keyword),
-    minTotalTokens: normalizeNumber(draft.minTotalTokens),
-    maxTotalTokens: normalizeNumber(draft.maxTotalTokens),
+    minTotalTokens: normalizeInteger(draft.minTotalTokens, 'minTotalTokens'),
+    maxTotalTokens: normalizeInteger(draft.maxTotalTokens, 'maxTotalTokens'),
     minTotalMs: normalizeNumber(draft.minTotalMs),
     maxTotalMs: normalizeNumber(draft.maxTotalMs),
   }

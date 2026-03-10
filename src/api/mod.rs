@@ -202,6 +202,13 @@ pub(crate) struct InvocationSummaryResponse {
     pub(crate) exception: InvocationExceptionSummary,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationNewRecordsCountResponse {
+    pub(crate) snapshot_id: i64,
+    pub(crate) new_records_count: i64,
+}
+
 fn normalize_query_text(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
@@ -473,18 +480,18 @@ fn append_invocation_order_clause(
     }
 }
 
-fn collect_positive_finite(values: impl Iterator<Item = Option<f64>>) -> Vec<f64> {
+fn collect_non_negative_finite(values: impl Iterator<Item = Option<f64>>) -> Vec<f64> {
     let mut collected = values
         .flatten()
-        .filter(|value| value.is_finite() && *value > 0.0)
+        .filter(|value| value.is_finite() && *value >= 0.0)
         .collect::<Vec<_>>();
     collected.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     collected
 }
 
 fn summarize_network_timings(rows: &[InvocationNetworkTimingRow]) -> InvocationNetworkSummary {
-    let ttfb_values = collect_positive_finite(rows.iter().map(|row| row.t_upstream_ttfb_ms));
-    let total_values = collect_positive_finite(rows.iter().map(|row| row.t_total_ms));
+    let ttfb_values = collect_non_negative_finite(rows.iter().map(|row| row.t_upstream_ttfb_ms));
+    let total_values = collect_non_negative_finite(rows.iter().map(|row| row.t_total_ms));
 
     let avg = |values: &[f64]| {
         if values.is_empty() {
@@ -501,6 +508,56 @@ fn summarize_network_timings(rows: &[InvocationNetworkTimingRow]) -> InvocationN
         p95_total_ms: (!total_values.is_empty())
             .then(|| percentile_sorted_f64(&total_values, 0.95)),
     }
+}
+
+async fn query_invocation_new_records_count(
+    pool: &Pool<Sqlite>,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<i64> {
+    #[derive(Debug, FromRow)]
+    struct NewCountRow {
+        total: i64,
+    }
+
+    let mut new_count_query =
+        QueryBuilder::new("SELECT COUNT(*) AS total FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(
+        &mut new_count_query,
+        filters,
+        source_scope,
+        Some(SnapshotConstraint::After(snapshot_id)),
+    );
+
+    Ok(new_count_query
+        .build_query_as::<NewCountRow>()
+        .fetch_one(pool)
+        .await?
+        .total)
+}
+
+fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
+    params.limit.is_some()
+        && params.page.is_none()
+        && params.page_size.is_none()
+        && params.snapshot_id.is_none()
+        && params.sort_by.is_none()
+        && params.sort_order.is_none()
+        && params.range_preset.is_none()
+        && params.from.is_none()
+        && params.to.is_none()
+        && params.proxy.is_none()
+        && params.endpoint.is_none()
+        && params.failure_class.is_none()
+        && params.failure_kind.is_none()
+        && params.prompt_cache_key.is_none()
+        && params.requester_ip.is_none()
+        && params.keyword.is_none()
+        && params.min_total_tokens.is_none()
+        && params.max_total_tokens.is_none()
+        && params.min_total_ms.is_none()
+        && params.max_total_ms.is_none()
 }
 
 fn summarize_exception_rows(rows: &[InvocationFailureSummaryRow]) -> InvocationExceptionSummary {
@@ -544,6 +601,27 @@ pub(crate) async fn list_invocations(
 ) -> Result<Json<ListResponse>, ApiError> {
     let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+
+    if is_legacy_invocation_stream_query(&params) {
+        let mut query = QueryBuilder::new(INVOCATION_SELECT_SQL);
+        apply_invocation_records_filters(&mut query, &request.filters, source_scope, None);
+        append_invocation_order_clause(&mut query, request.sort_by, request.sort_order);
+        query.push(" LIMIT ").push_bind(request.page_size);
+
+        let records = query
+            .build_query_as::<ApiInvocation>()
+            .fetch_all(&state.pool)
+            .await?;
+
+        return Ok(Json(ListResponse {
+            snapshot_id: 0,
+            total: records.len() as i64,
+            page: 1,
+            page_size: request.page_size,
+            records,
+        }));
+    }
+
     let snapshot_id = request
         .snapshot_id
         .unwrap_or(resolve_invocation_snapshot_id(&state.pool, source_scope).await?);
@@ -609,8 +687,8 @@ pub(crate) async fn fetch_invocation_summary(
     let mut totals_query = QueryBuilder::new(
         "SELECT \
          COUNT(*) AS total_count, \
-         SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count, \
-         SUM(CASE WHEN status IS NOT NULL AND status != 'success' THEN 1 ELSE 0 END) AS failure_count, \
+         COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN status IS NOT NULL AND status != 'success' THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
          COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens \
@@ -656,24 +734,13 @@ pub(crate) async fn fetch_invocation_summary(
         .fetch_all(&state.pool)
         .await?;
 
-    #[derive(Debug, FromRow)]
-    struct NewCountRow {
-        total: i64,
-    }
-
-    let mut new_count_query =
-        QueryBuilder::new("SELECT COUNT(*) AS total FROM codex_invocations WHERE 1 = 1");
-    apply_invocation_records_filters(
-        &mut new_count_query,
+    let new_records_count = query_invocation_new_records_count(
+        &state.pool,
         &request.filters,
         source_scope,
-        Some(SnapshotConstraint::After(snapshot_id)),
-    );
-    let new_records_count = new_count_query
-        .build_query_as::<NewCountRow>()
-        .fetch_one(&state.pool)
-        .await?
-        .total;
+        snapshot_id,
+    )
+    .await?;
 
     let avg_tokens_per_request = if totals.total_count <= 0 {
         0.0
@@ -698,6 +765,29 @@ pub(crate) async fn fetch_invocation_summary(
         },
         network: summarize_network_timings(&timing_rows),
         exception: summarize_exception_rows(&failure_rows),
+    }))
+}
+
+pub(crate) async fn fetch_invocation_new_records_count(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListQuery>,
+) -> Result<Json<InvocationNewRecordsCountResponse>, ApiError> {
+    let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let snapshot_id = request
+        .snapshot_id
+        .unwrap_or(resolve_invocation_snapshot_id(&state.pool, source_scope).await?);
+    let new_records_count = query_invocation_new_records_count(
+        &state.pool,
+        &request.filters,
+        source_scope,
+        snapshot_id,
+    )
+    .await?;
+
+    Ok(Json(InvocationNewRecordsCountResponse {
+        snapshot_id,
+        new_records_count,
     }))
 }
 

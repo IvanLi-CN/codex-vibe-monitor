@@ -2,13 +2,19 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { InvocationRecordsQuery, InvocationRecordsResponse, InvocationRecordsSummaryResponse } from '../lib/api'
+import type {
+  InvocationRecordsNewCountResponse,
+  InvocationRecordsQuery,
+  InvocationRecordsResponse,
+  InvocationRecordsSummaryResponse,
+} from '../lib/api'
 import { RECORDS_NEW_COUNT_POLL_INTERVAL_MS } from '../lib/invocationRecords'
 import { useInvocationRecords } from './useInvocationRecords'
 
 const apiMocks = vi.hoisted(() => ({
   fetchInvocationRecords: vi.fn<(query: InvocationRecordsQuery) => Promise<InvocationRecordsResponse>>(),
   fetchInvocationRecordsSummary: vi.fn<(query: InvocationRecordsQuery) => Promise<InvocationRecordsSummaryResponse>>(),
+  fetchInvocationRecordsNewCount: vi.fn<(query: InvocationRecordsQuery) => Promise<InvocationRecordsNewCountResponse>>(),
 }))
 
 vi.mock('../lib/api', async () => {
@@ -17,6 +23,7 @@ vi.mock('../lib/api', async () => {
     ...actual,
     fetchInvocationRecords: apiMocks.fetchInvocationRecords,
     fetchInvocationRecordsSummary: apiMocks.fetchInvocationRecordsSummary,
+    fetchInvocationRecordsNewCount: apiMocks.fetchInvocationRecordsNewCount,
   }
 })
 
@@ -131,6 +138,14 @@ function createSummaryResponse(overrides: Partial<InvocationRecordsSummaryRespon
   }
 }
 
+function createNewCountResponse(overrides: Partial<InvocationRecordsNewCountResponse>): InvocationRecordsNewCountResponse {
+  return {
+    snapshotId: 42,
+    newRecordsCount: 0,
+    ...overrides,
+  }
+}
+
 function Probe() {
   const state = useInvocationRecords()
 
@@ -141,6 +156,7 @@ function Probe() {
       <div data-testid="snapshot">{state.records?.snapshotId ?? 0}</div>
       <div data-testid="model">{state.records?.records[0]?.model ?? ''}</div>
       <div data-testid="new-count">{state.summary?.newRecordsCount ?? 0}</div>
+      <div data-testid="summary-error">{state.summaryError ?? ''}</div>
       <button data-testid="focus-network" type="button" onClick={() => state.setFocus('network')}>
         network
       </button>
@@ -161,7 +177,7 @@ describe('useInvocationRecords', () => {
   it('keeps paging on the applied snapshot until search refreshes it', async () => {
     vi.useFakeTimers()
 
-    let summary42CallCount = 0
+    let newCount42CallCount = 0
     apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
       if (query.snapshotId === 42) {
         return createListResponse({
@@ -207,6 +223,7 @@ describe('useInvocationRecords', () => {
       if (query.snapshotId === 84) {
         return createSummaryResponse({
           snapshotId: 84,
+          newRecordsCount: 9,
           totalCount: 1,
           successCount: 0,
           failureCount: 1,
@@ -227,8 +244,15 @@ describe('useInvocationRecords', () => {
         })
       }
 
-      summary42CallCount += 1
-      return createSummaryResponse({ newRecordsCount: summary42CallCount >= 2 ? 3 : 0 })
+      return createSummaryResponse({})
+    })
+
+    apiMocks.fetchInvocationRecordsNewCount.mockImplementation(async (query) => {
+      newCount42CallCount += 1
+      return createNewCountResponse({
+        snapshotId: query.snapshotId ?? 42,
+        newRecordsCount: newCount42CallCount >= 1 ? 3 : 0,
+      })
     })
 
     render(<Probe />)
@@ -240,6 +264,7 @@ describe('useInvocationRecords', () => {
 
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1)
     expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledTimes(1)
+    expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(0)
     expect(apiMocks.fetchInvocationRecords.mock.calls[0][0]?.snapshotId).toBeUndefined()
     expect(apiMocks.fetchInvocationRecordsSummary.mock.calls[0][0]?.snapshotId).toBe(42)
 
@@ -268,12 +293,13 @@ describe('useInvocationRecords', () => {
     await flushAsync()
     expect(text('new-count')).toBe('3')
 
-    const pollQuery = apiMocks.fetchInvocationRecordsSummary.mock.calls.at(-1)?.[0]
+    const pollQuery = apiMocks.fetchInvocationRecordsNewCount.mock.calls.at(-1)?.[0]
     expect(pollQuery?.snapshotId).toBe(42)
     expect(pollQuery?.model).toBeUndefined()
 
     const recordsCallsBeforeSearch = apiMocks.fetchInvocationRecords.mock.calls.length
     const summaryCallsBeforeSearch = apiMocks.fetchInvocationRecordsSummary.mock.calls.length
+    const newCountCallsBeforeSearch = apiMocks.fetchInvocationRecordsNewCount.mock.calls.length
     click('search')
     await flushAsync()
 
@@ -287,8 +313,114 @@ describe('useInvocationRecords', () => {
     expect(searchQuery?.page).toBe(1)
     expect(searchQuery?.model).toBe('next-model')
 
+    expect(apiMocks.fetchInvocationRecordsNewCount.mock.calls.length).toBe(newCountCallsBeforeSearch)
+
     const searchSummaryQuery = apiMocks.fetchInvocationRecordsSummary.mock.calls[summaryCallsBeforeSearch]?.[0]
     expect(searchSummaryQuery?.snapshotId).toBe(84)
     expect(searchSummaryQuery?.model).toBe('next-model')
+  })
+
+  it('keeps the last summary visible when new-count polling fails', async () => {
+    vi.useFakeTimers()
+
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createListResponse({ snapshotId: 42 }))
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }))
+    apiMocks.fetchInvocationRecordsNewCount.mockRejectedValue(new Error('poll failed'))
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('new-count')).toBe('0')
+    expect(text('summary-error')).toBe('')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
+    })
+    await flushAsync()
+
+    expect(text('new-count')).toBe('0')
+    expect(text('summary-error')).toBe('')
+    expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledTimes(1)
+    expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores stale page responses once a new search starts', async () => {
+    let resolvePageTwo: ((value: InvocationRecordsResponse) => void) | null = null
+    const pageTwoPromise = new Promise<InvocationRecordsResponse>((resolve) => {
+      resolvePageTwo = resolve
+    })
+
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      if (query.snapshotId === 42 && query.page === 2) {
+        return pageTwoPromise
+      }
+
+      if (query.model === 'next-model') {
+        return createListResponse({
+          snapshotId: 84,
+          total: 1,
+          page: 1,
+          pageSize: query.pageSize ?? 20,
+          records: [
+            {
+              id: 84,
+              invokeId: 'invoke-next',
+              occurredAt: '2026-03-10T02:00:00Z',
+              createdAt: '2026-03-10T02:00:00Z',
+              model: 'next-model',
+              status: 'success',
+            },
+          ],
+        })
+      }
+
+      return createListResponse({ snapshotId: 42 })
+    })
+
+    apiMocks.fetchInvocationRecordsSummary.mockImplementation(async (query) =>
+      createSummaryResponse({ snapshotId: query.snapshotId ?? 42, newRecordsCount: 4 }),
+    )
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }))
+
+    render(<Probe />)
+    await flushAsync()
+
+    click('page-2')
+    click('draft-model')
+    click('search')
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('84')
+    expect(text('page')).toBe('1')
+    expect(text('model')).toBe('next-model')
+    expect(text('new-count')).toBe('0')
+
+    if (!resolvePageTwo) {
+      throw new Error('page two resolver missing')
+    }
+    const resolvePageTwoFn = resolvePageTwo as (value: InvocationRecordsResponse) => void
+
+    resolvePageTwoFn(
+      createListResponse({
+        snapshotId: 42,
+        page: 2,
+        pageSize: 20,
+        records: [
+          {
+            id: 2,
+            invokeId: 'invoke-2',
+            occurredAt: '2026-03-10T00:05:00Z',
+            createdAt: '2026-03-10T00:05:00Z',
+            model: 'baseline-model',
+            status: 'failed',
+          },
+        ],
+      }),
+    )
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('84')
+    expect(text('page')).toBe('1')
+    expect(text('model')).toBe('next-model')
   })
 })

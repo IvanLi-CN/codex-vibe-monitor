@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   InvocationFocus,
+  InvocationRecordsNewCountResponse,
   InvocationRecordsQuery,
   InvocationRecordsResponse,
   InvocationRecordsSummaryResponse,
   InvocationSortBy,
   InvocationSortOrder,
 } from '../lib/api'
-import { fetchInvocationRecords, fetchInvocationRecordsSummary } from '../lib/api'
+import { fetchInvocationRecords, fetchInvocationRecordsNewCount, fetchInvocationRecordsSummary } from '../lib/api'
 import {
   buildAppliedInvocationFilters,
   buildInvocationRecordsQuery,
@@ -131,7 +132,9 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   const search = useCallback(async () => {
     const requestSeq = searchSeqRef.current + 1
     searchSeqRef.current = requestSeq
+    recordsSeqRef.current += 1
     setIsSearching(true)
+    setIsRecordsLoading(false)
     setRecordsError(null)
     setSummaryError(null)
 
@@ -154,7 +157,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
 
       appliedRef.current = { filters, snapshotId: listResponse.snapshotId }
       setRecords(listResponse)
-      setSummary(summaryResponse)
+      setSummary({ ...summaryResponse, newRecordsCount: 0 })
       setPageState(listResponse.page)
       setPageSizeState(listResponse.pageSize)
       setRecordsError(null)
@@ -203,29 +206,28 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   }, [search])
 
   useEffect(() => {
-    if (!appliedRef.current) return
+    if (!appliedRef.current || isSearching) return
     const timer = window.setInterval(() => {
       if (!shouldPollRecordsSummary()) return
       const applied = appliedRef.current
       if (!applied) return
-      void fetchInvocationRecordsSummary({
+      void fetchInvocationRecordsNewCount({
         ...applied.filters,
         snapshotId: applied.snapshotId,
       })
-        .then((response) => {
+        .then((response: InvocationRecordsNewCountResponse) => {
           if (!appliedRef.current || appliedRef.current.snapshotId !== response.snapshotId) return
           setSummary((current) => {
-            if (!current) return response
+            if (!current) return current
             return { ...current, newRecordsCount: response.newRecordsCount }
           })
-          setSummaryError(null)
         })
-        .catch((error) => {
-          setSummaryError(error instanceof Error ? error.message : String(error))
+        .catch(() => {
+          // Keep the last successful summary visible when the lightweight poll hiccups.
         })
     }, RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [summary?.snapshotId])
+  }, [isSearching, summary?.snapshotId])
 
   const api = useMemo(
     () => ({

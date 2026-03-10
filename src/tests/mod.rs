@@ -7318,6 +7318,59 @@ async fn list_invocations_preserves_historical_xy_records() {
 }
 
 #[tokio::test]
+async fn list_invocations_legacy_limit_query_skips_snapshot_shape() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at) in [
+        ("legacy-stream-1", "2026-03-10 07:00:00"),
+        ("legacy-stream-2", "2026-03-10 07:01:00"),
+        ("legacy-stream-3", "2026-03-10 07:02:00"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert legacy stream row");
+    }
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            limit: Some(2),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("legacy list query should succeed");
+
+    assert_eq!(response.snapshot_id, 0);
+    assert_eq!(response.total, 2);
+    assert_eq!(response.page, 1);
+    assert_eq!(response.page_size, 2);
+    assert_eq!(response.records.len(), 2);
+    assert_eq!(response.records[0].invoke_id, "legacy-stream-3");
+    assert_eq!(response.records[1].invoke_id, "legacy-stream-2");
+}
+
+#[tokio::test]
 async fn list_invocations_keeps_snapshot_stable_across_pagination_and_sorting() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -7535,6 +7588,179 @@ async fn fetch_invocation_summary_reports_new_records_count_for_applied_filters(
     assert_f64_close(summary.network.avg_ttfb_ms.unwrap_or_default(), 100.0);
     assert_f64_close(summary.network.p95_total_ms.unwrap_or_default(), 250.0);
     assert_eq!(summary.exception.failure_count, 0);
+}
+
+#[tokio::test]
+async fn fetch_invocation_summary_keeps_zero_ms_network_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            t_upstream_ttfb_ms,
+            t_total_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("summary-zero-network")
+    .bind("2026-03-10 09:10:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(0.0_f64)
+    .bind(0.0_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert zero-ms summary row");
+
+    let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
+        .await
+        .expect("summary query with zero-ms samples should succeed");
+
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.network.avg_ttfb_ms, Some(0.0));
+    assert_eq!(summary.network.p95_ttfb_ms, Some(0.0));
+    assert_eq!(summary.network.avg_total_ms, Some(0.0));
+    assert_eq!(summary.network.p95_total_ms, Some(0.0));
+}
+
+#[tokio::test]
+async fn fetch_invocation_summary_returns_zero_values_for_empty_results() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(summary) = fetch_invocation_summary(
+        State(state),
+        Query(ListQuery {
+            model: Some("missing-model".to_string()),
+            snapshot_id: Some(999),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("empty summary query should succeed");
+
+    assert_eq!(summary.snapshot_id, 999);
+    assert_eq!(summary.new_records_count, 0);
+    assert_eq!(summary.total_count, 0);
+    assert_eq!(summary.success_count, 0);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 0);
+    assert_f64_close(summary.total_cost, 0.0);
+    assert_eq!(summary.token.request_count, 0);
+    assert_eq!(summary.token.total_tokens, 0);
+    assert_f64_close(summary.token.avg_tokens_per_request, 0.0);
+    assert_eq!(summary.token.cache_input_tokens, 0);
+    assert_f64_close(summary.token.total_cost, 0.0);
+    assert_eq!(summary.network.avg_ttfb_ms, None);
+    assert_eq!(summary.network.p95_ttfb_ms, None);
+    assert_eq!(summary.network.avg_total_ms, None);
+    assert_eq!(summary.network.p95_total_ms, None);
+    assert_eq!(summary.exception.failure_count, 0);
+    assert_eq!(summary.exception.service_failure_count, 0);
+    assert_eq!(summary.exception.client_failure_count, 0);
+    assert_eq!(summary.exception.client_abort_count, 0);
+    assert_eq!(summary.exception.actionable_failure_count, 0);
+}
+
+#[tokio::test]
+async fn fetch_invocation_new_records_count_uses_snapshot_boundary() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            total_tokens,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("new-count-base")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("gpt-5.4")
+    .bind(120_i64)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert base invocation row");
+
+    let Json(initial_list) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            model: Some("gpt-5.4".to_string()),
+            page: Some(1),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("initial list query should succeed");
+
+    for (invoke_id, occurred_at, model) in [
+        ("new-count-match", "2026-03-10 09:05:00", "gpt-5.4"),
+        ("new-count-other", "2026-03-10 09:06:00", "gpt-5.3"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                total_tokens,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind(120_i64)
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert post-snapshot invocation row");
+    }
+
+    let Json(new_count) = fetch_invocation_new_records_count(
+        State(state),
+        Query(ListQuery {
+            model: Some("gpt-5.4".to_string()),
+            snapshot_id: Some(initial_list.snapshot_id),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("new count query should succeed");
+
+    assert_eq!(new_count.snapshot_id, initial_list.snapshot_id);
+    assert_eq!(new_count.new_records_count, 1);
 }
 
 #[tokio::test]

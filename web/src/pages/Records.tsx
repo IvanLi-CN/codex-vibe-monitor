@@ -130,7 +130,7 @@ export default function RecordsPage() {
                 <Button type="button" variant="ghost" onClick={handleClearDraft} disabled={isSearching}>
                   {t('records.filters.clearDraft')}
                 </Button>
-                <Button type="button" onClick={handleSearch} disabled={isSearching}>
+                <Button type="button" onClick={handleSearch} disabled={isSearching || isRecordsLoading}>
                   {isSearching ? t('records.filters.searching') : t('records.filters.search')}
                 </Button>
               </div>
@@ -221,11 +221,11 @@ export default function RecordsPage() {
 
               <label className="field">
                 <span className="field-label">{t('records.filters.minTotalTokens')}</span>
-                <input name="minTotalTokens" className={inputClassName} type="number" inputMode="numeric" value={draft.minTotalTokens} onChange={(event) => updateDraft('minTotalTokens', event.target.value)} />
+                <input name="minTotalTokens" className={inputClassName} type="number" inputMode="numeric" step={1} value={draft.minTotalTokens} onChange={(event) => updateDraft('minTotalTokens', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.maxTotalTokens')}</span>
-                <input name="maxTotalTokens" className={inputClassName} type="number" inputMode="numeric" value={draft.maxTotalTokens} onChange={(event) => updateDraft('maxTotalTokens', event.target.value)} />
+                <input name="maxTotalTokens" className={inputClassName} type="number" inputMode="numeric" step={1} value={draft.maxTotalTokens} onChange={(event) => updateDraft('maxTotalTokens', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.minTotalMs')}</span>

@@ -163,6 +163,11 @@ export interface InvocationRecordsSummaryResponse extends StatsResponse {
   exception: InvocationExceptionSummary
 }
 
+export interface InvocationRecordsNewCountResponse {
+  snapshotId: number
+  newRecordsCount: number
+}
+
 export interface StatsResponse {
   totalCount: number
   successCount: number
@@ -323,6 +328,12 @@ export async function fetchInvocationRecordsSummary(query: InvocationRecordsQuer
   const search = new URLSearchParams()
   appendInvocationRecordsQuery(search, query)
   return fetchJson<InvocationRecordsSummaryResponse>(`/api/invocations/summary?${search.toString()}`)
+}
+
+export async function fetchInvocationRecordsNewCount(query: InvocationRecordsQuery) {
+  const search = new URLSearchParams()
+  appendInvocationRecordsQuery(search, query)
+  return fetchJson<InvocationRecordsNewCountResponse>(`/api/invocations/new-count?${search.toString()}`)
 }
 
 export async function fetchStats() {
