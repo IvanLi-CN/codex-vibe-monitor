@@ -5,7 +5,7 @@ use std::{
     convert::Infallible,
     env,
     error::Error as StdError,
-    future::Future,
+    future::{Future, poll_fn},
     hash::{Hash, Hasher},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -38,7 +38,7 @@ use clap::Parser;
 use dotenvy::dotenv;
 use flate2::read::GzDecoder;
 use flate2::{Compression, write::GzEncoder};
-use futures_util::{StreamExt, stream};
+use futures_util::{FutureExt, StreamExt, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Proxy, Url, header};
@@ -435,6 +435,20 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let cancel = state.shutdown.clone();
+    let mut shutdown_signal = Box::pin(shutdown_signal);
+    let shutdown_requested_before_start = poll_fn(|cx| shutdown_signal.as_mut().poll(cx))
+        .now_or_never()
+        .is_some();
+    if shutdown_requested_before_start || cancel.is_cancelled() {
+        if !cancel.is_cancelled() {
+            info!("shutdown signal received; beginning graceful shutdown");
+            cancel.cancel();
+        }
+        state.xray_supervisor.lock().await.shutdown_all().await;
+        info!("shutdown complete");
+        return Ok(());
+    }
+
     let shutdown_cancel = cancel.clone();
     let shutdown_watcher = tokio::spawn(async move {
         shutdown_signal.await;
@@ -443,13 +457,6 @@ where
             shutdown_cancel.cancel();
         }
     });
-
-    tokio::task::yield_now().await;
-    if cancel.is_cancelled() {
-        let _ = shutdown_watcher.await;
-        info!("shutdown complete");
-        return Ok(());
-    }
 
     let poller_handle = if state.config.crs_stats.is_some() {
         Some(spawn_scheduler(state.clone(), cancel.clone()))
