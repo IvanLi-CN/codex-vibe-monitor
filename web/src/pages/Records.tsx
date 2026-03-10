@@ -255,6 +255,7 @@ export default function RecordsPage() {
                     onValueChange={(next) => updateDraft('model', next)}
                     options={(modelBucket?.items ?? []).map((item) => item.value)}
                     placeholder={t('records.filters.any')}
+                    emptyText={t('records.filters.noMatches')}
                     inputClassName={inputClassName}
                   />
                 ) : (
@@ -285,6 +286,7 @@ export default function RecordsPage() {
                     onValueChange={(next) => updateDraft('proxy', next)}
                     options={(proxyBucket?.items ?? []).map((item) => item.value)}
                     placeholder={t('records.filters.any')}
+                    emptyText={t('records.filters.noMatches')}
                     inputClassName={inputClassName}
                   />
                 ) : (
@@ -315,6 +317,7 @@ export default function RecordsPage() {
                     onValueChange={(next) => updateDraft('endpoint', next)}
                     options={(endpointBucket?.items ?? []).map((item) => item.value)}
                     placeholder={t('records.filters.any')}
+                    emptyText={t('records.filters.noMatches')}
                     inputClassName={inputClassName}
                   />
                 ) : (
@@ -355,6 +358,7 @@ export default function RecordsPage() {
                     onValueChange={(next) => updateDraft('failureKind', next)}
                     options={(failureKindBucket?.items ?? []).map((item) => item.value)}
                     placeholder={t('records.filters.any')}
+                    emptyText={t('records.filters.noMatches')}
                     inputClassName={inputClassName}
                   />
                 ) : (
@@ -385,6 +389,7 @@ export default function RecordsPage() {
                     onValueChange={(next) => updateDraft('promptCacheKey', next)}
                     options={(promptCacheKeyBucket?.items ?? []).map((item) => item.value)}
                     placeholder={t('records.filters.any')}
+                    emptyText={t('records.filters.noMatches')}
                     inputClassName={inputClassName}
                   />
                 ) : (
@@ -415,6 +420,7 @@ export default function RecordsPage() {
                     onValueChange={(next) => updateDraft('requesterIp', next)}
                     options={(requesterIpBucket?.items ?? []).map((item) => item.value)}
                     placeholder={t('records.filters.any')}
+                    emptyText={t('records.filters.noMatches')}
                     inputClassName={inputClassName}
                   />
                 ) : (

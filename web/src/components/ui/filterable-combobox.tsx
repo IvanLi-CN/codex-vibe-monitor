@@ -7,6 +7,7 @@ interface FilterableComboboxProps {
   onValueChange: (value: string) => void
   options: string[]
   placeholder?: string
+  emptyText?: string
   disabled?: boolean
   className?: string
   inputClassName?: string
@@ -21,6 +22,7 @@ export function FilterableCombobox({
   onValueChange,
   options,
   placeholder,
+  emptyText,
   disabled,
   className,
   inputClassName,
@@ -136,7 +138,7 @@ export function FilterableCombobox({
           )}
         >
           {filteredOptions.length === 0 ? (
-            <div className="px-3 py-2 text-sm text-base-content/60">No matches</div>
+            <div className="px-3 py-2 text-sm text-base-content/60">{emptyText ?? 'No matches'}</div>
           ) : (
             filteredOptions.map((option, idx) => (
               <button

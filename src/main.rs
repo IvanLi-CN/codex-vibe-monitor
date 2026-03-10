@@ -3551,6 +3551,41 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END,
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_proxy_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                COALESCE(
+                    NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), ''),
+                    CASE WHEN TRIM(source) != 'proxy' THEN TRIM(source) END
+                ),
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_proxy_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS codex_quota_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             captured_at TEXT NOT NULL DEFAULT (datetime('now')),
