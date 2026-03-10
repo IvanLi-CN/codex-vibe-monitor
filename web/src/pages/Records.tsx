@@ -139,7 +139,7 @@ export default function RecordsPage() {
             <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <label className="field">
                 <span className="field-label">{t('records.filters.rangePreset')}</span>
-                <select className="field-select" value={draft.rangePreset} onChange={(event) => handleRangePresetChange(event.target.value as InvocationRangePreset)}>
+                <select name="rangePreset" className="field-select" value={draft.rangePreset} onChange={(event) => handleRangePresetChange(event.target.value as InvocationRangePreset)}>
                   {rangeOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -152,6 +152,7 @@ export default function RecordsPage() {
                 <input
                   className={inputClassName}
                   type="datetime-local"
+                  name="customFrom"
                   value={draft.customFrom}
                   disabled={!isCustomRange}
                   onChange={(event) => updateDraft('customFrom', event.target.value)}
@@ -162,6 +163,7 @@ export default function RecordsPage() {
                 <input
                   className={inputClassName}
                   type="datetime-local"
+                  name="customTo"
                   value={draft.customTo}
                   disabled={!isCustomRange}
                   onChange={(event) => updateDraft('customTo', event.target.value)}
@@ -169,7 +171,7 @@ export default function RecordsPage() {
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.status')}</span>
-                <select className="field-select" value={draft.status} onChange={(event) => updateDraft('status', event.target.value)}>
+                <select name="status" className="field-select" value={draft.status} onChange={(event) => updateDraft('status', event.target.value)}>
                   <option value="">{t('records.filters.status.all')}</option>
                   <option value="success">{t('records.filters.status.success')}</option>
                   <option value="failed">{t('records.filters.status.failed')}</option>
@@ -180,19 +182,19 @@ export default function RecordsPage() {
 
               <label className="field">
                 <span className="field-label">{t('records.filters.model')}</span>
-                <input className={inputClassName} value={draft.model} onChange={(event) => updateDraft('model', event.target.value)} />
+                <input name="model" className={inputClassName} value={draft.model} onChange={(event) => updateDraft('model', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.proxy')}</span>
-                <input className={inputClassName} value={draft.proxy} onChange={(event) => updateDraft('proxy', event.target.value)} />
+                <input name="proxy" className={inputClassName} value={draft.proxy} onChange={(event) => updateDraft('proxy', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.endpoint')}</span>
-                <input className={inputClassName} value={draft.endpoint} onChange={(event) => updateDraft('endpoint', event.target.value)} />
+                <input name="endpoint" className={inputClassName} value={draft.endpoint} onChange={(event) => updateDraft('endpoint', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.failureClass')}</span>
-                <select className="field-select" value={draft.failureClass} onChange={(event) => updateDraft('failureClass', event.target.value)}>
+                <select name="failureClass" className="field-select" value={draft.failureClass} onChange={(event) => updateDraft('failureClass', event.target.value)}>
                   <option value="">{t('records.filters.failureClass.all')}</option>
                   <option value="service_failure">{t('records.filters.failureClass.service')}</option>
                   <option value="client_failure">{t('records.filters.failureClass.client')}</option>
@@ -202,36 +204,36 @@ export default function RecordsPage() {
 
               <label className="field">
                 <span className="field-label">{t('records.filters.failureKind')}</span>
-                <input className={inputClassName} value={draft.failureKind} onChange={(event) => updateDraft('failureKind', event.target.value)} />
+                <input name="failureKind" className={inputClassName} value={draft.failureKind} onChange={(event) => updateDraft('failureKind', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.promptCacheKey')}</span>
-                <input className={inputClassName} value={draft.promptCacheKey} onChange={(event) => updateDraft('promptCacheKey', event.target.value)} />
+                <input name="promptCacheKey" className={inputClassName} value={draft.promptCacheKey} onChange={(event) => updateDraft('promptCacheKey', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.requesterIp')}</span>
-                <input className={inputClassName} value={draft.requesterIp} onChange={(event) => updateDraft('requesterIp', event.target.value)} />
+                <input name="requesterIp" className={inputClassName} value={draft.requesterIp} onChange={(event) => updateDraft('requesterIp', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.keyword')}</span>
-                <input className={inputClassName} value={draft.keyword} onChange={(event) => updateDraft('keyword', event.target.value)} />
+                <input name="keyword" className={inputClassName} value={draft.keyword} onChange={(event) => updateDraft('keyword', event.target.value)} />
               </label>
 
               <label className="field">
                 <span className="field-label">{t('records.filters.minTotalTokens')}</span>
-                <input className={inputClassName} type="number" inputMode="numeric" value={draft.minTotalTokens} onChange={(event) => updateDraft('minTotalTokens', event.target.value)} />
+                <input name="minTotalTokens" className={inputClassName} type="number" inputMode="numeric" value={draft.minTotalTokens} onChange={(event) => updateDraft('minTotalTokens', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.maxTotalTokens')}</span>
-                <input className={inputClassName} type="number" inputMode="numeric" value={draft.maxTotalTokens} onChange={(event) => updateDraft('maxTotalTokens', event.target.value)} />
+                <input name="maxTotalTokens" className={inputClassName} type="number" inputMode="numeric" value={draft.maxTotalTokens} onChange={(event) => updateDraft('maxTotalTokens', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.minTotalMs')}</span>
-                <input className={inputClassName} type="number" inputMode="decimal" value={draft.minTotalMs} onChange={(event) => updateDraft('minTotalMs', event.target.value)} />
+                <input name="minTotalMs" className={inputClassName} type="number" inputMode="decimal" value={draft.minTotalMs} onChange={(event) => updateDraft('minTotalMs', event.target.value)} />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.maxTotalMs')}</span>
-                <input className={inputClassName} type="number" inputMode="decimal" value={draft.maxTotalMs} onChange={(event) => updateDraft('maxTotalMs', event.target.value)} />
+                <input name="maxTotalMs" className={inputClassName} type="number" inputMode="decimal" value={draft.maxTotalMs} onChange={(event) => updateDraft('maxTotalMs', event.target.value)} />
               </label>
             </div>
           </div>
@@ -296,7 +298,7 @@ export default function RecordsPage() {
               </div>
               <label className="field min-w-[7rem]">
                 <span className="field-label">{t('records.list.pageSize')}</span>
-                <select className="field-select field-select-sm" value={pageSize} onChange={(event) => void setPageSize(Number(event.target.value))}>
+                <select name="pageSize" className="field-select field-select-sm" value={pageSize} onChange={(event) => void setPageSize(Number(event.target.value))}>
                   {RECORDS_PAGE_SIZE_OPTIONS.map((value) => (
                     <option key={value} value={value}>
                       {value}
@@ -306,7 +308,7 @@ export default function RecordsPage() {
               </label>
               <label className="field min-w-[10rem]">
                 <span className="field-label">{t('records.list.sortBy')}</span>
-                <select className="field-select field-select-sm" value={sortBy} onChange={(event) => handleSortByChange(event.target.value as InvocationSortBy)}>
+                <select name="sortBy" className="field-select field-select-sm" value={sortBy} onChange={(event) => handleSortByChange(event.target.value as InvocationSortBy)}>
                   {sortOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -316,7 +318,7 @@ export default function RecordsPage() {
               </label>
               <label className="field min-w-[8rem]">
                 <span className="field-label">{t('records.list.sortOrder')}</span>
-                <select className="field-select field-select-sm" value={sortOrder} onChange={(event) => handleSortOrderChange(event.target.value as InvocationSortOrder)}>
+                <select name="sortOrder" className="field-select field-select-sm" value={sortOrder} onChange={(event) => handleSortOrderChange(event.target.value as InvocationSortOrder)}>
                   <option value="desc">{t('records.list.sort.desc')}</option>
                   <option value="asc">{t('records.list.sort.asc')}</option>
                 </select>
