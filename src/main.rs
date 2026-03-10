@@ -114,6 +114,52 @@ const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
 const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
 const ENV_DATABASE_PATH: &str = "DATABASE_PATH";
 const LEGACY_ENV_DATABASE_PATH: &str = "XY_DATABASE_PATH";
+const ENV_POLL_INTERVAL_SECS: &str = "POLL_INTERVAL_SECS";
+const LEGACY_ENV_POLL_INTERVAL_SECS: &str = "XY_POLL_INTERVAL_SECS";
+const ENV_REQUEST_TIMEOUT_SECS: &str = "REQUEST_TIMEOUT_SECS";
+const LEGACY_ENV_REQUEST_TIMEOUT_SECS: &str = "XY_REQUEST_TIMEOUT_SECS";
+const ENV_XRAY_BINARY: &str = "XRAY_BINARY";
+const LEGACY_ENV_XRAY_BINARY: &str = "XY_XRAY_BINARY";
+const ENV_XRAY_RUNTIME_DIR: &str = "XRAY_RUNTIME_DIR";
+const LEGACY_ENV_XRAY_RUNTIME_DIR: &str = "XY_XRAY_RUNTIME_DIR";
+const ENV_FORWARD_PROXY_ALGO: &str = "FORWARD_PROXY_ALGO";
+const LEGACY_ENV_FORWARD_PROXY_ALGO: &str = "XY_FORWARD_PROXY_ALGO";
+const ENV_MAX_PARALLEL_POLLS: &str = "MAX_PARALLEL_POLLS";
+const LEGACY_ENV_MAX_PARALLEL_POLLS: &str = "XY_MAX_PARALLEL_POLLS";
+const ENV_SHARED_CONNECTION_PARALLELISM: &str = "SHARED_CONNECTION_PARALLELISM";
+const LEGACY_ENV_SHARED_CONNECTION_PARALLELISM: &str = "XY_SHARED_CONNECTION_PARALLELISM";
+const ENV_HTTP_BIND: &str = "HTTP_BIND";
+const LEGACY_ENV_HTTP_BIND: &str = "XY_HTTP_BIND";
+const ENV_CORS_ALLOWED_ORIGINS: &str = "CORS_ALLOWED_ORIGINS";
+const LEGACY_ENV_CORS_ALLOWED_ORIGINS: &str = "XY_CORS_ALLOWED_ORIGINS";
+const ENV_LIST_LIMIT_MAX: &str = "LIST_LIMIT_MAX";
+const LEGACY_ENV_LIST_LIMIT_MAX: &str = "XY_LIST_LIMIT_MAX";
+const ENV_USER_AGENT: &str = "USER_AGENT";
+const LEGACY_ENV_USER_AGENT: &str = "XY_USER_AGENT";
+const ENV_STATIC_DIR: &str = "STATIC_DIR";
+const LEGACY_ENV_STATIC_DIR: &str = "XY_STATIC_DIR";
+const ENV_RETENTION_ENABLED: &str = "RETENTION_ENABLED";
+const LEGACY_ENV_RETENTION_ENABLED: &str = "XY_RETENTION_ENABLED";
+const ENV_RETENTION_DRY_RUN: &str = "RETENTION_DRY_RUN";
+const LEGACY_ENV_RETENTION_DRY_RUN: &str = "XY_RETENTION_DRY_RUN";
+const ENV_RETENTION_INTERVAL_SECS: &str = "RETENTION_INTERVAL_SECS";
+const LEGACY_ENV_RETENTION_INTERVAL_SECS: &str = "XY_RETENTION_INTERVAL_SECS";
+const ENV_RETENTION_BATCH_ROWS: &str = "RETENTION_BATCH_ROWS";
+const LEGACY_ENV_RETENTION_BATCH_ROWS: &str = "XY_RETENTION_BATCH_ROWS";
+const ENV_ARCHIVE_DIR: &str = "ARCHIVE_DIR";
+const LEGACY_ENV_ARCHIVE_DIR: &str = "XY_ARCHIVE_DIR";
+const ENV_INVOCATION_SUCCESS_FULL_DAYS: &str = "INVOCATION_SUCCESS_FULL_DAYS";
+const LEGACY_ENV_INVOCATION_SUCCESS_FULL_DAYS: &str = "XY_INVOCATION_SUCCESS_FULL_DAYS";
+const ENV_INVOCATION_MAX_DAYS: &str = "INVOCATION_MAX_DAYS";
+const LEGACY_ENV_INVOCATION_MAX_DAYS: &str = "XY_INVOCATION_MAX_DAYS";
+const ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: &str = "FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS";
+const LEGACY_ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: &str =
+    "XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS";
+const ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: &str = "STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS";
+const LEGACY_ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: &str =
+    "XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS";
+const ENV_QUOTA_SNAPSHOT_FULL_DAYS: &str = "QUOTA_SNAPSHOT_FULL_DAYS";
+const LEGACY_ENV_QUOTA_SNAPSHOT_FULL_DAYS: &str = "XY_QUOTA_SNAPSHOT_FULL_DAYS";
 const DETAIL_LEVEL_FULL: &str = "full";
 const DETAIL_LEVEL_STRUCTURED_ONLY: &str = "structured_only";
 const DETAIL_PRUNE_REASON_SUCCESS_OVER_30D: &str = "success_over_30d";
@@ -204,7 +250,6 @@ const DEFAULT_PROXY_FAST_MODE_REWRITE_MODE: ProxyFastModeRewriteMode =
     ProxyFastModeRewriteMode::Disabled;
 const DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP: bool = true;
 const GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS: i64 = 272_000;
-const ENV_CORS_ALLOWED_ORIGINS: &str = "XY_CORS_ALLOWED_ORIGINS";
 const PROMPT_CACHE_CONVERSATION_DEFAULT_LIMIT: i64 = 50;
 const PROMPT_CACHE_CONVERSATION_CACHE_TTL_SECS: u64 = 5;
 const PROXY_PRESET_MODEL_IDS: &[&str] = &[
@@ -222,6 +267,49 @@ const LEGACY_PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.1-codex-max",
     "gpt-5.1-codex-mini",
     "gpt-5.2",
+];
+const LEGACY_ENV_RENAMES: &[(&str, &str)] = &[
+    (LEGACY_ENV_DATABASE_PATH, ENV_DATABASE_PATH),
+    (LEGACY_ENV_POLL_INTERVAL_SECS, ENV_POLL_INTERVAL_SECS),
+    (LEGACY_ENV_REQUEST_TIMEOUT_SECS, ENV_REQUEST_TIMEOUT_SECS),
+    (LEGACY_ENV_XRAY_BINARY, ENV_XRAY_BINARY),
+    (LEGACY_ENV_XRAY_RUNTIME_DIR, ENV_XRAY_RUNTIME_DIR),
+    (LEGACY_ENV_FORWARD_PROXY_ALGO, ENV_FORWARD_PROXY_ALGO),
+    (LEGACY_ENV_MAX_PARALLEL_POLLS, ENV_MAX_PARALLEL_POLLS),
+    (
+        LEGACY_ENV_SHARED_CONNECTION_PARALLELISM,
+        ENV_SHARED_CONNECTION_PARALLELISM,
+    ),
+    (LEGACY_ENV_HTTP_BIND, ENV_HTTP_BIND),
+    (LEGACY_ENV_CORS_ALLOWED_ORIGINS, ENV_CORS_ALLOWED_ORIGINS),
+    (LEGACY_ENV_LIST_LIMIT_MAX, ENV_LIST_LIMIT_MAX),
+    (LEGACY_ENV_USER_AGENT, ENV_USER_AGENT),
+    (LEGACY_ENV_STATIC_DIR, ENV_STATIC_DIR),
+    (LEGACY_ENV_RETENTION_ENABLED, ENV_RETENTION_ENABLED),
+    (LEGACY_ENV_RETENTION_DRY_RUN, ENV_RETENTION_DRY_RUN),
+    (
+        LEGACY_ENV_RETENTION_INTERVAL_SECS,
+        ENV_RETENTION_INTERVAL_SECS,
+    ),
+    (LEGACY_ENV_RETENTION_BATCH_ROWS, ENV_RETENTION_BATCH_ROWS),
+    (LEGACY_ENV_ARCHIVE_DIR, ENV_ARCHIVE_DIR),
+    (
+        LEGACY_ENV_INVOCATION_SUCCESS_FULL_DAYS,
+        ENV_INVOCATION_SUCCESS_FULL_DAYS,
+    ),
+    (LEGACY_ENV_INVOCATION_MAX_DAYS, ENV_INVOCATION_MAX_DAYS),
+    (
+        LEGACY_ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
+        ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
+    ),
+    (
+        LEGACY_ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
+        ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
+    ),
+    (
+        LEGACY_ENV_QUOTA_SNAPSHOT_FULL_DAYS,
+        ENV_QUOTA_SNAPSHOT_FULL_DAYS,
+    ),
 ];
 static NEXT_PROXY_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -272,12 +360,28 @@ fn resolve_forward_proxy_algo_config(
     legacy_raw: Option<&str>,
 ) -> Result<ForwardProxyAlgo> {
     if legacy_raw.is_some() {
-        bail!("XY_FORWARD_PROXY_ALGO is not supported; use FORWARD_PROXY_ALGO");
+        bail!(
+            "{LEGACY_ENV_FORWARD_PROXY_ALGO} is not supported; rename it to {ENV_FORWARD_PROXY_ALGO}"
+        );
     }
     match primary_raw {
         Some(primary) => ForwardProxyAlgo::from_str(primary),
         None => Ok(DEFAULT_FORWARD_PROXY_ALGO),
     }
+}
+
+fn reject_legacy_env_var(legacy_name: &str, canonical_name: &str) -> Result<()> {
+    if env::var_os(legacy_name).is_some() {
+        bail!("{legacy_name} is not supported; rename it to {canonical_name}");
+    }
+    Ok(())
+}
+
+fn reject_legacy_env_vars(renames: &[(&str, &str)]) -> Result<()> {
+    for (legacy_name, canonical_name) in renames {
+        reject_legacy_env_var(legacy_name, canonical_name)?;
+    }
+    Ok(())
 }
 
 #[derive(Parser, Debug, Default)]
@@ -9726,9 +9830,7 @@ impl AppConfig {
     }
 
     fn from_sources(overrides: &CliArgs) -> Result<Self> {
-        if env::var_os(LEGACY_ENV_DATABASE_PATH).is_some() {
-            bail!("{LEGACY_ENV_DATABASE_PATH} is not supported; rename it to {ENV_DATABASE_PATH}");
-        }
+        reject_legacy_env_vars(LEGACY_ENV_RENAMES)?;
         let openai_upstream_base_url = env::var("OPENAI_UPSTREAM_BASE_URL")
             .unwrap_or_else(|_| DEFAULT_OPENAI_UPSTREAM_BASE_URL.to_string());
         let database_path = overrides
@@ -9739,7 +9841,7 @@ impl AppConfig {
         let poll_interval = overrides
             .poll_interval_secs
             .or_else(|| {
-                env::var("XY_POLL_INTERVAL_SECS")
+                env::var(ENV_POLL_INTERVAL_SECS)
                     .ok()
                     .and_then(|v| v.parse::<u64>().ok())
             })
@@ -9748,7 +9850,7 @@ impl AppConfig {
         let request_timeout = overrides
             .request_timeout_secs
             .or_else(|| {
-                env::var("XY_REQUEST_TIMEOUT_SECS")
+                env::var(ENV_REQUEST_TIMEOUT_SECS)
                     .ok()
                     .and_then(|v| v.parse::<u64>().ok())
             })
@@ -9816,16 +9918,14 @@ impl AppConfig {
             .ok()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_PROXY_RAW_DIR));
-        let xray_binary = env::var("XY_XRAY_BINARY")
-            .or_else(|_| env::var("XRAY_BINARY"))
-            .unwrap_or_else(|_| DEFAULT_XRAY_BINARY.to_string());
-        let xray_runtime_dir = env::var("XY_XRAY_RUNTIME_DIR")
-            .or_else(|_| env::var("XRAY_RUNTIME_DIR"))
+        let xray_binary =
+            env::var(ENV_XRAY_BINARY).unwrap_or_else(|_| DEFAULT_XRAY_BINARY.to_string());
+        let xray_runtime_dir = env::var(ENV_XRAY_RUNTIME_DIR)
             .ok()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_XRAY_RUNTIME_DIR));
-        let forward_proxy_algo_raw = env::var("FORWARD_PROXY_ALGO").ok();
-        let forward_proxy_algo_legacy_raw = env::var("XY_FORWARD_PROXY_ALGO").ok();
+        let forward_proxy_algo_raw = env::var(ENV_FORWARD_PROXY_ALGO).ok();
+        let forward_proxy_algo_legacy_raw = env::var(LEGACY_ENV_FORWARD_PROXY_ALGO).ok();
         let forward_proxy_algo = resolve_forward_proxy_algo_config(
             forward_proxy_algo_raw.as_deref(),
             forward_proxy_algo_legacy_raw.as_deref(),
@@ -9833,7 +9933,7 @@ impl AppConfig {
         let max_parallel_polls = overrides
             .max_parallel_polls
             .or_else(|| {
-                env::var("XY_MAX_PARALLEL_POLLS")
+                env::var(ENV_MAX_PARALLEL_POLLS)
                     .ok()
                     .and_then(|v| v.parse::<usize>().ok())
             })
@@ -9842,7 +9942,7 @@ impl AppConfig {
         let shared_connection_parallelism = overrides
             .shared_connection_parallelism
             .or_else(|| {
-                env::var("XY_SHARED_CONNECTION_PARALLELISM")
+                env::var(ENV_SHARED_CONNECTION_PARALLELISM)
                     .ok()
                     .and_then(|v| v.parse::<usize>().ok())
             })
@@ -9850,18 +9950,18 @@ impl AppConfig {
         let http_bind = if let Some(addr) = overrides.http_bind {
             addr
         } else {
-            env::var("XY_HTTP_BIND")
+            env::var(ENV_HTTP_BIND)
                 .ok()
                 .map(|v| v.parse())
                 .transpose()
-                .context("invalid XY_HTTP_BIND socket address")?
+                .context("invalid HTTP_BIND socket address")?
                 .unwrap_or_else(|| "127.0.0.1:8080".parse().expect("valid default address"))
         };
         let cors_allowed_origins = parse_cors_allowed_origins_env(ENV_CORS_ALLOWED_ORIGINS)?;
         let list_limit_max = overrides
             .list_limit_max
             .or_else(|| {
-                env::var("XY_LIST_LIMIT_MAX")
+                env::var(ENV_LIST_LIMIT_MAX)
                     .ok()
                     .and_then(|v| v.parse::<usize>().ok())
             })
@@ -9870,12 +9970,12 @@ impl AppConfig {
         let user_agent = overrides
             .user_agent
             .clone()
-            .or_else(|| env::var("XY_USER_AGENT").ok())
+            .or_else(|| env::var(ENV_USER_AGENT).ok())
             .unwrap_or_else(|| "codex-vibe-monitor/0.2.0".to_string());
         let static_dir = overrides
             .static_dir
             .clone()
-            .or_else(|| env::var("XY_STATIC_DIR").ok().map(PathBuf::from))
+            .or_else(|| env::var(ENV_STATIC_DIR).ok().map(PathBuf::from))
             .or_else(|| {
                 let default = PathBuf::from("web/dist");
                 if default.exists() {
@@ -9885,35 +9985,35 @@ impl AppConfig {
                 }
             });
         let retention_enabled =
-            parse_bool_env_var("XY_RETENTION_ENABLED", DEFAULT_RETENTION_ENABLED)?;
+            parse_bool_env_var(ENV_RETENTION_ENABLED, DEFAULT_RETENTION_ENABLED)?;
         let retention_dry_run = overrides.retention_dry_run
-            || parse_bool_env_var("XY_RETENTION_DRY_RUN", DEFAULT_RETENTION_DRY_RUN)?;
+            || parse_bool_env_var(ENV_RETENTION_DRY_RUN, DEFAULT_RETENTION_DRY_RUN)?;
         let retention_interval = Duration::from_secs(parse_u64_env_var(
-            "XY_RETENTION_INTERVAL_SECS",
+            ENV_RETENTION_INTERVAL_SECS,
             DEFAULT_RETENTION_INTERVAL_SECS,
         )?);
         let retention_batch_rows =
-            parse_usize_env_var("XY_RETENTION_BATCH_ROWS", DEFAULT_RETENTION_BATCH_ROWS)?.max(1);
-        let archive_dir = env::var("XY_ARCHIVE_DIR")
+            parse_usize_env_var(ENV_RETENTION_BATCH_ROWS, DEFAULT_RETENTION_BATCH_ROWS)?.max(1);
+        let archive_dir = env::var(ENV_ARCHIVE_DIR)
             .ok()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_ARCHIVE_DIR));
         let invocation_success_full_days = parse_u64_env_var(
-            "XY_INVOCATION_SUCCESS_FULL_DAYS",
+            ENV_INVOCATION_SUCCESS_FULL_DAYS,
             DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
         )?;
         let invocation_max_days =
-            parse_u64_env_var("XY_INVOCATION_MAX_DAYS", DEFAULT_INVOCATION_MAX_DAYS)?;
+            parse_u64_env_var(ENV_INVOCATION_MAX_DAYS, DEFAULT_INVOCATION_MAX_DAYS)?;
         let forward_proxy_attempts_retention_days = parse_u64_env_var(
-            "XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS",
+            ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
             DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
         )?;
         let stats_source_snapshots_retention_days = parse_u64_env_var(
-            "XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS",
+            ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
             DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
         )?;
         let quota_snapshot_full_days = parse_u64_env_var(
-            "XY_QUOTA_SNAPSHOT_FULL_DAYS",
+            ENV_QUOTA_SNAPSHOT_FULL_DAYS,
             DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
         )?;
 

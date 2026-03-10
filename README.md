@@ -64,42 +64,43 @@ npm run dev -- --host 127.0.0.1 --port 60080
 
 ```env
 OPENAI_UPSTREAM_BASE_URL=https://api.openai.com  # (可选，默认 https://api.openai.com/)
-DATABASE_PATH=codex_vibe_monitor.db            # (默认)
-XY_POLL_INTERVAL_SECS=10                       # (10；用于 CRS scheduler 基础节奏)
-XY_REQUEST_TIMEOUT_SECS=60                     # (60)
-OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=60         # (60，非 compact 上游等待超时)
-OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180     # (180，请求体读取总超时)
-OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=268435456  # (256MiB)
-PROXY_RAW_DIR=proxy_raw_payloads                # (相对路径时锚定到 DATABASE_PATH 同级目录)
-PROXY_RAW_MAX_BYTES=0                          # (0=unlimited, set >0 to cap)
-PROXY_RAW_RETENTION_DAYS=7                     # (7)
-PROXY_ENFORCE_STREAM_INCLUDE_USAGE=true        # (true)
-PROXY_USAGE_BACKFILL_ON_STARTUP=true           # (兼容保留；当前历史补数改为后台有界执行，不再阻塞 /health)
-FORWARD_PROXY_ALGO=v2                          # (v2，正向代理权重算法开关: v1|v2)
-XY_MAX_PARALLEL_POLLS=6                        # (6)
-XY_SHARED_CONNECTION_PARALLELISM=2             # (2)
-XY_HTTP_BIND=127.0.0.1:8080                    # (127.0.0.1:8080)
-XY_CORS_ALLOWED_ORIGINS=                        # (可选，逗号分隔，允许跨域 Origin 白名单)
-XY_LIST_LIMIT_MAX=200                          # (200)
-XY_USER_AGENT=codex-vibe-monitor/0.2.0         # (自动)
-XY_STATIC_DIR=web/dist                         # (存在时自动使用)
-XY_RETENTION_ENABLED=false                     # (false，需要显式开启后台保留任务)
-XY_RETENTION_DRY_RUN=false                     # (false)
-XY_RETENTION_INTERVAL_SECS=3600                # (3600)
-XY_RETENTION_BATCH_ROWS=1000                   # (1000)
-XY_ARCHIVE_DIR=archives                        # (archives，相对 DATABASE_PATH 同级目录解析)
-XY_INVOCATION_SUCCESS_FULL_DAYS=30             # (30，上海自然日)
-XY_INVOCATION_MAX_DAYS=90                      # (90，超窗后归档并清理主库)
-XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS=30    # (30，上海自然日)
-XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS=30    # (30，上海自然日)
-XY_QUOTA_SNAPSHOT_FULL_DAYS=30                 # (30，上海自然日)
-# 注意：XY_FORWARD_PROXY_ALGO 已移除，配置将直接失败，请改用 FORWARD_PROXY_ALGO
+DATABASE_PATH=codex_vibe_monitor.db              # (默认)
+POLL_INTERVAL_SECS=10                            # (10；用于 CRS scheduler 基础节奏)
+REQUEST_TIMEOUT_SECS=60                          # (60)
+OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=60           # (60，非 compact 上游等待超时)
+OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180       # (180，请求体读取总超时)
+OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=268435456    # (256MiB)
+PROXY_RAW_DIR=proxy_raw_payloads                 # (相对路径时锚定到 DATABASE_PATH 同级目录)
+PROXY_RAW_MAX_BYTES=0                            # (0=unlimited, set >0 to cap)
+PROXY_RAW_RETENTION_DAYS=7                       # (7)
+PROXY_ENFORCE_STREAM_INCLUDE_USAGE=true          # (true)
+PROXY_USAGE_BACKFILL_ON_STARTUP=true             # (兼容保留；当前历史补数改为后台有界执行，不再阻塞 /health)
+FORWARD_PROXY_ALGO=v2                            # (v2，正向代理权重算法开关: v1|v2)
+MAX_PARALLEL_POLLS=6                             # (6)
+SHARED_CONNECTION_PARALLELISM=2                  # (2)
+HTTP_BIND=127.0.0.1:8080                         # (127.0.0.1:8080)
+CORS_ALLOWED_ORIGINS=                            # (可选，逗号分隔，允许跨域 Origin 白名单)
+LIST_LIMIT_MAX=200                               # (200)
+USER_AGENT=codex-vibe-monitor/0.2.0              # (自动)
+STATIC_DIR=web/dist                              # (存在时自动使用)
+RETENTION_ENABLED=false                          # (false，需要显式开启后台保留任务)
+RETENTION_DRY_RUN=false                          # (false)
+RETENTION_INTERVAL_SECS=3600                     # (3600)
+RETENTION_BATCH_ROWS=1000                        # (1000)
+ARCHIVE_DIR=archives                             # (archives，相对 DATABASE_PATH 同级目录解析)
+INVOCATION_SUCCESS_FULL_DAYS=30                  # (30，上海自然日)
+INVOCATION_MAX_DAYS=90                           # (90，超窗后归档并清理主库)
+FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS=30         # (30，上海自然日)
+STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS=30         # (30，上海自然日)
+QUOTA_SNAPSHOT_FULL_DAYS=30                      # (30，上海自然日)
+XRAY_BINARY=xray                                 # (PATH lookup)
+XRAY_RUNTIME_DIR=.codex/xray-forward             # (xray 运行时目录)
 
 # CRS 日统计源（可选；未配置则禁用）
 CRS_STATS_BASE_URL=https://claude-relay-service.nsngc.org
 CRS_STATS_API_ID=<apiId>
-CRS_STATS_PERIOD=daily                         # (daily)
-CRS_STATS_POLL_INTERVAL_SECS=10                # (10，默认跟随 XY_POLL_INTERVAL_SECS)
+CRS_STATS_PERIOD=daily                           # (daily)
+CRS_STATS_POLL_INTERVAL_SECS=10                  # (10，默认跟随 POLL_INTERVAL_SECS)
 ```
 
 价格配置已迁移到数据库持久化（可在 Web 设置页 `/settings` 在线编辑）；服务启动会自动写入默认模型价格模板。
@@ -108,7 +109,35 @@ CRS_STATS_POLL_INTERVAL_SECS=10                # (10，默认跟随 XY_POLL_INTE
 
 服务不再读取 XYAI 上游 cookie / base URL / quota endpoint；`/api/quota/latest` 仅返回数据库中已有的历史快照。
 
-`XY_DATABASE_PATH` 已移除；若环境中仍保留该变量，服务会在启动时直接报错并提示迁移到 `DATABASE_PATH`。
+### Breaking change：公开环境变量改名
+
+服务已停止接受 legacy `XY_*` 公共运行时键；若环境中仍保留旧键，启动会直接失败，并给出 `rename <old> to <new>` 的一对一迁移提示。
+
+| Legacy key                                 | Canonical key                           |
+| ------------------------------------------ | --------------------------------------- |
+| `XY_POLL_INTERVAL_SECS`                    | `POLL_INTERVAL_SECS`                    |
+| `XY_REQUEST_TIMEOUT_SECS`                  | `REQUEST_TIMEOUT_SECS`                  |
+| `XY_MAX_PARALLEL_POLLS`                    | `MAX_PARALLEL_POLLS`                    |
+| `XY_SHARED_CONNECTION_PARALLELISM`         | `SHARED_CONNECTION_PARALLELISM`         |
+| `XY_HTTP_BIND`                             | `HTTP_BIND`                             |
+| `XY_CORS_ALLOWED_ORIGINS`                  | `CORS_ALLOWED_ORIGINS`                  |
+| `XY_LIST_LIMIT_MAX`                        | `LIST_LIMIT_MAX`                        |
+| `XY_USER_AGENT`                            | `USER_AGENT`                            |
+| `XY_STATIC_DIR`                            | `STATIC_DIR`                            |
+| `XY_RETENTION_ENABLED`                     | `RETENTION_ENABLED`                     |
+| `XY_RETENTION_DRY_RUN`                     | `RETENTION_DRY_RUN`                     |
+| `XY_RETENTION_INTERVAL_SECS`               | `RETENTION_INTERVAL_SECS`               |
+| `XY_RETENTION_BATCH_ROWS`                  | `RETENTION_BATCH_ROWS`                  |
+| `XY_ARCHIVE_DIR`                           | `ARCHIVE_DIR`                           |
+| `XY_INVOCATION_SUCCESS_FULL_DAYS`          | `INVOCATION_SUCCESS_FULL_DAYS`          |
+| `XY_INVOCATION_MAX_DAYS`                   | `INVOCATION_MAX_DAYS`                   |
+| `XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS` | `FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS` |
+| `XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS` | `STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS` |
+| `XY_QUOTA_SNAPSHOT_FULL_DAYS`              | `QUOTA_SNAPSHOT_FULL_DAYS`              |
+| `XY_XRAY_BINARY`                           | `XRAY_BINARY`                           |
+| `XY_XRAY_RUNTIME_DIR`                      | `XRAY_RUNTIME_DIR`                      |
+| `XY_DATABASE_PATH`                         | `DATABASE_PATH`                         |
+| `XY_FORWARD_PROXY_ALGO`                    | `FORWARD_PROXY_ALGO`                    |
 
 上述大部分变量均可使用 CLI 覆盖，例如：
 
@@ -122,7 +151,7 @@ cargo run -- \
 ## 数据分层保留与离线归档
 
 - `codex_invocations` 的成功记录超过 30 个上海自然日后，会先把完整行写入对应月份的离线 archive，再把主库内的原始 payload / raw response / raw file 引用精简为 `structured_only`，但保留结构化统计字段用于在线排障。
-- 任意调用记录超过 90 个上海自然日后，会先归档到 `XY_ARCHIVE_DIR/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`；若 `XY_ARCHIVE_DIR` 使用相对路径，则实际位置位于 `<DATABASE_PATH 同级目录>/<XY_ARCHIVE_DIR 的值>/...`，写入 `archive_batches` 清单后，再从主库删除。
+- 任意调用记录超过 90 个上海自然日后，会先归档到 `ARCHIVE_DIR/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`；若 `ARCHIVE_DIR` 使用相对路径，则实际位置位于 `<DATABASE_PATH 同级目录>/<ARCHIVE_DIR 的值>/...`，写入 `archive_batches` 清单后，再从主库删除。
 - `forward_proxy_attempts` 与 `stats_source_snapshots` 只保留最近 30 个上海自然日在线明细；更老数据同样执行“先归档、再清理”。
 - `codex_quota_snapshots` 保留最近 30 天全量，更老日期在主库内压缩为“每个上海自然日最后一条”，被折叠掉的行进入离线归档。
 - `stats_source_deltas` 长期在线保留；`/api/stats` 与 `GET /api/stats/summary?window=all` 通过“在线明细 + invocation_rollup_daily”保证长期 totals 不缩水。
@@ -148,7 +177,7 @@ cargo run -- --retention-run-once
 - `GET /api/settings`：获取统一设置（`proxy + pricing`）。
 - `PUT /api/settings/proxy`：更新 `/v1/models` 劫持与上游合并开关状态（全局持久化）。
 - `PUT /api/settings/pricing`：更新价格目录（全量覆盖、全局持久化、实时生效于新请求成本估算）。
-- `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `XY_LIST_LIMIT_MAX` 控制）；每条记录额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记在线明细是否仍完整。
+- `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `LIST_LIMIT_MAX` 控制）；每条记录额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记在线明细是否仍完整。
 - `GET /api/stats`：全量聚合统计；长期 totals 会合并在线明细与 `invocation_rollup_daily`。
 - `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计；`window=all` 会承接归档前回填的日汇总。
 - `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）。
@@ -180,7 +209,7 @@ docker run --rm \
   ghcr.io/ivanli-cn/codex-vibe-monitor:latest
 ```
 
-容器内默认：`DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db`，`XY_HTTP_BIND=0.0.0.0:8080`，`XY_STATIC_DIR=/srv/app/web`，`PROXY_RAW_DIR=proxy_raw_payloads`（解析到 `/srv/app/data/proxy_raw_payloads`）。运行镜像已内置 `curl` 与镜像级 `HEALTHCHECK`，会探测 `http://127.0.0.1:8080/health`。
+容器内默认：`DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db`，`HTTP_BIND=0.0.0.0:8080`，`STATIC_DIR=/srv/app/web`，`PROXY_RAW_DIR=proxy_raw_payloads`（解析到 `/srv/app/data/proxy_raw_payloads`）。运行镜像已内置 `curl` 与镜像级 `HEALTHCHECK`，会探测 `http://127.0.0.1:8080/health`。
 
 推荐在 Compose 中显式覆盖 healthcheck 参数，确保启动窗口内也能正确等待 readiness：
 
