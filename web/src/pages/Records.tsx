@@ -38,6 +38,7 @@ export default function RecordsPage() {
     summaryError,
     isSearching,
     isRecordsLoading,
+    isSummaryLoading,
     updateDraft,
     resetDraft,
     setFocus,
@@ -84,7 +85,7 @@ export default function RecordsPage() {
   const visiblePages = getVisiblePages(page, totalPages)
   const isCustomRange = draft.rangePreset === 'custom'
   const newRecordsCount = summary?.newRecordsCount ?? 0
-  const tableLoading = isSearching || isRecordsLoading
+  const tableLoading = isRecordsLoading
 
   const handleClearDraft = () => {
     resetDraft()
@@ -279,7 +280,7 @@ export default function RecordsPage() {
           <InvocationRecordsSummaryCards
             focus={focus}
             summary={summary}
-            isLoading={isSearching}
+            isLoading={isSummaryLoading}
             error={summaryError}
           />
         </div>

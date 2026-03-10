@@ -35,6 +35,7 @@ export interface UseInvocationRecordsResult {
   summaryError: string | null
   isSearching: boolean
   isRecordsLoading: boolean
+  isSummaryLoading: boolean
   updateDraft: <K extends keyof InvocationRecordsDraftFilters>(key: K, value: InvocationRecordsDraftFilters[K]) => void
   resetDraft: () => void
   setFocus: (focus: InvocationFocus) => void
@@ -69,6 +70,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   const [summaryError, setSummaryError] = useState<string | null>(null)
   const [isSearching, setIsSearching] = useState(true)
   const [isRecordsLoading, setIsRecordsLoading] = useState(false)
+  const [isSummaryLoading, setIsSummaryLoading] = useState(true)
   const appliedRef = useRef<SearchState | null>(null)
   const searchSeqRef = useRef(0)
   const recordsSeqRef = useRef(0)
@@ -134,9 +136,12 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     searchSeqRef.current = requestSeq
     recordsSeqRef.current += 1
     setIsSearching(true)
-    setIsRecordsLoading(false)
+    setIsRecordsLoading(true)
+    setIsSummaryLoading(true)
     setRecordsError(null)
     setSummaryError(null)
+
+    let listLoaded = false
 
     try {
       const filters = buildAppliedInvocationFilters(draftRef.current)
@@ -149,28 +154,37 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         }),
       )
       if (requestSeq !== searchSeqRef.current) return
+
+      listLoaded = true
+      appliedRef.current = { filters, snapshotId: listResponse.snapshotId }
+      setRecords(listResponse)
+      setPageState(listResponse.page)
+      setPageSizeState(listResponse.pageSize)
+      setRecordsError(null)
+      setIsRecordsLoading(false)
+
       const summaryResponse = await fetchInvocationRecordsSummary({
         ...filters,
         snapshotId: listResponse.snapshotId,
       })
       if (requestSeq !== searchSeqRef.current) return
 
-      appliedRef.current = { filters, snapshotId: listResponse.snapshotId }
-      setRecords(listResponse)
       setSummary({ ...summaryResponse, newRecordsCount: 0 })
-      setPageState(listResponse.page)
-      setPageSizeState(listResponse.pageSize)
-      setRecordsError(null)
       setSummaryError(null)
     } catch (error) {
       if (requestSeq !== searchSeqRef.current) return
       const message = error instanceof Error ? error.message : String(error)
-      setRecordsError(message)
-      setSummaryError(message)
+      if (listLoaded) {
+        setSummaryError(message)
+      } else {
+        setRecordsError(message)
+        setSummaryError(message)
+      }
     } finally {
       if (requestSeq === searchSeqRef.current) {
         setIsSearching(false)
         setIsRecordsLoading(false)
+        setIsSummaryLoading(false)
       }
     }
   }, [])
@@ -243,6 +257,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       summaryError,
       isSearching,
       isRecordsLoading,
+      isSummaryLoading,
       updateDraft: <K extends keyof InvocationRecordsDraftFilters>(key: K, value: InvocationRecordsDraftFilters[K]) => {
         setDraft((current) => ({ ...current, [key]: value }))
       },
@@ -253,7 +268,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       setPageSize,
       setSort,
     }),
-    [draft, focus, isRecordsLoading, isSearching, page, pageSize, records, recordsError, resetDraft, search, setPage, setPageSize, setSort, sortBy, sortOrder, summary, summaryError],
+    [draft, focus, isRecordsLoading, isSearching, isSummaryLoading, page, pageSize, records, recordsError, resetDraft, search, setPage, setPageSize, setSort, sortBy, sortOrder, summary, summaryError],
   )
 
   return api

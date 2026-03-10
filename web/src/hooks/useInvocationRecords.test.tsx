@@ -156,6 +156,8 @@ function Probe() {
       <div data-testid="snapshot">{state.records?.snapshotId ?? 0}</div>
       <div data-testid="model">{state.records?.records[0]?.model ?? ''}</div>
       <div data-testid="new-count">{state.summary?.newRecordsCount ?? 0}</div>
+      <div data-testid="records-loading">{state.isRecordsLoading ? 'yes' : 'no'}</div>
+      <div data-testid="summary-loading">{state.isSummaryLoading ? 'yes' : 'no'}</div>
       <div data-testid="summary-error">{state.summaryError ?? ''}</div>
       <button data-testid="focus-network" type="button" onClick={() => state.setFocus('network')}>
         network
@@ -318,6 +320,36 @@ describe('useInvocationRecords', () => {
     const searchSummaryQuery = apiMocks.fetchInvocationRecordsSummary.mock.calls[summaryCallsBeforeSearch]?.[0]
     expect(searchSummaryQuery?.snapshotId).toBe(84)
     expect(searchSummaryQuery?.model).toBe('next-model')
+  })
+
+
+  it('shows records as soon as the list resolves even if the summary is still pending', async () => {
+    let resolveSummary: ((value: InvocationRecordsSummaryResponse) => void) | null = null
+    const summaryPromise = new Promise<InvocationRecordsSummaryResponse>((resolve) => {
+      resolveSummary = resolve
+    })
+
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createListResponse({ snapshotId: 42 }))
+    apiMocks.fetchInvocationRecordsSummary.mockImplementation(async () => summaryPromise)
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }))
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('42')
+    expect(text('model')).toBe('baseline-model')
+    expect(text('records-loading')).toBe('no')
+    expect(text('summary-loading')).toBe('yes')
+
+    if (!resolveSummary) {
+      throw new Error('summary resolver missing')
+    }
+    const resolveSummaryFn = resolveSummary as (value: InvocationRecordsSummaryResponse) => void
+    resolveSummaryFn(createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }))
+    await flushAsync()
+
+    expect(text('summary-loading')).toBe('no')
+    expect(text('summary-error')).toBe('')
   })
 
   it('keeps the last summary visible when new-count polling fails', async () => {
