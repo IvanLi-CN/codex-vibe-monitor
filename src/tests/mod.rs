@@ -3855,7 +3855,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
             hijack_enabled: true,
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: ProxyFastModeRewriteMode::FillMissing,
-            upstream_429_max_retries: 5,
+            upstream_429_max_retries: Some(5),
             enabled_models: vec!["gpt-5.2-codex".to_string(), "unknown-model".to_string()],
         }),
     )
@@ -3892,7 +3892,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
             hijack_enabled: false,
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: ProxyFastModeRewriteMode::ForcePriority,
-            upstream_429_max_retries: 9,
+            upstream_429_max_retries: Some(9),
             enabled_models: Vec::new(),
         }),
     )
@@ -3909,6 +3909,48 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         MAX_PROXY_UPSTREAM_429_MAX_RETRIES
     );
     assert!(normalized.enabled_models.is_empty());
+}
+
+#[tokio::test]
+async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_missing() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(updated) = put_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ProxyModelSettingsUpdateRequest {
+            hijack_enabled: true,
+            merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: ProxyFastModeRewriteMode::FillMissing,
+            upstream_429_max_retries: Some(5),
+            enabled_models: vec!["gpt-5.2-codex".to_string()],
+        }),
+    )
+    .await
+    .expect("put settings should succeed");
+    assert_eq!(updated.upstream_429_max_retries, 5);
+
+    let legacy_payload = serde_json::from_value::<ProxyModelSettingsUpdateRequest>(json!({
+        "hijackEnabled": true,
+        "mergeUpstreamEnabled": false,
+        "fastModeRewriteMode": "fill_missing",
+        "enabledModels": ["gpt-5.2-codex"],
+    }))
+    .expect("legacy payload should deserialize");
+
+    let Json(updated) =
+        put_proxy_settings(State(state.clone()), HeaderMap::new(), Json(legacy_payload))
+            .await
+            .expect("legacy payload should not reset upstream429MaxRetries");
+    assert_eq!(updated.upstream_429_max_retries, 5);
+
+    let persisted = load_proxy_model_settings(&state.pool)
+        .await
+        .expect("settings should persist");
+    assert_eq!(persisted.upstream_429_max_retries, 5);
 }
 
 #[tokio::test]
@@ -4191,7 +4233,7 @@ async fn proxy_model_settings_api_rejects_cross_origin_writes() {
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
 
-            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -4230,7 +4272,7 @@ async fn proxy_model_settings_api_rejects_cross_site_request() {
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
 
-            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -4265,7 +4307,7 @@ async fn proxy_model_settings_api_allows_loopback_proxy_origin_mismatch() {
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
 
-            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -4314,7 +4356,7 @@ async fn proxy_model_settings_api_allows_forwarded_host_origin_match() {
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
 
-            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -4367,7 +4409,7 @@ async fn proxy_model_settings_api_allows_forwarded_port_non_default_origin_port(
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
 
-            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -4404,7 +4446,7 @@ async fn proxy_model_settings_api_allows_matching_origin_without_explicit_host_p
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
 
-            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )

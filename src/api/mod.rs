@@ -1614,15 +1614,18 @@ pub(crate) async fn put_proxy_settings(
         ));
     }
 
+    let _update_guard = state.proxy_model_settings_update_lock.lock().await;
+    let current = state.proxy_model_settings.read().await.clone();
     let next = ProxyModelSettings {
         hijack_enabled: payload.hijack_enabled,
         merge_upstream_enabled: payload.merge_upstream_enabled,
         fast_mode_rewrite_mode: payload.fast_mode_rewrite_mode,
-        upstream_429_max_retries: payload.upstream_429_max_retries,
+        upstream_429_max_retries: payload
+            .upstream_429_max_retries
+            .unwrap_or(current.upstream_429_max_retries),
         enabled_preset_models: payload.enabled_models,
     }
     .normalized();
-    let _update_guard = state.proxy_model_settings_update_lock.lock().await;
     save_proxy_model_settings(&state.pool, next.clone())
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;

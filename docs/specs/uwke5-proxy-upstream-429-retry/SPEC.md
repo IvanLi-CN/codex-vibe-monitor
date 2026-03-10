@@ -51,9 +51,10 @@
 - `upstream429MaxRetries` 默认值必须为 `3`，允许值范围为 `0..5`，其中 `0` 表示关闭自动重试。
 - `proxy_model_settings` 必须新增 `upstream_429_max_retries INTEGER NOT NULL DEFAULT 3`，旧库升级后未配置实例保持默认 `3`。
 - 所有反向代理上游请求在响应头阶段收到 `429` 时，都必须先记录一次 `forward_proxy_attempts` 失败（failure kind=`upstream_http_429`），再依据配置决定是否等待并重试。
-- 若上游响应带 `Retry-After`：必须支持 `delay-seconds` 与 HTTP-date 两种格式；若缺失、非法或已过期，则退回内置 backoff `min(500ms * 2^(attempt-1), 5s)`。
+- 若上游响应带 `Retry-After`：必须支持 `delay-seconds` 与 HTTP-date 两种格式；若缺失、非法或已过期，则退回内置 backoff `min(500ms * 2^(attempt-1), 5s)`；为避免过长阻塞，`Retry-After` 解析出的等待时间上限为 `30s`。
 - capture-target 路径成功重试后，最终客户端只能看到一次成功响应，且 `codex_invocations` 只持久化最终结果。
-- 非 capture `/v1/*` 透传路径必须先把请求体按现有 body limit 读入内存，再发往上游，确保 429 后可重放同一份方法 / query / headers / body。
+- `PUT /api/settings/proxy` 的 `upstream429MaxRetries` 允许缺省（兼容旧客户端）；缺省时后端必须沿用当前已持久化值，不得静默重置为默认值。
+- 非 capture `/v1/*` 透传路径在 `upstream429MaxRetries > 0` 时必须先把请求体按现有 body limit 读入内存再发往上游，确保 429 后可重放同一份方法 / query / headers / body；当 `upstream429MaxRetries == 0`（关闭重试）时保持旧的 stream-through 语义（不额外缓冲）。
 - 若 429 重试耗尽：直接反代路径必须原样返回最终 `429` 的状态码、关键响应头与响应体；`/v1/models` merge 路径则维持现有 preset fallback，并继续打 `x-proxy-model-merge-upstream=failed`。
 
 ### SHOULD
@@ -96,6 +97,7 @@
 
 - Given 旧库尚未包含 `upstream_429_max_retries`，When 服务启动执行 schema migration，Then 新列被补齐且默认读取值为 `3`。
 - Given 设置页把 `upstream429MaxRetries` 改成 `5`，When auto-save 完成并刷新页面，Then `/api/settings` 与前端状态都返回 `5`。
+- Given 已持久化的 `upstream429MaxRetries=5`，When `PUT /api/settings/proxy` payload 缺省 `upstream429MaxRetries`（旧客户端），Then 后端继续沿用 `5`，不得回退到默认 `3`。
 - Given capture-target 路径首个上游响应为 `429`、第二次为 `200`，When 客户端发起请求，Then 客户端只看到成功响应，且 invocation 表只有一条最终成功记录。
 - Given generic `/v1/*` 透传路径首个上游响应为 `429`、第二次为 `200`，When 客户端发起请求，Then 第二次请求收到与第一次完全相同的 body，并成功返回。
 - Given 上游 `429` 带 `Retry-After: 2` 或合法 HTTP-date，When helper 执行等待，Then 实际等待优先采用该值；Given header 无效，Then 退回 fallback backoff。
@@ -124,7 +126,7 @@
 
 ## 风险 / 假设
 
-- 风险：generic pass-through 改为先读 body 会失去当前“边读边发”的上行特性，但请求体上限已存在，因此这次以内存可重放优先。
+- 风险：当 `upstream429MaxRetries>0` 时，generic pass-through 改为先读 body 再发 upstream 会失去当前“边读边发”的上行特性；当 `upstream429MaxRetries==0` 则保持旧的 stream-through 语义。
 - 风险：若多个 proxy 节点都返回 `429`，重试只会在 `0..5` 次范围内切换，不保证一定避开限流。
 - 假设：`forward_proxy_attempts` failure kind 只用于内部观测，本次新增 `upstream_http_429` 不需要前端单独新增展示字段。
 

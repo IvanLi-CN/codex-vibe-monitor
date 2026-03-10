@@ -9120,10 +9120,6 @@ fn decode_proxy_fast_mode_rewrite_mode(raw: Option<&str>) -> ProxyFastModeRewrit
     }
 }
 
-fn default_proxy_upstream_429_max_retries() -> u8 {
-    DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES
-}
-
 fn normalize_proxy_upstream_429_max_retries(value: u8) -> u8 {
     value.min(MAX_PROXY_UPSTREAM_429_MAX_RETRIES)
 }
@@ -9200,8 +9196,8 @@ struct ProxyModelSettingsUpdateRequest {
     merge_upstream_enabled: bool,
     #[serde(default)]
     fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
-    #[serde(default = "default_proxy_upstream_429_max_retries")]
-    upstream_429_max_retries: u8,
+    #[serde(default)]
+    upstream_429_max_retries: Option<u8>,
     #[serde(default = "default_enabled_preset_models")]
     enabled_models: Vec<String>,
 }
