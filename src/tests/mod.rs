@@ -1174,6 +1174,90 @@ fn app_config_from_sources_rejects_legacy_database_path_env() {
     );
 }
 
+#[test]
+fn app_config_from_sources_uses_proxy_timeout_defaults() {
+    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let names = [
+        "OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS",
+        "OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS",
+        "OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS",
+    ];
+    let previous = names
+        .iter()
+        .map(|name| ((*name).to_string(), env::var_os(name)))
+        .collect::<Vec<_>>();
+
+    for name in names {
+        unsafe { env::remove_var(name) };
+    }
+
+    let result = AppConfig::from_sources(&CliArgs::default());
+
+    for (name, value) in previous {
+        match value {
+            Some(value) => unsafe { env::set_var(name, value) },
+            None => unsafe { env::remove_var(name) },
+        }
+    }
+
+    let config = result.expect("proxy timeout defaults should parse");
+    assert_eq!(
+        config.openai_proxy_handshake_timeout,
+        Duration::from_secs(DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS)
+    );
+    assert_eq!(
+        config.openai_proxy_compact_handshake_timeout,
+        Duration::from_secs(DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS)
+    );
+    assert_eq!(
+        config.openai_proxy_request_read_timeout,
+        Duration::from_secs(DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS)
+    );
+}
+
+#[test]
+fn app_config_from_sources_reads_proxy_timeout_envs() {
+    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let names = [
+        "OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS",
+        "OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS",
+        "OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS",
+    ];
+    let previous = names
+        .iter()
+        .map(|name| ((*name).to_string(), env::var_os(name)))
+        .collect::<Vec<_>>();
+
+    unsafe {
+        env::set_var("OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS", "61");
+        env::set_var("OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS", "181");
+        env::set_var("OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS", "182");
+    }
+
+    let result = AppConfig::from_sources(&CliArgs::default());
+
+    for (name, value) in previous {
+        match value {
+            Some(value) => unsafe { env::set_var(name, value) },
+            None => unsafe { env::remove_var(name) },
+        }
+    }
+
+    let config = result.expect("proxy timeout envs should parse");
+    assert_eq!(
+        config.openai_proxy_handshake_timeout,
+        Duration::from_secs(61)
+    );
+    assert_eq!(
+        config.openai_proxy_compact_handshake_timeout,
+        Duration::from_secs(181)
+    );
+    assert_eq!(
+        config.openai_proxy_request_read_timeout,
+        Duration::from_secs(182)
+    );
+}
+
 fn test_config() -> AppConfig {
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
@@ -1182,6 +1266,9 @@ fn test_config() -> AppConfig {
         request_timeout: Duration::from_secs(30),
         openai_proxy_handshake_timeout: Duration::from_secs(
             DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
+        ),
+        openai_proxy_compact_handshake_timeout: Duration::from_secs(
+            DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS,
         ),
         openai_proxy_request_read_timeout: Duration::from_secs(
             DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
@@ -1749,6 +1836,23 @@ async fn test_state_with_openai_base_body_limit_and_read_timeout(
     body_limit: usize,
     request_read_timeout: Duration,
 ) -> Arc<AppState> {
+    test_state_with_openai_base_and_proxy_timeouts(
+        openai_base,
+        body_limit,
+        Duration::from_secs(DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS),
+        Duration::from_secs(DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS),
+        request_read_timeout,
+    )
+    .await
+}
+
+async fn test_state_with_openai_base_and_proxy_timeouts(
+    openai_base: Url,
+    body_limit: usize,
+    handshake_timeout: Duration,
+    compact_handshake_timeout: Duration,
+    request_read_timeout: Duration,
+) -> Arc<AppState> {
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let db_url = format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
     let pool = SqlitePool::connect(&db_url)
@@ -1761,6 +1865,8 @@ async fn test_state_with_openai_base_body_limit_and_read_timeout(
     let mut config = test_config();
     config.openai_upstream_base_url = openai_base;
     config.openai_proxy_max_request_body_bytes = body_limit;
+    config.openai_proxy_handshake_timeout = handshake_timeout;
+    config.openai_proxy_compact_handshake_timeout = compact_handshake_timeout;
     config.openai_proxy_request_read_timeout = request_read_timeout;
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
@@ -2297,12 +2403,38 @@ async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
 async fn test_upstream_responses(uri: Uri) -> Response {
     if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
         test_upstream_responses_gzip_stream().await.into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=delay"))
+    {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        (
+            StatusCode::OK,
+            Json(json!({
+                "id": "resp_delayed_test",
+                "object": "response",
+                "model": "gpt-5.3-codex",
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 3,
+                    "total_tokens": 15
+                }
+            })),
+        )
+            .into_response()
     } else {
         test_upstream_stream_mid_error().await.into_response()
     }
 }
 
-async fn test_upstream_responses_compact() -> impl IntoResponse {
+async fn test_upstream_responses_compact(uri: Uri) -> impl IntoResponse {
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=delay"))
+    {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
     (
         StatusCode::OK,
         Json(json!({
@@ -2442,8 +2574,16 @@ async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
 
 async fn test_upstream_capture_target_echo(
     State(captured): State<Arc<Mutex<Vec<Value>>>>,
+    uri: Uri,
     body: Bytes,
 ) -> impl IntoResponse {
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=delay"))
+    {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
     let payload: Value = serde_json::from_slice(&body).expect("decode upstream captured body");
     captured.lock().await.push(payload.clone());
 
@@ -2466,8 +2606,16 @@ async fn test_upstream_capture_target_echo(
 
 async fn test_upstream_capture_target_compact_echo(
     State(captured): State<Arc<Mutex<Vec<Value>>>>,
+    uri: Uri,
     body: Bytes,
 ) -> impl IntoResponse {
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=delay"))
+    {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
     let payload: Value = serde_json::from_slice(&body).expect("decode upstream captured body");
     captured.lock().await.push(payload.clone());
 
@@ -5659,6 +5807,87 @@ async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_withou
             .map(|point| point.total_cost)
             .sum::<f64>(),
         0.0020235,
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_capture_target_compact_uses_dedicated_handshake_timeout() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let state = test_state_with_openai_base_and_proxy_timeouts(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        Duration::from_millis(100),
+        Duration::from_millis(400),
+        Duration::from_secs(DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS),
+    )
+    .await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.1-codex-max",
+        "previous_response_id": "resp_prev_001",
+        "input": [{"role": "user", "content": "compact this thread"}]
+    }))
+    .expect("serialize compact request body");
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri(
+            "/v1/responses/compact?mode=delay"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_capture_target_responses_uses_default_handshake_timeout() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let state = test_state_with_openai_base_and_proxy_timeouts(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        Duration::from_millis(100),
+        Duration::from_millis(400),
+        Duration::from_secs(DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS),
+    )
+    .await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "stream": false,
+        "input": "hello"
+    }))
+    .expect("serialize responses request body");
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses?mode=delay".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy error body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+    assert!(
+        payload["error"]
+            .as_str()
+            .expect("error message should be present")
+            .contains(PROXY_UPSTREAM_HANDSHAKE_TIMEOUT)
     );
 
     upstream_handle.abort();

@@ -67,7 +67,7 @@ OPENAI_UPSTREAM_BASE_URL=https://api.openai.com  # (可选，默认 https://api.
 DATABASE_PATH=codex_vibe_monitor.db            # (默认)
 XY_POLL_INTERVAL_SECS=10                       # (10；用于 CRS scheduler 基础节奏)
 XY_REQUEST_TIMEOUT_SECS=60                     # (60)
-OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=300        # (300)
+OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=60         # (60，非 compact 上游等待超时)
 OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180     # (180，请求体读取总超时)
 OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=268435456  # (256MiB)
 PROXY_RAW_DIR=proxy_raw_payloads                # (相对路径时锚定到 DATABASE_PATH 同级目录)
@@ -103,6 +103,7 @@ CRS_STATS_POLL_INTERVAL_SECS=10                # (10，默认跟随 XY_POLL_INTE
 ```
 
 价格配置已迁移到数据库持久化（可在 Web 设置页 `/settings` 在线编辑）；服务启动会自动写入默认模型价格模板。
+`OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS` 为可选覆盖项：未配置时，`/v1/responses/compact` 的上游等待超时默认使用 `180` 秒；其他代理路径默认使用 `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=60`。
 成本估算默认采用“精确模型优先 + 日期后缀模型回退”（如 `gpt-5.2-2025-12-11 -> gpt-5.2`），历史 `cost IS NULL` 的成功代理记录会在启动后由后台任务按批次增量补算（仅回填空成本，不覆盖已有值）。
 
 服务不再读取 XYAI 上游 cookie / base URL / quota endpoint；`/api/quota/latest` 仅返回数据库中已有的历史快照。
