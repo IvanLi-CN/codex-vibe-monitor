@@ -10620,16 +10620,22 @@ async fn terminate_child_process_prefers_sigterm_when_process_exits_cleanly() {
 #[cfg(unix)]
 #[tokio::test]
 async fn terminate_child_process_falls_back_to_force_kill_when_grace_period_is_exhausted() {
-    let mut child = Command::new("/bin/sh")
+    let mut child = Command::new("python3")
         .arg("-c")
-        .arg("trap 'exit 0' TERM; while :; do sleep 0.1; done")
+        .arg(
+            "import signal, time; signal.signal(signal.SIGTERM, lambda *_: time.sleep(1));
+while True: time.sleep(0.1)",
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn child for forced shutdown fallback");
+        .expect("spawn TERM-resistant child for forced shutdown fallback");
 
-    let outcome = terminate_child_process(&mut child, Duration::ZERO, "test-child").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let outcome =
+        terminate_child_process(&mut child, Duration::from_millis(100), "test-child").await;
 
     assert_eq!(outcome, ChildTerminationOutcome::Forced);
     assert!(
@@ -10639,7 +10645,6 @@ async fn terminate_child_process_falls_back_to_force_kill_when_grace_period_is_e
             .is_some()
     );
 }
-
 #[tokio::test]
 async fn http_server_graceful_shutdown_stops_accepting_new_connections() {
     let state = test_state_from_config(test_config(), false).await;
