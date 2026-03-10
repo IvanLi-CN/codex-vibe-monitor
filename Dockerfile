@@ -35,7 +35,7 @@ RUN find src -type f -name '*.rs' -exec touch {} + \
     && cargo build --release --locked
 
 # Stage 3: fetch Xray-core (xray) for forward-proxy subscription validation
-# The app defaults to `XY_XRAY_BINARY=xray` (PATH lookup). If the runtime image doesn't bundle
+# The app defaults to `XRAY_BINARY=xray` (PATH lookup). If the runtime image doesn't bundle
 # a real Xray-core binary, subscription validation for share links (vmess/vless/trojan/ss) fails.
 FROM debian:bookworm-slim AS xray-downloader
 ARG XRAY_CORE_VERSION=26.2.6
@@ -74,10 +74,10 @@ COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/loc
 COPY --from=web-builder /app/web/dist ./web
 
 ENV DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
-    XY_HTTP_BIND=0.0.0.0:8080 \
-    XY_STATIC_DIR=/srv/app/web \
-    XY_POLL_INTERVAL_SECS=10 \
-    XY_REQUEST_TIMEOUT_SECS=60 \
+    HTTP_BIND=0.0.0.0:8080 \
+    STATIC_DIR=/srv/app/web \
+    POLL_INTERVAL_SECS=10 \
+    REQUEST_TIMEOUT_SECS=60 \
     APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
 
 LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION}

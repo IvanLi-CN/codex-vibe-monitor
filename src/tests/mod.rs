@@ -16,7 +16,9 @@ use sqlx::{Connection, SqliteConnection, SqlitePool};
 use std::{
     borrow::Cow,
     collections::HashSet,
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
@@ -32,6 +34,10 @@ struct CurrentDirGuard {
     original: PathBuf,
 }
 
+struct EnvVarGuard {
+    previous: Vec<(String, Option<OsString>)>,
+}
+
 impl CurrentDirGuard {
     fn change_to(path: &Path) -> Self {
         let original = env::current_dir().expect("read current dir");
@@ -40,9 +46,38 @@ impl CurrentDirGuard {
     }
 }
 
+impl EnvVarGuard {
+    fn set(cases: &[(&str, Option<&str>)]) -> Self {
+        let previous = cases
+            .iter()
+            .map(|(name, _)| ((*name).to_string(), env::var_os(name)))
+            .collect::<Vec<_>>();
+
+        for (name, value) in cases {
+            match value {
+                Some(value) => unsafe { env::set_var(name, value) },
+                None => unsafe { env::remove_var(name) },
+            }
+        }
+
+        Self { previous }
+    }
+}
+
 impl Drop for CurrentDirGuard {
     fn drop(&mut self) {
         let _ = env::set_current_dir(&self.original);
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        for (name, value) in self.previous.drain(..).rev() {
+            match value {
+                Some(value) => unsafe { env::set_var(&name, value) },
+                None => unsafe { env::remove_var(&name) },
+            }
+        }
     }
 }
 
@@ -760,12 +795,22 @@ fn forward_proxy_algo_config_accepts_primary_env() {
 
 #[test]
 fn forward_proxy_algo_config_rejects_legacy_env() {
-    assert!(resolve_forward_proxy_algo_config(None, Some("v1")).is_err());
+    let err =
+        resolve_forward_proxy_algo_config(None, Some("v1")).expect_err("legacy env should fail");
+    assert_eq!(
+        err.to_string(),
+        "XY_FORWARD_PROXY_ALGO is not supported; rename it to FORWARD_PROXY_ALGO"
+    );
 }
 
 #[test]
 fn forward_proxy_algo_config_rejects_when_both_env_vars_are_set() {
-    assert!(resolve_forward_proxy_algo_config(Some("v2"), Some("v1")).is_err());
+    let err = resolve_forward_proxy_algo_config(Some("v2"), Some("v1"))
+        .expect_err("legacy env should still win as a hard failure");
+    assert_eq!(
+        err.to_string(),
+        "XY_FORWARD_PROXY_ALGO is not supported; rename it to FORWARD_PROXY_ALGO"
+    );
 }
 
 #[test]
@@ -1172,6 +1217,103 @@ fn app_config_from_sources_rejects_legacy_database_path_env() {
             .contains("XY_DATABASE_PATH is not supported; rename it to DATABASE_PATH"),
         "error should point to the DATABASE_PATH migration"
     );
+}
+
+#[test]
+fn app_config_from_sources_reads_renamed_public_envs() {
+    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let mut cases = LEGACY_ENV_RENAMES
+        .iter()
+        .map(|(legacy, _)| (*legacy, None))
+        .collect::<Vec<_>>();
+    cases.extend([
+        (ENV_POLL_INTERVAL_SECS, Some("11")),
+        (ENV_REQUEST_TIMEOUT_SECS, Some("61")),
+        (ENV_XRAY_BINARY, Some("/usr/local/bin/xray-custom")),
+        (ENV_XRAY_RUNTIME_DIR, Some("/tmp/xray-runtime")),
+        (ENV_MAX_PARALLEL_POLLS, Some("7")),
+        (ENV_SHARED_CONNECTION_PARALLELISM, Some("3")),
+        (ENV_HTTP_BIND, Some("127.0.0.1:39090")),
+        (
+            ENV_CORS_ALLOWED_ORIGINS,
+            Some("https://app.example.com, http://localhost:5173"),
+        ),
+        (ENV_LIST_LIMIT_MAX, Some("321")),
+        (ENV_USER_AGENT, Some("custom-agent/1.0")),
+        (ENV_STATIC_DIR, Some("/tmp/static")),
+        (ENV_RETENTION_ENABLED, Some("true")),
+        (ENV_RETENTION_DRY_RUN, Some("true")),
+        (ENV_RETENTION_INTERVAL_SECS, Some("7200")),
+        (ENV_RETENTION_BATCH_ROWS, Some("2222")),
+        (ENV_ARCHIVE_DIR, Some("/tmp/archive")),
+        (ENV_INVOCATION_SUCCESS_FULL_DAYS, Some("31")),
+        (ENV_INVOCATION_MAX_DAYS, Some("91")),
+        (ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS, Some("32")),
+        (ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS, Some("33")),
+        (ENV_QUOTA_SNAPSHOT_FULL_DAYS, Some("34")),
+        (ENV_FORWARD_PROXY_ALGO, Some("v2")),
+    ]);
+    let _env = EnvVarGuard::set(&cases);
+
+    let config =
+        AppConfig::from_sources(&CliArgs::default()).expect("renamed public envs should parse");
+
+    assert_eq!(config.poll_interval, Duration::from_secs(11));
+    assert_eq!(config.request_timeout, Duration::from_secs(61));
+    assert_eq!(config.xray_binary, "/usr/local/bin/xray-custom");
+    assert_eq!(config.xray_runtime_dir, PathBuf::from("/tmp/xray-runtime"));
+    assert_eq!(config.forward_proxy_algo, ForwardProxyAlgo::V2);
+    assert_eq!(config.max_parallel_polls, 7);
+    assert_eq!(config.shared_connection_parallelism, 3);
+    assert_eq!(
+        config.http_bind,
+        "127.0.0.1:39090".parse().expect("valid socket address")
+    );
+    assert_eq!(
+        config.cors_allowed_origins,
+        vec![
+            "https://app.example.com".to_string(),
+            "http://localhost:5173".to_string(),
+        ]
+    );
+    assert_eq!(config.list_limit_max, 321);
+    assert_eq!(config.user_agent, "custom-agent/1.0");
+    assert_eq!(config.static_dir, Some(PathBuf::from("/tmp/static")));
+    assert!(config.retention_enabled);
+    assert!(config.retention_dry_run);
+    assert_eq!(config.retention_interval, Duration::from_secs(7200));
+    assert_eq!(config.retention_batch_rows, 2222);
+    assert_eq!(config.archive_dir, PathBuf::from("/tmp/archive"));
+    assert_eq!(config.invocation_success_full_days, 31);
+    assert_eq!(config.invocation_max_days, 91);
+    assert_eq!(config.forward_proxy_attempts_retention_days, 32);
+    assert_eq!(config.stats_source_snapshots_retention_days, 33);
+    assert_eq!(config.quota_snapshot_full_days, 34);
+}
+
+#[test]
+fn app_config_from_sources_rejects_all_legacy_public_env_renames() {
+    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+
+    for (legacy_name, canonical_name) in LEGACY_ENV_RENAMES {
+        let mut cases = LEGACY_ENV_RENAMES
+            .iter()
+            .map(|(legacy, _)| (*legacy, None))
+            .collect::<Vec<_>>();
+        let target = cases
+            .iter_mut()
+            .find(|(name, _)| *name == *legacy_name)
+            .expect("legacy env should be present in helper list");
+        *target = (*legacy_name, Some("legacy-value"));
+        let _env = EnvVarGuard::set(&cases);
+
+        let err = AppConfig::from_sources(&CliArgs::default())
+            .expect_err("legacy env should fail fast with a rename hint");
+        assert_eq!(
+            err.to_string(),
+            format!("{legacy_name} is not supported; rename it to {canonical_name}")
+        );
+    }
 }
 
 #[test]
