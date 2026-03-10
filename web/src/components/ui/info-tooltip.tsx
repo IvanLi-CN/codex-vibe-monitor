@@ -35,7 +35,7 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
         type="button"
         aria-label={label}
         aria-describedby={open ? tooltipId : undefined}
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-base-content/55 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-current opacity-80 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         onClick={() => setOpen((current) => !current)}
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
