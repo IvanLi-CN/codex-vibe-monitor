@@ -73,7 +73,7 @@ COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
 COPY --from=web-builder /app/web/dist ./web
 
-ENV XY_DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
+ENV DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
     XY_HTTP_BIND=0.0.0.0:8080 \
     XY_STATIC_DIR=/srv/app/web \
     XY_POLL_INTERVAL_SECS=10 \
