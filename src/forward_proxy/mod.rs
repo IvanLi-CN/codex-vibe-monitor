@@ -1081,13 +1081,15 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
             }
             let selected_proxy = SelectedForwardProxy::from_endpoint(&endpoint);
             let started = Instant::now();
-            let probe_result = tokio::select! {
-                _ = shutdown.cancelled() => {
-                    info!(trigger, "forward proxy bootstrap probe round cancelled before next probe");
-                    break;
-                }
-                result = probe_forward_proxy_endpoint(state.as_ref(), &endpoint, validation_timeout) => result,
-            };
+            let probe_result =
+                probe_forward_proxy_endpoint(state.as_ref(), &endpoint, validation_timeout).await;
+            if shutdown.is_cancelled() {
+                info!(
+                    trigger,
+                    "forward proxy bootstrap probe round stopped after shutdown cleanup"
+                );
+                break;
+            }
             match probe_result {
                 Ok(latency_ms) => {
                     record_forward_proxy_attempt(
