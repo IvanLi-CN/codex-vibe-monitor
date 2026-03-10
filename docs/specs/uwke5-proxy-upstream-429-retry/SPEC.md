@@ -124,6 +124,19 @@
 - [x] M4: Rust + web 自动化验证补齐，`Retry-After`/exhaustion 语义确认。
 - [x] M5: fast-track 交付完成（spec sync、push、PR、checks、review-loop 收敛）。
 
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: Settings/SettingsPage/Default
+- state: default
+- evidence_note: 验证代理卡片已新增 `upstream429MaxRetries`（上游 429 自动重试最大重试次数）控件。
+
+![代理卡片：upstream429MaxRetries（Storybook Canvas）](./assets/settings-proxy-upstream429-card.png)
+
 ## 风险 / 假设
 
 - 风险：当 `upstream429MaxRetries>0` 时，generic pass-through 改为先读 body 再发 upstream 会失去当前“边读边发”的上行特性；当 `upstream429MaxRetries==0` 则保持旧的 stream-through 语义。
