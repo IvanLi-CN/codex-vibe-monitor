@@ -38,7 +38,7 @@ use clap::Parser;
 use dotenvy::dotenv;
 use flate2::read::GzDecoder;
 use flate2::{Compression, write::GzEncoder};
-use futures_util::{FutureExt, StreamExt, stream};
+use futures_util::{FutureExt, StreamExt, future::Shared, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Proxy, Url, header};
@@ -521,6 +521,73 @@ async fn main() -> Result<()> {
     .await
 }
 
+fn begin_runtime_shutdown_if_requested<F>(
+    shutdown_signal: &Shared<F>,
+    cancel: &CancellationToken,
+) -> bool
+where
+    F: Future<Output = ()>,
+{
+    if cancel.is_cancelled() {
+        return true;
+    }
+    if shutdown_signal.clone().now_or_never().is_some() {
+        begin_runtime_shutdown(cancel);
+        return true;
+    }
+    false
+}
+
+async fn run_startup_stage_until_shutdown<T, Stage, Shutdown>(
+    shutdown_signal: &Shared<Shutdown>,
+    cancel: &CancellationToken,
+    stage: Stage,
+) -> Option<T>
+where
+    Stage: Future<Output = T>,
+    Shutdown: Future<Output = ()>,
+{
+    if begin_runtime_shutdown_if_requested(shutdown_signal, cancel) {
+        return None;
+    }
+
+    let result = tokio::select! {
+        biased;
+        _ = shutdown_signal.clone() => {
+            begin_runtime_shutdown(cancel);
+            return None;
+        }
+        result = stage => result,
+    };
+
+    if begin_runtime_shutdown_if_requested(shutdown_signal, cancel) {
+        return None;
+    }
+
+    Some(result)
+}
+
+async fn drain_runtime_after_pending_shutdown(
+    state: Arc<AppState>,
+    shutdown_watcher: JoinHandle<()>,
+    server_handle: Option<JoinHandle<()>>,
+    poller_handle: Option<JoinHandle<()>>,
+    forward_proxy_handle: Option<JoinHandle<()>>,
+    retention_handle: Option<JoinHandle<()>>,
+    startup_backfill_handle: Option<JoinHandle<()>>,
+) -> Result<()> {
+    let _ = shutdown_watcher.await;
+    drain_runtime_after_shutdown(
+        state,
+        server_handle,
+        poller_handle,
+        forward_proxy_handle,
+        retention_handle,
+        startup_backfill_handle,
+    )
+    .await
+}
+
 async fn run_runtime_until_shutdown<F>(
     state: Arc<AppState>,
     startup_started_at: Instant,
@@ -544,18 +611,16 @@ where
     let mut server_handle = None;
     let mut startup_backfill_handle = None;
 
-    if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
-        warn!(error = %err, "failed to initialize forward proxy xray routes at startup");
-    }
-    tokio::select! {
-        biased;
-        _ = shutdown_signal.clone() => begin_runtime_shutdown(&cancel),
-        _ = std::future::ready(()) => {}
-    }
-    if cancel.is_cancelled() {
-        let _ = shutdown_watcher.await;
-        return drain_runtime_after_shutdown(
+    let Some(sync_result) = run_startup_stage_until_shutdown(
+        &shutdown_signal,
+        &cancel,
+        sync_forward_proxy_routes(state.as_ref()),
+    )
+    .await
+    else {
+        return drain_runtime_after_pending_shutdown(
             state,
+            shutdown_watcher,
             server_handle,
             poller_handle,
             forward_proxy_handle,
@@ -563,23 +628,26 @@ where
             startup_backfill_handle,
         )
         .await;
+    };
+    if let Err(err) = sync_result {
+        warn!(error = %err, "failed to initialize forward proxy xray routes at startup");
     }
     log_startup_phase("runtime_init", runtime_init_started_at);
 
-    if state.config.crs_stats.is_some() {
-        poller_handle = Some(spawn_scheduler(state.clone(), cancel.clone()));
-    } else {
-        info!("crs stats relay is disabled; scheduler will not start");
-    }
-    tokio::select! {
-        biased;
-        _ = shutdown_signal.clone() => begin_runtime_shutdown(&cancel),
-        _ = std::future::ready(()) => {}
-    }
-    if cancel.is_cancelled() {
-        let _ = shutdown_watcher.await;
-        return drain_runtime_after_shutdown(
+    let Some(next_poller_handle) =
+        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+            if state.config.crs_stats.is_some() {
+                Some(spawn_scheduler(state.clone(), cancel.clone()))
+            } else {
+                info!("crs stats relay is disabled; scheduler will not start");
+                None
+            }
+        })
+        .await
+    else {
+        return drain_runtime_after_pending_shutdown(
             state,
+            shutdown_watcher,
             server_handle,
             poller_handle,
             forward_proxy_handle,
@@ -587,21 +655,21 @@ where
             startup_backfill_handle,
         )
         .await;
-    }
+    };
+    poller_handle = next_poller_handle;
 
-    forward_proxy_handle = Some(spawn_forward_proxy_maintenance(
-        state.clone(),
-        cancel.clone(),
-    ));
-    tokio::select! {
-        biased;
-        _ = shutdown_signal.clone() => begin_runtime_shutdown(&cancel),
-        _ = std::future::ready(()) => {}
-    }
-    if cancel.is_cancelled() {
-        let _ = shutdown_watcher.await;
-        return drain_runtime_after_shutdown(
+    let Some(next_forward_proxy_handle) =
+        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+            Some(spawn_forward_proxy_maintenance(
+                state.clone(),
+                cancel.clone(),
+            ))
+        })
+        .await
+    else {
+        return drain_runtime_after_pending_shutdown(
             state,
+            shutdown_watcher,
             server_handle,
             poller_handle,
             forward_proxy_handle,
@@ -609,21 +677,21 @@ where
             startup_backfill_handle,
         )
         .await;
-    }
+    };
+    forward_proxy_handle = next_forward_proxy_handle;
 
-    retention_handle = Some(spawn_data_retention_maintenance(
-        state.clone(),
-        cancel.clone(),
-    ));
-    tokio::select! {
-        biased;
-        _ = shutdown_signal.clone() => begin_runtime_shutdown(&cancel),
-        _ = std::future::ready(()) => {}
-    }
-    if cancel.is_cancelled() {
-        let _ = shutdown_watcher.await;
-        return drain_runtime_after_shutdown(
+    let Some(next_retention_handle) =
+        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+            Some(spawn_data_retention_maintenance(
+                state.clone(),
+                cancel.clone(),
+            ))
+        })
+        .await
+    else {
+        return drain_runtime_after_pending_shutdown(
             state,
+            shutdown_watcher,
             server_handle,
             poller_handle,
             forward_proxy_handle,
@@ -631,20 +699,20 @@ where
             startup_backfill_handle,
         )
         .await;
-    }
+    };
+    retention_handle = next_retention_handle;
 
     let http_ready_started_at = Instant::now();
-    let (_http_addr, handle) = spawn_http_server(state.clone()).await?;
-    server_handle = Some(handle);
-    tokio::select! {
-        biased;
-        _ = shutdown_signal.clone() => begin_runtime_shutdown(&cancel),
-        _ = std::future::ready(()) => {}
-    }
-    if cancel.is_cancelled() {
-        let _ = shutdown_watcher.await;
-        return drain_runtime_after_shutdown(
+    let Some(http_result) = run_startup_stage_until_shutdown(
+        &shutdown_signal,
+        &cancel,
+        spawn_http_server(state.clone()),
+    )
+    .await
+    else {
+        return drain_runtime_after_pending_shutdown(
             state,
+            shutdown_watcher,
             server_handle,
             poller_handle,
             forward_proxy_handle,
@@ -652,26 +720,46 @@ where
             startup_backfill_handle,
         )
         .await;
-    }
+    };
+    let (_http_addr, handle) = http_result?;
+    server_handle = Some(handle);
     log_startup_phase("http_ready", http_ready_started_at);
     info!(
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
         "application readiness reached"
     );
 
-    startup_backfill_handle = Some(spawn_startup_backfill_maintenance(
-        state.clone(),
-        cancel.clone(),
-    ));
+    let Some(next_startup_backfill_handle) =
+        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+            Some(spawn_startup_backfill_maintenance(
+                state.clone(),
+                cancel.clone(),
+            ))
+        })
+        .await
+    else {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    };
+    startup_backfill_handle = next_startup_backfill_handle;
+
     tokio::select! {
         biased;
         _ = shutdown_signal => begin_runtime_shutdown(&cancel),
         _ = cancel.cancelled() => {}
     }
-    let _ = shutdown_watcher.await;
 
-    drain_runtime_after_shutdown(
+    drain_runtime_after_pending_shutdown(
         state,
+        shutdown_watcher,
         server_handle,
         poller_handle,
         forward_proxy_handle,

@@ -10747,6 +10747,37 @@ async fn run_runtime_until_shutdown_skips_startup_work_when_shutdown_is_already_
 }
 
 #[tokio::test]
+async fn run_runtime_until_shutdown_skips_xray_route_sync_when_shutdown_is_already_requested() {
+    let runtime_dir = make_temp_test_dir("runtime-shutdown-xray-sync");
+    fs::remove_dir_all(&runtime_dir).expect("remove temp runtime dir before startup");
+
+    let mut config = test_config();
+    config.xray_binary = "/path/to/non-existent-xray".to_string();
+    config.xray_runtime_dir = runtime_dir.clone();
+    let state = test_state_from_config(config, false).await;
+
+    {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_settings(ForwardProxySettings {
+            proxy_urls: vec!["vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com#vless".to_string()],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        });
+    }
+
+    run_runtime_until_shutdown(state.clone(), Instant::now(), async {})
+        .await
+        .expect("runtime should exit cleanly when shutdown is already requested");
+
+    assert!(state.shutdown.is_cancelled());
+    assert!(
+        !runtime_dir.exists(),
+        "shutdown should skip xray route sync side effects when startup never begins"
+    );
+}
+
+#[tokio::test]
 async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::OK).await;
     let normalized_proxy =
