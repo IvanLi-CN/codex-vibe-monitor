@@ -51,6 +51,20 @@ function toIsoString(date: Date) {
   return date.toISOString()
 }
 
+function isMinutePrecisionLocalDateTimeValue(value: string) {
+  // `datetime-local` defaults to "YYYY-MM-DDTHH:mm" (minute precision).
+  // When we send that as an exclusive `< to` bound, it unintentionally excludes the whole minute.
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)
+}
+
+function resolveCustomToUpperBound(value: string) {
+  const parsed = new Date(value)
+  if (isMinutePrecisionLocalDateTimeValue(value)) {
+    return new Date(parsed.getTime() + 60_000)
+  }
+  return parsed
+}
+
 function toLocalDateTimeValue(date: Date) {
   const pad = (value: number) => String(value).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
@@ -97,7 +111,8 @@ export function resolveRangeBoundsFromValues(
   if (rangePreset === 'custom') {
     return {
       from: customFrom ? toIsoString(new Date(customFrom)) : undefined,
-      to: customTo ? toIsoString(new Date(customTo)) : undefined,
+      // Treat minute-based inputs as inclusive-of-minute for UX, while keeping server-side `< to` bounds.
+      to: customTo ? toIsoString(resolveCustomToUpperBound(customTo)) : undefined,
     }
   }
 

@@ -163,6 +163,9 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       setPageSizeState(listResponse.pageSize)
       setRecordsError(null)
       setIsRecordsLoading(false)
+      // Treat search as "list fetch in flight". Once the list is visible, unlock the controls
+      // even if the summary request is still pending.
+      setIsSearching(false)
 
       const summaryResponse = await fetchInvocationRecordsSummary({
         ...filters,

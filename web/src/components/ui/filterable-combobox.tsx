@@ -12,6 +12,8 @@ interface FilterableComboboxProps {
   inputClassName?: string
   listClassName?: string
   label: string
+  name?: string
+  id?: string
 }
 
 export function FilterableCombobox({
@@ -24,11 +26,15 @@ export function FilterableCombobox({
   inputClassName,
   listClassName,
   label,
+  name,
+  id,
 }: FilterableComboboxProps) {
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(-1)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const fallbackInputId = useId()
   const listId = useId()
+  const inputId = id ?? fallbackInputId
 
   useEffect(() => {
     if (!open) return
@@ -88,6 +94,8 @@ export function FilterableCombobox({
     <div ref={rootRef} className={cn('relative', className)}>
       <input
         role="combobox"
+        id={inputId}
+        name={name}
         aria-label={label}
         aria-expanded={open}
         aria-controls={listId}

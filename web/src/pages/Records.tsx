@@ -249,6 +249,8 @@ export default function RecordsPage() {
                 {modelMode === 'dropdown' ? (
                   <FilterableCombobox
                     label={t('records.filters.model')}
+                    name="model"
+                    id="records-filter-model"
                     value={draft.model}
                     onValueChange={(next) => updateDraft('model', next)}
                     options={(modelBucket?.items ?? []).map((item) => item.value)}
@@ -277,6 +279,8 @@ export default function RecordsPage() {
                 {proxyMode === 'dropdown' ? (
                   <FilterableCombobox
                     label={t('records.filters.proxy')}
+                    name="proxy"
+                    id="records-filter-proxy"
                     value={draft.proxy}
                     onValueChange={(next) => updateDraft('proxy', next)}
                     options={(proxyBucket?.items ?? []).map((item) => item.value)}
@@ -305,6 +309,8 @@ export default function RecordsPage() {
                 {endpointMode === 'dropdown' ? (
                   <FilterableCombobox
                     label={t('records.filters.endpoint')}
+                    name="endpoint"
+                    id="records-filter-endpoint"
                     value={draft.endpoint}
                     onValueChange={(next) => updateDraft('endpoint', next)}
                     options={(endpointBucket?.items ?? []).map((item) => item.value)}
@@ -343,6 +349,8 @@ export default function RecordsPage() {
                 {failureKindMode === 'dropdown' ? (
                   <FilterableCombobox
                     label={t('records.filters.failureKind')}
+                    name="failureKind"
+                    id="records-filter-failure-kind"
                     value={draft.failureKind}
                     onValueChange={(next) => updateDraft('failureKind', next)}
                     options={(failureKindBucket?.items ?? []).map((item) => item.value)}
@@ -371,6 +379,8 @@ export default function RecordsPage() {
                 {promptCacheKeyMode === 'dropdown' ? (
                   <FilterableCombobox
                     label={t('records.filters.promptCacheKey')}
+                    name="promptCacheKey"
+                    id="records-filter-prompt-cache-key"
                     value={draft.promptCacheKey}
                     onValueChange={(next) => updateDraft('promptCacheKey', next)}
                     options={(promptCacheKeyBucket?.items ?? []).map((item) => item.value)}
@@ -399,6 +409,8 @@ export default function RecordsPage() {
                 {requesterIpMode === 'dropdown' ? (
                   <FilterableCombobox
                     label={t('records.filters.requesterIp')}
+                    name="requesterIp"
+                    id="records-filter-requester-ip"
                     value={draft.requesterIp}
                     onValueChange={(next) => updateDraft('requesterIp', next)}
                     options={(requesterIpBucket?.items ?? []).map((item) => item.value)}
