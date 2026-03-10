@@ -538,33 +538,35 @@ where
     false
 }
 
+enum StartupStageOutcome<T> {
+    SkippedByShutdown,
+    Completed { result: T, shutdown_requested: bool },
+}
+
 async fn run_startup_stage_until_shutdown<T, Stage, Shutdown>(
     shutdown_signal: &Shared<Shutdown>,
     cancel: &CancellationToken,
     stage: Stage,
-) -> Option<T>
+) -> StartupStageOutcome<T>
 where
     Stage: Future<Output = T>,
     Shutdown: Future<Output = ()>,
 {
     if begin_runtime_shutdown_if_requested(shutdown_signal, cancel) {
-        return None;
+        return StartupStageOutcome::SkippedByShutdown;
     }
 
-    let result = tokio::select! {
+    tokio::select! {
         biased;
         _ = shutdown_signal.clone() => {
             begin_runtime_shutdown(cancel);
-            return None;
+            StartupStageOutcome::SkippedByShutdown
         }
-        result = stage => result,
-    };
-
-    if begin_runtime_shutdown_if_requested(shutdown_signal, cancel) {
-        return None;
+        result = stage => StartupStageOutcome::Completed {
+            shutdown_requested: begin_runtime_shutdown_if_requested(shutdown_signal, cancel),
+            result,
+        },
     }
-
-    Some(result)
 }
 
 async fn drain_runtime_after_pending_shutdown(
@@ -611,40 +613,37 @@ where
     let mut server_handle = None;
     let mut startup_backfill_handle = None;
 
-    let Some(sync_result) = run_startup_stage_until_shutdown(
+    let sync_stage = run_startup_stage_until_shutdown(
         &shutdown_signal,
         &cancel,
         sync_forward_proxy_routes(state.as_ref()),
     )
-    .await
-    else {
-        return drain_runtime_after_pending_shutdown(
-            state,
-            shutdown_watcher,
-            server_handle,
-            poller_handle,
-            forward_proxy_handle,
-            retention_handle,
-            startup_backfill_handle,
-        )
-        .await;
-    };
-    if let Err(err) = sync_result {
-        warn!(error = %err, "failed to initialize forward proxy xray routes at startup");
-    }
-    log_startup_phase("runtime_init", runtime_init_started_at);
-
-    let Some(next_poller_handle) =
-        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
-            if state.config.crs_stats.is_some() {
-                Some(spawn_scheduler(state.clone(), cancel.clone()))
-            } else {
-                info!("crs stats relay is disabled; scheduler will not start");
-                None
+    .await;
+    let sync_shutdown_requested = match sync_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            if let Err(err) = result {
+                warn!(error = %err, "failed to initialize forward proxy xray routes at startup");
             }
-        })
-        .await
-    else {
+            shutdown_requested
+        }
+    };
+    log_startup_phase("runtime_init", runtime_init_started_at);
+    if sync_shutdown_requested {
         return drain_runtime_after_pending_shutdown(
             state,
             shutdown_watcher,
@@ -655,18 +654,39 @@ where
             startup_backfill_handle,
         )
         .await;
-    };
-    poller_handle = next_poller_handle;
+    }
 
-    let Some(next_forward_proxy_handle) =
-        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
-            Some(spawn_forward_proxy_maintenance(
-                state.clone(),
-                cancel.clone(),
-            ))
-        })
-        .await
-    else {
+    let scheduler_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        if state.config.crs_stats.is_some() {
+            Some(spawn_scheduler(state.clone(), cancel.clone()))
+        } else {
+            info!("crs stats relay is disabled; scheduler will not start");
+            None
+        }
+    })
+    .await;
+    let scheduler_shutdown_requested = match scheduler_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            poller_handle = result;
+            shutdown_requested
+        }
+    };
+    if scheduler_shutdown_requested {
         return drain_runtime_after_pending_shutdown(
             state,
             shutdown_watcher,
@@ -677,18 +697,37 @@ where
             startup_backfill_handle,
         )
         .await;
-    };
-    forward_proxy_handle = next_forward_proxy_handle;
+    }
 
-    let Some(next_retention_handle) =
-        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
-            Some(spawn_data_retention_maintenance(
-                state.clone(),
-                cancel.clone(),
-            ))
-        })
-        .await
-    else {
+    let forward_proxy_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        Some(spawn_forward_proxy_maintenance(
+            state.clone(),
+            cancel.clone(),
+        ))
+    })
+    .await;
+    let forward_proxy_shutdown_requested = match forward_proxy_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            forward_proxy_handle = result;
+            shutdown_requested
+        }
+    };
+    if forward_proxy_shutdown_requested {
         return drain_runtime_after_pending_shutdown(
             state,
             shutdown_watcher,
@@ -699,45 +738,126 @@ where
             startup_backfill_handle,
         )
         .await;
+    }
+
+    let retention_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        Some(spawn_data_retention_maintenance(
+            state.clone(),
+            cancel.clone(),
+        ))
+    })
+    .await;
+    let retention_shutdown_requested = match retention_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            retention_handle = result;
+            shutdown_requested
+        }
     };
-    retention_handle = next_retention_handle;
+    if retention_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
 
     let http_ready_started_at = Instant::now();
-    let Some(http_result) = run_startup_stage_until_shutdown(
+    let http_stage = run_startup_stage_until_shutdown(
         &shutdown_signal,
         &cancel,
         spawn_http_server(state.clone()),
     )
-    .await
-    else {
-        return drain_runtime_after_pending_shutdown(
-            state,
-            shutdown_watcher,
-            server_handle,
-            poller_handle,
-            forward_proxy_handle,
-            retention_handle,
-            startup_backfill_handle,
-        )
-        .await;
+    .await;
+    let http_shutdown_requested = match http_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            let (_http_addr, handle) = result?;
+            server_handle = Some(handle);
+            shutdown_requested
+        }
     };
-    let (_http_addr, handle) = http_result?;
-    server_handle = Some(handle);
     log_startup_phase("http_ready", http_ready_started_at);
     info!(
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
         "application readiness reached"
     );
+    if http_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
 
-    let Some(next_startup_backfill_handle) =
+    let startup_backfill_stage =
         run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
             Some(spawn_startup_backfill_maintenance(
                 state.clone(),
                 cancel.clone(),
             ))
         })
-        .await
-    else {
+        .await;
+    let startup_backfill_shutdown_requested = match startup_backfill_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            startup_backfill_handle = result;
+            shutdown_requested
+        }
+    };
+    if startup_backfill_shutdown_requested {
         return drain_runtime_after_pending_shutdown(
             state,
             shutdown_watcher,
@@ -748,8 +868,7 @@ where
             startup_backfill_handle,
         )
         .await;
-    };
-    startup_backfill_handle = next_startup_backfill_handle;
+    }
 
     tokio::select! {
         biased;

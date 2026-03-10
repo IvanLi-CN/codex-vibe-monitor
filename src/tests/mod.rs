@@ -10778,6 +10778,58 @@ async fn run_runtime_until_shutdown_skips_xray_route_sync_when_shutdown_is_alrea
 }
 
 #[tokio::test]
+async fn run_startup_stage_until_shutdown_preserves_stage_result_when_shutdown_arrives_after_stage()
+{
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll};
+
+    struct FlagShutdownFuture {
+        ready: Arc<AtomicBool>,
+    }
+
+    impl Future for FlagShutdownFuture {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if self.ready.load(Ordering::SeqCst) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    let shutdown_ready = Arc::new(AtomicBool::new(false));
+    let shutdown_signal = FlagShutdownFuture {
+        ready: shutdown_ready.clone(),
+    }
+    .shared();
+    let cancel = CancellationToken::new();
+
+    let outcome = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        shutdown_ready.store(true, Ordering::SeqCst);
+        42_u8
+    })
+    .await;
+
+    match outcome {
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            assert_eq!(result, 42);
+            assert!(shutdown_requested);
+            assert!(cancel.is_cancelled());
+        }
+        StartupStageOutcome::SkippedByShutdown => {
+            panic!("stage result should be preserved when shutdown arrives after stage completion")
+        }
+    }
+}
+
+#[tokio::test]
 async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::OK).await;
     let normalized_proxy =
