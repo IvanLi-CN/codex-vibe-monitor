@@ -3373,6 +3373,69 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_requester_ip_occurred_at")?;
 
+    // The records analytics page compares trimmed lowercase text for exact-match filters.
+    // Mirror those expressions in dedicated indexes so high-volume searches avoid full index scans.
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_model_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(model, '')))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_model_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_failure_kind_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END,
+                failure_kind
+            ), '')))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_failure_kind_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_endpoint_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.endpoint') AS TEXT) END,
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_endpoint_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_requester_ip_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END,
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_requester_ip_filter_occurred_at")?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS codex_quota_snapshots (
