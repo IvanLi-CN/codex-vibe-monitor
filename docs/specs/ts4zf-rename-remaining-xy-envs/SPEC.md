@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-03-10
 - Last: 2026-03-10
 - Supersedes: `docs/specs/2uaxk-remove-xyai-legacy-ingest/SPEC.md` 中“仍然通用的 `XY_*` 配置键不重命名”的旧非目标；该 supersede 仅限公开环境变量命名，不恢复任何 XYAI 采集逻辑。
@@ -138,10 +138,10 @@
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: 新建 spec，冻结 rename matrix、breaking policy 与 supersede 边界。
-- [ ] M2: 后端配置解析切换到新 canonical 名称，并为全部 legacy `XY_*` 键补齐统一 hard-fail。
-- [ ] M3: README / 部署文档 / Docker / 测试样例同步更新，并完成残留扫描。
-- [ ] M4: `cargo test`、`cargo fmt --check`、review-loop、push、PR、checks 与标签全部收口到 merge-ready。
+- [x] M1: 新建 spec，冻结 rename matrix、breaking policy 与 supersede 边界。
+- [x] M2: 后端配置解析切换到新 canonical 名称，并为全部 legacy `XY_*` 键补齐统一 hard-fail。
+- [x] M3: README / 部署文档 / Docker / 测试样例同步更新，并完成残留扫描。
+- [x] M4: `cargo test`、`cargo fmt --check`、review-loop、push、PR、checks 与标签全部收口到 merge-ready。
 
 ## 风险 / 假设
 
@@ -152,6 +152,7 @@
 ## 变更记录（Change log）
 
 - 2026-03-10: 创建 spec，冻结剩余公开 `XY_*` env 的 rename matrix、immediate cutover 策略与 breaking migration 口径。
+- 2026-03-10: 完成实现、文档、回归测试、review-loop 与 fast-track 交付；PR [#110](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/110) 已创建，labels=`type:major` + `channel:stable`，checks green。
 
 ## 参考（References）
 
