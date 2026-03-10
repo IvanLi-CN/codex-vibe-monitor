@@ -637,12 +637,27 @@ pub(crate) struct CrsTotals {
 }
 
 #[derive(Debug)]
-pub(crate) struct ApiError(pub(crate) anyhow::Error);
+pub(crate) enum ApiError {
+    BadRequest(anyhow::Error),
+    Internal(anyhow::Error),
+}
+
+impl ApiError {
+    pub(crate) fn bad_request<E>(err: E) -> Self
+    where
+        E: Into<anyhow::Error>,
+    {
+        Self::BadRequest(err.into())
+    }
+}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = StatusCode::INTERNAL_SERVER_ERROR;
-        let message = format!("{}", self.0);
+        let (status, err) = match self {
+            ApiError::BadRequest(err) => (StatusCode::BAD_REQUEST, err),
+            ApiError::Internal(err) => (StatusCode::INTERNAL_SERVER_ERROR, err),
+        };
+        let message = format!("{err}");
         (status, message).into_response()
     }
 }
@@ -652,7 +667,7 @@ where
     E: Into<anyhow::Error>,
 {
     fn from(err: E) -> Self {
-        Self(err.into())
+        Self::Internal(err.into())
     }
 }
 

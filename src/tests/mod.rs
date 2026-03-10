@@ -1122,12 +1122,16 @@ fn failure_scope_parse_defaults_to_service() {
 #[test]
 fn failure_scope_parse_rejects_unknown_value() {
     let err = FailureScope::parse(Some("unexpected")).expect_err("invalid scope should fail");
-    assert!(
-        err.0
-            .to_string()
-            .contains("unsupported failure scope: unexpected"),
-        "error should mention rejected scope"
-    );
+    match err {
+        ApiError::BadRequest(err) => {
+            assert!(
+                err.to_string()
+                    .contains("unsupported failure scope: unexpected"),
+                "error should mention rejected scope"
+            );
+        }
+        other => panic!("expected BadRequest, got: {other:?}"),
+    }
 }
 
 #[test]
@@ -7849,6 +7853,80 @@ async fn list_invocations_keeps_snapshot_stable_across_pagination_and_sorting() 
 }
 
 #[tokio::test]
+async fn list_invocations_failure_class_filter_matches_resolved_classification() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, status, error_message) in [
+        ("filter-client", "http_401", None),
+        (
+            "filter-abort",
+            "failed",
+            Some("[downstream_closed] user cancelled"),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 08:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(error_message)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert failure row");
+    }
+
+    let Json(client_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            failure_class: Some("client_failure".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("client failure class filter should succeed");
+
+    assert_eq!(client_filtered.total, 1);
+    assert_eq!(client_filtered.records[0].invoke_id, "filter-client");
+    assert_eq!(
+        client_filtered.records[0].failure_class.as_deref(),
+        Some("client_failure")
+    );
+
+    let Json(abort_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            failure_class: Some("client_abort".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("client abort failure class filter should succeed");
+
+    assert_eq!(abort_filtered.total, 1);
+    assert_eq!(abort_filtered.records[0].invoke_id, "filter-abort");
+    assert_eq!(
+        abort_filtered.records[0].failure_class.as_deref(),
+        Some("client_abort")
+    );
+}
+
+#[tokio::test]
 async fn fetch_invocation_summary_reports_new_records_count_for_applied_filters() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -7962,6 +8040,59 @@ async fn fetch_invocation_summary_reports_new_records_count_for_applied_filters(
 }
 
 #[tokio::test]
+async fn fetch_invocation_summary_resolves_failure_class_for_legacy_rows() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, status, error_message) in [
+        ("legacy-service", "failed", None),
+        ("legacy-client", "http_401", None),
+        (
+            "legacy-abort",
+            "failed",
+            Some("[downstream_closed] user cancelled"),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 09:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(error_message)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert legacy failure row");
+    }
+
+    let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
+        .await
+        .expect("summary query should succeed");
+
+    assert_eq!(summary.total_count, 3);
+    assert_eq!(summary.failure_count, 3);
+    assert_eq!(summary.exception.failure_count, 3);
+    assert_eq!(summary.exception.service_failure_count, 1);
+    assert_eq!(summary.exception.client_failure_count, 1);
+    assert_eq!(summary.exception.client_abort_count, 1);
+    assert_eq!(summary.exception.actionable_failure_count, 1);
+}
+
+#[tokio::test]
 async fn fetch_invocation_summary_keeps_zero_ms_network_samples() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -8056,7 +8187,12 @@ async fn fetch_invocation_new_records_count_requires_snapshot_id() {
         .await
         .expect_err("new-count query should reject missing snapshot id");
 
-    assert_eq!(error.0.to_string(), "snapshotId is required");
+    match error {
+        ApiError::BadRequest(err) => {
+            assert_eq!(err.to_string(), "snapshotId is required");
+        }
+        other => panic!("expected BadRequest, got: {other:?}"),
+    }
 }
 
 #[tokio::test]

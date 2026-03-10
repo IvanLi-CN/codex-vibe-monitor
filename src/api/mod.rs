@@ -9,38 +9,89 @@ const INVOCATION_FAILURE_KIND_SQL: &str = "COALESCE(CASE WHEN json_valid(payload
 const INVOCATION_REQUESTER_IP_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
 const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END";
-const INVOCATION_SELECT_SQL: &str = "SELECT id, invoke_id, occurred_at, source, \
-     CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
-     model, input_tokens, output_tokens, \
-     cache_input_tokens, reasoning_tokens, \
-     CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort, \
-     total_tokens, cost, status, error_message, \
-     CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
-     COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind, \
-     failure_class, is_actionable, \
-     CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
-     CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
-     CASE \
-       WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
-         THEN json_extract(payload, '$.requestedServiceTier') \
-       WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
-         THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
-     CASE \
-       WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
-         THEN json_extract(payload, '$.serviceTier') \
-       WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
-         THEN json_extract(payload, '$.service_tier') END AS service_tier, \
-     CASE WHEN json_valid(payload) \
-       AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real') \
-       THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta, \
-     cost_estimated, price_version, \
-     request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
-     response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
-     raw_expires_at, detail_level, detail_pruned_at, detail_prune_reason, \
-     t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
-     t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, \
-     created_at \
-     FROM codex_invocations WHERE 1 = 1";
+
+// Legacy records can carry `failure_class=none` or NULL while still representing failures.
+// Keep classification consistent with `resolve_failure_classification` without requiring a
+// backfill pass to complete before the summary + filters become accurate.
+const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = "CASE \
+  WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort') \
+    THEN LOWER(TRIM(COALESCE(failure_class, ''))) \
+  ELSE \
+    CASE \
+      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success' \
+        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none' \
+      WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%' \
+        THEN 'client_abort' \
+      WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%' \
+        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' \
+        OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403') \
+        THEN 'client_failure' \
+      WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%' \
+        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' \
+        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' \
+        THEN 'service_failure' \
+      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success' THEN 'none' \
+      ELSE 'service_failure' \
+    END \
+END";
+
+fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
+    let mut query = QueryBuilder::new(
+        "SELECT id, invoke_id, occurred_at, source, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
+         model, input_tokens, output_tokens, \
+         cache_input_tokens, reasoning_tokens, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort, \
+         total_tokens, cost, status, error_message, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
+         ",
+    );
+    query
+        .push(INVOCATION_FAILURE_KIND_SQL)
+        .push(" AS failure_kind, ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class, CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
+         CASE \
+           WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
+             THEN json_extract(payload, '$.requestedServiceTier') \
+           WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
+             THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
+         CASE \
+           WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
+             THEN json_extract(payload, '$.serviceTier') \
+           WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
+             THEN json_extract(payload, '$.service_tier') END AS service_tier, \
+         CASE WHEN json_valid(payload) \
+           AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real') \
+           THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta, \
+         cost_estimated, price_version, \
+         request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
+         response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
+         raw_expires_at, detail_level, detail_pruned_at, detail_prune_reason, \
+         t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
+         t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, \
+         created_at \
+         FROM codex_invocations WHERE 1 = 1",
+        );
+    query
+}
 
 #[derive(Debug, Clone, Copy)]
 enum InvocationSortBy {
@@ -256,17 +307,18 @@ fn escape_sql_like(raw: &str) -> String {
     escaped
 }
 
-fn parse_invocation_bound(raw: Option<&str>, field_name: &str) -> Result<Option<String>> {
+fn parse_invocation_bound(raw: Option<&str>, field_name: &str) -> Result<Option<String>, ApiError> {
     let Some(raw_value) = normalize_query_text(raw) else {
         return Ok(None);
     };
     let parsed = DateTime::parse_from_rfc3339(&raw_value)
-        .with_context(|| format!("invalid {field_name}: {raw_value}"))?
+        .with_context(|| format!("invalid {field_name}: {raw_value}"))
+        .map_err(ApiError::bad_request)?
         .with_timezone(&Utc);
     Ok(Some(db_occurred_at_lower_bound(parsed)))
 }
 
-fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilters> {
+fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilters, ApiError> {
     let mut occurred_from = parse_invocation_bound(params.from.as_deref(), "from")?;
     let mut occurred_to = parse_invocation_bound(params.to.as_deref(), "to")?;
 
@@ -292,13 +344,17 @@ fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilte
     if let (Some(min_tokens), Some(max_tokens)) = (params.min_total_tokens, params.max_total_tokens)
         && min_tokens > max_tokens
     {
-        return Err(anyhow!("minTotalTokens must be <= maxTotalTokens"));
+        return Err(ApiError::bad_request(anyhow!(
+            "minTotalTokens must be <= maxTotalTokens"
+        )));
     }
 
     if let (Some(min_ms), Some(max_ms)) = (params.min_total_ms, params.max_total_ms)
         && min_ms > max_ms
     {
-        return Err(anyhow!("minTotalMs must be <= maxTotalMs"));
+        return Err(ApiError::bad_request(anyhow!(
+            "minTotalMs must be <= maxTotalMs"
+        )));
     }
 
     Ok(InvocationRecordsFilters {
@@ -323,7 +379,7 @@ fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilte
 fn build_invocation_list_request(
     params: &ListQuery,
     list_limit_max: i64,
-) -> Result<InvocationListRequest> {
+) -> Result<InvocationListRequest, ApiError> {
     let filters = build_invocation_filters(params)?;
     let page_size = params
         .page_size
@@ -437,7 +493,7 @@ fn apply_invocation_records_filters(
     }
 
     if let Some(failure_class) = filters.failure_class.as_deref() {
-        push_exact_text_filter(query, "failure_class", failure_class);
+        push_exact_text_filter(query, INVOCATION_RESOLVED_FAILURE_CLASS_SQL, failure_class);
     }
 
     if let Some(failure_kind) = filters.failure_kind.as_deref() {
@@ -767,15 +823,24 @@ async fn query_invocation_exception_summary(
     source_scope: InvocationSourceScope,
     snapshot_id: i64,
 ) -> Result<InvocationExceptionSummary> {
-    let mut query = QueryBuilder::new(
-        "SELECT \
-         COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(failure_class, ''))) NOT IN ('', 'none') THEN 1 ELSE 0 END), 0) AS failure_count, \
-         COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(failure_class, ''))) = 'service_failure' THEN 1 ELSE 0 END), 0) AS service_failure_count, \
-         COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(failure_class, ''))) = 'client_failure' THEN 1 ELSE 0 END), 0) AS client_failure_count, \
-         COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(failure_class, ''))) = 'client_abort' THEN 1 ELSE 0 END), 0) AS client_abort_count, \
-         COALESCE(SUM(CASE WHEN COALESCE(is_actionable, 0) != 0 AND LOWER(TRIM(COALESCE(failure_class, ''))) NOT IN ('', 'none') THEN 1 ELSE 0 END), 0) AS actionable_failure_count \
-         FROM codex_invocations WHERE 1 = 1",
-    );
+    let mut query = QueryBuilder::new("SELECT ");
+    query
+        .push("COALESCE(SUM(CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" NOT IN ('', 'none') THEN 1 ELSE 0 END), 0) AS failure_count, ")
+        .push("COALESCE(SUM(CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'service_failure' THEN 1 ELSE 0 END), 0) AS service_failure_count, ")
+        .push("COALESCE(SUM(CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'client_failure' THEN 1 ELSE 0 END), 0) AS client_failure_count, ")
+        .push("COALESCE(SUM(CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'client_abort' THEN 1 ELSE 0 END), 0) AS client_abort_count, ")
+        .push("COALESCE(SUM(CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'service_failure' THEN 1 ELSE 0 END), 0) AS actionable_failure_count ")
+        .push("FROM codex_invocations WHERE 1 = 1");
     apply_invocation_records_filters(
         &mut query,
         filters,
@@ -803,7 +868,7 @@ pub(crate) async fn list_invocations(
     let source_scope = resolve_default_source_scope(&state.pool).await?;
 
     if is_legacy_invocation_stream_query(&params) {
-        let mut query = QueryBuilder::new(INVOCATION_SELECT_SQL);
+        let mut query = build_invocation_select_query();
         apply_invocation_records_filters(&mut query, &request.filters, source_scope, None);
         append_invocation_order_clause(&mut query, request.sort_by, request.sort_order);
         query.push(" LIMIT ").push_bind(request.page_size);
@@ -846,7 +911,7 @@ pub(crate) async fn list_invocations(
         .total;
 
     let offset = (request.page - 1).saturating_mul(request.page_size);
-    let mut query = QueryBuilder::new(INVOCATION_SELECT_SQL);
+    let mut query = build_invocation_select_query();
     apply_invocation_records_filters(
         &mut query,
         &request.filters,
@@ -959,7 +1024,7 @@ pub(crate) async fn fetch_invocation_new_records_count(
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let snapshot_id = request
         .snapshot_id
-        .ok_or_else(|| ApiError(anyhow!("snapshotId is required")))?;
+        .ok_or_else(|| ApiError::bad_request(anyhow!("snapshotId is required")))?;
     let new_records_count = query_invocation_new_records_count(
         &state.pool,
         &request.filters,
@@ -1095,8 +1160,9 @@ pub(crate) async fn fetch_summary(
         }
         SummaryWindow::Calendar(spec) => {
             let now = Utc::now();
-            let start = named_range_start(spec.as_str(), now, reporting_tz)
-                .ok_or_else(|| ApiError(anyhow!("unsupported calendar window: {spec}")))?;
+            let start = named_range_start(spec.as_str(), now, reporting_tz).ok_or_else(|| {
+                ApiError::bad_request(anyhow!("unsupported calendar window: {spec}"))
+            })?;
             query_combined_totals(
                 &state.pool,
                 state.config.crs_stats.as_ref(),
@@ -1414,7 +1480,9 @@ pub(crate) async fn fetch_timeseries(
     };
 
     if bucket_seconds <= 0 {
-        return Err(ApiError(anyhow!("bucket seconds must be positive")));
+        return Err(ApiError::bad_request(anyhow!(
+            "bucket seconds must be positive"
+        )));
     }
 
     let range_seconds = range_window.duration.num_seconds();
@@ -1736,7 +1804,7 @@ impl FailureScope {
             "service" => Ok(FailureScope::Service),
             "client" => Ok(FailureScope::Client),
             "abort" => Ok(FailureScope::Abort),
-            _ => Err(ApiError(anyhow!(
+            _ => Err(ApiError::bad_request(anyhow!(
                 "unsupported failure scope: {scope}; expected one of all|service|client|abort"
             ))),
         }
