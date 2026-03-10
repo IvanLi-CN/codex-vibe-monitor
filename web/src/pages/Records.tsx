@@ -12,7 +12,6 @@ import {
   type InvocationRangePreset,
   type InvocationSortBy,
   type InvocationSortOrder,
-  type InvocationSuggestionBucket,
   type InvocationSuggestionsResponse,
 } from '../lib/api'
 import { createDefaultCustomRange, RECORDS_PAGE_SIZE_OPTIONS, resolveRangeBoundsFromValues } from '../lib/invocationRecords'
@@ -21,7 +20,6 @@ import { cn } from '../lib/utils'
 const inputClassName =
   'h-9 w-full rounded-md border border-base-300/80 bg-base-100 px-3 text-sm text-base-content shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-60'
 
-const SUGGESTION_DROPDOWN_THRESHOLD = 12
 const SUGGESTION_DEBOUNCE_MS = 250
 
 function getVisiblePages(currentPage: number, totalPages: number) {
@@ -91,14 +89,6 @@ export default function RecordsPage() {
     return () => window.clearTimeout(timer)
   }, [suggestionQuery])
 
-  const resolveSuggestMode = (bucket: InvocationSuggestionBucket | undefined) => {
-    if (!bucket) return 'autocomplete' as const
-    if (!bucket.hasMore && bucket.items.length > 0 && bucket.items.length <= SUGGESTION_DROPDOWN_THRESHOLD) {
-      return 'dropdown' as const
-    }
-    return 'autocomplete' as const
-  }
-
   const focusOptions = useMemo(
     () => [
       { value: 'token' as InvocationFocus, label: t('records.focus.token') },
@@ -143,12 +133,6 @@ export default function RecordsPage() {
   const failureKindBucket = suggestions?.failureKind
   const promptCacheKeyBucket = suggestions?.promptCacheKey
   const requesterIpBucket = suggestions?.requesterIp
-  const modelMode = resolveSuggestMode(modelBucket)
-  const proxyMode = resolveSuggestMode(proxyBucket)
-  const endpointMode = resolveSuggestMode(endpointBucket)
-  const failureKindMode = resolveSuggestMode(failureKindBucket)
-  const promptCacheKeyMode = resolveSuggestMode(promptCacheKeyBucket)
-  const requesterIpMode = resolveSuggestMode(requesterIpBucket)
 
   const handleClearDraft = () => {
     resetDraft()
@@ -246,96 +230,45 @@ export default function RecordsPage() {
 
               <label className="field">
                 <span className="field-label">{t('records.filters.model')}</span>
-                {modelMode === 'dropdown' ? (
-                  <FilterableCombobox
-                    label={t('records.filters.model')}
-                    name="model"
-                    id="records-filter-model"
-                    value={draft.model}
-                    onValueChange={(next) => updateDraft('model', next)}
-                    options={(modelBucket?.items ?? []).map((item) => item.value)}
-                    placeholder={t('records.filters.any')}
-                    emptyText={t('records.filters.noMatches')}
-                    inputClassName={inputClassName}
-                  />
-                ) : (
-                  <>
-                    <input
-                      list="records-model-suggestions"
-                      name="model"
-                      className={inputClassName}
-                      value={draft.model}
-                      onChange={(event) => updateDraft('model', event.target.value)}
-                    />
-                    <datalist id="records-model-suggestions">
-                      {(modelBucket?.items ?? []).map((item) => (
-                        <option key={item.value} value={item.value} />
-                      ))}
-                    </datalist>
-                  </>
-                )}
+                <FilterableCombobox
+                  label={t('records.filters.model')}
+                  name="model"
+                  id="records-filter-model"
+                  value={draft.model}
+                  onValueChange={(next) => updateDraft('model', next)}
+                  options={(modelBucket?.items ?? []).map((item) => item.value)}
+                  placeholder={t('records.filters.any')}
+                  emptyText={t('records.filters.noMatches')}
+                  inputClassName={inputClassName}
+                />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.proxy')}</span>
-                {proxyMode === 'dropdown' ? (
-                  <FilterableCombobox
-                    label={t('records.filters.proxy')}
-                    name="proxy"
-                    id="records-filter-proxy"
-                    value={draft.proxy}
-                    onValueChange={(next) => updateDraft('proxy', next)}
-                    options={(proxyBucket?.items ?? []).map((item) => item.value)}
-                    placeholder={t('records.filters.any')}
-                    emptyText={t('records.filters.noMatches')}
-                    inputClassName={inputClassName}
-                  />
-                ) : (
-                  <>
-                    <input
-                      list="records-proxy-suggestions"
-                      name="proxy"
-                      className={inputClassName}
-                      value={draft.proxy}
-                      onChange={(event) => updateDraft('proxy', event.target.value)}
-                    />
-                    <datalist id="records-proxy-suggestions">
-                      {(proxyBucket?.items ?? []).map((item) => (
-                        <option key={item.value} value={item.value} />
-                      ))}
-                    </datalist>
-                  </>
-                )}
+                <FilterableCombobox
+                  label={t('records.filters.proxy')}
+                  name="proxy"
+                  id="records-filter-proxy"
+                  value={draft.proxy}
+                  onValueChange={(next) => updateDraft('proxy', next)}
+                  options={(proxyBucket?.items ?? []).map((item) => item.value)}
+                  placeholder={t('records.filters.any')}
+                  emptyText={t('records.filters.noMatches')}
+                  inputClassName={inputClassName}
+                />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.endpoint')}</span>
-                {endpointMode === 'dropdown' ? (
-                  <FilterableCombobox
-                    label={t('records.filters.endpoint')}
-                    name="endpoint"
-                    id="records-filter-endpoint"
-                    value={draft.endpoint}
-                    onValueChange={(next) => updateDraft('endpoint', next)}
-                    options={(endpointBucket?.items ?? []).map((item) => item.value)}
-                    placeholder={t('records.filters.any')}
-                    emptyText={t('records.filters.noMatches')}
-                    inputClassName={inputClassName}
-                  />
-                ) : (
-                  <>
-                    <input
-                      list="records-endpoint-suggestions"
-                      name="endpoint"
-                      className={inputClassName}
-                      value={draft.endpoint}
-                      onChange={(event) => updateDraft('endpoint', event.target.value)}
-                    />
-                    <datalist id="records-endpoint-suggestions">
-                      {(endpointBucket?.items ?? []).map((item) => (
-                        <option key={item.value} value={item.value} />
-                      ))}
-                    </datalist>
-                  </>
-                )}
+                <FilterableCombobox
+                  label={t('records.filters.endpoint')}
+                  name="endpoint"
+                  id="records-filter-endpoint"
+                  value={draft.endpoint}
+                  onValueChange={(next) => updateDraft('endpoint', next)}
+                  options={(endpointBucket?.items ?? []).map((item) => item.value)}
+                  placeholder={t('records.filters.any')}
+                  emptyText={t('records.filters.noMatches')}
+                  inputClassName={inputClassName}
+                />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.failureClass')}</span>
@@ -349,96 +282,45 @@ export default function RecordsPage() {
 
               <label className="field">
                 <span className="field-label">{t('records.filters.failureKind')}</span>
-                {failureKindMode === 'dropdown' ? (
-                  <FilterableCombobox
-                    label={t('records.filters.failureKind')}
-                    name="failureKind"
-                    id="records-filter-failure-kind"
-                    value={draft.failureKind}
-                    onValueChange={(next) => updateDraft('failureKind', next)}
-                    options={(failureKindBucket?.items ?? []).map((item) => item.value)}
-                    placeholder={t('records.filters.any')}
-                    emptyText={t('records.filters.noMatches')}
-                    inputClassName={inputClassName}
-                  />
-                ) : (
-                  <>
-                    <input
-                      list="records-failure-kind-suggestions"
-                      name="failureKind"
-                      className={inputClassName}
-                      value={draft.failureKind}
-                      onChange={(event) => updateDraft('failureKind', event.target.value)}
-                    />
-                    <datalist id="records-failure-kind-suggestions">
-                      {(failureKindBucket?.items ?? []).map((item) => (
-                        <option key={item.value} value={item.value} />
-                      ))}
-                    </datalist>
-                  </>
-                )}
+                <FilterableCombobox
+                  label={t('records.filters.failureKind')}
+                  name="failureKind"
+                  id="records-filter-failure-kind"
+                  value={draft.failureKind}
+                  onValueChange={(next) => updateDraft('failureKind', next)}
+                  options={(failureKindBucket?.items ?? []).map((item) => item.value)}
+                  placeholder={t('records.filters.any')}
+                  emptyText={t('records.filters.noMatches')}
+                  inputClassName={inputClassName}
+                />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.promptCacheKey')}</span>
-                {promptCacheKeyMode === 'dropdown' ? (
-                  <FilterableCombobox
-                    label={t('records.filters.promptCacheKey')}
-                    name="promptCacheKey"
-                    id="records-filter-prompt-cache-key"
-                    value={draft.promptCacheKey}
-                    onValueChange={(next) => updateDraft('promptCacheKey', next)}
-                    options={(promptCacheKeyBucket?.items ?? []).map((item) => item.value)}
-                    placeholder={t('records.filters.any')}
-                    emptyText={t('records.filters.noMatches')}
-                    inputClassName={inputClassName}
-                  />
-                ) : (
-                  <>
-                    <input
-                      list="records-prompt-cache-key-suggestions"
-                      name="promptCacheKey"
-                      className={inputClassName}
-                      value={draft.promptCacheKey}
-                      onChange={(event) => updateDraft('promptCacheKey', event.target.value)}
-                    />
-                    <datalist id="records-prompt-cache-key-suggestions">
-                      {(promptCacheKeyBucket?.items ?? []).map((item) => (
-                        <option key={item.value} value={item.value} />
-                      ))}
-                    </datalist>
-                  </>
-                )}
+                <FilterableCombobox
+                  label={t('records.filters.promptCacheKey')}
+                  name="promptCacheKey"
+                  id="records-filter-prompt-cache-key"
+                  value={draft.promptCacheKey}
+                  onValueChange={(next) => updateDraft('promptCacheKey', next)}
+                  options={(promptCacheKeyBucket?.items ?? []).map((item) => item.value)}
+                  placeholder={t('records.filters.any')}
+                  emptyText={t('records.filters.noMatches')}
+                  inputClassName={inputClassName}
+                />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.requesterIp')}</span>
-                {requesterIpMode === 'dropdown' ? (
-                  <FilterableCombobox
-                    label={t('records.filters.requesterIp')}
-                    name="requesterIp"
-                    id="records-filter-requester-ip"
-                    value={draft.requesterIp}
-                    onValueChange={(next) => updateDraft('requesterIp', next)}
-                    options={(requesterIpBucket?.items ?? []).map((item) => item.value)}
-                    placeholder={t('records.filters.any')}
-                    emptyText={t('records.filters.noMatches')}
-                    inputClassName={inputClassName}
-                  />
-                ) : (
-                  <>
-                    <input
-                      list="records-requester-ip-suggestions"
-                      name="requesterIp"
-                      className={inputClassName}
-                      value={draft.requesterIp}
-                      onChange={(event) => updateDraft('requesterIp', event.target.value)}
-                    />
-                    <datalist id="records-requester-ip-suggestions">
-                      {(requesterIpBucket?.items ?? []).map((item) => (
-                        <option key={item.value} value={item.value} />
-                      ))}
-                    </datalist>
-                  </>
-                )}
+                <FilterableCombobox
+                  label={t('records.filters.requesterIp')}
+                  name="requesterIp"
+                  id="records-filter-requester-ip"
+                  value={draft.requesterIp}
+                  onValueChange={(next) => updateDraft('requesterIp', next)}
+                  options={(requesterIpBucket?.items ?? []).map((item) => item.value)}
+                  placeholder={t('records.filters.any')}
+                  emptyText={t('records.filters.noMatches')}
+                  inputClassName={inputClassName}
+                />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.keyword')}</span>
