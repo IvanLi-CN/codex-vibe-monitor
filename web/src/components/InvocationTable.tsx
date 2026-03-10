@@ -554,7 +554,11 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
                 <Badge variant={row.meta.variant}>{t(row.meta.key)}</Badge>
-                <span className="min-w-0 truncate text-xs text-base-content/75" title={row.proxyDisplayName}>
+                <span
+                  className="min-w-0 truncate text-xs text-base-content/75"
+                  title={row.proxyDisplayName}
+                  data-testid="invocation-proxy-name"
+                >
                   {row.proxyDisplayName}
                 </span>
               </div>
@@ -699,14 +703,20 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </td>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-center xl:px-3">
                         <div className="flex min-w-0 flex-col items-center justify-center gap-1 leading-tight">
-                          <div className="flex min-w-0 flex-wrap items-center justify-center gap-1">
-                            <Badge variant={row.meta.variant} className="max-w-full justify-center overflow-hidden">
-                              <span className="block max-w-full truncate whitespace-nowrap text-center" title={row.proxyDisplayName}>
-                                {row.proxyDisplayName}
-                              </span>
-                              <span className="sr-only">{t(row.meta.key)}</span>
-                            </Badge>
-                          </div>
+                          <Badge
+                            variant={row.meta.variant}
+                            className="min-w-0 max-w-full justify-center overflow-hidden"
+                            data-testid="invocation-proxy-badge"
+                          >
+                            <span
+                              className="block max-w-full min-w-0 truncate whitespace-nowrap text-center"
+                              title={row.proxyDisplayName}
+                              data-testid="invocation-proxy-name"
+                            >
+                              {row.proxyDisplayName}
+                            </span>
+                            <span className="sr-only">{t(row.meta.key)}</span>
+                          </Badge>
                           <span className="hidden whitespace-nowrap font-mono text-[11px] text-base-content/70 lg:block" title={row.latencySummary}>
                             {row.latencySummary}
                           </span>
