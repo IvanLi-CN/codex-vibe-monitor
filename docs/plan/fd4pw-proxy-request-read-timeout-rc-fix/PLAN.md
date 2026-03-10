@@ -50,7 +50,7 @@
 
 - PR: [#45](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/45) 已合并到 `main`（2026-02-23）。
 - RC: [`v0.5.2-rc.54932bc`](https://github.com/IvanLi-CN/codex-vibe-monitor/releases/tag/v0.5.2-rc.54932bc) 已产出并替换测试线容器镜像。
-- 测试线（`192.168.31.11`）已切换到内网上游：`OPENAI_UPSTREAM_BASE_URL=http://ai-claude-relay-service:3000/openai`，并启用 `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=120` 与 `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180`。
+- 测试线（`192.168.31.11`）已切换到内网上游：`OPENAI_UPSTREAM_BASE_URL=http://ai-claude-relay-service:3000/openai`，并启用请求体读取总超时 `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS=180` 与显式上游等待超时覆盖。
 - 30 分钟观测窗（2026-02-23 18:01:32–18:31:32 CST）统计：`request_body_read_timeout=1`，`request_body_stream_error_client_closed=0`，`failed_contact_upstream=0`，`upstream_handshake_timeout=0`。
 - 对照部署前 90 分钟（16:31:32–18:01:32 CST）历史记录：`failed_contact_upstream=57`，`upstream_handshake_timeout=14`（按 `error_message` 聚合）。
 
