@@ -18,12 +18,13 @@ use std::{
     collections::HashSet,
     env, fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, atomic::AtomicUsize},
     time::Duration,
 };
 use tokio::net::TcpListener;
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::{Notify, Semaphore, broadcast};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<StdMutex<()>> =
     once_cell::sync::Lazy::new(|| StdMutex::new(()));
@@ -1284,7 +1285,7 @@ fn test_config() -> AppConfig {
         forward_proxy_algo: ForwardProxyAlgo::V1,
         max_parallel_polls: 2,
         shared_connection_parallelism: 1,
-        http_bind: "127.0.0.1:38080".parse().expect("valid socket address"),
+        http_bind: "127.0.0.1:0".parse().expect("valid socket address"),
         cors_allowed_origins: Vec::new(),
         list_limit_max: 100,
         user_agent: "codex-test".to_string(),
@@ -1853,6 +1854,16 @@ async fn test_state_with_openai_base_and_proxy_timeouts(
     compact_handshake_timeout: Duration,
     request_read_timeout: Duration,
 ) -> Arc<AppState> {
+    let mut config = test_config();
+    config.openai_upstream_base_url = openai_base;
+    config.openai_proxy_max_request_body_bytes = body_limit;
+    config.openai_proxy_handshake_timeout = handshake_timeout;
+    config.openai_proxy_compact_handshake_timeout = compact_handshake_timeout;
+    config.openai_proxy_request_read_timeout = request_read_timeout;
+    test_state_from_config(config, true).await
+}
+
+async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<AppState> {
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let db_url = format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
     let pool = SqlitePool::connect(&db_url)
@@ -1862,12 +1873,6 @@ async fn test_state_with_openai_base_and_proxy_timeouts(
         .await
         .expect("schema should initialize");
 
-    let mut config = test_config();
-    config.openai_upstream_base_url = openai_base;
-    config.openai_proxy_max_request_body_bytes = body_limit;
-    config.openai_proxy_handshake_timeout = handshake_timeout;
-    config.openai_proxy_compact_handshake_timeout = compact_handshake_timeout;
-    config.openai_proxy_request_read_timeout = request_read_timeout;
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let (broadcaster, _rx) = broadcast::channel(16);
@@ -1883,7 +1888,8 @@ async fn test_state_with_openai_base_and_proxy_timeouts(
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        startup_ready: Arc::new(AtomicBool::new(true)),
+        startup_ready: Arc::new(AtomicBool::new(startup_ready)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -4663,6 +4669,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
             hijack_enabled: true,
@@ -5918,6 +5925,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -6045,6 +6053,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -6213,6 +6222,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -6282,6 +6292,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -9379,6 +9390,7 @@ async fn quota_latest_returns_degraded_when_empty() {
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -10397,4 +10409,221 @@ async fn retention_dry_run_does_not_mutate_database_or_files() {
     assert_eq!(archive_files, 0);
 
     cleanup_temp_test_dir(&temp_dir);
+}
+
+async fn spawn_test_crs_stats_server(
+    release_request: Arc<Notify>,
+    request_count: Arc<AtomicUsize>,
+) -> (String, JoinHandle<()>) {
+    let app = Router::new().route(
+        "/apiStats/api/user-model-stats",
+        post(move || {
+            let release_request = release_request.clone();
+            let request_count = request_count.clone();
+            async move {
+                request_count.fetch_add(1, Ordering::SeqCst);
+                release_request.notified().await;
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "success": true,
+                        "period": "daily",
+                        "data": [],
+                    })),
+                )
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind crs stats test server");
+    let addr = listener.local_addr().expect("crs stats test server addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("crs stats test server should run");
+    });
+
+    (format!("http://{addr}/"), handle)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminate_child_process_prefers_sigterm_when_process_exits_cleanly() {
+    let mut child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("trap 'exit 0' TERM; while :; do sleep 0.1; done")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sigterm-friendly child");
+
+    let outcome = terminate_child_process(&mut child, Duration::from_secs(1), "test-child").await;
+
+    assert_eq!(outcome, ChildTerminationOutcome::Graceful);
+    assert!(
+        child
+            .try_wait()
+            .expect("poll child after terminate")
+            .is_some()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminate_child_process_falls_back_to_force_kill_when_grace_period_is_exhausted() {
+    let mut child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("trap 'exit 0' TERM; while :; do sleep 0.1; done")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn child for forced shutdown fallback");
+
+    let outcome = terminate_child_process(&mut child, Duration::ZERO, "test-child").await;
+
+    assert_eq!(outcome, ChildTerminationOutcome::Forced);
+    assert!(
+        child
+            .try_wait()
+            .expect("poll child after force kill")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn http_server_graceful_shutdown_stops_accepting_new_connections() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (addr, server_handle) = spawn_http_server(state.clone())
+        .await
+        .expect("spawn http server");
+
+    let healthy_response = reqwest::get(format!("http://{addr}/health"))
+        .await
+        .expect("health endpoint should respond before shutdown");
+    assert_eq!(healthy_response.status(), StatusCode::OK);
+
+    state.shutdown.cancel();
+    server_handle.await.expect("http server task should join");
+
+    let err = reqwest::get(format!("http://{addr}/health"))
+        .await
+        .expect_err("server should stop accepting new connections after shutdown");
+    assert!(err.is_connect() || err.is_timeout());
+}
+
+#[tokio::test]
+async fn run_runtime_until_shutdown_waits_for_inflight_scheduler_poll() {
+    let release_request = Arc::new(Notify::new());
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let (crs_base, crs_handle) =
+        spawn_test_crs_stats_server(release_request.clone(), request_count.clone()).await;
+
+    let mut config = test_config();
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse(&crs_base).expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    config.request_timeout = Duration::from_secs(5);
+    config.poll_interval = Duration::from_millis(25);
+    config.max_parallel_polls = 1;
+    let state = test_state_from_config(config, false).await;
+
+    let shutdown = Arc::new(Notify::new());
+    let shutdown_for_runtime = shutdown.clone();
+    let state_for_runtime = state.clone();
+    let runtime_handle = tokio::spawn(async move {
+        run_runtime_until_shutdown(state_for_runtime, Instant::now(), async move {
+            shutdown_for_runtime.notified().await;
+        })
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while request_count.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("scheduler should start an in-flight poll");
+    shutdown.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        !runtime_handle.is_finished(),
+        "runtime should wait for the in-flight scheduler poll to finish"
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+    release_request.notify_waiters();
+    runtime_handle
+        .await
+        .expect("runtime task should join")
+        .expect("runtime should shutdown cleanly");
+
+    assert!(state.shutdown.is_cancelled());
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+    crs_handle.abort();
+}
+
+#[tokio::test]
+async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
+    let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::OK).await;
+    let normalized_proxy =
+        normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid upstream base url"),
+    )
+    .await;
+    state.shutdown.cancel();
+
+    spawn_forward_proxy_bootstrap_probe_round(
+        state.clone(),
+        vec![ForwardProxyEndpoint {
+            key: normalized_proxy.clone(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            display_name: normalized_proxy.clone(),
+            protocol: ForwardProxyProtocol::Http,
+            endpoint_url: Some(Url::parse(&normalized_proxy).expect("valid normalized proxy url")),
+            raw_url: Some(normalized_proxy.clone()),
+        }],
+        "test-shutdown",
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let probe_count =
+        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    assert_eq!(probe_count, 0);
+
+    proxy_handle.abort();
+}
+
+#[tokio::test]
+async fn persist_and_broadcast_proxy_capture_skips_summary_worker_during_shutdown() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let _rx = state.broadcaster.subscribe();
+    state.shutdown.cancel();
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record("shutdown-broadcast", &format_utc_iso(Utc::now())),
+    )
+    .await
+    .expect("persist proxy capture during shutdown");
+
+    assert!(
+        !state
+            .proxy_summary_quota_broadcast_running
+            .load(Ordering::Acquire),
+        "summary/quota broadcast worker should not stay active during shutdown"
+    );
 }

@@ -1054,10 +1054,11 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
     added_endpoints: Vec<ForwardProxyEndpoint>,
     trigger: &'static str,
 ) {
-    if added_endpoints.is_empty() {
+    if added_endpoints.is_empty() || state.shutdown.is_cancelled() {
         return;
     }
     tokio::spawn(async move {
+        let shutdown = state.shutdown.clone();
         let validation_timeout =
             forward_proxy_validation_timeout(ForwardProxyValidationKind::ProxyUrl);
         info!(
@@ -1067,10 +1068,23 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
             "forward proxy bootstrap probe round started"
         );
         for endpoint in added_endpoints {
+            if shutdown.is_cancelled() {
+                info!(
+                    trigger,
+                    "forward proxy bootstrap probe round stopped by shutdown"
+                );
+                break;
+            }
             let selected_proxy = SelectedForwardProxy::from_endpoint(&endpoint);
             let started = Instant::now();
-            match probe_forward_proxy_endpoint(state.as_ref(), &endpoint, validation_timeout).await
-            {
+            let probe_result = tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!(trigger, "forward proxy bootstrap probe round cancelled before next probe");
+                    break;
+                }
+                result = probe_forward_proxy_endpoint(state.as_ref(), &endpoint, validation_timeout) => result,
+            };
+            match probe_result {
                 Ok(latency_ms) => {
                     record_forward_proxy_attempt(
                         state.clone(),
@@ -1446,41 +1460,50 @@ pub(crate) fn spawn_penalized_forward_proxy_probe(
     candidate: SelectedForwardProxy,
 ) {
     tokio::spawn(async move {
-        let probe_result = async {
-            let target = state
-                .config
-                .openai_upstream_base_url
-                .join("v1/models")
-                .context("failed to build probe target url")?;
-            let client = state
-                .http_clients
-                .client_for_forward_proxy(candidate.endpoint_url.as_ref())?;
-            let started = Instant::now();
-            let response = timeout(
-                state.config.openai_proxy_handshake_timeout,
-                client.get(target).send(),
-            )
-            .await
-            .map_err(|_| anyhow!("probe timed out"))?
-            .context("probe request failed")?;
-            let success = !response.status().is_server_error();
-            let latency_ms = Some(elapsed_ms(started));
-            record_forward_proxy_attempt(
-                state.clone(),
-                candidate.clone(),
-                success,
-                latency_ms,
-                if success {
-                    None
-                } else {
-                    Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
-                },
-                true,
-            )
-            .await;
-            Ok::<(), anyhow::Error>(())
-        }
-        .await;
+        let shutdown = state.shutdown.clone();
+        let probe_result = tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!(
+                    proxy_key_ref = %forward_proxy_log_ref(&candidate.key),
+                    "skipping penalized forward proxy probe because shutdown is in progress"
+                );
+                Ok(())
+            }
+            result = async {
+                let target = state
+                    .config
+                    .openai_upstream_base_url
+                    .join("v1/models")
+                    .context("failed to build probe target url")?;
+                let client = state
+                    .http_clients
+                    .client_for_forward_proxy(candidate.endpoint_url.as_ref())?;
+                let started = Instant::now();
+                let response = timeout(
+                    state.config.openai_proxy_handshake_timeout,
+                    client.get(target).send(),
+                )
+                .await
+                .map_err(|_| anyhow!("probe timed out"))?
+                .context("probe request failed")?;
+                let success = !response.status().is_server_error();
+                let latency_ms = Some(elapsed_ms(started));
+                record_forward_proxy_attempt(
+                    state.clone(),
+                    candidate.clone(),
+                    success,
+                    latency_ms,
+                    if success {
+                        None
+                    } else {
+                        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+                    },
+                    true,
+                )
+                .await;
+                Ok::<(), anyhow::Error>(())
+            } => result,
+        };
 
         if let Err(err) = probe_result {
             warn!(
@@ -2520,8 +2543,12 @@ impl XraySupervisor {
         };
 
         if let Err(err) = wait_for_xray_proxy_ready(&mut child, local_port, ready_timeout).await {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            let _ = terminate_child_process(
+                &mut child,
+                Duration::from_secs(2),
+                &forward_proxy_log_ref(&endpoint.key),
+            )
+            .await;
             let _ = fs::remove_file(&config_path);
             return Err(err);
         }
@@ -2542,28 +2569,18 @@ impl XraySupervisor {
 
     pub(crate) async fn remove_instance(&mut self, key: &str) {
         if let Some(mut instance) = self.instances.remove(key) {
-            let still_running = matches!(instance.child.try_wait(), Ok(None));
-            if still_running {
-                if let Err(err) = instance.child.kill().await {
-                    warn!(
-                        proxy_key_ref = %forward_proxy_log_ref(key),
-                        error = %err,
-                        "failed to terminate xray proxy process"
-                    );
-                }
-                if let Err(err) = timeout(Duration::from_secs(2), instance.child.wait()).await {
-                    warn!(
-                        proxy_key_ref = %forward_proxy_log_ref(key),
-                        error = %err,
-                        "timed out waiting xray proxy process exit"
-                    );
-                }
-            }
+            let proxy_key_ref = forward_proxy_log_ref(key);
+            let _ = terminate_child_process(
+                &mut instance.child,
+                Duration::from_secs(2),
+                &proxy_key_ref,
+            )
+            .await;
             if let Err(err) = fs::remove_file(&instance.config_path)
                 && err.kind() != io::ErrorKind::NotFound
             {
                 warn!(
-                    proxy_key_ref = %forward_proxy_log_ref(key),
+                    proxy_key_ref = %proxy_key_ref,
                     path = %instance.config_path.display(),
                     error = %err,
                     "failed to remove xray config file"
@@ -2596,6 +2613,101 @@ pub(crate) fn pick_unused_local_port() -> Result<u16> {
         .context("failed to read local address for allocated port")?
         .port();
     Ok(port)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildTerminationOutcome {
+    AlreadyExited,
+    Graceful,
+    Forced,
+}
+
+pub(crate) async fn terminate_child_process(
+    child: &mut Child,
+    grace_period: Duration,
+    process_ref: &str,
+) -> ChildTerminationOutcome {
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            info!(process_ref, status = %status, "child process already exited before shutdown");
+            return ChildTerminationOutcome::AlreadyExited;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(process_ref, error = %err, "failed to poll child process before shutdown");
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            let result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+            if result == 0 {
+                info!(
+                    process_ref,
+                    pid,
+                    grace_ms = grace_period.as_millis() as u64,
+                    "sent SIGTERM to child process"
+                );
+                if grace_period.is_zero() {
+                    warn!(
+                        process_ref,
+                        pid,
+                        "grace period is zero; falling back to force kill immediately after SIGTERM"
+                    );
+                } else {
+                    match timeout(grace_period, child.wait()).await {
+                        Ok(Ok(status)) => {
+                            info!(process_ref, pid, status = %status, "child process exited after SIGTERM");
+                            return ChildTerminationOutcome::Graceful;
+                        }
+                        Ok(Err(err)) => {
+                            warn!(process_ref, pid, error = %err, "failed while waiting for child process after SIGTERM");
+                        }
+                        Err(_) => {
+                            warn!(
+                                process_ref,
+                                pid,
+                                grace_ms = grace_period.as_millis() as u64,
+                                "child process did not exit after SIGTERM; falling back to force kill"
+                            );
+                        }
+                    }
+                }
+            } else {
+                let err = io::Error::last_os_error();
+                warn!(process_ref, pid, error = %err, "failed to send SIGTERM to child process; falling back to force kill");
+            }
+        }
+    }
+
+    if let Err(err) = child.kill().await {
+        warn!(process_ref, error = %err, "failed to force kill child process");
+    } else {
+        info!(
+            process_ref,
+            grace_ms = grace_period.as_millis() as u64,
+            "force killed child process after graceful shutdown fallback"
+        );
+    }
+
+    match timeout(grace_period, child.wait()).await {
+        Ok(Ok(status)) => {
+            info!(process_ref, status = %status, "child process exited after force kill");
+        }
+        Ok(Err(err)) => {
+            warn!(process_ref, error = %err, "failed while waiting for force killed child process");
+        }
+        Err(_) => {
+            warn!(
+                process_ref,
+                grace_ms = grace_period.as_millis() as u64,
+                "timed out waiting for force killed child process exit"
+            );
+        }
+    }
+
+    ChildTerminationOutcome::Forced
 }
 
 pub(crate) async fn wait_for_xray_proxy_ready(

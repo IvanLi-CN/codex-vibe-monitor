@@ -5,6 +5,7 @@ use std::{
     convert::Infallible,
     env,
     error::Error as StdError,
+    future::Future,
     hash::{Hash, Hasher},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -380,6 +381,7 @@ async fn main() -> Result<()> {
     let http_clients = HttpClients::build(&config)?;
     let (tx, _rx) = broadcast::channel(128);
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+    let shutdown = CancellationToken::new();
 
     let state = Arc::new(AppState {
         config: config.clone(),
@@ -390,6 +392,7 @@ async fn main() -> Result<()> {
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
         startup_ready: Arc::new(AtomicBool::new(false)),
+        shutdown: shutdown.clone(),
         semaphore: semaphore.clone(),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -407,6 +410,8 @@ async fn main() -> Result<()> {
         )),
     });
 
+    let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
+
     if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
         warn!(
             error = %err,
@@ -415,17 +420,21 @@ async fn main() -> Result<()> {
     }
     log_startup_phase("runtime_init", runtime_init_started_at);
 
-    // Shared cancellation token for graceful shutdown
-    let cancel = CancellationToken::new();
+    run_runtime_until_shutdown(state, startup_started_at, async move {
+        let _ = signal_listener.await;
+    })
+    .await
+}
 
-    // Listen for OS signals and trigger cancellation
-    let cancel_for_signals = cancel.clone();
-    let signals_task = tokio::spawn(async move {
-        shutdown_listener().await;
-        cancel_for_signals.cancel();
-        info!("shutdown signal received; beginning graceful shutdown");
-    });
-
+async fn run_runtime_until_shutdown<F>(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    shutdown_signal: F,
+) -> Result<()>
+where
+    F: Future<Output = ()> + Send,
+{
+    let cancel = state.shutdown.clone();
     let poller_handle = if state.config.crs_stats.is_some() {
         Some(spawn_scheduler(state.clone(), cancel.clone()))
     } else {
@@ -435,7 +444,7 @@ async fn main() -> Result<()> {
     let forward_proxy_handle = spawn_forward_proxy_maintenance(state.clone(), cancel.clone());
     let retention_handle = spawn_data_retention_maintenance(state.clone(), cancel.clone());
     let http_ready_started_at = Instant::now();
-    let server_handle = spawn_http_server(state.clone(), cancel.clone()).await?;
+    let (_http_addr, server_handle) = spawn_http_server(state.clone()).await?;
     log_startup_phase("http_ready", http_ready_started_at);
     info!(
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
@@ -443,16 +452,21 @@ async fn main() -> Result<()> {
     );
     let startup_backfill_handle = spawn_startup_backfill_maintenance(state.clone(), cancel.clone());
 
-    // Wait until a shutdown signal is received, then wait for tasks to finish
-    let _ = signals_task.await;
+    shutdown_signal.await;
+    info!("shutdown signal received; beginning graceful shutdown");
+    cancel.cancel();
 
+    info!("http server graceful drain started");
     if let Err(err) = server_handle.await {
         error!(?err, "http server terminated unexpectedly");
     }
-    if let Some(poller_handle) = poller_handle
-        && let Err(err) = poller_handle.await
-    {
-        error!(?err, "poller task terminated unexpectedly");
+    info!("http server graceful drain finished");
+
+    if let Some(poller_handle) = poller_handle {
+        if let Err(err) = poller_handle.await {
+            error!(?err, "poller task terminated unexpectedly");
+        }
+        info!("scheduler drained");
     }
     if let Err(err) = forward_proxy_handle.await {
         error!(
@@ -471,6 +485,7 @@ async fn main() -> Result<()> {
     }
 
     state.xray_supervisor.lock().await.shutdown_all().await;
+    info!("shutdown complete");
 
     Ok(())
 }
@@ -2615,10 +2630,7 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
     Ok(handle)
 }
 
-async fn spawn_http_server(
-    state: Arc<AppState>,
-    cancel: CancellationToken,
-) -> Result<JoinHandle<()>> {
+async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
     let cors_layer = build_cors_layer(&state.config);
     let mut router = Router::new()
         .route("/health", get(health_check))
@@ -2682,19 +2694,28 @@ async fn spawn_http_server(
     info!(%addr, "http server listening");
     state.startup_ready.store(true, Ordering::Release);
 
+    let shutdown = state.shutdown.clone();
     let handle = tokio::spawn(async move {
         if let Err(err) = axum::serve(
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(async move { cancel.cancelled().await })
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
         .await
         {
             error!(?err, "http server exited with error");
         }
     });
 
-    Ok(handle)
+    Ok((addr, handle))
+}
+
+fn spawn_shutdown_signal_listener(cancel: CancellationToken) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        shutdown_listener().await;
+        cancel.cancel();
+        info!("shutdown signal received; beginning graceful shutdown");
+    })
 }
 
 async fn shutdown_listener() {
@@ -6482,6 +6503,14 @@ async fn persist_and_broadcast_proxy_capture(
         );
     }
 
+    if state.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %invoke_id,
+            "skipping summary/quota broadcast worker because shutdown is in progress"
+        );
+        return Ok(());
+    }
+
     state
         .proxy_summary_quota_broadcast_seq
         .fetch_add(1, Ordering::Relaxed);
@@ -6499,13 +6528,24 @@ async fn persist_and_broadcast_proxy_capture(
     let broadcaster = state.broadcaster.clone();
     let broadcast_state_cache = state.broadcast_state_cache.clone();
     let relay_config = state.config.crs_stats.clone();
+    let shutdown = state.shutdown.clone();
     tokio::spawn(async move {
         let mut synced_seq = 0_u64;
         loop {
+            if shutdown.is_cancelled() {
+                broadcast_running.store(false, Ordering::Release);
+                info!(
+                    invoke_id = %invoke_id,
+                    "stopping summary/quota broadcast worker because shutdown is in progress"
+                );
+                break;
+            }
+
             let target_seq = latest_broadcast_seq.load(Ordering::Acquire);
             if target_seq == synced_seq {
                 broadcast_running.store(false, Ordering::Release);
-                if latest_broadcast_seq.load(Ordering::Acquire) != synced_seq
+                if !shutdown.is_cancelled()
+                    && latest_broadcast_seq.load(Ordering::Acquire) != synced_seq
                     && broadcast_running
                         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                         .is_ok()
@@ -6520,7 +6560,18 @@ async fn persist_and_broadcast_proxy_capture(
                 continue;
             }
 
-            match collect_summary_snapshots(&pool, relay_config.as_ref()).await {
+            let summaries = tokio::select! {
+                _ = shutdown.cancelled() => {
+                    broadcast_running.store(false, Ordering::Release);
+                    info!(
+                        invoke_id = %invoke_id,
+                        "summary/quota broadcast worker cancelled before collecting summaries"
+                    );
+                    break;
+                }
+                result = collect_summary_snapshots(&pool, relay_config.as_ref()) => result,
+            };
+            match summaries {
                 Ok(summaries) => {
                     for summary in summaries {
                         if let Err(err) = broadcast_summary_if_changed(
@@ -6553,7 +6604,18 @@ async fn persist_and_broadcast_proxy_capture(
                 continue;
             }
 
-            match QuotaSnapshotResponse::fetch_latest(&pool).await {
+            let quota = tokio::select! {
+                _ = shutdown.cancelled() => {
+                    broadcast_running.store(false, Ordering::Release);
+                    info!(
+                        invoke_id = %invoke_id,
+                        "summary/quota broadcast worker cancelled before fetching quota"
+                    );
+                    break;
+                }
+                result = QuotaSnapshotResponse::fetch_latest(&pool) => result,
+            };
+            match quota {
                 Ok(Some(snapshot)) => {
                     if let Err(err) = broadcast_quota_if_changed(
                         &broadcaster,
@@ -8741,6 +8803,7 @@ struct AppState {
     proxy_summary_quota_broadcast_seq: Arc<AtomicU64>,
     proxy_summary_quota_broadcast_running: Arc<AtomicBool>,
     startup_ready: Arc<AtomicBool>,
+    shutdown: CancellationToken,
     semaphore: Arc<Semaphore>,
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,

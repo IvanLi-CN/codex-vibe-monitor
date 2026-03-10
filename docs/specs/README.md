@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                   |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ------------------------------------------------------- |
+| fmfuf | 优雅停机补强                                                                  | 部分完成（4/5） | `fmfuf-graceful-shutdown-hardening/SPEC.md`              | 2026-03-10 | fast-track / local tests green                          |
 | ask3x | 反向代理默认超时口径统一为 60s / 180s                                         | 已完成          | `ask3x-proxy-timeout-defaults/SPEC.md`                   | 2026-03-10 | fast-track / PR #108 / checks green / review-loop clear |
 | 5gqdb | InvocationTable 桌面代理名省略回归热修                                        | 已完成          | `5gqdb-invocation-proxy-name-truncation-hotfix/SPEC.md`  | 2026-03-10 | fast-track / PR #105 / screenshot evidence              |
 | 2uaxk | 移除 XYAI 采集，仅保留历史读取                                                | 已完成（4/4）   | `2uaxk-remove-xyai-legacy-ingest/SPEC.md`                | 2026-03-09 | PR #101 / CI + review-loop                              |

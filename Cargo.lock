@@ -332,6 +332,7 @@ dependencies = [
  "filetime",
  "flate2",
  "futures-util",
+ "libc",
  "once_cell",
  "regex",
  "reqwest",
