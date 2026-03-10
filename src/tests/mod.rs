@@ -1154,6 +1154,14 @@ fn classify_invocation_failure_marks_upstream_errors_as_service_failure() {
 }
 
 #[test]
+fn classify_invocation_failure_marks_http_429_as_service_failure() {
+    let result = classify_invocation_failure(Some("http_429"), Some("rate limited"));
+    assert_eq!(result.failure_class, FailureClass::ServiceFailure);
+    assert!(result.is_actionable);
+    assert_eq!(result.failure_kind.as_deref(), Some("http_429"));
+}
+
+#[test]
 fn resolve_failure_classification_recomputes_actionable_for_missing_legacy_class() {
     let result = resolve_failure_classification(
         Some("http_502"),
@@ -2149,6 +2157,7 @@ fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCapture
         price_version: Some("unit-test".to_string()),
         status: "success".to_string(),
         error_message: None,
+        failure_kind: None,
         payload: Some(
             "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\",\"requestedServiceTier\":\"priority\",\"reasoningEffort\":\"high\"}"
                 .to_string(),
@@ -3969,6 +3978,9 @@ async fn proxy_capture_target_returns_final_429_after_retry_exhaustion() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
         status: Option<String>,
+        failure_kind: Option<String>,
+        failure_class: Option<String>,
+        is_actionable: Option<i64>,
         payload: Option<String>,
     }
 
@@ -4020,7 +4032,7 @@ async fn proxy_capture_target_returns_final_429_after_retry_exhaustion() {
     assert_eq!(count_codex_invocations(&state.pool).await, 1);
     let row = sqlx::query_as::<_, PersistedRow>(
         r#"
-        SELECT status, payload
+        SELECT status, failure_kind, failure_class, is_actionable, payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -4031,6 +4043,12 @@ async fn proxy_capture_target_returns_final_429_after_retry_exhaustion() {
     .expect("query capture record")
     .expect("capture record should be persisted");
     assert_eq!(row.status.as_deref(), Some("http_429"));
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+    );
+    assert_eq!(row.failure_class.as_deref(), Some(FAILURE_CLASS_SERVICE));
+    assert_eq!(row.is_actionable, Some(1));
     let payload_json: Value = serde_json::from_str(
         row.payload
             .as_deref()

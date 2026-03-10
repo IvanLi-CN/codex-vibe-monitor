@@ -5430,6 +5430,7 @@ async fn proxy_openai_v1_capture_target(
                     "failed".to_string()
                 },
                 error_message: Some(error_message),
+                failure_kind: Some(read_err.failure_kind.to_string()),
                 payload: Some(build_proxy_payload_summary(
                     capture_target,
                     read_err.status,
@@ -5539,6 +5540,7 @@ async fn proxy_openai_v1_capture_target(
                     "failed".to_string()
                 },
                 error_message: Some(error_message),
+                failure_kind: Some(err.failure_kind.to_string()),
                 payload: Some(build_proxy_payload_summary(
                     capture_target,
                     err.status,
@@ -5620,6 +5622,7 @@ async fn proxy_openai_v1_capture_target(
                 price_version,
                 status: "http_502".to_string(),
                 error_message: Some(message.clone()),
+                failure_kind: None,
                 payload: Some(build_proxy_payload_summary(
                     capture_target,
                     StatusCode::BAD_GATEWAY,
@@ -5863,6 +5866,7 @@ async fn proxy_openai_v1_capture_target(
             price_version,
             status,
             error_message,
+            failure_kind: failure_kind.map(|kind| kind.to_string()),
             payload: Some(payload),
             raw_response: build_raw_response_preview(&response_bytes),
             req_raw: req_raw_for_task,
@@ -6881,6 +6885,10 @@ async fn persist_proxy_capture_record(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
     );
+    let failure_kind = record
+        .failure_kind
+        .as_deref()
+        .or(failure.failure_kind.as_deref());
     let persist_started = Instant::now();
     let insert_result = sqlx::query(
         r#"
@@ -6942,7 +6950,7 @@ async fn persist_proxy_capture_record(
     .bind(record.price_version.as_deref())
     .bind(&record.status)
     .bind(record.error_message.as_deref())
-    .bind(failure.failure_kind.as_deref())
+    .bind(failure_kind)
     .bind(failure.failure_class.as_str())
     .bind(failure.is_actionable as i64)
     .bind(record.payload.as_deref())
