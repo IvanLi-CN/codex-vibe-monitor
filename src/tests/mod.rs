@@ -1082,6 +1082,16 @@ fn classify_invocation_failure_marks_upstream_errors_as_service_failure() {
 }
 
 #[test]
+fn classify_invocation_failure_treats_running_and_pending_as_none() {
+    for status in ["running", "pending"] {
+        let result = classify_invocation_failure(Some(status), None);
+        assert_eq!(result.failure_class, FailureClass::None);
+        assert!(!result.is_actionable);
+        assert_eq!(result.failure_kind, None);
+    }
+}
+
+#[test]
 fn resolve_failure_classification_recomputes_actionable_for_missing_legacy_class() {
     let result = resolve_failure_classification(
         Some("http_502"),
@@ -7866,6 +7876,8 @@ async fn list_invocations_failure_class_filter_matches_resolved_classification()
             "failed",
             Some("[downstream_closed] user cancelled"),
         ),
+        ("filter-running", "running", None),
+        ("filter-service", "failed", None),
     ] {
         sqlx::query(
             r#"
@@ -7909,7 +7921,7 @@ async fn list_invocations_failure_class_filter_matches_resolved_classification()
     );
 
     let Json(abort_filtered) = list_invocations(
-        State(state),
+        State(state.clone()),
         Query(ListQuery {
             failure_class: Some("client_abort".to_string()),
             ..Default::default()
@@ -7923,6 +7935,23 @@ async fn list_invocations_failure_class_filter_matches_resolved_classification()
     assert_eq!(
         abort_filtered.records[0].failure_class.as_deref(),
         Some("client_abort")
+    );
+
+    let Json(service_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            failure_class: Some("service_failure".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("service failure class filter should succeed");
+
+    assert_eq!(service_filtered.total, 1);
+    assert_eq!(service_filtered.records[0].invoke_id, "filter-service");
+    assert_eq!(
+        service_filtered.records[0].failure_class.as_deref(),
+        Some("service_failure")
     );
 }
 
@@ -8054,6 +8083,8 @@ async fn fetch_invocation_summary_resolves_failure_class_for_legacy_rows() {
             "failed",
             Some("[downstream_closed] user cancelled"),
         ),
+        ("legacy-running", "running", None),
+        ("legacy-pending", "pending", None),
     ] {
         sqlx::query(
             r#"
@@ -8083,7 +8114,7 @@ async fn fetch_invocation_summary_resolves_failure_class_for_legacy_rows() {
         .await
         .expect("summary query should succeed");
 
-    assert_eq!(summary.total_count, 3);
+    assert_eq!(summary.total_count, 5);
     assert_eq!(summary.failure_count, 3);
     assert_eq!(summary.exception.failure_count, 3);
     assert_eq!(summary.exception.service_failure_count, 1);

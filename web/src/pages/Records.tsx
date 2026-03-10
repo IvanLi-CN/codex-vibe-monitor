@@ -71,6 +71,7 @@ export default function RecordsPage() {
 
   const [suggestions, setSuggestions] = useState<InvocationSuggestionsResponse | null>(null)
   const suggestionsSeqRef = useRef(0)
+  const customRangeTouchedRef = useRef(false)
 
   useEffect(() => {
     const requestSeq = suggestionsSeqRef.current + 1
@@ -135,12 +136,13 @@ export default function RecordsPage() {
   const requesterIpBucket = suggestions?.requesterIp
 
   const handleClearDraft = () => {
+    customRangeTouchedRef.current = false
     resetDraft()
   }
 
   const handleRangePresetChange = (value: InvocationRangePreset) => {
     updateDraft('rangePreset', value)
-    if (value === 'custom' && !draft.customFrom && !draft.customTo) {
+    if (value === 'custom' && !customRangeTouchedRef.current) {
       const nextRange = createDefaultCustomRange()
       updateDraft('customFrom', nextRange.customFrom)
       updateDraft('customTo', nextRange.customTo)
@@ -203,7 +205,10 @@ export default function RecordsPage() {
                   name="customFrom"
                   value={draft.customFrom}
                   disabled={!isCustomRange}
-                  onChange={(event) => updateDraft('customFrom', event.target.value)}
+                  onChange={(event) => {
+                    customRangeTouchedRef.current = true
+                    updateDraft('customFrom', event.target.value)
+                  }}
                 />
               </label>
               <label className="field">
@@ -214,7 +219,10 @@ export default function RecordsPage() {
                   name="customTo"
                   value={draft.customTo}
                   disabled={!isCustomRange}
-                  onChange={(event) => updateDraft('customTo', event.target.value)}
+                  onChange={(event) => {
+                    customRangeTouchedRef.current = true
+                    updateDraft('customTo', event.target.value)
+                  }}
                 />
               </label>
               <label className="field">

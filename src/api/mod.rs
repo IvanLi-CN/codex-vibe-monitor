@@ -20,6 +20,8 @@ const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = "CASE \
     CASE \
       WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success' \
         AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none' \
+      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending') \
+        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none' \
       WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%' \
         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%' \
         THEN 'client_abort' \
@@ -953,7 +955,7 @@ pub(crate) async fn fetch_invocation_summary(
         "SELECT \
          COUNT(*) AS total_count, \
          COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) AS success_count, \
-         COALESCE(SUM(CASE WHEN status IS NOT NULL AND status != 'success' THEN 1 ELSE 0 END), 0) AS failure_count, \
+         COALESCE(SUM(CASE WHEN status IS NOT NULL AND status NOT IN ('success', 'running', 'pending') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
          COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens \
@@ -1881,6 +1883,13 @@ pub(crate) fn classify_invocation_failure(
     let err_lower = err.to_ascii_lowercase();
 
     if status_norm == "success" && err.is_empty() {
+        return FailureClassification {
+            failure_kind: None,
+            failure_class: FailureClass::None,
+            is_actionable: false,
+        };
+    }
+    if (status_norm == "running" || status_norm == "pending") && err.is_empty() {
         return FailureClassification {
             failure_kind: None,
             failure_class: FailureClass::None,
