@@ -144,18 +144,20 @@ struct InvocationSummaryAggRow {
 }
 
 #[derive(Debug, FromRow)]
-struct InvocationNetworkTimingRow {
-    t_upstream_ttfb_ms: Option<f64>,
-    t_total_ms: Option<f64>,
+struct InvocationNetworkAggRow {
+    avg_ttfb_ms: Option<f64>,
+    ttfb_count: i64,
+    avg_total_ms: Option<f64>,
+    total_count: i64,
 }
 
 #[derive(Debug, FromRow)]
-struct InvocationFailureSummaryRow {
-    status: Option<String>,
-    error_message: Option<String>,
-    failure_kind: Option<String>,
-    failure_class: Option<String>,
-    is_actionable: Option<i64>,
+struct InvocationExceptionAggRow {
+    failure_count: i64,
+    service_failure_count: i64,
+    client_failure_count: i64,
+    client_abort_count: i64,
+    actionable_failure_count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -265,8 +267,27 @@ fn parse_invocation_bound(raw: Option<&str>, field_name: &str) -> Result<Option<
 }
 
 fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilters> {
-    let occurred_from = parse_invocation_bound(params.from.as_deref(), "from")?;
-    let occurred_to = parse_invocation_bound(params.to.as_deref(), "to")?;
+    let mut occurred_from = parse_invocation_bound(params.from.as_deref(), "from")?;
+    let mut occurred_to = parse_invocation_bound(params.to.as_deref(), "to")?;
+
+    // Keep compatibility with clients that only send rangePreset. When explicit from/to are
+    // provided, they always take precedence over rangePreset.
+    if occurred_from.is_none()
+        && occurred_to.is_none()
+        && let Some(preset) = normalize_query_text(params.range_preset.as_deref())
+    {
+        let now = Utc::now();
+        let bounds = named_range_bounds(&preset, now, Shanghai).or_else(|| {
+            parse_duration_spec(&preset)
+                .ok()
+                .map(|duration| (now - duration, now))
+        });
+
+        if let Some((start, end)) = bounds {
+            occurred_from = Some(db_occurred_at_lower_bound(start));
+            occurred_to = Some(db_occurred_at_lower_bound(end));
+        }
+    }
 
     if let (Some(min_tokens), Some(max_tokens)) = (params.min_total_tokens, params.max_total_tokens)
         && min_tokens > max_tokens
@@ -505,34 +526,138 @@ fn append_invocation_order_clause(
     }
 }
 
-fn collect_non_negative_finite(values: impl Iterator<Item = Option<f64>>) -> Vec<f64> {
-    let mut collected = values
-        .flatten()
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .collect::<Vec<_>>();
-    collected.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    collected
-}
-
-fn summarize_network_timings(rows: &[InvocationNetworkTimingRow]) -> InvocationNetworkSummary {
-    let ttfb_values = collect_non_negative_finite(rows.iter().map(|row| row.t_upstream_ttfb_ms));
-    let total_values = collect_non_negative_finite(rows.iter().map(|row| row.t_total_ms));
-
-    let avg = |values: &[f64]| {
-        if values.is_empty() {
-            None
-        } else {
-            Some(values.iter().copied().sum::<f64>() / values.len() as f64)
-        }
-    };
-
-    InvocationNetworkSummary {
-        avg_ttfb_ms: avg(&ttfb_values),
-        p95_ttfb_ms: (!ttfb_values.is_empty()).then(|| percentile_sorted_f64(&ttfb_values, 0.95)),
-        avg_total_ms: avg(&total_values),
-        p95_total_ms: (!total_values.is_empty())
-            .then(|| percentile_sorted_f64(&total_values, 0.95)),
+async fn query_invocation_network_summary(
+    pool: &Pool<Sqlite>,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<InvocationNetworkSummary> {
+    #[derive(Debug, FromRow)]
+    struct ValueRow {
+        value: Option<f64>,
     }
+
+    let mut agg_query = QueryBuilder::new(
+        "SELECT \
+         AVG(CASE WHEN t_upstream_ttfb_ms IS NOT NULL AND t_upstream_ttfb_ms >= 0 THEN t_upstream_ttfb_ms END) AS avg_ttfb_ms, \
+         COALESCE(SUM(CASE WHEN t_upstream_ttfb_ms IS NOT NULL AND t_upstream_ttfb_ms >= 0 THEN 1 ELSE 0 END), 0) AS ttfb_count, \
+         AVG(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN t_total_ms END) AS avg_total_ms, \
+         COALESCE(SUM(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN 1 ELSE 0 END), 0) AS total_count \
+         FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters(
+        &mut agg_query,
+        filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    let agg = agg_query
+        .build_query_as::<InvocationNetworkAggRow>()
+        .fetch_one(pool)
+        .await?;
+
+    async fn query_sorted_value(
+        pool: &Pool<Sqlite>,
+        filters: &InvocationRecordsFilters,
+        source_scope: InvocationSourceScope,
+        snapshot_id: i64,
+        column: &'static str,
+        offset: i64,
+    ) -> Result<Option<f64>> {
+        let mut query = QueryBuilder::new("SELECT ");
+        query
+            .push(column)
+            .push(" AS value FROM codex_invocations WHERE 1 = 1");
+        apply_invocation_records_filters(
+            &mut query,
+            filters,
+            source_scope,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        );
+        query
+            .push(" AND ")
+            .push(column)
+            .push(" IS NOT NULL AND ")
+            .push(column)
+            .push(" >= 0");
+        query.push(" ORDER BY ").push(column).push(" ASC");
+        query.push(" LIMIT 1 OFFSET ").push_bind(offset.max(0));
+
+        Ok(query
+            .build_query_as::<ValueRow>()
+            .fetch_optional(pool)
+            .await?
+            .and_then(|row| row.value))
+    }
+
+    fn resolve_p95_offsets(count: i64) -> Option<(i64, i64, f64)> {
+        if count <= 0 {
+            return None;
+        }
+        if count == 1 {
+            return Some((0, 0, 0.0));
+        }
+
+        let rank = 0.95_f64 * (count.saturating_sub(1) as f64);
+        let lower = rank.floor() as i64;
+        let upper = rank.ceil() as i64;
+        let weight = rank - lower as f64;
+        Some((lower, upper, weight))
+    }
+
+    async fn query_p95(
+        pool: &Pool<Sqlite>,
+        filters: &InvocationRecordsFilters,
+        source_scope: InvocationSourceScope,
+        snapshot_id: i64,
+        column: &'static str,
+        count: i64,
+    ) -> Result<Option<f64>> {
+        let Some((lower, upper, weight)) = resolve_p95_offsets(count) else {
+            return Ok(None);
+        };
+
+        let Some(lower_value) =
+            query_sorted_value(pool, filters, source_scope, snapshot_id, column, lower).await?
+        else {
+            return Ok(None);
+        };
+
+        if lower == upper {
+            return Ok(Some(lower_value));
+        }
+
+        let Some(upper_value) =
+            query_sorted_value(pool, filters, source_scope, snapshot_id, column, upper).await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(lower_value + (upper_value - lower_value) * weight))
+    }
+
+    Ok(InvocationNetworkSummary {
+        avg_ttfb_ms: agg.avg_ttfb_ms,
+        p95_ttfb_ms: query_p95(
+            pool,
+            filters,
+            source_scope,
+            snapshot_id,
+            "t_upstream_ttfb_ms",
+            agg.ttfb_count,
+        )
+        .await?,
+        avg_total_ms: agg.avg_total_ms,
+        p95_total_ms: query_p95(
+            pool,
+            filters,
+            source_scope,
+            snapshot_id,
+            "t_total_ms",
+            agg.total_count,
+        )
+        .await?,
+    })
 }
 
 async fn query_invocation_new_records_count(
@@ -636,39 +761,38 @@ fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
         && params.max_total_ms.is_none()
 }
 
-fn summarize_exception_rows(rows: &[InvocationFailureSummaryRow]) -> InvocationExceptionSummary {
-    let mut summary = InvocationExceptionSummary {
-        failure_count: 0,
-        service_failure_count: 0,
-        client_failure_count: 0,
-        client_abort_count: 0,
-        actionable_failure_count: 0,
-    };
-
-    for row in rows {
-        let resolved = resolve_failure_classification(
-            row.status.as_deref(),
-            row.error_message.as_deref(),
-            row.failure_kind.as_deref(),
-            row.failure_class.as_deref(),
-            row.is_actionable,
-        );
-        if resolved.failure_class == FailureClass::None {
-            continue;
-        }
-        summary.failure_count += 1;
-        match resolved.failure_class {
-            FailureClass::ServiceFailure => summary.service_failure_count += 1,
-            FailureClass::ClientFailure => summary.client_failure_count += 1,
-            FailureClass::ClientAbort => summary.client_abort_count += 1,
-            FailureClass::None => {}
-        }
-        if resolved.is_actionable {
-            summary.actionable_failure_count += 1;
-        }
-    }
-
-    summary
+async fn query_invocation_exception_summary(
+    pool: &Pool<Sqlite>,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<InvocationExceptionSummary> {
+    let mut query = QueryBuilder::new(
+        "SELECT \
+         COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(failure_class, ''))) NOT IN ('', 'none') THEN 1 ELSE 0 END), 0) AS failure_count, \
+         COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(failure_class, ''))) = 'service_failure' THEN 1 ELSE 0 END), 0) AS service_failure_count, \
+         COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(failure_class, ''))) = 'client_failure' THEN 1 ELSE 0 END), 0) AS client_failure_count, \
+         COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(failure_class, ''))) = 'client_abort' THEN 1 ELSE 0 END), 0) AS client_abort_count, \
+         COALESCE(SUM(CASE WHEN COALESCE(is_actionable, 0) != 0 AND LOWER(TRIM(COALESCE(failure_class, ''))) NOT IN ('', 'none') THEN 1 ELSE 0 END), 0) AS actionable_failure_count \
+         FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters(
+        &mut query,
+        filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    let agg = query
+        .build_query_as::<InvocationExceptionAggRow>()
+        .fetch_one(pool)
+        .await?;
+    Ok(InvocationExceptionSummary {
+        failure_count: agg.failure_count,
+        service_failure_count: agg.service_failure_count,
+        client_failure_count: agg.client_failure_count,
+        client_abort_count: agg.client_abort_count,
+        actionable_failure_count: agg.actionable_failure_count,
+    })
 }
 
 pub(crate) async fn list_invocations(
@@ -781,34 +905,17 @@ pub(crate) async fn fetch_invocation_summary(
         .fetch_one(&state.pool)
         .await?;
 
-    let mut timing_query = QueryBuilder::new(
-        "SELECT t_upstream_ttfb_ms, t_total_ms FROM codex_invocations WHERE 1 = 1",
-    );
-    apply_invocation_records_filters(
-        &mut timing_query,
-        &request.filters,
-        source_scope,
-        Some(SnapshotConstraint::UpTo(snapshot_id)),
-    );
-    let timing_rows = timing_query
-        .build_query_as::<InvocationNetworkTimingRow>()
-        .fetch_all(&state.pool)
-        .await?;
+    let network =
+        query_invocation_network_summary(&state.pool, &request.filters, source_scope, snapshot_id)
+            .await?;
 
-    let mut failure_query = QueryBuilder::new("SELECT status, error_message, ");
-    failure_query
-        .push(INVOCATION_FAILURE_KIND_SQL)
-        .push(" AS failure_kind, failure_class, is_actionable FROM codex_invocations WHERE 1 = 1");
-    apply_invocation_records_filters(
-        &mut failure_query,
+    let exception = query_invocation_exception_summary(
+        &state.pool,
         &request.filters,
         source_scope,
-        Some(SnapshotConstraint::UpTo(snapshot_id)),
-    );
-    let failure_rows = failure_query
-        .build_query_as::<InvocationFailureSummaryRow>()
-        .fetch_all(&state.pool)
-        .await?;
+        snapshot_id,
+    )
+    .await?;
 
     let new_records_count = query_invocation_new_records_count(
         &state.pool,
@@ -839,8 +946,8 @@ pub(crate) async fn fetch_invocation_summary(
             cache_input_tokens: totals.cache_input_tokens,
             total_cost: totals.total_cost,
         },
-        network: summarize_network_timings(&timing_rows),
-        exception: summarize_exception_rows(&failure_rows),
+        network,
+        exception,
     }))
 }
 

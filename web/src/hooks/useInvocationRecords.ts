@@ -140,6 +140,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     setIsSummaryLoading(true)
     setRecordsError(null)
     setSummaryError(null)
+    setSummary(null)
 
     let listLoaded = false
 
