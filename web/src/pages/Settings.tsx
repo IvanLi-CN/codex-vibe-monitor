@@ -85,6 +85,7 @@ const FORWARD_PROXY_BATCH_VALIDATION_ROUNDS = 12
 const pricingTableHeaderCellClass =
   'px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/65'
 const pricingTableBodyCellClass = 'align-middle px-4 py-3'
+const PROXY_UPSTREAM_429_RETRY_VALUES = [0, 1, 2, 3, 4, 5] as const
 
 function normalizeDraftEntry(entry: PricingDraftEntry): PricingDraftEntry {
   return {
@@ -116,6 +117,12 @@ function parsePricingValue(raw: string, allowEmpty: boolean): number | null | un
   const parsed = Number(text)
   if (!Number.isFinite(parsed)) return undefined
   return parsed
+}
+
+function normalizeProxyUpstream429MaxRetries(value: number): number {
+  if (!Number.isFinite(value)) return 3
+  const normalized = Math.trunc(value)
+  return Math.min(5, Math.max(0, normalized))
 }
 
 function parsePricingDraft(draft: PricingDraft): { value?: PricingSettings; error?: string } {
@@ -581,6 +588,19 @@ export default function SettingsPage() {
     ],
     [proxyFastModeRewriteCopy],
   )
+  const proxyUpstream429RetryOptions = useMemo(
+    () =>
+      PROXY_UPSTREAM_429_RETRY_VALUES.map((value) => ({
+        value,
+        label:
+          value === 0
+            ? t('settings.proxy.upstream429RetriesDisabled')
+            : value === 1
+              ? t('settings.proxy.upstream429RetriesOnce')
+              : t('settings.proxy.upstream429RetriesMany', { count: value }),
+      })),
+    [t],
+  )
   const currentProxyFastModeRewriteOption = useMemo(
     () =>
       proxyFastModeRewriteOptions.find((option) => option.value === currentProxy?.fastModeRewriteMode) ??
@@ -662,6 +682,7 @@ export default function SettingsPage() {
         ...nextProxy,
         mergeUpstreamEnabled: nextProxy.hijackEnabled ? nextProxy.mergeUpstreamEnabled : false,
         enabledModels: nextProxy.models.filter((candidate) => nextProxy.enabledModels.includes(candidate)),
+        upstream429MaxRetries: normalizeProxyUpstream429MaxRetries(nextProxy.upstream429MaxRetries),
       }
 
       setProxyDraft(normalizedProxy)
@@ -673,6 +694,7 @@ export default function SettingsPage() {
           mergeUpstreamEnabled: normalizedProxy.mergeUpstreamEnabled,
           enabledModels: normalizedProxy.enabledModels,
           fastModeRewriteMode: normalizedProxy.fastModeRewriteMode,
+          upstream429MaxRetries: normalizedProxy.upstream429MaxRetries,
         })
         lastConfirmedProxyRef.current = savedProxy
         setProxyDraft(savedProxy)
@@ -725,6 +747,19 @@ export default function SettingsPage() {
       void persistProxy({
         ...currentProxy,
         fastModeRewriteMode: value,
+      })
+    },
+    [currentProxy, persistProxy],
+  )
+
+  const handleProxyUpstream429MaxRetriesChange = useCallback(
+    (value: number) => {
+      if (!currentProxy) return
+      const normalized = normalizeProxyUpstream429MaxRetries(value)
+      if (currentProxy.upstream429MaxRetries === normalized) return
+      void persistProxy({
+        ...currentProxy,
+        upstream429MaxRetries: normalized,
       })
     },
     [currentProxy, persistProxy],
@@ -1355,6 +1390,29 @@ export default function SettingsPage() {
               <div className="mt-3 rounded-lg border border-base-300/70 bg-base-100/78 px-3 py-2 text-xs leading-5 text-base-content/72">
                 {currentProxyFastModeRewriteOption.description}
               </div>
+            </div>
+
+            <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+              <div className="space-y-1">
+                <label htmlFor="proxy-upstream-429-max-retries" className="block font-medium">
+                  {t('settings.proxy.upstream429RetriesLabel')}
+                </label>
+                <p className="text-sm leading-snug text-base-content/70">{t('settings.proxy.upstream429RetriesHint')}</p>
+              </div>
+              <select
+                id="proxy-upstream-429-max-retries"
+                aria-label={t('settings.proxy.upstream429RetriesLabel')}
+                className="mt-3 h-10 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 text-sm outline-none transition focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-70"
+                value={String(currentProxy.upstream429MaxRetries)}
+                disabled={isProxySaving}
+                onChange={(event) => handleProxyUpstream429MaxRetriesChange(Number.parseInt(event.target.value, 10))}
+              >
+                {proxyUpstream429RetryOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">

@@ -224,7 +224,7 @@ describe('fetchSummary', () => {
 })
 
 
-describe('proxy fast mode rewrite settings', () => {
+describe('proxy settings normalization', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
   })
@@ -242,6 +242,7 @@ describe('proxy fast mode rewrite settings', () => {
               models: ['gpt-5.3-codex'],
               enabledModels: ['gpt-5.3-codex'],
               fastModeRewriteMode: 'wat',
+              upstream429MaxRetries: 99,
             },
             forwardProxy: {
               proxyUrls: [],
@@ -262,9 +263,46 @@ describe('proxy fast mode rewrite settings', () => {
 
     const settings = await fetchSettings()
     expect(settings.proxy.fastModeRewriteMode).toBe('disabled')
+    expect(settings.proxy.upstream429MaxRetries).toBe(5)
   })
 
-  it('sends fast rewrite mode in proxy settings update payload', async () => {
+  it('defaults invalid upstream 429 retry count to 3 when fetching settings', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            proxy: {
+              hijackEnabled: true,
+              mergeUpstreamEnabled: true,
+              defaultHijackEnabled: false,
+              models: ['gpt-5.3-codex'],
+              enabledModels: ['gpt-5.3-codex'],
+              fastModeRewriteMode: 'disabled',
+              upstream429MaxRetries: 'bad',
+            },
+            forwardProxy: {
+              proxyUrls: [],
+              subscriptionUrls: [],
+              subscriptionUpdateIntervalSecs: 3600,
+              insertDirect: true,
+              nodes: [],
+            },
+            pricing: {
+              catalogVersion: 'v1',
+              entries: [],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }) as typeof fetch,
+    )
+
+    const settings = await fetchSettings()
+    expect(settings.proxy.upstream429MaxRetries).toBe(3)
+  })
+
+  it('sends upstream 429 retry count in proxy settings update payload', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(init?.method).toBe('PUT')
       expect(typeof init?.body).toBe('string')
@@ -273,6 +311,7 @@ describe('proxy fast mode rewrite settings', () => {
         mergeUpstreamEnabled: false,
         enabledModels: ['gpt-5.3-codex'],
         fastModeRewriteMode: 'force_priority',
+        upstream429MaxRetries: 4,
       })
       return new Response(
         JSON.stringify({
@@ -282,6 +321,7 @@ describe('proxy fast mode rewrite settings', () => {
           models: ['gpt-5.3-codex'],
           enabledModels: ['gpt-5.3-codex'],
           fastModeRewriteMode: 'force_priority',
+          upstream429MaxRetries: 4,
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       )
@@ -293,9 +333,11 @@ describe('proxy fast mode rewrite settings', () => {
       mergeUpstreamEnabled: false,
       enabledModels: ['gpt-5.3-codex'],
       fastModeRewriteMode: 'force_priority',
+      upstream429MaxRetries: 4,
     })
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(response.fastModeRewriteMode).toBe('force_priority')
+    expect(response.upstream429MaxRetries).toBe(4)
   })
 })
