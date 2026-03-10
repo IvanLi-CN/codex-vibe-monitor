@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成
 - Created: 2026-03-10
 - Last: 2026-03-10
 
@@ -101,7 +101,7 @@
 - [x] M2: 运行时停机编排下沉为可测试 helper，生产路径保留 OS signal 监听。
 - [x] M3: Xray 子进程终止统一为两阶段 helper，并在清理与启动失败路径复用。
 - [x] M4: detached worker 接入 shutdown 感知，停止 shutdown 期间继续 probe / broadcast。
-- [ ] M5: 新增并通过停机相关 Rust 测试；fast-track 交付完成（提交、push、PR、checks、review-loop、spec 同步）。
+- [x] M5: 新增并通过停机相关 Rust 测试；fast-track 交付完成（提交、push、PR、checks、review-loop、spec 同步）。
 
 ## 风险 / 假设
 
@@ -113,6 +113,7 @@
 
 - 2026-03-10: 创建 spec，冻结 graceful shutdown 标准补强范围、验收标准与快车道交付要求。
 - 2026-03-10: 完成运行时停机编排重构、Xray 两阶段终止、detached worker shutdown 短路与本地测试收敛。
+- 2026-03-10: PR [#111](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/111) 已创建，CI Pipeline 运行 #412 通过；本地 codex review 首轮发现的启动期信号监听回归已修复，复查未发现新的已确认阻塞项。
 
 ## 参考（References）
 
