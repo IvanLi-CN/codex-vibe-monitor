@@ -26,9 +26,9 @@ function formatText(value?: string | null) {
   return normalized ? normalized : FALLBACK_CELL
 }
 
-function formatNumber(value?: number | null) {
+function formatNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
-  return new Intl.NumberFormat('en-US').format(value)
+  return formatter.format(value)
 }
 
 function formatMilliseconds(value?: number | null) {
@@ -36,14 +36,9 @@ function formatMilliseconds(value?: number | null) {
   return `${Math.round(value)} ms`
 }
 
-function formatCost(value?: number | null) {
+function formatCost(value: number | null | undefined, formatter: Intl.NumberFormat) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 4,
-    maximumFractionDigits: 4,
-  }).format(value)
+  return formatter.format(value)
 }
 
 function resolveStatusMeta(status?: string | null) {
@@ -58,16 +53,16 @@ function resolveProxyName(record: ApiInvocation) {
   return FALLBACK_CELL
 }
 
-function resolveFailureClassTone(failureClass?: ApiInvocation['failureClass']) {
+function resolveFailureClassMeta(failureClass?: ApiInvocation['failureClass']) {
   switch (failureClass) {
     case 'service_failure':
-      return { variant: 'error' as const, text: 'service_failure' }
+      return { variant: 'error' as const, labelKey: 'records.filters.failureClass.service' }
     case 'client_failure':
-      return { variant: 'warning' as const, text: 'client_failure' }
+      return { variant: 'warning' as const, labelKey: 'records.filters.failureClass.client' }
     case 'client_abort':
-      return { variant: 'secondary' as const, text: 'client_abort' }
+      return { variant: 'secondary' as const, labelKey: 'records.filters.failureClass.abort' }
     default:
-      return { variant: 'secondary' as const, text: FALLBACK_CELL }
+      return { variant: 'secondary' as const, labelKey: null }
   }
 }
 
@@ -75,6 +70,17 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
   const { t, locale } = useTranslation()
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
+  const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
+  const costFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat(localeTag, {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 4,
+        maximumFractionDigits: 4,
+      }),
+    [localeTag],
+  )
   const dateTimeFormatter = useMemo(
     () =>
       new Intl.DateTimeFormat(localeTag, {
@@ -143,12 +149,12 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
           </>
         )
       case 'exception': {
-        const failureClass = resolveFailureClassTone(record.failureClass)
+        const failureClass = resolveFailureClassMeta(record.failureClass)
         return (
           <>
             <td className="px-3 py-3 align-middle text-left font-mono text-xs">{formatText(record.failureKind)}</td>
             <td className="px-3 py-3 align-middle text-left text-xs">
-              <Badge variant={failureClass.variant}>{failureClass.text}</Badge>
+              <Badge variant={failureClass.variant}>{failureClass.labelKey ? t(failureClass.labelKey) : FALLBACK_CELL}</Badge>
             </td>
             <td className="px-3 py-3 align-middle text-left text-xs">
               <Badge variant={record.isActionable ? 'warning' : 'secondary'}>
@@ -166,15 +172,15 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
         return (
           <>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">
-              <div>{formatNumber(record.inputTokens)}</div>
-              <div className="text-base-content/60">{formatNumber(record.cacheInputTokens)}</div>
+              <div>{formatNumber(record.inputTokens, numberFormatter)}</div>
+              <div className="text-base-content/60">{formatNumber(record.cacheInputTokens, numberFormatter)}</div>
             </td>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">
-              <div>{formatNumber(record.outputTokens)}</div>
-              <div className="text-base-content/60">{formatNumber(record.reasoningTokens)}</div>
+              <div>{formatNumber(record.outputTokens, numberFormatter)}</div>
+              <div className="text-base-content/60">{formatNumber(record.reasoningTokens, numberFormatter)}</div>
             </td>
-            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatNumber(record.totalTokens)}</td>
-            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatCost(record.cost)}</td>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatNumber(record.totalTokens, numberFormatter)}</td>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatCost(record.cost, costFormatter)}</td>
           </>
         )
     }
@@ -191,23 +197,25 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
             <div className="flex items-center justify-between gap-3"><dt>{t('records.table.network.totalMs')}</dt><dd className="font-mono">{formatMilliseconds(record.tTotalMs)}</dd></div>
           </>
         )
-      case 'exception':
+      case 'exception': {
+        const failureClass = resolveFailureClassMeta(record.failureClass)
         return (
           <>
             <div className="flex items-center justify-between gap-3"><dt>{t('records.table.exception.failureKind')}</dt><dd className="truncate font-mono">{formatText(record.failureKind)}</dd></div>
-            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.exception.failureClass')}</dt><dd className="truncate font-mono">{formatText(record.failureClass)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.exception.failureClass')}</dt><dd className="truncate">{failureClass.labelKey ? t(failureClass.labelKey) : FALLBACK_CELL}</dd></div>
             <div className="flex items-center justify-between gap-3"><dt>{t('records.table.exception.actionable')}</dt><dd>{record.isActionable ? t('records.table.exception.actionableYes') : t('records.table.exception.actionableNo')}</dd></div>
             <div className="flex items-center justify-between gap-3"><dt>{t('records.table.exception.error')}</dt><dd className="truncate font-mono">{formatText(record.errorMessage)}</dd></div>
           </>
         )
+      }
       case 'token':
       default:
         return (
           <>
-            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.inputCache')}</dt><dd className="font-mono">{formatNumber(record.inputTokens)} / {formatNumber(record.cacheInputTokens)}</dd></div>
-            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.outputReasoning')}</dt><dd className="font-mono">{formatNumber(record.outputTokens)} / {formatNumber(record.reasoningTokens)}</dd></div>
-            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.totalTokens')}</dt><dd className="font-mono">{formatNumber(record.totalTokens)}</dd></div>
-            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.cost')}</dt><dd className="font-mono">{formatCost(record.cost)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.inputCache')}</dt><dd className="font-mono">{formatNumber(record.inputTokens, numberFormatter)} / {formatNumber(record.cacheInputTokens, numberFormatter)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.outputReasoning')}</dt><dd className="font-mono">{formatNumber(record.outputTokens, numberFormatter)} / {formatNumber(record.reasoningTokens, numberFormatter)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.totalTokens')}</dt><dd className="font-mono">{formatNumber(record.totalTokens, numberFormatter)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.token.cost')}</dt><dd className="font-mono">{formatCost(record.cost, costFormatter)}</dd></div>
           </>
         )
     }
@@ -316,8 +324,8 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
                           <div className="rounded-lg border border-base-300/70 bg-base-100/55 p-3">
                             <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/60">{t('records.table.focusTitle')}</div>
                             <div className="space-y-2">
-                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.token.totalTokens')}</span><span className="font-mono">{formatNumber(record.totalTokens)}</span></div>
-                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.token.cost')}</span><span className="font-mono">{formatCost(record.cost)}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.token.totalTokens')}</span><span className="font-mono">{formatNumber(record.totalTokens, numberFormatter)}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.token.cost')}</span><span className="font-mono">{formatCost(record.cost, costFormatter)}</span></div>
                               <div className="flex items-start justify-between gap-3"><span>{t('records.table.network.ttfb')}</span><span className="font-mono">{formatMilliseconds(record.tUpstreamTtfbMs)}</span></div>
                               <div className="flex items-start justify-between gap-3"><span>{t('records.table.network.totalMs')}</span><span className="font-mono">{formatMilliseconds(record.tTotalMs)}</span></div>
                               <div className="flex items-start justify-between gap-3"><span>{t('records.table.exception.failureKind')}</span><span className="break-all font-mono">{formatText(record.failureKind)}</span></div>
