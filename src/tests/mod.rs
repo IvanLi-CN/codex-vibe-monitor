@@ -8149,6 +8149,166 @@ async fn fetch_invocation_new_records_count_uses_snapshot_boundary() {
 }
 
 #[tokio::test]
+async fn list_invocations_total_tokens_range_filters_exclude_null_values() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("tokens-null")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert null total_tokens row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("tokens-set")
+    .bind("2026-03-10 09:01:00")
+    .bind(SOURCE_PROXY)
+    .bind(10_i64)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert total_tokens row");
+
+    let Json(max_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            max_total_tokens: Some(0),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with maxTotalTokens should succeed");
+
+    assert_eq!(max_filtered.total, 0);
+    assert!(max_filtered.records.is_empty());
+
+    let Json(min_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            min_total_tokens: Some(0),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with minTotalTokens should succeed");
+
+    assert_eq!(min_filtered.total, 1);
+    assert_eq!(min_filtered.records.len(), 1);
+    assert_eq!(min_filtered.records[0].invoke_id, "tokens-set");
+    assert_eq!(min_filtered.records[0].total_tokens, Some(10));
+}
+
+#[tokio::test]
+async fn list_invocations_total_ms_range_filters_exclude_null_values() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("ms-null")
+    .bind("2026-03-10 09:10:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert null t_total_ms row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            t_total_ms,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("ms-set")
+    .bind("2026-03-10 09:11:00")
+    .bind(SOURCE_PROXY)
+    .bind(50.0_f64)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert t_total_ms row");
+
+    let Json(max_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            max_total_ms: Some(0.0),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with maxTotalMs should succeed");
+
+    assert_eq!(max_filtered.total, 0);
+    assert!(max_filtered.records.is_empty());
+
+    let Json(min_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            min_total_ms: Some(0.0),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with minTotalMs should succeed");
+
+    assert_eq!(min_filtered.total, 1);
+    assert_eq!(min_filtered.records.len(), 1);
+    assert_eq!(min_filtered.records[0].invoke_id, "ms-set");
+    assert_f64_close(min_filtered.records[0].t_total_ms.unwrap_or_default(), 50.0);
+}
+
+#[tokio::test]
 async fn fetch_invocation_suggestions_orders_by_count_and_respects_time_bounds() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

@@ -458,25 +458,25 @@ fn apply_invocation_records_filters(
 
     if let Some(min_total_tokens) = filters.min_total_tokens {
         query
-            .push(" AND COALESCE(total_tokens, 0) >= ")
+            .push(" AND total_tokens IS NOT NULL AND total_tokens >= ")
             .push_bind(min_total_tokens);
     }
 
     if let Some(max_total_tokens) = filters.max_total_tokens {
         query
-            .push(" AND COALESCE(total_tokens, 0) <= ")
+            .push(" AND total_tokens IS NOT NULL AND total_tokens <= ")
             .push_bind(max_total_tokens);
     }
 
     if let Some(min_total_ms) = filters.min_total_ms {
         query
-            .push(" AND COALESCE(t_total_ms, 0) >= ")
+            .push(" AND t_total_ms IS NOT NULL AND t_total_ms >= ")
             .push_bind(min_total_ms);
     }
 
     if let Some(max_total_ms) = filters.max_total_ms {
         query
-            .push(" AND COALESCE(t_total_ms, 0) <= ")
+            .push(" AND t_total_ms IS NOT NULL AND t_total_ms <= ")
             .push_bind(max_total_ms);
     }
 }
