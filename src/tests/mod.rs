@@ -7956,6 +7956,79 @@ async fn list_invocations_failure_class_filter_matches_resolved_classification()
 }
 
 #[tokio::test]
+async fn list_invocations_status_failed_matches_http_failure_statuses() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, status) in [
+        ("status-success", "success"),
+        ("status-running", "running"),
+        ("status-pending", "pending"),
+        ("status-failed", "failed"),
+        ("status-http401", "http_401"),
+        ("status-http502", "http_502"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 08:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert status row");
+    }
+
+    let Json(failed_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            status: Some("failed".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("failed status filter should succeed");
+
+    assert_eq!(failed_filtered.total, 3);
+    let actual = failed_filtered
+        .records
+        .into_iter()
+        .map(|record| record.invoke_id)
+        .collect::<HashSet<_>>();
+    let expected = ["status-failed", "status-http401", "status-http502"]
+        .into_iter()
+        .map(String::from)
+        .collect::<HashSet<_>>();
+    assert_eq!(actual, expected);
+
+    let Json(running_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            status: Some("running".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("running status filter should still use exact match");
+
+    assert_eq!(running_filtered.total, 1);
+    assert_eq!(running_filtered.records[0].invoke_id, "status-running");
+}
+
+#[tokio::test]
 async fn fetch_invocation_summary_reports_new_records_count_for_applied_filters() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

@@ -483,7 +483,16 @@ fn apply_invocation_records_filters(
     }
 
     if let Some(status) = filters.status.as_deref() {
-        push_exact_text_filter(query, "status", status);
+        if status.trim().eq_ignore_ascii_case("failed") {
+            // The DB stores failure statuses as a mix of generic values ("failed") and HTTP codes
+            // ("http_502", "http_401", ...). Treat the UI-level "failed" option as "non-success
+            // terminal status" so the filter matches both.
+            query.push(
+                " AND status IS NOT NULL AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('success', 'running', 'pending')",
+            );
+        } else {
+            push_exact_text_filter(query, "status", status);
+        }
     }
 
     if let Some(proxy) = filters.proxy.as_deref() {

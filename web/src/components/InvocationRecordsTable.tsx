@@ -14,7 +14,13 @@ interface InvocationRecordsTableProps {
 }
 
 const FALLBACK_CELL = '—'
-const STATUS_META: Record<string, { variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'; labelKey: string }> = {
+type StatusMeta = {
+  variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'
+  labelKey?: string
+  label?: string
+}
+
+const STATUS_META: Record<string, { variant: StatusMeta['variant']; labelKey: string }> = {
   success: { variant: 'success', labelKey: 'table.status.success' },
   failed: { variant: 'error', labelKey: 'table.status.failed' },
   running: { variant: 'default', labelKey: 'table.status.running' },
@@ -41,8 +47,28 @@ function formatCost(value: number | null | undefined, formatter: Intl.NumberForm
   return formatter.format(value)
 }
 
-function resolveStatusMeta(status?: string | null) {
-  return STATUS_META[(status ?? '').toLowerCase()] ?? { variant: 'secondary' as const, labelKey: 'table.status.unknown' }
+function formatStatusLabel(status: string) {
+  const normalized = status.trim()
+  if (!normalized) return null
+  const lower = normalized.toLowerCase()
+  if (lower.startsWith('http_')) {
+    const code = lower.slice('http_'.length)
+    if (/^\d{3}$/.test(code)) return `HTTP ${code}`
+    return normalized.toUpperCase().replace('_', ' ')
+  }
+  return normalized
+}
+
+function resolveStatusMeta(status?: string | null): StatusMeta {
+  const raw = (status ?? '').trim()
+  const lower = raw.toLowerCase()
+  const known = STATUS_META[lower]
+  if (known) return known
+  if (!raw) return { variant: 'secondary', labelKey: 'table.status.unknown' }
+  if (lower.startsWith('http_4')) return { variant: 'warning', label: formatStatusLabel(raw) ?? raw }
+  if (lower.startsWith('http_5')) return { variant: 'error', label: formatStatusLabel(raw) ?? raw }
+  if (lower.startsWith('http_')) return { variant: 'secondary', label: formatStatusLabel(raw) ?? raw }
+  return { variant: 'secondary', label: raw }
 }
 
 function resolveProxyName(record: ApiInvocation) {
@@ -227,13 +253,14 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
         {records.map((record) => {
           const isExpanded = expandedId === record.id
           const statusMeta = resolveStatusMeta(record.status)
+          const statusLabel = statusMeta.labelKey ? t(statusMeta.labelKey) : statusMeta.label ?? t('table.status.unknown')
           return (
             <article key={record.id} className="rounded-xl border border-base-300/70 bg-base-100/45 px-4 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-sm font-semibold">{dateTimeFormatter.format(new Date(record.occurredAt))}</div>
                   <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <Badge variant={statusMeta.variant}>{t(statusMeta.labelKey)}</Badge>
+                    <Badge variant={statusMeta.variant}>{statusLabel}</Badge>
                     <span className="truncate text-xs text-base-content/70">{resolveProxyName(record)}</span>
                   </div>
                 </div>
@@ -287,13 +314,14 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
             {records.map((record, index) => {
               const isExpanded = expandedId === record.id
               const statusMeta = resolveStatusMeta(record.status)
+              const statusLabel = statusMeta.labelKey ? t(statusMeta.labelKey) : statusMeta.label ?? t('table.status.unknown')
               return (
                 <Fragment key={record.id}>
                   <tr className={index % 2 === 0 ? 'bg-base-100/30' : 'bg-base-200/18'}>
                     <td className="px-3 py-3 align-middle text-left text-xs font-medium">{dateTimeFormatter.format(new Date(record.occurredAt))}</td>
                     <td className="max-w-[12rem] truncate px-3 py-3 align-middle text-left text-xs" title={resolveProxyName(record)}>{resolveProxyName(record)}</td>
                     <td className="max-w-[14rem] truncate px-3 py-3 align-middle text-left text-xs" title={record.model ?? undefined}>{formatText(record.model)}</td>
-                    <td className="px-3 py-3 align-middle text-left text-xs"><Badge variant={statusMeta.variant}>{t(statusMeta.labelKey)}</Badge></td>
+                    <td className="px-3 py-3 align-middle text-left text-xs"><Badge variant={statusMeta.variant}>{statusLabel}</Badge></td>
                     {renderFocusCells(record)}
                     <td className="px-3 py-3 align-middle text-right">
                       <button
