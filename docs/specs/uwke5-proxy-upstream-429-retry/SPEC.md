@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-10
 - Last: 2026-03-10
 
@@ -122,7 +122,7 @@
 - [x] M2: shared 429 retry helper 落地，并接入 capture-target、generic pass-through 与 `/v1/models` merge。
 - [x] M3: 设置页代理卡片新增 `0..5` auto-save 控件与文案。
 - [x] M4: Rust + web 自动化验证补齐，`Retry-After`/exhaustion 语义确认。
-- [ ] M5: fast-track 交付完成（spec sync、push、PR、checks、review-loop 收敛）。
+- [x] M5: fast-track 交付完成（spec sync、push、PR、checks、review-loop 收敛）。
 
 ## 风险 / 假设
 
