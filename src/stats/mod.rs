@@ -34,6 +34,16 @@ pub(crate) struct StatsDeltaRecord {
     pub(crate) total_cost: f64,
 }
 
+#[derive(Debug, FromRow)]
+pub(crate) struct InvocationRollupRecord {
+    pub(crate) stats_date: String,
+    pub(crate) total_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+}
+
 #[derive(Default)]
 pub(crate) struct BucketAggregate {
     pub(crate) total_count: i64,
@@ -491,6 +501,41 @@ pub(crate) async fn query_invocation_rollup_totals(
         }
     };
     Ok(StatsTotals::from(row))
+}
+
+pub(crate) async fn query_invocation_rollup_daily_range(
+    pool: &Pool<Sqlite>,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<InvocationRollupRecord>> {
+    let mut query = QueryBuilder::new(
+        r#"
+        SELECT
+            stats_date,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost
+        FROM invocation_rollup_daily
+        WHERE stats_date >=
+        "#,
+    );
+    query.push_bind(start_date.to_string());
+    query
+        .push(" AND stats_date <= ")
+        .push_bind(end_date.to_string());
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY stats_date ASC");
+
+    query
+        .build_query_as::<InvocationRollupRecord>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
 }
 
 pub(crate) async fn query_crs_totals(

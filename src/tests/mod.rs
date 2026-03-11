@@ -11288,6 +11288,54 @@ async fn insert_timeseries_invocation(
     .expect("insert timeseries invocation");
 }
 
+async fn insert_invocation_rollup(
+    pool: &SqlitePool,
+    stats_date: NaiveDate,
+    source: &str,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_daily (
+            stats_date,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
+        "#,
+    )
+    .bind(stats_date.to_string())
+    .bind(source)
+    .bind(total_count)
+    .bind(success_count)
+    .bind(failure_count)
+    .bind(total_tokens)
+    .bind(total_cost)
+    .execute(pool)
+    .await
+    .expect("insert invocation rollup");
+}
+
+fn bucket_date_in_tz(bucket_start: &str, tz: Tz) -> NaiveDate {
+    DateTime::parse_from_rfc3339(bucket_start)
+        .expect("valid bucket start")
+        .with_timezone(&tz)
+        .date_naive()
+}
+
+fn shanghai_bucket_date(bucket_start: &str) -> NaiveDate {
+    bucket_date_in_tz(bucket_start, Shanghai)
+}
+
 fn assert_f64_close(actual: f64, expected: f64) {
     let diff = (actual - expected).abs();
     assert!(
@@ -11507,6 +11555,274 @@ async fn timeseries_daily_bucket_includes_first_byte_stats() {
         bucket.first_byte_p95_ms.expect("p95 should be present"),
         145.0,
     );
+}
+
+#[tokio::test]
+async fn timeseries_daily_includes_archived_rollup_days_without_ttfb() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(40);
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 7, 5, 2, 700, 1.75).await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch daily timeseries");
+
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == archived_date)
+        .expect("should include archived rollup day");
+
+    assert_eq!(bucket.total_count, 7);
+    assert_eq!(bucket.success_count, 5);
+    assert_eq!(bucket.failure_count, 2);
+    assert_eq!(bucket.total_tokens, 700);
+    assert_f64_close(bucket.total_cost, 1.75);
+    assert_eq!(bucket.first_byte_sample_count, 0);
+    assert!(bucket.first_byte_avg_ms.is_none());
+    assert!(bucket.first_byte_p95_ms.is_none());
+}
+
+#[tokio::test]
+async fn timeseries_daily_stays_continuous_after_rollup_archive() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(12);
+    let live_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(2);
+    let live_occurred_at = format_naive(live_date.and_hms_opt(15, 30, 0).expect("valid live time"));
+
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 3, 2, 1, 300, 3.0).await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-live-after-rollup",
+        &live_occurred_at,
+        "success",
+        Some(120.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state.clone()),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch daily timeseries");
+
+    let archived_bucket = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == archived_date)
+        .expect("should include archived bucket");
+    let live_bucket = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == live_date)
+        .expect("should include live bucket");
+
+    assert_eq!(archived_bucket.total_count, 3);
+    assert_eq!(live_bucket.total_count, 1);
+    assert_eq!(live_bucket.first_byte_sample_count, 1);
+
+    let summed_count: i64 = response.points.iter().map(|point| point.total_count).sum();
+    let summed_tokens: i64 = response.points.iter().map(|point| point.total_tokens).sum();
+    let summed_cost: f64 = response.points.iter().map(|point| point.total_cost).sum();
+    assert_eq!(summed_count, 4);
+    assert_eq!(summed_tokens, 310);
+    assert_f64_close(summed_cost, 3.01);
+
+    let totals = query_combined_totals(
+        &state.pool,
+        None,
+        StatsFilter::All,
+        InvocationSourceScope::All,
+    )
+    .await
+    .expect("query combined totals");
+    assert_eq!(totals.total_count, summed_count);
+    assert_eq!(totals.total_tokens, summed_tokens);
+    assert_f64_close(totals.total_cost, summed_cost);
+}
+
+#[tokio::test]
+async fn timeseries_daily_combines_rollup_and_live_within_same_day() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mixed_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(8);
+    let live_occurred_at = format_naive(
+        mixed_date
+            .and_hms_opt(18, 0, 0)
+            .expect("valid mixed live time"),
+    );
+
+    insert_invocation_rollup(&state.pool, mixed_date, SOURCE_PROXY, 2, 1, 1, 20, 0.2).await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-mixed-rollup-live",
+        &live_occurred_at,
+        "success",
+        Some(150.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch mixed daily timeseries");
+
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == mixed_date)
+        .expect("should include mixed bucket");
+
+    assert_eq!(bucket.total_count, 3);
+    assert_eq!(bucket.success_count, 2);
+    assert_eq!(bucket.failure_count, 1);
+    assert_eq!(bucket.total_tokens, 30);
+    assert_f64_close(bucket.total_cost, 0.21);
+    assert_eq!(bucket.first_byte_sample_count, 1);
+    assert_f64_close(
+        bucket.first_byte_avg_ms.expect("avg should be present"),
+        150.0,
+    );
+    assert_f64_close(
+        bucket.first_byte_p95_ms.expect("p95 should be present"),
+        150.0,
+    );
+}
+
+#[tokio::test]
+async fn timeseries_daily_skips_rollups_when_timezone_boundaries_differ() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(30);
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 9, 7, 2, 900, 2.25).await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("UTC".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch utc daily timeseries");
+
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        0
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.first_byte_sample_count)
+            .sum::<i64>(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn timeseries_daily_includes_rollups_for_equivalent_day_boundaries() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(18);
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 4, 4, 0, 400, 1.0).await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Singapore".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch singapore daily timeseries");
+
+    let singapore = "Asia/Singapore".parse::<Tz>().expect("valid singapore tz");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| bucket_date_in_tz(&point.bucket_start, singapore) == archived_date)
+        .expect("should include archived rollup day for matching boundaries");
+
+    assert_eq!(bucket.total_count, 4);
+    assert_eq!(bucket.success_count, 4);
+    assert_eq!(bucket.failure_count, 0);
+    assert_eq!(bucket.total_tokens, 400);
+    assert_f64_close(bucket.total_cost, 1.0);
+}
+
+#[tokio::test]
+async fn invocation_rollup_daily_range_respects_proxy_only_scope() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let stats_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(20);
+    insert_invocation_rollup(&state.pool, stats_date, SOURCE_PROXY, 2, 1, 1, 20, 0.2).await;
+    insert_invocation_rollup(&state.pool, stats_date, SOURCE_XY, 5, 5, 0, 50, 0.5).await;
+
+    let proxy_rows = query_invocation_rollup_daily_range(
+        &state.pool,
+        stats_date,
+        stats_date,
+        InvocationSourceScope::ProxyOnly,
+    )
+    .await
+    .expect("query proxy rollup range");
+    let all_rows = query_invocation_rollup_daily_range(
+        &state.pool,
+        stats_date,
+        stats_date,
+        InvocationSourceScope::All,
+    )
+    .await
+    .expect("query all rollup range");
+
+    assert_eq!(proxy_rows.len(), 1);
+    assert_eq!(proxy_rows[0].total_count, 2);
+    assert_eq!(all_rows.len(), 2);
+    assert_eq!(all_rows.iter().map(|row| row.total_count).sum::<i64>(), 7);
 }
 
 #[tokio::test]
