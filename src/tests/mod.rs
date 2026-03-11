@@ -2261,6 +2261,7 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -6040,6 +6041,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -7370,6 +7372,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -7498,6 +7501,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -7667,6 +7671,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -7737,6 +7742,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -10835,6 +10841,7 @@ async fn quota_latest_returns_degraded_when_empty() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -12020,6 +12027,132 @@ async fn run_runtime_until_shutdown_waits_for_inflight_scheduler_poll() {
     assert!(state.shutdown.is_cancelled());
     assert_eq!(request_count.load(Ordering::SeqCst), 1);
     crs_handle.abort();
+}
+
+#[tokio::test]
+async fn scheduler_does_not_start_a_new_poll_after_shutdown_while_waiting_for_permit() {
+    let release_request = Arc::new(Notify::new());
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let (crs_base, crs_handle) =
+        spawn_test_crs_stats_server(release_request.clone(), request_count.clone()).await;
+
+    let mut config = test_config();
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse(&crs_base).expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    config.request_timeout = Duration::from_secs(5);
+    config.poll_interval = Duration::from_millis(25);
+    config.max_parallel_polls = 1;
+    let state = test_state_from_config(config, false).await;
+
+    let scheduler_handle = spawn_scheduler(state.clone(), state.shutdown.clone());
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while request_count.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("scheduler should start its initial poll");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    state.shutdown.cancel();
+    release_request.notify_waiters();
+
+    tokio::time::timeout(Duration::from_secs(2), scheduler_handle)
+        .await
+        .expect("scheduler should drain promptly after shutdown")
+        .expect("scheduler task should join cleanly");
+
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        1,
+        "shutdown should prevent a queued follow-up poll from starting once the permit is released"
+    );
+    crs_handle.abort();
+}
+
+#[tokio::test]
+async fn run_maintenance_pass_until_shutdown_interrupts_long_running_work() {
+    let cancel = CancellationToken::new();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+
+    let handle = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            run_maintenance_pass_until_shutdown(&cancel, "test_maintenance", "tick", async move {
+                started_tx
+                    .send(())
+                    .expect("maintenance pass should report when it starts");
+                std::future::pending::<()>().await;
+            })
+            .await
+        }
+    });
+
+    started_rx
+        .await
+        .expect("maintenance pass should begin before shutdown");
+    cancel.cancel();
+
+    let result = tokio::time::timeout(Duration::from_secs(1), handle)
+        .await
+        .expect("maintenance helper should stop waiting once shutdown begins")
+        .expect("maintenance helper task should join cleanly");
+    assert!(
+        result.is_none(),
+        "shutdown should stop waiting for the in-flight maintenance pass"
+    );
+}
+
+#[tokio::test]
+async fn drain_runtime_after_shutdown_waits_for_summary_quota_broadcast_worker() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let release = Arc::new(Notify::new());
+    let worker = tokio::spawn({
+        let release = release.clone();
+        async move {
+            started_tx
+                .send(())
+                .expect("broadcast worker should report when it starts");
+            release.notified().await;
+        }
+    });
+    {
+        let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;
+        *guard = Some(worker);
+    }
+
+    let drain_handle = tokio::spawn({
+        let state = state.clone();
+        async move { drain_runtime_after_shutdown(state, None, None, None, None, None).await }
+    });
+
+    started_rx
+        .await
+        .expect("broadcast worker should start before the drain waits on it");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !drain_handle.is_finished(),
+        "runtime drain should wait for the summary/quota broadcast worker"
+    );
+
+    release.notify_waiters();
+    drain_handle
+        .await
+        .expect("drain task should join")
+        .expect("runtime drain should finish once the broadcast worker does");
+    assert!(
+        state
+            .proxy_summary_quota_broadcast_handle
+            .lock()
+            .await
+            .is_none(),
+        "runtime drain should clear the tracked summary/quota broadcast worker"
+    );
 }
 
 #[tokio::test]

@@ -497,6 +497,7 @@ async fn main() -> Result<()> {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
         startup_ready: Arc::new(AtomicBool::new(false)),
         shutdown: shutdown.clone(),
         semaphore: semaphore.clone(),
@@ -909,6 +910,31 @@ fn begin_runtime_shutdown(cancel: &CancellationToken) {
     }
 }
 
+async fn run_maintenance_pass_until_shutdown<T, F>(
+    cancel: &CancellationToken,
+    task: &'static str,
+    phase: &'static str,
+    future: F,
+) -> Option<T>
+where
+    F: Future<Output = T>,
+{
+    tokio::select! {
+        _ = cancel.cancelled() => {
+            info!(task, phase, "maintenance pass stopped because shutdown is in progress");
+            None
+        }
+        result = future => Some(result),
+    }
+}
+
+async fn drain_scheduler_inflight(mut inflight: Vec<JoinHandle<()>>) {
+    inflight.retain(|handle| !handle.is_finished());
+    for handle in inflight {
+        let _ = handle.await;
+    }
+}
+
 async fn drain_runtime_after_shutdown(
     state: Arc<AppState>,
     server_handle: Option<JoinHandle<()>>,
@@ -951,6 +977,20 @@ async fn drain_runtime_after_shutdown(
             ?err,
             "startup backfill maintenance task terminated unexpectedly"
         );
+    }
+
+    let broadcast_handle = {
+        let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;
+        guard.take()
+    };
+    if let Some(broadcast_handle) = broadcast_handle {
+        if let Err(err) = broadcast_handle.await {
+            error!(
+                ?err,
+                "summary/quota broadcast worker terminated unexpectedly"
+            );
+        }
+        info!("summary/quota broadcast worker drained");
     }
 
     state.xray_supervisor.lock().await.shutdown_all().await;
@@ -1612,13 +1652,16 @@ fn spawn_startup_backfill_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                info!("startup backfill maintenance skipped because shutdown is already in progress");
-                return;
-            }
-            _ = async { run_startup_backfill_maintenance_pass(state.clone()).await; } => {}
+        if run_maintenance_pass_until_shutdown(
+            &cancel,
+            "startup_backfill",
+            "startup",
+            run_startup_backfill_maintenance_pass(state.clone()),
+        )
+        .await
+        .is_none()
+        {
+            return;
         }
 
         let mut ticker = interval(Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
@@ -1632,7 +1675,17 @@ fn spawn_startup_backfill_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    run_startup_backfill_maintenance_pass(state.clone()).await;
+                    if run_maintenance_pass_until_shutdown(
+                        &cancel,
+                        "startup_backfill",
+                        "tick",
+                        run_startup_backfill_maintenance_pass(state.clone()),
+                    )
+                    .await
+                    .is_none()
+                    {
+                        break;
+                    }
                 }
             }
         }
@@ -1641,14 +1694,17 @@ fn spawn_startup_backfill_maintenance(
 
 fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandle<()> {
     tokio::spawn(async move {
-        // Track in-flight tasks so we can wait for them on shutdown
         let mut inflight: Vec<JoinHandle<()>> = Vec::new();
         if cancel.is_cancelled() {
             info!("scheduler startup skipped because shutdown is already in progress");
             return;
         }
-        match schedule_poll(state.clone()).await {
-            Ok(handle) => inflight.push(handle),
+        match schedule_poll(state.clone(), &cancel).await {
+            Ok(Some(handle)) => inflight.push(handle),
+            Ok(None) => {
+                info!("scheduler startup skipped because shutdown is already in progress");
+                return;
+            }
             Err(err) => warn!(?err, "initial poll failed"),
         }
 
@@ -1659,20 +1715,19 @@ fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandl
             tokio::select! {
                 _ = cancel.cancelled() => {
                     info!("scheduler received shutdown; waiting for in-flight polls");
-                    // Drain completed tasks first
-                    inflight.retain(|h| !h.is_finished());
-                    // Wait for remaining tasks to finish
-                    for h in inflight {
-                        let _ = h.await;
-                    }
+                    drain_scheduler_inflight(inflight).await;
                     break;
                 }
                 _ = ticker.tick() => {
-                    match schedule_poll(state.clone()).await {
-                        Ok(handle) => {
+                    match schedule_poll(state.clone(), &cancel).await {
+                        Ok(Some(handle)) => {
                             inflight.push(handle);
-                            // Clean up finished tasks to avoid unbounded growth
-                            inflight.retain(|h| !h.is_finished());
+                            inflight.retain(|handle| !handle.is_finished());
+                        }
+                        Ok(None) => {
+                            info!("scheduler received shutdown while waiting to start a new poll; waiting for in-flight polls");
+                            drain_scheduler_inflight(inflight).await;
+                            break;
                         }
                         Err(err) => {
                             warn!(?err, "scheduled poll failed");
@@ -1693,21 +1748,22 @@ fn spawn_forward_proxy_maintenance(
             let manager = state.forward_proxy.lock().await;
             snapshot_known_subscription_proxy_keys(&manager)
         };
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                info!("forward proxy maintenance skipped because shutdown is already in progress");
-                return;
-            }
-            result = refresh_forward_proxy_subscriptions(
+        let startup_refresh = run_maintenance_pass_until_shutdown(
+            &cancel,
+            "forward_proxy_refresh",
+            "startup",
+            refresh_forward_proxy_subscriptions(
                 state.clone(),
                 true,
                 Some(startup_known_subscription_keys),
-            ) => {
-                if let Err(err) = result {
-                    warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
-                }
-            }
+            ),
+        )
+        .await;
+        let Some(startup_refresh) = startup_refresh else {
+            return;
+        };
+        if let Err(err) = startup_refresh {
+            warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
         }
 
         let mut ticker = interval(Duration::from_secs(60));
@@ -1719,7 +1775,17 @@ fn spawn_forward_proxy_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
+                    let refresh = run_maintenance_pass_until_shutdown(
+                        &cancel,
+                        "forward_proxy_refresh",
+                        "tick",
+                        refresh_forward_proxy_subscriptions(state.clone(), false, None),
+                    )
+                    .await;
+                    let Some(refresh) = refresh else {
+                        break;
+                    };
+                    if let Err(err) = refresh {
                         warn!(error = %err, "failed to refresh forward proxy subscriptions");
                     }
                 }
@@ -1960,17 +2026,18 @@ fn spawn_data_retention_maintenance(
             return;
         }
 
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                info!("data retention maintenance skipped because shutdown is already in progress");
-                return;
-            }
-            result = run_data_retention_maintenance(&state.pool, &state.config, None) => {
-                if let Err(err) = result {
-                    warn!(error = %err, "failed to run retention maintenance at startup");
-                }
-            }
+        let startup_run = run_maintenance_pass_until_shutdown(
+            &cancel,
+            "data_retention",
+            "startup",
+            run_data_retention_maintenance(&state.pool, &state.config, None),
+        )
+        .await;
+        let Some(startup_run) = startup_run else {
+            return;
+        };
+        if let Err(err) = startup_run {
+            warn!(error = %err, "failed to run retention maintenance at startup");
         }
 
         let mut ticker = interval(state.config.retention_interval);
@@ -1983,7 +2050,17 @@ fn spawn_data_retention_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    if let Err(err) = run_data_retention_maintenance(&state.pool, &state.config, None).await {
+                    let maintenance = run_maintenance_pass_until_shutdown(
+                        &cancel,
+                        "data_retention",
+                        "tick",
+                        run_data_retention_maintenance(&state.pool, &state.config, None),
+                    )
+                    .await;
+                    let Some(maintenance) = maintenance else {
+                        break;
+                    };
+                    if let Err(err) = maintenance {
                         warn!(error = %err, "failed to run retention maintenance");
                     }
                 }
@@ -3044,13 +3121,19 @@ fn sha256_hex_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
-    let permit = state
-        .semaphore
-        .clone()
-        .acquire_owned()
-        .await
-        .context("failed to acquire scheduler permit")?;
+async fn schedule_poll(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+) -> Result<Option<JoinHandle<()>>> {
+    let permit = tokio::select! {
+        _ = cancel.cancelled() => return Ok(None),
+        permit = state.semaphore.clone().acquire_owned() => {
+            permit.context("failed to acquire scheduler permit")?
+        }
+    };
+    if cancel.is_cancelled() {
+        return Ok(None);
+    }
 
     let in_flight = state
         .config
@@ -3123,7 +3206,7 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
         drop(permit);
     });
 
-    Ok(handle)
+    Ok(Some(handle))
 }
 
 async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
@@ -7303,7 +7386,8 @@ async fn persist_and_broadcast_proxy_capture(
     let broadcast_state_cache = state.broadcast_state_cache.clone();
     let relay_config = state.config.crs_stats.clone();
     let shutdown = state.shutdown.clone();
-    tokio::spawn(async move {
+    let broadcast_handle_slot = state.proxy_summary_quota_broadcast_handle.clone();
+    let handle = tokio::spawn(async move {
         let mut synced_seq = 0_u64;
         loop {
             let target_seq = latest_broadcast_seq.load(Ordering::Acquire);
@@ -7446,6 +7530,23 @@ async fn persist_and_broadcast_proxy_capture(
             }
         }
     });
+
+    let previous_handle = {
+        let mut guard = broadcast_handle_slot.lock().await;
+        guard.replace(handle)
+    };
+    if let Some(previous_handle) = previous_handle {
+        if previous_handle.is_finished() {
+            if let Err(err) = previous_handle.await {
+                error!(
+                    ?err,
+                    "summary/quota broadcast worker terminated unexpectedly"
+                );
+            }
+        } else {
+            warn!("replaced an unfinished summary/quota broadcast worker handle");
+        }
+    }
 
     Ok(())
 }
@@ -9606,6 +9707,7 @@ struct AppState {
     broadcast_state_cache: Arc<Mutex<BroadcastStateCache>>,
     proxy_summary_quota_broadcast_seq: Arc<AtomicU64>,
     proxy_summary_quota_broadcast_running: Arc<AtomicBool>,
+    proxy_summary_quota_broadcast_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     startup_ready: Arc<AtomicBool>,
     shutdown: CancellationToken,
     semaphore: Arc<Semaphore>,
