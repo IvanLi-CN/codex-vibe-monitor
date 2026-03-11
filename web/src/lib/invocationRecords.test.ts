@@ -81,4 +81,23 @@ describe('buildAppliedInvocationFilters', () => {
     expect(query.from).toBeDefined()
     expect(query.to).toBeDefined()
   })
+  it('tolerates invalid draft values when building suggestion queries', () => {
+    const draft = {
+      ...createDefaultInvocationRecordsDraft(),
+      rangePreset: 'custom' as const,
+      customFrom: '2026-03-10T10:',
+      customTo: 'not-a-date',
+      minTotalTokens: '1.5',
+      maxTotalTokens: 'abc',
+    }
+
+    expect(() => buildInvocationSuggestionsQuery(draft, 42)).not.toThrow()
+
+    const query = buildInvocationSuggestionsQuery(draft, 42)
+    expect(query.snapshotId).toBe(42)
+    expect(query.from).toBeUndefined()
+    expect(query.to).toBeUndefined()
+    expect(query.minTotalTokens).toBeUndefined()
+    expect(query.maxTotalTokens).toBeUndefined()
+  })
 })

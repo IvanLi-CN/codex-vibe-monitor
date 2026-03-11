@@ -14,42 +14,7 @@ const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, ''))
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
 // Keep classification consistent with `resolve_failure_classification` without requiring a
 // backfill pass to complete before the summary + filters become accurate.
-const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = "CASE \
-  WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort') \
-    THEN LOWER(TRIM(COALESCE(failure_class, ''))) \
-  ELSE \
-    CASE \
-      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success' \
-        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none' \
-      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending') \
-        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none' \
-      WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%' \
-        THEN 'client_abort' \
-      WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%' \
-        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' \
-        OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403') \
-        THEN 'client_failure' \
-      WHEN LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%' \
-        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' \
-        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' \
-        THEN 'service_failure' \
-      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success' THEN 'none' \
-      ELSE 'service_failure' \
-    END \
-END";
+const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = "CASE   WHEN LOWER(TRIM(COALESCE(failure_class, ''))) IN ('service_failure', 'client_failure', 'client_abort')     THEN LOWER(TRIM(COALESCE(failure_class, '')))   ELSE     CASE       WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success'         AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')         AND LOWER(TRIM(COALESCE(error_message, ''))) = '' THEN 'none'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'downstream_closed'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[downstream_closed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%downstream closed while streaming upstream response%'         THEN 'client_abort'       WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_429'         OR LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = 'upstream_http_429'         THEN 'service_failure'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('request_body_stream_error_client_closed', 'invalid_api_key', 'api_key_not_found', 'api_key_missing')         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_stream_error_client_closed]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to read request body stream%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%invalid api key format%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key format is invalid%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%incorrect api key provided%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%api key not found%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%please provide an api key%'         OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) != 'http_429')         OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403')         THEN 'client_failure'       WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('failed_contact_upstream', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout')         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[request_body_read_timeout]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_handshake_timeout]%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%failed to contact upstream%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream stream error%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%request body read timed out%'         OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%'         OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%'         THEN 'service_failure'       WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success' THEN 'none'       ELSE 'service_failure'     END END";
 
 fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
     let mut query = QueryBuilder::new(

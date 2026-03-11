@@ -102,6 +102,27 @@ function normalizeInteger(value: string, fieldName: string) {
   return parsed
 }
 
+
+function normalizeIntegerSafely(value: string, fieldName: string) {
+  try {
+    return normalizeInteger(value, fieldName)
+  } catch {
+    return undefined
+  }
+}
+
+function resolveRangeBoundsSafely(
+  rangePreset: InvocationRangePreset,
+  draft: InvocationRecordsDraftFilters,
+  now = new Date(),
+) {
+  try {
+    return resolveRangeBounds(rangePreset, draft, now)
+  } catch {
+    return { from: undefined, to: undefined }
+  }
+}
+
 export function resolveRangeBoundsFromValues(
   rangePreset: InvocationRangePreset,
   customFrom: string,
@@ -177,8 +198,24 @@ export function buildInvocationSuggestionsQuery(
   snapshotId?: number,
   now = new Date(),
 ): Omit<InvocationRecordsQuery, 'page' | 'pageSize' | 'sortBy' | 'sortOrder'> {
+  const bounds = resolveRangeBoundsSafely(draft.rangePreset, draft, now)
   return {
-    ...buildAppliedInvocationFilters(draft, now),
+    rangePreset: draft.rangePreset,
+    from: bounds.from,
+    to: bounds.to,
+    status: normalizeText(draft.status),
+    model: normalizeText(draft.model),
+    proxy: normalizeText(draft.proxy),
+    endpoint: normalizeText(draft.endpoint),
+    failureClass: normalizeText(draft.failureClass),
+    failureKind: normalizeText(draft.failureKind),
+    promptCacheKey: normalizeText(draft.promptCacheKey),
+    requesterIp: normalizeText(draft.requesterIp),
+    keyword: normalizeText(draft.keyword),
+    minTotalTokens: normalizeIntegerSafely(draft.minTotalTokens, 'minTotalTokens'),
+    maxTotalTokens: normalizeIntegerSafely(draft.maxTotalTokens, 'maxTotalTokens'),
+    minTotalMs: normalizeNumber(draft.minTotalMs),
+    maxTotalMs: normalizeNumber(draft.maxTotalMs),
     snapshotId,
   }
 }
