@@ -636,6 +636,85 @@ async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path
     let _ = fs::remove_dir_all(&temp_root);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn probe_forward_proxy_endpoint_returns_none_when_shutdown_interrupts_temporary_xray_startup()
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_root = make_temp_test_dir("xray-probe-startup-shutdown");
+    let runtime_dir = temp_root.join("runtime");
+    let fake_xray = temp_root.join("fake-xray.sh");
+    fs::write(
+        &fake_xray,
+        "#!/bin/sh
+sleep 30
+",
+    )
+    .expect("write fake xray binary");
+    let mut perms = fs::metadata(&fake_xray)
+        .expect("read fake xray metadata")
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&fake_xray, perms).expect("chmod fake xray binary");
+
+    let mut config = test_config();
+    config.xray_binary = fake_xray.to_string_lossy().to_string();
+    config.xray_runtime_dir = runtime_dir.clone();
+    let state = test_state_from_config(config, false).await;
+    let endpoint = ForwardProxyEndpoint {
+        key: "xray-probe-startup-shutdown".to_string(),
+        source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+        display_name: "xray-probe-startup-shutdown".to_string(),
+        protocol: ForwardProxyProtocol::Vless,
+        endpoint_url: None,
+        raw_url: Some(
+            "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:443?encryption=none"
+                .to_string(),
+        ),
+    };
+    let shutdown = CancellationToken::new();
+    let cancel_shutdown = shutdown.clone();
+    let cancel_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancel_shutdown.cancel();
+    });
+
+    let result = probe_forward_proxy_endpoint(
+        state.as_ref(),
+        &endpoint,
+        Duration::from_secs(5),
+        Some(&shutdown),
+    )
+    .await
+    .expect("shutdown-interrupted xray startup should normalize to a skipped probe");
+
+    cancel_task
+        .await
+        .expect("shutdown trigger task should finish");
+    assert!(
+        result.is_none(),
+        "shutdown-interrupted temporary xray startup should be treated as a skipped probe"
+    );
+    assert!(
+        state.xray_supervisor.lock().await.instances.is_empty(),
+        "temporary xray validation instances should be cleaned up after shutdown"
+    );
+    if runtime_dir.exists() {
+        let mut runtime_entries = fs::read_dir(&runtime_dir)
+            .expect("read temporary xray runtime dir after shutdown")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect temporary xray runtime dir entries");
+        runtime_entries.retain(|entry| entry.path().is_file());
+        assert!(
+            runtime_entries.is_empty(),
+            "temporary xray shutdown path should not leave runtime files behind"
+        );
+    }
+
+    cleanup_temp_test_dir(&temp_root);
+}
+
 #[tokio::test]
 async fn forward_proxy_settings_returns_service_unavailable_when_shutdown_interrupts_xray_sync() {
     let temp_root = make_temp_test_dir("forward-proxy-settings-shutdown");

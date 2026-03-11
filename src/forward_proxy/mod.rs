@@ -924,9 +924,20 @@ pub(crate) async fn probe_forward_proxy_endpoint(
         .join("v1/models")
         .context("failed to build validation probe target")?;
     let started = Instant::now();
-    let (endpoint_url, temporary_xray_key) =
-        resolve_forward_proxy_probe_endpoint_url(state, endpoint, validation_timeout, shutdown)
-            .await?;
+    let (endpoint_url, temporary_xray_key) = match resolve_forward_proxy_probe_endpoint_url(
+        state,
+        endpoint,
+        validation_timeout,
+        shutdown,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_err) if shutdown.is_some_and(CancellationToken::is_cancelled) => {
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
+    };
 
     let probe_result = async {
         let send_timeout = remaining_timeout_budget(validation_timeout, started.elapsed())
