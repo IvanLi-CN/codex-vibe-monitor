@@ -9977,17 +9977,42 @@ async fn fetch_invocation_summary_resolves_failure_class_for_legacy_rows() {
     .await
     .expect("insert legacy 429 row");
 
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            failure_kind,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("legacy-stream-success")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("[upstream_response_failed] server_error")
+    .bind("upstream_response_failed")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy stream failure row");
+
     let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
         .await
         .expect("summary query should succeed");
 
-    assert_eq!(summary.total_count, 6);
-    assert_eq!(summary.failure_count, 4);
-    assert_eq!(summary.exception.failure_count, 4);
-    assert_eq!(summary.exception.service_failure_count, 2);
+    assert_eq!(summary.total_count, 7);
+    assert_eq!(summary.failure_count, 5);
+    assert_eq!(summary.exception.failure_count, 5);
+    assert_eq!(summary.exception.service_failure_count, 3);
     assert_eq!(summary.exception.client_failure_count, 1);
     assert_eq!(summary.exception.client_abort_count, 1);
-    assert_eq!(summary.exception.actionable_failure_count, 2);
+    assert_eq!(summary.exception.actionable_failure_count, 3);
 }
 
 #[tokio::test]
