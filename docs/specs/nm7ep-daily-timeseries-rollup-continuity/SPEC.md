@@ -47,13 +47,16 @@
 - `GET /api/stats/timeseries` 保持原 query / response 不变。
 - `bucket=1d` 路径的数据来源改为：
   - 在线 `codex_invocations`
-  - `invocation_rollup_daily`
+  - `invocation_rollup_daily`（仅当请求时区与 Asia/Shanghai 归档日边界一致时合并）
   - `stats_source_deltas`（现有 CRS 增量）
 - `firstByteSampleCount` / `firstByteAvgMs` / `firstByteP95Ms` 只由在线 success invocation 样本贡献；纯 rollup bucket 必须保持 `0 / null / null`。
+- 当请求时区的自然日边界与 Asia/Shanghai 不一致时，daily timeseries 必须跳过 rollup rows，避免把 archived history 错桶到错误的本地日。
 
 ## 验收标准（Acceptance Criteria）
 
 - Given 某个仍在 90d 范围内的历史日只存在 `invocation_rollup_daily`，When 请求 `range=90d&bucket=1d&timeZone=Asia/Shanghai`，Then 返回对应非零 bucket，且 first-byte 指标为 `0 / null / null`。
+- Given 请求时区与 Asia/Shanghai 共享相同日边界（例如 `Asia/Singapore`），When 请求 daily timeseries，Then archived rollup day 仍会被合并到对应 bucket。
+- Given 请求时区的自然日边界与 Asia/Shanghai 不一致（例如 `UTC`），When 请求 daily timeseries，Then 不得把 rollup rows 错投到该时区 bucket；此时 archived rollup rows 应被跳过。
 - Given 较早日期来自 rollup、较近日期来自 live invocation，When 请求 daily timeseries，Then 两段历史连续可见，且总和与 `query_combined_totals(..., StatsFilter::All, InvocationSourceScope::All)` 一致。
 - Given 同一天存在 rollup 与 live proxy invocation，When 请求 daily timeseries，Then 同一 bucket 会累加两部分 count/tokens/cost，且 first-byte 指标只来自 live success 样本。
 - Given 同一天存在 `proxy` 与 `xy` rollup，When 以 `InvocationSourceScope::ProxyOnly` 查询 rollup helper，Then 只返回 `source='proxy'` 的记录。
@@ -74,16 +77,18 @@
 ## 实现里程碑（Milestones / Delivery checklist）
 
 - [x] M1: `invocation_rollup_daily` range helper 落地，并接入 daily timeseries 聚合。
-- [x] M2: Rust 回归测试覆盖 archived rollup day、continuity、same-day mixed bucket、proxy-only scope。
+- [x] M2: Rust 回归测试覆盖 archived rollup day、boundary-matched timezone、timezone mismatch skip、continuity、same-day mixed bucket、proxy-only scope。
 - [ ] M3: 验证、spec-sync、PR 与 review-loop 收敛。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
+- 风险：对于与 Asia/Shanghai 日边界不一致的时区，archived invocation days 仍无法按请求时区重分桶；本热修只保证不误投到错误日期。
 - 风险：CRS 增量按现有 captured-at day 聚合，热修不会改变它的统计边界。
-- 开放问题：无。
+- 开放问题：若未来需要跨任意时区恢复 archived daily history，需要引入可重分桶的 archive 粒度或额外维度。
 - 假设：`invocation_rollup_daily.stats_date` 始终以 Asia/Shanghai 自然日落盘。
 
 ## 变更记录（Change log）
 
 - 2026-03-11: 初始化 hotfix spec，冻结“daily timeseries after archive must stay continuous / no schema change / no detail backfill”范围。
 - 2026-03-11: daily timeseries 已接入 `invocation_rollup_daily`，并补充 archived day、same-day mixed bucket、proxy-only scope 的后端回归测试。
+- 2026-03-11: review-loop 发现 rollup 为 Asia/Shanghai 日粒度后，补充“仅在请求时区日边界匹配时合并 rollup”的保护逻辑与对应 UTC / Asia-Singapore 回归测试。

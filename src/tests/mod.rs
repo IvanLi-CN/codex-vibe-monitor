@@ -11325,11 +11325,15 @@ async fn insert_invocation_rollup(
     .expect("insert invocation rollup");
 }
 
-fn shanghai_bucket_date(bucket_start: &str) -> NaiveDate {
+fn bucket_date_in_tz(bucket_start: &str, tz: Tz) -> NaiveDate {
     DateTime::parse_from_rfc3339(bucket_start)
         .expect("valid bucket start")
-        .with_timezone(&Shanghai)
+        .with_timezone(&tz)
         .date_naive()
+}
+
+fn shanghai_bucket_date(bucket_start: &str) -> NaiveDate {
+    bucket_date_in_tz(bucket_start, Shanghai)
 }
 
 fn assert_f64_close(actual: f64, expected: f64) {
@@ -11712,6 +11716,80 @@ async fn timeseries_daily_combines_rollup_and_live_within_same_day() {
         bucket.first_byte_p95_ms.expect("p95 should be present"),
         150.0,
     );
+}
+
+#[tokio::test]
+async fn timeseries_daily_skips_rollups_when_timezone_boundaries_differ() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(30);
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 9, 7, 2, 900, 2.25).await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("UTC".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch utc daily timeseries");
+
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        0
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.first_byte_sample_count)
+            .sum::<i64>(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn timeseries_daily_includes_rollups_for_equivalent_day_boundaries() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(18);
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 4, 4, 0, 400, 1.0).await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Singapore".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch singapore daily timeseries");
+
+    let singapore = "Asia/Singapore".parse::<Tz>().expect("valid singapore tz");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| bucket_date_in_tz(&point.bucket_start, singapore) == archived_date)
+        .expect("should include archived rollup day for matching boundaries");
+
+    assert_eq!(bucket.total_count, 4);
+    assert_eq!(bucket.success_count, 4);
+    assert_eq!(bucket.failure_count, 0);
+    assert_eq!(bucket.total_tokens, 400);
+    assert_f64_close(bucket.total_cost, 1.0);
 }
 
 #[tokio::test]
