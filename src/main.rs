@@ -632,6 +632,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drain_runtime_after_pending_shutdown(
     state: Arc<AppState>,
     mut shutdown_watcher: JoinHandle<()>,
