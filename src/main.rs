@@ -189,6 +189,7 @@ const PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED: &str =
 const PROXY_FAILURE_FAILED_CONTACT_UPSTREAM: &str = "failed_contact_upstream";
 const PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream_handshake_timeout";
 const PROXY_FAILURE_UPSTREAM_STREAM_ERROR: &str = "upstream_stream_error";
+const PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED: &str = "upstream_response_failed";
 const PROXY_STREAM_TERMINAL_COMPLETED: &str = "stream_completed";
 const PROXY_STREAM_TERMINAL_ERROR: &str = "stream_error";
 const PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED: &str = "downstream_closed";
@@ -1212,6 +1213,7 @@ async fn run_startup_backfill_task(
             let outcome = backfill_failure_classification_from_cursor(
                 &state.pool,
                 cursor_id,
+                raw_path_fallback_root,
                 Some(STARTUP_BACKFILL_SCAN_LIMIT),
                 max_elapsed,
             )
@@ -1222,7 +1224,7 @@ async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
-                    samples: Vec::new(),
+                    samples: outcome.samples,
                 },
                 "failure classification recalculated".to_string(),
             ))
@@ -5450,6 +5452,10 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
+                    None,
+                    None,
+                    None,
+                    None,
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -5558,6 +5564,10 @@ async fn proxy_openai_v1_capture_target(
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
                     None,
+                    None,
+                    None,
+                    None,
+                    None,
                     Some(err.selected_proxy.display_name.as_str()),
                     proxy_attempt_update.delta(),
                 )),
@@ -5639,6 +5649,10 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
+                    None,
+                    None,
+                    None,
+                    None,
                     None,
                     Some(selected_proxy.display_name.as_str()),
                     proxy_attempt_update.delta(),
@@ -5787,6 +5801,8 @@ async fn proxy_openai_v1_capture_target(
             Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
         } else if downstream_closed {
             Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+        } else if response_info.stream_terminal_event.is_some() {
+            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
         } else if upstream_status == StatusCode::TOO_MANY_REQUESTS {
             Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
         } else if upstream_status.is_server_error() {
@@ -5803,6 +5819,8 @@ async fn proxy_openai_v1_capture_target(
                 "[{}] downstream closed while streaming upstream response",
                 PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
             ))
+        } else if response_info.stream_terminal_event.is_some() {
+            Some(format_upstream_response_failed_message(&response_info))
         } else if !upstream_status.is_success() {
             extract_error_message_from_response(&response_bytes)
         } else {
@@ -5855,6 +5873,10 @@ async fn proxy_openai_v1_capture_target(
             requester_ip_for_task.as_deref(),
             prompt_cache_key_for_task.as_deref(),
             response_info.service_tier.as_deref(),
+            response_info.stream_terminal_event.as_deref(),
+            response_info.upstream_error_code.as_deref(),
+            response_info.upstream_error_message.as_deref(),
+            response_info.upstream_request_id.as_deref(),
             Some(selected_proxy_display_name.as_str()),
             proxy_attempt_update.delta(),
         );
@@ -6179,6 +6201,10 @@ fn parse_target_response_payload(
             usage: ParsedUsage::default(),
             usage_missing_reason: Some("empty_response".to_string()),
             service_tier: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            upstream_request_id: None,
         };
     }
 
@@ -6207,6 +6233,10 @@ fn parse_target_response_payload(
                     usage,
                     usage_missing_reason,
                     service_tier,
+                    stream_terminal_event: None,
+                    upstream_error_code: extract_upstream_error_code(&value),
+                    upstream_error_message: extract_upstream_error_message(&value),
+                    upstream_request_id: extract_upstream_request_id(&value),
                 }
             }
             Err(_) => ResponseCaptureInfo {
@@ -6214,6 +6244,10 @@ fn parse_target_response_payload(
                 usage: ParsedUsage::default(),
                 usage_missing_reason: Some("response_not_json".to_string()),
                 service_tier: None,
+                stream_terminal_event: None,
+                upstream_error_code: None,
+                upstream_error_message: None,
+                upstream_request_id: None,
             },
         }
     };
@@ -6295,20 +6329,31 @@ fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
     let mut model: Option<String> = None;
     let mut usage = ParsedUsage::default();
     let mut service_tier: Option<String> = None;
+    let mut stream_terminal_event: Option<String> = None;
+    let mut upstream_error_code: Option<String> = None;
+    let mut upstream_error_message: Option<String> = None;
+    let mut upstream_request_id: Option<String> = None;
     let mut usage_found = false;
     let mut parse_error_seen = false;
+    let mut pending_event_name: Option<String> = None;
 
     for line in text.lines() {
         let trimmed = line.trim();
+        if trimmed.starts_with("event:") {
+            pending_event_name = Some(trimmed.trim_start_matches("event:").trim().to_string());
+            continue;
+        }
         if !trimmed.starts_with("data:") {
             continue;
         }
         let payload = trimmed.trim_start_matches("data:").trim();
         if payload.is_empty() || payload == "[DONE]" {
+            pending_event_name = None;
             continue;
         }
         match serde_json::from_str::<Value>(payload) {
             Ok(value) => {
+                let event_name = pending_event_name.take();
                 if model.is_none() {
                     model = extract_model_from_payload(&value);
                 }
@@ -6319,24 +6364,115 @@ fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
                     usage = parsed_usage;
                     usage_found = true;
                 }
+                if stream_payload_indicates_failure(event_name.as_deref(), &value) {
+                    let candidate = event_name
+                        .clone()
+                        .or_else(|| extract_stream_payload_type(&value))
+                        .unwrap_or_else(|| "response.failed".to_string());
+                    if stream_terminal_event.is_none() || candidate == "response.failed" {
+                        stream_terminal_event = Some(candidate);
+                    }
+                }
+                if upstream_error_code.is_none() {
+                    upstream_error_code = extract_upstream_error_code(&value);
+                }
+                if upstream_error_message.is_none() {
+                    upstream_error_message = extract_upstream_error_message(&value);
+                }
+                if upstream_request_id.is_none() {
+                    upstream_request_id = extract_upstream_request_id(&value);
+                }
             }
             Err(_) => {
+                pending_event_name = None;
                 parse_error_seen = true;
             }
         }
     }
 
+    let usage_missing_reason = if usage_found {
+        None
+    } else if stream_terminal_event.is_some() {
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string())
+    } else if parse_error_seen {
+        Some("stream_event_parse_error".to_string())
+    } else {
+        Some("usage_missing_in_stream".to_string())
+    };
+
     ResponseCaptureInfo {
         model,
         usage,
-        usage_missing_reason: if usage_found {
-            None
-        } else if parse_error_seen {
-            Some("stream_event_parse_error".to_string())
-        } else {
-            Some("usage_missing_in_stream".to_string())
-        },
+        usage_missing_reason,
         service_tier,
+        stream_terminal_event,
+        upstream_error_code,
+        upstream_error_message,
+        upstream_request_id,
+    }
+}
+
+fn extract_stream_payload_type(value: &Value) -> Option<String> {
+    value
+        .get("type")
+        .and_then(|entry| entry.as_str())
+        .map(|entry| entry.to_string())
+}
+
+fn stream_payload_indicates_failure(event_name: Option<&str>, value: &Value) -> bool {
+    matches!(event_name, Some("response.failed") | Some("error"))
+        || value
+            .get("type")
+            .and_then(|entry| entry.as_str())
+            .is_some_and(|kind| kind == "response.failed" || kind == "error")
+        || value
+            .pointer("/response/status")
+            .and_then(|entry| entry.as_str())
+            .is_some_and(|status| status.eq_ignore_ascii_case("failed"))
+}
+
+fn extract_upstream_error_object(value: &Value) -> Option<&Value> {
+    value
+        .get("error")
+        .filter(|entry| entry.is_object())
+        .or_else(|| {
+            value
+                .pointer("/response/error")
+                .filter(|entry| entry.is_object())
+        })
+}
+
+fn extract_upstream_error_code(value: &Value) -> Option<String> {
+    extract_upstream_error_object(value)
+        .and_then(|entry| entry.get("code"))
+        .and_then(|entry| entry.as_str())
+        .map(|entry| entry.to_string())
+}
+
+fn extract_upstream_error_message(value: &Value) -> Option<String> {
+    extract_upstream_error_object(value)
+        .and_then(|entry| entry.get("message"))
+        .and_then(|entry| entry.as_str())
+        .map(|entry| entry.to_string())
+}
+
+fn extract_upstream_request_id(value: &Value) -> Option<String> {
+    extract_upstream_error_message(value)
+        .and_then(|message| extract_request_id_from_message(&message))
+}
+
+fn extract_request_id_from_message(message: &str) -> Option<String> {
+    let needle = "request ID ";
+    let start = message.find(needle)? + needle.len();
+    let tail = &message[start..];
+    let request_id: String = tail
+        .chars()
+        .take_while(|ch| ch.is_ascii_hexdigit() || *ch == '-')
+        .collect();
+    if request_id.is_empty() {
+        None
+    } else {
+        Some(request_id)
     }
 }
 
@@ -6495,6 +6631,10 @@ fn build_proxy_payload_summary(
     requester_ip: Option<&str>,
     prompt_cache_key: Option<&str>,
     service_tier: Option<&str>,
+    stream_terminal_event: Option<&str>,
+    upstream_error_code: Option<&str>,
+    upstream_error_message: Option<&str>,
+    upstream_request_id: Option<&str>,
     proxy_display_name: Option<&str>,
     proxy_weight_delta: Option<f64>,
 ) -> String {
@@ -6512,6 +6652,10 @@ fn build_proxy_payload_summary(
         "requesterIp": requester_ip,
         "promptCacheKey": prompt_cache_key,
         "serviceTier": service_tier,
+        "streamTerminalEvent": stream_terminal_event,
+        "upstreamErrorCode": upstream_error_code,
+        "upstreamErrorMessage": upstream_error_message,
+        "upstreamRequestId": upstream_request_id,
         "proxyDisplayName": proxy_display_name,
         "proxyWeightDelta": proxy_weight_delta,
     });
@@ -7022,6 +7166,10 @@ async fn persist_proxy_capture_record(
             error_message,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint,
             COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.streamTerminalEvent') END AS stream_terminal_event,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorCode') END AS upstream_error_code,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorMessage') END AS upstream_error_message,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamRequestId') END AS upstream_request_id,
             failure_class,
             is_actionable,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
@@ -8132,16 +8280,187 @@ async fn backfill_invocation_service_tiers(
 #[derive(Debug, FromRow)]
 struct FailureClassificationBackfillRow {
     id: i64,
+    source: String,
     status: Option<String>,
     error_message: Option<String>,
     failure_kind: Option<String>,
     failure_class: Option<String>,
     is_actionable: Option<i64>,
+    payload: Option<String>,
+    raw_response: String,
+    response_raw_path: Option<String>,
+}
+
+fn parse_proxy_response_capture_from_stored_bytes(
+    target: ProxyCaptureTarget,
+    bytes: &[u8],
+    is_stream: bool,
+) -> ResponseCaptureInfo {
+    let (payload_for_parse, _) = decode_response_payload_for_usage(bytes, None);
+    parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream, None)
+}
+
+fn format_upstream_response_failed_message(response_info: &ResponseCaptureInfo) -> String {
+    let upstream_message = response_info
+        .upstream_error_message
+        .as_deref()
+        .unwrap_or("upstream response failed");
+    if let Some(code) = response_info.upstream_error_code.as_deref() {
+        format!(
+            "[{}] {}: {}",
+            PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED, code, upstream_message
+        )
+    } else {
+        format!(
+            "[{}] {}",
+            PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED, upstream_message
+        )
+    }
+}
+
+fn update_proxy_payload_failure_details(
+    payload: Option<&str>,
+    failure_kind: Option<&str>,
+    response_info: &ResponseCaptureInfo,
+) -> String {
+    let mut value = payload
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .filter(|value| value.is_object())
+        .unwrap_or_else(|| json!({}));
+    let object = value
+        .as_object_mut()
+        .expect("payload summary must be an object");
+
+    object.insert(
+        "failureKind".to_string(),
+        failure_kind
+            .map(|value| Value::String(value.to_string()))
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "streamTerminalEvent".to_string(),
+        response_info
+            .stream_terminal_event
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "upstreamErrorCode".to_string(),
+        response_info
+            .upstream_error_code
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "upstreamErrorMessage".to_string(),
+        response_info
+            .upstream_error_message
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "upstreamRequestId".to_string(),
+        response_info
+            .upstream_request_id
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "usageMissingReason".to_string(),
+        response_info
+            .usage_missing_reason
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null),
+    );
+
+    serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn should_upgrade_to_upstream_response_failed(
+    row: &FailureClassificationBackfillRow,
+    existing_kind: Option<&str>,
+) -> bool {
+    let status_norm = row
+        .status
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let error_message_empty = row
+        .error_message
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty);
+
+    if matches!(
+        existing_kind,
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+            | Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+            | Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+            | Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
+            | Some(PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT)
+            | Some(PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED)
+    ) {
+        return false;
+    }
+
+    status_norm == "success"
+        || existing_kind.is_none()
+        || existing_kind == Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+        || (status_norm == "http_200" && error_message_empty)
+}
+
+fn parse_proxy_response_failure_from_persisted_record(
+    row: &FailureClassificationBackfillRow,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<Option<ResponseCaptureInfo>> {
+    if row.source != SOURCE_PROXY {
+        return Ok(None);
+    }
+
+    let (target, is_stream) = parse_proxy_capture_summary(row.payload.as_deref());
+    let preview_info = parse_proxy_response_capture_from_stored_bytes(
+        target,
+        row.raw_response.as_bytes(),
+        is_stream,
+    );
+    let preview_has_failure = preview_info.stream_terminal_event.is_some();
+    let preview_is_complete = preview_has_failure
+        && preview_info.upstream_error_message.is_some()
+        && preview_info.upstream_request_id.is_some();
+
+    if preview_is_complete || row.response_raw_path.is_none() {
+        return Ok(preview_has_failure.then_some(preview_info));
+    }
+
+    let Some(path) = row.response_raw_path.as_deref() else {
+        return Ok(preview_has_failure.then_some(preview_info));
+    };
+
+    match read_proxy_raw_bytes(path, raw_path_fallback_root) {
+        Ok(bytes) => {
+            let full_info =
+                parse_proxy_response_capture_from_stored_bytes(target, &bytes, is_stream);
+            if full_info.stream_terminal_event.is_some() {
+                Ok(Some(full_info))
+            } else {
+                Ok(preview_has_failure.then_some(preview_info))
+            }
+        }
+        Err(_err) if preview_has_failure => Ok(Some(preview_info)),
+        Err(err) => Err(err.into()),
+    }
 }
 
 async fn backfill_failure_classification_from_cursor(
     pool: &Pool<Sqlite>,
     start_after_id: i64,
+    raw_path_fallback_root: Option<&Path>,
     scan_limit: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<BackfillBatchOutcome<FailureClassificationBackfillSummary>> {
@@ -8149,6 +8468,7 @@ async fn backfill_failure_classification_from_cursor(
     let mut summary = FailureClassificationBackfillSummary::default();
     let mut last_seen_id = start_after_id;
     let mut hit_budget = false;
+    let mut samples = Vec::new();
 
     loop {
         if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed) {
@@ -8158,7 +8478,17 @@ async fn backfill_failure_classification_from_cursor(
 
         let rows = sqlx::query_as::<_, FailureClassificationBackfillRow>(
             r#"
-            SELECT id, status, error_message, failure_kind, failure_class, is_actionable
+            SELECT
+                id,
+                source,
+                status,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                payload,
+                raw_response,
+                response_raw_path
             FROM codex_invocations
             WHERE id > ?1
               AND (
@@ -8174,12 +8504,28 @@ async fn backfill_failure_classification_from_cursor(
                     LOWER(TRIM(COALESCE(status, ''))) != 'success'
                     AND TRIM(COALESCE(failure_class, '')) = 'none'
                 )
+                OR (
+                    source = ?2
+                    AND LOWER(TRIM(COALESCE(status, ''))) = 'success'
+                    AND (
+                        raw_response LIKE '%response.failed%'
+                        OR raw_response LIKE '%"type":"error"%'
+                        OR (
+                            json_valid(payload)
+                            AND (
+                                TRIM(COALESCE(CAST(json_extract(payload, '$.usageMissingReason') AS TEXT), '')) IN ('usage_missing_in_stream', 'upstream_response_failed')
+                                OR TRIM(COALESCE(CAST(json_extract(payload, '$.streamTerminalEvent') AS TEXT), '')) != ''
+                            )
+                        )
+                    )
+                )
               )
             ORDER BY id ASC
-            LIMIT ?2
+            LIMIT ?3
             "#,
         )
         .bind(last_seen_id)
+        .bind(SOURCE_PROXY)
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
         .await?;
@@ -8195,6 +8541,71 @@ async fn backfill_failure_classification_from_cursor(
 
         let mut tx = pool.begin().await?;
         for row in rows {
+            let existing_kind = row
+                .failure_kind
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+            let existing_class = row
+                .failure_class
+                .as_deref()
+                .and_then(FailureClass::from_db_str);
+            let existing_actionable = row.is_actionable.map(|value| value != 0);
+
+            let response_failure = match parse_proxy_response_failure_from_persisted_record(
+                &row,
+                raw_path_fallback_root,
+            ) {
+                Ok(result) => result,
+                Err(err) => {
+                    push_backfill_sample(
+                        &mut samples,
+                        format!(
+                            "id={} reason=response_failure_parse_error err={err}",
+                            row.id
+                        ),
+                    );
+                    None
+                }
+            };
+
+            if let Some(response_info) = response_failure.as_ref().filter(|_| {
+                should_upgrade_to_upstream_response_failed(&row, existing_kind.as_deref())
+            }) {
+                let error_message = format_upstream_response_failed_message(response_info);
+                let resolved = classify_invocation_failure(Some("http_200"), Some(&error_message));
+                let next_payload = update_proxy_payload_failure_details(
+                    row.payload.as_deref(),
+                    Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
+                    response_info,
+                );
+                let affected = sqlx::query(
+                    r#"
+                    UPDATE codex_invocations
+                    SET status = ?1,
+                        error_message = ?2,
+                        failure_kind = ?3,
+                        failure_class = ?4,
+                        is_actionable = ?5,
+                        payload = ?6
+                    WHERE id = ?7
+                    "#,
+                )
+                .bind("http_200")
+                .bind(&error_message)
+                .bind(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+                .bind(resolved.failure_class.as_str())
+                .bind(resolved.is_actionable as i64)
+                .bind(next_payload)
+                .bind(row.id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+                summary.updated += affected;
+                continue;
+            }
+
             let resolved = resolve_failure_classification(
                 row.status.as_deref(),
                 row.error_message.as_deref(),
@@ -8202,18 +8613,6 @@ async fn backfill_failure_classification_from_cursor(
                 row.failure_class.as_deref(),
                 row.is_actionable,
             );
-
-            let existing_kind = row
-                .failure_kind
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(ToOwned::to_owned);
-            let existing_class = row
-                .failure_class
-                .as_deref()
-                .and_then(FailureClass::from_db_str);
-            let existing_actionable = row.is_actionable.map(|v| v != 0);
 
             let next_kind = existing_kind.clone().or(resolved.failure_kind.clone());
             let should_update = existing_class != Some(resolved.failure_class)
@@ -8249,7 +8648,7 @@ async fn backfill_failure_classification_from_cursor(
         summary,
         next_cursor_id: last_seen_id,
         hit_budget,
-        samples: Vec::new(),
+        samples,
     })
 }
 
@@ -8257,9 +8656,10 @@ async fn backfill_failure_classification_from_cursor(
 #[allow(dead_code)]
 async fn backfill_failure_classification(
     pool: &Pool<Sqlite>,
+    raw_path_fallback_root: Option<&Path>,
 ) -> Result<FailureClassificationBackfillSummary> {
     Ok(
-        backfill_failure_classification_from_cursor(pool, 0, None, None)
+        backfill_failure_classification_from_cursor(pool, 0, raw_path_fallback_root, None, None)
             .await?
             .summary,
     )
