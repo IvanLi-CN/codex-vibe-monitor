@@ -646,6 +646,24 @@ pub(crate) async fn fetch_timeseries_daily(
             .unwrap_or(cursor + ChronoDuration::days(1));
     }
 
+    let rollups =
+        query_invocation_rollup_daily_range(&state.pool, start_date, end_date, source_scope)
+            .await?;
+    for rollup in rollups {
+        let Ok(local_date) = NaiveDate::parse_from_str(&rollup.stats_date, "%Y-%m-%d") else {
+            continue;
+        };
+        if local_date < start_date || local_date > end_date {
+            continue;
+        }
+        let entry = aggregates.entry(local_date).or_default();
+        entry.total_count += rollup.total_count;
+        entry.success_count += rollup.success_count;
+        entry.failure_count += rollup.failure_count;
+        entry.total_tokens += rollup.total_tokens;
+        entry.total_cost += rollup.total_cost;
+    }
+
     let mut records_query = QueryBuilder::new(
         "SELECT occurred_at, status, total_tokens, cost, t_upstream_ttfb_ms FROM codex_invocations WHERE occurred_at >= ",
     );
