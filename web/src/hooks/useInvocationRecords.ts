@@ -169,6 +169,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
 
       listLoaded = true
       appliedRef.current = { filters, snapshotId: listResponse.snapshotId, generation: requestSeq }
+      setSummary(null)
       setRecords(listResponse)
       setPageState(listResponse.page)
       setPageSizeState(listResponse.pageSize)

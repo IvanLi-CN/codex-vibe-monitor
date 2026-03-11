@@ -126,8 +126,8 @@ describe('RecordsPage suggestions', () => {
       pageSize: 20,
       sortBy: 'occurredAt',
       sortOrder: 'desc',
-      records: { snapshotId: 42, total: 0, page: 1, pageSize: 20, records: [] },
-      summary: createSummary(),
+      records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
+      summary: { ...createSummary(), snapshotId: 42 },
       recordsError: null,
       summaryError: null,
       isSearching: false,
@@ -166,6 +166,6 @@ describe('RecordsPage suggestions', () => {
     await flushAsync()
 
     expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(1)
-    expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledWith(expect.objectContaining({ snapshotId: 42 }))
+    expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledWith(expect.objectContaining({ snapshotId: 84 }))
   })
 })

@@ -60,7 +60,7 @@ export default function RecordsPage() {
     setSort,
   } = useInvocationRecords()
 
-  const appliedSnapshotId = summary?.snapshotId ?? records?.snapshotId
+  const appliedSnapshotId = records?.snapshotId ?? summary?.snapshotId
   const suggestionQuery = useMemo(
     () => buildInvocationSuggestionsQuery(draft, appliedSnapshotId),
     [appliedSnapshotId, draft],

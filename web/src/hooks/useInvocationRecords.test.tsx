@@ -448,6 +448,66 @@ describe('useInvocationRecords', () => {
     expect(text('summary-error')).toBe('')
   })
 
+  it('clears the old summary once a new list snapshot lands before summary resolves', async () => {
+    let resolveSummary: ((value: InvocationRecordsSummaryResponse) => void) | null = null
+    const nextSummaryPromise = new Promise<InvocationRecordsSummaryResponse>((resolve) => {
+      resolveSummary = resolve
+    })
+
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      if (query.model === 'next-model') {
+        return createListResponse({
+          snapshotId: 84,
+          page: 1,
+          pageSize: query.pageSize ?? 20,
+          total: 1,
+          records: [
+            {
+              id: 84,
+              invokeId: 'invoke-next',
+              occurredAt: '2026-03-10T02:00:00Z',
+              createdAt: '2026-03-10T02:00:00Z',
+              model: 'next-model',
+              status: 'success',
+            },
+          ],
+        })
+      }
+
+      return createListResponse({ snapshotId: 42 })
+    })
+    apiMocks.fetchInvocationRecordsSummary.mockImplementation(async (query) => {
+      if (query.snapshotId === 84) {
+        return nextSummaryPromise
+      }
+      return createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 })
+    })
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }))
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('summary-snapshot')).toBe('42')
+
+    click('draft-model')
+    click('search')
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('84')
+    expect(text('summary-snapshot')).toBe('0')
+    expect(text('summary-loading')).toBe('yes')
+
+    if (!resolveSummary) {
+      throw new Error('next summary resolver missing')
+    }
+    const resolveSummaryFn = resolveSummary as (value: InvocationRecordsSummaryResponse) => void
+    resolveSummaryFn(createSummaryResponse({ snapshotId: 84, newRecordsCount: 0 }))
+    await flushAsync()
+
+    expect(text('summary-snapshot')).toBe('84')
+    expect(text('summary-loading')).toBe('no')
+  })
+
   it('keeps the last summary visible when new-count polling fails', async () => {
     vi.useFakeTimers()
 
