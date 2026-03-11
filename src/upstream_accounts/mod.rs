@@ -2133,25 +2133,31 @@ async fn parse_token_response(response: reqwest::Response) -> Result<OAuthTokenR
     serde_json::from_str(&body).context("failed to decode OAuth token response")
 }
 
+fn build_usage_endpoint_url(base_url: &Url) -> Result<Url> {
+    let usage_path = if base_url.path().contains("/backend-api") {
+        USAGE_PATH_STYLE_CHATGPT
+    } else {
+        USAGE_PATH_STYLE_CODEX_API
+    };
+    let base_path = base_url.path().trim_end_matches('/');
+    let resolved_path = if base_path.is_empty() || base_path == "/" {
+        usage_path.to_string()
+    } else {
+        format!("{base_path}/{}", usage_path.trim_start_matches('/'))
+    };
+    let mut url = base_url.clone();
+    url.set_path(&resolved_path);
+    Ok(url)
+}
+
 async fn fetch_usage_snapshot(
     client: &Client,
     config: &AppConfig,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Result<NormalizedUsageSnapshot> {
-    let path = if config
-        .upstream_accounts_usage_base_url
-        .path()
-        .contains("/backend-api")
-    {
-        USAGE_PATH_STYLE_CHATGPT
-    } else {
-        USAGE_PATH_STYLE_CODEX_API
-    };
-    let url = config
-        .upstream_accounts_usage_base_url
-        .join(path.trim_start_matches('/'))
-        .context("failed to join usage endpoint")?;
+    let url = build_usage_endpoint_url(&config.upstream_accounts_usage_base_url)
+        .context("failed to build usage endpoint")?;
     let mut request = client
         .get(url)
         .bearer_auth(access_token)
@@ -2726,6 +2732,25 @@ mod tests {
         assert_eq!(claims.chatgpt_plan_type.as_deref(), Some("pro"));
         assert_eq!(claims.chatgpt_user_id.as_deref(), Some("user_123"));
         assert_eq!(claims.chatgpt_account_id.as_deref(), Some("org_123"));
+    }
+
+    #[test]
+    fn build_usage_endpoint_url_preserves_backend_api_prefix() {
+        let base = Url::parse("https://chatgpt.com/backend-api").expect("chatgpt base");
+        let resolved = build_usage_endpoint_url(&base).expect("resolved usage url");
+        assert_eq!(
+            resolved.as_str(),
+            "https://chatgpt.com/backend-api/wham/usage"
+        );
+
+        let base_with_slash =
+            Url::parse("https://chatgpt.com/backend-api/").expect("chatgpt base with slash");
+        let resolved_with_slash =
+            build_usage_endpoint_url(&base_with_slash).expect("resolved usage url");
+        assert_eq!(
+            resolved_with_slash.as_str(),
+            "https://chatgpt.com/backend-api/wham/usage"
+        );
     }
 
     #[test]
