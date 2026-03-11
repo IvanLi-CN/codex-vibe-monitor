@@ -1836,6 +1836,27 @@ pub(crate) fn resolve_daily_date_range(
     Ok((start_local, end_local))
 }
 
+fn rollup_day_boundaries_match_reporting_tz(
+    reporting_tz: Tz,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> bool {
+    let mut cursor = start_date;
+    while cursor <= end_date {
+        let midnight = cursor
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight should be representable");
+        if local_naive_to_utc(midnight, reporting_tz) != local_naive_to_utc(midnight, Shanghai) {
+            return false;
+        }
+        cursor = cursor
+            .succ_opt()
+            .unwrap_or(cursor + ChronoDuration::days(1));
+    }
+
+    true
+}
+
 pub(crate) async fn fetch_timeseries_daily(
     state: Arc<AppState>,
     params: TimeseriesQuery,
@@ -1857,6 +1878,28 @@ pub(crate) async fn fetch_timeseries_daily(
         cursor = cursor
             .succ_opt()
             .unwrap_or(cursor + ChronoDuration::days(1));
+    }
+
+    // Archived invocation rollups are stored with Asia/Shanghai day semantics, so only
+    // merge them when the requested reporting timezone uses the same day boundaries.
+    if rollup_day_boundaries_match_reporting_tz(reporting_tz, start_date, end_date) {
+        let rollups =
+            query_invocation_rollup_daily_range(&state.pool, start_date, end_date, source_scope)
+                .await?;
+        for rollup in rollups {
+            let Ok(local_date) = NaiveDate::parse_from_str(&rollup.stats_date, "%Y-%m-%d") else {
+                continue;
+            };
+            if local_date < start_date || local_date > end_date {
+                continue;
+            }
+            let entry = aggregates.entry(local_date).or_default();
+            entry.total_count += rollup.total_count;
+            entry.success_count += rollup.success_count;
+            entry.failure_count += rollup.failure_count;
+            entry.total_tokens += rollup.total_tokens;
+            entry.total_cost += rollup.total_cost;
+        }
     }
 
     let mut records_query = QueryBuilder::new(
