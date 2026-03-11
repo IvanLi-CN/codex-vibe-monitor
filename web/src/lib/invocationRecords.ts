@@ -172,6 +172,17 @@ export function buildAppliedInvocationFilters(
   }
 }
 
+export function buildInvocationSuggestionsQuery(
+  draft: InvocationRecordsDraftFilters,
+  snapshotId?: number,
+  now = new Date(),
+): Omit<InvocationRecordsQuery, 'page' | 'pageSize' | 'sortBy' | 'sortOrder'> {
+  return {
+    ...buildAppliedInvocationFilters(draft, now),
+    snapshotId,
+  }
+}
+
 export function buildInvocationRecordsQuery(
   base: Omit<InvocationRecordsQuery, 'page' | 'pageSize' | 'sortBy' | 'sortOrder' | 'snapshotId'>,
   options: {

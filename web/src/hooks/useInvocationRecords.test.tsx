@@ -153,6 +153,7 @@ function Probe() {
     <div>
       <div data-testid="focus">{state.focus}</div>
       <div data-testid="page">{state.page}</div>
+      <div data-testid="page-size">{state.pageSize}</div>
       <div data-testid="snapshot">{state.records?.snapshotId ?? 0}</div>
       <div data-testid="model">{state.records?.records[0]?.model ?? ''}</div>
       <div data-testid="new-count">{state.summary?.newRecordsCount ?? 0}</div>
@@ -167,6 +168,9 @@ function Probe() {
       </button>
       <button data-testid="page-2" type="button" onClick={() => void state.setPage(2)}>
         page2
+      </button>
+      <button data-testid="page-size-50" type="button" onClick={() => void state.setPageSize(50)}>
+        pageSize50
       </button>
       <button data-testid="search" type="button" onClick={() => void state.search()}>
         search
@@ -435,6 +439,98 @@ describe('useInvocationRecords', () => {
     expect(text('summary-error')).toBe('')
     expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledTimes(1)
     expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores stale page-size responses that race with a newer search snapshot', async () => {
+    let resolveSearch: ((value: InvocationRecordsResponse) => void) | null = null
+    let resolveOldPageSize: ((value: InvocationRecordsResponse) => void) | null = null
+    const searchPromise = new Promise<InvocationRecordsResponse>((resolve) => {
+      resolveSearch = resolve
+    })
+    const oldPageSizePromise = new Promise<InvocationRecordsResponse>((resolve) => {
+      resolveOldPageSize = resolve
+    })
+
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      if (query.model === 'next-model') {
+        return searchPromise
+      }
+
+      if (query.snapshotId === 42 && query.pageSize === 50) {
+        return oldPageSizePromise
+      }
+
+      return createListResponse({ snapshotId: 42 })
+    })
+
+    apiMocks.fetchInvocationRecordsSummary.mockImplementation(async (query) =>
+      createSummaryResponse({ snapshotId: query.snapshotId ?? 42, newRecordsCount: 0 }),
+    )
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }))
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('page-size')).toBe('20')
+
+    click('draft-model')
+    click('search')
+    await flushAsync()
+    click('page-size-50')
+    await flushAsync()
+
+    if (!resolveSearch || !resolveOldPageSize) {
+      throw new Error('missing async resolver')
+    }
+    const resolveSearchFn = resolveSearch as (value: InvocationRecordsResponse) => void
+    const resolveOldPageSizeFn = resolveOldPageSize as (value: InvocationRecordsResponse) => void
+
+    resolveSearchFn(
+      createListResponse({
+        snapshotId: 84,
+        total: 1,
+        page: 1,
+        pageSize: 20,
+        records: [
+          {
+            id: 84,
+            invokeId: 'invoke-next',
+            occurredAt: '2026-03-10T02:00:00Z',
+            createdAt: '2026-03-10T02:00:00Z',
+            model: 'next-model',
+            status: 'success',
+          },
+        ],
+      }),
+    )
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('84')
+    expect(text('model')).toBe('next-model')
+    expect(text('page-size')).toBe('20')
+
+    resolveOldPageSizeFn(
+      createListResponse({
+        snapshotId: 42,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 2,
+            invokeId: 'invoke-old',
+            occurredAt: '2026-03-10T00:05:00Z',
+            createdAt: '2026-03-10T00:05:00Z',
+            model: 'baseline-model',
+            status: 'failed',
+          },
+        ],
+      }),
+    )
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('84')
+    expect(text('model')).toBe('next-model')
+    expect(text('page-size')).toBe('20')
   })
 
   it('ignores stale page responses once a new search starts', async () => {

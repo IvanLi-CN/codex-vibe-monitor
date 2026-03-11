@@ -100,20 +100,28 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     async (nextPage: number, nextPageSize: number, nextSortBy: InvocationSortBy, nextSortOrder: InvocationSortOrder) => {
       const applied = appliedRef.current
       if (!applied) return
+      const { filters, generation, snapshotId } = applied
       const requestSeq = recordsSeqRef.current + 1
       recordsSeqRef.current = requestSeq
       setIsRecordsLoading(true)
+
+      const isCurrentRequest = () => {
+        if (requestSeq !== recordsSeqRef.current) return false
+        const latest = appliedRef.current
+        return !!latest && latest.generation === generation && latest.snapshotId === snapshotId
+      }
+
       try {
         const response = await fetchInvocationRecords(
-          buildInvocationRecordsQuery(applied.filters, {
+          buildInvocationRecordsQuery(filters, {
             page: nextPage,
             pageSize: nextPageSize,
             sortBy: nextSortBy,
             sortOrder: nextSortOrder,
-            snapshotId: applied.snapshotId,
+            snapshotId,
           }),
         )
-        if (requestSeq !== recordsSeqRef.current) return
+        if (!isCurrentRequest()) return
         setRecords(response)
         setPageState(response.page)
         setPageSizeState(response.pageSize)
@@ -121,10 +129,10 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         setSortOrderState(nextSortOrder)
         setRecordsError(null)
       } catch (error) {
-        if (requestSeq !== recordsSeqRef.current) return
+        if (!isCurrentRequest()) return
         setRecordsError(error instanceof Error ? error.message : String(error))
       } finally {
-        if (requestSeq === recordsSeqRef.current) {
+        if (isCurrentRequest()) {
           setIsRecordsLoading(false)
         }
       }

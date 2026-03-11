@@ -9350,6 +9350,66 @@ async fn fetch_invocation_summary_resolves_failure_class_for_legacy_rows() {
 }
 
 #[tokio::test]
+async fn fetch_invocation_summary_normalizes_top_level_success_and_failure_counts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("summary-success-trimmed")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind(" SUCCESS ")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert trimmed success row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            error_message,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("summary-null-status-failure")
+    .bind("2026-03-10 09:01:00")
+    .bind(SOURCE_PROXY)
+    .bind("upstream exploded")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert null-status failure row");
+
+    let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
+        .await
+        .expect("summary query should succeed");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.exception.failure_count, 1);
+    assert_eq!(summary.exception.service_failure_count, 1);
+}
+
+#[tokio::test]
 async fn fetch_invocation_summary_keeps_zero_ms_network_samples() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -9783,6 +9843,125 @@ async fn fetch_invocation_suggestions_orders_by_count_and_respects_time_bounds()
         "suggestions should not contain empty values"
     );
     assert!(!suggestions.model.has_more);
+}
+
+#[tokio::test]
+async fn fetch_invocation_suggestions_use_snapshot_and_keep_other_filters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at, model, proxy) in [
+        (
+            "suggest-snapshot-alpha",
+            "2026-03-10 09:00:00",
+            "model-alpha",
+            "proxy-a",
+        ),
+        (
+            "suggest-snapshot-beta",
+            "2026-03-10 09:01:00",
+            "model-beta",
+            "proxy-a",
+        ),
+        (
+            "suggest-snapshot-gamma",
+            "2026-03-10 09:02:00",
+            "model-gamma",
+            "proxy-b",
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                payload,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind(json!({ "proxyDisplayName": proxy }).to_string())
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert suggestion snapshot row");
+    }
+
+    let Json(initial_list) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            page: Some(1),
+            page_size: Some(20),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("seed list query should succeed");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            payload,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("suggest-snapshot-delta")
+    .bind("2026-03-10 09:03:00")
+    .bind(SOURCE_PROXY)
+    .bind("model-delta")
+    .bind(json!({ "proxyDisplayName": "proxy-a" }).to_string())
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert post-snapshot suggestion row");
+
+    let Json(suggestions) = fetch_invocation_suggestions(
+        State(state),
+        Query(ListQuery {
+            snapshot_id: Some(initial_list.snapshot_id),
+            model: Some("model-alpha".to_string()),
+            proxy: Some("proxy-a".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("suggestions query should succeed");
+
+    let model_values = suggestions
+        .model
+        .items
+        .iter()
+        .map(|item| item.value.as_str())
+        .collect::<Vec<_>>();
+    assert!(model_values.contains(&"model-alpha"));
+    assert!(model_values.contains(&"model-beta"));
+    assert!(
+        !model_values.contains(&"model-delta"),
+        "suggestions should stay inside the frozen snapshot"
+    );
+    assert!(
+        !model_values.contains(&"model-gamma"),
+        "suggestions should keep the other applied proxy filter"
+    );
 }
 
 #[tokio::test]

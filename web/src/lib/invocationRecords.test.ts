@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildAppliedInvocationFilters, createDefaultInvocationRecordsDraft } from './invocationRecords'
+import { buildAppliedInvocationFilters, buildInvocationSuggestionsQuery, createDefaultInvocationRecordsDraft } from './invocationRecords'
 
 describe('buildAppliedInvocationFilters', () => {
   it('rejects fractional token filters before sending the request', () => {
@@ -38,5 +38,47 @@ describe('buildAppliedInvocationFilters', () => {
     const filters = buildAppliedInvocationFilters(draft)
     const expected = new Date('2026-03-10T10:32:45').getTime()
     expect(new Date(filters.to as string).getTime()).toBe(expected)
+  })
+
+
+  it('builds suggestion queries from the full draft filters and current snapshot', () => {
+    const draft = {
+      ...createDefaultInvocationRecordsDraft(),
+      rangePreset: 'custom' as const,
+      customFrom: '2026-03-10T10:00:00',
+      customTo: '2026-03-10T10:32:45',
+      status: ' failed ',
+      model: ' gpt-5.4 ',
+      proxy: ' proxy-a ',
+      endpoint: ' /v1/responses ',
+      failureClass: ' service_failure ',
+      failureKind: ' http_502 ',
+      promptCacheKey: ' cache-key ',
+      requesterIp: ' 127.0.0.1 ',
+      keyword: ' retry ',
+      minTotalTokens: '10',
+      maxTotalTokens: '20',
+      minTotalMs: '1.5',
+      maxTotalMs: '2.5',
+    }
+
+    const query = buildInvocationSuggestionsQuery(draft, 99)
+
+    expect(query.snapshotId).toBe(99)
+    expect(query.status).toBe('failed')
+    expect(query.model).toBe('gpt-5.4')
+    expect(query.proxy).toBe('proxy-a')
+    expect(query.endpoint).toBe('/v1/responses')
+    expect(query.failureClass).toBe('service_failure')
+    expect(query.failureKind).toBe('http_502')
+    expect(query.promptCacheKey).toBe('cache-key')
+    expect(query.requesterIp).toBe('127.0.0.1')
+    expect(query.keyword).toBe('retry')
+    expect(query.minTotalTokens).toBe(10)
+    expect(query.maxTotalTokens).toBe(20)
+    expect(query.minTotalMs).toBe(1.5)
+    expect(query.maxTotalMs).toBe(2.5)
+    expect(query.from).toBeDefined()
+    expect(query.to).toBeDefined()
   })
 })

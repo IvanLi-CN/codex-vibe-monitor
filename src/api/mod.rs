@@ -9,6 +9,7 @@ const INVOCATION_FAILURE_KIND_SQL: &str = "COALESCE(CASE WHEN json_valid(payload
 const INVOCATION_REQUESTER_IP_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
 const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END";
+const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
 
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
 // Keep classification consistent with `resolve_failure_classification` without requiring a
@@ -758,6 +759,7 @@ async fn query_invocation_suggestion_bucket(
     pool: &Pool<Sqlite>,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
+    snapshot: Option<SnapshotConstraint>,
     sql_expr: &str,
     limit: i64,
 ) -> Result<InvocationSuggestionBucket> {
@@ -770,7 +772,7 @@ async fn query_invocation_suggestion_bucket(
     let mut query = QueryBuilder::new("SELECT MIN(TRIM(COALESCE(");
     query.push(sql_expr);
     query.push(", ''))) AS value, COUNT(*) AS count FROM codex_invocations WHERE 1 = 1");
-    apply_invocation_records_filters(&mut query, filters, source_scope, None);
+    apply_invocation_records_filters(&mut query, filters, source_scope, snapshot);
     query.push(" AND TRIM(COALESCE(");
     query.push(sql_expr);
     query.push(", '')) != ''");
@@ -960,16 +962,19 @@ pub(crate) async fn fetch_invocation_summary(
         .snapshot_id
         .unwrap_or(resolve_invocation_snapshot_id(&state.pool, source_scope).await?);
 
-    let mut totals_query = QueryBuilder::new(
+    let totals_sql = format!(
         "SELECT \
          COUNT(*) AS total_count, \
-         COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) AS success_count, \
-         COALESCE(SUM(CASE WHEN status IS NOT NULL AND status NOT IN ('success', 'running', 'pending') THEN 1 ELSE 0 END), 0) AS failure_count, \
+         COALESCE(SUM(CASE WHEN {status_norm} = 'success' THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
          COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens \
          FROM codex_invocations WHERE 1 = 1",
+        status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
+        resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
     );
+    let mut totals_query = QueryBuilder::new(totals_sql);
     apply_invocation_records_filters(
         &mut totals_query,
         &request.filters,
@@ -1055,53 +1060,79 @@ pub(crate) async fn fetch_invocation_suggestions(
     Query(params): Query<ListQuery>,
 ) -> Result<Json<InvocationSuggestionsResponse>, ApiError> {
     const SUGGESTION_LIMIT: i64 = 30;
-    let filters = build_invocation_filters(&params)?;
+    let request = build_invocation_list_request(&params, state.config.list_limit_max as i64)?;
+    let filters = request.filters;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let snapshot = request.snapshot_id.map(SnapshotConstraint::UpTo);
 
     let model = query_invocation_suggestion_bucket(
         &state.pool,
-        &filters,
+        &InvocationRecordsFilters {
+            model: None,
+            ..filters.clone()
+        },
         source_scope,
+        snapshot,
         "model",
         SUGGESTION_LIMIT,
     )
     .await?;
     let proxy = query_invocation_suggestion_bucket(
         &state.pool,
-        &filters,
+        &InvocationRecordsFilters {
+            proxy: None,
+            ..filters.clone()
+        },
         source_scope,
+        snapshot,
         INVOCATION_PROXY_DISPLAY_SQL,
         SUGGESTION_LIMIT,
     )
     .await?;
     let endpoint = query_invocation_suggestion_bucket(
         &state.pool,
-        &filters,
+        &InvocationRecordsFilters {
+            endpoint: None,
+            ..filters.clone()
+        },
         source_scope,
+        snapshot,
         INVOCATION_ENDPOINT_SQL,
         SUGGESTION_LIMIT,
     )
     .await?;
     let failure_kind = query_invocation_suggestion_bucket(
         &state.pool,
-        &filters,
+        &InvocationRecordsFilters {
+            failure_kind: None,
+            ..filters.clone()
+        },
         source_scope,
+        snapshot,
         INVOCATION_FAILURE_KIND_SQL,
         SUGGESTION_LIMIT,
     )
     .await?;
     let prompt_cache_key = query_invocation_suggestion_bucket(
         &state.pool,
-        &filters,
+        &InvocationRecordsFilters {
+            prompt_cache_key: None,
+            ..filters.clone()
+        },
         source_scope,
+        snapshot,
         INVOCATION_PROMPT_CACHE_KEY_SQL,
         SUGGESTION_LIMIT,
     )
     .await?;
     let requester_ip = query_invocation_suggestion_bucket(
         &state.pool,
-        &filters,
+        &InvocationRecordsFilters {
+            requester_ip: None,
+            ..filters.clone()
+        },
         source_scope,
+        snapshot,
         INVOCATION_REQUESTER_IP_SQL,
         SUGGESTION_LIMIT,
     )

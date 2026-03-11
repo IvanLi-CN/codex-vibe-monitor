@@ -14,7 +14,7 @@ import {
   type InvocationSortOrder,
   type InvocationSuggestionsResponse,
 } from '../lib/api'
-import { createDefaultCustomRange, RECORDS_PAGE_SIZE_OPTIONS, resolveRangeBoundsFromValues } from '../lib/invocationRecords'
+import { buildInvocationSuggestionsQuery, createDefaultCustomRange, RECORDS_PAGE_SIZE_OPTIONS } from '../lib/invocationRecords'
 import { cn } from '../lib/utils'
 
 const inputClassName =
@@ -58,16 +58,11 @@ export default function RecordsPage() {
     setSort,
   } = useInvocationRecords()
 
-  const suggestionQuery = useMemo(() => {
-    const bounds = resolveRangeBoundsFromValues(draft.rangePreset, draft.customFrom, draft.customTo)
-    return {
-      rangePreset: draft.rangePreset,
-      from: bounds.from,
-      to: bounds.to,
-      status: draft.status.trim() ? draft.status.trim() : undefined,
-      failureClass: draft.failureClass.trim() ? draft.failureClass.trim() : undefined,
-    }
-  }, [draft.customFrom, draft.customTo, draft.failureClass, draft.rangePreset, draft.status])
+  const appliedSnapshotId = summary?.snapshotId ?? records?.snapshotId
+  const suggestionQuery = useMemo(
+    () => buildInvocationSuggestionsQuery(draft, appliedSnapshotId),
+    [appliedSnapshotId, draft],
+  )
 
   const [suggestions, setSuggestions] = useState<InvocationSuggestionsResponse | null>(null)
   const suggestionsSeqRef = useRef(0)
@@ -128,6 +123,7 @@ export default function RecordsPage() {
   const isCustomRange = draft.rangePreset === 'custom'
   const newRecordsCount = summary?.newRecordsCount ?? 0
   const tableLoading = isRecordsLoading
+  const listControlsDisabled = isSearching || isRecordsLoading
   const modelBucket = suggestions?.model
   const proxyBucket = suggestions?.proxy
   const endpointBucket = suggestions?.endpoint
@@ -414,7 +410,13 @@ export default function RecordsPage() {
               </div>
               <label className="field min-w-[7rem]">
                 <span className="field-label">{t('records.list.pageSize')}</span>
-                <select name="pageSize" className="field-select field-select-sm" value={pageSize} onChange={(event) => void setPageSize(Number(event.target.value))}>
+                <select
+                  name="pageSize"
+                  className="field-select field-select-sm"
+                  value={pageSize}
+                  disabled={listControlsDisabled}
+                  onChange={(event) => void setPageSize(Number(event.target.value))}
+                >
                   {RECORDS_PAGE_SIZE_OPTIONS.map((value) => (
                     <option key={value} value={value}>
                       {value}
@@ -424,7 +426,13 @@ export default function RecordsPage() {
               </label>
               <label className="field min-w-[10rem]">
                 <span className="field-label">{t('records.list.sortBy')}</span>
-                <select name="sortBy" className="field-select field-select-sm" value={sortBy} onChange={(event) => handleSortByChange(event.target.value as InvocationSortBy)}>
+                <select
+                  name="sortBy"
+                  className="field-select field-select-sm"
+                  value={sortBy}
+                  disabled={listControlsDisabled}
+                  onChange={(event) => handleSortByChange(event.target.value as InvocationSortBy)}
+                >
                   {sortOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -434,7 +442,13 @@ export default function RecordsPage() {
               </label>
               <label className="field min-w-[8rem]">
                 <span className="field-label">{t('records.list.sortOrder')}</span>
-                <select name="sortOrder" className="field-select field-select-sm" value={sortOrder} onChange={(event) => handleSortOrderChange(event.target.value as InvocationSortOrder)}>
+                <select
+                  name="sortOrder"
+                  className="field-select field-select-sm"
+                  value={sortOrder}
+                  disabled={listControlsDisabled}
+                  onChange={(event) => handleSortOrderChange(event.target.value as InvocationSortOrder)}
+                >
                   <option value="desc">{t('records.list.sort.desc')}</option>
                   <option value="asc">{t('records.list.sort.asc')}</option>
                 </select>
