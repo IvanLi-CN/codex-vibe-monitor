@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
     env,
+    future::Future,
     hash::{Hash, Hasher},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -36,7 +37,7 @@ use clap::Parser;
 use dotenvy::dotenv;
 use flate2::read::GzDecoder;
 use flate2::{Compression, write::GzEncoder};
-use futures_util::{StreamExt, stream};
+use futures_util::{FutureExt, StreamExt, future::Shared, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Proxy, Url, header};
@@ -461,12 +462,12 @@ async fn main() -> Result<()> {
     log_startup_phase("schema", schema_started_at);
     if cli.retention_run_once {
         let summary =
-            run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run)).await?;
+            run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run), None)
+                .await?;
         info!(?summary, "retention maintenance run-once finished");
         return Ok(());
     }
 
-    let runtime_init_started_at = Instant::now();
     let pricing_catalog = load_pricing_catalog(&pool).await?;
     let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
     let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
@@ -488,6 +489,7 @@ async fn main() -> Result<()> {
     let http_clients = HttpClients::build(&config)?;
     let (tx, _rx) = broadcast::channel(128);
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+    let shutdown = CancellationToken::new();
 
     let state = Arc::new(AppState {
         config: config.clone(),
@@ -497,7 +499,9 @@ async fn main() -> Result<()> {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(false)),
+        shutdown: shutdown.clone(),
         semaphore: semaphore.clone(),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -515,70 +519,519 @@ async fn main() -> Result<()> {
         )),
     });
 
-    if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
-        warn!(
-            error = %err,
-            "failed to initialize forward proxy xray routes at startup"
-        );
+    let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
+
+    run_runtime_until_shutdown(state, startup_started_at, async move {
+        let _ = signal_listener.await;
+    })
+    .await
+}
+
+fn begin_runtime_shutdown_if_requested<F>(
+    shutdown_signal: &Shared<F>,
+    cancel: &CancellationToken,
+) -> bool
+where
+    F: Future<Output = ()>,
+{
+    if cancel.is_cancelled() {
+        return true;
     }
-    log_startup_phase("runtime_init", runtime_init_started_at);
+    if shutdown_signal.clone().now_or_never().is_some() {
+        begin_runtime_shutdown(cancel);
+        return true;
+    }
+    false
+}
 
-    // Shared cancellation token for graceful shutdown
-    let cancel = CancellationToken::new();
+enum StartupStageOutcome<T> {
+    SkippedByShutdown,
+    Completed { result: T, shutdown_requested: bool },
+}
 
-    // Listen for OS signals and trigger cancellation
-    let cancel_for_signals = cancel.clone();
-    let signals_task = tokio::spawn(async move {
-        shutdown_listener().await;
-        cancel_for_signals.cancel();
-        info!("shutdown signal received; beginning graceful shutdown");
+struct TrackedStartupStage<Stage> {
+    stage: std::pin::Pin<Box<Stage>>,
+    started: bool,
+}
+
+impl<Stage> TrackedStartupStage<Stage> {
+    fn new(stage: Stage) -> Self {
+        Self {
+            stage: Box::pin(stage),
+            started: false,
+        }
+    }
+
+    fn has_started(&self) -> bool {
+        self.started
+    }
+}
+
+impl<Stage> TrackedStartupStage<Stage>
+where
+    Stage: Future,
+{
+    async fn finish(&mut self) -> Stage::Output {
+        self.started = true;
+        self.stage.as_mut().await
+    }
+}
+
+impl<Stage> Future for TrackedStartupStage<Stage>
+where
+    Stage: Future,
+{
+    type Output = Stage::Output;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.as_mut().get_mut();
+        this.started = true;
+        this.stage.as_mut().poll(cx)
+    }
+}
+
+async fn run_startup_stage_until_shutdown<T, Stage, Shutdown>(
+    shutdown_signal: &Shared<Shutdown>,
+    cancel: &CancellationToken,
+    stage: Stage,
+) -> StartupStageOutcome<T>
+where
+    Stage: Future<Output = T>,
+    Shutdown: Future<Output = ()>,
+{
+    if begin_runtime_shutdown_if_requested(shutdown_signal, cancel) {
+        return StartupStageOutcome::SkippedByShutdown;
+    }
+
+    let stage = TrackedStartupStage::new(stage);
+    tokio::pin!(stage);
+    tokio::select! {
+        biased;
+        _ = shutdown_signal.clone() => {
+            begin_runtime_shutdown(cancel);
+            if stage.as_ref().get_ref().has_started() {
+                StartupStageOutcome::Completed {
+                    result: stage.as_mut().get_mut().finish().await,
+                    shutdown_requested: true,
+                }
+            } else {
+                StartupStageOutcome::SkippedByShutdown
+            }
+        }
+        result = &mut stage => StartupStageOutcome::Completed {
+            shutdown_requested: begin_runtime_shutdown_if_requested(shutdown_signal, cancel),
+            result,
+        },
+    }
+}
+
+async fn drain_runtime_after_pending_shutdown(
+    state: Arc<AppState>,
+    mut shutdown_watcher: JoinHandle<()>,
+    server_handle: Option<JoinHandle<()>>,
+    poller_handle: Option<JoinHandle<()>>,
+    forward_proxy_handle: Option<JoinHandle<()>>,
+    retention_handle: Option<JoinHandle<()>>,
+    startup_backfill_handle: Option<JoinHandle<()>>,
+) -> Result<()> {
+    let shutdown_cancel = state.shutdown.clone();
+    tokio::select! {
+        _ = shutdown_cancel.cancelled() => {
+            shutdown_watcher.abort();
+            let _ = shutdown_watcher.await;
+        }
+        _ = &mut shutdown_watcher => {}
+    }
+    drain_runtime_after_shutdown(
+        state,
+        server_handle,
+        poller_handle,
+        forward_proxy_handle,
+        retention_handle,
+        startup_backfill_handle,
+    )
+    .await
+}
+
+async fn run_runtime_until_shutdown<F>(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    shutdown_signal: F,
+) -> Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let cancel = state.shutdown.clone();
+    let runtime_init_started_at = Instant::now();
+    let shutdown_signal = shutdown_signal.shared();
+    let shutdown_cancel = cancel.clone();
+    let shutdown_relay_signal = shutdown_signal.clone();
+    let shutdown_watcher = tokio::spawn(async move {
+        shutdown_relay_signal.await;
+        begin_runtime_shutdown(&shutdown_cancel);
     });
+    let mut poller_handle = None;
+    let mut forward_proxy_handle = None;
+    let mut retention_handle = None;
+    let mut server_handle = None;
+    let mut startup_backfill_handle = None;
 
-    let poller_handle = if state.config.crs_stats.is_some() {
-        Some(spawn_scheduler(state.clone(), cancel.clone()))
-    } else {
-        info!("crs stats relay is disabled; scheduler will not start");
-        None
+    let sync_stage = run_startup_stage_until_shutdown(
+        &shutdown_signal,
+        &cancel,
+        sync_forward_proxy_routes(state.as_ref()),
+    )
+    .await;
+    let sync_shutdown_requested = match sync_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            if let Err(err) = result {
+                warn!(error = %err, "failed to initialize forward proxy xray routes at startup");
+            }
+            shutdown_requested
+        }
     };
-    let forward_proxy_handle = spawn_forward_proxy_maintenance(state.clone(), cancel.clone());
-    let retention_handle = spawn_data_retention_maintenance(state.clone(), cancel.clone());
+    log_startup_phase("runtime_init", runtime_init_started_at);
+    if sync_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    let scheduler_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        if state.config.crs_stats.is_some() {
+            Some(spawn_scheduler(state.clone(), cancel.clone()))
+        } else {
+            info!("crs stats relay is disabled; scheduler will not start");
+            None
+        }
+    })
+    .await;
+    let scheduler_shutdown_requested = match scheduler_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            poller_handle = result;
+            shutdown_requested
+        }
+    };
+    if scheduler_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    let forward_proxy_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        Some(spawn_forward_proxy_maintenance(
+            state.clone(),
+            cancel.clone(),
+        ))
+    })
+    .await;
+    let forward_proxy_shutdown_requested = match forward_proxy_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            forward_proxy_handle = result;
+            shutdown_requested
+        }
+    };
+    if forward_proxy_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    let retention_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        Some(spawn_data_retention_maintenance(
+            state.clone(),
+            cancel.clone(),
+        ))
+    })
+    .await;
+    let retention_shutdown_requested = match retention_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            retention_handle = result;
+            shutdown_requested
+        }
+    };
+    if retention_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
     let http_ready_started_at = Instant::now();
-    let server_handle = spawn_http_server(state.clone(), cancel.clone()).await?;
+    let http_stage = run_startup_stage_until_shutdown(
+        &shutdown_signal,
+        &cancel,
+        spawn_http_server(state.clone()),
+    )
+    .await;
+    let http_shutdown_requested = match http_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            let (_http_addr, handle) = result?;
+            server_handle = Some(handle);
+            shutdown_requested
+        }
+    };
+    if http_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    let startup_backfill_stage =
+        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+            Some(spawn_startup_backfill_maintenance(
+                state.clone(),
+                cancel.clone(),
+            ))
+        })
+        .await;
+    let startup_backfill_shutdown_requested = match startup_backfill_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            startup_backfill_handle = result;
+            shutdown_requested
+        }
+    };
+    if startup_backfill_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    state.startup_ready.store(true, Ordering::Release);
     log_startup_phase("http_ready", http_ready_started_at);
     info!(
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
         "application readiness reached"
     );
-    let startup_backfill_handle = spawn_startup_backfill_maintenance(state.clone(), cancel.clone());
 
-    // Wait until a shutdown signal is received, then wait for tasks to finish
-    let _ = signals_task.await;
-
-    if let Err(err) = server_handle.await {
-        error!(?err, "http server terminated unexpectedly");
+    tokio::select! {
+        biased;
+        _ = shutdown_signal => begin_runtime_shutdown(&cancel),
+        _ = cancel.cancelled() => {}
     }
-    if let Some(poller_handle) = poller_handle
-        && let Err(err) = poller_handle.await
+
+    drain_runtime_after_pending_shutdown(
+        state,
+        shutdown_watcher,
+        server_handle,
+        poller_handle,
+        forward_proxy_handle,
+        retention_handle,
+        startup_backfill_handle,
+    )
+    .await
+}
+
+fn begin_runtime_shutdown(cancel: &CancellationToken) {
+    if !cancel.is_cancelled() {
+        info!("shutdown signal received; beginning graceful shutdown");
+        cancel.cancel();
+    }
+}
+
+async fn drain_scheduler_inflight(mut inflight: Vec<JoinHandle<()>>) {
+    inflight.retain(|handle| !handle.is_finished());
+    for handle in inflight {
+        let _ = handle.await;
+    }
+}
+
+async fn drain_runtime_after_shutdown(
+    state: Arc<AppState>,
+    server_handle: Option<JoinHandle<()>>,
+    poller_handle: Option<JoinHandle<()>>,
+    forward_proxy_handle: Option<JoinHandle<()>>,
+    retention_handle: Option<JoinHandle<()>>,
+    startup_backfill_handle: Option<JoinHandle<()>>,
+) -> Result<()> {
+    if let Some(server_handle) = server_handle {
+        info!("http server graceful drain started");
+        if let Err(err) = server_handle.await {
+            error!(?err, "http server terminated unexpectedly");
+        }
+        info!("http server graceful drain finished");
+    }
+
+    if let Some(poller_handle) = poller_handle {
+        if let Err(err) = poller_handle.await {
+            error!(?err, "poller task terminated unexpectedly");
+        }
+        info!("scheduler drained");
+    }
+    if let Some(forward_proxy_handle) = forward_proxy_handle
+        && let Err(err) = forward_proxy_handle.await
     {
-        error!(?err, "poller task terminated unexpectedly");
-    }
-    if let Err(err) = forward_proxy_handle.await {
         error!(
             ?err,
             "forward proxy maintenance task terminated unexpectedly"
         );
     }
-    if let Err(err) = retention_handle.await {
+    if let Some(retention_handle) = retention_handle
+        && let Err(err) = retention_handle.await
+    {
         error!(?err, "retention maintenance task terminated unexpectedly");
     }
-    if let Err(err) = startup_backfill_handle.await {
+    if let Some(startup_backfill_handle) = startup_backfill_handle
+        && let Err(err) = startup_backfill_handle.await
+    {
         error!(
             ?err,
             "startup backfill maintenance task terminated unexpectedly"
         );
     }
 
+    let broadcast_handles = {
+        let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;
+        std::mem::take(&mut *guard)
+    };
+    if !broadcast_handles.is_empty() {
+        for broadcast_handle in broadcast_handles {
+            if let Err(err) = broadcast_handle.await {
+                error!(
+                    ?err,
+                    "summary/quota broadcast worker terminated unexpectedly"
+                );
+            }
+        }
+        info!("summary/quota broadcast worker drained");
+    }
+
     state.xray_supervisor.lock().await.shutdown_all().await;
+    info!("shutdown complete");
 
     Ok(())
 }
@@ -916,8 +1369,15 @@ async fn save_startup_backfill_progress(
     Ok(())
 }
 
-async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>) {
+async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &CancellationToken) {
     for task in StartupBackfillTask::ordered_tasks() {
+        if cancel.is_cancelled() {
+            info!(
+                task = task.log_label(),
+                "startup backfill maintenance stopped at a task boundary because shutdown is in progress"
+            );
+            break;
+        }
         if *task == StartupBackfillTask::ProxyUsage && !state.config.proxy_usage_backfill_on_startup
         {
             debug!(
@@ -1237,7 +1697,11 @@ fn spawn_startup_backfill_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        run_startup_backfill_maintenance_pass(state.clone()).await;
+        if cancel.is_cancelled() {
+            info!("startup backfill maintenance skipped because shutdown is already in progress");
+            return;
+        }
+        run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
 
         let mut ticker = interval(Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1250,7 +1714,7 @@ fn spawn_startup_backfill_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    run_startup_backfill_maintenance_pass(state.clone()).await;
+                    run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
                 }
             }
         }
@@ -1259,10 +1723,17 @@ fn spawn_startup_backfill_maintenance(
 
 fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandle<()> {
     tokio::spawn(async move {
-        // Track in-flight tasks so we can wait for them on shutdown
         let mut inflight: Vec<JoinHandle<()>> = Vec::new();
-        match schedule_poll(state.clone()).await {
-            Ok(h) => inflight.push(h),
+        if cancel.is_cancelled() {
+            info!("scheduler startup skipped because shutdown is already in progress");
+            return;
+        }
+        match schedule_poll(state.clone(), &cancel).await {
+            Ok(Some(handle)) => inflight.push(handle),
+            Ok(None) => {
+                info!("scheduler startup skipped because shutdown is already in progress");
+                return;
+            }
             Err(err) => warn!(?err, "initial poll failed"),
         }
 
@@ -1273,20 +1744,19 @@ fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandl
             tokio::select! {
                 _ = cancel.cancelled() => {
                     info!("scheduler received shutdown; waiting for in-flight polls");
-                    // Drain completed tasks first
-                    inflight.retain(|h| !h.is_finished());
-                    // Wait for remaining tasks to finish
-                    for h in inflight {
-                        let _ = h.await;
-                    }
+                    drain_scheduler_inflight(inflight).await;
                     break;
                 }
                 _ = ticker.tick() => {
-                    match schedule_poll(state.clone()).await {
-                        Ok(handle) => {
+                    match schedule_poll(state.clone(), &cancel).await {
+                        Ok(Some(handle)) => {
                             inflight.push(handle);
-                            // Clean up finished tasks to avoid unbounded growth
-                            inflight.retain(|h| !h.is_finished());
+                            inflight.retain(|handle| !handle.is_finished());
+                        }
+                        Ok(None) => {
+                            info!("scheduler received shutdown while waiting to start a new poll; waiting for in-flight polls");
+                            drain_scheduler_inflight(inflight).await;
+                            break;
                         }
                         Err(err) => {
                             warn!(?err, "scheduled poll failed");
@@ -1307,6 +1777,10 @@ fn spawn_forward_proxy_maintenance(
             let manager = state.forward_proxy.lock().await;
             snapshot_known_subscription_proxy_keys(&manager)
         };
+        if cancel.is_cancelled() {
+            info!("forward proxy maintenance skipped because shutdown is already in progress");
+            return;
+        }
         if let Err(err) = refresh_forward_proxy_subscriptions(
             state.clone(),
             true,
@@ -1567,7 +2041,13 @@ fn spawn_data_retention_maintenance(
             return;
         }
 
-        if let Err(err) = run_data_retention_maintenance(&state.pool, &state.config, None).await {
+        if cancel.is_cancelled() {
+            info!("data retention maintenance skipped because shutdown is already in progress");
+            return;
+        }
+        if let Err(err) =
+            run_data_retention_maintenance(&state.pool, &state.config, None, Some(&cancel)).await
+        {
             warn!(error = %err, "failed to run retention maintenance at startup");
         }
 
@@ -1581,7 +2061,12 @@ fn spawn_data_retention_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    if let Err(err) = run_data_retention_maintenance(&state.pool, &state.config, None).await {
+                    if let Err(err) = run_data_retention_maintenance(
+                        &state.pool,
+                        &state.config,
+                        None,
+                        Some(&cancel),
+                    ).await {
                         warn!(error = %err, "failed to run retention maintenance");
                     }
                 }
@@ -1590,10 +2075,21 @@ fn spawn_data_retention_maintenance(
     })
 }
 
+fn should_stop_data_retention_maintenance(shutdown: Option<&CancellationToken>) -> bool {
+    let should_stop = shutdown.is_some_and(CancellationToken::is_cancelled);
+    if should_stop {
+        info!(
+            "data retention maintenance stopped at a safe boundary because shutdown is in progress"
+        );
+    }
+    should_stop
+}
+
 async fn run_data_retention_maintenance(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     dry_run_override: Option<bool>,
+    shutdown: Option<&CancellationToken>,
 ) -> Result<RetentionRunSummary> {
     let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
     let mut summary = RetentionRunSummary {
@@ -1602,17 +2098,29 @@ async fn run_data_retention_maintenance(
     };
     let raw_path_fallback_root = config.database_path.parent();
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let pruned =
         prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await?;
     summary.invocation_details_pruned += pruned.0;
     summary.archive_batches_touched += pruned.1;
     summary.raw_files_removed += pruned.2;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let invocation_archive =
         archive_old_invocations(pool, config, raw_path_fallback_root, dry_run).await?;
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
 
     let proxy_archive = archive_timestamped_dataset(
         pool,
@@ -1626,6 +2134,10 @@ async fn run_data_retention_maintenance(
     summary.forward_proxy_attempt_rows_archived += proxy_archive.0;
     summary.archive_batches_touched += proxy_archive.1;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let snapshot_archive = archive_timestamped_dataset(
         pool,
         config,
@@ -1638,12 +2150,24 @@ async fn run_data_retention_maintenance(
     summary.stats_source_snapshot_rows_archived += snapshot_archive.0;
     summary.archive_batches_touched += snapshot_archive.1;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let quota_archive = compact_old_quota_snapshots(pool, config, dry_run).await?;
     summary.quota_snapshot_rows_archived += quota_archive.0;
     summary.archive_batches_touched += quota_archive.1;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     summary.orphan_raw_files_removed +=
         sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, dry_run).await?;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
 
     if !dry_run && summary.touched_anything() {
         sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
@@ -2642,13 +3166,19 @@ fn sha256_hex_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
-    let permit = state
-        .semaphore
-        .clone()
-        .acquire_owned()
-        .await
-        .context("failed to acquire scheduler permit")?;
+async fn schedule_poll(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+) -> Result<Option<JoinHandle<()>>> {
+    let permit = tokio::select! {
+        _ = cancel.cancelled() => return Ok(None),
+        permit = state.semaphore.clone().acquire_owned() => {
+            permit.context("failed to acquire scheduler permit")?
+        }
+    };
+    if cancel.is_cancelled() {
+        return Ok(None);
+    }
 
     let in_flight = state
         .config
@@ -2721,13 +3251,10 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
         drop(permit);
     });
 
-    Ok(handle)
+    Ok(Some(handle))
 }
 
-async fn spawn_http_server(
-    state: Arc<AppState>,
-    cancel: CancellationToken,
-) -> Result<JoinHandle<()>> {
+async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
     let cors_layer = build_cors_layer(&state.config);
     let mut router = Router::new()
         .route("/health", get(health_check))
@@ -2789,21 +3316,29 @@ async fn spawn_http_server(
     let listener = TcpListener::bind(&state.config.http_bind).await?;
     let addr = listener.local_addr()?;
     info!(%addr, "http server listening");
-    state.startup_ready.store(true, Ordering::Release);
 
+    let shutdown = state.shutdown.clone();
     let handle = tokio::spawn(async move {
         if let Err(err) = axum::serve(
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(async move { cancel.cancelled().await })
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
         .await
         {
             error!(?err, "http server exited with error");
         }
     });
 
-    Ok(handle)
+    Ok((addr, handle))
+}
+
+fn spawn_shutdown_signal_listener(cancel: CancellationToken) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        shutdown_listener().await;
+        cancel.cancel();
+        info!("shutdown signal received; beginning graceful shutdown");
+    })
 }
 
 async fn shutdown_listener() {
@@ -6925,6 +7460,118 @@ fn compute_raw_expires_at(now_utc: DateTime<Utc>, retention: Duration) -> Option
         .map(|d| format_naive((now_utc + d).naive_utc()))
 }
 
+async fn broadcast_proxy_capture_follow_up(
+    pool: &Pool<Sqlite>,
+    broadcaster: &broadcast::Sender<BroadcastPayload>,
+    broadcast_state_cache: &Mutex<BroadcastStateCache>,
+    relay_config: Option<&CrsStatsConfig>,
+    invoke_id: &str,
+) {
+    if broadcaster.receiver_count() == 0 {
+        return;
+    }
+
+    match collect_summary_snapshots(pool, relay_config).await {
+        Ok(summaries) => {
+            for summary in summaries {
+                if let Err(err) = broadcast_summary_if_changed(
+                    broadcaster,
+                    broadcast_state_cache,
+                    &summary.window,
+                    summary.summary,
+                )
+                .await
+                {
+                    warn!(
+                        ?err,
+                        invoke_id = %invoke_id,
+                        window = %summary.window,
+                        "failed to broadcast proxy summary payload"
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            warn!(
+                ?err,
+                invoke_id = %invoke_id,
+                "failed to collect summary snapshots after proxy capture persistence"
+            );
+        }
+    }
+
+    if broadcaster.receiver_count() == 0 {
+        return;
+    }
+
+    match QuotaSnapshotResponse::fetch_latest(pool).await {
+        Ok(Some(snapshot)) => {
+            if let Err(err) =
+                broadcast_quota_if_changed(broadcaster, broadcast_state_cache, snapshot).await
+            {
+                warn!(
+                    ?err,
+                    invoke_id = %invoke_id,
+                    "failed to broadcast proxy quota snapshot"
+                );
+            }
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(
+                ?err,
+                invoke_id = %invoke_id,
+                "failed to fetch latest quota snapshot after proxy capture persistence"
+            );
+        }
+    }
+}
+
+struct SummaryQuotaBroadcastIdleContext<'a> {
+    latest_broadcast_seq: &'a AtomicU64,
+    broadcast_running: &'a AtomicBool,
+    shutdown: &'a CancellationToken,
+    pool: &'a Pool<Sqlite>,
+    broadcaster: &'a broadcast::Sender<BroadcastPayload>,
+    broadcast_state_cache: &'a Mutex<BroadcastStateCache>,
+    relay_config: Option<&'a CrsStatsConfig>,
+    invoke_id: &'a str,
+}
+
+async fn finish_summary_quota_broadcast_idle(
+    ctx: SummaryQuotaBroadcastIdleContext<'_>,
+    synced_seq: u64,
+) -> bool {
+    ctx.broadcast_running.store(false, Ordering::Release);
+
+    let pending_seq = ctx.latest_broadcast_seq.load(Ordering::Acquire);
+    if pending_seq == synced_seq {
+        return false;
+    }
+
+    if ctx.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %ctx.invoke_id,
+            pending_seq,
+            synced_seq,
+            "flushing final summary/quota snapshots inline because shutdown arrived during broadcast worker idle handoff"
+        );
+        broadcast_proxy_capture_follow_up(
+            ctx.pool,
+            ctx.broadcaster,
+            ctx.broadcast_state_cache,
+            ctx.relay_config,
+            ctx.invoke_id,
+        )
+        .await;
+        return false;
+    }
+
+    ctx.broadcast_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
 async fn persist_and_broadcast_proxy_capture(
     state: &AppState,
     capture_started: Instant,
@@ -6949,9 +7596,40 @@ async fn persist_and_broadcast_proxy_capture(
         );
     }
 
+    if state.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %invoke_id,
+            "broadcasting final summary/quota snapshots inline because shutdown is in progress"
+        );
+        broadcast_proxy_capture_follow_up(
+            &state.pool,
+            &state.broadcaster,
+            state.broadcast_state_cache.as_ref(),
+            state.config.crs_stats.as_ref(),
+            &invoke_id,
+        )
+        .await;
+        return Ok(());
+    }
+
     state
         .proxy_summary_quota_broadcast_seq
         .fetch_add(1, Ordering::Relaxed);
+    if state.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %invoke_id,
+            "broadcasting final summary/quota snapshots inline because shutdown started after record broadcast"
+        );
+        broadcast_proxy_capture_follow_up(
+            &state.pool,
+            &state.broadcaster,
+            state.broadcast_state_cache.as_ref(),
+            state.config.crs_stats.as_ref(),
+            &invoke_id,
+        )
+        .await;
+        return Ok(());
+    }
     if state
         .proxy_summary_quota_broadcast_running
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -6966,16 +7644,50 @@ async fn persist_and_broadcast_proxy_capture(
     let broadcaster = state.broadcaster.clone();
     let broadcast_state_cache = state.broadcast_state_cache.clone();
     let relay_config = state.config.crs_stats.clone();
-    tokio::spawn(async move {
+    let shutdown = state.shutdown.clone();
+    let broadcast_handle_slot = state.proxy_summary_quota_broadcast_handle.clone();
+    let handle = tokio::spawn(async move {
         let mut synced_seq = 0_u64;
         loop {
             let target_seq = latest_broadcast_seq.load(Ordering::Acquire);
-            if target_seq == synced_seq {
+            if shutdown.is_cancelled() {
+                if target_seq != synced_seq {
+                    info!(
+                        invoke_id = %invoke_id,
+                        "flushing final summary/quota snapshots inline before shutdown"
+                    );
+                    broadcast_proxy_capture_follow_up(
+                        &pool,
+                        &broadcaster,
+                        broadcast_state_cache.as_ref(),
+                        relay_config.as_ref(),
+                        &invoke_id,
+                    )
+                    .await;
+                }
                 broadcast_running.store(false, Ordering::Release);
-                if latest_broadcast_seq.load(Ordering::Acquire) != synced_seq
-                    && broadcast_running
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
+                info!(
+                    invoke_id = %invoke_id,
+                    "stopping summary/quota broadcast worker because shutdown is in progress"
+                );
+                break;
+            }
+
+            if target_seq == synced_seq {
+                if finish_summary_quota_broadcast_idle(
+                    SummaryQuotaBroadcastIdleContext {
+                        latest_broadcast_seq: latest_broadcast_seq.as_ref(),
+                        broadcast_running: broadcast_running.as_ref(),
+                        shutdown: &shutdown,
+                        pool: &pool,
+                        broadcaster: &broadcaster,
+                        broadcast_state_cache: broadcast_state_cache.as_ref(),
+                        relay_config: relay_config.as_ref(),
+                        invoke_id: &invoke_id,
+                    },
+                    synced_seq,
+                )
+                .await
                 {
                     continue;
                 }
@@ -6987,7 +7699,26 @@ async fn persist_and_broadcast_proxy_capture(
                 continue;
             }
 
-            match collect_summary_snapshots(&pool, relay_config.as_ref()).await {
+            let summaries = tokio::select! {
+                _ = shutdown.cancelled() => {
+                    broadcast_proxy_capture_follow_up(
+                        &pool,
+                        &broadcaster,
+                        broadcast_state_cache.as_ref(),
+                        relay_config.as_ref(),
+                        &invoke_id,
+                    )
+                    .await;
+                    broadcast_running.store(false, Ordering::Release);
+                    info!(
+                        invoke_id = %invoke_id,
+                        "summary/quota broadcast worker flushed follow-up before collecting summaries during shutdown"
+                    );
+                    break;
+                }
+                result = collect_summary_snapshots(&pool, relay_config.as_ref()) => result,
+            };
+            match summaries {
                 Ok(summaries) => {
                     for summary in summaries {
                         if let Err(err) = broadcast_summary_if_changed(
@@ -7020,7 +7751,26 @@ async fn persist_and_broadcast_proxy_capture(
                 continue;
             }
 
-            match QuotaSnapshotResponse::fetch_latest(&pool).await {
+            let quota = tokio::select! {
+                _ = shutdown.cancelled() => {
+                    broadcast_proxy_capture_follow_up(
+                        &pool,
+                        &broadcaster,
+                        broadcast_state_cache.as_ref(),
+                        relay_config.as_ref(),
+                        &invoke_id,
+                    )
+                    .await;
+                    broadcast_running.store(false, Ordering::Release);
+                    info!(
+                        invoke_id = %invoke_id,
+                        "summary/quota broadcast worker flushed follow-up before fetching quota during shutdown"
+                    );
+                    break;
+                }
+                result = QuotaSnapshotResponse::fetch_latest(&pool) => result,
+            };
+            match quota {
                 Ok(Some(snapshot)) => {
                     if let Err(err) = broadcast_quota_if_changed(
                         &broadcaster,
@@ -7047,6 +7797,31 @@ async fn persist_and_broadcast_proxy_capture(
             }
         }
     });
+
+    let finished_handles = {
+        let mut guard = broadcast_handle_slot.lock().await;
+        let mut active_handles = std::mem::take(&mut *guard);
+        let mut finished_handles = Vec::new();
+        let mut idx = 0;
+        while idx < active_handles.len() {
+            if active_handles[idx].is_finished() {
+                finished_handles.push(active_handles.remove(idx));
+            } else {
+                idx += 1;
+            }
+        }
+        active_handles.push(handle);
+        *guard = active_handles;
+        finished_handles
+    };
+    for finished_handle in finished_handles {
+        if let Err(err) = finished_handle.await {
+            error!(
+                ?err,
+                "summary/quota broadcast worker terminated unexpectedly"
+            );
+        }
+    }
 
     Ok(())
 }
@@ -9471,7 +10246,9 @@ struct AppState {
     broadcast_state_cache: Arc<Mutex<BroadcastStateCache>>,
     proxy_summary_quota_broadcast_seq: Arc<AtomicU64>,
     proxy_summary_quota_broadcast_running: Arc<AtomicBool>,
+    proxy_summary_quota_broadcast_handle: Arc<Mutex<Vec<JoinHandle<()>>>>,
     startup_ready: Arc<AtomicBool>,
+    shutdown: CancellationToken,
     semaphore: Arc<Semaphore>,
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,

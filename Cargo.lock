@@ -333,6 +333,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "httpdate",
+ "libc",
  "once_cell",
  "regex",
  "reqwest",
