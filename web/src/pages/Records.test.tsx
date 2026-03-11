@@ -120,7 +120,7 @@ describe('RecordsPage suggestions', () => {
     vi.useFakeTimers()
     apiMocks.fetchInvocationSuggestions.mockResolvedValue(createSuggestions())
     hookMocks.useInvocationRecords.mockReturnValue({
-      draft: { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange() },
+      draft: { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange(), model: 'alp' },
       focus: 'token',
       page: 1,
       pageSize: 20,
@@ -166,6 +166,6 @@ describe('RecordsPage suggestions', () => {
     await flushAsync()
 
     expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(1)
-    expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledWith(expect.objectContaining({ snapshotId: 84 }))
+    expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledWith(expect.objectContaining({ snapshotId: 84, suggestField: 'model', suggestQuery: 'alp' }))
   })
 })

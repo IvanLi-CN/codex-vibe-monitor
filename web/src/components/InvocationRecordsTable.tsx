@@ -80,6 +80,13 @@ function resolveDisplayStatus(record: ApiInvocation) {
   return raw
 }
 
+function formatOccurredAt(occurredAt: string, formatter: Intl.DateTimeFormat) {
+  const value = occurredAt.trim()
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value || FALLBACK_CELL
+  return formatter.format(parsed)
+}
+
 function resolveProxyName(record: ApiInvocation) {
   const payloadProxyName = record.proxyDisplayName?.trim()
   if (payloadProxyName) return payloadProxyName
@@ -272,7 +279,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
             <article key={record.id} className="rounded-xl border border-base-300/70 bg-base-100/45 px-4 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold">{dateTimeFormatter.format(new Date(record.occurredAt))}</div>
+                  <div className="text-sm font-semibold">{formatOccurredAt(record.occurredAt, dateTimeFormatter)}</div>
                   <div className="mt-1 flex flex-wrap items-center gap-2">
                     <Badge variant={statusMeta.variant}>{statusLabel}</Badge>
                     <span className="truncate text-xs text-base-content/70">{resolveProxyName(record)}</span>
@@ -332,7 +339,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
               return (
                 <Fragment key={record.id}>
                   <tr className={index % 2 === 0 ? 'bg-base-100/30' : 'bg-base-200/18'}>
-                    <td className="px-3 py-3 align-middle text-left text-xs font-medium">{dateTimeFormatter.format(new Date(record.occurredAt))}</td>
+                    <td className="px-3 py-3 align-middle text-left text-xs font-medium">{formatOccurredAt(record.occurredAt, dateTimeFormatter)}</td>
                     <td className="max-w-[12rem] truncate px-3 py-3 align-middle text-left text-xs" title={resolveProxyName(record)}>{resolveProxyName(record)}</td>
                     <td className="max-w-[14rem] truncate px-3 py-3 align-middle text-left text-xs" title={record.model ?? undefined}>{formatText(record.model)}</td>
                     <td className="px-3 py-3 align-middle text-left text-xs"><Badge variant={statusMeta.variant}>{statusLabel}</Badge></td>

@@ -78,8 +78,24 @@ describe('buildAppliedInvocationFilters', () => {
     expect(query.maxTotalTokens).toBe(20)
     expect(query.minTotalMs).toBe(1.5)
     expect(query.maxTotalMs).toBe(2.5)
+    expect(query.suggestField).toBeUndefined()
+    expect(query.suggestQuery).toBeUndefined()
     expect(query.from).toBeDefined()
     expect(query.to).toBeDefined()
+  })
+
+  it('includes the active suggestion field and server-side search text when provided', () => {
+    const draft = {
+      ...createDefaultInvocationRecordsDraft(),
+      model: ' gpt-5.4-mini ',
+    }
+
+    const query = buildInvocationSuggestionsQuery(draft, 42, 'model')
+
+    expect(query.snapshotId).toBe(42)
+    expect(query.suggestField).toBe('model')
+    expect(query.suggestQuery).toBe('gpt-5.4-mini')
+    expect(query.model).toBe('gpt-5.4-mini')
   })
   it('tolerates invalid draft values when building suggestion queries', () => {
     const draft = {

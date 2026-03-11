@@ -10559,6 +10559,90 @@ async fn fetch_invocation_suggestions_orders_by_count_and_respects_time_bounds()
 }
 
 #[tokio::test]
+async fn fetch_invocation_suggestions_filters_active_bucket_before_limit() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for index in 0..35 {
+        let model = format!("model-hot-{index:02}");
+        for occurrence in 0..2 {
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    invoke_id,
+                    occurred_at,
+                    source,
+                    model,
+                    status,
+                    raw_response
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+            )
+            .bind(format!("suggest-hot-{index:02}-{occurrence}"))
+            .bind(format!("2026-03-10 10:{index:02}:{occurrence:02}"))
+            .bind(SOURCE_PROXY)
+            .bind(&model)
+            .bind("success")
+            .bind("{}")
+            .execute(&state.pool)
+            .await
+            .expect("insert hot suggestion row");
+        }
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("suggest-needle")
+    .bind("2026-03-10 11:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("model-needle")
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert needle suggestion row");
+
+    let Json(suggestions) = fetch_invocation_suggestions(
+        State(state),
+        Query(ListQuery {
+            suggest_field: Some("model".to_string()),
+            suggest_query: Some("needle".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("filtered suggestions query should succeed");
+
+    let model_values = suggestions
+        .model
+        .items
+        .iter()
+        .map(|item| item.value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(model_values, vec!["model-needle"]);
+    assert!(!suggestions.model.has_more);
+    assert!(suggestions.proxy.items.is_empty());
+    assert!(suggestions.endpoint.items.is_empty());
+    assert!(suggestions.failure_kind.items.is_empty());
+    assert!(suggestions.prompt_cache_key.items.is_empty());
+    assert!(suggestions.requester_ip.items.is_empty());
+}
+
+#[tokio::test]
 async fn fetch_invocation_suggestions_use_snapshot_and_keep_other_filters() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

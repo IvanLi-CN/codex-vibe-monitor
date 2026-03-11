@@ -742,12 +742,132 @@ async fn query_invocation_new_records_count(
         .total)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InvocationSuggestionField {
+    Model,
+    Proxy,
+    Endpoint,
+    FailureKind,
+    PromptCacheKey,
+    RequesterIp,
+}
+
+impl InvocationSuggestionField {
+    fn parse(raw: Option<&str>) -> Result<Option<Self>, ApiError> {
+        let Some(value) = normalize_query_text(raw) else {
+            return Ok(None);
+        };
+        let normalized = value.to_ascii_lowercase();
+
+        match normalized.as_str() {
+            "model" => Ok(Some(Self::Model)),
+            "proxy" => Ok(Some(Self::Proxy)),
+            "endpoint" => Ok(Some(Self::Endpoint)),
+            "failurekind" => Ok(Some(Self::FailureKind)),
+            "promptcachekey" => Ok(Some(Self::PromptCacheKey)),
+            "requesterip" => Ok(Some(Self::RequesterIp)),
+            _ => Err(ApiError::bad_request(anyhow!(
+                "unsupported suggestField: {value}"
+            ))),
+        }
+    }
+
+    fn sql_expr(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::Proxy => INVOCATION_PROXY_DISPLAY_SQL,
+            Self::Endpoint => INVOCATION_ENDPOINT_SQL,
+            Self::FailureKind => INVOCATION_FAILURE_KIND_SQL,
+            Self::PromptCacheKey => INVOCATION_PROMPT_CACHE_KEY_SQL,
+            Self::RequesterIp => INVOCATION_REQUESTER_IP_SQL,
+        }
+    }
+
+    fn clear_field_filter(self, filters: &InvocationRecordsFilters) -> InvocationRecordsFilters {
+        let mut next = filters.clone();
+        match self {
+            Self::Model => next.model = None,
+            Self::Proxy => next.proxy = None,
+            Self::Endpoint => next.endpoint = None,
+            Self::FailureKind => next.failure_kind = None,
+            Self::PromptCacheKey => next.prompt_cache_key = None,
+            Self::RequesterIp => next.requester_ip = None,
+        }
+        next
+    }
+}
+
+fn empty_invocation_suggestion_bucket() -> InvocationSuggestionBucket {
+    InvocationSuggestionBucket {
+        items: Vec::new(),
+        has_more: false,
+    }
+}
+
+fn suggestion_response_for_field(
+    field: InvocationSuggestionField,
+    bucket: InvocationSuggestionBucket,
+) -> InvocationSuggestionsResponse {
+    let empty = || empty_invocation_suggestion_bucket();
+    match field {
+        InvocationSuggestionField::Model => InvocationSuggestionsResponse {
+            model: bucket,
+            proxy: empty(),
+            endpoint: empty(),
+            failure_kind: empty(),
+            prompt_cache_key: empty(),
+            requester_ip: empty(),
+        },
+        InvocationSuggestionField::Proxy => InvocationSuggestionsResponse {
+            model: empty(),
+            proxy: bucket,
+            endpoint: empty(),
+            failure_kind: empty(),
+            prompt_cache_key: empty(),
+            requester_ip: empty(),
+        },
+        InvocationSuggestionField::Endpoint => InvocationSuggestionsResponse {
+            model: empty(),
+            proxy: empty(),
+            endpoint: bucket,
+            failure_kind: empty(),
+            prompt_cache_key: empty(),
+            requester_ip: empty(),
+        },
+        InvocationSuggestionField::FailureKind => InvocationSuggestionsResponse {
+            model: empty(),
+            proxy: empty(),
+            endpoint: empty(),
+            failure_kind: bucket,
+            prompt_cache_key: empty(),
+            requester_ip: empty(),
+        },
+        InvocationSuggestionField::PromptCacheKey => InvocationSuggestionsResponse {
+            model: empty(),
+            proxy: empty(),
+            endpoint: empty(),
+            failure_kind: empty(),
+            prompt_cache_key: bucket,
+            requester_ip: empty(),
+        },
+        InvocationSuggestionField::RequesterIp => InvocationSuggestionsResponse {
+            model: empty(),
+            proxy: empty(),
+            endpoint: empty(),
+            failure_kind: empty(),
+            prompt_cache_key: empty(),
+            requester_ip: bucket,
+        },
+    }
+}
+
 async fn query_invocation_suggestion_bucket(
     pool: &Pool<Sqlite>,
     filters: &InvocationRecordsFilters,
     source_scope: InvocationSourceScope,
     snapshot: Option<SnapshotConstraint>,
     sql_expr: &str,
+    match_query: Option<&str>,
     limit: i64,
 ) -> Result<InvocationSuggestionBucket> {
     #[derive(Debug, FromRow)]
@@ -763,6 +883,13 @@ async fn query_invocation_suggestion_bucket(
     query.push(" AND TRIM(COALESCE(");
     query.push(sql_expr);
     query.push(", '')) != ''");
+    if let Some(match_query) = match_query {
+        let like_pattern = format!("%{}%", escape_sql_like(&match_query.to_lowercase()));
+        query.push(" AND LOWER(TRIM(COALESCE(");
+        query.push(sql_expr);
+        query.push(", ''))) LIKE ");
+        query.push_bind(like_pattern).push(" ESCAPE '\\'");
+    }
     query.push(" GROUP BY LOWER(TRIM(COALESCE(");
     query.push(sql_expr);
     query.push(", '')))");
@@ -1051,6 +1178,22 @@ pub(crate) async fn fetch_invocation_suggestions(
     let filters = request.filters;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let snapshot = request.snapshot_id.map(SnapshotConstraint::UpTo);
+    let suggest_field = InvocationSuggestionField::parse(params.suggest_field.as_deref())?;
+    let suggest_query = normalize_query_text(params.suggest_query.as_deref());
+
+    if let Some(field) = suggest_field {
+        let bucket = query_invocation_suggestion_bucket(
+            &state.pool,
+            &field.clear_field_filter(&filters),
+            source_scope,
+            snapshot,
+            field.sql_expr(),
+            suggest_query.as_deref(),
+            SUGGESTION_LIMIT,
+        )
+        .await?;
+        return Ok(Json(suggestion_response_for_field(field, bucket)));
+    }
 
     let model = query_invocation_suggestion_bucket(
         &state.pool,
@@ -1061,6 +1204,7 @@ pub(crate) async fn fetch_invocation_suggestions(
         source_scope,
         snapshot,
         "model",
+        None,
         SUGGESTION_LIMIT,
     )
     .await?;
@@ -1073,6 +1217,7 @@ pub(crate) async fn fetch_invocation_suggestions(
         source_scope,
         snapshot,
         INVOCATION_PROXY_DISPLAY_SQL,
+        None,
         SUGGESTION_LIMIT,
     )
     .await?;
@@ -1085,6 +1230,7 @@ pub(crate) async fn fetch_invocation_suggestions(
         source_scope,
         snapshot,
         INVOCATION_ENDPOINT_SQL,
+        None,
         SUGGESTION_LIMIT,
     )
     .await?;
@@ -1097,6 +1243,7 @@ pub(crate) async fn fetch_invocation_suggestions(
         source_scope,
         snapshot,
         INVOCATION_FAILURE_KIND_SQL,
+        None,
         SUGGESTION_LIMIT,
     )
     .await?;
@@ -1109,6 +1256,7 @@ pub(crate) async fn fetch_invocation_suggestions(
         source_scope,
         snapshot,
         INVOCATION_PROMPT_CACHE_KEY_SQL,
+        None,
         SUGGESTION_LIMIT,
     )
     .await?;
@@ -1121,6 +1269,7 @@ pub(crate) async fn fetch_invocation_suggestions(
         source_scope,
         snapshot,
         INVOCATION_REQUESTER_IP_SQL,
+        None,
         SUGGESTION_LIMIT,
     )
     .await?;
@@ -3506,6 +3655,8 @@ pub(crate) struct ListQuery {
     pub(crate) max_total_tokens: Option<i64>,
     pub(crate) min_total_ms: Option<f64>,
     pub(crate) max_total_ms: Option<f64>,
+    pub(crate) suggest_field: Option<String>,
+    pub(crate) suggest_query: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

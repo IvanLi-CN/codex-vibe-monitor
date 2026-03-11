@@ -1,4 +1,4 @@
-import type { InvocationRangePreset, InvocationRecordsQuery, InvocationSortBy, InvocationSortOrder } from './api'
+import type { InvocationRangePreset, InvocationRecordsQuery, InvocationSortBy, InvocationSortOrder, InvocationSuggestionField } from './api'
 
 export const RECORDS_PAGE_SIZE_OPTIONS = [20, 50, 100] as const
 export const RECORDS_NEW_COUNT_POLL_INTERVAL_MS = 15_000
@@ -193,9 +193,29 @@ export function buildAppliedInvocationFilters(
   }
 }
 
+function readSuggestionDraftValue(draft: InvocationRecordsDraftFilters, field?: InvocationSuggestionField) {
+  switch (field) {
+    case 'model':
+      return draft.model
+    case 'proxy':
+      return draft.proxy
+    case 'endpoint':
+      return draft.endpoint
+    case 'failureKind':
+      return draft.failureKind
+    case 'promptCacheKey':
+      return draft.promptCacheKey
+    case 'requesterIp':
+      return draft.requesterIp
+    default:
+      return undefined
+  }
+}
+
 export function buildInvocationSuggestionsQuery(
   draft: InvocationRecordsDraftFilters,
   snapshotId?: number,
+  suggestField?: InvocationSuggestionField,
   now = new Date(),
 ): Omit<InvocationRecordsQuery, 'page' | 'pageSize' | 'sortBy' | 'sortOrder'> {
   const bounds = resolveRangeBoundsSafely(draft.rangePreset, draft, now)
@@ -216,6 +236,8 @@ export function buildInvocationSuggestionsQuery(
     maxTotalTokens: normalizeIntegerSafely(draft.maxTotalTokens, 'maxTotalTokens'),
     minTotalMs: normalizeNumber(draft.minTotalMs),
     maxTotalMs: normalizeNumber(draft.maxTotalMs),
+    suggestField,
+    suggestQuery: suggestField ? normalizeText(readSuggestionDraftValue(draft, suggestField) ?? '') : undefined,
     snapshotId,
   }
 }

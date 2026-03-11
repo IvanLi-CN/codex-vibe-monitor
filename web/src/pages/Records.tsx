@@ -12,6 +12,7 @@ import {
   type InvocationRangePreset,
   type InvocationSortBy,
   type InvocationSortOrder,
+  type InvocationSuggestionField,
   type InvocationSuggestionsResponse,
 } from '../lib/api'
 import { buildInvocationSuggestionsQuery, createDefaultCustomRange, RECORDS_PAGE_SIZE_OPTIONS } from '../lib/invocationRecords'
@@ -21,8 +22,6 @@ const inputClassName =
   'h-9 w-full rounded-md border border-base-300/80 bg-base-100 px-3 text-sm text-base-content shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-60'
 
 const SUGGESTION_DEBOUNCE_MS = 250
-
-type SuggestionField = 'model' | 'proxy' | 'endpoint' | 'failureKind' | 'promptCacheKey' | 'requesterIp'
 
 function getVisiblePages(currentPage: number, totalPages: number) {
   if (totalPages <= 1) return [1]
@@ -61,14 +60,13 @@ export default function RecordsPage() {
   } = useInvocationRecords()
 
   const appliedSnapshotId = records?.snapshotId ?? summary?.snapshotId
-  const suggestionQuery = useMemo(
-    () => buildInvocationSuggestionsQuery(draft, appliedSnapshotId),
-    [appliedSnapshotId, draft],
-  )
-
   const [suggestions, setSuggestions] = useState<InvocationSuggestionsResponse | null>(null)
   const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false)
-  const [activeSuggestionField, setActiveSuggestionField] = useState<SuggestionField | null>(null)
+  const [activeSuggestionField, setActiveSuggestionField] = useState<InvocationSuggestionField | null>(null)
+  const suggestionQuery = useMemo(
+    () => buildInvocationSuggestionsQuery(draft, appliedSnapshotId, activeSuggestionField ?? undefined),
+    [activeSuggestionField, appliedSnapshotId, draft],
+  )
   const suggestionsSeqRef = useRef(0)
   const customRangeTouchedRef = useRef(false)
 
@@ -163,7 +161,7 @@ export default function RecordsPage() {
     void search()
   }
 
-  const handleSuggestionOpenChange = (field: SuggestionField) => (open: boolean) => {
+  const handleSuggestionOpenChange = (field: InvocationSuggestionField) => (open: boolean) => {
     setActiveSuggestionField((current) => {
       if (open) return field
       return current === field ? null : current

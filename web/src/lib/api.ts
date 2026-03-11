@@ -104,6 +104,7 @@ export type InvocationFocus = 'token' | 'network' | 'exception'
 export type InvocationSortBy = 'occurredAt' | 'totalTokens' | 'cost' | 'tTotalMs' | 'tUpstreamTtfbMs' | 'status'
 export type InvocationSortOrder = 'asc' | 'desc'
 export type InvocationRangePreset = 'today' | '1d' | '7d' | '30d' | 'custom'
+export type InvocationSuggestionField = 'model' | 'proxy' | 'endpoint' | 'failureKind' | 'promptCacheKey' | 'requesterIp'
 
 export interface InvocationRecordsQuery {
   page?: number
@@ -127,6 +128,8 @@ export interface InvocationRecordsQuery {
   maxTotalTokens?: number
   minTotalMs?: number
   maxTotalMs?: number
+  suggestField?: InvocationSuggestionField
+  suggestQuery?: string
 }
 
 export interface InvocationTokenSummary {
@@ -330,6 +333,8 @@ function appendInvocationRecordsQuery(search: URLSearchParams, query: Invocation
   if (query.maxTotalTokens != null) search.set('maxTotalTokens', String(query.maxTotalTokens))
   if (query.minTotalMs != null) search.set('minTotalMs', String(query.minTotalMs))
   if (query.maxTotalMs != null) search.set('maxTotalMs', String(query.maxTotalMs))
+  if (query.suggestField) search.set('suggestField', query.suggestField)
+  if (query.suggestQuery) search.set('suggestQuery', query.suggestQuery)
 }
 
 export async function fetchInvocations(limit: number, params?: { model?: string; status?: string }) {

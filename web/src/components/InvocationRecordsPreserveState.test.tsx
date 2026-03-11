@@ -126,4 +126,17 @@ describe('records stale-data rendering', () => {
     expect(text).toContain('table.status.failed')
     expect(text).not.toContain('table.status.success')
   })
+
+  it('falls back to the raw occurredAt string when a record timestamp is invalid', () => {
+    render(
+      <InvocationRecordsTable
+        focus="token"
+        records={[createRecord({ occurredAt: 'not-a-date' })]}
+        isLoading={false}
+      />,
+    )
+
+    const text = host?.textContent ?? ''
+    expect(text).toContain('not-a-date')
+  })
 })
