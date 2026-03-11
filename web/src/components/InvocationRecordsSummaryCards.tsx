@@ -41,8 +41,12 @@ export function InvocationRecordsSummaryCards({ focus, summary, isLoading, error
     [localeTag],
   )
 
-  if (error) {
-    return <Alert variant="error">{t('records.summary.loadError', { error })}</Alert>
+  const hasSummary = summary !== null
+  const showBlockingError = Boolean(error) && !hasSummary
+  const showInlineError = Boolean(error) && hasSummary
+
+  if (showBlockingError) {
+    return <Alert variant="error">{t('records.summary.loadError', { error: error ?? '' })}</Alert>
   }
 
   const formatNumber = (value?: number | null) => numberFormatter.format(value ?? 0)
@@ -79,10 +83,13 @@ export function InvocationRecordsSummaryCards({ focus, summary, isLoading, error
   })()
 
   return (
-    <div className="metric-grid">
-      {metrics.map((metric) => (
-        <MetricCell key={metric.label} {...metric} loading={isLoading} />
-      ))}
+    <div className="space-y-3">
+      {showInlineError ? <Alert variant="error">{t('records.summary.loadError', { error: error ?? '' })}</Alert> : null}
+      <div className="metric-grid">
+        {metrics.map((metric) => (
+          <MetricCell key={metric.label} {...metric} loading={isLoading && !hasSummary} />
+        ))}
+      </div>
     </div>
   )
 }

@@ -152,7 +152,6 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     setIsSummaryLoading(true)
     setRecordsError(null)
     setSummaryError(null)
-    setSummary(null)
 
     let listLoaded = false
 
@@ -194,7 +193,6 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         setSummaryError(message)
       } else {
         setRecordsError(message)
-        setSummaryError(message)
       }
     } finally {
       if (requestSeq === searchSeqRef.current) {

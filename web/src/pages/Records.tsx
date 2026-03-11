@@ -22,6 +22,8 @@ const inputClassName =
 
 const SUGGESTION_DEBOUNCE_MS = 250
 
+type SuggestionField = 'model' | 'proxy' | 'endpoint' | 'failureKind' | 'promptCacheKey' | 'requesterIp'
+
 function getVisiblePages(currentPage: number, totalPages: number) {
   if (totalPages <= 1) return [1]
   const start = Math.max(1, currentPage - 2)
@@ -65,25 +67,37 @@ export default function RecordsPage() {
   )
 
   const [suggestions, setSuggestions] = useState<InvocationSuggestionsResponse | null>(null)
+  const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false)
+  const [activeSuggestionField, setActiveSuggestionField] = useState<SuggestionField | null>(null)
   const suggestionsSeqRef = useRef(0)
   const customRangeTouchedRef = useRef(false)
 
   useEffect(() => {
+    if (!activeSuggestionField) {
+      setIsSuggestionsLoading(false)
+      return
+    }
+
     const requestSeq = suggestionsSeqRef.current + 1
     suggestionsSeqRef.current = requestSeq
+    setIsSuggestionsLoading(true)
+
     const timer = window.setTimeout(() => {
       fetchInvocationSuggestions(suggestionQuery)
         .then((response) => {
           if (requestSeq !== suggestionsSeqRef.current) return
           setSuggestions(response)
+          setIsSuggestionsLoading(false)
         })
         .catch(() => {
+          if (requestSeq !== suggestionsSeqRef.current) return
+          setIsSuggestionsLoading(false)
           // Best-effort: suggestions should never block the page.
         })
     }, SUGGESTION_DEBOUNCE_MS)
 
     return () => window.clearTimeout(timer)
-  }, [suggestionQuery])
+  }, [activeSuggestionField, suggestionQuery])
 
   const focusOptions = useMemo(
     () => [
@@ -147,6 +161,13 @@ export default function RecordsPage() {
 
   const handleSearch = () => {
     void search()
+  }
+
+  const handleSuggestionOpenChange = (field: SuggestionField) => (open: boolean) => {
+    setActiveSuggestionField((current) => {
+      if (open) return field
+      return current === field ? null : current
+    })
   }
 
   const handleSortByChange = (value: InvocationSortBy) => {
@@ -243,7 +264,10 @@ export default function RecordsPage() {
                   options={(modelBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t('records.filters.any')}
                   emptyText={t('records.filters.noMatches')}
+                  loading={isSuggestionsLoading && activeSuggestionField === 'model'}
+                  loadingText={t('records.filters.searching')}
                   inputClassName={inputClassName}
+                  onOpenChange={handleSuggestionOpenChange('model')}
                 />
               </label>
               <label className="field">
@@ -257,7 +281,10 @@ export default function RecordsPage() {
                   options={(proxyBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t('records.filters.any')}
                   emptyText={t('records.filters.noMatches')}
+                  loading={isSuggestionsLoading && activeSuggestionField === 'proxy'}
+                  loadingText={t('records.filters.searching')}
                   inputClassName={inputClassName}
+                  onOpenChange={handleSuggestionOpenChange('proxy')}
                 />
               </label>
               <label className="field">
@@ -271,7 +298,10 @@ export default function RecordsPage() {
                   options={(endpointBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t('records.filters.any')}
                   emptyText={t('records.filters.noMatches')}
+                  loading={isSuggestionsLoading && activeSuggestionField === 'endpoint'}
+                  loadingText={t('records.filters.searching')}
                   inputClassName={inputClassName}
+                  onOpenChange={handleSuggestionOpenChange('endpoint')}
                 />
               </label>
               <label className="field">
@@ -295,7 +325,10 @@ export default function RecordsPage() {
                   options={(failureKindBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t('records.filters.any')}
                   emptyText={t('records.filters.noMatches')}
+                  loading={isSuggestionsLoading && activeSuggestionField === 'failureKind'}
+                  loadingText={t('records.filters.searching')}
                   inputClassName={inputClassName}
+                  onOpenChange={handleSuggestionOpenChange('failureKind')}
                 />
               </label>
               <label className="field">
@@ -309,7 +342,10 @@ export default function RecordsPage() {
                   options={(promptCacheKeyBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t('records.filters.any')}
                   emptyText={t('records.filters.noMatches')}
+                  loading={isSuggestionsLoading && activeSuggestionField === 'promptCacheKey'}
+                  loadingText={t('records.filters.searching')}
                   inputClassName={inputClassName}
+                  onOpenChange={handleSuggestionOpenChange('promptCacheKey')}
                 />
               </label>
               <label className="field">
@@ -323,7 +359,10 @@ export default function RecordsPage() {
                   options={(requesterIpBucket?.items ?? []).map((item) => item.value)}
                   placeholder={t('records.filters.any')}
                   emptyText={t('records.filters.noMatches')}
+                  loading={isSuggestionsLoading && activeSuggestionField === 'requesterIp'}
+                  loadingText={t('records.filters.searching')}
                   inputClassName={inputClassName}
+                  onOpenChange={handleSuggestionOpenChange('requesterIp')}
                 />
               </label>
               <label className="field">

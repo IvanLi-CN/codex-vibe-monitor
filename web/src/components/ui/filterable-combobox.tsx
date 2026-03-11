@@ -8,6 +8,8 @@ interface FilterableComboboxProps {
   options: string[]
   placeholder?: string
   emptyText?: string
+  loading?: boolean
+  loadingText?: string
   disabled?: boolean
   className?: string
   inputClassName?: string
@@ -15,6 +17,7 @@ interface FilterableComboboxProps {
   label: string
   name?: string
   id?: string
+  onOpenChange?: (open: boolean) => void
 }
 
 export function FilterableCombobox({
@@ -23,6 +26,8 @@ export function FilterableCombobox({
   options,
   placeholder,
   emptyText,
+  loading,
+  loadingText,
   disabled,
   className,
   inputClassName,
@@ -30,6 +35,7 @@ export function FilterableCombobox({
   label,
   name,
   id,
+  onOpenChange,
 }: FilterableComboboxProps) {
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(-1)
@@ -37,6 +43,10 @@ export function FilterableCombobox({
   const fallbackInputId = useId()
   const listId = useId()
   const inputId = id ?? fallbackInputId
+
+  useEffect(() => {
+    onOpenChange?.(open)
+  }, [onOpenChange, open])
 
   useEffect(() => {
     if (!open) return
@@ -137,7 +147,9 @@ export function FilterableCombobox({
             listClassName,
           )}
         >
-          {filteredOptions.length === 0 ? (
+          {loading ? (
+            <div className="px-3 py-2 text-sm text-base-content/60">{loadingText ?? 'Loading…'}</div>
+          ) : filteredOptions.length === 0 ? (
             <div className="px-3 py-2 text-sm text-base-content/60">{emptyText ?? 'No matches'}</div>
           ) : (
             filteredOptions.map((option, idx) => (

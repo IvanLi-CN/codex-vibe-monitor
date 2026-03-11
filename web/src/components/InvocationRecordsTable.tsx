@@ -120,11 +120,15 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
     [localeTag],
   )
 
-  if (error) {
-    return <Alert variant="error">{t('records.table.loadError', { error })}</Alert>
+  const hasRecords = records.length > 0
+  const showBlockingError = Boolean(error) && !hasRecords
+  const showInlineError = Boolean(error) && hasRecords
+
+  if (showBlockingError) {
+    return <Alert variant="error">{t('records.table.loadError', { error: error ?? '' })}</Alert>
   }
 
-  if (isLoading) {
+  if (isLoading && !hasRecords) {
     return (
       <div className="flex justify-center py-10">
         <Spinner size="lg" aria-label={t('records.table.loadingAria')} />
@@ -132,7 +136,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
     )
   }
 
-  if (records.length === 0) {
+  if (!hasRecords) {
     return <Alert>{t('records.table.empty')}</Alert>
   }
 
@@ -249,6 +253,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
 
   return (
     <div className="space-y-3">
+      {showInlineError ? <Alert variant="error">{t('records.table.loadError', { error: error ?? '' })}</Alert> : null}
       <div className="space-y-3 md:hidden">
         {records.map((record) => {
           const isExpanded = expandedId === record.id

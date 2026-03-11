@@ -157,8 +157,10 @@ function Probe() {
       <div data-testid="snapshot">{state.records?.snapshotId ?? 0}</div>
       <div data-testid="model">{state.records?.records[0]?.model ?? ''}</div>
       <div data-testid="new-count">{state.summary?.newRecordsCount ?? 0}</div>
+      <div data-testid="summary-snapshot">{state.summary?.snapshotId ?? 0}</div>
       <div data-testid="records-loading">{state.isRecordsLoading ? 'yes' : 'no'}</div>
       <div data-testid="summary-loading">{state.isSummaryLoading ? 'yes' : 'no'}</div>
+      <div data-testid="records-error">{state.recordsError ?? ''}</div>
       <div data-testid="summary-error">{state.summaryError ?? ''}</div>
       <button data-testid="focus-network" type="button" onClick={() => state.setFocus('network')}>
         network
@@ -414,6 +416,35 @@ describe('useInvocationRecords', () => {
     await flushAsync()
 
     expect(text('summary-loading')).toBe('no')
+    expect(text('summary-error')).toBe('')
+  })
+
+  it('keeps the last snapshot visible when a new search fails', async () => {
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      if (query.model === 'next-model') {
+        throw new Error('search failed')
+      }
+
+      return createListResponse({ snapshotId: 42 })
+    })
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(createSummaryResponse({ snapshotId: 42, newRecordsCount: 5 }))
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }))
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('42')
+    expect(text('summary-snapshot')).toBe('42')
+
+    click('draft-model')
+    click('search')
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('42')
+    expect(text('model')).toBe('baseline-model')
+    expect(text('summary-snapshot')).toBe('42')
+    expect(text('new-count')).toBe('0')
+    expect(text('records-error')).toContain('search failed')
     expect(text('summary-error')).toBe('')
   })
 
