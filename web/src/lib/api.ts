@@ -22,7 +22,16 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(detail ? `Request failed: ${response.status} ${detail}` : `Request failed: ${response.status}`)
   }
 
-  return response.json() as Promise<T>
+  if (response.status === 204) {
+    return undefined as T
+  }
+
+  const rawText = await response.text()
+  if (!rawText.trim()) {
+    return undefined as T
+  }
+
+  return JSON.parse(rawText) as T
 }
 
 export interface ApiInvocation {
@@ -652,6 +661,226 @@ function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   }
 }
 
+
+export interface RateWindowSnapshot {
+  usedPercent: number
+  usedText: string
+  limitText: string
+  resetsAt?: string | null
+  windowDurationMins: number
+}
+
+export interface CreditsSnapshot {
+  hasCredits: boolean
+  unlimited: boolean
+  balance?: string | null
+}
+
+export interface LocalLimitSnapshot {
+  primaryLimit?: number | null
+  secondaryLimit?: number | null
+  limitUnit: string
+}
+
+export interface UpstreamAccountHistoryPoint {
+  capturedAt: string
+  primaryUsedPercent?: number | null
+  secondaryUsedPercent?: number | null
+  creditsBalance?: string | null
+}
+
+export interface UpstreamAccountSummary {
+  id: number
+  kind: 'oauth_codex' | 'api_key_codex' | string
+  provider: string
+  displayName: string
+  status: 'active' | 'syncing' | 'needs_reauth' | 'error' | 'disabled' | string
+  enabled: boolean
+  email?: string | null
+  chatgptAccountId?: string | null
+  planType?: string | null
+  maskedApiKey?: string | null
+  lastSyncedAt?: string | null
+  lastSuccessfulSyncAt?: string | null
+  lastError?: string | null
+  lastErrorAt?: string | null
+  tokenExpiresAt?: string | null
+  primaryWindow?: RateWindowSnapshot | null
+  secondaryWindow?: RateWindowSnapshot | null
+  credits?: CreditsSnapshot | null
+  localLimits?: LocalLimitSnapshot | null
+}
+
+export interface UpstreamAccountDetail extends UpstreamAccountSummary {
+  note?: string | null
+  chatgptUserId?: string | null
+  lastRefreshedAt?: string | null
+  history: UpstreamAccountHistoryPoint[]
+}
+
+export interface UpstreamAccountListResponse {
+  writesEnabled: boolean
+  items: UpstreamAccountSummary[]
+}
+
+export interface LoginSessionStatusResponse {
+  loginId: string
+  status: 'pending' | 'completed' | 'failed' | 'expired' | string
+  authUrl?: string | null
+  expiresAt: string
+  accountId?: number | null
+  error?: string | null
+}
+
+export interface CreateOauthLoginSessionPayload {
+  displayName?: string
+  note?: string
+  accountId?: number
+}
+
+export interface CreateApiKeyAccountPayload {
+  displayName: string
+  note?: string
+  apiKey: string
+  localPrimaryLimit?: number
+  localSecondaryLimit?: number
+  localLimitUnit?: string
+}
+
+export interface UpdateUpstreamAccountPayload {
+  displayName?: string
+  note?: string
+  enabled?: boolean
+  apiKey?: string
+  localPrimaryLimit?: number | null
+  localSecondaryLimit?: number | null
+  localLimitUnit?: string | null
+}
+
+function normalizeRateWindowSnapshot(raw: unknown): RateWindowSnapshot | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const usedPercent = normalizeFiniteNumber(payload.usedPercent)
+  const usedText = typeof payload.usedText === 'string' ? payload.usedText : ''
+  const limitText = typeof payload.limitText === 'string' ? payload.limitText : ''
+  const windowDurationMins = normalizeFiniteNumber(payload.windowDurationMins)
+  if (usedPercent == null || !usedText || !limitText || windowDurationMins == null) return null
+  return {
+    usedPercent,
+    usedText,
+    limitText,
+    resetsAt: typeof payload.resetsAt === 'string' ? payload.resetsAt : null,
+    windowDurationMins,
+  }
+}
+
+function normalizeCreditsSnapshot(raw: unknown): CreditsSnapshot | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  if (typeof payload.hasCredits !== 'boolean' || typeof payload.unlimited !== 'boolean') return null
+  return {
+    hasCredits: payload.hasCredits,
+    unlimited: payload.unlimited,
+    balance: typeof payload.balance === 'string' ? payload.balance : null,
+  }
+}
+
+function normalizeLocalLimitSnapshot(raw: unknown): LocalLimitSnapshot | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const limitUnit = typeof payload.limitUnit === 'string' && payload.limitUnit.trim() ? payload.limitUnit : 'requests'
+  return {
+    primaryLimit: normalizeFiniteNumber(payload.primaryLimit) ?? null,
+    secondaryLimit: normalizeFiniteNumber(payload.secondaryLimit) ?? null,
+    limitUnit,
+  }
+}
+
+function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const id = normalizeFiniteNumber(payload.id)
+  const displayName = typeof payload.displayName === 'string' ? payload.displayName : ''
+  const kind = typeof payload.kind === 'string' ? payload.kind : ''
+  const provider = typeof payload.provider === 'string' ? payload.provider : ''
+  const status = typeof payload.status === 'string' ? payload.status : 'error'
+  if (id == null || !displayName || !kind || !provider) return null
+  return {
+    id,
+    kind,
+    provider,
+    displayName,
+    status,
+    enabled: payload.enabled !== false,
+    email: typeof payload.email === 'string' ? payload.email : null,
+    chatgptAccountId: typeof payload.chatgptAccountId === 'string' ? payload.chatgptAccountId : null,
+    planType: typeof payload.planType === 'string' ? payload.planType : null,
+    maskedApiKey: typeof payload.maskedApiKey === 'string' ? payload.maskedApiKey : null,
+    lastSyncedAt: typeof payload.lastSyncedAt === 'string' ? payload.lastSyncedAt : null,
+    lastSuccessfulSyncAt: typeof payload.lastSuccessfulSyncAt === 'string' ? payload.lastSuccessfulSyncAt : null,
+    lastError: typeof payload.lastError === 'string' ? payload.lastError : null,
+    lastErrorAt: typeof payload.lastErrorAt === 'string' ? payload.lastErrorAt : null,
+    tokenExpiresAt: typeof payload.tokenExpiresAt === 'string' ? payload.tokenExpiresAt : null,
+    primaryWindow: normalizeRateWindowSnapshot(payload.primaryWindow),
+    secondaryWindow: normalizeRateWindowSnapshot(payload.secondaryWindow),
+    credits: normalizeCreditsSnapshot(payload.credits),
+    localLimits: normalizeLocalLimitSnapshot(payload.localLimits),
+  }
+}
+
+function normalizeUpstreamAccountHistoryPoint(raw: unknown): UpstreamAccountHistoryPoint | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const capturedAt = typeof payload.capturedAt === 'string' ? payload.capturedAt : ''
+  if (!capturedAt) return null
+  return {
+    capturedAt,
+    primaryUsedPercent: normalizeFiniteNumber(payload.primaryUsedPercent) ?? null,
+    secondaryUsedPercent: normalizeFiniteNumber(payload.secondaryUsedPercent) ?? null,
+    creditsBalance: typeof payload.creditsBalance === 'string' ? payload.creditsBalance : null,
+  }
+}
+
+function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const summary = normalizeUpstreamAccountSummary(payload)
+  if (!summary) {
+    throw new Error('Request failed: invalid upstream account payload')
+  }
+  const historyRaw = Array.isArray(payload.history) ? payload.history : []
+  return {
+    ...summary,
+    note: typeof payload.note === 'string' ? payload.note : null,
+    chatgptUserId: typeof payload.chatgptUserId === 'string' ? payload.chatgptUserId : null,
+    lastRefreshedAt: typeof payload.lastRefreshedAt === 'string' ? payload.lastRefreshedAt : null,
+    history: historyRaw
+      .map(normalizeUpstreamAccountHistoryPoint)
+      .filter((item): item is UpstreamAccountHistoryPoint => item != null),
+  }
+}
+
+function normalizeUpstreamAccountListResponse(raw: unknown): UpstreamAccountListResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const itemsRaw = Array.isArray(payload.items) ? payload.items : []
+  return {
+    writesEnabled: payload.writesEnabled !== false,
+    items: itemsRaw.map(normalizeUpstreamAccountSummary).filter((item): item is UpstreamAccountSummary => item != null),
+  }
+}
+
+function normalizeLoginSessionStatusResponse(raw: unknown): LoginSessionStatusResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const loginId = typeof payload.loginId === 'string' ? payload.loginId : ''
+  const expiresAt = typeof payload.expiresAt === 'string' ? payload.expiresAt : ''
+  if (!loginId || !expiresAt) {
+    throw new Error('Request failed: invalid login session payload')
+  }
+  const accountId = normalizeFiniteNumber(payload.accountId)
+  return {
+    loginId,
+    status: typeof payload.status === 'string' ? payload.status : 'failed',
+    authUrl: typeof payload.authUrl === 'string' ? payload.authUrl : null,
+    expiresAt,
+    accountId: accountId == null ? null : accountId,
+    error: typeof payload.error === 'string' ? payload.error : null,
+  }
+}
+
 export async function fetchVersion(): Promise<VersionResponse> {
   return fetchJson<VersionResponse>('/api/version')
 }
@@ -791,6 +1020,73 @@ export async function fetchPerfStats(params?: PerfStatsQuery) {
 
 export async function fetchQuotaSnapshot() {
   return fetchJson<QuotaSnapshot>('/api/quota/latest')
+}
+
+
+export async function fetchUpstreamAccounts(): Promise<UpstreamAccountListResponse> {
+  const response = await fetchJson<unknown>('/api/pool/upstream-accounts')
+  return normalizeUpstreamAccountListResponse(response)
+}
+
+export async function fetchUpstreamAccountDetail(accountId: number): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}`)
+  return normalizeUpstreamAccountDetail(response)
+}
+
+export async function createOauthLoginSession(
+  payload: CreateOauthLoginSessionPayload,
+): Promise<LoginSessionStatusResponse> {
+  const response = await fetchJson<unknown>('/api/pool/upstream-accounts/oauth/login-sessions', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  return normalizeLoginSessionStatusResponse(response)
+}
+
+export async function fetchOauthLoginSession(loginId: string): Promise<LoginSessionStatusResponse> {
+  const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`)
+  return normalizeLoginSessionStatusResponse(response)
+}
+
+export async function reloginUpstreamAccount(accountId: number): Promise<LoginSessionStatusResponse> {
+  const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}/oauth/relogin`, {
+    method: 'POST',
+  })
+  return normalizeLoginSessionStatusResponse(response)
+}
+
+export async function createApiKeyUpstreamAccount(
+  payload: CreateApiKeyAccountPayload,
+): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>('/api/pool/upstream-accounts/api-keys', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  return normalizeUpstreamAccountDetail(response)
+}
+
+export async function updateUpstreamAccount(
+  accountId: number,
+  payload: UpdateUpstreamAccountPayload,
+): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+  return normalizeUpstreamAccountDetail(response)
+}
+
+export async function deleteUpstreamAccount(accountId: number): Promise<void> {
+  await fetchJson(`/api/pool/upstream-accounts/${accountId}`, {
+    method: 'DELETE',
+  })
+}
+
+export async function syncUpstreamAccount(accountId: number): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}/sync`, {
+    method: 'POST',
+  })
+  return normalizeUpstreamAccountDetail(response)
 }
 
 export function createEventSource(path: string) {

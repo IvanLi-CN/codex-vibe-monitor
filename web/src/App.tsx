@@ -4,6 +4,8 @@ import DashboardPage from './pages/Dashboard'
 import LivePage from './pages/Live'
 import SettingsPage from './pages/Settings'
 import StatsPage from './pages/Stats'
+import AccountPoolLayout from './pages/account-pool/AccountPoolLayout'
+import UpstreamAccountsPage from './pages/account-pool/UpstreamAccounts'
 
 function App() {
   return (
@@ -13,6 +15,10 @@ function App() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="stats" element={<StatsPage />} />
         <Route path="live" element={<LivePage />} />
+        <Route path="account-pool" element={<AccountPoolLayout />}>
+          <Route index element={<Navigate to="/account-pool/upstream-accounts" replace />} />
+          <Route path="upstream-accounts" element={<UpstreamAccountsPage />} />
+        </Route>
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>

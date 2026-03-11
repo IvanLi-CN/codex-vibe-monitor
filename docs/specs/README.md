@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                   |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ------------------------------------------------------- |
+| g4ek6 | 号池模块第一阶段：上游账号管理                                            | 已实现          | `g4ek6-account-pool-upstream-accounts/SPEC.md`           | 2026-03-11 | fast-track / OAuth + API key 管理                       |
 | fmfuf | 优雅停机补强                                                                  | 已完成          | `fmfuf-graceful-shutdown-hardening/SPEC.md`              | 2026-03-10 | fast-track / PR #111 / CI Pipeline #412 green           |
 | ts4zf | 修正剩余 `XY_*` 环境变量命名                                                  | 已完成          | `ts4zf-rename-remaining-xy-envs/SPEC.md`                 | 2026-03-10 | fast-track / PR #110 / checks green / review-loop clear |
 | uwke5 | 反向代理上游 429 自动重试（设置可配）                                         | 已完成（5/5）   | `uwke5-proxy-upstream-429-retry/SPEC.md`                 | 2026-03-10 | fast-track / PR #109 / screenshot evidence              |

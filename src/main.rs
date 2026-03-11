@@ -71,10 +71,12 @@ mod forward_proxy;
 mod stats;
 #[cfg(test)]
 mod tests;
+mod upstream_accounts;
 
 use api::*;
 use forward_proxy::*;
 use stats::*;
+use upstream_accounts::*;
 
 #[cfg_attr(not(test), allow(dead_code))]
 const SOURCE_XY: &str = "xy";
@@ -487,6 +489,7 @@ async fn main() -> Result<()> {
     let pricing_catalog = Arc::new(RwLock::new(pricing_catalog));
 
     let http_clients = HttpClients::build(&config)?;
+    let upstream_accounts = Arc::new(UpstreamAccountsRuntime::from_env()?);
     let (tx, _rx) = broadcast::channel(128);
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let shutdown = CancellationToken::new();
@@ -517,6 +520,7 @@ async fn main() -> Result<()> {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        upstream_accounts,
     });
 
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
@@ -633,6 +637,7 @@ async fn drain_runtime_after_pending_shutdown(
     mut shutdown_watcher: JoinHandle<()>,
     server_handle: Option<JoinHandle<()>>,
     poller_handle: Option<JoinHandle<()>>,
+    upstream_accounts_handle: Option<JoinHandle<()>>,
     forward_proxy_handle: Option<JoinHandle<()>>,
     retention_handle: Option<JoinHandle<()>>,
     startup_backfill_handle: Option<JoinHandle<()>>,
@@ -649,6 +654,7 @@ async fn drain_runtime_after_pending_shutdown(
         state,
         server_handle,
         poller_handle,
+        upstream_accounts_handle,
         forward_proxy_handle,
         retention_handle,
         startup_backfill_handle,
@@ -674,6 +680,7 @@ where
         begin_runtime_shutdown(&shutdown_cancel);
     });
     let mut poller_handle = None;
+    let mut upstream_accounts_handle = None;
     let mut forward_proxy_handle = None;
     let mut retention_handle = None;
     let mut server_handle = None;
@@ -692,6 +699,7 @@ where
                 shutdown_watcher,
                 server_handle,
                 poller_handle,
+                upstream_accounts_handle,
                 forward_proxy_handle,
                 retention_handle,
                 startup_backfill_handle,
@@ -715,6 +723,7 @@ where
             shutdown_watcher,
             server_handle,
             poller_handle,
+            upstream_accounts_handle,
             forward_proxy_handle,
             retention_handle,
             startup_backfill_handle,
@@ -738,6 +747,7 @@ where
                 shutdown_watcher,
                 server_handle,
                 poller_handle,
+                upstream_accounts_handle,
                 forward_proxy_handle,
                 retention_handle,
                 startup_backfill_handle,
@@ -758,6 +768,51 @@ where
             shutdown_watcher,
             server_handle,
             poller_handle,
+            upstream_accounts_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    let upstream_accounts_stage =
+        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+            Some(spawn_upstream_account_maintenance(
+                state.clone(),
+                cancel.clone(),
+            ))
+        })
+        .await;
+    let upstream_accounts_shutdown_requested = match upstream_accounts_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                upstream_accounts_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            upstream_accounts_handle = result;
+            shutdown_requested
+        }
+    };
+    if upstream_accounts_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            upstream_accounts_handle,
             forward_proxy_handle,
             retention_handle,
             startup_backfill_handle,
@@ -779,6 +834,7 @@ where
                 shutdown_watcher,
                 server_handle,
                 poller_handle,
+                upstream_accounts_handle,
                 forward_proxy_handle,
                 retention_handle,
                 startup_backfill_handle,
@@ -799,6 +855,7 @@ where
             shutdown_watcher,
             server_handle,
             poller_handle,
+            upstream_accounts_handle,
             forward_proxy_handle,
             retention_handle,
             startup_backfill_handle,
@@ -820,6 +877,7 @@ where
                 shutdown_watcher,
                 server_handle,
                 poller_handle,
+                upstream_accounts_handle,
                 forward_proxy_handle,
                 retention_handle,
                 startup_backfill_handle,
@@ -840,13 +898,13 @@ where
             shutdown_watcher,
             server_handle,
             poller_handle,
+            upstream_accounts_handle,
             forward_proxy_handle,
             retention_handle,
             startup_backfill_handle,
         )
         .await;
     }
-
     let http_ready_started_at = Instant::now();
     let http_stage = run_startup_stage_until_shutdown(
         &shutdown_signal,
@@ -861,6 +919,7 @@ where
                 shutdown_watcher,
                 server_handle,
                 poller_handle,
+                upstream_accounts_handle,
                 forward_proxy_handle,
                 retention_handle,
                 startup_backfill_handle,
@@ -882,6 +941,7 @@ where
             shutdown_watcher,
             server_handle,
             poller_handle,
+            upstream_accounts_handle,
             forward_proxy_handle,
             retention_handle,
             startup_backfill_handle,
@@ -904,6 +964,7 @@ where
                 shutdown_watcher,
                 server_handle,
                 poller_handle,
+                upstream_accounts_handle,
                 forward_proxy_handle,
                 retention_handle,
                 startup_backfill_handle,
@@ -924,6 +985,7 @@ where
             shutdown_watcher,
             server_handle,
             poller_handle,
+            upstream_accounts_handle,
             forward_proxy_handle,
             retention_handle,
             startup_backfill_handle,
@@ -949,6 +1011,7 @@ where
         shutdown_watcher,
         server_handle,
         poller_handle,
+        upstream_accounts_handle,
         forward_proxy_handle,
         retention_handle,
         startup_backfill_handle,
@@ -974,6 +1037,7 @@ async fn drain_runtime_after_shutdown(
     state: Arc<AppState>,
     server_handle: Option<JoinHandle<()>>,
     poller_handle: Option<JoinHandle<()>>,
+    upstream_accounts_handle: Option<JoinHandle<()>>,
     forward_proxy_handle: Option<JoinHandle<()>>,
     retention_handle: Option<JoinHandle<()>>,
     startup_backfill_handle: Option<JoinHandle<()>>,
@@ -991,6 +1055,14 @@ async fn drain_runtime_after_shutdown(
             error!(?err, "poller task terminated unexpectedly");
         }
         info!("scheduler drained");
+    }
+    if let Some(upstream_accounts_handle) = upstream_accounts_handle
+        && let Err(err) = upstream_accounts_handle.await
+    {
+        error!(
+            ?err,
+            "upstream account maintenance task terminated unexpectedly"
+        );
     }
     if let Some(forward_proxy_handle) = forward_proxy_handle
         && let Err(err) = forward_proxy_handle.await
@@ -3291,6 +3363,37 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             get(fetch_prompt_cache_conversations),
         )
         .route("/api/quota/latest", get(latest_quota_snapshot))
+        .route("/api/pool/upstream-accounts", get(list_upstream_accounts))
+        .route(
+            "/api/pool/upstream-accounts/:id",
+            get(get_upstream_account)
+                .patch(update_upstream_account)
+                .delete(delete_upstream_account),
+        )
+        .route(
+            "/api/pool/upstream-accounts/:id/sync",
+            post(sync_upstream_account),
+        )
+        .route(
+            "/api/pool/upstream-accounts/:id/oauth/relogin",
+            post(relogin_upstream_account),
+        )
+        .route(
+            "/api/pool/upstream-accounts/api-keys",
+            post(create_api_key_account),
+        )
+        .route(
+            "/api/pool/upstream-accounts/oauth/login-sessions",
+            post(create_oauth_login_session),
+        )
+        .route(
+            "/api/pool/upstream-accounts/oauth/login-sessions/:loginId",
+            get(get_oauth_login_session),
+        )
+        .route(
+            "/api/pool/upstream-accounts/oauth/callback",
+            get(oauth_callback),
+        )
         .route("/events", get(sse_stream))
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
         .with_state(state.clone())
@@ -4440,6 +4543,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .context("failed to ensure startup_backfill_progress table existence")?;
 
     seed_default_pricing_catalog(pool).await?;
+    ensure_upstream_accounts_schema(pool).await?;
 
     Ok(())
 }
@@ -10259,6 +10363,7 @@ struct AppState {
     pricing_settings_update_lock: Arc<Mutex<()>>,
     pricing_catalog: Arc<RwLock<PricingCatalog>>,
     prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
+    upstream_accounts: Arc<UpstreamAccountsRuntime>,
 }
 
 #[derive(Debug, Clone)]
@@ -11237,6 +11342,13 @@ struct AppConfig {
     stats_source_snapshots_retention_days: u64,
     quota_snapshot_full_days: u64,
     crs_stats: Option<CrsStatsConfig>,
+    upstream_accounts_oauth_client_id: String,
+    upstream_accounts_oauth_issuer: Url,
+    upstream_accounts_usage_base_url: Url,
+    upstream_accounts_login_session_ttl: Duration,
+    upstream_accounts_sync_interval: Duration,
+    upstream_accounts_refresh_lead_time: Duration,
+    upstream_accounts_history_retention_days: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -11443,6 +11555,40 @@ impl AppConfig {
             ENV_QUOTA_SNAPSHOT_FULL_DAYS,
             DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
         )?;
+        let upstream_accounts_oauth_client_id = env::var(ENV_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID.to_string());
+        let upstream_accounts_oauth_issuer = Url::parse(
+            &env::var(ENV_UPSTREAM_ACCOUNTS_OAUTH_ISSUER)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_ISSUER.to_string()),
+        )
+        .context("invalid UPSTREAM_ACCOUNTS_OAUTH_ISSUER")?;
+        let upstream_accounts_usage_base_url = Url::parse(
+            &env::var(ENV_UPSTREAM_ACCOUNTS_USAGE_BASE_URL)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_UPSTREAM_ACCOUNTS_USAGE_BASE_URL.to_string()),
+        )
+        .context("invalid UPSTREAM_ACCOUNTS_USAGE_BASE_URL")?;
+        let upstream_accounts_login_session_ttl = Duration::from_secs(parse_u64_env_var(
+            ENV_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS,
+            DEFAULT_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS,
+        )?);
+        let upstream_accounts_sync_interval = Duration::from_secs(parse_u64_env_var(
+            ENV_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
+            DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
+        )?);
+        let upstream_accounts_refresh_lead_time = Duration::from_secs(parse_u64_env_var(
+            ENV_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS,
+            DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS,
+        )?);
+        let upstream_accounts_history_retention_days = parse_u64_env_var(
+            ENV_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
+            DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
+        )?;
 
         let crs_stats_base_url = env::var("CRS_STATS_BASE_URL").ok();
         let crs_stats_api_id = env::var("CRS_STATS_API_ID").ok();
@@ -11510,6 +11656,13 @@ impl AppConfig {
             stats_source_snapshots_retention_days,
             quota_snapshot_full_days,
             crs_stats,
+            upstream_accounts_oauth_client_id,
+            upstream_accounts_oauth_issuer,
+            upstream_accounts_usage_base_url,
+            upstream_accounts_login_session_ttl,
+            upstream_accounts_sync_interval,
+            upstream_accounts_refresh_lead_time,
+            upstream_accounts_history_retention_days,
         })
     }
 

@@ -1769,6 +1769,21 @@ fn test_config() -> AppConfig {
         stats_source_snapshots_retention_days: DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
         quota_snapshot_full_days: DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
         crs_stats: None,
+        upstream_accounts_oauth_client_id: DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID.to_string(),
+        upstream_accounts_oauth_issuer: Url::parse(DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_ISSUER)
+            .expect("valid oauth issuer"),
+        upstream_accounts_usage_base_url: Url::parse(DEFAULT_UPSTREAM_ACCOUNTS_USAGE_BASE_URL)
+            .expect("valid usage base url"),
+        upstream_accounts_login_session_ttl: Duration::from_secs(
+            DEFAULT_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS,
+        ),
+        upstream_accounts_sync_interval: Duration::from_secs(
+            DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
+        ),
+        upstream_accounts_refresh_lead_time: Duration::from_secs(
+            DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS,
+        ),
+        upstream_accounts_history_retention_days: DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
     }
 }
 
@@ -2377,6 +2392,7 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
 }
 
@@ -6283,6 +6299,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
     let started = Instant::now();
@@ -7715,6 +7732,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
     let slow_chunks = stream::unfold(0u8, |state| async move {
@@ -7844,6 +7862,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
     let app = Router::new()
@@ -8014,6 +8033,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
     let response = proxy_openai_v1(
@@ -8085,6 +8105,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
     let response = proxy_openai_v1(
@@ -11216,6 +11237,7 @@ async fn quota_latest_returns_degraded_when_empty() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
     let Json(snapshot) = latest_quota_snapshot(State(state))

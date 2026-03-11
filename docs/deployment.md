@@ -94,6 +94,12 @@ labels:
 - `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：非 compact 代理路径的上游等待超时，默认 `60` 秒。
 - `OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS`：`/v1/responses/compact` 的上游等待超时，可选覆盖；默认 `180` 秒。
 - `OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS`：请求体读取总超时，默认 `180` 秒；超时返回 `408`。
+- `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`：启用号池 / 上游账号写入的必填密钥；没有它时账号列表仍可读，但新增、更新、删除与 OAuth 绑定都会被拒绝。
+- `UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID` / `UPSTREAM_ACCOUNTS_OAUTH_ISSUER`：Codex OAuth 登录的 client / issuer；默认沿用官方 Codex CLI 当前参数。
+- `UPSTREAM_ACCOUNTS_USAGE_BASE_URL`：OAuth 账号 usage 抓取基址；默认 `https://chatgpt.com/backend-api`，会自动拼接 `/wham/usage`。
+- `UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS`：一次性 OAuth 登录会话 TTL；默认 10 分钟。
+- `UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS` / `UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS`：后台账号保活与配额同步间隔 / 提前刷新窗口。
+- `UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS`：上游账号 `5 小时 / 7 天` 历史样本保留天数。
 - `RETENTION_ENABLED`：是否启用后台 retention/archive 维护任务，默认 `false`，上线时需要显式开启。
 - `RETENTION_DRY_RUN`：全局 dry-run 开关；开启后 maintenance 只输出计划与计数，不删除数据。
 - `RETENTION_INTERVAL_SECS`：常驻 maintenance 执行间隔；默认按小时调度。
@@ -109,6 +115,12 @@ labels:
 - 可通过 `/settings` 页面或 `PUT /api/settings/pricing` 在线更新，并实时影响新请求的成本估算。
 
 统计接口行为：
+
+号池 / 上游账号运维提示：
+
+- OAuth callback 地址固定为 `/api/pool/upstream-accounts/oauth/callback`；服务会根据实际请求 `Origin/Host` 生成 redirect URI，因此反向代理必须正确透传这两个头。
+- 后台会定期刷新临近过期的 OAuth access token，并同步归一化后的 `5 小时(primary)` / `7 天(secondary)` 配额窗口；明确的授权失效会把账号转成 `needs_reauth`，但不会删除账号或清空最后成功快照。
+- API Key 账号第一阶段只展示本地占位限额，不会探测真实 usage；真实计量会在后续路由阶段接入。
 
 - `GET /api/quota/latest`：读取数据库里最近一条历史 quota snapshot；本服务不再从外部 XYAI 上游抓取新 quota。
 - `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries` 默认合并数据库中的历史 `xy`、当前 `proxy`，以及启用时的 `crs` 来源。
