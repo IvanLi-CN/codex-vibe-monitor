@@ -693,9 +693,14 @@ pub(crate) async fn put_forward_proxy_settings(
     let next: ForwardProxySettings = payload.into();
     let _update_guard = state.forward_proxy_settings_update_lock.lock().await;
 
+    let previous_settings;
     let (known_subscription_keys_before_settings, added_manual_endpoints) = {
         let mut manager = state.forward_proxy.lock().await;
+        previous_settings = manager.settings.clone();
         let before = snapshot_active_forward_proxy_endpoints(&manager);
+        save_forward_proxy_settings(&state.pool, next.clone())
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
         manager.apply_settings(next.clone());
         let after = snapshot_active_forward_proxy_endpoints(&manager);
         (
@@ -709,6 +714,18 @@ pub(crate) async fn put_forward_proxy_settings(
     };
     if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
         if state.shutdown.is_cancelled() {
+            let mut manager = state.forward_proxy.lock().await;
+            if let Err(rollback_err) =
+                save_forward_proxy_settings(&state.pool, previous_settings.clone()).await
+            {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!(
+                        "failed to roll back forward proxy settings after shutdown interruption: {rollback_err}"
+                    ),
+                ));
+            }
+            manager.apply_settings(previous_settings);
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!("forward proxy settings update interrupted by shutdown: {err}"),
@@ -735,9 +752,6 @@ pub(crate) async fn put_forward_proxy_settings(
             "settings-update",
         );
     }
-    save_forward_proxy_settings(&state.pool, next)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
     let response = build_forward_proxy_settings_response(state.as_ref())
         .await

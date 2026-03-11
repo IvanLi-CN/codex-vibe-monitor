@@ -681,6 +681,11 @@ async fn forward_proxy_settings_returns_service_unavailable_when_shutdown_interr
         !saved_settings.proxy_urls.contains(&normalized_proxy),
         "shutdown-interrupted settings update should not persist the new proxy configuration"
     );
+    let manager = state.forward_proxy.lock().await;
+    assert!(
+        !manager.settings.proxy_urls.contains(&normalized_proxy),
+        "shutdown-interrupted settings update should roll back the in-memory proxy configuration"
+    );
 }
 
 #[tokio::test]
