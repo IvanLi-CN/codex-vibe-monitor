@@ -11988,6 +11988,70 @@ async fn run_startup_stage_until_shutdown_preserves_stage_result_when_shutdown_a
 }
 
 #[tokio::test]
+async fn run_startup_stage_until_shutdown_waits_for_stage_completion_when_shutdown_arrives_mid_stage()
+ {
+    let shutdown = Arc::new(Notify::new());
+    let shutdown_signal = {
+        let shutdown = shutdown.clone();
+        async move {
+            shutdown.notified().await;
+        }
+        .shared()
+    };
+    let cancel = CancellationToken::new();
+    let release_stage = Arc::new(Notify::new());
+    let (stage_started_tx, stage_started_rx) = tokio::sync::oneshot::channel();
+
+    let shutdown_task = {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            stage_started_rx
+                .await
+                .expect("stage should signal when startup work begins");
+            shutdown.notify_waiters();
+        })
+    };
+    let release_task = {
+        let cancel = cancel.clone();
+        let release_stage = release_stage.clone();
+        tokio::spawn(async move {
+            cancel.cancelled().await;
+            release_stage.notify_waiters();
+        })
+    };
+
+    let outcome = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async move {
+        stage_started_tx
+            .send(())
+            .expect("stage start signal should be sent exactly once");
+        release_stage.notified().await;
+        7_u8
+    })
+    .await;
+
+    shutdown_task
+        .await
+        .expect("shutdown trigger task should finish");
+    release_task
+        .await
+        .expect("stage release task should finish");
+
+    match outcome {
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            assert_eq!(result, 7);
+            assert!(shutdown_requested);
+            assert!(cancel.is_cancelled());
+        }
+        StartupStageOutcome::SkippedByShutdown => {
+            panic!("stage should finish after shutdown begins once startup work is already running")
+        }
+    }
+}
+
+#[tokio::test]
 async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::OK).await;
     let normalized_proxy =

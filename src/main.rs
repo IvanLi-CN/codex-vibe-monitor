@@ -559,15 +559,19 @@ where
         return StartupStageOutcome::SkippedByShutdown;
     }
 
+    tokio::pin!(stage);
     tokio::select! {
         biased;
-        result = stage => StartupStageOutcome::Completed {
+        result = &mut stage => StartupStageOutcome::Completed {
             shutdown_requested: begin_runtime_shutdown_if_requested(shutdown_signal, cancel),
             result,
         },
         _ = shutdown_signal.clone() => {
             begin_runtime_shutdown(cancel);
-            StartupStageOutcome::SkippedByShutdown
+            StartupStageOutcome::Completed {
+                result: stage.await,
+                shutdown_requested: true,
+            }
         }
     }
 }
