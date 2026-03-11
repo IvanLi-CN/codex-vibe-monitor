@@ -711,6 +711,12 @@ pub(crate) async fn put_forward_proxy_settings(
         )
     };
     if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
+        if state.shutdown.is_cancelled() {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("forward proxy settings update interrupted by shutdown: {err}"),
+            ));
+        }
         warn!(
             error = %err,
             "failed to sync forward proxy routes after settings update"
@@ -992,12 +998,13 @@ pub(crate) async fn resolve_forward_proxy_probe_endpoint_url(
         raw_url: Some(raw_url.to_string()),
     };
     let route_url = {
+        let validation_shutdown = CancellationToken::new();
         let mut supervisor = state.xray_supervisor.lock().await;
         supervisor
             .ensure_instance_with_ready_timeout(
                 &probe_endpoint,
                 validation_timeout,
-                &state.shutdown,
+                &validation_shutdown,
             )
             .await?
     };
@@ -2470,7 +2477,7 @@ impl XraySupervisor {
         for endpoint in endpoints {
             if shutdown.is_cancelled() {
                 info!("stopping xray route sync because shutdown is in progress");
-                break;
+                bail!("xray route sync cancelled because shutdown is in progress");
             }
             if !endpoint.requires_xray() {
                 continue;

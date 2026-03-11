@@ -489,6 +489,33 @@ async fn validate_subscription_candidate_keeps_5xx_as_failure() {
 }
 
 #[tokio::test]
+async fn validate_single_forward_proxy_candidate_keeps_xray_startup_running_during_shutdown() {
+    let temp_root = make_temp_test_dir("xray-validation-shutdown");
+    let runtime_dir = temp_root.join("runtime");
+    let mut config = test_config();
+    config.xray_binary = "/path/to/non-existent-xray".to_string();
+    config.xray_runtime_dir = runtime_dir;
+    let state = test_state_from_config(config, false).await;
+    state.shutdown.cancel();
+
+    let err = validate_single_forward_proxy_candidate(
+        state.as_ref(),
+        "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:443?encryption=none".to_string(),
+    )
+    .await
+    .expect_err("validation should fail on missing xray binary, not on shutdown cancellation");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("failed to start xray binary"),
+        "expected validation to keep running through xray startup, got: {message}"
+    );
+    assert!(
+        !message.contains("shutdown is in progress"),
+        "request-scoped validation should not reuse the global shutdown token: {message}"
+    );
+}
+
+#[tokio::test]
 async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path() {
     let temp_root = make_temp_test_dir("xray-runtime-create");
     let runtime_dir = temp_root.join("nested/runtime");
@@ -539,6 +566,46 @@ async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path
     );
 
     let _ = fs::remove_dir_all(&temp_root);
+}
+
+#[tokio::test]
+async fn forward_proxy_settings_returns_service_unavailable_when_shutdown_interrupts_xray_sync() {
+    let temp_root = make_temp_test_dir("forward-proxy-settings-shutdown");
+    let runtime_dir = temp_root.join("runtime");
+    let xray_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com#vless".to_string();
+    let normalized_proxy = normalize_single_proxy_url(&xray_url).expect("normalize xray proxy url");
+
+    let mut config = test_config();
+    config.xray_binary = "/path/to/non-existent-xray".to_string();
+    config.xray_runtime_dir = runtime_dir;
+    let state = test_state_from_config(config, false).await;
+    state.shutdown.cancel();
+
+    let err = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec![xray_url],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect_err("settings update should surface shutdown interruption");
+
+    assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        err.1.contains("interrupted by shutdown"),
+        "expected shutdown-specific error, got: {}",
+        err.1
+    );
+    assert!(
+        read_forward_proxy_runtime_weight(&state.pool, &normalized_proxy)
+            .await
+            .is_none(),
+        "shutdown-interrupted route sync should not persist a partial runtime snapshot"
+    );
 }
 
 #[tokio::test]
