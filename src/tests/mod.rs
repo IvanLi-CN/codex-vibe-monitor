@@ -279,6 +279,78 @@ fn timeout_seconds_for_message_rounds_subsecond_up_to_one() {
 }
 
 #[test]
+fn fallback_proxy_429_retry_delay_uses_exponential_backoff_with_cap() {
+    assert_eq!(
+        fallback_proxy_429_retry_delay(1),
+        Duration::from_millis(500)
+    );
+    assert_eq!(fallback_proxy_429_retry_delay(2), Duration::from_secs(1));
+    assert_eq!(fallback_proxy_429_retry_delay(3), Duration::from_secs(2));
+    assert_eq!(fallback_proxy_429_retry_delay(4), Duration::from_secs(4));
+    assert_eq!(fallback_proxy_429_retry_delay(5), Duration::from_secs(5));
+    assert_eq!(fallback_proxy_429_retry_delay(9), Duration::from_secs(5));
+}
+
+#[test]
+fn parse_retry_after_delay_supports_seconds_and_http_date() {
+    let seconds = HeaderValue::from_static("2");
+    assert_eq!(
+        parse_retry_after_delay(&seconds),
+        Some(Duration::from_secs(2))
+    );
+
+    let retry_at = Utc::now() + chrono::Duration::seconds(5);
+    let imf_fixdate = retry_at.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+    let rfc850 = retry_at.format("%A, %d-%b-%y %H:%M:%S GMT").to_string();
+    let asctime = retry_at.format("%a %b %e %H:%M:%S %Y").to_string();
+
+    for raw in [imf_fixdate, rfc850, asctime] {
+        let http_date = HeaderValue::from_str(&raw).expect("valid retry-after date header");
+        let parsed =
+            parse_retry_after_delay(&http_date).expect("http-date retry-after should parse");
+        assert!(parsed >= Duration::from_secs(1));
+        assert!(parsed <= Duration::from_secs(5));
+    }
+}
+
+#[test]
+fn parse_retry_after_delay_clamps_large_values() {
+    let huge_seconds = HeaderValue::from_static("3600");
+    assert_eq!(
+        parse_retry_after_delay(&huge_seconds),
+        Some(Duration::from_secs(
+            MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS
+        ))
+    );
+
+    let huge_date = (Utc::now() + chrono::Duration::seconds(3600))
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string();
+    let huge_header = HeaderValue::from_str(&huge_date).expect("valid retry-after date header");
+    assert_eq!(
+        parse_retry_after_delay(&huge_header),
+        Some(Duration::from_secs(
+            MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS
+        ))
+    );
+}
+
+#[test]
+fn parse_retry_after_delay_rejects_invalid_or_past_values() {
+    let invalid = HeaderValue::from_static("not-a-date");
+    assert_eq!(parse_retry_after_delay(&invalid), None);
+
+    let blank = HeaderValue::from_static("   ");
+    assert_eq!(parse_retry_after_delay(&blank), None);
+
+    let past = (Utc::now() - chrono::Duration::seconds(1))
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string();
+    let past_header = HeaderValue::from_str(&past).expect("valid past retry-after date header");
+    assert_eq!(parse_retry_after_delay(&past_header), None);
+}
+
+#[test]
 fn validation_probe_reachable_status_accepts_success_auth_and_not_found() {
     for status in [
         StatusCode::OK,
@@ -1084,6 +1156,14 @@ fn classify_invocation_failure_marks_upstream_errors_as_service_failure() {
         result.failure_kind.as_deref(),
         Some("failed_contact_upstream")
     );
+}
+
+#[test]
+fn classify_invocation_failure_marks_http_429_as_service_failure() {
+    let result = classify_invocation_failure(Some("http_429"), Some("rate limited"));
+    assert_eq!(result.failure_class, FailureClass::ServiceFailure);
+    assert!(result.is_actionable);
+    assert_eq!(result.failure_kind.as_deref(), Some("http_429"));
 }
 
 #[test]
@@ -2087,6 +2167,7 @@ fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCapture
         price_version: Some("unit-test".to_string()),
         status: "success".to_string(),
         error_message: None,
+        failure_kind: None,
         payload: Some(
             "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\",\"requestedServiceTier\":\"priority\",\"reasoningEffort\":\"high\"}"
                 .to_string(),
@@ -2329,6 +2410,318 @@ async fn wait_for_forward_proxy_probe_attempts(
     }
 }
 
+async fn count_request_forward_proxy_attempts(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM forward_proxy_attempts WHERE is_probe = 0")
+        .fetch_one(pool)
+        .await
+        .expect("count request forward proxy attempts")
+}
+
+async fn count_request_forward_proxy_attempts_with_failure_kind(
+    pool: &SqlitePool,
+    failure_kind: &str,
+) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM forward_proxy_attempts WHERE is_probe = 0 AND failure_kind = ?1",
+    )
+    .bind(failure_kind)
+    .fetch_one(pool)
+    .await
+    .expect("count request forward proxy attempts by failure kind")
+}
+
+async fn latest_request_forward_proxy_attempt_latency_ms(pool: &SqlitePool) -> Option<f64> {
+    sqlx::query_scalar::<_, Option<f64>>(
+        "SELECT latency_ms FROM forward_proxy_attempts WHERE is_probe = 0 ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .expect("fetch latest request forward proxy latency")
+    .flatten()
+}
+
+async fn count_codex_invocations(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(pool)
+        .await
+        .expect("count codex invocations")
+}
+
+async fn wait_for_codex_invocations(pool: &SqlitePool, expected_min_count: i64) {
+    let started = Instant::now();
+    loop {
+        let count = count_codex_invocations(pool).await;
+        if count >= expected_min_count {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timed out waiting for codex invocations; expected at least {expected_min_count}, got {count}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[derive(Clone)]
+struct Retry429EchoState {
+    rate_limit_attempts: usize,
+    attempts: Arc<AtomicUsize>,
+    seen_bodies: Arc<StdMutex<Vec<String>>>,
+    retry_after: Option<HeaderValue>,
+}
+
+async fn retrying_echo_upstream(
+    State(state): State<Retry429EchoState>,
+    method: Method,
+    uri: Uri,
+    body: String,
+) -> Response {
+    state
+        .seen_bodies
+        .lock()
+        .expect("lock retrying echo bodies")
+        .push(body.clone());
+    let attempt = state.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+
+    if attempt <= state.rate_limit_attempts {
+        let mut headers = HeaderMap::new();
+        if let Some(retry_after) = state.retry_after.clone() {
+            headers.insert(http_header::RETRY_AFTER, retry_after);
+        }
+        headers.insert(
+            http_header::HeaderName::from_static("x-upstream-attempt"),
+            HeaderValue::from_str(&attempt.to_string()).expect("valid attempt header"),
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            headers,
+            Json(json!({
+                "error": "rate limited",
+                "attempt": attempt,
+                "method": method.as_str(),
+                "query": uri.query().unwrap_or_default(),
+                "body": body,
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(json!({
+            "attempt": attempt,
+            "method": method.as_str(),
+            "path": uri.path(),
+            "query": uri.query().unwrap_or_default(),
+            "body": body,
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_retrying_echo_upstream(
+    rate_limit_attempts: usize,
+    retry_after: Option<&str>,
+) -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<StdMutex<Vec<String>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let seen_bodies = Arc::new(StdMutex::new(Vec::<String>::new()));
+    let app = Router::new()
+        .route("/v1/echo", any(retrying_echo_upstream))
+        .with_state(Retry429EchoState {
+            rate_limit_attempts,
+            attempts: attempts.clone(),
+            seen_bodies: seen_bodies.clone(),
+            retry_after: retry_after
+                .map(|value| HeaderValue::from_str(value).expect("valid retry-after header")),
+        });
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind retrying echo test server");
+    let addr = listener
+        .local_addr()
+        .expect("retrying echo test server addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("retrying echo test server should run");
+    });
+
+    (format!("http://{addr}/"), attempts, seen_bodies, handle)
+}
+
+#[derive(Clone)]
+struct Retry429CaptureState {
+    rate_limit_attempts: usize,
+    attempts: Arc<AtomicUsize>,
+    seen_payloads: Arc<StdMutex<Vec<Value>>>,
+    retry_after: Option<HeaderValue>,
+}
+
+async fn retrying_capture_upstream(
+    State(state): State<Retry429CaptureState>,
+    body: Bytes,
+) -> Response {
+    let payload: Value = serde_json::from_slice(&body).expect("decode retrying capture body");
+    state
+        .seen_payloads
+        .lock()
+        .expect("lock retrying capture payloads")
+        .push(payload.clone());
+    let attempt = state.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+
+    if attempt <= state.rate_limit_attempts {
+        let mut headers = HeaderMap::new();
+        if let Some(retry_after) = state.retry_after.clone() {
+            headers.insert(http_header::RETRY_AFTER, retry_after);
+        }
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            headers,
+            Json(json!({
+                "error": "rate limited",
+                "attempt": attempt,
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "id": "resp_retry_success",
+            "object": "response",
+            "model": "gpt-5.3-codex",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 3,
+                "total_tokens": 15
+            },
+            "received": payload,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_retrying_capture_upstream(
+    rate_limit_attempts: usize,
+    retry_after: Option<&str>,
+) -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<StdMutex<Vec<Value>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let seen_payloads = Arc::new(StdMutex::new(Vec::<Value>::new()));
+    let app = Router::new()
+        .route("/v1/chat/completions", post(retrying_capture_upstream))
+        .route("/v1/responses", post(retrying_capture_upstream))
+        .with_state(Retry429CaptureState {
+            rate_limit_attempts,
+            attempts: attempts.clone(),
+            seen_payloads: seen_payloads.clone(),
+            retry_after: retry_after
+                .map(|value| HeaderValue::from_str(value).expect("valid retry-after header")),
+        });
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind retrying capture test server");
+    let addr = listener
+        .local_addr()
+        .expect("retrying capture test server addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("retrying capture test server should run");
+    });
+
+    (format!("http://{addr}/"), attempts, seen_payloads, handle)
+}
+
+#[derive(Clone)]
+struct Retry429ModelsState {
+    rate_limit_attempts: usize,
+    attempts: Arc<AtomicUsize>,
+    retry_after: Option<HeaderValue>,
+}
+
+async fn retrying_models_upstream(State(state): State<Retry429ModelsState>) -> Response {
+    let attempt = state.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+
+    if attempt <= state.rate_limit_attempts {
+        let mut headers = HeaderMap::new();
+        if let Some(retry_after) = state.retry_after.clone() {
+            headers.insert(http_header::RETRY_AFTER, retry_after);
+        }
+        headers.insert(
+            http_header::HeaderName::from_static("x-upstream-attempt"),
+            HeaderValue::from_str(&attempt.to_string()).expect("valid attempt header"),
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            headers,
+            Json(json!({
+                "error": "rate limited",
+                "attempt": attempt,
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "upstream-model-after-retry",
+                    "object": "model",
+                    "owned_by": "upstream",
+                    "created": 1712345680
+                }
+            ]
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_retrying_models_upstream(
+    rate_limit_attempts: usize,
+    retry_after: Option<&str>,
+) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route("/v1/models", get(retrying_models_upstream))
+        .with_state(Retry429ModelsState {
+            rate_limit_attempts,
+            attempts: attempts.clone(),
+            retry_after: retry_after
+                .map(|value| HeaderValue::from_str(value).expect("valid retry-after header")),
+        });
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind retrying models test server");
+    let addr = listener
+        .local_addr()
+        .expect("retrying models test server addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("retrying models test server should run");
+    });
+
+    (format!("http://{addr}/"), attempts, handle)
+}
+
 async fn read_forward_proxy_runtime_weight(pool: &SqlitePool, proxy_key: &str) -> Option<f64> {
     sqlx::query_scalar::<_, f64>("SELECT weight FROM forward_proxy_runtime WHERE proxy_key = ?1")
         .bind(proxy_key)
@@ -2458,6 +2851,32 @@ async fn test_upstream_stream_mid_error() -> impl IntoResponse {
             http_header::CONTENT_TYPE,
             HeaderValue::from_static("text/event-stream"),
         )],
+        Body::from_stream(chunks),
+    )
+}
+
+async fn test_upstream_429_mid_error() -> impl IntoResponse {
+    let chunks = stream::unfold(0usize, |state| async move {
+        match state {
+            0 => Some((
+                Ok::<Bytes, io::Error>(Bytes::from_static(
+                    br#"{"error":{"message":"rate limited"}}"#,
+                )),
+                1,
+            )),
+            1 => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Some((
+                    Err::<Bytes, io::Error>(io::Error::other("upstream-429-mid-stream-error")),
+                    2,
+                ))
+            }
+            _ => None,
+        }
+    });
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(http_header::RETRY_AFTER, HeaderValue::from_static("0"))],
         Body::from_stream(chunks),
     )
 }
@@ -2693,6 +3112,7 @@ async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
             any(test_upstream_stream_first_error),
         )
         .route("/v1/stream-mid-error", any(test_upstream_stream_mid_error))
+        .route("/v1/429-mid-error", any(test_upstream_429_mid_error))
         .route("/v1/slow-stream", any(test_upstream_slow_stream))
         .route("/v1/hang", any(test_upstream_hang))
         .route("/v1/models", get(test_upstream_models))
@@ -3274,6 +3694,480 @@ async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_replays_non_capture_body_across_429_retries() {
+    let (upstream_base, attempts, seen_bodies, upstream_handle) =
+        spawn_retrying_echo_upstream(1, Some("0")).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 1;
+    }
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/echo?mode=retry".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from("retry-body"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+    assert_eq!(payload["attempt"], 2);
+    assert_eq!(payload["query"], "mode=retry");
+    assert_eq!(payload["body"], "retry-body");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        seen_bodies
+            .lock()
+            .expect("lock retrying echo bodies")
+            .clone(),
+        vec!["retry-body".to_string(), "retry-body".to_string()]
+    );
+    assert_eq!(count_request_forward_proxy_attempts(&state.pool).await, 2);
+    assert_eq!(
+        count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        )
+        .await,
+        1
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_records_stream_error_when_final_429_stream_fails() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 1;
+    }
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/429-mid-error".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::new(),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let err = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect_err("upstream 429 stream should fail mid-body");
+    assert!(
+        err.to_string().contains("upstream stream error"),
+        "unexpected stream error text: {err}"
+    );
+
+    let mut attempt_count: i64 = 0;
+    let mut rate_limit_count: i64 = 0;
+    let mut stream_error_count: i64 = 0;
+    for _ in 0..20 {
+        attempt_count = count_request_forward_proxy_attempts(&state.pool).await;
+        rate_limit_count = count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        )
+        .await;
+        stream_error_count = count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_STREAM_ERROR,
+        )
+        .await;
+
+        if attempt_count == 2 && rate_limit_count == 1 && stream_error_count == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    assert_eq!(attempt_count, 2);
+    assert_eq!(rate_limit_count, 1);
+    assert_eq!(stream_error_count, 1);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_streams_request_body_when_429_retry_is_disabled() {
+    let (upstream_base, _attempts, _seen_bodies, upstream_handle) =
+        spawn_retrying_echo_upstream(0, None).await;
+    let state = test_state_with_openai_base_body_limit_and_read_timeout(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        Duration::from_millis(50),
+    )
+    .await;
+
+    let uri: Uri = "/v1/echo?mode=slow-body".parse().expect("valid uri");
+
+    // Disabled => should keep legacy stream-through semantics (no eager buffering).
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 0;
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from_static(b"hello"))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"-proxy"))).await;
+    });
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri.clone()),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+    assert_eq!(payload["body"], "hello-proxy");
+
+    // Enabled => buffering path enforces OPENAI_PROXY_REQUEST_READ_TIMEOUT.
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 1;
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from_static(b"hello"))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"-proxy"))).await;
+    });
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_records_end_to_end_latency_for_non_capture_streams() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 1;
+    }
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/slow-stream".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::new(),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    assert_eq!(body, Bytes::from_static(b"chunk-achunk-b"));
+
+    assert_eq!(count_request_forward_proxy_attempts(&state.pool).await, 1);
+    let latency_ms = latest_request_forward_proxy_attempt_latency_ms(&state.pool)
+        .await
+        .expect("latency should be recorded");
+    assert!(
+        latency_ms >= 350.0,
+        "expected end-to-end latency to include streaming delay, got {latency_ms}ms"
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_returns_final_429_body_and_headers_after_retry_exhaustion() {
+    let (upstream_base, attempts, seen_bodies, upstream_handle) =
+        spawn_retrying_echo_upstream(99, Some("0")).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 2;
+    }
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/echo?mode=always-429".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from("retry-body"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response.headers().get(http_header::RETRY_AFTER),
+        Some(&HeaderValue::from_static("0"))
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(http_header::HeaderName::from_static("x-upstream-attempt")),
+        Some(&HeaderValue::from_static("3"))
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+    assert_eq!(payload["attempt"], 3);
+    assert_eq!(payload["body"], "retry-body");
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        seen_bodies
+            .lock()
+            .expect("lock retrying echo bodies")
+            .clone(),
+        vec![
+            "retry-body".to_string(),
+            "retry-body".to_string(),
+            "retry-body".to_string(),
+        ]
+    );
+    assert_eq!(count_request_forward_proxy_attempts(&state.pool).await, 3);
+    assert_eq!(
+        count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        )
+        .await,
+        3
+    );
+    // 429 failures should not trigger penalized-proxy probes (they ignore Retry-After and add load).
+    let probe_guard_started = Instant::now();
+    loop {
+        let probe_attempts =
+            count_forward_proxy_probe_attempts(&state.pool, FORWARD_PROXY_DIRECT_KEY, None).await;
+        assert_eq!(
+            probe_attempts, 0,
+            "unexpected penalized-proxy probe attempt spawned after upstream 429 exhaustion"
+        );
+        if probe_guard_started.elapsed() > Duration::from_millis(500) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn forward_proxy_penalized_probe_treats_429_as_failure() {
+    let (upstream_base, upstream_handle) =
+        spawn_test_forward_proxy_status(StatusCode::TOO_MANY_REQUESTS).await;
+    let state = test_state_with_openai_base(
+        Url::parse(&format!("{upstream_base}/")).expect("valid upstream base url"),
+    )
+    .await;
+    let candidate = SelectedForwardProxy::from_endpoint(&ForwardProxyEndpoint::direct());
+
+    spawn_penalized_forward_proxy_probe(state.clone(), candidate.clone());
+    wait_for_forward_proxy_probe_attempts(&state.pool, &candidate.key, 1).await;
+    assert_eq!(
+        count_forward_proxy_probe_attempts(&state.pool, &candidate.key, Some(false)).await,
+        1
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_capture_target_retries_429_then_persists_final_success_once() {
+    let (upstream_base, attempts, seen_payloads, upstream_handle) =
+        spawn_retrying_capture_upstream(1, Some("0")).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 1;
+    }
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "stream": false,
+        "input": "hello"
+    }))
+    .expect("serialize request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response body");
+    assert_eq!(payload["attempt"], 2);
+    assert_eq!(payload["received"]["input"], "hello");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        seen_payloads
+            .lock()
+            .expect("lock retrying capture payloads")
+            .clone(),
+        vec![
+            json!({
+                "model": "gpt-5.3-codex",
+                "stream": false,
+                "input": "hello"
+            }),
+            json!({
+                "model": "gpt-5.3-codex",
+                "stream": false,
+                "input": "hello"
+            }),
+        ]
+    );
+    wait_for_codex_invocations(&state.pool, 1).await;
+    assert_eq!(count_codex_invocations(&state.pool).await, 1);
+    assert_eq!(count_request_forward_proxy_attempts(&state.pool).await, 2);
+    assert_eq!(
+        count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        )
+        .await,
+        1
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_capture_target_returns_final_429_after_retry_exhaustion() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedRow {
+        status: Option<String>,
+        failure_kind: Option<String>,
+        failure_class: Option<String>,
+        is_actionable: Option<i64>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, attempts, seen_payloads, upstream_handle) =
+        spawn_retrying_capture_upstream(99, Some("0")).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 2;
+    }
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "stream": false,
+        "input": "hello"
+    }))
+    .expect("serialize request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response.headers().get(http_header::RETRY_AFTER),
+        Some(&HeaderValue::from_static("0"))
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response body");
+    assert_eq!(payload["attempt"], 3);
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        seen_payloads
+            .lock()
+            .expect("lock retrying capture payloads")
+            .len(),
+        3
+    );
+    wait_for_codex_invocations(&state.pool, 1).await;
+    assert_eq!(count_codex_invocations(&state.pool).await, 1);
+    let row = sqlx::query_as::<_, PersistedRow>(
+        r#"
+        SELECT status, failure_kind, failure_class, is_actionable, payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .expect("query capture record")
+    .expect("capture record should be persisted");
+    assert_eq!(row.status.as_deref(), Some("http_429"));
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+    );
+    assert_eq!(row.failure_class.as_deref(), Some(FAILURE_CLASS_SERVICE));
+    assert_eq!(row.is_actionable, Some(1));
+    let payload_json: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("capture payload should be present"),
+    )
+    .expect("decode capture payload");
+    assert_eq!(
+        payload_json["failureKind"].as_str(),
+        Some("upstream_http_429")
+    );
+    assert_eq!(count_request_forward_proxy_attempts(&state.pool).await, 3);
+    assert_eq!(
+        count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        )
+        .await,
+        3
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_model_settings_api_reads_and_persists_updates() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
@@ -3288,6 +4182,10 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     assert_eq!(
         initial.proxy.fast_mode_rewrite_mode,
         ProxyFastModeRewriteMode::Disabled
+    );
+    assert_eq!(
+        initial.proxy.upstream_429_max_retries,
+        DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES
     );
     assert_eq!(initial.proxy.models.len(), PROXY_PRESET_MODEL_IDS.len());
     assert_eq!(
@@ -3305,6 +4203,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
             hijack_enabled: true,
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: ProxyFastModeRewriteMode::FillMissing,
+            upstream_429_max_retries: Some(5),
             enabled_models: vec!["gpt-5.2-codex".to_string(), "unknown-model".to_string()],
         }),
     )
@@ -3316,6 +4215,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         updated.fast_mode_rewrite_mode,
         ProxyFastModeRewriteMode::FillMissing
     );
+    assert_eq!(updated.upstream_429_max_retries, 5);
     assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
 
     let persisted = load_proxy_model_settings(&state.pool)
@@ -3327,6 +4227,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         persisted.fast_mode_rewrite_mode,
         ProxyFastModeRewriteMode::FillMissing
     );
+    assert_eq!(persisted.upstream_429_max_retries, 5);
     assert_eq!(
         persisted.enabled_preset_models,
         vec!["gpt-5.2-codex".to_string()]
@@ -3339,6 +4240,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
             hijack_enabled: false,
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: ProxyFastModeRewriteMode::ForcePriority,
+            upstream_429_max_retries: Some(9),
             enabled_models: Vec::new(),
         }),
     )
@@ -3350,7 +4252,53 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         normalized.fast_mode_rewrite_mode,
         ProxyFastModeRewriteMode::ForcePriority
     );
+    assert_eq!(
+        normalized.upstream_429_max_retries,
+        MAX_PROXY_UPSTREAM_429_MAX_RETRIES
+    );
     assert!(normalized.enabled_models.is_empty());
+}
+
+#[tokio::test]
+async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_missing() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(updated) = put_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ProxyModelSettingsUpdateRequest {
+            hijack_enabled: true,
+            merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: ProxyFastModeRewriteMode::FillMissing,
+            upstream_429_max_retries: Some(5),
+            enabled_models: vec!["gpt-5.2-codex".to_string()],
+        }),
+    )
+    .await
+    .expect("put settings should succeed");
+    assert_eq!(updated.upstream_429_max_retries, 5);
+
+    let legacy_payload = serde_json::from_value::<ProxyModelSettingsUpdateRequest>(json!({
+        "hijackEnabled": true,
+        "mergeUpstreamEnabled": false,
+        "fastModeRewriteMode": "fill_missing",
+        "enabledModels": ["gpt-5.2-codex"],
+    }))
+    .expect("legacy payload should deserialize");
+
+    let Json(updated) =
+        put_proxy_settings(State(state.clone()), HeaderMap::new(), Json(legacy_payload))
+            .await
+            .expect("legacy payload should not reset upstream429MaxRetries");
+    assert_eq!(updated.upstream_429_max_retries, 5);
+
+    let persisted = load_proxy_model_settings(&state.pool)
+        .await
+        .expect("settings should persist");
+    assert_eq!(persisted.upstream_429_max_retries, 5);
 }
 
 #[tokio::test]
@@ -3409,6 +4357,10 @@ async fn ensure_schema_adds_fast_mode_rewrite_mode_with_disabled_default() {
     assert_eq!(
         settings.fast_mode_rewrite_mode,
         ProxyFastModeRewriteMode::Disabled
+    );
+    assert_eq!(
+        settings.upstream_429_max_retries,
+        DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES
     );
 }
 
@@ -3628,6 +4580,8 @@ async fn proxy_model_settings_api_rejects_cross_origin_writes() {
             hijack_enabled: true,
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -3665,6 +4619,8 @@ async fn proxy_model_settings_api_rejects_cross_site_request() {
             hijack_enabled: true,
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -3698,6 +4654,8 @@ async fn proxy_model_settings_api_allows_loopback_proxy_origin_mismatch() {
             hijack_enabled: true,
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -3745,6 +4703,8 @@ async fn proxy_model_settings_api_allows_forwarded_host_origin_match() {
             hijack_enabled: true,
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -3796,6 +4756,8 @@ async fn proxy_model_settings_api_allows_forwarded_port_non_default_origin_port(
             hijack_enabled: true,
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -3831,6 +4793,8 @@ async fn proxy_model_settings_api_allows_matching_origin_without_explicit_host_p
             hijack_enabled: true,
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -4628,6 +5592,8 @@ async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge
             hijack_enabled: true,
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()],
         };
     }
@@ -4673,6 +5639,8 @@ async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
             hijack_enabled: true,
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.4".to_string(), "gpt-5.4-pro".to_string()],
         };
     }
@@ -4709,6 +5677,8 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
             hijack_enabled: true,
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec![
                 "gpt-5.2-codex".to_string(),
                 "gpt-5.1-codex-mini".to_string(),
@@ -4751,6 +5721,59 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_retrying_models_upstream(1, Some("0")).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        *settings = ProxyModelSettings {
+            hijack_enabled: true,
+            merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+            upstream_429_max_retries: 1,
+            enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+        };
+    }
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/models".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::new(),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(PROXY_MODEL_MERGE_STATUS_HEADER),
+        Some(&HeaderValue::from_static(PROXY_MODEL_MERGE_STATUS_SUCCESS))
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode merged payload");
+    let ids = extract_model_ids(&payload);
+    assert!(ids.contains(&"upstream-model-after-retry".to_string()));
+    assert!(ids.contains(&"gpt-5.1-codex-mini".to_string()));
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(count_request_forward_proxy_attempts(&state.pool).await, 2);
+    assert_eq!(
+        count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        )
+        .await,
+        1
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -4762,6 +5785,8 @@ async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails()
             hijack_enabled: true,
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
         };
     }
@@ -4786,6 +5811,60 @@ async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails()
     let payload: Value = serde_json::from_slice(&body).expect("decode fallback payload");
     let ids = extract_model_ids(&payload);
     assert_eq!(ids, vec!["gpt-5.1-codex-mini".to_string()]);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_retrying_models_upstream(99, Some("0")).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        *settings = ProxyModelSettings {
+            hijack_enabled: true,
+            merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+            upstream_429_max_retries: 2,
+            enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+        };
+    }
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/models".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::new(),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(PROXY_MODEL_MERGE_STATUS_HEADER),
+        Some(&HeaderValue::from_static(PROXY_MODEL_MERGE_STATUS_FAILED))
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read fallback response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode fallback payload");
+    assert_eq!(
+        extract_model_ids(&payload),
+        vec!["gpt-5.1-codex-mini".to_string()]
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(count_request_forward_proxy_attempts(&state.pool).await, 3);
+    assert_eq!(
+        count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        )
+        .await,
+        3
+    );
 
     upstream_handle.abort();
 }
@@ -4821,6 +5900,8 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
             hijack_enabled: true,
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+
+            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
         })),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -5474,6 +6555,78 @@ async fn read_request_body_timeout_returns_408() {
         payload_json["failureKind"].as_str(),
         Some("request_body_read_timeout")
     );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_retries_429_and_persists_single_invocation() {
+    let (upstream_base, attempts, seen_payloads, upstream_handle) =
+        spawn_retrying_capture_upstream(1, Some("0")).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.upstream_429_max_retries = 1;
+    }
+
+    let request_payload = json!({
+        "model": "gpt-5.2-codex",
+        "stream": false,
+        "input": "hello",
+    });
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(
+            serde_json::to_vec(&request_payload).expect("serialize capture retry request body"),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode capture retry payload");
+    assert_eq!(payload["attempt"], 2);
+    assert_eq!(payload["received"], request_payload);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        seen_payloads
+            .lock()
+            .expect("lock retrying capture payloads")
+            .clone(),
+        vec![request_payload.clone(), request_payload.clone()]
+    );
+
+    let mut invocation_count: i64 = 0;
+    let mut attempt_count: i64 = 0;
+    let mut rate_limit_count: i64 = 0;
+    for _ in 0..20 {
+        invocation_count = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count persisted invocations");
+        attempt_count = count_request_forward_proxy_attempts(&state.pool).await;
+        rate_limit_count = count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        )
+        .await;
+
+        if invocation_count == 1 && attempt_count == 2 && rate_limit_count == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    assert_eq!(invocation_count, 1);
+    assert_eq!(attempt_count, 2);
+    assert_eq!(rate_limit_count, 1);
 
     upstream_handle.abort();
 }
