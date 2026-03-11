@@ -24,12 +24,12 @@ use std::{
     time::Duration,
 };
 use tokio::net::TcpListener;
-use tokio::sync::{Notify, Semaphore, broadcast};
+use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<StdMutex<()>> =
-    once_cell::sync::Lazy::new(|| StdMutex::new(()));
+static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<AsyncMutex<()>> =
+    once_cell::sync::Lazy::new(|| AsyncMutex::new(()));
 
 struct CurrentDirGuard {
     original: PathBuf,
@@ -1364,7 +1364,7 @@ fn failure_scope_parse_rejects_unknown_value() {
 
 #[test]
 fn app_config_from_sources_ignores_removed_xyai_env_vars() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let cases = [
         ("XY_BASE_URL", "not-a-valid-url"),
         ("XY_VIBE_QUOTA_ENDPOINT", "%%%"),
@@ -1397,7 +1397,7 @@ fn app_config_from_sources_ignores_removed_xyai_env_vars() {
 
 #[test]
 fn app_config_from_sources_reads_database_path_env() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let previous_database = env::var_os(ENV_DATABASE_PATH);
     let previous_legacy = env::var_os(LEGACY_ENV_DATABASE_PATH);
 
@@ -1423,7 +1423,7 @@ fn app_config_from_sources_reads_database_path_env() {
 
 #[test]
 fn app_config_from_sources_rejects_legacy_database_path_env() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let previous_database = env::var_os(ENV_DATABASE_PATH);
     let previous_legacy = env::var_os(LEGACY_ENV_DATABASE_PATH);
 
@@ -1453,7 +1453,7 @@ fn app_config_from_sources_rejects_legacy_database_path_env() {
 
 #[test]
 fn app_config_from_sources_reads_renamed_public_envs() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let mut cases = LEGACY_ENV_RENAMES
         .iter()
         .map(|(legacy, _)| (*legacy, None))
@@ -1525,7 +1525,7 @@ fn app_config_from_sources_reads_renamed_public_envs() {
 
 #[test]
 fn app_config_from_sources_rejects_all_legacy_public_env_renames() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
 
     for (legacy_name, canonical_name) in LEGACY_ENV_RENAMES {
         let mut cases = LEGACY_ENV_RENAMES
@@ -1550,7 +1550,7 @@ fn app_config_from_sources_rejects_all_legacy_public_env_renames() {
 
 #[test]
 fn app_config_from_sources_uses_proxy_timeout_defaults() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let names = [
         "OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS",
         "OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS",
@@ -1591,7 +1591,7 @@ fn app_config_from_sources_uses_proxy_timeout_defaults() {
 
 #[test]
 fn app_config_from_sources_reads_proxy_timeout_envs() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let names = [
         "OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS",
         "OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS",
@@ -1724,7 +1724,7 @@ fn resolved_proxy_raw_dir_resolves_relative_dir_from_database_parent() {
 
 #[test]
 fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("cwd lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let temp_dir = make_temp_test_dir("proxy-raw-store-db-parent");
     let cwd = temp_dir.join("cwd");
     let db_root = temp_dir.join("db-root");
@@ -1758,7 +1758,7 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
 
 #[test]
 fn read_proxy_raw_bytes_keeps_current_dir_compat_for_legacy_relative_paths() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("cwd lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let temp_dir = make_temp_test_dir("proxy-raw-read-legacy-cwd");
     let cwd = temp_dir.join("cwd");
     let fallback_root = temp_dir.join("fallback");
@@ -11748,7 +11748,7 @@ async fn retention_orphan_sweep_skips_fresh_raw_files() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn retention_orphan_sweep_anchors_relative_raw_dir_to_database_parent() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("cwd lock");
+    let _guard = APP_CONFIG_ENV_LOCK.lock().await;
     let temp_dir = make_temp_test_dir("retention-orphan-db-parent");
     let db_root = temp_dir.join("db-root");
     let cwd_root = temp_dir.join("cwd-root");
