@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-02-24
-- Last: 2026-02-24
+- Last: 2026-03-11
 
 ## 背景 / 问题陈述
 
@@ -47,6 +47,7 @@
 - 新增字段必须向后兼容，老数据不丢失。
 - `downstream_closed` 必须归类为 `client_abort`，不计入可行动故障。
 - `failed_contact_upstream`、`upstream_stream_error`、`request_body_read_timeout` 必须归类为 `service_failure` 且 `is_actionable=true`。
+- `HTTP 200` 的 `/v1/responses` 流若出现 `event: response.failed`、`type:error` 或 `response.status=failed`，必须落为 `failure_kind=upstream_response_failed`，并保留上游错误码、消息与 request ID。
 - `api key` 相关错误必须归类为 `client_failure`。
 - 至少新增一条后端自动化测试覆盖分类逻辑。
 
@@ -61,6 +62,8 @@
 
 - 启动阶段执行 schema ensure，并对历史 `codex_invocations` 进行失败分类 backfill（幂等）。
 - 新写入的调用记录在落库时同步写入 `failure_kind`、`failure_class`、`is_actionable`。
+- 对于 `HTTP 200` 但流内显式失败的 Responses SSE，落库状态必须为 `status=http_200`，不得误记为 `success`。
+- 启动 backfill 需要基于 `raw_response` 预览与 `response_raw_path` 原文，修正历史误记为 `success` 的 `response.failed` 记录。
 - `/api/stats/errors` 支持 `scope=all|service|client|abort`，默认 `service`。
 - `/api/stats/failures/summary` 返回同一时间窗口下失败摘要和可行动失败率。
 - 统计页支持 scope 切换，并显示失败摘要。
@@ -86,6 +89,8 @@
 - Given 含有 `downstream_closed` 的记录，When 请求错误分布 `scope=service`，Then 该类记录不会出现在结果中。
 - Given 含有 `failed_contact_upstream` 的记录，When 请求失败摘要，Then `serviceFailureCount` 与 `actionableFailureCount` 增加。
 - Given 历史无分类字段数据，When 服务启动后查询调用列表，Then 返回的记录包含分类字段（允许少量未识别为 `none`）。
+- Given `/v1/responses` 返回 `HTTP 200` 且 SSE 中出现 `event: response.failed` 或 `type:error`，When 调用记录落库，Then `status=http_200`、`failureKind=upstream_response_failed`、`failureClass=service_failure`、`isActionable=true`，且可读取 `streamTerminalEvent`、`upstreamErrorCode`、`upstreamErrorMessage`、`upstreamRequestId`。
+- Given 历史误记为 `success` 的 proxy 记录仍保留失败 SSE 原始证据，When 启动 backfill，Then 该记录会被修正并进入服务失败统计。
 - Given 统计页切换 scope，When 数据刷新，Then 饼图按对应范围更新。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
@@ -119,3 +124,4 @@
 - 2026-02-24: 初始化规格并冻结实现范围与验收标准。
 - 2026-02-24: 完成失败分类与统计口径改造，PR #51 进入收敛。
 - 2026-02-24: 修复历史回填 `is_actionable` 误判与 Label Gate 读取陈旧标签上下文问题。
+- 2026-03-11: 修复 Responses SSE `response.failed` / `type:error` 被误记为 `success` 的问题，并补齐上游失败明细与历史回填。

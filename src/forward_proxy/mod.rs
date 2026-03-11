@@ -692,25 +692,48 @@ pub(crate) async fn put_forward_proxy_settings(
 
     let next: ForwardProxySettings = payload.into();
     let _update_guard = state.forward_proxy_settings_update_lock.lock().await;
+
+    let (previous_settings, known_subscription_keys_before_settings) = {
+        let manager = state.forward_proxy.lock().await;
+        let before = snapshot_active_forward_proxy_endpoints(&manager);
+        (
+            manager.settings.clone(),
+            before
+                .into_iter()
+                .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+                .map(|endpoint| endpoint.key)
+                .collect::<HashSet<_>>(),
+        )
+    };
     save_forward_proxy_settings(&state.pool, next.clone())
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-
-    let (known_subscription_keys_before_settings, added_manual_endpoints) = {
+    let added_manual_endpoints = {
         let mut manager = state.forward_proxy.lock().await;
         let before = snapshot_active_forward_proxy_endpoints(&manager);
-        manager.apply_settings(next);
+        manager.apply_settings(next.clone());
         let after = snapshot_active_forward_proxy_endpoints(&manager);
-        (
-            before
-                .iter()
-                .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
-                .map(|endpoint| endpoint.key.clone())
-                .collect::<HashSet<_>>(),
-            compute_added_forward_proxy_endpoints(&before, &after),
-        )
+        compute_added_forward_proxy_endpoints(&before, &after)
     };
     if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
+        if state.shutdown.is_cancelled() {
+            let mut manager = state.forward_proxy.lock().await;
+            if let Err(rollback_err) =
+                save_forward_proxy_settings(&state.pool, previous_settings.clone()).await
+            {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!(
+                        "failed to roll back forward proxy settings after shutdown interruption: {rollback_err}"
+                    ),
+                ));
+            }
+            manager.apply_settings(previous_settings);
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("forward proxy settings update interrupted by shutdown: {err}"),
+            ));
+        }
         warn!(
             error = %err,
             "failed to sync forward proxy routes after settings update"
@@ -792,8 +815,10 @@ pub(crate) async fn validate_single_forward_proxy_candidate(
         state,
         &endpoint,
         forward_proxy_validation_timeout(ForwardProxyValidationKind::ProxyUrl),
+        None,
     )
-    .await?;
+    .await?
+    .expect("validation probes should not be cancelled without a shutdown token");
     Ok(ForwardProxyCandidateValidationResponse::success(
         "proxy validation succeeded",
         Some(parsed.normalized),
@@ -843,9 +868,13 @@ pub(crate) async fn validate_subscription_candidate(
             break;
         }
 
-        match probe_forward_proxy_endpoint(state, endpoint, remaining_timeout).await {
-            Ok(latency_ms) => {
+        match probe_forward_proxy_endpoint(state, endpoint, remaining_timeout, None).await {
+            Ok(Some(latency_ms)) => {
                 best_latency_ms = Some(latency_ms);
+                break;
+            }
+            Ok(None) => {
+                last_error = Some(shutdown_cancelled_forward_proxy_probe());
                 break;
             }
             Err(err) => {
@@ -875,19 +904,40 @@ pub(crate) async fn validate_subscription_candidate(
     ))
 }
 
+fn shutdown_cancelled_forward_proxy_probe() -> anyhow::Error {
+    anyhow!("forward proxy probe cancelled because shutdown is in progress")
+}
+
 pub(crate) async fn probe_forward_proxy_endpoint(
     state: &AppState,
     endpoint: &ForwardProxyEndpoint,
     validation_timeout: Duration,
-) -> Result<f64> {
+    shutdown: Option<&CancellationToken>,
+) -> Result<Option<f64>> {
+    if shutdown.is_some_and(CancellationToken::is_cancelled) {
+        return Ok(None);
+    }
+
     let probe_target = state
         .config
         .openai_upstream_base_url
         .join("v1/models")
         .context("failed to build validation probe target")?;
     let started = Instant::now();
-    let (endpoint_url, temporary_xray_key) =
-        resolve_forward_proxy_probe_endpoint_url(state, endpoint, validation_timeout).await?;
+    let (endpoint_url, temporary_xray_key) = match resolve_forward_proxy_probe_endpoint_url(
+        state,
+        endpoint,
+        validation_timeout,
+        shutdown,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_err) if shutdown.is_some_and(CancellationToken::is_cancelled) => {
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
+    };
 
     let probe_result = async {
         let send_timeout = remaining_timeout_budget(validation_timeout, started.elapsed())
@@ -896,16 +946,33 @@ pub(crate) async fn probe_forward_proxy_endpoint(
         let client = state
             .http_clients
             .client_for_forward_proxy(endpoint_url.as_ref())?;
-        let response = timeout(send_timeout, client.get(probe_target).send())
-            .await
-            .map_err(|_| timeout_error_for_duration(validation_timeout))?
-            .context("validation request failed")?;
+        let response = match shutdown {
+            Some(shutdown) => {
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        return Ok(None);
+                    }
+                    response = timeout(send_timeout, client.get(probe_target).send()) => {
+                        response
+                            .map_err(|_| timeout_error_for_duration(validation_timeout))?
+                            .context("validation request failed")?
+                    }
+                }
+            }
+            None => timeout(send_timeout, client.get(probe_target).send())
+                .await
+                .map_err(|_| timeout_error_for_duration(validation_timeout))?
+                .context("validation request failed")?,
+        };
         let status = response.status();
         // Validation only needs to prove the route is reachable; auth/404 still count as reachable.
         if !is_validation_probe_reachable_status(status) {
             bail!("validation probe returned status {}", status);
         }
-        Ok::<(), anyhow::Error>(())
+        if shutdown.is_some_and(CancellationToken::is_cancelled) {
+            return Ok(None);
+        }
+        Ok(Some(elapsed_ms(started)))
     }
     .await;
 
@@ -914,8 +981,7 @@ pub(crate) async fn probe_forward_proxy_endpoint(
         supervisor.remove_instance(&temp_key).await;
     }
 
-    probe_result?;
-    Ok(elapsed_ms(started))
+    probe_result
 }
 
 pub(crate) fn is_validation_probe_reachable_status(status: StatusCode) -> bool {
@@ -970,7 +1036,11 @@ pub(crate) async fn resolve_forward_proxy_probe_endpoint_url(
     state: &AppState,
     endpoint: &ForwardProxyEndpoint,
     validation_timeout: Duration,
+    shutdown: Option<&CancellationToken>,
 ) -> Result<(Option<Url>, Option<String>)> {
+    if shutdown.is_some_and(CancellationToken::is_cancelled) {
+        return Err(shutdown_cancelled_forward_proxy_probe());
+    }
     if !endpoint.requires_xray() {
         return Ok((endpoint.endpoint_url.clone(), None));
     }
@@ -991,10 +1061,15 @@ pub(crate) async fn resolve_forward_proxy_probe_endpoint_url(
         endpoint_url: None,
         raw_url: Some(raw_url.to_string()),
     };
+    let validation_shutdown = shutdown.cloned().unwrap_or_else(CancellationToken::new);
     let route_url = {
         let mut supervisor = state.xray_supervisor.lock().await;
         supervisor
-            .ensure_instance_with_ready_timeout(&probe_endpoint, validation_timeout)
+            .ensure_instance_with_ready_timeout(
+                &probe_endpoint,
+                validation_timeout,
+                &validation_shutdown,
+            )
             .await?
     };
     Ok((Some(route_url), Some(temporary_key)))
@@ -1054,10 +1129,11 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
     added_endpoints: Vec<ForwardProxyEndpoint>,
     trigger: &'static str,
 ) {
-    if added_endpoints.is_empty() {
+    if added_endpoints.is_empty() || state.shutdown.is_cancelled() {
         return;
     }
     tokio::spawn(async move {
+        let shutdown = state.shutdown.clone();
         let validation_timeout =
             forward_proxy_validation_timeout(ForwardProxyValidationKind::ProxyUrl);
         info!(
@@ -1067,11 +1143,32 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
             "forward proxy bootstrap probe round started"
         );
         for endpoint in added_endpoints {
+            if shutdown.is_cancelled() {
+                info!(
+                    trigger,
+                    "forward proxy bootstrap probe round stopped by shutdown"
+                );
+                break;
+            }
             let selected_proxy = SelectedForwardProxy::from_endpoint(&endpoint);
             let started = Instant::now();
-            match probe_forward_proxy_endpoint(state.as_ref(), &endpoint, validation_timeout).await
-            {
-                Ok(latency_ms) => {
+            let probe_result = probe_forward_proxy_endpoint(
+                state.as_ref(),
+                &endpoint,
+                validation_timeout,
+                Some(&shutdown),
+            )
+            .await;
+            match probe_result {
+                Ok(Some(latency_ms)) => {
+                    if shutdown.is_cancelled() {
+                        info!(
+                            trigger,
+                            proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
+                            "forward proxy bootstrap probe round stopped before recording a completed probe because shutdown is in progress"
+                        );
+                        break;
+                    }
                     record_forward_proxy_attempt(
                         state.clone(),
                         selected_proxy,
@@ -1081,6 +1178,14 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
                         true,
                     )
                     .await;
+                }
+                Ok(None) => {
+                    info!(
+                        trigger,
+                        proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
+                        "forward proxy bootstrap probe round stopped by shutdown during an in-flight probe"
+                    );
+                    break;
                 }
                 Err(err) => {
                     let failure_kind = classify_bootstrap_forward_proxy_probe_failure(&err);
@@ -1135,13 +1240,22 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
     let mut subscription_proxy_urls = Vec::new();
     let mut fetched_any_subscription = false;
     for subscription_url in &subscription_urls {
-        match fetch_subscription_proxy_urls(
-            &state.http_clients.shared,
-            subscription_url,
-            state.config.request_timeout,
-        )
-        .await
-        {
+        if state.shutdown.is_cancelled() {
+            info!("stopping forward proxy subscription refresh because shutdown is in progress");
+            return Ok(());
+        }
+        let fetch_result = tokio::select! {
+            _ = state.shutdown.cancelled() => {
+                info!("stopping forward proxy subscription refresh because shutdown is in progress");
+                return Ok(());
+            }
+            result = fetch_subscription_proxy_urls(
+                &state.http_clients.shared,
+                subscription_url,
+                state.config.request_timeout,
+            ) => result,
+        };
+        match fetch_result {
             Ok(urls) => {
                 fetched_any_subscription = true;
                 subscription_proxy_urls.extend(urls);
@@ -1159,10 +1273,20 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
     if !subscription_urls.is_empty() && !fetched_any_subscription {
         bail!("all forward proxy subscriptions failed to refresh");
     }
+    if state.shutdown.is_cancelled() {
+        info!("stopping forward proxy subscription refresh because shutdown is in progress");
+        return Ok(());
+    }
 
     let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
     let added_subscription_endpoints = {
         let mut manager = state.forward_proxy.lock().await;
+        if state.shutdown.is_cancelled() {
+            info!(
+                "stopping forward proxy subscription refresh before applying refreshed endpoints because shutdown is in progress"
+            );
+            return Ok(());
+        }
         if manager.settings.subscription_urls != subscription_urls {
             debug!("skip stale forward proxy subscription refresh after settings changed");
             return Ok(());
@@ -1199,7 +1323,7 @@ pub(crate) async fn sync_forward_proxy_routes(state: &AppState) -> Result<()> {
         let mut manager = state.forward_proxy.lock().await;
         let mut xray_supervisor = state.xray_supervisor.lock().await;
         xray_supervisor
-            .sync_endpoints(&mut manager.endpoints)
+            .sync_endpoints(&mut manager.endpoints, &state.shutdown)
             .await?;
         manager.ensure_non_zero_weight();
         manager.snapshot_runtime()
@@ -1450,6 +1574,17 @@ pub(crate) fn spawn_penalized_forward_proxy_probe(
     candidate: SelectedForwardProxy,
 ) {
     tokio::spawn(async move {
+        let shutdown = state.shutdown.clone();
+        if shutdown.is_cancelled() {
+            info!(
+                proxy_key_ref = %forward_proxy_log_ref(&candidate.key),
+                "skipping penalized forward proxy probe because shutdown is in progress"
+            );
+            let mut manager = state.forward_proxy.lock().await;
+            manager.mark_probe_finished();
+            return;
+        }
+
         let probe_result = async {
             let target = state
                 .config
@@ -1460,14 +1595,31 @@ pub(crate) fn spawn_penalized_forward_proxy_probe(
                 .http_clients
                 .client_for_forward_proxy(candidate.endpoint_url.as_ref())?;
             let started = Instant::now();
-            let response = timeout(
-                state.config.openai_proxy_handshake_timeout,
-                client.get(target).send(),
-            )
-            .await
-            .map_err(|_| anyhow!("probe timed out"))?
-            .context("probe request failed")?;
+            let response = tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!(
+                        proxy_key_ref = %forward_proxy_log_ref(&candidate.key),
+                        "stopping penalized forward proxy probe because shutdown is in progress"
+                    );
+                    return Ok::<(), anyhow::Error>(());
+                }
+                response = timeout(
+                    state.config.openai_proxy_handshake_timeout,
+                    client.get(target).send(),
+                ) => {
+                    response
+                        .map_err(|_| anyhow!("probe timed out"))?
+                        .context("probe request failed")?
+                }
+            };
             let status = response.status();
+            if shutdown.is_cancelled() {
+                info!(
+                    proxy_key_ref = %forward_proxy_log_ref(&candidate.key),
+                    "skipping penalized forward proxy probe recording because shutdown is in progress"
+                );
+                return Ok::<(), anyhow::Error>(());
+            }
             // Treat 429 as a probe failure so we don't "recover" a still-rate-limited proxy.
             let success = is_validation_probe_reachable_status(status);
             let latency_ms = Some(elapsed_ms(started));
@@ -2419,6 +2571,7 @@ impl XraySupervisor {
     pub(crate) async fn sync_endpoints(
         &mut self,
         endpoints: &mut [ForwardProxyEndpoint],
+        shutdown: &CancellationToken,
     ) -> Result<()> {
         fs::create_dir_all(&self.runtime_dir).with_context(|| {
             format!(
@@ -2438,15 +2591,16 @@ impl XraySupervisor {
             .filter(|key| !desired_keys.contains(*key))
             .cloned()
             .collect::<Vec<_>>();
-        for key in stale_keys {
-            self.remove_instance(&key).await;
-        }
 
         for endpoint in endpoints {
+            if shutdown.is_cancelled() {
+                info!("stopping xray route sync because shutdown is in progress");
+                bail!("xray route sync cancelled because shutdown is in progress");
+            }
             if !endpoint.requires_xray() {
                 continue;
             }
-            match self.ensure_instance(endpoint).await {
+            match self.ensure_instance(endpoint, shutdown).await {
                 Ok(route_url) => endpoint.endpoint_url = Some(route_url),
                 Err(err) => {
                     endpoint.endpoint_url = None;
@@ -2462,6 +2616,18 @@ impl XraySupervisor {
             }
         }
 
+        if shutdown.is_cancelled() {
+            info!("skipping stale xray route cleanup because shutdown is in progress");
+            bail!("xray route sync cancelled because shutdown is in progress");
+        }
+        for key in stale_keys {
+            if shutdown.is_cancelled() {
+                info!("skipping stale xray route cleanup because shutdown is in progress");
+                bail!("xray route sync cancelled because shutdown is in progress");
+            }
+            self.remove_instance(&key).await;
+        }
+
         Ok(())
     }
 
@@ -2472,10 +2638,15 @@ impl XraySupervisor {
         }
     }
 
-    pub(crate) async fn ensure_instance(&mut self, endpoint: &ForwardProxyEndpoint) -> Result<Url> {
+    pub(crate) async fn ensure_instance(
+        &mut self,
+        endpoint: &ForwardProxyEndpoint,
+        shutdown: &CancellationToken,
+    ) -> Result<Url> {
         self.ensure_instance_with_ready_timeout(
             endpoint,
             Duration::from_millis(XRAY_PROXY_READY_TIMEOUT_MS),
+            shutdown,
         )
         .await
     }
@@ -2484,6 +2655,7 @@ impl XraySupervisor {
         &mut self,
         endpoint: &ForwardProxyEndpoint,
         ready_timeout: Duration,
+        shutdown: &CancellationToken,
     ) -> Result<Url> {
         if let Some(instance) = self.instances.get_mut(&endpoint.key) {
             match instance.child.try_wait() {
@@ -2506,13 +2678,14 @@ impl XraySupervisor {
         }
 
         self.remove_instance(&endpoint.key).await;
-        self.spawn_instance(endpoint, ready_timeout).await
+        self.spawn_instance(endpoint, ready_timeout, shutdown).await
     }
 
     pub(crate) async fn spawn_instance(
         &mut self,
         endpoint: &ForwardProxyEndpoint,
         ready_timeout: Duration,
+        shutdown: &CancellationToken,
     ) -> Result<Url> {
         let outbound = build_xray_outbound_for_endpoint(endpoint)?;
         let local_port = pick_unused_local_port().context("failed to allocate xray local port")?;
@@ -2549,9 +2722,15 @@ impl XraySupervisor {
             }
         };
 
-        if let Err(err) = wait_for_xray_proxy_ready(&mut child, local_port, ready_timeout).await {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+        if let Err(err) =
+            wait_for_xray_proxy_ready(&mut child, local_port, ready_timeout, shutdown).await
+        {
+            let _ = terminate_child_process(
+                &mut child,
+                Duration::from_secs(2),
+                &forward_proxy_log_ref(&endpoint.key),
+            )
+            .await;
             let _ = fs::remove_file(&config_path);
             return Err(err);
         }
@@ -2572,28 +2751,18 @@ impl XraySupervisor {
 
     pub(crate) async fn remove_instance(&mut self, key: &str) {
         if let Some(mut instance) = self.instances.remove(key) {
-            let still_running = matches!(instance.child.try_wait(), Ok(None));
-            if still_running {
-                if let Err(err) = instance.child.kill().await {
-                    warn!(
-                        proxy_key_ref = %forward_proxy_log_ref(key),
-                        error = %err,
-                        "failed to terminate xray proxy process"
-                    );
-                }
-                if let Err(err) = timeout(Duration::from_secs(2), instance.child.wait()).await {
-                    warn!(
-                        proxy_key_ref = %forward_proxy_log_ref(key),
-                        error = %err,
-                        "timed out waiting xray proxy process exit"
-                    );
-                }
-            }
+            let proxy_key_ref = forward_proxy_log_ref(key);
+            let _ = terminate_child_process(
+                &mut instance.child,
+                Duration::from_secs(2),
+                &proxy_key_ref,
+            )
+            .await;
             if let Err(err) = fs::remove_file(&instance.config_path)
                 && err.kind() != io::ErrorKind::NotFound
             {
                 warn!(
-                    proxy_key_ref = %forward_proxy_log_ref(key),
+                    proxy_key_ref = %proxy_key_ref,
                     path = %instance.config_path.display(),
                     error = %err,
                     "failed to remove xray config file"
@@ -2628,32 +2797,141 @@ pub(crate) fn pick_unused_local_port() -> Result<u16> {
     Ok(port)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildTerminationOutcome {
+    AlreadyExited,
+    Graceful,
+    Forced,
+}
+
+pub(crate) async fn terminate_child_process(
+    child: &mut Child,
+    grace_period: Duration,
+    process_ref: &str,
+) -> ChildTerminationOutcome {
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            info!(process_ref, status = %status, "child process already exited before shutdown");
+            return ChildTerminationOutcome::AlreadyExited;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(process_ref, error = %err, "failed to poll child process before shutdown");
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            let result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+            if result == 0 {
+                info!(
+                    process_ref,
+                    pid,
+                    grace_ms = grace_period.as_millis() as u64,
+                    "sent SIGTERM to child process"
+                );
+                if grace_period.is_zero() {
+                    warn!(
+                        process_ref,
+                        pid,
+                        "grace period is zero; falling back to force kill immediately after SIGTERM"
+                    );
+                } else {
+                    match timeout(grace_period, child.wait()).await {
+                        Ok(Ok(status)) => {
+                            info!(process_ref, pid, status = %status, "child process exited after SIGTERM");
+                            return ChildTerminationOutcome::Graceful;
+                        }
+                        Ok(Err(err)) => {
+                            warn!(process_ref, pid, error = %err, "failed while waiting for child process after SIGTERM");
+                        }
+                        Err(_) => {
+                            warn!(
+                                process_ref,
+                                pid,
+                                grace_ms = grace_period.as_millis() as u64,
+                                "child process did not exit after SIGTERM; falling back to force kill"
+                            );
+                        }
+                    }
+                }
+            } else {
+                let err = io::Error::last_os_error();
+                warn!(process_ref, pid, error = %err, "failed to send SIGTERM to child process; falling back to force kill");
+            }
+        }
+    }
+
+    if let Err(err) = child.kill().await {
+        warn!(process_ref, error = %err, "failed to force kill child process");
+    } else {
+        info!(
+            process_ref,
+            grace_ms = grace_period.as_millis() as u64,
+            "force killed child process after graceful shutdown fallback"
+        );
+    }
+
+    match timeout(grace_period, child.wait()).await {
+        Ok(Ok(status)) => {
+            info!(process_ref, status = %status, "child process exited after force kill");
+        }
+        Ok(Err(err)) => {
+            warn!(process_ref, error = %err, "failed while waiting for force killed child process");
+        }
+        Err(_) => {
+            warn!(
+                process_ref,
+                grace_ms = grace_period.as_millis() as u64,
+                "timed out waiting for force killed child process exit"
+            );
+        }
+    }
+
+    ChildTerminationOutcome::Forced
+}
+
 pub(crate) async fn wait_for_xray_proxy_ready(
     child: &mut Child,
     local_port: u16,
     ready_timeout: Duration,
+    shutdown: &CancellationToken,
 ) -> Result<()> {
     let deadline = Instant::now() + ready_timeout;
     loop {
+        if shutdown.is_cancelled() {
+            bail!("xray startup cancelled because shutdown is in progress");
+        }
         if let Some(status) = child
             .try_wait()
             .context("failed to poll xray proxy process status")?
         {
             bail!("xray process exited before ready: {status}");
         }
-        if timeout(
+        let connect_attempt = timeout(
             Duration::from_millis(250),
             TcpStream::connect(("127.0.0.1", local_port)),
-        )
-        .await
-        .is_ok_and(|result| result.is_ok())
-        {
-            return Ok(());
+        );
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                bail!("xray startup cancelled because shutdown is in progress");
+            }
+            result = connect_attempt => {
+                if result.is_ok_and(|connection| connection.is_ok()) {
+                    return Ok(());
+                }
+            }
         }
         if Instant::now() >= deadline {
             bail!("xray local socks endpoint was not ready in time");
         }
-        sleep(Duration::from_millis(100)).await;
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                bail!("xray startup cancelled because shutdown is in progress");
+            }
+            _ = sleep(Duration::from_millis(100)) => {}
+        }
     }
 }
 

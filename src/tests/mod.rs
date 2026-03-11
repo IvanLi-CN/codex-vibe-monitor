@@ -24,11 +24,12 @@ use std::{
     time::Duration,
 };
 use tokio::net::TcpListener;
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore, broadcast};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
-static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<StdMutex<()>> =
-    once_cell::sync::Lazy::new(|| StdMutex::new(()));
+static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<AsyncMutex<()>> =
+    once_cell::sync::Lazy::new(|| AsyncMutex::new(()));
 
 struct CurrentDirGuard {
     original: PathBuf,
@@ -488,6 +489,101 @@ async fn validate_subscription_candidate_keeps_5xx_as_failure() {
 }
 
 #[tokio::test]
+async fn validate_single_forward_proxy_candidate_keeps_xray_startup_running_during_shutdown() {
+    let temp_root = make_temp_test_dir("xray-validation-shutdown");
+    let runtime_dir = temp_root.join("runtime");
+    let mut config = test_config();
+    config.xray_binary = "/path/to/non-existent-xray".to_string();
+    config.xray_runtime_dir = runtime_dir;
+    let state = test_state_from_config(config, false).await;
+    state.shutdown.cancel();
+
+    let err = validate_single_forward_proxy_candidate(
+        state.as_ref(),
+        "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:443?encryption=none".to_string(),
+    )
+    .await
+    .expect_err("validation should fail on missing xray binary, not on shutdown cancellation");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("failed to start xray binary"),
+        "expected validation to keep running through xray startup, got: {message}"
+    );
+    assert!(
+        !message.contains("shutdown is in progress"),
+        "request-scoped validation should not reuse the global shutdown token: {message}"
+    );
+}
+
+#[tokio::test]
+async fn xray_supervisor_sync_endpoints_keeps_stale_instances_alive_when_shutdown_starts() {
+    let temp_root = make_temp_test_dir("xray-sync-stale-shutdown");
+    let runtime_dir = temp_root.join("runtime");
+    let mut supervisor = XraySupervisor::new("/path/to/non-existent-xray".to_string(), runtime_dir);
+    let config_path = temp_root.join("stale-xray.json");
+    fs::write(&config_path, "{}").expect("write stale xray config placeholder");
+    let child = Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import time
+time.sleep(30)
+",
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn stale xray child");
+    supervisor.instances.insert(
+        "stale-xray".to_string(),
+        XrayInstance {
+            local_proxy_url: Url::parse("socks5://127.0.0.1:1080").expect("valid local proxy url"),
+            config_path: config_path.clone(),
+            child,
+        },
+    );
+    let shutdown = CancellationToken::new();
+    shutdown.cancel();
+    let mut endpoints = Vec::new();
+
+    let err = supervisor
+        .sync_endpoints(&mut endpoints, &shutdown)
+        .await
+        .expect_err("shutdown should interrupt xray sync before stale teardown");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("shutdown is in progress"),
+        "expected shutdown-specific sync error, got: {message}"
+    );
+
+    let stale_instance = supervisor
+        .instances
+        .get_mut("stale-xray")
+        .expect("stale instance should be preserved until final shutdown drain");
+    assert!(
+        stale_instance
+            .child
+            .try_wait()
+            .expect("poll stale child after interrupted sync")
+            .is_none(),
+        "shutdown-interrupted sync should not tear down stale xray instances early"
+    );
+    let outcome = terminate_child_process(
+        &mut stale_instance.child,
+        Duration::from_millis(100),
+        "stale-test-child",
+    )
+    .await;
+    assert!(
+        matches!(
+            outcome,
+            ChildTerminationOutcome::Graceful | ChildTerminationOutcome::Forced
+        ),
+        "test cleanup should terminate the preserved stale child"
+    );
+}
+
+#[tokio::test]
 async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path() {
     let temp_root = make_temp_test_dir("xray-runtime-create");
     let runtime_dir = temp_root.join("nested/runtime");
@@ -512,7 +608,11 @@ async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path
     ));
 
     let err = supervisor
-        .ensure_instance_with_ready_timeout(&endpoint, Duration::from_millis(50))
+        .ensure_instance_with_ready_timeout(
+            &endpoint,
+            Duration::from_millis(50),
+            &CancellationToken::new(),
+        )
         .await
         .expect_err("non-existent xray binary should fail to start");
     let message = format!("{err:#}");
@@ -534,6 +634,137 @@ async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path
     );
 
     let _ = fs::remove_dir_all(&temp_root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn probe_forward_proxy_endpoint_returns_none_when_shutdown_interrupts_temporary_xray_startup()
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_root = make_temp_test_dir("xray-probe-startup-shutdown");
+    let runtime_dir = temp_root.join("runtime");
+    let fake_xray = temp_root.join("fake-xray.sh");
+    fs::write(
+        &fake_xray,
+        "#!/bin/sh
+sleep 30
+",
+    )
+    .expect("write fake xray binary");
+    let mut perms = fs::metadata(&fake_xray)
+        .expect("read fake xray metadata")
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&fake_xray, perms).expect("chmod fake xray binary");
+
+    let mut config = test_config();
+    config.xray_binary = fake_xray.to_string_lossy().to_string();
+    config.xray_runtime_dir = runtime_dir.clone();
+    let state = test_state_from_config(config, false).await;
+    let endpoint = ForwardProxyEndpoint {
+        key: "xray-probe-startup-shutdown".to_string(),
+        source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+        display_name: "xray-probe-startup-shutdown".to_string(),
+        protocol: ForwardProxyProtocol::Vless,
+        endpoint_url: None,
+        raw_url: Some(
+            "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:443?encryption=none"
+                .to_string(),
+        ),
+    };
+    let shutdown = CancellationToken::new();
+    let cancel_shutdown = shutdown.clone();
+    let cancel_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancel_shutdown.cancel();
+    });
+
+    let result = probe_forward_proxy_endpoint(
+        state.as_ref(),
+        &endpoint,
+        Duration::from_secs(5),
+        Some(&shutdown),
+    )
+    .await
+    .expect("shutdown-interrupted xray startup should normalize to a skipped probe");
+
+    cancel_task
+        .await
+        .expect("shutdown trigger task should finish");
+    assert!(
+        result.is_none(),
+        "shutdown-interrupted temporary xray startup should be treated as a skipped probe"
+    );
+    assert!(
+        state.xray_supervisor.lock().await.instances.is_empty(),
+        "temporary xray validation instances should be cleaned up after shutdown"
+    );
+    if runtime_dir.exists() {
+        let mut runtime_entries = fs::read_dir(&runtime_dir)
+            .expect("read temporary xray runtime dir after shutdown")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect temporary xray runtime dir entries");
+        runtime_entries.retain(|entry| entry.path().is_file());
+        assert!(
+            runtime_entries.is_empty(),
+            "temporary xray shutdown path should not leave runtime files behind"
+        );
+    }
+
+    cleanup_temp_test_dir(&temp_root);
+}
+
+#[tokio::test]
+async fn forward_proxy_settings_returns_service_unavailable_when_shutdown_interrupts_xray_sync() {
+    let temp_root = make_temp_test_dir("forward-proxy-settings-shutdown");
+    let runtime_dir = temp_root.join("runtime");
+    let xray_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com#vless".to_string();
+    let normalized_proxy = normalize_single_proxy_url(&xray_url).expect("normalize xray proxy url");
+
+    let mut config = test_config();
+    config.xray_binary = "/path/to/non-existent-xray".to_string();
+    config.xray_runtime_dir = runtime_dir;
+    let state = test_state_from_config(config, false).await;
+    state.shutdown.cancel();
+
+    let err = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec![xray_url],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect_err("settings update should surface shutdown interruption");
+
+    assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        err.1.contains("interrupted by shutdown"),
+        "expected shutdown-specific error, got: {}",
+        err.1
+    );
+    assert!(
+        read_forward_proxy_runtime_weight(&state.pool, &normalized_proxy)
+            .await
+            .is_none(),
+        "shutdown-interrupted route sync should not persist a partial runtime snapshot"
+    );
+    let saved_settings = load_forward_proxy_settings(&state.pool)
+        .await
+        .expect("read forward proxy settings after shutdown interruption");
+    assert!(
+        !saved_settings.proxy_urls.contains(&normalized_proxy),
+        "shutdown-interrupted settings update should not persist the new proxy configuration"
+    );
+    let manager = state.forward_proxy.lock().await;
+    assert!(
+        !manager.settings.proxy_urls.contains(&normalized_proxy),
+        "shutdown-interrupted settings update should roll back the in-memory proxy configuration"
+    );
 }
 
 #[tokio::test]
@@ -1164,6 +1395,22 @@ fn classify_invocation_failure_treats_running_and_pending_as_none() {
 }
 
 #[test]
+fn classify_invocation_failure_marks_upstream_response_failed_as_service_failure() {
+    let result = classify_invocation_failure(
+        Some("http_200"),
+        Some(
+            "[upstream_response_failed] server_error: An error occurred while processing your request. Please include the request ID 060a328d-5cb6-433c-9025-1da2d9c632f1 in your message.",
+        ),
+    );
+    assert_eq!(result.failure_class, FailureClass::ServiceFailure);
+    assert!(result.is_actionable);
+    assert_eq!(
+        result.failure_kind.as_deref(),
+        Some("upstream_response_failed")
+    );
+}
+
+#[test]
 fn classify_invocation_failure_marks_http_429_as_service_failure() {
     let result = classify_invocation_failure(Some("http_429"), Some("rate limited"));
     assert_eq!(result.failure_class, FailureClass::ServiceFailure);
@@ -1226,7 +1473,7 @@ fn failure_scope_parse_rejects_unknown_value() {
 
 #[test]
 fn app_config_from_sources_ignores_removed_xyai_env_vars() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let cases = [
         ("XY_BASE_URL", "not-a-valid-url"),
         ("XY_VIBE_QUOTA_ENDPOINT", "%%%"),
@@ -1259,7 +1506,7 @@ fn app_config_from_sources_ignores_removed_xyai_env_vars() {
 
 #[test]
 fn app_config_from_sources_reads_database_path_env() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let previous_database = env::var_os(ENV_DATABASE_PATH);
     let previous_legacy = env::var_os(LEGACY_ENV_DATABASE_PATH);
 
@@ -1285,7 +1532,7 @@ fn app_config_from_sources_reads_database_path_env() {
 
 #[test]
 fn app_config_from_sources_rejects_legacy_database_path_env() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let previous_database = env::var_os(ENV_DATABASE_PATH);
     let previous_legacy = env::var_os(LEGACY_ENV_DATABASE_PATH);
 
@@ -1315,7 +1562,7 @@ fn app_config_from_sources_rejects_legacy_database_path_env() {
 
 #[test]
 fn app_config_from_sources_reads_renamed_public_envs() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let mut cases = LEGACY_ENV_RENAMES
         .iter()
         .map(|(legacy, _)| (*legacy, None))
@@ -1387,7 +1634,7 @@ fn app_config_from_sources_reads_renamed_public_envs() {
 
 #[test]
 fn app_config_from_sources_rejects_all_legacy_public_env_renames() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
 
     for (legacy_name, canonical_name) in LEGACY_ENV_RENAMES {
         let mut cases = LEGACY_ENV_RENAMES
@@ -1412,7 +1659,7 @@ fn app_config_from_sources_rejects_all_legacy_public_env_renames() {
 
 #[test]
 fn app_config_from_sources_uses_proxy_timeout_defaults() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let names = [
         "OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS",
         "OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS",
@@ -1453,7 +1700,7 @@ fn app_config_from_sources_uses_proxy_timeout_defaults() {
 
 #[test]
 fn app_config_from_sources_reads_proxy_timeout_envs() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("env lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let names = [
         "OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS",
         "OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS",
@@ -1520,7 +1767,7 @@ fn test_config() -> AppConfig {
         forward_proxy_algo: ForwardProxyAlgo::V1,
         max_parallel_polls: 2,
         shared_connection_parallelism: 1,
-        http_bind: "127.0.0.1:38080".parse().expect("valid socket address"),
+        http_bind: "127.0.0.1:0".parse().expect("valid socket address"),
         cors_allowed_origins: Vec::new(),
         list_limit_max: 100,
         user_agent: "codex-test".to_string(),
@@ -1586,7 +1833,7 @@ fn resolved_proxy_raw_dir_resolves_relative_dir_from_database_parent() {
 
 #[test]
 fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("cwd lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let temp_dir = make_temp_test_dir("proxy-raw-store-db-parent");
     let cwd = temp_dir.join("cwd");
     let db_root = temp_dir.join("db-root");
@@ -1620,7 +1867,7 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
 
 #[test]
 fn read_proxy_raw_bytes_keeps_current_dir_compat_for_legacy_relative_paths() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("cwd lock");
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let temp_dir = make_temp_test_dir("proxy-raw-read-legacy-cwd");
     let cwd = temp_dir.join("cwd");
     let fallback_root = temp_dir.join("fallback");
@@ -2089,6 +2336,16 @@ async fn test_state_with_openai_base_and_proxy_timeouts(
     compact_handshake_timeout: Duration,
     request_read_timeout: Duration,
 ) -> Arc<AppState> {
+    let mut config = test_config();
+    config.openai_upstream_base_url = openai_base;
+    config.openai_proxy_max_request_body_bytes = body_limit;
+    config.openai_proxy_handshake_timeout = handshake_timeout;
+    config.openai_proxy_compact_handshake_timeout = compact_handshake_timeout;
+    config.openai_proxy_request_read_timeout = request_read_timeout;
+    test_state_from_config(config, true).await
+}
+
+async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<AppState> {
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let db_url = format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
     let pool = SqlitePool::connect(&db_url)
@@ -2098,12 +2355,6 @@ async fn test_state_with_openai_base_and_proxy_timeouts(
         .await
         .expect("schema should initialize");
 
-    let mut config = test_config();
-    config.openai_upstream_base_url = openai_base;
-    config.openai_proxy_max_request_body_bytes = body_limit;
-    config.openai_proxy_handshake_timeout = handshake_timeout;
-    config.openai_proxy_compact_handshake_timeout = compact_handshake_timeout;
-    config.openai_proxy_request_read_timeout = request_read_timeout;
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let (broadcaster, _rx) = broadcast::channel(16);
@@ -2119,7 +2370,9 @@ async fn test_state_with_openai_base_and_proxy_timeouts(
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        startup_ready: Arc::new(AtomicBool::new(true)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
+        startup_ready: Arc::new(AtomicBool::new(startup_ready)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -2339,6 +2592,41 @@ async fn spawn_test_forward_proxy_status(status: StatusCode) -> (String, JoinHan
         axum::serve(listener, app)
             .await
             .expect("forward proxy status test server should run");
+    });
+
+    (format!("http://{addr}"), handle)
+}
+
+async fn spawn_test_blocking_forward_proxy_status(
+    status: StatusCode,
+    request_started: Arc<Notify>,
+    release_request: Arc<Notify>,
+) -> (String, JoinHandle<()>) {
+    let app = Router::new().fallback(any(move || {
+        let request_started = request_started.clone();
+        let release_request = release_request.clone();
+        async move {
+            request_started.notify_waiters();
+            release_request.notified().await;
+            (
+                status,
+                Json(json!({
+                    "status": status.as_u16(),
+                })),
+            )
+        }
+    }));
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind blocking forward proxy status test server");
+    let addr = listener
+        .local_addr()
+        .expect("blocking forward proxy status test server addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("blocking forward proxy status test server should run");
     });
 
     (format!("http://{addr}"), handle)
@@ -2975,8 +3263,46 @@ async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_responses_failed_stream() -> impl IntoResponse {
+    let payload = [
+        "event: response.created
+",
+        r#"data: {"type":"response.created","response":{"id":"resp_fail_test","model":"gpt-5.4","status":"in_progress"}}"#,
+        "
+
+",
+        r#"data: {"type":"error","error":{"code":"server_error","message":"An error occurred while processing your request. Please include the request ID 060a328d-5cb6-433c-9025-1da2d9c632f1 in your message."}}"#,
+        "
+
+",
+        "event: response.failed
+",
+        r#"data: {"type":"response.failed","response":{"id":"resp_fail_test","model":"gpt-5.4","status":"failed","error":{"code":"server_error","message":"An error occurred while processing your request. Please include the request ID 060a328d-5cb6-433c-9025-1da2d9c632f1 in your message."}}}"#,
+        "
+
+",
+    ]
+    .concat();
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from(payload),
+    )
+}
+
 async fn test_upstream_responses(uri: Uri) -> Response {
-    if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=response_failed"))
+    {
+        test_upstream_responses_failed_stream()
+            .await
+            .into_response()
+    } else if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
         test_upstream_responses_gzip_stream().await.into_response()
     } else if uri
         .query()
@@ -4001,6 +4327,52 @@ async fn forward_proxy_penalized_probe_treats_429_as_failure() {
     );
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn forward_proxy_penalized_probe_skips_recording_when_shutdown_begins_mid_probe() {
+    let request_started = Arc::new(Notify::new());
+    let release_request = Arc::new(Notify::new());
+    let (proxy_url, proxy_handle) = spawn_test_blocking_forward_proxy_status(
+        StatusCode::OK,
+        request_started.clone(),
+        release_request.clone(),
+    )
+    .await;
+    let normalized_proxy =
+        normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid upstream base url"),
+    )
+    .await;
+    let endpoint = ForwardProxyEndpoint {
+        key: normalized_proxy.clone(),
+        source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+        display_name: normalized_proxy.clone(),
+        protocol: ForwardProxyProtocol::Http,
+        endpoint_url: Some(Url::parse(&normalized_proxy).expect("valid normalized proxy url")),
+        raw_url: Some(normalized_proxy.clone()),
+    };
+
+    spawn_penalized_forward_proxy_probe(
+        state.clone(),
+        SelectedForwardProxy::from_endpoint(&endpoint),
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), request_started.notified())
+        .await
+        .expect("penalized probe should reach the forward proxy before shutdown");
+    state.shutdown.cancel();
+    release_request.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(
+        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await,
+        0,
+        "shutdown should stop an in-flight penalized probe without recording a probe attempt"
+    );
+
+    proxy_handle.abort();
 }
 
 #[tokio::test]
@@ -5897,7 +6269,9 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
             hijack_enabled: true,
@@ -6787,6 +7161,114 @@ async fn capture_target_stream_error_emits_failure_kind_and_persists() {
 }
 
 #[tokio::test]
+async fn capture_target_response_failed_stream_persists_service_failure_details() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedRow {
+        status: Option<String>,
+        error_message: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello"
+    }))
+    .expect("serialize request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=response_failed"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    let text = String::from_utf8(body.to_vec()).expect("response body should be utf8");
+    assert!(text.contains("response.failed"));
+
+    let mut row: Option<PersistedRow> = None;
+    for _ in 0..20 {
+        row = sqlx::query_as::<_, PersistedRow>(
+            r#"
+            SELECT status, error_message, payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query capture record");
+        if row.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let row = row.expect("capture record should be persisted");
+
+    assert_eq!(count_request_forward_proxy_attempts(&state.pool).await, 1);
+    assert_eq!(
+        count_request_forward_proxy_attempts_with_failure_kind(
+            &state.pool,
+            PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+        )
+        .await,
+        1
+    );
+
+    assert_eq!(row.status.as_deref(), Some("http_200"));
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|msg| msg.contains("[upstream_response_failed] server_error"))
+    );
+    let payload_json: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("capture payload should be present"),
+    )
+    .expect("decode capture payload");
+    assert_eq!(
+        payload_json["failureKind"].as_str(),
+        Some("upstream_response_failed")
+    );
+    assert_eq!(
+        payload_json["streamTerminalEvent"].as_str(),
+        Some("response.failed")
+    );
+    assert_eq!(
+        payload_json["upstreamErrorCode"].as_str(),
+        Some("server_error")
+    );
+    assert!(
+        payload_json["upstreamErrorMessage"]
+            .as_str()
+            .is_some_and(|msg| msg.contains("request ID 060a328d-5cb6-433c-9025-1da2d9c632f1"))
+    );
+    assert_eq!(
+        payload_json["upstreamRequestId"].as_str(),
+        Some("060a328d-5cb6-433c-9025-1da2d9c632f1")
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_capture_target_fill_missing_rewrites_priority_for_responses() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -7226,7 +7708,9 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -7353,7 +7837,9 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -7521,7 +8007,9 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -7590,7 +8078,9 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -7999,6 +8489,38 @@ fn parse_stream_response_payload_extracts_usage_and_model() {
     assert_eq!(parsed.usage.total_tokens, Some(18));
     assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
     assert!(parsed.usage_missing_reason.is_none());
+}
+
+#[test]
+fn parse_stream_response_payload_extracts_terminal_failure_details() {
+    let raw = [
+        "event: response.created",
+        r#"data: {"type":"response.created","response":{"id":"resp_test","model":"gpt-5.4","status":"in_progress"}}"#,
+        "event: response.failed",
+        r#"data: {"type":"response.failed","response":{"id":"resp_test","model":"gpt-5.4","status":"failed","error":{"code":"server_error","message":"An error occurred while processing your request. Please include the request ID 060a328d-5cb6-433c-9025-1da2d9c632f1 in your message."}}}"#,
+    ]
+    .join("\n");
+
+    let parsed = parse_stream_response_payload(raw.as_bytes());
+    assert_eq!(parsed.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        parsed.stream_terminal_event.as_deref(),
+        Some("response.failed")
+    );
+    assert_eq!(parsed.upstream_error_code.as_deref(), Some("server_error"));
+    assert!(
+        parsed.upstream_error_message.as_deref().is_some_and(
+            |message| message.contains("request ID 060a328d-5cb6-433c-9025-1da2d9c632f1")
+        )
+    );
+    assert_eq!(
+        parsed.upstream_request_id.as_deref(),
+        Some("060a328d-5cb6-433c-9025-1da2d9c632f1")
+    );
+    assert_eq!(
+        parsed.usage_missing_reason.as_deref(),
+        Some("upstream_response_failed")
+    );
 }
 
 #[test]
@@ -11849,7 +12371,9 @@ async fn quota_latest_returns_degraded_when_empty() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
         semaphore,
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -12338,13 +12862,225 @@ async fn failure_classification_backfill_skips_success_rows_with_complete_defaul
     .await
     .expect("insert success row");
 
-    let outcome = backfill_failure_classification_from_cursor(&pool, 0, Some(10), None)
+    let outcome = backfill_failure_classification_from_cursor(&pool, 0, None, Some(10), None)
         .await
         .expect("run failure classification backfill");
     assert_eq!(outcome.summary.scanned, 0);
     assert_eq!(outcome.summary.updated, 0);
     assert_eq!(outcome.next_cursor_id, 0);
     assert!(!outcome.hit_budget);
+}
+
+#[tokio::test]
+async fn failure_classification_backfill_recovers_response_failed_records() {
+    #[derive(sqlx::FromRow)]
+    struct BackfilledRow {
+        status: Option<String>,
+        error_message: Option<String>,
+        failure_kind: Option<String>,
+        failure_class: Option<String>,
+        is_actionable: Option<i64>,
+        payload: Option<String>,
+    }
+
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let raw_response = [
+        "event: response.created",
+        r#"data: {"type":"response.created","response":{"id":"resp_test","model":"gpt-5.4","status":"in_progress"}}"#,
+        "event: response.failed",
+        r#"data: {"type":"response.failed","response":{"id":"resp_test","model":"gpt-5.4","status":"failed","error":{"code":"server_error","message":"An error occurred while processing your request. Please include the request ID 060a328d-5cb6-433c-9025-1da2d9c632f1 in your message."}}}"#,
+    ]
+    .join("\n");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            failure_class,
+            is_actionable,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("response-failed-success")
+    .bind("2026-03-09 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(FAILURE_CLASS_NONE)
+    .bind(0_i64)
+    .bind(r#"{"endpoint":"/v1/responses","isStream":true,"usageMissingReason":"usage_missing_in_stream"}"#)
+    .bind(&raw_response)
+    .execute(&pool)
+    .await
+    .expect("insert misrecorded success row");
+
+    let outcome = backfill_failure_classification_from_cursor(&pool, 0, None, Some(10), None)
+        .await
+        .expect("run failure classification backfill");
+    assert_eq!(outcome.summary.scanned, 1);
+    assert_eq!(outcome.summary.updated, 1);
+
+    let row = sqlx::query_as::<_, BackfilledRow>(
+        r#"
+        SELECT status, error_message, failure_kind, failure_class, is_actionable, payload
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("response-failed-success")
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled row");
+
+    assert_eq!(row.status.as_deref(), Some("http_200"));
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|msg| msg.contains("[upstream_response_failed] server_error"))
+    );
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some("upstream_response_failed")
+    );
+    assert_eq!(row.failure_class.as_deref(), Some("service_failure"));
+    assert_eq!(row.is_actionable, Some(1));
+
+    let payload_json: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("payload should still be present"),
+    )
+    .expect("decode payload json");
+    assert_eq!(
+        payload_json["streamTerminalEvent"].as_str(),
+        Some("response.failed")
+    );
+    assert_eq!(
+        payload_json["upstreamErrorCode"].as_str(),
+        Some("server_error")
+    );
+    assert_eq!(
+        payload_json["upstreamRequestId"].as_str(),
+        Some("060a328d-5cb6-433c-9025-1da2d9c632f1")
+    );
+}
+
+#[tokio::test]
+async fn failure_classification_backfill_reads_long_stream_failures_from_raw_file() {
+    #[derive(sqlx::FromRow)]
+    struct BackfilledRow {
+        status: Option<String>,
+        error_message: Option<String>,
+        failure_kind: Option<String>,
+        payload: Option<String>,
+    }
+
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let temp_dir = make_temp_test_dir("response-failed-backfill");
+    let response_path = temp_dir.join("response.bin");
+    let long_prefix = format!(
+        r#"event: response.created
+data: {{"type":"response.output_text.delta","delta":"{}"}}
+
+"#,
+        "x".repeat(16_400)
+    );
+    let raw_file = format!(
+        r#"{}event: response.failed
+data: {{"type":"response.failed","response":{{"id":"resp_test","model":"gpt-5.4","status":"failed","error":{{"code":"server_error","message":"An error occurred while processing your request. Please include the request ID 060a328d-5cb6-433c-9025-1da2d9c632f1 in your message."}}}}}}
+"#,
+        long_prefix,
+    );
+    fs::write(&response_path, raw_file.as_bytes()).expect("write response raw file");
+
+    let preview = build_raw_response_preview(raw_file.as_bytes());
+    assert!(!preview.contains("response.failed"));
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            failure_class,
+            is_actionable,
+            payload,
+            raw_response,
+            response_raw_path,
+            response_raw_size
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind("response-failed-from-file")
+    .bind("2026-03-09 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(FAILURE_CLASS_NONE)
+    .bind(0_i64)
+    .bind(r#"{"endpoint":"/v1/responses","isStream":true}"#)
+    .bind(&preview)
+    .bind(response_path.to_string_lossy().to_string())
+    .bind(raw_file.len() as i64)
+    .execute(&pool)
+    .await
+    .expect("insert long success row");
+
+    let outcome = backfill_failure_classification_from_cursor(&pool, 0, None, Some(10), None)
+        .await
+        .expect("run failure classification backfill");
+    assert_eq!(outcome.summary.scanned, 1);
+    assert_eq!(outcome.summary.updated, 1);
+
+    let row = sqlx::query_as::<_, BackfilledRow>(
+        r#"
+        SELECT status, error_message, failure_kind, payload
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("response-failed-from-file")
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled row");
+
+    assert_eq!(row.status.as_deref(), Some("http_200"));
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|msg| msg.contains("[upstream_response_failed] server_error"))
+    );
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some("upstream_response_failed")
+    );
+
+    let payload_json: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("payload should still be present"),
+    )
+    .expect("decode payload json");
+    assert_eq!(
+        payload_json["upstreamRequestId"].as_str(),
+        Some("060a328d-5cb6-433c-9025-1da2d9c632f1")
+    );
+
+    fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
 }
 
 #[tokio::test]
@@ -12379,7 +13115,7 @@ async fn failure_classification_backfill_from_cursor_respects_scan_limit() {
         .expect("insert failure classification row");
     }
 
-    let first = backfill_failure_classification_from_cursor(&pool, 0, Some(200), None)
+    let first = backfill_failure_classification_from_cursor(&pool, 0, None, Some(200), None)
         .await
         .expect("first bounded failure classification pass");
     assert_eq!(first.summary.scanned, 200);
@@ -12387,10 +13123,15 @@ async fn failure_classification_backfill_from_cursor_respects_scan_limit() {
     assert!(first.hit_budget);
     assert!(first.next_cursor_id > 0);
 
-    let second =
-        backfill_failure_classification_from_cursor(&pool, first.next_cursor_id, Some(200), None)
-            .await
-            .expect("second bounded failure classification pass");
+    let second = backfill_failure_classification_from_cursor(
+        &pool,
+        first.next_cursor_id,
+        None,
+        Some(200),
+        None,
+    )
+    .await
+    .expect("second bounded failure classification pass");
     assert_eq!(second.summary.scanned, 5);
     assert_eq!(second.summary.updated, 5);
     assert!(!second.hit_budget);
@@ -12423,7 +13164,7 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     .await;
 
     let before_pruned_at = Utc::now() - ChronoDuration::seconds(5);
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run retention prune");
     let after_pruned_at = Utc::now() + ChronoDuration::seconds(5);
@@ -12595,7 +13336,7 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
     let before = query_combined_totals(&pool, None, StatsFilter::All, InvocationSourceScope::All)
         .await
         .expect("query totals before retention");
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run retention archive");
     let after = query_combined_totals(&pool, None, StatsFilter::All, InvocationSourceScope::All)
@@ -12666,7 +13407,7 @@ async fn retention_archives_forward_proxy_attempts_and_stats_snapshots() {
     insert_stats_source_snapshot_row(&pool, &old_captured_at, &old_captured_at[..10]).await;
     insert_stats_source_snapshot_row(&pool, &recent_captured_at, &recent_captured_at[..10]).await;
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run timestamped retention");
     assert_eq!(summary.forward_proxy_attempt_rows_archived, 1);
@@ -12720,7 +13461,7 @@ async fn retention_compacts_old_quota_snapshots_by_shanghai_day() {
     seed_quota_snapshot(&pool, &same_day_late).await;
     seed_quota_snapshot(&pool, &next_day).await;
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run quota compaction");
     assert_eq!(summary.quota_snapshot_rows_archived, 1);
@@ -12750,7 +13491,7 @@ async fn retention_orphan_sweep_skips_fresh_raw_files() {
     let orphan = config.proxy_raw_dir.join("fresh-orphan.bin");
     fs::write(&orphan, b"fresh-orphan").expect("write fresh orphan");
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run retention with fresh orphan");
     assert_eq!(summary.orphan_raw_files_removed, 0);
@@ -12761,7 +13502,7 @@ async fn retention_orphan_sweep_skips_fresh_raw_files() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn retention_orphan_sweep_anchors_relative_raw_dir_to_database_parent() {
-    let _guard = APP_CONFIG_ENV_LOCK.lock().expect("cwd lock");
+    let _guard = APP_CONFIG_ENV_LOCK.lock().await;
     let temp_dir = make_temp_test_dir("retention-orphan-db-parent");
     let db_root = temp_dir.join("db-root");
     let cwd_root = temp_dir.join("cwd-root");
@@ -12834,7 +13575,7 @@ async fn retention_dry_run_does_not_mutate_database_or_files() {
     )
     .await;
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(true))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(true), None)
         .await
         .expect("run dry-run retention");
     assert!(summary.dry_run);
@@ -12868,4 +13609,810 @@ async fn retention_dry_run_does_not_mutate_database_or_files() {
     assert_eq!(archive_files, 0);
 
     cleanup_temp_test_dir(&temp_dir);
+}
+
+async fn spawn_test_crs_stats_server(
+    release_request: Arc<Notify>,
+    request_count: Arc<AtomicUsize>,
+) -> (String, JoinHandle<()>) {
+    let app = Router::new().route(
+        "/apiStats/api/user-model-stats",
+        post(move || {
+            let release_request = release_request.clone();
+            let request_count = request_count.clone();
+            async move {
+                request_count.fetch_add(1, Ordering::SeqCst);
+                release_request.notified().await;
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "success": true,
+                        "period": "daily",
+                        "data": [],
+                    })),
+                )
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind crs stats test server");
+    let addr = listener.local_addr().expect("crs stats test server addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("crs stats test server should run");
+    });
+
+    (format!("http://{addr}/"), handle)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminate_child_process_prefers_sigterm_when_process_exits_cleanly() {
+    let mut child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("trap 'exit 0' TERM; while :; do sleep 0.1; done")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sigterm-friendly child");
+
+    let outcome = terminate_child_process(&mut child, Duration::from_secs(1), "test-child").await;
+
+    assert_eq!(outcome, ChildTerminationOutcome::Graceful);
+    assert!(
+        child
+            .try_wait()
+            .expect("poll child after terminate")
+            .is_some()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminate_child_process_falls_back_to_force_kill_when_grace_period_is_exhausted() {
+    let mut child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("trap '' TERM; while :; do sleep 0.1; done")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn TERM-ignoring child for forced shutdown fallback");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let outcome =
+        terminate_child_process(&mut child, Duration::from_millis(100), "test-child").await;
+
+    assert_eq!(outcome, ChildTerminationOutcome::Forced);
+    assert!(
+        child
+            .try_wait()
+            .expect("poll child after force kill")
+            .is_some()
+    );
+}
+#[tokio::test]
+async fn spawn_http_server_leaves_health_unready_until_runtime_declares_readiness() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (addr, server_handle) = spawn_http_server(state.clone())
+        .await
+        .expect("spawn http server");
+
+    assert!(
+        !state.startup_ready.load(Ordering::Acquire),
+        "HTTP startup should not mark the app ready before runtime startup completes"
+    );
+    let response = reqwest::get(format!("http://{addr}/health"))
+        .await
+        .expect("health endpoint should respond while startup is incomplete");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    state.shutdown.cancel();
+    server_handle.await.expect("http server task should join");
+}
+
+#[tokio::test]
+async fn http_server_graceful_shutdown_stops_accepting_new_connections() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (addr, server_handle) = spawn_http_server(state.clone())
+        .await
+        .expect("spawn http server");
+    state.startup_ready.store(true, Ordering::Release);
+
+    let healthy_response = reqwest::get(format!("http://{addr}/health"))
+        .await
+        .expect("health endpoint should respond before shutdown");
+    assert_eq!(healthy_response.status(), StatusCode::OK);
+
+    state.shutdown.cancel();
+    server_handle.await.expect("http server task should join");
+
+    let err = reqwest::get(format!("http://{addr}/health"))
+        .await
+        .expect_err("server should stop accepting new connections after shutdown");
+    assert!(err.is_connect() || err.is_timeout());
+}
+
+#[tokio::test]
+async fn run_runtime_until_shutdown_waits_for_inflight_scheduler_poll() {
+    let release_request = Arc::new(Notify::new());
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let (crs_base, crs_handle) =
+        spawn_test_crs_stats_server(release_request.clone(), request_count.clone()).await;
+
+    let mut config = test_config();
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse(&crs_base).expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    config.request_timeout = Duration::from_secs(5);
+    config.poll_interval = Duration::from_millis(25);
+    config.max_parallel_polls = 1;
+    let state = test_state_from_config(config, false).await;
+
+    let shutdown = Arc::new(Notify::new());
+    let shutdown_for_runtime = shutdown.clone();
+    let state_for_runtime = state.clone();
+    let runtime_handle = tokio::spawn(async move {
+        run_runtime_until_shutdown(state_for_runtime, Instant::now(), async move {
+            shutdown_for_runtime.notified().await;
+        })
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while request_count.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("scheduler should start an in-flight poll");
+    shutdown.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        !runtime_handle.is_finished(),
+        "runtime should wait for the in-flight scheduler poll to finish"
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+    release_request.notify_waiters();
+    runtime_handle
+        .await
+        .expect("runtime task should join")
+        .expect("runtime should shutdown cleanly");
+
+    assert!(state.shutdown.is_cancelled());
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+    crs_handle.abort();
+}
+
+#[tokio::test]
+async fn scheduler_does_not_start_a_new_poll_after_shutdown_while_waiting_for_permit() {
+    let release_request = Arc::new(Notify::new());
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let (crs_base, crs_handle) =
+        spawn_test_crs_stats_server(release_request.clone(), request_count.clone()).await;
+
+    let mut config = test_config();
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse(&crs_base).expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    config.request_timeout = Duration::from_secs(5);
+    config.poll_interval = Duration::from_millis(25);
+    config.max_parallel_polls = 1;
+    let state = test_state_from_config(config, false).await;
+
+    let scheduler_handle = spawn_scheduler(state.clone(), state.shutdown.clone());
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while request_count.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("scheduler should start its initial poll");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    state.shutdown.cancel();
+    release_request.notify_waiters();
+
+    tokio::time::timeout(Duration::from_secs(2), scheduler_handle)
+        .await
+        .expect("scheduler should drain promptly after shutdown")
+        .expect("scheduler task should join cleanly");
+
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        1,
+        "shutdown should prevent a queued follow-up poll from starting once the permit is released"
+    );
+    crs_handle.abort();
+}
+
+#[tokio::test]
+async fn drain_runtime_after_shutdown_waits_for_summary_quota_broadcast_workers() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (started_tx_a, started_rx_a) = tokio::sync::oneshot::channel();
+    let (started_tx_b, started_rx_b) = tokio::sync::oneshot::channel();
+    let release_a = Arc::new(Notify::new());
+    let release_b = Arc::new(Notify::new());
+    let worker_a = tokio::spawn({
+        let release_a = release_a.clone();
+        async move {
+            started_tx_a
+                .send(())
+                .expect("first broadcast worker should report when it starts");
+            release_a.notified().await;
+        }
+    });
+    let worker_b = tokio::spawn({
+        let release_b = release_b.clone();
+        async move {
+            started_tx_b
+                .send(())
+                .expect("second broadcast worker should report when it starts");
+            release_b.notified().await;
+        }
+    });
+    {
+        let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;
+        guard.extend([worker_a, worker_b]);
+    }
+
+    let drain_handle = tokio::spawn({
+        let state = state.clone();
+        async move { drain_runtime_after_shutdown(state, None, None, None, None, None).await }
+    });
+
+    started_rx_a
+        .await
+        .expect("first broadcast worker should start before the drain waits on it");
+    started_rx_b
+        .await
+        .expect("second broadcast worker should start before the drain waits on it");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !drain_handle.is_finished(),
+        "runtime drain should wait for every tracked summary/quota broadcast worker"
+    );
+
+    release_a.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !drain_handle.is_finished(),
+        "runtime drain should keep waiting until the last tracked summary/quota broadcast worker exits"
+    );
+
+    release_b.notify_waiters();
+    drain_handle
+        .await
+        .expect("drain task should join")
+        .expect("runtime drain should finish once every broadcast worker does");
+    assert!(
+        state
+            .proxy_summary_quota_broadcast_handle
+            .lock()
+            .await
+            .is_empty(),
+        "runtime drain should clear all tracked summary/quota broadcast workers"
+    );
+}
+
+#[tokio::test]
+async fn run_runtime_until_shutdown_exits_when_shutdown_token_is_cancelled_directly() {
+    let state = test_state_from_config(test_config(), false).await;
+    state.shutdown.cancel();
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        run_runtime_until_shutdown(state.clone(), Instant::now(), std::future::pending::<()>()),
+    )
+    .await
+    .expect("direct shutdown token cancellation should not hang runtime drain")
+    .expect("runtime should exit cleanly after direct shutdown token cancellation");
+
+    assert!(state.shutdown.is_cancelled());
+}
+
+#[tokio::test]
+async fn run_runtime_until_shutdown_skips_startup_work_when_shutdown_is_already_requested() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let release_request = Arc::new(Notify::new());
+    let (crs_base, crs_handle) =
+        spawn_test_crs_stats_server(release_request.clone(), request_count.clone()).await;
+
+    let mut config = test_config();
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse(&crs_base).expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    config.request_timeout = Duration::from_secs(5);
+    config.poll_interval = Duration::from_millis(25);
+    config.max_parallel_polls = 1;
+    let state = test_state_from_config(config, false).await;
+
+    run_runtime_until_shutdown(state.clone(), Instant::now(), async {})
+        .await
+        .expect("runtime should exit cleanly when shutdown is already requested");
+
+    assert!(state.shutdown.is_cancelled());
+    assert_eq!(request_count.load(Ordering::SeqCst), 0);
+    release_request.notify_waiters();
+    crs_handle.abort();
+}
+
+#[tokio::test]
+async fn run_runtime_until_shutdown_skips_xray_route_sync_when_shutdown_is_already_requested() {
+    let runtime_dir = make_temp_test_dir("runtime-shutdown-xray-sync");
+    fs::remove_dir_all(&runtime_dir).expect("remove temp runtime dir before startup");
+
+    let mut config = test_config();
+    config.xray_binary = "/path/to/non-existent-xray".to_string();
+    config.xray_runtime_dir = runtime_dir.clone();
+    let state = test_state_from_config(config, false).await;
+
+    {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_settings(ForwardProxySettings {
+            proxy_urls: vec!["vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com#vless".to_string()],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        });
+    }
+
+    run_runtime_until_shutdown(state.clone(), Instant::now(), async {})
+        .await
+        .expect("runtime should exit cleanly when shutdown is already requested");
+
+    assert!(state.shutdown.is_cancelled());
+    assert!(
+        !runtime_dir.exists(),
+        "shutdown should skip xray route sync side effects when startup never begins"
+    );
+}
+
+#[tokio::test]
+async fn run_startup_stage_until_shutdown_skips_stage_when_shutdown_arrives_before_first_poll() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::task::{Context, Poll};
+
+    struct ReadyOnSecondPollFuture {
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl Future for ReadyOnSecondPollFuture {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let poll_count = self.polls.fetch_add(1, Ordering::SeqCst);
+            if poll_count == 0 {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        }
+    }
+
+    let shutdown_polls = Arc::new(AtomicUsize::new(0));
+    let shutdown_signal = ReadyOnSecondPollFuture {
+        polls: shutdown_polls.clone(),
+    }
+    .shared();
+    let cancel = CancellationToken::new();
+    let stage_started = Arc::new(AtomicBool::new(false));
+
+    let outcome = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, {
+        let stage_started = stage_started.clone();
+        async move {
+            stage_started.store(true, Ordering::SeqCst);
+            13_u8
+        }
+    })
+    .await;
+
+    assert!(matches!(outcome, StartupStageOutcome::SkippedByShutdown));
+    assert!(cancel.is_cancelled());
+    assert!(
+        !stage_started.load(Ordering::SeqCst),
+        "shutdown should skip startup work that has not started polling yet"
+    );
+    assert_eq!(
+        shutdown_polls.load(Ordering::SeqCst),
+        2,
+        "the shutdown future should only need the initial probe and the shutdown branch poll"
+    );
+}
+
+#[tokio::test]
+async fn run_startup_stage_until_shutdown_preserves_stage_result_when_shutdown_arrives_after_stage()
+{
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll};
+
+    struct FlagShutdownFuture {
+        ready: Arc<AtomicBool>,
+    }
+
+    impl Future for FlagShutdownFuture {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if self.ready.load(Ordering::SeqCst) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    let shutdown_ready = Arc::new(AtomicBool::new(false));
+    let shutdown_signal = FlagShutdownFuture {
+        ready: shutdown_ready.clone(),
+    }
+    .shared();
+    let cancel = CancellationToken::new();
+
+    let outcome = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        shutdown_ready.store(true, Ordering::SeqCst);
+        42_u8
+    })
+    .await;
+
+    match outcome {
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            assert_eq!(result, 42);
+            assert!(shutdown_requested);
+            assert!(cancel.is_cancelled());
+        }
+        StartupStageOutcome::SkippedByShutdown => {
+            panic!("stage result should be preserved when shutdown arrives after stage completion")
+        }
+    }
+}
+
+#[tokio::test]
+async fn run_startup_stage_until_shutdown_waits_for_stage_completion_when_shutdown_arrives_mid_stage()
+ {
+    let shutdown = Arc::new(Notify::new());
+    let shutdown_signal = {
+        let shutdown = shutdown.clone();
+        async move {
+            shutdown.notified().await;
+        }
+        .shared()
+    };
+    let cancel = CancellationToken::new();
+    let release_stage = Arc::new(Notify::new());
+    let (stage_started_tx, stage_started_rx) = tokio::sync::oneshot::channel();
+
+    let shutdown_task = {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            stage_started_rx
+                .await
+                .expect("stage should signal when startup work begins");
+            shutdown.notify_waiters();
+        })
+    };
+    let release_task = {
+        let cancel = cancel.clone();
+        let release_stage = release_stage.clone();
+        tokio::spawn(async move {
+            cancel.cancelled().await;
+            release_stage.notify_waiters();
+        })
+    };
+
+    let outcome = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async move {
+        stage_started_tx
+            .send(())
+            .expect("stage start signal should be sent exactly once");
+        release_stage.notified().await;
+        7_u8
+    })
+    .await;
+
+    shutdown_task
+        .await
+        .expect("shutdown trigger task should finish");
+    release_task
+        .await
+        .expect("stage release task should finish");
+
+    match outcome {
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            assert_eq!(result, 7);
+            assert!(shutdown_requested);
+            assert!(cancel.is_cancelled());
+        }
+        StartupStageOutcome::SkippedByShutdown => {
+            panic!("stage should finish after shutdown begins once startup work is already running")
+        }
+    }
+}
+
+#[tokio::test]
+async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
+    let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::OK).await;
+    let normalized_proxy =
+        normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid upstream base url"),
+    )
+    .await;
+    state.shutdown.cancel();
+
+    spawn_forward_proxy_bootstrap_probe_round(
+        state.clone(),
+        vec![ForwardProxyEndpoint {
+            key: normalized_proxy.clone(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            display_name: normalized_proxy.clone(),
+            protocol: ForwardProxyProtocol::Http,
+            endpoint_url: Some(Url::parse(&normalized_proxy).expect("valid normalized proxy url")),
+            raw_url: Some(normalized_proxy.clone()),
+        }],
+        "test-shutdown",
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let probe_count =
+        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    assert_eq!(probe_count, 0);
+
+    proxy_handle.abort();
+}
+
+#[tokio::test]
+async fn forward_proxy_bootstrap_probe_round_stops_mid_probe_when_shutdown_begins() {
+    let request_started = Arc::new(Notify::new());
+    let release_request = Arc::new(Notify::new());
+    let (proxy_url, proxy_handle) = spawn_test_blocking_forward_proxy_status(
+        StatusCode::OK,
+        request_started.clone(),
+        release_request.clone(),
+    )
+    .await;
+    let normalized_proxy =
+        normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid upstream base url"),
+    )
+    .await;
+
+    spawn_forward_proxy_bootstrap_probe_round(
+        state.clone(),
+        vec![ForwardProxyEndpoint {
+            key: normalized_proxy.clone(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            display_name: normalized_proxy.clone(),
+            protocol: ForwardProxyProtocol::Http,
+            endpoint_url: Some(Url::parse(&normalized_proxy).expect("valid normalized proxy url")),
+            raw_url: Some(normalized_proxy.clone()),
+        }],
+        "test-shutdown-mid-probe",
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), request_started.notified())
+        .await
+        .expect("bootstrap probe should reach the forward proxy before shutdown");
+    state.shutdown.cancel();
+    release_request.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(
+        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await,
+        0,
+        "shutdown should stop an in-flight bootstrap probe without recording a probe attempt"
+    );
+
+    proxy_handle.abort();
+}
+
+#[tokio::test]
+async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_arrives() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    seed_quota_snapshot(&state.pool, &now_local).await;
+    let mut rx = state.broadcaster.subscribe();
+
+    state
+        .proxy_summary_quota_broadcast_seq
+        .store(2, Ordering::Release);
+    state
+        .proxy_summary_quota_broadcast_running
+        .store(true, Ordering::Release);
+    state.shutdown.cancel();
+
+    let should_continue = finish_summary_quota_broadcast_idle(
+        SummaryQuotaBroadcastIdleContext {
+            latest_broadcast_seq: state.proxy_summary_quota_broadcast_seq.as_ref(),
+            broadcast_running: state.proxy_summary_quota_broadcast_running.as_ref(),
+            shutdown: &state.shutdown,
+            pool: &state.pool,
+            broadcaster: &state.broadcaster,
+            broadcast_state_cache: state.broadcast_state_cache.as_ref(),
+            relay_config: state.config.crs_stats.as_ref(),
+            invoke_id: "idle-shutdown-tail",
+        },
+        1,
+    )
+    .await;
+
+    assert!(
+        !should_continue,
+        "shutdown tail should flush inline instead of trying to restart the broadcast worker"
+    );
+    assert!(
+        !state
+            .proxy_summary_quota_broadcast_running
+            .load(Ordering::Acquire),
+        "shutdown tail flush should leave the worker idle"
+    );
+
+    let mut saw_quota = false;
+    let mut summary_windows = HashSet::new();
+    let expected_summary_windows = summary_broadcast_specs().len();
+    for _ in 0..8 {
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for shutdown idle-tail broadcast event")
+            .expect("broadcast channel should stay open");
+        match payload {
+            BroadcastPayload::Summary { window, .. } => {
+                summary_windows.insert(window);
+            }
+            BroadcastPayload::Quota { snapshot } => {
+                saw_quota = true;
+                assert_eq!(snapshot.total_requests, 9);
+            }
+            BroadcastPayload::Records { .. } | BroadcastPayload::Version { .. } => {}
+        }
+
+        if saw_quota && summary_windows.len() == expected_summary_windows {
+            break;
+        }
+    }
+
+    assert!(
+        saw_quota,
+        "shutdown idle-tail flush should emit the latest quota snapshot"
+    );
+    assert_eq!(
+        summary_windows.len(),
+        expected_summary_windows,
+        "shutdown idle-tail flush should emit every summary window"
+    );
+}
+
+#[tokio::test]
+async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_begins_after_record_event()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    seed_quota_snapshot(&state.pool, &now_local).await;
+
+    let mut rx = state.broadcaster.subscribe();
+    let invoke_id = "shutdown-tail-broadcast";
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, &now_local),
+    )
+    .await
+    .expect("persist proxy capture before shutdown");
+    state.shutdown.cancel();
+
+    let mut saw_record = false;
+    let mut saw_quota = false;
+    let mut summary_windows = HashSet::new();
+    let expected_summary_windows = summary_broadcast_specs().len();
+    for _ in 0..16 {
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for shutdown tail broadcast event")
+            .expect("broadcast channel should stay open");
+        match payload {
+            BroadcastPayload::Records { records } => {
+                saw_record |= records
+                    .into_iter()
+                    .any(|record| record.invoke_id == invoke_id);
+            }
+            BroadcastPayload::Summary { window, .. } => {
+                summary_windows.insert(window);
+            }
+            BroadcastPayload::Quota { snapshot } => {
+                saw_quota = true;
+                assert_eq!(snapshot.total_requests, 9);
+            }
+            BroadcastPayload::Version { .. } => {}
+        }
+
+        if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
+            break;
+        }
+    }
+
+    assert!(
+        saw_record,
+        "shutdown tail path should still emit the persisted record"
+    );
+    assert!(
+        saw_quota,
+        "shutdown tail path should flush the latest quota snapshot"
+    );
+    assert_eq!(
+        summary_windows.len(),
+        expected_summary_windows,
+        "shutdown tail path should flush every summary window"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !state
+            .proxy_summary_quota_broadcast_running
+            .load(Ordering::Acquire),
+        "summary/quota broadcast worker should quiesce after flushing the shutdown tail"
+    );
+}
+
+#[tokio::test]
+async fn persist_and_broadcast_proxy_capture_skips_summary_worker_during_shutdown() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut rx = state.broadcaster.subscribe();
+    state.shutdown.cancel();
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record("shutdown-broadcast", &format_utc_iso(Utc::now())),
+    )
+    .await
+    .expect("persist proxy capture during shutdown");
+
+    let payload = tokio::time::timeout(Duration::from_millis(100), rx.recv())
+        .await
+        .expect("shutdown path should still emit the persisted record")
+        .expect("broadcast channel should stay open");
+    assert!(
+        matches!(payload, BroadcastPayload::Records { .. }),
+        "shutdown path should keep the live record event aligned with persisted data"
+    );
+    assert!(
+        !state
+            .proxy_summary_quota_broadcast_running
+            .load(Ordering::Acquire),
+        "summary/quota broadcast worker should not stay active during shutdown"
+    );
 }

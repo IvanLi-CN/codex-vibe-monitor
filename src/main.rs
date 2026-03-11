@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
     env,
+    future::Future,
     hash::{Hash, Hasher},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -36,7 +37,7 @@ use clap::Parser;
 use dotenvy::dotenv;
 use flate2::read::GzDecoder;
 use flate2::{Compression, write::GzEncoder};
-use futures_util::{StreamExt, stream};
+use futures_util::{FutureExt, StreamExt, future::Shared, stream};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Proxy, Url, header};
@@ -189,6 +190,7 @@ const PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED: &str =
 const PROXY_FAILURE_FAILED_CONTACT_UPSTREAM: &str = "failed_contact_upstream";
 const PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream_handshake_timeout";
 const PROXY_FAILURE_UPSTREAM_STREAM_ERROR: &str = "upstream_stream_error";
+const PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED: &str = "upstream_response_failed";
 const PROXY_STREAM_TERMINAL_COMPLETED: &str = "stream_completed";
 const PROXY_STREAM_TERMINAL_ERROR: &str = "stream_error";
 const PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED: &str = "downstream_closed";
@@ -460,12 +462,12 @@ async fn main() -> Result<()> {
     log_startup_phase("schema", schema_started_at);
     if cli.retention_run_once {
         let summary =
-            run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run)).await?;
+            run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run), None)
+                .await?;
         info!(?summary, "retention maintenance run-once finished");
         return Ok(());
     }
 
-    let runtime_init_started_at = Instant::now();
     let pricing_catalog = load_pricing_catalog(&pool).await?;
     let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
     let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
@@ -487,6 +489,7 @@ async fn main() -> Result<()> {
     let http_clients = HttpClients::build(&config)?;
     let (tx, _rx) = broadcast::channel(128);
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+    let shutdown = CancellationToken::new();
 
     let state = Arc::new(AppState {
         config: config.clone(),
@@ -496,7 +499,9 @@ async fn main() -> Result<()> {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(false)),
+        shutdown: shutdown.clone(),
         semaphore: semaphore.clone(),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -514,70 +519,519 @@ async fn main() -> Result<()> {
         )),
     });
 
-    if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
-        warn!(
-            error = %err,
-            "failed to initialize forward proxy xray routes at startup"
-        );
+    let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
+
+    run_runtime_until_shutdown(state, startup_started_at, async move {
+        let _ = signal_listener.await;
+    })
+    .await
+}
+
+fn begin_runtime_shutdown_if_requested<F>(
+    shutdown_signal: &Shared<F>,
+    cancel: &CancellationToken,
+) -> bool
+where
+    F: Future<Output = ()>,
+{
+    if cancel.is_cancelled() {
+        return true;
     }
-    log_startup_phase("runtime_init", runtime_init_started_at);
+    if shutdown_signal.clone().now_or_never().is_some() {
+        begin_runtime_shutdown(cancel);
+        return true;
+    }
+    false
+}
 
-    // Shared cancellation token for graceful shutdown
-    let cancel = CancellationToken::new();
+enum StartupStageOutcome<T> {
+    SkippedByShutdown,
+    Completed { result: T, shutdown_requested: bool },
+}
 
-    // Listen for OS signals and trigger cancellation
-    let cancel_for_signals = cancel.clone();
-    let signals_task = tokio::spawn(async move {
-        shutdown_listener().await;
-        cancel_for_signals.cancel();
-        info!("shutdown signal received; beginning graceful shutdown");
+struct TrackedStartupStage<Stage> {
+    stage: std::pin::Pin<Box<Stage>>,
+    started: bool,
+}
+
+impl<Stage> TrackedStartupStage<Stage> {
+    fn new(stage: Stage) -> Self {
+        Self {
+            stage: Box::pin(stage),
+            started: false,
+        }
+    }
+
+    fn has_started(&self) -> bool {
+        self.started
+    }
+}
+
+impl<Stage> TrackedStartupStage<Stage>
+where
+    Stage: Future,
+{
+    async fn finish(&mut self) -> Stage::Output {
+        self.started = true;
+        self.stage.as_mut().await
+    }
+}
+
+impl<Stage> Future for TrackedStartupStage<Stage>
+where
+    Stage: Future,
+{
+    type Output = Stage::Output;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.as_mut().get_mut();
+        this.started = true;
+        this.stage.as_mut().poll(cx)
+    }
+}
+
+async fn run_startup_stage_until_shutdown<T, Stage, Shutdown>(
+    shutdown_signal: &Shared<Shutdown>,
+    cancel: &CancellationToken,
+    stage: Stage,
+) -> StartupStageOutcome<T>
+where
+    Stage: Future<Output = T>,
+    Shutdown: Future<Output = ()>,
+{
+    if begin_runtime_shutdown_if_requested(shutdown_signal, cancel) {
+        return StartupStageOutcome::SkippedByShutdown;
+    }
+
+    let stage = TrackedStartupStage::new(stage);
+    tokio::pin!(stage);
+    tokio::select! {
+        biased;
+        _ = shutdown_signal.clone() => {
+            begin_runtime_shutdown(cancel);
+            if stage.as_ref().get_ref().has_started() {
+                StartupStageOutcome::Completed {
+                    result: stage.as_mut().get_mut().finish().await,
+                    shutdown_requested: true,
+                }
+            } else {
+                StartupStageOutcome::SkippedByShutdown
+            }
+        }
+        result = &mut stage => StartupStageOutcome::Completed {
+            shutdown_requested: begin_runtime_shutdown_if_requested(shutdown_signal, cancel),
+            result,
+        },
+    }
+}
+
+async fn drain_runtime_after_pending_shutdown(
+    state: Arc<AppState>,
+    mut shutdown_watcher: JoinHandle<()>,
+    server_handle: Option<JoinHandle<()>>,
+    poller_handle: Option<JoinHandle<()>>,
+    forward_proxy_handle: Option<JoinHandle<()>>,
+    retention_handle: Option<JoinHandle<()>>,
+    startup_backfill_handle: Option<JoinHandle<()>>,
+) -> Result<()> {
+    let shutdown_cancel = state.shutdown.clone();
+    tokio::select! {
+        _ = shutdown_cancel.cancelled() => {
+            shutdown_watcher.abort();
+            let _ = shutdown_watcher.await;
+        }
+        _ = &mut shutdown_watcher => {}
+    }
+    drain_runtime_after_shutdown(
+        state,
+        server_handle,
+        poller_handle,
+        forward_proxy_handle,
+        retention_handle,
+        startup_backfill_handle,
+    )
+    .await
+}
+
+async fn run_runtime_until_shutdown<F>(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    shutdown_signal: F,
+) -> Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let cancel = state.shutdown.clone();
+    let runtime_init_started_at = Instant::now();
+    let shutdown_signal = shutdown_signal.shared();
+    let shutdown_cancel = cancel.clone();
+    let shutdown_relay_signal = shutdown_signal.clone();
+    let shutdown_watcher = tokio::spawn(async move {
+        shutdown_relay_signal.await;
+        begin_runtime_shutdown(&shutdown_cancel);
     });
+    let mut poller_handle = None;
+    let mut forward_proxy_handle = None;
+    let mut retention_handle = None;
+    let mut server_handle = None;
+    let mut startup_backfill_handle = None;
 
-    let poller_handle = if state.config.crs_stats.is_some() {
-        Some(spawn_scheduler(state.clone(), cancel.clone()))
-    } else {
-        info!("crs stats relay is disabled; scheduler will not start");
-        None
+    let sync_stage = run_startup_stage_until_shutdown(
+        &shutdown_signal,
+        &cancel,
+        sync_forward_proxy_routes(state.as_ref()),
+    )
+    .await;
+    let sync_shutdown_requested = match sync_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            if let Err(err) = result {
+                warn!(error = %err, "failed to initialize forward proxy xray routes at startup");
+            }
+            shutdown_requested
+        }
     };
-    let forward_proxy_handle = spawn_forward_proxy_maintenance(state.clone(), cancel.clone());
-    let retention_handle = spawn_data_retention_maintenance(state.clone(), cancel.clone());
+    log_startup_phase("runtime_init", runtime_init_started_at);
+    if sync_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    let scheduler_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        if state.config.crs_stats.is_some() {
+            Some(spawn_scheduler(state.clone(), cancel.clone()))
+        } else {
+            info!("crs stats relay is disabled; scheduler will not start");
+            None
+        }
+    })
+    .await;
+    let scheduler_shutdown_requested = match scheduler_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            poller_handle = result;
+            shutdown_requested
+        }
+    };
+    if scheduler_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    let forward_proxy_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        Some(spawn_forward_proxy_maintenance(
+            state.clone(),
+            cancel.clone(),
+        ))
+    })
+    .await;
+    let forward_proxy_shutdown_requested = match forward_proxy_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            forward_proxy_handle = result;
+            shutdown_requested
+        }
+    };
+    if forward_proxy_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    let retention_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+        Some(spawn_data_retention_maintenance(
+            state.clone(),
+            cancel.clone(),
+        ))
+    })
+    .await;
+    let retention_shutdown_requested = match retention_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            retention_handle = result;
+            shutdown_requested
+        }
+    };
+    if retention_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
     let http_ready_started_at = Instant::now();
-    let server_handle = spawn_http_server(state.clone(), cancel.clone()).await?;
+    let http_stage = run_startup_stage_until_shutdown(
+        &shutdown_signal,
+        &cancel,
+        spawn_http_server(state.clone()),
+    )
+    .await;
+    let http_shutdown_requested = match http_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            let (_http_addr, handle) = result?;
+            server_handle = Some(handle);
+            shutdown_requested
+        }
+    };
+    if http_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    let startup_backfill_stage =
+        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+            Some(spawn_startup_backfill_maintenance(
+                state.clone(),
+                cancel.clone(),
+            ))
+        })
+        .await;
+    let startup_backfill_shutdown_requested = match startup_backfill_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                forward_proxy_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            startup_backfill_handle = result;
+            shutdown_requested
+        }
+    };
+    if startup_backfill_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            forward_proxy_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
+    state.startup_ready.store(true, Ordering::Release);
     log_startup_phase("http_ready", http_ready_started_at);
     info!(
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
         "application readiness reached"
     );
-    let startup_backfill_handle = spawn_startup_backfill_maintenance(state.clone(), cancel.clone());
 
-    // Wait until a shutdown signal is received, then wait for tasks to finish
-    let _ = signals_task.await;
-
-    if let Err(err) = server_handle.await {
-        error!(?err, "http server terminated unexpectedly");
+    tokio::select! {
+        biased;
+        _ = shutdown_signal => begin_runtime_shutdown(&cancel),
+        _ = cancel.cancelled() => {}
     }
-    if let Some(poller_handle) = poller_handle
-        && let Err(err) = poller_handle.await
+
+    drain_runtime_after_pending_shutdown(
+        state,
+        shutdown_watcher,
+        server_handle,
+        poller_handle,
+        forward_proxy_handle,
+        retention_handle,
+        startup_backfill_handle,
+    )
+    .await
+}
+
+fn begin_runtime_shutdown(cancel: &CancellationToken) {
+    if !cancel.is_cancelled() {
+        info!("shutdown signal received; beginning graceful shutdown");
+        cancel.cancel();
+    }
+}
+
+async fn drain_scheduler_inflight(mut inflight: Vec<JoinHandle<()>>) {
+    inflight.retain(|handle| !handle.is_finished());
+    for handle in inflight {
+        let _ = handle.await;
+    }
+}
+
+async fn drain_runtime_after_shutdown(
+    state: Arc<AppState>,
+    server_handle: Option<JoinHandle<()>>,
+    poller_handle: Option<JoinHandle<()>>,
+    forward_proxy_handle: Option<JoinHandle<()>>,
+    retention_handle: Option<JoinHandle<()>>,
+    startup_backfill_handle: Option<JoinHandle<()>>,
+) -> Result<()> {
+    if let Some(server_handle) = server_handle {
+        info!("http server graceful drain started");
+        if let Err(err) = server_handle.await {
+            error!(?err, "http server terminated unexpectedly");
+        }
+        info!("http server graceful drain finished");
+    }
+
+    if let Some(poller_handle) = poller_handle {
+        if let Err(err) = poller_handle.await {
+            error!(?err, "poller task terminated unexpectedly");
+        }
+        info!("scheduler drained");
+    }
+    if let Some(forward_proxy_handle) = forward_proxy_handle
+        && let Err(err) = forward_proxy_handle.await
     {
-        error!(?err, "poller task terminated unexpectedly");
-    }
-    if let Err(err) = forward_proxy_handle.await {
         error!(
             ?err,
             "forward proxy maintenance task terminated unexpectedly"
         );
     }
-    if let Err(err) = retention_handle.await {
+    if let Some(retention_handle) = retention_handle
+        && let Err(err) = retention_handle.await
+    {
         error!(?err, "retention maintenance task terminated unexpectedly");
     }
-    if let Err(err) = startup_backfill_handle.await {
+    if let Some(startup_backfill_handle) = startup_backfill_handle
+        && let Err(err) = startup_backfill_handle.await
+    {
         error!(
             ?err,
             "startup backfill maintenance task terminated unexpectedly"
         );
     }
 
+    let broadcast_handles = {
+        let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;
+        std::mem::take(&mut *guard)
+    };
+    if !broadcast_handles.is_empty() {
+        for broadcast_handle in broadcast_handles {
+            if let Err(err) = broadcast_handle.await {
+                error!(
+                    ?err,
+                    "summary/quota broadcast worker terminated unexpectedly"
+                );
+            }
+        }
+        info!("summary/quota broadcast worker drained");
+    }
+
     state.xray_supervisor.lock().await.shutdown_all().await;
+    info!("shutdown complete");
 
     Ok(())
 }
@@ -915,8 +1369,15 @@ async fn save_startup_backfill_progress(
     Ok(())
 }
 
-async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>) {
+async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &CancellationToken) {
     for task in StartupBackfillTask::ordered_tasks() {
+        if cancel.is_cancelled() {
+            info!(
+                task = task.log_label(),
+                "startup backfill maintenance stopped at a task boundary because shutdown is in progress"
+            );
+            break;
+        }
         if *task == StartupBackfillTask::ProxyUsage && !state.config.proxy_usage_backfill_on_startup
         {
             debug!(
@@ -1212,6 +1673,7 @@ async fn run_startup_backfill_task(
             let outcome = backfill_failure_classification_from_cursor(
                 &state.pool,
                 cursor_id,
+                raw_path_fallback_root,
                 Some(STARTUP_BACKFILL_SCAN_LIMIT),
                 max_elapsed,
             )
@@ -1222,7 +1684,7 @@ async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
-                    samples: Vec::new(),
+                    samples: outcome.samples,
                 },
                 "failure classification recalculated".to_string(),
             ))
@@ -1235,7 +1697,11 @@ fn spawn_startup_backfill_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        run_startup_backfill_maintenance_pass(state.clone()).await;
+        if cancel.is_cancelled() {
+            info!("startup backfill maintenance skipped because shutdown is already in progress");
+            return;
+        }
+        run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
 
         let mut ticker = interval(Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1248,7 +1714,7 @@ fn spawn_startup_backfill_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    run_startup_backfill_maintenance_pass(state.clone()).await;
+                    run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
                 }
             }
         }
@@ -1257,10 +1723,17 @@ fn spawn_startup_backfill_maintenance(
 
 fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandle<()> {
     tokio::spawn(async move {
-        // Track in-flight tasks so we can wait for them on shutdown
         let mut inflight: Vec<JoinHandle<()>> = Vec::new();
-        match schedule_poll(state.clone()).await {
-            Ok(h) => inflight.push(h),
+        if cancel.is_cancelled() {
+            info!("scheduler startup skipped because shutdown is already in progress");
+            return;
+        }
+        match schedule_poll(state.clone(), &cancel).await {
+            Ok(Some(handle)) => inflight.push(handle),
+            Ok(None) => {
+                info!("scheduler startup skipped because shutdown is already in progress");
+                return;
+            }
             Err(err) => warn!(?err, "initial poll failed"),
         }
 
@@ -1271,20 +1744,19 @@ fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandl
             tokio::select! {
                 _ = cancel.cancelled() => {
                     info!("scheduler received shutdown; waiting for in-flight polls");
-                    // Drain completed tasks first
-                    inflight.retain(|h| !h.is_finished());
-                    // Wait for remaining tasks to finish
-                    for h in inflight {
-                        let _ = h.await;
-                    }
+                    drain_scheduler_inflight(inflight).await;
                     break;
                 }
                 _ = ticker.tick() => {
-                    match schedule_poll(state.clone()).await {
-                        Ok(handle) => {
+                    match schedule_poll(state.clone(), &cancel).await {
+                        Ok(Some(handle)) => {
                             inflight.push(handle);
-                            // Clean up finished tasks to avoid unbounded growth
-                            inflight.retain(|h| !h.is_finished());
+                            inflight.retain(|handle| !handle.is_finished());
+                        }
+                        Ok(None) => {
+                            info!("scheduler received shutdown while waiting to start a new poll; waiting for in-flight polls");
+                            drain_scheduler_inflight(inflight).await;
+                            break;
                         }
                         Err(err) => {
                             warn!(?err, "scheduled poll failed");
@@ -1305,6 +1777,10 @@ fn spawn_forward_proxy_maintenance(
             let manager = state.forward_proxy.lock().await;
             snapshot_known_subscription_proxy_keys(&manager)
         };
+        if cancel.is_cancelled() {
+            info!("forward proxy maintenance skipped because shutdown is already in progress");
+            return;
+        }
         if let Err(err) = refresh_forward_proxy_subscriptions(
             state.clone(),
             true,
@@ -1565,7 +2041,13 @@ fn spawn_data_retention_maintenance(
             return;
         }
 
-        if let Err(err) = run_data_retention_maintenance(&state.pool, &state.config, None).await {
+        if cancel.is_cancelled() {
+            info!("data retention maintenance skipped because shutdown is already in progress");
+            return;
+        }
+        if let Err(err) =
+            run_data_retention_maintenance(&state.pool, &state.config, None, Some(&cancel)).await
+        {
             warn!(error = %err, "failed to run retention maintenance at startup");
         }
 
@@ -1579,7 +2061,12 @@ fn spawn_data_retention_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    if let Err(err) = run_data_retention_maintenance(&state.pool, &state.config, None).await {
+                    if let Err(err) = run_data_retention_maintenance(
+                        &state.pool,
+                        &state.config,
+                        None,
+                        Some(&cancel),
+                    ).await {
                         warn!(error = %err, "failed to run retention maintenance");
                     }
                 }
@@ -1588,10 +2075,21 @@ fn spawn_data_retention_maintenance(
     })
 }
 
+fn should_stop_data_retention_maintenance(shutdown: Option<&CancellationToken>) -> bool {
+    let should_stop = shutdown.is_some_and(CancellationToken::is_cancelled);
+    if should_stop {
+        info!(
+            "data retention maintenance stopped at a safe boundary because shutdown is in progress"
+        );
+    }
+    should_stop
+}
+
 async fn run_data_retention_maintenance(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     dry_run_override: Option<bool>,
+    shutdown: Option<&CancellationToken>,
 ) -> Result<RetentionRunSummary> {
     let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
     let mut summary = RetentionRunSummary {
@@ -1600,17 +2098,29 @@ async fn run_data_retention_maintenance(
     };
     let raw_path_fallback_root = config.database_path.parent();
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let pruned =
         prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await?;
     summary.invocation_details_pruned += pruned.0;
     summary.archive_batches_touched += pruned.1;
     summary.raw_files_removed += pruned.2;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let invocation_archive =
         archive_old_invocations(pool, config, raw_path_fallback_root, dry_run).await?;
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
 
     let proxy_archive = archive_timestamped_dataset(
         pool,
@@ -1624,6 +2134,10 @@ async fn run_data_retention_maintenance(
     summary.forward_proxy_attempt_rows_archived += proxy_archive.0;
     summary.archive_batches_touched += proxy_archive.1;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let snapshot_archive = archive_timestamped_dataset(
         pool,
         config,
@@ -1636,12 +2150,24 @@ async fn run_data_retention_maintenance(
     summary.stats_source_snapshot_rows_archived += snapshot_archive.0;
     summary.archive_batches_touched += snapshot_archive.1;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let quota_archive = compact_old_quota_snapshots(pool, config, dry_run).await?;
     summary.quota_snapshot_rows_archived += quota_archive.0;
     summary.archive_batches_touched += quota_archive.1;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     summary.orphan_raw_files_removed +=
         sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, dry_run).await?;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
 
     if !dry_run && summary.touched_anything() {
         sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
@@ -2640,13 +3166,19 @@ fn sha256_hex_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
-    let permit = state
-        .semaphore
-        .clone()
-        .acquire_owned()
-        .await
-        .context("failed to acquire scheduler permit")?;
+async fn schedule_poll(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+) -> Result<Option<JoinHandle<()>>> {
+    let permit = tokio::select! {
+        _ = cancel.cancelled() => return Ok(None),
+        permit = state.semaphore.clone().acquire_owned() => {
+            permit.context("failed to acquire scheduler permit")?
+        }
+    };
+    if cancel.is_cancelled() {
+        return Ok(None);
+    }
 
     let in_flight = state
         .config
@@ -2719,13 +3251,10 @@ async fn schedule_poll(state: Arc<AppState>) -> Result<JoinHandle<()>> {
         drop(permit);
     });
 
-    Ok(handle)
+    Ok(Some(handle))
 }
 
-async fn spawn_http_server(
-    state: Arc<AppState>,
-    cancel: CancellationToken,
-) -> Result<JoinHandle<()>> {
+async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
     let cors_layer = build_cors_layer(&state.config);
     let mut router = Router::new()
         .route("/health", get(health_check))
@@ -2796,21 +3325,29 @@ async fn spawn_http_server(
     let listener = TcpListener::bind(&state.config.http_bind).await?;
     let addr = listener.local_addr()?;
     info!(%addr, "http server listening");
-    state.startup_ready.store(true, Ordering::Release);
 
+    let shutdown = state.shutdown.clone();
     let handle = tokio::spawn(async move {
         if let Err(err) = axum::serve(
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(async move { cancel.cancelled().await })
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
         .await
         {
             error!(?err, "http server exited with error");
         }
     });
 
-    Ok(handle)
+    Ok((addr, handle))
+}
+
+fn spawn_shutdown_signal_listener(cancel: CancellationToken) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        shutdown_listener().await;
+        cancel.cancel();
+        info!("shutdown signal received; beginning graceful shutdown");
+    })
 }
 
 async fn shutdown_listener() {
@@ -4868,6 +5405,14 @@ fn proxy_forward_response_status_is_success(status: StatusCode, stream_error: bo
     !stream_error && status != StatusCode::TOO_MANY_REQUESTS && !status.is_server_error()
 }
 
+fn proxy_capture_response_status_is_success(
+    status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+) -> bool {
+    !logical_stream_failure && proxy_forward_response_status_is_success(status, stream_error)
+}
+
 fn proxy_forward_response_failure_kind(
     status: StatusCode,
     stream_error: bool,
@@ -4880,6 +5425,18 @@ fn proxy_forward_response_failure_kind(
         Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
     } else {
         None
+    }
+}
+
+fn proxy_capture_response_failure_kind(
+    status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+) -> Option<&'static str> {
+    if logical_stream_failure {
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    } else {
+        proxy_forward_response_failure_kind(status, stream_error)
     }
 }
 
@@ -5603,6 +6160,10 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
+                    None,
+                    None,
+                    None,
+                    None,
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -5711,6 +6272,10 @@ async fn proxy_openai_v1_capture_target(
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
                     None,
+                    None,
+                    None,
+                    None,
+                    None,
                     Some(err.selected_proxy.display_name.as_str()),
                     proxy_attempt_update.delta(),
                 )),
@@ -5792,6 +6357,10 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
+                    None,
+                    None,
+                    None,
+                    None,
                     None,
                     Some(selected_proxy.display_name.as_str()),
                     proxy_attempt_update.delta(),
@@ -5940,6 +6509,8 @@ async fn proxy_openai_v1_capture_target(
             Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
         } else if downstream_closed {
             Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+        } else if response_info.stream_terminal_event.is_some() {
+            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
         } else if upstream_status == StatusCode::TOO_MANY_REQUESTS {
             Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
         } else if upstream_status.is_server_error() {
@@ -5948,6 +6519,7 @@ async fn proxy_openai_v1_capture_target(
             None
         };
         let had_stream_error = stream_error.is_some();
+        let had_logical_stream_failure = response_info.stream_terminal_event.is_some();
 
         let error_message = if let Some(err) = stream_error {
             Some(format!("[{}] {err}", PROXY_FAILURE_UPSTREAM_STREAM_ERROR))
@@ -5956,6 +6528,8 @@ async fn proxy_openai_v1_capture_target(
                 "[{}] downstream closed while streaming upstream response",
                 PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
             ))
+        } else if response_info.stream_terminal_event.is_some() {
+            Some(format_upstream_response_failed_message(&response_info))
         } else if !upstream_status.is_success() {
             extract_error_message_from_response(&response_bytes)
         } else {
@@ -5967,8 +6541,11 @@ async fn proxy_openai_v1_capture_target(
             format!("http_{}", upstream_status.as_u16())
         };
         let selected_proxy_display_name = selected_proxy_for_task.display_name.clone();
-        let forward_proxy_success =
-            proxy_forward_response_status_is_success(upstream_status, had_stream_error);
+        let forward_proxy_success = proxy_capture_response_status_is_success(
+            upstream_status,
+            had_stream_error,
+            had_logical_stream_failure,
+        );
         let proxy_attempt_update = if attempt_already_recorded_for_task {
             final_attempt_update_for_task.unwrap_or_default()
         } else {
@@ -5977,7 +6554,11 @@ async fn proxy_openai_v1_capture_target(
                 selected_proxy_for_task,
                 forward_proxy_success,
                 Some(t_upstream_connect_ms + t_upstream_ttfb_ms + t_upstream_stream_ms),
-                proxy_forward_response_failure_kind(upstream_status, had_stream_error),
+                proxy_capture_response_failure_kind(
+                    upstream_status,
+                    had_stream_error,
+                    had_logical_stream_failure,
+                ),
                 false,
             )
             .await
@@ -6008,6 +6589,10 @@ async fn proxy_openai_v1_capture_target(
             requester_ip_for_task.as_deref(),
             prompt_cache_key_for_task.as_deref(),
             response_info.service_tier.as_deref(),
+            response_info.stream_terminal_event.as_deref(),
+            response_info.upstream_error_code.as_deref(),
+            response_info.upstream_error_message.as_deref(),
+            response_info.upstream_request_id.as_deref(),
             Some(selected_proxy_display_name.as_str()),
             proxy_attempt_update.delta(),
         );
@@ -6332,6 +6917,10 @@ fn parse_target_response_payload(
             usage: ParsedUsage::default(),
             usage_missing_reason: Some("empty_response".to_string()),
             service_tier: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            upstream_request_id: None,
         };
     }
 
@@ -6360,6 +6949,10 @@ fn parse_target_response_payload(
                     usage,
                     usage_missing_reason,
                     service_tier,
+                    stream_terminal_event: None,
+                    upstream_error_code: extract_upstream_error_code(&value),
+                    upstream_error_message: extract_upstream_error_message(&value),
+                    upstream_request_id: extract_upstream_request_id(&value),
                 }
             }
             Err(_) => ResponseCaptureInfo {
@@ -6367,6 +6960,10 @@ fn parse_target_response_payload(
                 usage: ParsedUsage::default(),
                 usage_missing_reason: Some("response_not_json".to_string()),
                 service_tier: None,
+                stream_terminal_event: None,
+                upstream_error_code: None,
+                upstream_error_message: None,
+                upstream_request_id: None,
             },
         }
     };
@@ -6448,20 +7045,31 @@ fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
     let mut model: Option<String> = None;
     let mut usage = ParsedUsage::default();
     let mut service_tier: Option<String> = None;
+    let mut stream_terminal_event: Option<String> = None;
+    let mut upstream_error_code: Option<String> = None;
+    let mut upstream_error_message: Option<String> = None;
+    let mut upstream_request_id: Option<String> = None;
     let mut usage_found = false;
     let mut parse_error_seen = false;
+    let mut pending_event_name: Option<String> = None;
 
     for line in text.lines() {
         let trimmed = line.trim();
+        if trimmed.starts_with("event:") {
+            pending_event_name = Some(trimmed.trim_start_matches("event:").trim().to_string());
+            continue;
+        }
         if !trimmed.starts_with("data:") {
             continue;
         }
         let payload = trimmed.trim_start_matches("data:").trim();
         if payload.is_empty() || payload == "[DONE]" {
+            pending_event_name = None;
             continue;
         }
         match serde_json::from_str::<Value>(payload) {
             Ok(value) => {
+                let event_name = pending_event_name.take();
                 if model.is_none() {
                     model = extract_model_from_payload(&value);
                 }
@@ -6472,24 +7080,115 @@ fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
                     usage = parsed_usage;
                     usage_found = true;
                 }
+                if stream_payload_indicates_failure(event_name.as_deref(), &value) {
+                    let candidate = event_name
+                        .clone()
+                        .or_else(|| extract_stream_payload_type(&value))
+                        .unwrap_or_else(|| "response.failed".to_string());
+                    if stream_terminal_event.is_none() || candidate == "response.failed" {
+                        stream_terminal_event = Some(candidate);
+                    }
+                }
+                if upstream_error_code.is_none() {
+                    upstream_error_code = extract_upstream_error_code(&value);
+                }
+                if upstream_error_message.is_none() {
+                    upstream_error_message = extract_upstream_error_message(&value);
+                }
+                if upstream_request_id.is_none() {
+                    upstream_request_id = extract_upstream_request_id(&value);
+                }
             }
             Err(_) => {
+                pending_event_name = None;
                 parse_error_seen = true;
             }
         }
     }
 
+    let usage_missing_reason = if usage_found {
+        None
+    } else if stream_terminal_event.is_some() {
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string())
+    } else if parse_error_seen {
+        Some("stream_event_parse_error".to_string())
+    } else {
+        Some("usage_missing_in_stream".to_string())
+    };
+
     ResponseCaptureInfo {
         model,
         usage,
-        usage_missing_reason: if usage_found {
-            None
-        } else if parse_error_seen {
-            Some("stream_event_parse_error".to_string())
-        } else {
-            Some("usage_missing_in_stream".to_string())
-        },
+        usage_missing_reason,
         service_tier,
+        stream_terminal_event,
+        upstream_error_code,
+        upstream_error_message,
+        upstream_request_id,
+    }
+}
+
+fn extract_stream_payload_type(value: &Value) -> Option<String> {
+    value
+        .get("type")
+        .and_then(|entry| entry.as_str())
+        .map(|entry| entry.to_string())
+}
+
+fn stream_payload_indicates_failure(event_name: Option<&str>, value: &Value) -> bool {
+    matches!(event_name, Some("response.failed") | Some("error"))
+        || value
+            .get("type")
+            .and_then(|entry| entry.as_str())
+            .is_some_and(|kind| kind == "response.failed" || kind == "error")
+        || value
+            .pointer("/response/status")
+            .and_then(|entry| entry.as_str())
+            .is_some_and(|status| status.eq_ignore_ascii_case("failed"))
+}
+
+fn extract_upstream_error_object(value: &Value) -> Option<&Value> {
+    value
+        .get("error")
+        .filter(|entry| entry.is_object())
+        .or_else(|| {
+            value
+                .pointer("/response/error")
+                .filter(|entry| entry.is_object())
+        })
+}
+
+fn extract_upstream_error_code(value: &Value) -> Option<String> {
+    extract_upstream_error_object(value)
+        .and_then(|entry| entry.get("code"))
+        .and_then(|entry| entry.as_str())
+        .map(|entry| entry.to_string())
+}
+
+fn extract_upstream_error_message(value: &Value) -> Option<String> {
+    extract_upstream_error_object(value)
+        .and_then(|entry| entry.get("message"))
+        .and_then(|entry| entry.as_str())
+        .map(|entry| entry.to_string())
+}
+
+fn extract_upstream_request_id(value: &Value) -> Option<String> {
+    extract_upstream_error_message(value)
+        .and_then(|message| extract_request_id_from_message(&message))
+}
+
+fn extract_request_id_from_message(message: &str) -> Option<String> {
+    let needle = "request ID ";
+    let start = message.find(needle)? + needle.len();
+    let tail = &message[start..];
+    let request_id: String = tail
+        .chars()
+        .take_while(|ch| ch.is_ascii_hexdigit() || *ch == '-')
+        .collect();
+    if request_id.is_empty() {
+        None
+    } else {
+        Some(request_id)
     }
 }
 
@@ -6648,6 +7347,10 @@ fn build_proxy_payload_summary(
     requester_ip: Option<&str>,
     prompt_cache_key: Option<&str>,
     service_tier: Option<&str>,
+    stream_terminal_event: Option<&str>,
+    upstream_error_code: Option<&str>,
+    upstream_error_message: Option<&str>,
+    upstream_request_id: Option<&str>,
     proxy_display_name: Option<&str>,
     proxy_weight_delta: Option<f64>,
 ) -> String {
@@ -6665,6 +7368,10 @@ fn build_proxy_payload_summary(
         "requesterIp": requester_ip,
         "promptCacheKey": prompt_cache_key,
         "serviceTier": service_tier,
+        "streamTerminalEvent": stream_terminal_event,
+        "upstreamErrorCode": upstream_error_code,
+        "upstreamErrorMessage": upstream_error_message,
+        "upstreamRequestId": upstream_request_id,
         "proxyDisplayName": proxy_display_name,
         "proxyWeightDelta": proxy_weight_delta,
     });
@@ -6906,6 +7613,118 @@ fn compute_raw_expires_at(now_utc: DateTime<Utc>, retention: Duration) -> Option
         .map(|d| format_naive((now_utc + d).naive_utc()))
 }
 
+async fn broadcast_proxy_capture_follow_up(
+    pool: &Pool<Sqlite>,
+    broadcaster: &broadcast::Sender<BroadcastPayload>,
+    broadcast_state_cache: &Mutex<BroadcastStateCache>,
+    relay_config: Option<&CrsStatsConfig>,
+    invoke_id: &str,
+) {
+    if broadcaster.receiver_count() == 0 {
+        return;
+    }
+
+    match collect_summary_snapshots(pool, relay_config).await {
+        Ok(summaries) => {
+            for summary in summaries {
+                if let Err(err) = broadcast_summary_if_changed(
+                    broadcaster,
+                    broadcast_state_cache,
+                    &summary.window,
+                    summary.summary,
+                )
+                .await
+                {
+                    warn!(
+                        ?err,
+                        invoke_id = %invoke_id,
+                        window = %summary.window,
+                        "failed to broadcast proxy summary payload"
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            warn!(
+                ?err,
+                invoke_id = %invoke_id,
+                "failed to collect summary snapshots after proxy capture persistence"
+            );
+        }
+    }
+
+    if broadcaster.receiver_count() == 0 {
+        return;
+    }
+
+    match QuotaSnapshotResponse::fetch_latest(pool).await {
+        Ok(Some(snapshot)) => {
+            if let Err(err) =
+                broadcast_quota_if_changed(broadcaster, broadcast_state_cache, snapshot).await
+            {
+                warn!(
+                    ?err,
+                    invoke_id = %invoke_id,
+                    "failed to broadcast proxy quota snapshot"
+                );
+            }
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(
+                ?err,
+                invoke_id = %invoke_id,
+                "failed to fetch latest quota snapshot after proxy capture persistence"
+            );
+        }
+    }
+}
+
+struct SummaryQuotaBroadcastIdleContext<'a> {
+    latest_broadcast_seq: &'a AtomicU64,
+    broadcast_running: &'a AtomicBool,
+    shutdown: &'a CancellationToken,
+    pool: &'a Pool<Sqlite>,
+    broadcaster: &'a broadcast::Sender<BroadcastPayload>,
+    broadcast_state_cache: &'a Mutex<BroadcastStateCache>,
+    relay_config: Option<&'a CrsStatsConfig>,
+    invoke_id: &'a str,
+}
+
+async fn finish_summary_quota_broadcast_idle(
+    ctx: SummaryQuotaBroadcastIdleContext<'_>,
+    synced_seq: u64,
+) -> bool {
+    ctx.broadcast_running.store(false, Ordering::Release);
+
+    let pending_seq = ctx.latest_broadcast_seq.load(Ordering::Acquire);
+    if pending_seq == synced_seq {
+        return false;
+    }
+
+    if ctx.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %ctx.invoke_id,
+            pending_seq,
+            synced_seq,
+            "flushing final summary/quota snapshots inline because shutdown arrived during broadcast worker idle handoff"
+        );
+        broadcast_proxy_capture_follow_up(
+            ctx.pool,
+            ctx.broadcaster,
+            ctx.broadcast_state_cache,
+            ctx.relay_config,
+            ctx.invoke_id,
+        )
+        .await;
+        return false;
+    }
+
+    ctx.broadcast_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
 async fn persist_and_broadcast_proxy_capture(
     state: &AppState,
     capture_started: Instant,
@@ -6930,9 +7749,40 @@ async fn persist_and_broadcast_proxy_capture(
         );
     }
 
+    if state.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %invoke_id,
+            "broadcasting final summary/quota snapshots inline because shutdown is in progress"
+        );
+        broadcast_proxy_capture_follow_up(
+            &state.pool,
+            &state.broadcaster,
+            state.broadcast_state_cache.as_ref(),
+            state.config.crs_stats.as_ref(),
+            &invoke_id,
+        )
+        .await;
+        return Ok(());
+    }
+
     state
         .proxy_summary_quota_broadcast_seq
         .fetch_add(1, Ordering::Relaxed);
+    if state.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %invoke_id,
+            "broadcasting final summary/quota snapshots inline because shutdown started after record broadcast"
+        );
+        broadcast_proxy_capture_follow_up(
+            &state.pool,
+            &state.broadcaster,
+            state.broadcast_state_cache.as_ref(),
+            state.config.crs_stats.as_ref(),
+            &invoke_id,
+        )
+        .await;
+        return Ok(());
+    }
     if state
         .proxy_summary_quota_broadcast_running
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -6947,16 +7797,50 @@ async fn persist_and_broadcast_proxy_capture(
     let broadcaster = state.broadcaster.clone();
     let broadcast_state_cache = state.broadcast_state_cache.clone();
     let relay_config = state.config.crs_stats.clone();
-    tokio::spawn(async move {
+    let shutdown = state.shutdown.clone();
+    let broadcast_handle_slot = state.proxy_summary_quota_broadcast_handle.clone();
+    let handle = tokio::spawn(async move {
         let mut synced_seq = 0_u64;
         loop {
             let target_seq = latest_broadcast_seq.load(Ordering::Acquire);
-            if target_seq == synced_seq {
+            if shutdown.is_cancelled() {
+                if target_seq != synced_seq {
+                    info!(
+                        invoke_id = %invoke_id,
+                        "flushing final summary/quota snapshots inline before shutdown"
+                    );
+                    broadcast_proxy_capture_follow_up(
+                        &pool,
+                        &broadcaster,
+                        broadcast_state_cache.as_ref(),
+                        relay_config.as_ref(),
+                        &invoke_id,
+                    )
+                    .await;
+                }
                 broadcast_running.store(false, Ordering::Release);
-                if latest_broadcast_seq.load(Ordering::Acquire) != synced_seq
-                    && broadcast_running
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
+                info!(
+                    invoke_id = %invoke_id,
+                    "stopping summary/quota broadcast worker because shutdown is in progress"
+                );
+                break;
+            }
+
+            if target_seq == synced_seq {
+                if finish_summary_quota_broadcast_idle(
+                    SummaryQuotaBroadcastIdleContext {
+                        latest_broadcast_seq: latest_broadcast_seq.as_ref(),
+                        broadcast_running: broadcast_running.as_ref(),
+                        shutdown: &shutdown,
+                        pool: &pool,
+                        broadcaster: &broadcaster,
+                        broadcast_state_cache: broadcast_state_cache.as_ref(),
+                        relay_config: relay_config.as_ref(),
+                        invoke_id: &invoke_id,
+                    },
+                    synced_seq,
+                )
+                .await
                 {
                     continue;
                 }
@@ -6968,7 +7852,26 @@ async fn persist_and_broadcast_proxy_capture(
                 continue;
             }
 
-            match collect_summary_snapshots(&pool, relay_config.as_ref()).await {
+            let summaries = tokio::select! {
+                _ = shutdown.cancelled() => {
+                    broadcast_proxy_capture_follow_up(
+                        &pool,
+                        &broadcaster,
+                        broadcast_state_cache.as_ref(),
+                        relay_config.as_ref(),
+                        &invoke_id,
+                    )
+                    .await;
+                    broadcast_running.store(false, Ordering::Release);
+                    info!(
+                        invoke_id = %invoke_id,
+                        "summary/quota broadcast worker flushed follow-up before collecting summaries during shutdown"
+                    );
+                    break;
+                }
+                result = collect_summary_snapshots(&pool, relay_config.as_ref()) => result,
+            };
+            match summaries {
                 Ok(summaries) => {
                     for summary in summaries {
                         if let Err(err) = broadcast_summary_if_changed(
@@ -7001,7 +7904,26 @@ async fn persist_and_broadcast_proxy_capture(
                 continue;
             }
 
-            match QuotaSnapshotResponse::fetch_latest(&pool).await {
+            let quota = tokio::select! {
+                _ = shutdown.cancelled() => {
+                    broadcast_proxy_capture_follow_up(
+                        &pool,
+                        &broadcaster,
+                        broadcast_state_cache.as_ref(),
+                        relay_config.as_ref(),
+                        &invoke_id,
+                    )
+                    .await;
+                    broadcast_running.store(false, Ordering::Release);
+                    info!(
+                        invoke_id = %invoke_id,
+                        "summary/quota broadcast worker flushed follow-up before fetching quota during shutdown"
+                    );
+                    break;
+                }
+                result = QuotaSnapshotResponse::fetch_latest(&pool) => result,
+            };
+            match quota {
                 Ok(Some(snapshot)) => {
                     if let Err(err) = broadcast_quota_if_changed(
                         &broadcaster,
@@ -7028,6 +7950,31 @@ async fn persist_and_broadcast_proxy_capture(
             }
         }
     });
+
+    let finished_handles = {
+        let mut guard = broadcast_handle_slot.lock().await;
+        let mut active_handles = std::mem::take(&mut *guard);
+        let mut finished_handles = Vec::new();
+        let mut idx = 0;
+        while idx < active_handles.len() {
+            if active_handles[idx].is_finished() {
+                finished_handles.push(active_handles.remove(idx));
+            } else {
+                idx += 1;
+            }
+        }
+        active_handles.push(handle);
+        *guard = active_handles;
+        finished_handles
+    };
+    for finished_handle in finished_handles {
+        if let Err(err) = finished_handle.await {
+            error!(
+                ?err,
+                "summary/quota broadcast worker terminated unexpectedly"
+            );
+        }
+    }
 
     Ok(())
 }
@@ -7175,6 +8122,10 @@ async fn persist_proxy_capture_record(
             error_message,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint,
             COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.streamTerminalEvent') END AS stream_terminal_event,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorCode') END AS upstream_error_code,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorMessage') END AS upstream_error_message,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamRequestId') END AS upstream_request_id,
             failure_class,
             is_actionable,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
@@ -8285,16 +9236,187 @@ async fn backfill_invocation_service_tiers(
 #[derive(Debug, FromRow)]
 struct FailureClassificationBackfillRow {
     id: i64,
+    source: String,
     status: Option<String>,
     error_message: Option<String>,
     failure_kind: Option<String>,
     failure_class: Option<String>,
     is_actionable: Option<i64>,
+    payload: Option<String>,
+    raw_response: String,
+    response_raw_path: Option<String>,
+}
+
+fn parse_proxy_response_capture_from_stored_bytes(
+    target: ProxyCaptureTarget,
+    bytes: &[u8],
+    is_stream: bool,
+) -> ResponseCaptureInfo {
+    let (payload_for_parse, _) = decode_response_payload_for_usage(bytes, None);
+    parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream, None)
+}
+
+fn format_upstream_response_failed_message(response_info: &ResponseCaptureInfo) -> String {
+    let upstream_message = response_info
+        .upstream_error_message
+        .as_deref()
+        .unwrap_or("upstream response failed");
+    if let Some(code) = response_info.upstream_error_code.as_deref() {
+        format!(
+            "[{}] {}: {}",
+            PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED, code, upstream_message
+        )
+    } else {
+        format!(
+            "[{}] {}",
+            PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED, upstream_message
+        )
+    }
+}
+
+fn update_proxy_payload_failure_details(
+    payload: Option<&str>,
+    failure_kind: Option<&str>,
+    response_info: &ResponseCaptureInfo,
+) -> String {
+    let mut value = payload
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .filter(|value| value.is_object())
+        .unwrap_or_else(|| json!({}));
+    let object = value
+        .as_object_mut()
+        .expect("payload summary must be an object");
+
+    object.insert(
+        "failureKind".to_string(),
+        failure_kind
+            .map(|value| Value::String(value.to_string()))
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "streamTerminalEvent".to_string(),
+        response_info
+            .stream_terminal_event
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "upstreamErrorCode".to_string(),
+        response_info
+            .upstream_error_code
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "upstreamErrorMessage".to_string(),
+        response_info
+            .upstream_error_message
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "upstreamRequestId".to_string(),
+        response_info
+            .upstream_request_id
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "usageMissingReason".to_string(),
+        response_info
+            .usage_missing_reason
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null),
+    );
+
+    serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn should_upgrade_to_upstream_response_failed(
+    row: &FailureClassificationBackfillRow,
+    existing_kind: Option<&str>,
+) -> bool {
+    let status_norm = row
+        .status
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let error_message_empty = row
+        .error_message
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty);
+
+    if matches!(
+        existing_kind,
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+            | Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+            | Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+            | Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
+            | Some(PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT)
+            | Some(PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED)
+    ) {
+        return false;
+    }
+
+    status_norm == "success"
+        || existing_kind.is_none()
+        || existing_kind == Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+        || (status_norm == "http_200" && error_message_empty)
+}
+
+fn parse_proxy_response_failure_from_persisted_record(
+    row: &FailureClassificationBackfillRow,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<Option<ResponseCaptureInfo>> {
+    if row.source != SOURCE_PROXY {
+        return Ok(None);
+    }
+
+    let (target, is_stream) = parse_proxy_capture_summary(row.payload.as_deref());
+    let preview_info = parse_proxy_response_capture_from_stored_bytes(
+        target,
+        row.raw_response.as_bytes(),
+        is_stream,
+    );
+    let preview_has_failure = preview_info.stream_terminal_event.is_some();
+    let preview_is_complete = preview_has_failure
+        && preview_info.upstream_error_message.is_some()
+        && preview_info.upstream_request_id.is_some();
+
+    if preview_is_complete || row.response_raw_path.is_none() {
+        return Ok(preview_has_failure.then_some(preview_info));
+    }
+
+    let Some(path) = row.response_raw_path.as_deref() else {
+        return Ok(preview_has_failure.then_some(preview_info));
+    };
+
+    match read_proxy_raw_bytes(path, raw_path_fallback_root) {
+        Ok(bytes) => {
+            let full_info =
+                parse_proxy_response_capture_from_stored_bytes(target, &bytes, is_stream);
+            if full_info.stream_terminal_event.is_some() {
+                Ok(Some(full_info))
+            } else {
+                Ok(preview_has_failure.then_some(preview_info))
+            }
+        }
+        Err(_err) if preview_has_failure => Ok(Some(preview_info)),
+        Err(err) => Err(err.into()),
+    }
 }
 
 async fn backfill_failure_classification_from_cursor(
     pool: &Pool<Sqlite>,
     start_after_id: i64,
+    raw_path_fallback_root: Option<&Path>,
     scan_limit: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<BackfillBatchOutcome<FailureClassificationBackfillSummary>> {
@@ -8302,6 +9424,7 @@ async fn backfill_failure_classification_from_cursor(
     let mut summary = FailureClassificationBackfillSummary::default();
     let mut last_seen_id = start_after_id;
     let mut hit_budget = false;
+    let mut samples = Vec::new();
 
     loop {
         if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed) {
@@ -8311,7 +9434,17 @@ async fn backfill_failure_classification_from_cursor(
 
         let rows = sqlx::query_as::<_, FailureClassificationBackfillRow>(
             r#"
-            SELECT id, status, error_message, failure_kind, failure_class, is_actionable
+            SELECT
+                id,
+                source,
+                status,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                payload,
+                raw_response,
+                response_raw_path
             FROM codex_invocations
             WHERE id > ?1
               AND (
@@ -8327,12 +9460,36 @@ async fn backfill_failure_classification_from_cursor(
                     LOWER(TRIM(COALESCE(status, ''))) != 'success'
                     AND TRIM(COALESCE(failure_class, '')) = 'none'
                 )
+                OR (
+                    source = ?2
+                    AND LOWER(TRIM(COALESCE(status, ''))) = 'success'
+                    AND (
+                        raw_response LIKE '%response.failed%'
+                        OR raw_response LIKE '%"type":"error"%'
+                        OR (
+                            json_valid(payload)
+                            AND (
+                                TRIM(COALESCE(CAST(json_extract(payload, '$.usageMissingReason') AS TEXT), '')) IN ('usage_missing_in_stream', 'upstream_response_failed')
+                                OR TRIM(COALESCE(CAST(json_extract(payload, '$.streamTerminalEvent') AS TEXT), '')) != ''
+                            )
+                        )
+                        OR (
+                            response_raw_path IS NOT NULL
+                            AND COALESCE(response_raw_size, LENGTH(raw_response)) >= 16384
+                            AND json_valid(payload)
+                            AND COALESCE(CAST(json_extract(payload, '$.endpoint') AS TEXT), '') = '/v1/responses'
+                            AND COALESCE(json_extract(payload, '$.isStream'), 0) = 1
+                            AND TRIM(COALESCE(failure_kind, '')) = ''
+                        )
+                    )
+                )
               )
             ORDER BY id ASC
-            LIMIT ?2
+            LIMIT ?3
             "#,
         )
         .bind(last_seen_id)
+        .bind(SOURCE_PROXY)
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
         .await?;
@@ -8348,6 +9505,71 @@ async fn backfill_failure_classification_from_cursor(
 
         let mut tx = pool.begin().await?;
         for row in rows {
+            let existing_kind = row
+                .failure_kind
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+            let existing_class = row
+                .failure_class
+                .as_deref()
+                .and_then(FailureClass::from_db_str);
+            let existing_actionable = row.is_actionable.map(|value| value != 0);
+
+            let response_failure = match parse_proxy_response_failure_from_persisted_record(
+                &row,
+                raw_path_fallback_root,
+            ) {
+                Ok(result) => result,
+                Err(err) => {
+                    push_backfill_sample(
+                        &mut samples,
+                        format!(
+                            "id={} reason=response_failure_parse_error err={err}",
+                            row.id
+                        ),
+                    );
+                    None
+                }
+            };
+
+            if let Some(response_info) = response_failure.as_ref().filter(|_| {
+                should_upgrade_to_upstream_response_failed(&row, existing_kind.as_deref())
+            }) {
+                let error_message = format_upstream_response_failed_message(response_info);
+                let resolved = classify_invocation_failure(Some("http_200"), Some(&error_message));
+                let next_payload = update_proxy_payload_failure_details(
+                    row.payload.as_deref(),
+                    Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
+                    response_info,
+                );
+                let affected = sqlx::query(
+                    r#"
+                    UPDATE codex_invocations
+                    SET status = ?1,
+                        error_message = ?2,
+                        failure_kind = ?3,
+                        failure_class = ?4,
+                        is_actionable = ?5,
+                        payload = ?6
+                    WHERE id = ?7
+                    "#,
+                )
+                .bind("http_200")
+                .bind(&error_message)
+                .bind(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+                .bind(resolved.failure_class.as_str())
+                .bind(resolved.is_actionable as i64)
+                .bind(next_payload)
+                .bind(row.id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+                summary.updated += affected;
+                continue;
+            }
+
             let resolved = resolve_failure_classification(
                 row.status.as_deref(),
                 row.error_message.as_deref(),
@@ -8355,18 +9577,6 @@ async fn backfill_failure_classification_from_cursor(
                 row.failure_class.as_deref(),
                 row.is_actionable,
             );
-
-            let existing_kind = row
-                .failure_kind
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(ToOwned::to_owned);
-            let existing_class = row
-                .failure_class
-                .as_deref()
-                .and_then(FailureClass::from_db_str);
-            let existing_actionable = row.is_actionable.map(|v| v != 0);
 
             let next_kind = existing_kind.clone().or(resolved.failure_kind.clone());
             let should_update = existing_class != Some(resolved.failure_class)
@@ -8402,7 +9612,7 @@ async fn backfill_failure_classification_from_cursor(
         summary,
         next_cursor_id: last_seen_id,
         hit_budget,
-        samples: Vec::new(),
+        samples,
     })
 }
 
@@ -8410,9 +9620,10 @@ async fn backfill_failure_classification_from_cursor(
 #[allow(dead_code)]
 async fn backfill_failure_classification(
     pool: &Pool<Sqlite>,
+    raw_path_fallback_root: Option<&Path>,
 ) -> Result<FailureClassificationBackfillSummary> {
     Ok(
-        backfill_failure_classification_from_cursor(pool, 0, None, None)
+        backfill_failure_classification_from_cursor(pool, 0, raw_path_fallback_root, None, None)
             .await?
             .summary,
     )
@@ -9188,7 +10399,9 @@ struct AppState {
     broadcast_state_cache: Arc<Mutex<BroadcastStateCache>>,
     proxy_summary_quota_broadcast_seq: Arc<AtomicU64>,
     proxy_summary_quota_broadcast_running: Arc<AtomicBool>,
+    proxy_summary_quota_broadcast_handle: Arc<Mutex<Vec<JoinHandle<()>>>>,
     startup_ready: Arc<AtomicBool>,
+    shutdown: CancellationToken,
     semaphore: Arc<Semaphore>,
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,

@@ -362,4 +362,5 @@ describe('InvocationTable', () => {
     expect(summaryHtml).toContain('legacy row still renders')
 
   })
+
 })

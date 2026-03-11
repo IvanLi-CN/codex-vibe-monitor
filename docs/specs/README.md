@@ -8,7 +8,8 @@
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                   |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ------------------------------------------------------- |
-| 6whgx | 请求记录分析页：稳定快照 + 聚焦分析                                           | 已完成（5/5）   | `6whgx-records-stable-snapshot-analytics/SPEC.md`        | 2026-03-10 | fast-track / PR #107 / checks green / review-loop clear |
+| fmfuf | 优雅停机补强                                                                  | 已完成          | `fmfuf-graceful-shutdown-hardening/SPEC.md`              | 2026-03-10 | fast-track / PR #111 / CI Pipeline #412 green           |
+| 6whgx | 请求记录分析页：稳定快照 + 聚焦分析                                           | 已完成（5/5）   | `6whgx-records-stable-snapshot-analytics/SPEC.md`        | 2026-03-11 | fast-track / PR #107 / visual evidence synced           |
 | ts4zf | 修正剩余 `XY_*` 环境变量命名                                                  | 已完成          | `ts4zf-rename-remaining-xy-envs/SPEC.md`                 | 2026-03-10 | fast-track / PR #110 / checks green / review-loop clear |
 | uwke5 | 反向代理上游 429 自动重试（设置可配）                                         | 已完成（5/5）   | `uwke5-proxy-upstream-429-retry/SPEC.md`                 | 2026-03-10 | fast-track / PR #109 / screenshot evidence              |
 | ask3x | 反向代理默认超时口径统一为 60s / 180s                                         | 已完成          | `ask3x-proxy-timeout-defaults/SPEC.md`                   | 2026-03-10 | fast-track / PR #108 / checks green / review-loop clear |
@@ -52,5 +53,5 @@
 | 5932d | SSE 驱动的请求记录与统计实时更新                                              | 已完成          | `5932d-sse-proxy-live-sync/SPEC.md`                      | 2026-02-25 | PR #52                                                  |
 | jpg66 | 设置页切换为 shadcn 风格并优化亮/暗主题可读性                                 | 已完成          | `jpg66-settings-shadcn-refresh/SPEC.md`                  | 2026-02-25 | 已完成并通过视觉确认                                    |
 | q86c7 | 接入 ui-ux-pro-max（Codex）并修正 .gitignore 追踪策略                         | 已完成          | `q86c7-setup-uipro-codex/SPEC.md`                        | 2026-02-24 | PR #50                                                  |
-| gwpsb | 线上失败请求分类治理与可观测性增强                                            | 已完成          | `gwpsb-proxy-failure-hardening/SPEC.md`                  | 2026-02-24 | PR #51                                                  |
+| gwpsb | 线上失败请求分类治理与可观测性增强                                            | 已完成          | `gwpsb-proxy-failure-hardening/SPEC.md`                  | 2026-03-11 | SSE `response.failed` 误记修复 / 上游失败明细回填       |
 | z9h7v | 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key）     | 已完成          | `z9h7v-invocation-log-observability/SPEC.md`             | 2026-02-25 | PR #57                                                  |

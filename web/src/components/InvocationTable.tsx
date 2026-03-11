@@ -384,7 +384,11 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           { label: t('table.details.reasoningEffort'), value: renderReasoningEffortBadge(reasoningEffortValue) },
           { label: t('table.details.reasoningTokens'), value: reasoningTokensValue },
           { label: t('table.details.proxyWeightDelta'), value: proxyWeightDeltaValue },
-          { label: t('table.details.failureKind'), value: record.failureKind || FALLBACK_CELL },
+          { label: t('table.details.failureKind'), value: formatOptionalText(record.failureKind) },
+          { label: t('table.details.streamTerminalEvent'), value: formatOptionalText(record.streamTerminalEvent) },
+          { label: t('table.details.upstreamErrorCode'), value: formatOptionalText(record.upstreamErrorCode) },
+          { label: t('table.details.upstreamErrorMessage'), value: formatOptionalText(record.upstreamErrorMessage) },
+          { label: t('table.details.upstreamRequestId'), value: formatOptionalText(record.upstreamRequestId) },
           {
             label: detailLabels.level,
             value: (

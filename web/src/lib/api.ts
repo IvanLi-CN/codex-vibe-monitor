@@ -42,6 +42,10 @@ export interface ApiInvocation {
   status?: string
   errorMessage?: string
   failureKind?: string
+  streamTerminalEvent?: string
+  upstreamErrorCode?: string
+  upstreamErrorMessage?: string
+  upstreamRequestId?: string
   failureClass?: 'service_failure' | 'client_failure' | 'client_abort' | 'none'
   isActionable?: boolean
   endpoint?: string
