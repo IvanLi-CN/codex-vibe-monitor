@@ -1643,18 +1643,13 @@ fn spawn_scheduler(state: Arc<AppState>, cancel: CancellationToken) -> JoinHandl
     tokio::spawn(async move {
         // Track in-flight tasks so we can wait for them on shutdown
         let mut inflight: Vec<JoinHandle<()>> = Vec::new();
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                info!("scheduler startup skipped because shutdown is already in progress");
-                return;
-            }
-            result = schedule_poll(state.clone()) => {
-                match result {
-                    Ok(handle) => inflight.push(handle),
-                    Err(err) => warn!(?err, "initial poll failed"),
-                }
-            }
+        if cancel.is_cancelled() {
+            info!("scheduler startup skipped because shutdown is already in progress");
+            return;
+        }
+        match schedule_poll(state.clone()).await {
+            Ok(handle) => inflight.push(handle),
+            Err(err) => warn!(?err, "initial poll failed"),
         }
 
         let mut ticker = interval(state.config.poll_interval);
@@ -7278,6 +7273,21 @@ async fn persist_and_broadcast_proxy_capture(
     state
         .proxy_summary_quota_broadcast_seq
         .fetch_add(1, Ordering::Relaxed);
+    if state.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %invoke_id,
+            "broadcasting final summary/quota snapshots inline because shutdown started after record broadcast"
+        );
+        broadcast_proxy_capture_follow_up(
+            &state.pool,
+            &state.broadcaster,
+            state.broadcast_state_cache.as_ref(),
+            state.config.crs_stats.as_ref(),
+            &invoke_id,
+        )
+        .await;
+        return Ok(());
+    }
     if state
         .proxy_summary_quota_broadcast_running
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -7296,7 +7306,22 @@ async fn persist_and_broadcast_proxy_capture(
     tokio::spawn(async move {
         let mut synced_seq = 0_u64;
         loop {
+            let target_seq = latest_broadcast_seq.load(Ordering::Acquire);
             if shutdown.is_cancelled() {
+                if target_seq != synced_seq {
+                    info!(
+                        invoke_id = %invoke_id,
+                        "flushing final summary/quota snapshots inline before shutdown"
+                    );
+                    broadcast_proxy_capture_follow_up(
+                        &pool,
+                        &broadcaster,
+                        broadcast_state_cache.as_ref(),
+                        relay_config.as_ref(),
+                        &invoke_id,
+                    )
+                    .await;
+                }
                 broadcast_running.store(false, Ordering::Release);
                 info!(
                     invoke_id = %invoke_id,
@@ -7305,7 +7330,6 @@ async fn persist_and_broadcast_proxy_capture(
                 break;
             }
 
-            let target_seq = latest_broadcast_seq.load(Ordering::Acquire);
             if target_seq == synced_seq {
                 broadcast_running.store(false, Ordering::Release);
                 if !shutdown.is_cancelled()
@@ -7326,10 +7350,18 @@ async fn persist_and_broadcast_proxy_capture(
 
             let summaries = tokio::select! {
                 _ = shutdown.cancelled() => {
+                    broadcast_proxy_capture_follow_up(
+                        &pool,
+                        &broadcaster,
+                        broadcast_state_cache.as_ref(),
+                        relay_config.as_ref(),
+                        &invoke_id,
+                    )
+                    .await;
                     broadcast_running.store(false, Ordering::Release);
                     info!(
                         invoke_id = %invoke_id,
-                        "summary/quota broadcast worker cancelled before collecting summaries"
+                        "summary/quota broadcast worker flushed follow-up before collecting summaries during shutdown"
                     );
                     break;
                 }
@@ -7370,10 +7402,18 @@ async fn persist_and_broadcast_proxy_capture(
 
             let quota = tokio::select! {
                 _ = shutdown.cancelled() => {
+                    broadcast_proxy_capture_follow_up(
+                        &pool,
+                        &broadcaster,
+                        broadcast_state_cache.as_ref(),
+                        relay_config.as_ref(),
+                        &invoke_id,
+                    )
+                    .await;
                     broadcast_running.store(false, Ordering::Release);
                     info!(
                         invoke_id = %invoke_id,
-                        "summary/quota broadcast worker cancelled before fetching quota"
+                        "summary/quota broadcast worker flushed follow-up before fetching quota during shutdown"
                     );
                     break;
                 }

@@ -12247,6 +12247,79 @@ async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
 }
 
 #[tokio::test]
+async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_begins_after_record_event()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    seed_quota_snapshot(&state.pool, &now_local).await;
+
+    let mut rx = state.broadcaster.subscribe();
+    let invoke_id = "shutdown-tail-broadcast";
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, &now_local),
+    )
+    .await
+    .expect("persist proxy capture before shutdown");
+    state.shutdown.cancel();
+
+    let mut saw_record = false;
+    let mut saw_quota = false;
+    let mut summary_windows = HashSet::new();
+    let expected_summary_windows = summary_broadcast_specs().len();
+    for _ in 0..16 {
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for shutdown tail broadcast event")
+            .expect("broadcast channel should stay open");
+        match payload {
+            BroadcastPayload::Records { records } => {
+                saw_record |= records
+                    .into_iter()
+                    .any(|record| record.invoke_id == invoke_id);
+            }
+            BroadcastPayload::Summary { window, .. } => {
+                summary_windows.insert(window);
+            }
+            BroadcastPayload::Quota { snapshot } => {
+                saw_quota = true;
+                assert_eq!(snapshot.total_requests, 9);
+            }
+            BroadcastPayload::Version { .. } => {}
+        }
+
+        if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
+            break;
+        }
+    }
+
+    assert!(
+        saw_record,
+        "shutdown tail path should still emit the persisted record"
+    );
+    assert!(
+        saw_quota,
+        "shutdown tail path should flush the latest quota snapshot"
+    );
+    assert_eq!(
+        summary_windows.len(),
+        expected_summary_windows,
+        "shutdown tail path should flush every summary window"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !state
+            .proxy_summary_quota_broadcast_running
+            .load(Ordering::Acquire),
+        "summary/quota broadcast worker should quiesce after flushing the shutdown tail"
+    );
+}
+
+#[tokio::test]
 async fn persist_and_broadcast_proxy_capture_skips_summary_worker_during_shutdown() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
