@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-10
-- Last: 2026-03-10
+- Last: 2026-03-11
 
 ## 背景 / 问题陈述
 
@@ -136,6 +136,14 @@
 - 2026-03-10: 浏览器复查补齐记录页筛选与排序表单字段的 name 属性，清除表单字段缺少 name/id 的可访问性告警。
 - 2026-03-10: 根据 review 收敛空结果 summary 零值、搜索并发失效保护、轻量 new-count 轮询接口，以及搜索后新数据提示复位。
 - 2026-03-10: PR #107 已更新并通过 checks，review-loop 收敛完成；补上搜索按钮回归与 `new-count` 强制 `snapshotId` 校验后，规格状态切换为已完成。
+- 2026-03-11: 补充 PR 可公开界面截图，并同步到规格固定视觉证据区与 PR 正文。
+
+## Visual Evidence (PR)
+
+- 记录页整页概览（筛选 / 统计 / 稳定分页记录）
+  ![记录页整页概览](./assets/records-page-overview.png)
+- 模型筛选的可输入下拉过滤效果
+  ![模型筛选下拉过滤](./assets/records-page-model-combobox.png)
 
 ## 参考（References）
 
