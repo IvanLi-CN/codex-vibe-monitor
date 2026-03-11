@@ -1644,14 +1644,11 @@ fn spawn_startup_backfill_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                info!("startup backfill maintenance skipped because shutdown is already in progress");
-                return;
-            }
-            _ = run_startup_backfill_maintenance_pass(state.clone(), &cancel) => {}
+        if cancel.is_cancelled() {
+            info!("startup backfill maintenance skipped because shutdown is already in progress");
+            return;
         }
+        run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
 
         let mut ticker = interval(Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1727,21 +1724,18 @@ fn spawn_forward_proxy_maintenance(
             let manager = state.forward_proxy.lock().await;
             snapshot_known_subscription_proxy_keys(&manager)
         };
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                info!("forward proxy maintenance skipped because shutdown is already in progress");
-                return;
-            }
-            result = refresh_forward_proxy_subscriptions(
-                state.clone(),
-                true,
-                Some(startup_known_subscription_keys),
-            ) => {
-                if let Err(err) = result {
-                    warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
-                }
-            }
+        if cancel.is_cancelled() {
+            info!("forward proxy maintenance skipped because shutdown is already in progress");
+            return;
+        }
+        if let Err(err) = refresh_forward_proxy_subscriptions(
+            state.clone(),
+            true,
+            Some(startup_known_subscription_keys),
+        )
+        .await
+        {
+            warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
         }
 
         let mut ticker = interval(Duration::from_secs(60));
@@ -1994,17 +1988,14 @@ fn spawn_data_retention_maintenance(
             return;
         }
 
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                info!("data retention maintenance skipped because shutdown is already in progress");
-                return;
-            }
-            result = run_data_retention_maintenance(&state.pool, &state.config, None, Some(&cancel)) => {
-                if let Err(err) = result {
-                    warn!(error = %err, "failed to run retention maintenance at startup");
-                }
-            }
+        if cancel.is_cancelled() {
+            info!("data retention maintenance skipped because shutdown is already in progress");
+            return;
+        }
+        if let Err(err) =
+            run_data_retention_maintenance(&state.pool, &state.config, None, Some(&cancel)).await
+        {
+            warn!(error = %err, "failed to run retention maintenance at startup");
         }
 
         let mut ticker = interval(state.config.retention_interval);

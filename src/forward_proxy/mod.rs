@@ -693,24 +693,27 @@ pub(crate) async fn put_forward_proxy_settings(
     let next: ForwardProxySettings = payload.into();
     let _update_guard = state.forward_proxy_settings_update_lock.lock().await;
 
-    let previous_settings;
-    let (known_subscription_keys_before_settings, added_manual_endpoints) = {
-        let mut manager = state.forward_proxy.lock().await;
-        previous_settings = manager.settings.clone();
+    let (previous_settings, known_subscription_keys_before_settings) = {
+        let manager = state.forward_proxy.lock().await;
         let before = snapshot_active_forward_proxy_endpoints(&manager);
-        save_forward_proxy_settings(&state.pool, next.clone())
-            .await
-            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        (
+            manager.settings.clone(),
+            before
+                .into_iter()
+                .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+                .map(|endpoint| endpoint.key)
+                .collect::<HashSet<_>>(),
+        )
+    };
+    save_forward_proxy_settings(&state.pool, next.clone())
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let added_manual_endpoints = {
+        let mut manager = state.forward_proxy.lock().await;
+        let before = snapshot_active_forward_proxy_endpoints(&manager);
         manager.apply_settings(next.clone());
         let after = snapshot_active_forward_proxy_endpoints(&manager);
-        (
-            before
-                .iter()
-                .filter(|endpoint| endpoint.source == FORWARD_PROXY_SOURCE_SUBSCRIPTION)
-                .map(|endpoint| endpoint.key.clone())
-                .collect::<HashSet<_>>(),
-            compute_added_forward_proxy_endpoints(&before, &after),
-        )
+        compute_added_forward_proxy_endpoints(&before, &after)
     };
     if let Err(err) = sync_forward_proxy_routes(state.as_ref()).await {
         if state.shutdown.is_cancelled() {
