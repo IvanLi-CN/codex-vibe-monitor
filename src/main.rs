@@ -498,7 +498,7 @@ async fn main() -> Result<()> {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(false)),
         shutdown: shutdown.clone(),
         semaphore: semaphore.clone(),
@@ -548,6 +548,50 @@ enum StartupStageOutcome<T> {
     Completed { result: T, shutdown_requested: bool },
 }
 
+struct TrackedStartupStage<Stage> {
+    stage: std::pin::Pin<Box<Stage>>,
+    started: bool,
+}
+
+impl<Stage> TrackedStartupStage<Stage> {
+    fn new(stage: Stage) -> Self {
+        Self {
+            stage: Box::pin(stage),
+            started: false,
+        }
+    }
+
+    fn has_started(&self) -> bool {
+        self.started
+    }
+}
+
+impl<Stage> TrackedStartupStage<Stage>
+where
+    Stage: Future,
+{
+    async fn finish(&mut self) -> Stage::Output {
+        self.started = true;
+        self.stage.as_mut().await
+    }
+}
+
+impl<Stage> Future for TrackedStartupStage<Stage>
+where
+    Stage: Future,
+{
+    type Output = Stage::Output;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.as_mut().get_mut();
+        this.started = true;
+        this.stage.as_mut().poll(cx)
+    }
+}
+
 async fn run_startup_stage_until_shutdown<T, Stage, Shutdown>(
     shutdown_signal: &Shared<Shutdown>,
     cancel: &CancellationToken,
@@ -561,20 +605,25 @@ where
         return StartupStageOutcome::SkippedByShutdown;
     }
 
+    let stage = TrackedStartupStage::new(stage);
     tokio::pin!(stage);
     tokio::select! {
         biased;
+        _ = shutdown_signal.clone() => {
+            begin_runtime_shutdown(cancel);
+            if stage.as_ref().get_ref().has_started() {
+                StartupStageOutcome::Completed {
+                    result: stage.as_mut().get_mut().finish().await,
+                    shutdown_requested: true,
+                }
+            } else {
+                StartupStageOutcome::SkippedByShutdown
+            }
+        }
         result = &mut stage => StartupStageOutcome::Completed {
             shutdown_requested: begin_runtime_shutdown_if_requested(shutdown_signal, cancel),
             result,
         },
-        _ = shutdown_signal.clone() => {
-            begin_runtime_shutdown(cancel);
-            StartupStageOutcome::Completed {
-                result: stage.await,
-                shutdown_requested: true,
-            }
-        }
     }
 }
 
@@ -964,16 +1013,18 @@ async fn drain_runtime_after_shutdown(
         );
     }
 
-    let broadcast_handle = {
+    let broadcast_handles = {
         let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;
-        guard.take()
+        std::mem::take(&mut *guard)
     };
-    if let Some(broadcast_handle) = broadcast_handle {
-        if let Err(err) = broadcast_handle.await {
-            error!(
-                ?err,
-                "summary/quota broadcast worker terminated unexpectedly"
-            );
+    if !broadcast_handles.is_empty() {
+        for broadcast_handle in broadcast_handles {
+            if let Err(err) = broadcast_handle.await {
+                error!(
+                    ?err,
+                    "summary/quota broadcast worker terminated unexpectedly"
+                );
+            }
         }
         info!("summary/quota broadcast worker drained");
     }
@@ -7522,20 +7573,28 @@ async fn persist_and_broadcast_proxy_capture(
         }
     });
 
-    let previous_handle = {
+    let finished_handles = {
         let mut guard = broadcast_handle_slot.lock().await;
-        guard.replace(handle)
-    };
-    if let Some(previous_handle) = previous_handle {
-        if previous_handle.is_finished() {
-            if let Err(err) = previous_handle.await {
-                error!(
-                    ?err,
-                    "summary/quota broadcast worker terminated unexpectedly"
-                );
+        let mut active_handles = std::mem::take(&mut *guard);
+        let mut finished_handles = Vec::new();
+        let mut idx = 0;
+        while idx < active_handles.len() {
+            if active_handles[idx].is_finished() {
+                finished_handles.push(active_handles.remove(idx));
+            } else {
+                idx += 1;
             }
-        } else {
-            warn!("replaced an unfinished summary/quota broadcast worker handle");
+        }
+        active_handles.push(handle);
+        *guard = active_handles;
+        finished_handles
+    };
+    for finished_handle in finished_handles {
+        if let Err(err) = finished_handle.await {
+            error!(
+                ?err,
+                "summary/quota broadcast worker terminated unexpectedly"
+            );
         }
     }
 
@@ -9698,7 +9757,7 @@ struct AppState {
     broadcast_state_cache: Arc<Mutex<BroadcastStateCache>>,
     proxy_summary_quota_broadcast_seq: Arc<AtomicU64>,
     proxy_summary_quota_broadcast_running: Arc<AtomicBool>,
-    proxy_summary_quota_broadcast_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    proxy_summary_quota_broadcast_handle: Arc<Mutex<Vec<JoinHandle<()>>>>,
     startup_ready: Arc<AtomicBool>,
     shutdown: CancellationToken,
     semaphore: Arc<Semaphore>,

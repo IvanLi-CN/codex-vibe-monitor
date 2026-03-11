@@ -2261,7 +2261,7 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -6041,7 +6041,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -7372,7 +7372,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -7501,7 +7501,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -7671,7 +7671,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -7742,7 +7742,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -10841,7 +10841,7 @@ async fn quota_latest_returns_degraded_when_empty() {
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
         proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
         proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(None)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
@@ -11927,17 +11927,14 @@ async fn terminate_child_process_prefers_sigterm_when_process_exits_cleanly() {
 #[cfg(unix)]
 #[tokio::test]
 async fn terminate_child_process_falls_back_to_force_kill_when_grace_period_is_exhausted() {
-    let mut child = Command::new("python3")
+    let mut child = Command::new("/bin/sh")
         .arg("-c")
-        .arg(
-            "import signal, time; signal.signal(signal.SIGTERM, lambda *_: time.sleep(1));
-while True: time.sleep(0.1)",
-        )
+        .arg("trap '' TERM; while :; do sleep 0.1; done")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn TERM-resistant child for forced shutdown fallback");
+        .expect("spawn TERM-ignoring child for forced shutdown fallback");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -12096,22 +12093,33 @@ async fn scheduler_does_not_start_a_new_poll_after_shutdown_while_waiting_for_pe
 }
 
 #[tokio::test]
-async fn drain_runtime_after_shutdown_waits_for_summary_quota_broadcast_worker() {
+async fn drain_runtime_after_shutdown_waits_for_summary_quota_broadcast_workers() {
     let state = test_state_from_config(test_config(), false).await;
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let release = Arc::new(Notify::new());
-    let worker = tokio::spawn({
-        let release = release.clone();
+    let (started_tx_a, started_rx_a) = tokio::sync::oneshot::channel();
+    let (started_tx_b, started_rx_b) = tokio::sync::oneshot::channel();
+    let release_a = Arc::new(Notify::new());
+    let release_b = Arc::new(Notify::new());
+    let worker_a = tokio::spawn({
+        let release_a = release_a.clone();
         async move {
-            started_tx
+            started_tx_a
                 .send(())
-                .expect("broadcast worker should report when it starts");
-            release.notified().await;
+                .expect("first broadcast worker should report when it starts");
+            release_a.notified().await;
+        }
+    });
+    let worker_b = tokio::spawn({
+        let release_b = release_b.clone();
+        async move {
+            started_tx_b
+                .send(())
+                .expect("second broadcast worker should report when it starts");
+            release_b.notified().await;
         }
     });
     {
         let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;
-        *guard = Some(worker);
+        guard.extend([worker_a, worker_b]);
     }
 
     let drain_handle = tokio::spawn({
@@ -12119,27 +12127,37 @@ async fn drain_runtime_after_shutdown_waits_for_summary_quota_broadcast_worker()
         async move { drain_runtime_after_shutdown(state, None, None, None, None, None).await }
     });
 
-    started_rx
+    started_rx_a
         .await
-        .expect("broadcast worker should start before the drain waits on it");
+        .expect("first broadcast worker should start before the drain waits on it");
+    started_rx_b
+        .await
+        .expect("second broadcast worker should start before the drain waits on it");
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         !drain_handle.is_finished(),
-        "runtime drain should wait for the summary/quota broadcast worker"
+        "runtime drain should wait for every tracked summary/quota broadcast worker"
     );
 
-    release.notify_waiters();
+    release_a.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !drain_handle.is_finished(),
+        "runtime drain should keep waiting until the last tracked summary/quota broadcast worker exits"
+    );
+
+    release_b.notify_waiters();
     drain_handle
         .await
         .expect("drain task should join")
-        .expect("runtime drain should finish once the broadcast worker does");
+        .expect("runtime drain should finish once every broadcast worker does");
     assert!(
         state
             .proxy_summary_quota_broadcast_handle
             .lock()
             .await
-            .is_none(),
-        "runtime drain should clear the tracked summary/quota broadcast worker"
+            .is_empty(),
+        "runtime drain should clear all tracked summary/quota broadcast workers"
     );
 }
 
@@ -12216,6 +12234,60 @@ async fn run_runtime_until_shutdown_skips_xray_route_sync_when_shutdown_is_alrea
     assert!(
         !runtime_dir.exists(),
         "shutdown should skip xray route sync side effects when startup never begins"
+    );
+}
+
+#[tokio::test]
+async fn run_startup_stage_until_shutdown_skips_stage_when_shutdown_arrives_before_first_poll() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::task::{Context, Poll};
+
+    struct ReadyOnSecondPollFuture {
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl Future for ReadyOnSecondPollFuture {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let poll_count = self.polls.fetch_add(1, Ordering::SeqCst);
+            if poll_count == 0 {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        }
+    }
+
+    let shutdown_polls = Arc::new(AtomicUsize::new(0));
+    let shutdown_signal = ReadyOnSecondPollFuture {
+        polls: shutdown_polls.clone(),
+    }
+    .shared();
+    let cancel = CancellationToken::new();
+    let stage_started = Arc::new(AtomicBool::new(false));
+
+    let outcome = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, {
+        let stage_started = stage_started.clone();
+        async move {
+            stage_started.store(true, Ordering::SeqCst);
+            13_u8
+        }
+    })
+    .await;
+
+    assert!(matches!(outcome, StartupStageOutcome::SkippedByShutdown));
+    assert!(cancel.is_cancelled());
+    assert!(
+        !stage_started.load(Ordering::SeqCst),
+        "shutdown should skip startup work that has not started polling yet"
+    );
+    assert_eq!(
+        shutdown_polls.load(Ordering::SeqCst),
+        2,
+        "the shutdown future should only need the initial probe and the shutdown branch poll"
     );
 }
 
