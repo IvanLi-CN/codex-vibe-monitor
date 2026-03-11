@@ -578,14 +578,21 @@ where
 
 async fn drain_runtime_after_pending_shutdown(
     state: Arc<AppState>,
-    shutdown_watcher: JoinHandle<()>,
+    mut shutdown_watcher: JoinHandle<()>,
     server_handle: Option<JoinHandle<()>>,
     poller_handle: Option<JoinHandle<()>>,
     forward_proxy_handle: Option<JoinHandle<()>>,
     retention_handle: Option<JoinHandle<()>>,
     startup_backfill_handle: Option<JoinHandle<()>>,
 ) -> Result<()> {
-    let _ = shutdown_watcher.await;
+    let shutdown_cancel = state.shutdown.clone();
+    tokio::select! {
+        _ = shutdown_cancel.cancelled() => {
+            shutdown_watcher.abort();
+            let _ = shutdown_watcher.await;
+        }
+        _ = &mut shutdown_watcher => {}
+    }
     drain_runtime_after_shutdown(
         state,
         server_handle,

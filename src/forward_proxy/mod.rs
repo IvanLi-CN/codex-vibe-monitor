@@ -692,14 +692,11 @@ pub(crate) async fn put_forward_proxy_settings(
 
     let next: ForwardProxySettings = payload.into();
     let _update_guard = state.forward_proxy_settings_update_lock.lock().await;
-    save_forward_proxy_settings(&state.pool, next.clone())
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
     let (known_subscription_keys_before_settings, added_manual_endpoints) = {
         let mut manager = state.forward_proxy.lock().await;
         let before = snapshot_active_forward_proxy_endpoints(&manager);
-        manager.apply_settings(next);
+        manager.apply_settings(next.clone());
         let after = snapshot_active_forward_proxy_endpoints(&manager);
         (
             before
@@ -738,6 +735,9 @@ pub(crate) async fn put_forward_proxy_settings(
             "settings-update",
         );
     }
+    save_forward_proxy_settings(&state.pool, next)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
     let response = build_forward_proxy_settings_response(state.as_ref())
         .await
@@ -2470,9 +2470,6 @@ impl XraySupervisor {
             .filter(|key| !desired_keys.contains(*key))
             .cloned()
             .collect::<Vec<_>>();
-        for key in stale_keys {
-            self.remove_instance(&key).await;
-        }
 
         for endpoint in endpoints {
             if shutdown.is_cancelled() {
@@ -2496,6 +2493,18 @@ impl XraySupervisor {
                     );
                 }
             }
+        }
+
+        if shutdown.is_cancelled() {
+            info!("skipping stale xray route cleanup because shutdown is in progress");
+            bail!("xray route sync cancelled because shutdown is in progress");
+        }
+        for key in stale_keys {
+            if shutdown.is_cancelled() {
+                info!("skipping stale xray route cleanup because shutdown is in progress");
+                bail!("xray route sync cancelled because shutdown is in progress");
+            }
+            self.remove_instance(&key).await;
         }
 
         Ok(())

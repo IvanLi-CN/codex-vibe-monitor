@@ -516,6 +516,74 @@ async fn validate_single_forward_proxy_candidate_keeps_xray_startup_running_duri
 }
 
 #[tokio::test]
+async fn xray_supervisor_sync_endpoints_keeps_stale_instances_alive_when_shutdown_starts() {
+    let temp_root = make_temp_test_dir("xray-sync-stale-shutdown");
+    let runtime_dir = temp_root.join("runtime");
+    let mut supervisor = XraySupervisor::new("/path/to/non-existent-xray".to_string(), runtime_dir);
+    let config_path = temp_root.join("stale-xray.json");
+    fs::write(&config_path, "{}").expect("write stale xray config placeholder");
+    let child = Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import time
+time.sleep(30)
+",
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn stale xray child");
+    supervisor.instances.insert(
+        "stale-xray".to_string(),
+        XrayInstance {
+            local_proxy_url: Url::parse("socks5://127.0.0.1:1080").expect("valid local proxy url"),
+            config_path: config_path.clone(),
+            child,
+        },
+    );
+    let shutdown = CancellationToken::new();
+    shutdown.cancel();
+    let mut endpoints = Vec::new();
+
+    let err = supervisor
+        .sync_endpoints(&mut endpoints, &shutdown)
+        .await
+        .expect_err("shutdown should interrupt xray sync before stale teardown");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("shutdown is in progress"),
+        "expected shutdown-specific sync error, got: {message}"
+    );
+
+    let stale_instance = supervisor
+        .instances
+        .get_mut("stale-xray")
+        .expect("stale instance should be preserved until final shutdown drain");
+    assert!(
+        stale_instance
+            .child
+            .try_wait()
+            .expect("poll stale child after interrupted sync")
+            .is_none(),
+        "shutdown-interrupted sync should not tear down stale xray instances early"
+    );
+    let outcome = terminate_child_process(
+        &mut stale_instance.child,
+        Duration::from_millis(100),
+        "stale-test-child",
+    )
+    .await;
+    assert!(
+        matches!(
+            outcome,
+            ChildTerminationOutcome::Graceful | ChildTerminationOutcome::Forced
+        ),
+        "test cleanup should terminate the preserved stale child"
+    );
+}
+
+#[tokio::test]
 async fn xray_supervisor_ensure_instance_creates_runtime_dir_for_validation_path() {
     let temp_root = make_temp_test_dir("xray-runtime-create");
     let runtime_dir = temp_root.join("nested/runtime");
@@ -605,6 +673,13 @@ async fn forward_proxy_settings_returns_service_unavailable_when_shutdown_interr
             .await
             .is_none(),
         "shutdown-interrupted route sync should not persist a partial runtime snapshot"
+    );
+    let saved_settings = load_forward_proxy_settings(&state.pool)
+        .await
+        .expect("read forward proxy settings after shutdown interruption");
+    assert!(
+        !saved_settings.proxy_urls.contains(&normalized_proxy),
+        "shutdown-interrupted settings update should not persist the new proxy configuration"
     );
 }
 
@@ -11940,6 +12015,22 @@ async fn run_runtime_until_shutdown_waits_for_inflight_scheduler_poll() {
     assert!(state.shutdown.is_cancelled());
     assert_eq!(request_count.load(Ordering::SeqCst), 1);
     crs_handle.abort();
+}
+
+#[tokio::test]
+async fn run_runtime_until_shutdown_exits_when_shutdown_token_is_cancelled_directly() {
+    let state = test_state_from_config(test_config(), false).await;
+    state.shutdown.cancel();
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        run_runtime_until_shutdown(state.clone(), Instant::now(), std::future::pending::<()>()),
+    )
+    .await
+    .expect("direct shutdown token cancellation should not hang runtime drain")
+    .expect("runtime should exit cleanly after direct shutdown token cancellation");
+
+    assert!(state.shutdown.is_cancelled());
 }
 
 #[tokio::test]
