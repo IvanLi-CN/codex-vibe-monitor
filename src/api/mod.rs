@@ -485,12 +485,11 @@ fn apply_invocation_records_filters(
 
     if let Some(status) = filters.status.as_deref() {
         if status.trim().eq_ignore_ascii_case("failed") {
-            // The DB stores failure statuses as a mix of generic values ("failed") and HTTP codes
-            // ("http_502", "http_401", ...). Treat the UI-level "failed" option as "non-success
-            // terminal status" so the filter matches both.
-            query.push(
-                " AND status IS NOT NULL AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('success', 'running', 'pending')",
-            );
+            // Legacy rows can still represent failures while `status` is NULL/`none`, so align the
+            // UI-level failed filter with the same resolved failure-class semantics used by summary.
+            query.push(" AND ");
+            query.push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL);
+            query.push(" IN ('service_failure', 'client_failure', 'client_abort')");
         } else {
             push_exact_text_filter(query, "status", status);
         }

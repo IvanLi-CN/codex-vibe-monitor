@@ -441,6 +441,59 @@ describe('useInvocationRecords', () => {
     expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps the previous page size when a page-size request fails before search', async () => {
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      if (query.model === 'next-model') {
+        return createListResponse({
+          snapshotId: 84,
+          page: 1,
+          pageSize: query.pageSize ?? 20,
+          total: 1,
+          records: [
+            {
+              id: 84,
+              invokeId: 'invoke-next',
+              occurredAt: '2026-03-10T02:00:00Z',
+              createdAt: '2026-03-10T02:00:00Z',
+              model: 'next-model',
+              status: 'success',
+            },
+          ],
+        })
+      }
+
+      if (query.snapshotId === 42 && query.pageSize === 50) {
+        throw new Error('page size failed')
+      }
+
+      return createListResponse({ snapshotId: 42 })
+    })
+
+    apiMocks.fetchInvocationRecordsSummary.mockImplementation(async (query) =>
+      createSummaryResponse({ snapshotId: query.snapshotId ?? 42, newRecordsCount: 0 }),
+    )
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }))
+
+    render(<Probe />)
+    await flushAsync()
+
+    click('page-size-50')
+    await flushAsync()
+
+    expect(text('page-size')).toBe('20')
+
+    click('draft-model')
+    click('search')
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('84')
+    expect(text('page-size')).toBe('20')
+
+    const searchQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0]
+    expect(searchQuery?.model).toBe('next-model')
+    expect(searchQuery?.pageSize).toBe(20)
+  })
+
   it('ignores stale page-size responses that race with a newer search snapshot', async () => {
     let resolveSearch: ((value: InvocationRecordsResponse) => void) | null = null
     let resolveOldPageSize: ((value: InvocationRecordsResponse) => void) | null = null

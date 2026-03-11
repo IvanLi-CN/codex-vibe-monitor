@@ -9145,6 +9145,27 @@ async fn list_invocations_status_failed_matches_http_failure_statuses() {
         .expect("insert status row");
     }
 
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            error_message,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("status-legacy-null")
+    .bind("2026-03-10 08:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("upstream exploded")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy null-status failure row");
+
     let Json(failed_filtered) = list_invocations(
         State(state.clone()),
         Query(ListQuery {
@@ -9155,16 +9176,21 @@ async fn list_invocations_status_failed_matches_http_failure_statuses() {
     .await
     .expect("failed status filter should succeed");
 
-    assert_eq!(failed_filtered.total, 3);
+    assert_eq!(failed_filtered.total, 4);
     let actual = failed_filtered
         .records
         .into_iter()
         .map(|record| record.invoke_id)
         .collect::<HashSet<_>>();
-    let expected = ["status-failed", "status-http401", "status-http502"]
-        .into_iter()
-        .map(String::from)
-        .collect::<HashSet<_>>();
+    let expected = [
+        "status-failed",
+        "status-http401",
+        "status-http502",
+        "status-legacy-null",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<HashSet<_>>();
     assert_eq!(actual, expected);
 
     let Json(running_filtered) = list_invocations(

@@ -125,8 +125,11 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         setRecords(response)
         setPageState(response.page)
         setPageSizeState(response.pageSize)
+        pageSizeRef.current = response.pageSize
         setSortByState(nextSortBy)
+        sortByRef.current = nextSortBy
         setSortOrderState(nextSortOrder)
+        sortOrderRef.current = nextSortOrder
         setRecordsError(null)
       } catch (error) {
         if (!isCurrentRequest()) return
@@ -211,8 +214,6 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
 
   const setPageSize = useCallback(
     async (nextPageSize: number) => {
-      // Keep refs in sync so a fast "change -> Search" uses the latest user intent.
-      pageSizeRef.current = nextPageSize
       await loadRecordsPage(1, nextPageSize, sortByRef.current, sortOrderRef.current)
     },
     [loadRecordsPage],
@@ -220,9 +221,6 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
 
   const setSort = useCallback(
     async (nextSortBy: InvocationSortBy, nextSortOrder: InvocationSortOrder) => {
-      // Keep refs in sync so a fast "change -> Search" uses the latest user intent.
-      sortByRef.current = nextSortBy
-      sortOrderRef.current = nextSortOrder
       await loadRecordsPage(1, pageSizeRef.current, nextSortBy, nextSortOrder)
     },
     [loadRecordsPage],
