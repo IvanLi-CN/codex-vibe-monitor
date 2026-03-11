@@ -20,6 +20,10 @@ pub(crate) async fn list_invocations(
          total_tokens, cost, status, error_message, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
          COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.streamTerminalEvent') END AS stream_terminal_event, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorCode') END AS upstream_error_code, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorMessage') END AS upstream_error_message, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamRequestId') END AS upstream_request_id, \
          failure_class, is_actionable, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
@@ -797,11 +801,19 @@ pub(crate) fn derive_failure_kind(status_norm: &str, err: &str, err_lower: &str)
     if err_lower.contains("downstream closed while streaming upstream response") {
         return Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string());
     }
+    if err_lower.contains("upstream response stream reported failure") {
+        return Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string());
+    }
     if err_lower.contains("upstream stream error") {
         return Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR.to_string());
     }
     if err_lower.contains("failed to contact upstream") {
         return Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string());
+    }
+    if err_lower.contains("[upstream_response_failed]")
+        || err_lower.contains("upstream response failed")
+    {
+        return Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string());
     }
     if err_lower.contains("upstream handshake timed out") {
         return Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT.to_string());
@@ -881,9 +893,11 @@ pub(crate) fn classify_invocation_failure(
     {
         FailureClass::ClientFailure
     } else if failure_kind_lower == PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+        || failure_kind_lower == PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
         || failure_kind_lower == PROXY_FAILURE_UPSTREAM_STREAM_ERROR
         || failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
         || failure_kind_lower == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+        || err_lower.contains("upstream response stream reported failure")
         || err_lower.contains("failed to contact upstream")
         || err_lower.contains("upstream stream error")
         || err_lower.contains("request body read timed out")
@@ -1719,6 +1733,14 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) failure_kind: Option<String>,
     #[sqlx(default)]
+    pub(crate) stream_terminal_event: Option<String>,
+    #[sqlx(default)]
+    pub(crate) upstream_error_code: Option<String>,
+    #[sqlx(default)]
+    pub(crate) upstream_error_message: Option<String>,
+    #[sqlx(default)]
+    pub(crate) upstream_request_id: Option<String>,
+    #[sqlx(default)]
     pub(crate) failure_class: Option<String>,
     #[sqlx(default)]
     pub(crate) is_actionable: Option<bool>,
@@ -2132,6 +2154,10 @@ pub(crate) struct ResponseCaptureInfo {
     pub(crate) usage: ParsedUsage,
     pub(crate) usage_missing_reason: Option<String>,
     pub(crate) service_tier: Option<String>,
+    pub(crate) stream_terminal_event: Option<String>,
+    pub(crate) upstream_error_code: Option<String>,
+    pub(crate) upstream_error_message: Option<String>,
+    pub(crate) upstream_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
