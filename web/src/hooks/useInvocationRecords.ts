@@ -75,6 +75,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   const appliedRef = useRef<SearchState | null>(null)
   const searchSeqRef = useRef(0)
   const recordsSeqRef = useRef(0)
+  const pollSeqRef = useRef(0)
   const draftRef = useRef(draft)
   const pageSizeRef = useRef(pageSize)
   const sortByRef = useRef(sortBy)
@@ -241,11 +242,14 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       const applied = appliedRef.current
       if (!applied) return
       const generation = applied.generation
+      const pollSeq = pollSeqRef.current + 1
+      pollSeqRef.current = pollSeq
       void fetchInvocationRecordsNewCount({
         ...applied.filters,
         snapshotId: applied.snapshotId,
       })
         .then((response: InvocationRecordsNewCountResponse) => {
+          if (pollSeq !== pollSeqRef.current) return
           const latest = appliedRef.current
           if (!latest || latest.generation !== generation) return
           if (latest.snapshotId !== response.snapshotId) return

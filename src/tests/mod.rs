@@ -9736,18 +9736,35 @@ async fn list_invocations_status_sort_uses_normalized_status_values() {
     )
     .await;
 
-    for (invoke_id, occurred_at, status) in [
+    for (invoke_id, occurred_at, status, error_message, failure_kind) in [
         (
             "status-sort-trimmed-success",
             "2026-03-10 08:02:00",
             Some(" SUCCESS "),
+            None,
+            None,
         ),
         (
             "status-sort-success",
             "2026-03-10 08:01:00",
             Some("success"),
+            None,
+            None,
         ),
-        ("status-sort-failed", "2026-03-10 08:03:00", Some("failed")),
+        (
+            "status-sort-failed",
+            "2026-03-10 08:03:00",
+            Some("failed"),
+            None,
+            None,
+        ),
+        (
+            "status-sort-legacy-success-failure",
+            "2026-03-10 08:04:00",
+            Some("success"),
+            Some("[upstream_response_failed] server_error"),
+            Some("upstream_response_failed"),
+        ),
     ] {
         sqlx::query(
             r#"
@@ -9756,15 +9773,19 @@ async fn list_invocations_status_sort_uses_normalized_status_values() {
                 occurred_at,
                 source,
                 status,
+                error_message,
+                failure_kind,
                 raw_response
             )
-            VALUES (?1, ?2, ?3, ?4, ?5)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             "#,
         )
         .bind(invoke_id)
         .bind(occurred_at)
         .bind(SOURCE_PROXY)
         .bind(status)
+        .bind(error_message)
+        .bind(failure_kind)
         .bind("{}")
         .execute(&state.pool)
         .await
@@ -9792,6 +9813,7 @@ async fn list_invocations_status_sort_uses_normalized_status_values() {
     assert_eq!(
         actual,
         vec![
+            "status-sort-legacy-success-failure".to_string(),
             "status-sort-failed".to_string(),
             "status-sort-trimmed-success".to_string(),
             "status-sort-success".to_string(),
@@ -10064,15 +10086,40 @@ async fn fetch_invocation_summary_normalizes_top_level_success_and_failure_count
     .await
     .expect("insert null-status failure row");
 
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            failure_kind,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("summary-legacy-success-failure")
+    .bind("2026-03-10 09:02:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("[upstream_response_failed] server_error")
+    .bind("upstream_response_failed")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy success failure row");
+
     let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
         .await
         .expect("summary query should succeed");
 
-    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.total_count, 3);
     assert_eq!(summary.success_count, 1);
-    assert_eq!(summary.failure_count, 1);
-    assert_eq!(summary.exception.failure_count, 1);
-    assert_eq!(summary.exception.service_failure_count, 1);
+    assert_eq!(summary.failure_count, 2);
+    assert_eq!(summary.exception.failure_count, 2);
+    assert_eq!(summary.exception.service_failure_count, 2);
 }
 
 #[tokio::test]

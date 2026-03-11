@@ -77,7 +77,7 @@ function createSummary(): InvocationRecordsSummaryResponse {
   }
 }
 
-function createRecord(): ApiInvocation {
+function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
   return {
     id: 1,
     invokeId: 'invoke-1',
@@ -86,6 +86,7 @@ function createRecord(): ApiInvocation {
     status: 'success',
     model: 'gpt-4.1',
     source: 'proxy-a',
+    ...overrides,
   }
 }
 
@@ -104,5 +105,25 @@ describe('records stale-data rendering', () => {
     const text = host?.textContent ?? ''
     expect(text).toContain('records.table.loadError: boom')
     expect(text).toContain('gpt-4.1')
+  })
+
+  it('renders legacy success rows with a failure badge once failureClass marks them as failed', () => {
+    render(
+      <InvocationRecordsTable
+        focus="token"
+        records={[
+          createRecord({
+            status: 'success',
+            failureClass: 'service_failure',
+            errorMessage: '[upstream_response_failed] server_error',
+          }),
+        ]}
+        isLoading={false}
+      />,
+    )
+
+    const text = host?.textContent ?? ''
+    expect(text).toContain('table.status.failed')
+    expect(text).not.toContain('table.status.success')
   })
 })

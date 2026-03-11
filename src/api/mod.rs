@@ -102,6 +102,14 @@ impl InvocationSortBy {
     }
 }
 
+fn invocation_display_status_sql() -> String {
+    format!(
+        "CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 'failed' WHEN {status_norm} = '' THEN 'unknown' ELSE {status_norm} END",
+        resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+        status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 enum InvocationSortOrder {
     Asc,
@@ -549,9 +557,17 @@ fn append_invocation_order_clause(
 ) {
     let direction = sort_order.sql_keyword();
     query.push(" ORDER BY ");
-    query.push(sort_by.sql_expr());
-    query.push(" IS NULL ASC, ");
-    query.push(sort_by.sql_expr());
+    if matches!(sort_by, InvocationSortBy::Status) {
+        let status_expr = invocation_display_status_sql();
+        query.push("(");
+        query.push(&status_expr);
+        query.push(") IS NULL ASC, ");
+        query.push(status_expr);
+    } else {
+        query.push(sort_by.sql_expr());
+        query.push(" IS NULL ASC, ");
+        query.push(sort_by.sql_expr());
+    }
     query.push(" ");
     query.push(direction);
     match sort_by {
@@ -936,7 +952,7 @@ pub(crate) async fn fetch_invocation_summary(
     let totals_sql = format!(
         "SELECT \
          COUNT(*) AS total_count, \
-         COALESCE(SUM(CASE WHEN {status_norm} = 'success' THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND {status_norm} = 'success' THEN 1 ELSE 0 END), 0) AS success_count, \
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \

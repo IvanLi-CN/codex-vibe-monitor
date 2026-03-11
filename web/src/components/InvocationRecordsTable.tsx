@@ -71,6 +71,15 @@ function resolveStatusMeta(status?: string | null): StatusMeta {
   return { variant: 'secondary', label: raw }
 }
 
+function resolveDisplayStatus(record: ApiInvocation) {
+  const raw = (record.status ?? '').trim()
+  const lower = raw.toLowerCase()
+  if (record.failureClass && record.failureClass !== 'none' && (!raw || lower === 'success')) {
+    return 'failed'
+  }
+  return raw
+}
+
 function resolveProxyName(record: ApiInvocation) {
   const payloadProxyName = record.proxyDisplayName?.trim()
   if (payloadProxyName) return payloadProxyName
@@ -257,7 +266,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
       <div className="space-y-3 md:hidden">
         {records.map((record) => {
           const isExpanded = expandedId === record.id
-          const statusMeta = resolveStatusMeta(record.status)
+          const statusMeta = resolveStatusMeta(resolveDisplayStatus(record))
           const statusLabel = statusMeta.labelKey ? t(statusMeta.labelKey) : statusMeta.label ?? t('table.status.unknown')
           return (
             <article key={record.id} className="rounded-xl border border-base-300/70 bg-base-100/45 px-4 py-4">
@@ -318,7 +327,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
           <tbody>
             {records.map((record, index) => {
               const isExpanded = expandedId === record.id
-              const statusMeta = resolveStatusMeta(record.status)
+              const statusMeta = resolveStatusMeta(resolveDisplayStatus(record))
               const statusLabel = statusMeta.labelKey ? t(statusMeta.labelKey) : statusMeta.label ?? t('table.status.unknown')
               return (
                 <Fragment key={record.id}>

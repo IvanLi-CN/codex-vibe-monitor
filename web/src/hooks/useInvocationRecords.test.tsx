@@ -389,6 +389,41 @@ describe('useInvocationRecords', () => {
     expect(text('new-count')).toBe('0')
   })
 
+  it('ignores stale overlapping new-count polls for the same snapshot', async () => {
+    vi.useFakeTimers()
+
+    const pollResolvers: Array<(value: InvocationRecordsNewCountResponse) => void> = []
+
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createListResponse({ snapshotId: 42 }))
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }))
+    apiMocks.fetchInvocationRecordsNewCount.mockImplementation(
+      async () =>
+        new Promise<InvocationRecordsNewCountResponse>((resolve) => {
+          pollResolvers.push(resolve)
+        }),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
+    })
+
+    expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(2)
+    expect(pollResolvers).toHaveLength(2)
+
+    pollResolvers[1](createNewCountResponse({ snapshotId: 42, newRecordsCount: 9 }))
+    await flushAsync()
+    expect(text('new-count')).toBe('9')
+
+    pollResolvers[0](createNewCountResponse({ snapshotId: 42, newRecordsCount: 3 }))
+    await flushAsync()
+    expect(text('new-count')).toBe('9')
+  })
 
   it('shows records as soon as the list resolves even if the summary is still pending', async () => {
     let resolveSummary: ((value: InvocationRecordsSummaryResponse) => void) | null = null
