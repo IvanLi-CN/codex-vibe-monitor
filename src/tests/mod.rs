@@ -2488,6 +2488,41 @@ async fn spawn_test_forward_proxy_status(status: StatusCode) -> (String, JoinHan
     (format!("http://{addr}"), handle)
 }
 
+async fn spawn_test_blocking_forward_proxy_status(
+    status: StatusCode,
+    request_started: Arc<Notify>,
+    release_request: Arc<Notify>,
+) -> (String, JoinHandle<()>) {
+    let app = Router::new().fallback(any(move || {
+        let request_started = request_started.clone();
+        let release_request = release_request.clone();
+        async move {
+            request_started.notify_waiters();
+            release_request.notified().await;
+            (
+                status,
+                Json(json!({
+                    "status": status.as_u16(),
+                })),
+            )
+        }
+    }));
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind blocking forward proxy status test server");
+    let addr = listener
+        .local_addr()
+        .expect("blocking forward proxy status test server addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("blocking forward proxy status test server should run");
+    });
+
+    (format!("http://{addr}"), handle)
+}
+
 async fn spawn_test_subscription_source(body: String) -> (String, JoinHandle<()>) {
     let body = Arc::new(body);
     let app = Router::new().route(
@@ -4145,6 +4180,52 @@ async fn forward_proxy_penalized_probe_treats_429_as_failure() {
     );
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn forward_proxy_penalized_probe_skips_recording_when_shutdown_begins_mid_probe() {
+    let request_started = Arc::new(Notify::new());
+    let release_request = Arc::new(Notify::new());
+    let (proxy_url, proxy_handle) = spawn_test_blocking_forward_proxy_status(
+        StatusCode::OK,
+        request_started.clone(),
+        release_request.clone(),
+    )
+    .await;
+    let normalized_proxy =
+        normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid upstream base url"),
+    )
+    .await;
+    let endpoint = ForwardProxyEndpoint {
+        key: normalized_proxy.clone(),
+        source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+        display_name: normalized_proxy.clone(),
+        protocol: ForwardProxyProtocol::Http,
+        endpoint_url: Some(Url::parse(&normalized_proxy).expect("valid normalized proxy url")),
+        raw_url: Some(normalized_proxy.clone()),
+    };
+
+    spawn_penalized_forward_proxy_probe(
+        state.clone(),
+        SelectedForwardProxy::from_endpoint(&endpoint),
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), request_started.notified())
+        .await
+        .expect("penalized probe should reach the forward proxy before shutdown");
+    state.shutdown.cancel();
+    release_request.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(
+        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await,
+        0,
+        "shutdown should stop an in-flight penalized probe without recording a probe attempt"
+    );
+
+    proxy_handle.abort();
 }
 
 #[tokio::test]
@@ -12437,6 +12518,131 @@ async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     assert_eq!(probe_count, 0);
 
     proxy_handle.abort();
+}
+
+#[tokio::test]
+async fn forward_proxy_bootstrap_probe_round_stops_mid_probe_when_shutdown_begins() {
+    let request_started = Arc::new(Notify::new());
+    let release_request = Arc::new(Notify::new());
+    let (proxy_url, proxy_handle) = spawn_test_blocking_forward_proxy_status(
+        StatusCode::OK,
+        request_started.clone(),
+        release_request.clone(),
+    )
+    .await;
+    let normalized_proxy =
+        normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid upstream base url"),
+    )
+    .await;
+
+    spawn_forward_proxy_bootstrap_probe_round(
+        state.clone(),
+        vec![ForwardProxyEndpoint {
+            key: normalized_proxy.clone(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            display_name: normalized_proxy.clone(),
+            protocol: ForwardProxyProtocol::Http,
+            endpoint_url: Some(Url::parse(&normalized_proxy).expect("valid normalized proxy url")),
+            raw_url: Some(normalized_proxy.clone()),
+        }],
+        "test-shutdown-mid-probe",
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), request_started.notified())
+        .await
+        .expect("bootstrap probe should reach the forward proxy before shutdown");
+    state.shutdown.cancel();
+    release_request.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(
+        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await,
+        0,
+        "shutdown should stop an in-flight bootstrap probe without recording a probe attempt"
+    );
+
+    proxy_handle.abort();
+}
+
+#[tokio::test]
+async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_arrives() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    seed_quota_snapshot(&state.pool, &now_local).await;
+    let mut rx = state.broadcaster.subscribe();
+
+    state
+        .proxy_summary_quota_broadcast_seq
+        .store(2, Ordering::Release);
+    state
+        .proxy_summary_quota_broadcast_running
+        .store(true, Ordering::Release);
+    state.shutdown.cancel();
+
+    let should_continue = finish_summary_quota_broadcast_idle(
+        SummaryQuotaBroadcastIdleContext {
+            latest_broadcast_seq: state.proxy_summary_quota_broadcast_seq.as_ref(),
+            broadcast_running: state.proxy_summary_quota_broadcast_running.as_ref(),
+            shutdown: &state.shutdown,
+            pool: &state.pool,
+            broadcaster: &state.broadcaster,
+            broadcast_state_cache: state.broadcast_state_cache.as_ref(),
+            relay_config: state.config.crs_stats.as_ref(),
+            invoke_id: "idle-shutdown-tail",
+        },
+        1,
+    )
+    .await;
+
+    assert!(
+        !should_continue,
+        "shutdown tail should flush inline instead of trying to restart the broadcast worker"
+    );
+    assert!(
+        !state
+            .proxy_summary_quota_broadcast_running
+            .load(Ordering::Acquire),
+        "shutdown tail flush should leave the worker idle"
+    );
+
+    let mut saw_quota = false;
+    let mut summary_windows = HashSet::new();
+    let expected_summary_windows = summary_broadcast_specs().len();
+    for _ in 0..8 {
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for shutdown idle-tail broadcast event")
+            .expect("broadcast channel should stay open");
+        match payload {
+            BroadcastPayload::Summary { window, .. } => {
+                summary_windows.insert(window);
+            }
+            BroadcastPayload::Quota { snapshot } => {
+                saw_quota = true;
+                assert_eq!(snapshot.total_requests, 9);
+            }
+            BroadcastPayload::Records { .. } | BroadcastPayload::Version { .. } => {}
+        }
+
+        if saw_quota && summary_windows.len() == expected_summary_windows {
+            break;
+        }
+    }
+
+    assert!(
+        saw_quota,
+        "shutdown idle-tail flush should emit the latest quota snapshot"
+    );
+    assert_eq!(
+        summary_windows.len(),
+        expected_summary_windows,
+        "shutdown idle-tail flush should emit every summary window"
+    );
 }
 
 #[tokio::test]

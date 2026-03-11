@@ -7355,6 +7355,51 @@ async fn broadcast_proxy_capture_follow_up(
     }
 }
 
+struct SummaryQuotaBroadcastIdleContext<'a> {
+    latest_broadcast_seq: &'a AtomicU64,
+    broadcast_running: &'a AtomicBool,
+    shutdown: &'a CancellationToken,
+    pool: &'a Pool<Sqlite>,
+    broadcaster: &'a broadcast::Sender<BroadcastPayload>,
+    broadcast_state_cache: &'a Mutex<BroadcastStateCache>,
+    relay_config: Option<&'a CrsStatsConfig>,
+    invoke_id: &'a str,
+}
+
+async fn finish_summary_quota_broadcast_idle(
+    ctx: SummaryQuotaBroadcastIdleContext<'_>,
+    synced_seq: u64,
+) -> bool {
+    ctx.broadcast_running.store(false, Ordering::Release);
+
+    let pending_seq = ctx.latest_broadcast_seq.load(Ordering::Acquire);
+    if pending_seq == synced_seq {
+        return false;
+    }
+
+    if ctx.shutdown.is_cancelled() {
+        info!(
+            invoke_id = %ctx.invoke_id,
+            pending_seq,
+            synced_seq,
+            "flushing final summary/quota snapshots inline because shutdown arrived during broadcast worker idle handoff"
+        );
+        broadcast_proxy_capture_follow_up(
+            ctx.pool,
+            ctx.broadcaster,
+            ctx.broadcast_state_cache,
+            ctx.relay_config,
+            ctx.invoke_id,
+        )
+        .await;
+        return false;
+    }
+
+    ctx.broadcast_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
 async fn persist_and_broadcast_proxy_capture(
     state: &AppState,
     capture_started: Instant,
@@ -7457,12 +7502,20 @@ async fn persist_and_broadcast_proxy_capture(
             }
 
             if target_seq == synced_seq {
-                broadcast_running.store(false, Ordering::Release);
-                if !shutdown.is_cancelled()
-                    && latest_broadcast_seq.load(Ordering::Acquire) != synced_seq
-                    && broadcast_running
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
+                if finish_summary_quota_broadcast_idle(
+                    SummaryQuotaBroadcastIdleContext {
+                        latest_broadcast_seq: latest_broadcast_seq.as_ref(),
+                        broadcast_running: broadcast_running.as_ref(),
+                        shutdown: &shutdown,
+                        pool: &pool,
+                        broadcaster: &broadcaster,
+                        broadcast_state_cache: broadcast_state_cache.as_ref(),
+                        relay_config: relay_config.as_ref(),
+                        invoke_id: &invoke_id,
+                    },
+                    synced_seq,
+                )
+                .await
                 {
                     continue;
                 }

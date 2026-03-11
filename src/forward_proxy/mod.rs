@@ -815,8 +815,10 @@ pub(crate) async fn validate_single_forward_proxy_candidate(
         state,
         &endpoint,
         forward_proxy_validation_timeout(ForwardProxyValidationKind::ProxyUrl),
+        None,
     )
-    .await?;
+    .await?
+    .expect("validation probes should not be cancelled without a shutdown token");
     Ok(ForwardProxyCandidateValidationResponse::success(
         "proxy validation succeeded",
         Some(parsed.normalized),
@@ -866,9 +868,13 @@ pub(crate) async fn validate_subscription_candidate(
             break;
         }
 
-        match probe_forward_proxy_endpoint(state, endpoint, remaining_timeout).await {
-            Ok(latency_ms) => {
+        match probe_forward_proxy_endpoint(state, endpoint, remaining_timeout, None).await {
+            Ok(Some(latency_ms)) => {
                 best_latency_ms = Some(latency_ms);
+                break;
+            }
+            Ok(None) => {
+                last_error = Some(shutdown_cancelled_forward_proxy_probe());
                 break;
             }
             Err(err) => {
@@ -898,11 +904,20 @@ pub(crate) async fn validate_subscription_candidate(
     ))
 }
 
+fn shutdown_cancelled_forward_proxy_probe() -> anyhow::Error {
+    anyhow!("forward proxy probe cancelled because shutdown is in progress")
+}
+
 pub(crate) async fn probe_forward_proxy_endpoint(
     state: &AppState,
     endpoint: &ForwardProxyEndpoint,
     validation_timeout: Duration,
-) -> Result<f64> {
+    shutdown: Option<&CancellationToken>,
+) -> Result<Option<f64>> {
+    if shutdown.is_some_and(CancellationToken::is_cancelled) {
+        return Ok(None);
+    }
+
     let probe_target = state
         .config
         .openai_upstream_base_url
@@ -910,7 +925,8 @@ pub(crate) async fn probe_forward_proxy_endpoint(
         .context("failed to build validation probe target")?;
     let started = Instant::now();
     let (endpoint_url, temporary_xray_key) =
-        resolve_forward_proxy_probe_endpoint_url(state, endpoint, validation_timeout).await?;
+        resolve_forward_proxy_probe_endpoint_url(state, endpoint, validation_timeout, shutdown)
+            .await?;
 
     let probe_result = async {
         let send_timeout = remaining_timeout_budget(validation_timeout, started.elapsed())
@@ -919,16 +935,33 @@ pub(crate) async fn probe_forward_proxy_endpoint(
         let client = state
             .http_clients
             .client_for_forward_proxy(endpoint_url.as_ref())?;
-        let response = timeout(send_timeout, client.get(probe_target).send())
-            .await
-            .map_err(|_| timeout_error_for_duration(validation_timeout))?
-            .context("validation request failed")?;
+        let response = match shutdown {
+            Some(shutdown) => {
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        return Ok(None);
+                    }
+                    response = timeout(send_timeout, client.get(probe_target).send()) => {
+                        response
+                            .map_err(|_| timeout_error_for_duration(validation_timeout))?
+                            .context("validation request failed")?
+                    }
+                }
+            }
+            None => timeout(send_timeout, client.get(probe_target).send())
+                .await
+                .map_err(|_| timeout_error_for_duration(validation_timeout))?
+                .context("validation request failed")?,
+        };
         let status = response.status();
         // Validation only needs to prove the route is reachable; auth/404 still count as reachable.
         if !is_validation_probe_reachable_status(status) {
             bail!("validation probe returned status {}", status);
         }
-        Ok::<(), anyhow::Error>(())
+        if shutdown.is_some_and(CancellationToken::is_cancelled) {
+            return Ok(None);
+        }
+        Ok(Some(elapsed_ms(started)))
     }
     .await;
 
@@ -937,8 +970,7 @@ pub(crate) async fn probe_forward_proxy_endpoint(
         supervisor.remove_instance(&temp_key).await;
     }
 
-    probe_result?;
-    Ok(elapsed_ms(started))
+    probe_result
 }
 
 pub(crate) fn is_validation_probe_reachable_status(status: StatusCode) -> bool {
@@ -993,7 +1025,11 @@ pub(crate) async fn resolve_forward_proxy_probe_endpoint_url(
     state: &AppState,
     endpoint: &ForwardProxyEndpoint,
     validation_timeout: Duration,
+    shutdown: Option<&CancellationToken>,
 ) -> Result<(Option<Url>, Option<String>)> {
+    if shutdown.is_some_and(CancellationToken::is_cancelled) {
+        return Err(shutdown_cancelled_forward_proxy_probe());
+    }
     if !endpoint.requires_xray() {
         return Ok((endpoint.endpoint_url.clone(), None));
     }
@@ -1014,8 +1050,8 @@ pub(crate) async fn resolve_forward_proxy_probe_endpoint_url(
         endpoint_url: None,
         raw_url: Some(raw_url.to_string()),
     };
+    let validation_shutdown = shutdown.cloned().unwrap_or_else(CancellationToken::new);
     let route_url = {
-        let validation_shutdown = CancellationToken::new();
         let mut supervisor = state.xray_supervisor.lock().await;
         supervisor
             .ensure_instance_with_ready_timeout(
@@ -1105,10 +1141,23 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
             }
             let selected_proxy = SelectedForwardProxy::from_endpoint(&endpoint);
             let started = Instant::now();
-            let probe_result =
-                probe_forward_proxy_endpoint(state.as_ref(), &endpoint, validation_timeout).await;
+            let probe_result = probe_forward_proxy_endpoint(
+                state.as_ref(),
+                &endpoint,
+                validation_timeout,
+                Some(&shutdown),
+            )
+            .await;
             match probe_result {
-                Ok(latency_ms) => {
+                Ok(Some(latency_ms)) => {
+                    if shutdown.is_cancelled() {
+                        info!(
+                            trigger,
+                            proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
+                            "forward proxy bootstrap probe round stopped before recording a completed probe because shutdown is in progress"
+                        );
+                        break;
+                    }
                     record_forward_proxy_attempt(
                         state.clone(),
                         selected_proxy,
@@ -1118,6 +1167,14 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
                         true,
                     )
                     .await;
+                }
+                Ok(None) => {
+                    info!(
+                        trigger,
+                        proxy_key_ref = %forward_proxy_log_ref(&endpoint.key),
+                        "forward proxy bootstrap probe round stopped by shutdown during an in-flight probe"
+                    );
+                    break;
                 }
                 Err(err) => {
                     let failure_kind = classify_bootstrap_forward_proxy_probe_failure(&err);
@@ -1527,14 +1584,31 @@ pub(crate) fn spawn_penalized_forward_proxy_probe(
                 .http_clients
                 .client_for_forward_proxy(candidate.endpoint_url.as_ref())?;
             let started = Instant::now();
-            let response = timeout(
-                state.config.openai_proxy_handshake_timeout,
-                client.get(target).send(),
-            )
-            .await
-            .map_err(|_| anyhow!("probe timed out"))?
-            .context("probe request failed")?;
+            let response = tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!(
+                        proxy_key_ref = %forward_proxy_log_ref(&candidate.key),
+                        "stopping penalized forward proxy probe because shutdown is in progress"
+                    );
+                    return Ok::<(), anyhow::Error>(());
+                }
+                response = timeout(
+                    state.config.openai_proxy_handshake_timeout,
+                    client.get(target).send(),
+                ) => {
+                    response
+                        .map_err(|_| anyhow!("probe timed out"))?
+                        .context("probe request failed")?
+                }
+            };
             let status = response.status();
+            if shutdown.is_cancelled() {
+                info!(
+                    proxy_key_ref = %forward_proxy_log_ref(&candidate.key),
+                    "skipping penalized forward proxy probe recording because shutdown is in progress"
+                );
+                return Ok::<(), anyhow::Error>(());
+            }
             // Treat 429 as a probe failure so we don't "recover" a still-rate-limited proxy.
             let success = is_validation_probe_reachable_status(status);
             let latency_ms = Some(elapsed_ms(started));
