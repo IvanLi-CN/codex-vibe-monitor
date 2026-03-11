@@ -9730,6 +9730,76 @@ async fn list_invocations_status_failed_matches_http_failure_statuses() {
 }
 
 #[tokio::test]
+async fn list_invocations_status_sort_uses_normalized_status_values() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at, status) in [
+        (
+            "status-sort-trimmed-success",
+            "2026-03-10 08:02:00",
+            Some(" SUCCESS "),
+        ),
+        (
+            "status-sort-success",
+            "2026-03-10 08:01:00",
+            Some("success"),
+        ),
+        ("status-sort-failed", "2026-03-10 08:03:00", Some("failed")),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert status sort row");
+    }
+
+    let Json(sorted) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            page: Some(1),
+            page_size: Some(20),
+            sort_by: Some("status".to_string()),
+            sort_order: Some("asc".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("status sort should succeed");
+
+    let actual = sorted
+        .records
+        .into_iter()
+        .map(|record| record.invoke_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        vec![
+            "status-sort-failed".to_string(),
+            "status-sort-trimmed-success".to_string(),
+            "status-sort-success".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn fetch_invocation_summary_reports_new_records_count_for_applied_filters() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

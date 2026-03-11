@@ -97,7 +97,7 @@ impl InvocationSortBy {
             Self::Cost => "cost",
             Self::TotalMs => "t_total_ms",
             Self::TtfbMs => "t_upstream_ttfb_ms",
-            Self::Status => "status",
+            Self::Status => INVOCATION_STATUS_NORMALIZED_SQL,
         }
     }
 }

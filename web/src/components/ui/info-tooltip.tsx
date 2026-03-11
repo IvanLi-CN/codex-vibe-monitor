@@ -12,6 +12,7 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
   const [shiftX, setShiftX] = useState(0)
+  const [placement, setPlacement] = useState<'top' | 'bottom'>('bottom')
   const rootRef = useRef<HTMLSpanElement | null>(null)
   const tooltipRef = useRef<HTMLSpanElement | null>(null)
   const tooltipId = useId()
@@ -31,20 +32,28 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
   useEffect(() => {
     if (!open) {
       setShiftX(0)
+      setPlacement('bottom')
       return
     }
 
     const update = () => {
       const tooltipEl = tooltipRef.current
-      if (!tooltipEl) return
+      const rootEl = rootRef.current
+      if (!tooltipEl || !rootEl) return
       const rect = tooltipEl.getBoundingClientRect()
+      const rootRect = rootEl.getBoundingClientRect()
       const margin = 8
+      const gap = 8
       let nextShift = 0
       const overflowLeft = margin - rect.left
       if (overflowLeft > 0) nextShift += overflowLeft
       const overflowRight = rect.right - (window.innerWidth - margin)
       if (overflowRight > 0) nextShift -= overflowRight
       setShiftX(nextShift)
+
+      const fitsBelow = rootRect.bottom + gap + rect.height <= window.innerHeight - margin
+      const fitsAbove = rootRect.top - gap - rect.height >= margin
+      setPlacement(!fitsBelow && fitsAbove ? 'top' : 'bottom')
     }
 
     update()
@@ -85,7 +94,9 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
           if (!pinned) setOpen(false)
         }}
       >
-        <Icon icon="mdi:help-circle-outline" className="h-4.5 w-4.5 text-[inherit]" aria-hidden />
+        <span className="inline-flex h-[18px] w-[18px] items-center justify-center text-[inherit]" aria-hidden>
+          <Icon icon="mdi:help-circle-outline" className="h-full w-full" />
+        </span>
       </button>
       <span
         ref={tooltipRef}
@@ -94,7 +105,8 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
         aria-hidden={open ? 'false' : 'true'}
         style={{ transform: `translateX(-50%) translateX(${shiftX}px)` }}
         className={cn(
-          'absolute left-1/2 top-[calc(100%+0.45rem)] z-20 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-base-300/80 bg-base-100/95 px-3 py-2 text-left text-xs leading-5 text-base-content shadow-lg backdrop-blur transition-opacity',
+          'absolute left-1/2 z-20 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-base-300/80 bg-base-100/95 px-3 py-2 text-left text-xs leading-5 text-base-content shadow-lg backdrop-blur transition-opacity',
+          placement === 'top' ? 'bottom-[calc(100%+0.45rem)]' : 'top-[calc(100%+0.45rem)]',
           open ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
         )}
       >
