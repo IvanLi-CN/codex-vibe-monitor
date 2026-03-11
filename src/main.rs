@@ -4717,6 +4717,14 @@ fn proxy_forward_response_status_is_success(status: StatusCode, stream_error: bo
     !stream_error && status != StatusCode::TOO_MANY_REQUESTS && !status.is_server_error()
 }
 
+fn proxy_capture_response_status_is_success(
+    status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+) -> bool {
+    !logical_stream_failure && proxy_forward_response_status_is_success(status, stream_error)
+}
+
 fn proxy_forward_response_failure_kind(
     status: StatusCode,
     stream_error: bool,
@@ -4729,6 +4737,18 @@ fn proxy_forward_response_failure_kind(
         Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
     } else {
         None
+    }
+}
+
+fn proxy_capture_response_failure_kind(
+    status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+) -> Option<&'static str> {
+    if logical_stream_failure {
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    } else {
+        proxy_forward_response_failure_kind(status, stream_error)
     }
 }
 
@@ -5811,6 +5831,7 @@ async fn proxy_openai_v1_capture_target(
             None
         };
         let had_stream_error = stream_error.is_some();
+        let had_logical_stream_failure = response_info.stream_terminal_event.is_some();
 
         let error_message = if let Some(err) = stream_error {
             Some(format!("[{}] {err}", PROXY_FAILURE_UPSTREAM_STREAM_ERROR))
@@ -5832,8 +5853,11 @@ async fn proxy_openai_v1_capture_target(
             format!("http_{}", upstream_status.as_u16())
         };
         let selected_proxy_display_name = selected_proxy_for_task.display_name.clone();
-        let forward_proxy_success =
-            proxy_forward_response_status_is_success(upstream_status, had_stream_error);
+        let forward_proxy_success = proxy_capture_response_status_is_success(
+            upstream_status,
+            had_stream_error,
+            had_logical_stream_failure,
+        );
         let proxy_attempt_update = if attempt_already_recorded_for_task {
             final_attempt_update_for_task.unwrap_or_default()
         } else {
@@ -5842,7 +5866,11 @@ async fn proxy_openai_v1_capture_target(
                 selected_proxy_for_task,
                 forward_proxy_success,
                 Some(t_upstream_connect_ms + t_upstream_ttfb_ms + t_upstream_stream_ms),
-                proxy_forward_response_failure_kind(upstream_status, had_stream_error),
+                proxy_capture_response_failure_kind(
+                    upstream_status,
+                    had_stream_error,
+                    had_logical_stream_failure,
+                ),
                 false,
             )
             .await
@@ -8516,6 +8544,14 @@ async fn backfill_failure_classification_from_cursor(
                                 TRIM(COALESCE(CAST(json_extract(payload, '$.usageMissingReason') AS TEXT), '')) IN ('usage_missing_in_stream', 'upstream_response_failed')
                                 OR TRIM(COALESCE(CAST(json_extract(payload, '$.streamTerminalEvent') AS TEXT), '')) != ''
                             )
+                        )
+                        OR (
+                            response_raw_path IS NOT NULL
+                            AND COALESCE(response_raw_size, LENGTH(raw_response)) >= 16384
+                            AND json_valid(payload)
+                            AND COALESCE(CAST(json_extract(payload, '$.endpoint') AS TEXT), '') = '/v1/responses'
+                            AND COALESCE(json_extract(payload, '$.isStream'), 0) = 1
+                            AND TRIM(COALESCE(failure_kind, '')) = ''
                         )
                     )
                 )
