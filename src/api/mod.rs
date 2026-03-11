@@ -1913,14 +1913,21 @@ pub(crate) fn classify_invocation_failure(
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let is_http_4xx =
-        status_norm.starts_with("http_4") || status_norm == "http_401" || status_norm == "http_403";
+    let is_http_429 =
+        status_norm == "http_429" || failure_kind_lower == FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429;
+    let is_http_4xx = (status_norm.starts_with("http_4")
+        || status_norm == "http_401"
+        || status_norm == "http_403")
+        && !is_http_429;
     let is_http_5xx = status_norm.starts_with("http_5");
 
     let failure_class = if failure_kind_lower == PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
         || err_lower.contains("downstream closed while streaming upstream response")
     {
         FailureClass::ClientAbort
+    } else if is_http_429 {
+        // Upstream rate limiting is retryable and should be surfaced as service-impacting.
+        FailureClass::ServiceFailure
     } else if failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
         || err_lower.contains("invalid api key format")
         || err_lower.contains("api key format is invalid")
@@ -2671,14 +2678,18 @@ pub(crate) async fn put_proxy_settings(
         ));
     }
 
+    let _update_guard = state.proxy_model_settings_update_lock.lock().await;
+    let current = state.proxy_model_settings.read().await.clone();
     let next = ProxyModelSettings {
         hijack_enabled: payload.hijack_enabled,
         merge_upstream_enabled: payload.merge_upstream_enabled,
         fast_mode_rewrite_mode: payload.fast_mode_rewrite_mode,
+        upstream_429_max_retries: payload
+            .upstream_429_max_retries
+            .unwrap_or(current.upstream_429_max_retries),
         enabled_preset_models: payload.enabled_models,
     }
     .normalized();
-    let _update_guard = state.proxy_model_settings_update_lock.lock().await;
     save_proxy_model_settings(&state.pool, next.clone())
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
@@ -3207,6 +3218,7 @@ pub(crate) struct ProxyCaptureRecord {
     pub(crate) price_version: Option<String>,
     pub(crate) status: String,
     pub(crate) error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
     pub(crate) payload: Option<String>,
     pub(crate) raw_response: String,
     pub(crate) req_raw: RawPayloadMeta,

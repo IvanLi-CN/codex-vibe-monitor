@@ -4,7 +4,6 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
     env,
-    error::Error as StdError,
     hash::{Hash, Hasher},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -176,7 +175,6 @@ const DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: u64 = 30;
 const DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: u64 = 30;
 const DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS: u64 = 30;
 const ARCHIVE_STATUS_COMPLETED: &str = "completed";
-const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit exceeded";
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
 const PROXY_INVALID_REQUEST_TARGET: &str = "proxy request target is malformed";
 const PROXY_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream handshake timed out";
@@ -184,6 +182,7 @@ const PROXY_MODEL_MERGE_STATUS_HEADER: &str = "x-proxy-model-merge-upstream";
 const PROXY_MODEL_MERGE_STATUS_SUCCESS: &str = "success";
 const PROXY_MODEL_MERGE_STATUS_FAILED: &str = "failed";
 const PROXY_FAILURE_BODY_TOO_LARGE: &str = "body_too_large";
+const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit exceeded";
 const PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT: &str = "request_body_read_timeout";
 const PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED: &str =
     "request_body_stream_error_client_closed";
@@ -237,6 +236,7 @@ const FORWARD_PROXY_SOURCE_DIRECT: &str = "direct";
 const FORWARD_PROXY_FAILURE_SEND_ERROR: &str = "send_error";
 const FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT: &str = "handshake_timeout";
 const FORWARD_PROXY_FAILURE_STREAM_ERROR: &str = "stream_error";
+const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429: &str = "upstream_http_429";
 const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
 const DEFAULT_XRAY_BINARY: &str = "xray";
 const DEFAULT_XRAY_RUNTIME_DIR: &str = ".codex/xray-forward";
@@ -246,6 +246,9 @@ const LEGACY_DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-02-23
 const DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE: bool = true;
 const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
+const DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES: u8 = 3;
+const MAX_PROXY_UPSTREAM_429_MAX_RETRIES: u8 = 5;
+const MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS: u64 = 30;
 const DEFAULT_PROXY_FAST_MODE_REWRITE_MODE: ProxyFastModeRewriteMode =
     ProxyFastModeRewriteMode::Disabled;
 const DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP: bool = true;
@@ -3761,6 +3764,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             hijack_enabled INTEGER NOT NULL DEFAULT 0,
             merge_upstream_enabled INTEGER NOT NULL DEFAULT 0,
             fast_mode_rewrite_mode TEXT NOT NULL DEFAULT 'disabled',
+            upstream_429_max_retries INTEGER NOT NULL DEFAULT 3,
             enabled_preset_models_json TEXT,
             preset_models_migrated INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -3810,6 +3814,19 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         return Err(err).context("failed to ensure preset_models_migrated column");
     }
 
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE proxy_model_settings
+        ADD COLUMN upstream_429_max_retries INTEGER NOT NULL DEFAULT 3
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context("failed to ensure upstream_429_max_retries column");
+    }
+
     let default_enabled_models_json = serde_json::to_string(&default_enabled_preset_models())
         .context("failed to serialize default enabled preset models")?;
 
@@ -3820,15 +3837,17 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             hijack_enabled,
             merge_upstream_enabled,
             fast_mode_rewrite_mode,
+            upstream_429_max_retries,
             enabled_preset_models_json
         )
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         "#,
     )
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
     .bind(DEFAULT_PROXY_MODELS_HIJACK_ENABLED as i64)
     .bind(DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED as i64)
     .bind(DEFAULT_PROXY_FAST_MODE_REWRITE_MODE.as_str())
+    .bind(i64::from(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES))
     .bind(default_enabled_models_json)
     .execute(pool)
     .await
@@ -4044,7 +4063,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSettings> {
     let row = sqlx::query_as::<_, ProxyModelSettingsRow>(
         r#"
-        SELECT hijack_enabled, merge_upstream_enabled, fast_mode_rewrite_mode, enabled_preset_models_json
+        SELECT hijack_enabled, merge_upstream_enabled, fast_mode_rewrite_mode, upstream_429_max_retries, enabled_preset_models_json
         FROM proxy_model_settings
         WHERE id = ?1
         LIMIT 1
@@ -4073,14 +4092,16 @@ async fn save_proxy_model_settings(
         SET hijack_enabled = ?1,
             merge_upstream_enabled = ?2,
             fast_mode_rewrite_mode = ?3,
-            enabled_preset_models_json = ?4,
+            upstream_429_max_retries = ?4,
+            enabled_preset_models_json = ?5,
             updated_at = datetime('now')
-        WHERE id = ?5
+        WHERE id = ?6
         "#,
     )
     .bind(settings.hijack_enabled as i64)
     .bind(settings.merge_upstream_enabled as i64)
     .bind(settings.fast_mode_rewrite_mode.as_str())
+    .bind(i64::from(settings.upstream_429_max_retries))
     .bind(enabled_models_json)
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
     .execute(pool)
@@ -4821,6 +4842,197 @@ async fn proxy_openai_v1_common(
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct ForwardProxyUpstreamResponse {
+    pub(crate) selected_proxy: SelectedForwardProxy,
+    pub(crate) response: reqwest::Response,
+    pub(crate) connect_latency_ms: f64,
+    /// `Instant` captured right before sending the upstream request for the final attempt.
+    /// Used to record end-to-end latency once streaming finishes.
+    pub(crate) attempt_started_at: Instant,
+    pub(crate) attempt_recorded: bool,
+    pub(crate) attempt_update: Option<ForwardProxyAttemptUpdate>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ForwardProxyUpstreamError {
+    pub(crate) selected_proxy: SelectedForwardProxy,
+    pub(crate) status: StatusCode,
+    pub(crate) message: String,
+    pub(crate) failure_kind: &'static str,
+    pub(crate) attempt_failure_kind: &'static str,
+    pub(crate) connect_latency_ms: f64,
+}
+
+fn proxy_forward_response_status_is_success(status: StatusCode, stream_error: bool) -> bool {
+    !stream_error && status != StatusCode::TOO_MANY_REQUESTS && !status.is_server_error()
+}
+
+fn proxy_forward_response_failure_kind(
+    status: StatusCode,
+    stream_error: bool,
+) -> Option<&'static str> {
+    if stream_error {
+        Some(FORWARD_PROXY_FAILURE_STREAM_ERROR)
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+    } else if status.is_server_error() {
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+    } else {
+        None
+    }
+}
+
+fn fallback_proxy_429_retry_delay(retry_index: u32) -> Duration {
+    let exponent = retry_index.saturating_sub(1).min(16);
+    let multiplier = 1_u64 << exponent;
+    Duration::from_millis(500_u64.saturating_mul(multiplier)).min(Duration::from_secs(5))
+}
+
+fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
+    let text = value.to_str().ok()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    if let Ok(seconds) = text.parse::<u64>() {
+        return Some(Duration::from_secs(seconds).min(Duration::from_secs(
+            MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS,
+        )));
+    }
+
+    let retry_at = httpdate::parse_http_date(text).ok()?;
+    let delay = retry_at.duration_since(std::time::SystemTime::now()).ok()?;
+    Some(delay.min(Duration::from_secs(
+        MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS,
+    )))
+}
+
+pub(crate) async fn send_forward_proxy_request_with_429_retry(
+    state: Arc<AppState>,
+    method: Method,
+    target_url: Url,
+    headers: &HeaderMap,
+    body: Option<Bytes>,
+    handshake_timeout: Duration,
+    upstream_429_max_retries: u8,
+) -> Result<ForwardProxyUpstreamResponse, ForwardProxyUpstreamError> {
+    let request_connection_scoped = connection_scoped_header_names(headers);
+
+    for attempt in 0..=upstream_429_max_retries {
+        let selected_proxy = select_forward_proxy_for_request(state.as_ref()).await;
+        let client = match state
+            .http_clients
+            .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
+        {
+            Ok(client) => client,
+            Err(err) => {
+                return Err(ForwardProxyUpstreamError {
+                    selected_proxy,
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!("failed to initialize forward proxy client: {err}"),
+                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                    attempt_failure_kind: FORWARD_PROXY_FAILURE_SEND_ERROR,
+                    connect_latency_ms: 0.0,
+                });
+            }
+        };
+
+        let mut request = client.request(method.clone(), target_url.clone());
+        for (name, value) in headers {
+            if should_forward_proxy_header(name, &request_connection_scoped) {
+                request = request.header(name, value);
+            }
+        }
+        if let Some(body_bytes) = body.clone() {
+            request = request.body(body_bytes);
+        }
+
+        let connect_started = Instant::now();
+        let response = match timeout(handshake_timeout, request.send()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                return Err(ForwardProxyUpstreamError {
+                    selected_proxy,
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!("failed to contact upstream: {err}"),
+                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                    attempt_failure_kind: FORWARD_PROXY_FAILURE_SEND_ERROR,
+                    connect_latency_ms: elapsed_ms(connect_started),
+                });
+            }
+            Err(_) => {
+                return Err(ForwardProxyUpstreamError {
+                    selected_proxy,
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!(
+                        "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
+                        handshake_timeout.as_millis()
+                    ),
+                    failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                    attempt_failure_kind: FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT,
+                    connect_latency_ms: elapsed_ms(connect_started),
+                });
+            }
+        };
+
+        let connect_latency_ms = elapsed_ms(connect_started);
+        if response.status() != StatusCode::TOO_MANY_REQUESTS {
+            return Ok(ForwardProxyUpstreamResponse {
+                selected_proxy,
+                response,
+                connect_latency_ms,
+                attempt_started_at: connect_started,
+                attempt_recorded: false,
+                attempt_update: None,
+            });
+        }
+
+        if attempt < upstream_429_max_retries {
+            record_forward_proxy_attempt(
+                state.clone(),
+                selected_proxy.clone(),
+                false,
+                Some(connect_latency_ms),
+                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429),
+                false,
+            )
+            .await;
+
+            let retry_delay = response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(parse_retry_after_delay)
+                .unwrap_or_else(|| fallback_proxy_429_retry_delay(u32::from(attempt) + 1));
+            info!(
+                proxy_key_ref = %forward_proxy_log_ref(&selected_proxy.key),
+                proxy_source = selected_proxy.source,
+                proxy_label = selected_proxy.display_name,
+                proxy_url_ref = %forward_proxy_log_ref_option(selected_proxy.endpoint_url_raw.as_deref()),
+                retry_index = attempt + 1,
+                max_429_retries = upstream_429_max_retries,
+                retry_after_ms = retry_delay.as_millis(),
+                "upstream responded 429; retrying forward proxy request"
+            );
+            sleep(retry_delay).await;
+            continue;
+        }
+
+        // Final 429: defer attempt recording until the caller finishes consuming / forwarding
+        // the response body, so a later stream error can override this classification.
+        return Ok(ForwardProxyUpstreamResponse {
+            selected_proxy,
+            response,
+            connect_latency_ms,
+            attempt_started_at: connect_started,
+            attempt_recorded: false,
+            attempt_update: None,
+        });
+    }
+
+    unreachable!("429 retry loop should always return a response or error")
+}
+
 async fn proxy_openai_v1_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -4853,12 +5065,11 @@ async fn proxy_openai_v1_inner(
             let mut payload = build_preset_models_payload(&settings.enabled_preset_models);
             let mut merge_status: Option<&'static str> = None;
             if settings.merge_upstream_enabled {
-                let selected_proxy = select_forward_proxy_for_request(state.as_ref()).await;
                 match fetch_upstream_models_payload(
                     state.clone(),
-                    selected_proxy,
                     target_url.clone(),
                     &headers,
+                    settings.upstream_429_max_retries,
                 )
                 .await
                 {
@@ -4903,8 +5114,6 @@ async fn proxy_openai_v1_inner(
         }
     }
 
-    let selected_proxy = select_forward_proxy_for_request(state.as_ref()).await;
-
     if let Some(target) = capture_target_for_request(original_uri.path(), &method) {
         return proxy_openai_v1_capture_target(
             state,
@@ -4914,7 +5123,6 @@ async fn proxy_openai_v1_inner(
             target,
             target_url,
             peer_ip,
-            selected_proxy,
         )
         .await;
     }
@@ -4932,94 +5140,163 @@ async fn proxy_openai_v1_inner(
         ));
     }
 
-    let mut seen_body_bytes = 0usize;
-    let request_body_stream = body.into_data_stream().map(move |chunk| {
-        let chunk = chunk.map_err(|err| {
-            warn!(
-                proxy_request_id,
-                error = %err,
-                "openai proxy request body stream error"
-            );
-            io::Error::other(format!("failed to read request body stream: {err}"))
-        })?;
-        seen_body_bytes = seen_body_bytes.saturating_add(chunk.len());
-        if seen_body_bytes > body_limit {
-            Err(io::Error::other(PROXY_REQUEST_BODY_LIMIT_EXCEEDED))
-        } else {
-            Ok(chunk)
-        }
-    });
-
-    let proxy_client = state
-        .http_clients
-        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
-        .map_err(|err| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("failed to initialize forward proxy client: {err}"),
-            )
-        })?;
-    let mut upstream_request = proxy_client
-        .request(method, target_url)
-        .body(reqwest::Body::wrap_stream(request_body_stream));
-
-    let request_connection_scoped = connection_scoped_header_names(&headers);
-    for (name, value) in &headers {
-        if should_forward_proxy_header(name, &request_connection_scoped) {
-            upstream_request = upstream_request.header(name, value);
-        }
-    }
-
-    let map_upstream_error = |err: reqwest::Error| {
-        if is_body_too_large_error(&err) {
-            (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("request body exceeds {body_limit} bytes"),
-            )
-        } else {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("failed to contact upstream: {err}"),
-            )
-        }
-    };
-
-    let connect_started = Instant::now();
     let handshake_timeout = state.config.proxy_upstream_handshake_timeout(None);
-    let upstream_response = match timeout(handshake_timeout, upstream_request.send()).await {
-        Ok(Ok(response)) => response,
-        Ok(Err(err)) => {
-            let mapped = map_upstream_error(err);
-            record_forward_proxy_attempt(
-                state.clone(),
-                selected_proxy.clone(),
-                false,
-                Some(elapsed_ms(connect_started)),
-                Some(FORWARD_PROXY_FAILURE_SEND_ERROR),
-                false,
-            )
-            .await;
-            return Err(mapped);
+    let upstream_429_max_retries = state
+        .proxy_model_settings
+        .read()
+        .await
+        .upstream_429_max_retries;
+    let upstream = if upstream_429_max_retries == 0 {
+        let selected_proxy = select_forward_proxy_for_request(state.as_ref()).await;
+        let proxy_client = match state
+            .http_clients
+            .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
+        {
+            Ok(client) => client,
+            Err(err) => {
+                record_forward_proxy_attempt(
+                    state.clone(),
+                    selected_proxy.clone(),
+                    false,
+                    Some(0.0),
+                    Some(FORWARD_PROXY_FAILURE_SEND_ERROR),
+                    false,
+                )
+                .await;
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    format!("failed to initialize forward proxy client: {err}"),
+                ));
+            }
+        };
+
+        let mut seen_body_bytes = 0usize;
+        let request_body_stream = body.into_data_stream().map(move |chunk| {
+            let chunk = chunk.map_err(|err| {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    "openai proxy request body stream error"
+                );
+                io::Error::other(format!("failed to read request body stream: {err}"))
+            })?;
+            seen_body_bytes = seen_body_bytes.saturating_add(chunk.len());
+            if seen_body_bytes > body_limit {
+                Err(io::Error::other(PROXY_REQUEST_BODY_LIMIT_EXCEEDED))
+            } else {
+                Ok(chunk)
+            }
+        });
+
+        let mut upstream_request = proxy_client
+            .request(method, target_url)
+            .body(reqwest::Body::wrap_stream(request_body_stream));
+        let request_connection_scoped = connection_scoped_header_names(&headers);
+        for (name, value) in &headers {
+            if should_forward_proxy_header(name, &request_connection_scoped) {
+                upstream_request = upstream_request.header(name, value);
+            }
         }
-        Err(_) => {
-            record_forward_proxy_attempt(
-                state.clone(),
-                selected_proxy.clone(),
-                false,
-                Some(elapsed_ms(connect_started)),
-                Some(FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT),
-                false,
-            )
-            .await;
-            return Err((
-                StatusCode::BAD_GATEWAY,
-                format!(
-                    "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
-                    handshake_timeout.as_millis()
-                ),
-            ));
+
+        let map_upstream_error = |err: reqwest::Error| {
+            if is_body_too_large_error(&err) {
+                (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!("request body exceeds {body_limit} bytes"),
+                )
+            } else {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("failed to contact upstream: {err}"),
+                )
+            }
+        };
+
+        let connect_started = Instant::now();
+        let upstream_response = match timeout(handshake_timeout, upstream_request.send()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                let mapped = map_upstream_error(err);
+                record_forward_proxy_attempt(
+                    state.clone(),
+                    selected_proxy.clone(),
+                    false,
+                    Some(elapsed_ms(connect_started)),
+                    Some(FORWARD_PROXY_FAILURE_SEND_ERROR),
+                    false,
+                )
+                .await;
+                return Err(mapped);
+            }
+            Err(_) => {
+                record_forward_proxy_attempt(
+                    state.clone(),
+                    selected_proxy.clone(),
+                    false,
+                    Some(elapsed_ms(connect_started)),
+                    Some(FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT),
+                    false,
+                )
+                .await;
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    format!(
+                        "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
+                        handshake_timeout.as_millis()
+                    ),
+                ));
+            }
+        };
+
+        Ok(ForwardProxyUpstreamResponse {
+            selected_proxy,
+            response: upstream_response,
+            connect_latency_ms: elapsed_ms(connect_started),
+            attempt_started_at: connect_started,
+            attempt_recorded: false,
+            attempt_update: None,
+        })
+    } else {
+        let request_body_bytes = read_request_body_with_limit(
+            body,
+            body_limit,
+            state.config.openai_proxy_request_read_timeout,
+            proxy_request_id,
+        )
+        .await
+        .map_err(|err| (err.status, err.message))?;
+        let request_body_bytes = Bytes::from(request_body_bytes);
+        match send_forward_proxy_request_with_429_retry(
+            state.clone(),
+            method,
+            target_url,
+            &headers,
+            Some(request_body_bytes),
+            handshake_timeout,
+            upstream_429_max_retries,
+        )
+        .await
+        {
+            Ok(response) => Ok(response),
+            Err(err) => {
+                record_forward_proxy_attempt(
+                    state.clone(),
+                    err.selected_proxy,
+                    false,
+                    Some(err.connect_latency_ms),
+                    Some(err.attempt_failure_kind),
+                    false,
+                )
+                .await;
+                Err((err.status, err.message))
+            }
         }
-    };
+    }?;
+    let upstream_attempt_started_at = upstream.attempt_started_at;
+    let selected_proxy = upstream.selected_proxy;
+    let t_upstream_connect_ms = upstream.connect_latency_ms;
+    let attempt_already_recorded = upstream.attempt_recorded;
+    let upstream_response = upstream.response;
 
     let rewritten_location = match normalize_proxy_location_header(
         upstream_response.status(),
@@ -5032,7 +5309,7 @@ async fn proxy_openai_v1_inner(
                 state.clone(),
                 selected_proxy.clone(),
                 false,
-                Some(elapsed_ms(connect_started)),
+                Some(t_upstream_connect_ms),
                 Some(FORWARD_PROXY_FAILURE_SEND_ERROR),
                 false,
             )
@@ -5072,15 +5349,17 @@ async fn proxy_openai_v1_inner(
             Some(chunk)
         }
         Some(Err(err)) => {
-            record_forward_proxy_attempt(
-                state.clone(),
-                selected_proxy.clone(),
-                false,
-                Some(elapsed_ms(connect_started)),
-                Some(FORWARD_PROXY_FAILURE_STREAM_ERROR),
-                false,
-            )
-            .await;
+            if !attempt_already_recorded {
+                record_forward_proxy_attempt(
+                    state.clone(),
+                    selected_proxy.clone(),
+                    false,
+                    Some(elapsed_ms(upstream_attempt_started_at)),
+                    Some(FORWARD_PROXY_FAILURE_STREAM_ERROR),
+                    false,
+                )
+                .await;
+            }
             warn!(
                 proxy_request_id,
                 error = %err,
@@ -5092,20 +5371,18 @@ async fn proxy_openai_v1_inner(
             ));
         }
         None => {
-            let success = !upstream_status.is_server_error();
-            record_forward_proxy_attempt(
-                state.clone(),
-                selected_proxy.clone(),
-                success,
-                Some(elapsed_ms(connect_started)),
-                if success {
-                    None
-                } else {
-                    Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
-                },
-                false,
-            )
-            .await;
+            if !attempt_already_recorded {
+                let success = proxy_forward_response_status_is_success(upstream_status, false);
+                record_forward_proxy_attempt(
+                    state.clone(),
+                    selected_proxy.clone(),
+                    success,
+                    Some(elapsed_ms(upstream_attempt_started_at)),
+                    proxy_forward_response_failure_kind(upstream_status, false),
+                    false,
+                )
+                .await;
+            }
             info!(
                 proxy_request_id,
                 ttfb_ms = stream_ttfb_started.elapsed().as_millis(),
@@ -5124,6 +5401,8 @@ async fn proxy_openai_v1_inner(
     let state_for_record = state.clone();
     let selected_proxy_for_record = selected_proxy.clone();
     let upstream_status_for_record = upstream_status;
+    let upstream_attempt_started_at_for_record = upstream_attempt_started_at;
+    let attempt_already_recorded_for_response = attempt_already_recorded;
     tokio::spawn(async move {
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
@@ -5188,22 +5467,24 @@ async fn proxy_openai_v1_inner(
             }
         }
 
-        let success = !stream_error_happened && !upstream_status_for_record.is_server_error();
-        record_forward_proxy_attempt(
-            state_for_record,
-            selected_proxy_for_record,
-            success,
-            Some(elapsed_ms(connect_started)),
-            if success {
-                None
-            } else if stream_error_happened {
-                Some(FORWARD_PROXY_FAILURE_STREAM_ERROR)
-            } else {
-                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
-            },
-            false,
-        )
-        .await;
+        if !attempt_already_recorded_for_response {
+            let success = proxy_forward_response_status_is_success(
+                upstream_status_for_record,
+                stream_error_happened,
+            );
+            record_forward_proxy_attempt(
+                state_for_record,
+                selected_proxy_for_record,
+                success,
+                Some(elapsed_ms(upstream_attempt_started_at_for_record)),
+                proxy_forward_response_failure_kind(
+                    upstream_status_for_record,
+                    stream_error_happened,
+                ),
+                false,
+            )
+            .await;
+        }
 
         info!(
             proxy_request_id,
@@ -5245,7 +5526,6 @@ async fn proxy_openai_v1_capture_target(
     capture_target: ProxyCaptureTarget,
     target_url: Url,
     peer_ip: Option<IpAddr>,
-    selected_proxy: SelectedForwardProxy,
 ) -> Result<Response, (StatusCode, String)> {
     let capture_started = Instant::now();
     let occurred_at_utc = Utc::now();
@@ -5306,6 +5586,7 @@ async fn proxy_openai_v1_capture_target(
                     "failed".to_string()
                 },
                 error_message: Some(error_message),
+                failure_kind: Some(read_err.failure_kind.to_string()),
                 payload: Some(build_proxy_payload_summary(
                     capture_target,
                     read_err.status,
@@ -5320,7 +5601,7 @@ async fn proxy_openai_v1_capture_target(
                     requester_ip.as_deref(),
                     header_prompt_cache_key.as_deref(),
                     None,
-                    Some(selected_proxy.display_name.as_str()),
+                    None,
                     None,
                 )),
                 raw_response: "{}".to_string(),
@@ -5348,17 +5629,13 @@ async fn proxy_openai_v1_capture_target(
     };
     let t_req_read_ms = elapsed_ms(req_read_started);
 
-    let proxy_fast_mode_rewrite_mode = state
-        .proxy_model_settings
-        .read()
-        .await
-        .fast_mode_rewrite_mode;
+    let proxy_settings = state.proxy_model_settings.read().await.clone();
     let req_parse_started = Instant::now();
     let (upstream_body, request_info, body_rewritten) = prepare_target_request_body(
         capture_target,
         request_body_bytes,
         state.config.proxy_enforce_stream_include_usage,
-        proxy_fast_mode_rewrite_mode,
+        proxy_settings.fast_mode_rewrite_mode,
     );
     let prompt_cache_key = request_info
         .prompt_cache_key
@@ -5366,60 +5643,34 @@ async fn proxy_openai_v1_capture_target(
         .or_else(|| header_prompt_cache_key.clone());
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let req_raw = store_raw_payload_file(&state.config, &invoke_id, "request", &upstream_body);
+    let upstream_body_bytes = Bytes::from(upstream_body);
 
-    let proxy_client = state
-        .http_clients
-        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
-        .map_err(|err| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("failed to initialize forward proxy client: {err}"),
-            )
-        })?;
-    let mut upstream_request = proxy_client
-        .request(Method::POST, target_url)
-        .body(upstream_body.clone());
-    let request_connection_scoped = connection_scoped_header_names(&headers);
-    for (name, value) in &headers {
-        if !should_forward_proxy_header(name, &request_connection_scoped) {
-            continue;
-        }
-        if name == header::CONTENT_LENGTH && body_rewritten {
-            continue;
-        }
-        upstream_request = upstream_request.header(name, value);
+    let mut upstream_headers = headers.clone();
+    if body_rewritten {
+        upstream_headers.remove(header::CONTENT_LENGTH);
     }
-
-    let map_upstream_error = |err: reqwest::Error| {
-        if is_body_too_large_error(&err) {
-            (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("request body exceeds {body_limit} bytes"),
-                PROXY_FAILURE_BODY_TOO_LARGE,
-            )
-        } else {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("failed to contact upstream: {err}"),
-                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-            )
-        }
-    };
-
-    let connect_started = Instant::now();
     let handshake_timeout = state
         .config
         .proxy_upstream_handshake_timeout(Some(capture_target));
-    let upstream_response = match timeout(handshake_timeout, upstream_request.send()).await {
-        Ok(Ok(response)) => response,
-        Ok(Err(err)) => {
-            let (status, message, failure_kind) = map_upstream_error(err);
+    let upstream = match send_forward_proxy_request_with_429_retry(
+        state.clone(),
+        Method::POST,
+        target_url,
+        &upstream_headers,
+        Some(upstream_body_bytes),
+        handshake_timeout,
+        proxy_settings.upstream_429_max_retries,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => {
             let proxy_attempt_update = record_forward_proxy_attempt(
                 state.clone(),
-                selected_proxy.clone(),
+                err.selected_proxy.clone(),
                 false,
-                Some(elapsed_ms(connect_started)),
-                Some(FORWARD_PROXY_FAILURE_SEND_ERROR),
+                Some(err.connect_latency_ms),
+                Some(err.attempt_failure_kind),
                 false,
             )
             .await;
@@ -5430,7 +5681,7 @@ async fn proxy_openai_v1_capture_target(
                 &usage,
             )
             .await;
-            let error_message = format!("[{failure_kind}] {message}");
+            let error_message = format!("[{}] {}", err.failure_kind, err.message);
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -5439,15 +5690,16 @@ async fn proxy_openai_v1_capture_target(
                 cost,
                 cost_estimated,
                 price_version,
-                status: if status.is_server_error() {
-                    format!("http_{}", status.as_u16())
+                status: if err.status.is_server_error() {
+                    format!("http_{}", err.status.as_u16())
                 } else {
                     "failed".to_string()
                 },
                 error_message: Some(error_message),
+                failure_kind: Some(err.failure_kind.to_string()),
                 payload: Some(build_proxy_payload_summary(
                     capture_target,
-                    status,
+                    err.status,
                     request_info.is_stream,
                     None,
                     request_info.requested_service_tier.as_deref(),
@@ -5455,11 +5707,11 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     request_info.parse_error.as_deref(),
-                    Some(failure_kind),
+                    Some(err.failure_kind),
                     requester_ip.as_deref(),
                     prompt_cache_key.as_deref(),
                     None,
-                    Some(selected_proxy.display_name.as_str()),
+                    Some(err.selected_proxy.display_name.as_str()),
                     proxy_attempt_update.delta(),
                 )),
                 raw_response: "{}".to_string(),
@@ -5470,7 +5722,7 @@ async fn proxy_openai_v1_capture_target(
                     t_total_ms: 0.0,
                     t_req_read_ms,
                     t_req_parse_ms,
-                    t_upstream_connect_ms: elapsed_ms(connect_started),
+                    t_upstream_connect_ms: err.connect_latency_ms,
                     t_upstream_ttfb_ms: 0.0,
                     t_upstream_stream_ms: 0.0,
                     t_resp_parse_ms: 0.0,
@@ -5482,82 +5734,14 @@ async fn proxy_openai_v1_capture_target(
             {
                 warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
             }
-            return Err((status, message));
-        }
-        Err(_) => {
-            let message = format!(
-                "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
-                handshake_timeout.as_millis()
-            );
-            let failure_kind = PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT;
-            let proxy_attempt_update = record_forward_proxy_attempt(
-                state.clone(),
-                selected_proxy.clone(),
-                false,
-                Some(elapsed_ms(connect_started)),
-                Some(FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT),
-                false,
-            )
-            .await;
-            let usage = ParsedUsage::default();
-            let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
-                &state.pricing_catalog,
-                request_info.model.as_deref(),
-                &usage,
-            )
-            .await;
-            let error_message = format!("[{failure_kind}] {message}");
-            let record = ProxyCaptureRecord {
-                invoke_id,
-                occurred_at,
-                model: request_info.model,
-                usage,
-                cost,
-                cost_estimated,
-                price_version,
-                status: "http_502".to_string(),
-                error_message: Some(error_message),
-                payload: Some(build_proxy_payload_summary(
-                    capture_target,
-                    StatusCode::BAD_GATEWAY,
-                    request_info.is_stream,
-                    None,
-                    request_info.requested_service_tier.as_deref(),
-                    request_info.reasoning_effort.as_deref(),
-                    None,
-                    None,
-                    request_info.parse_error.as_deref(),
-                    Some(failure_kind),
-                    requester_ip.as_deref(),
-                    prompt_cache_key.as_deref(),
-                    None,
-                    Some(selected_proxy.display_name.as_str()),
-                    proxy_attempt_update.delta(),
-                )),
-                raw_response: "{}".to_string(),
-                req_raw,
-                resp_raw: RawPayloadMeta::default(),
-                raw_expires_at,
-                timings: StageTimings {
-                    t_total_ms: 0.0,
-                    t_req_read_ms,
-                    t_req_parse_ms,
-                    t_upstream_connect_ms: elapsed_ms(connect_started),
-                    t_upstream_ttfb_ms: 0.0,
-                    t_upstream_stream_ms: 0.0,
-                    t_resp_parse_ms: 0.0,
-                    t_persist_ms: 0.0,
-                },
-            };
-            if let Err(err) =
-                persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record).await
-            {
-                warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
-            }
-            return Err((StatusCode::BAD_GATEWAY, message));
+            return Err((err.status, err.message));
         }
     };
-    let t_upstream_connect_ms = elapsed_ms(connect_started);
+    let selected_proxy = upstream.selected_proxy;
+    let t_upstream_connect_ms = upstream.connect_latency_ms;
+    let attempt_already_recorded = upstream.attempt_recorded;
+    let final_attempt_update = upstream.attempt_update;
+    let upstream_response = upstream.response;
 
     let upstream_status = upstream_response.status();
     let rewritten_location = match normalize_proxy_location_header(
@@ -5594,6 +5778,7 @@ async fn proxy_openai_v1_capture_target(
                 price_version,
                 status: "http_502".to_string(),
                 error_message: Some(message.clone()),
+                failure_kind: None,
                 payload: Some(build_proxy_payload_summary(
                     capture_target,
                     StatusCode::BAD_GATEWAY,
@@ -5664,6 +5849,8 @@ async fn proxy_openai_v1_capture_target(
     let requester_ip_for_task = requester_ip.clone();
     let prompt_cache_key_for_task = prompt_cache_key.clone();
     let selected_proxy_for_task = selected_proxy.clone();
+    let attempt_already_recorded_for_task = attempt_already_recorded;
+    let final_attempt_update_for_task = final_attempt_update;
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
 
     tokio::spawn(async move {
@@ -5753,6 +5940,10 @@ async fn proxy_openai_v1_capture_target(
             Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
         } else if downstream_closed {
             Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+        } else if upstream_status == StatusCode::TOO_MANY_REQUESTS {
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+        } else if upstream_status.is_server_error() {
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
         } else {
             None
         };
@@ -5776,22 +5967,21 @@ async fn proxy_openai_v1_capture_target(
             format!("http_{}", upstream_status.as_u16())
         };
         let selected_proxy_display_name = selected_proxy_for_task.display_name.clone();
-        let forward_proxy_success = !had_stream_error && !upstream_status.is_server_error();
-        let proxy_attempt_update = record_forward_proxy_attempt(
-            state_for_task.clone(),
-            selected_proxy_for_task,
-            forward_proxy_success,
-            Some(t_upstream_connect_ms + t_upstream_ttfb_ms + t_upstream_stream_ms),
-            if forward_proxy_success {
-                None
-            } else if had_stream_error {
-                Some(FORWARD_PROXY_FAILURE_STREAM_ERROR)
-            } else {
-                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
-            },
-            false,
-        )
-        .await;
+        let forward_proxy_success =
+            proxy_forward_response_status_is_success(upstream_status, had_stream_error);
+        let proxy_attempt_update = if attempt_already_recorded_for_task {
+            final_attempt_update_for_task.unwrap_or_default()
+        } else {
+            record_forward_proxy_attempt(
+                state_for_task.clone(),
+                selected_proxy_for_task,
+                forward_proxy_success,
+                Some(t_upstream_connect_ms + t_upstream_ttfb_ms + t_upstream_stream_ms),
+                proxy_forward_response_failure_kind(upstream_status, had_stream_error),
+                false,
+            )
+            .await
+        };
         let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
             &state_for_task.pricing_catalog,
             response_info.model.as_deref(),
@@ -5832,6 +6022,7 @@ async fn proxy_openai_v1_capture_target(
             price_version,
             status,
             error_message,
+            failure_kind: failure_kind.map(|kind| kind.to_string()),
             payload: Some(payload),
             raw_response: build_raw_response_preview(&response_bytes),
             req_raw: req_raw_for_task,
@@ -6850,6 +7041,10 @@ async fn persist_proxy_capture_record(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
     );
+    let failure_kind = record
+        .failure_kind
+        .as_deref()
+        .or(failure.failure_kind.as_deref());
     let persist_started = Instant::now();
     let insert_result = sqlx::query(
         r#"
@@ -6911,7 +7106,7 @@ async fn persist_proxy_capture_record(
     .bind(record.price_version.as_deref())
     .bind(&record.status)
     .bind(record.error_message.as_deref())
-    .bind(failure.failure_kind.as_deref())
+    .bind(failure_kind)
     .bind(failure.failure_class.as_str())
     .bind(failure.is_actionable as i64)
     .bind(record.payload.as_deref())
@@ -8299,15 +8494,11 @@ fn next_proxy_request_id() -> u64 {
 }
 
 fn is_body_too_large_error(err: &reqwest::Error) -> bool {
-    if error_chain_contains(err, "length limit exceeded")
+    error_chain_contains(err, "length limit exceeded")
         || error_chain_contains(err, PROXY_REQUEST_BODY_LIMIT_EXCEEDED)
-    {
-        return true;
-    }
-    false
 }
 
-fn error_chain_contains(err: &(dyn StdError + 'static), needle: &str) -> bool {
+fn error_chain_contains(err: &(dyn std::error::Error + 'static), needle: &str) -> bool {
     if err.to_string().contains(needle) {
         return true;
     }
@@ -9159,6 +9350,7 @@ struct ProxyModelSettings {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
     fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
+    upstream_429_max_retries: u8,
     enabled_preset_models: Vec<String>,
 }
 
@@ -9194,12 +9386,23 @@ fn decode_proxy_fast_mode_rewrite_mode(raw: Option<&str>) -> ProxyFastModeRewrit
     }
 }
 
+fn normalize_proxy_upstream_429_max_retries(value: u8) -> u8 {
+    value.min(MAX_PROXY_UPSTREAM_429_MAX_RETRIES)
+}
+
+fn decode_proxy_upstream_429_max_retries(raw: Option<i64>) -> u8 {
+    raw.and_then(|value| u8::try_from(value).ok())
+        .map(normalize_proxy_upstream_429_max_retries)
+        .unwrap_or(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES)
+}
+
 impl Default for ProxyModelSettings {
     fn default() -> Self {
         Self {
             hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             merge_upstream_enabled: DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED,
             fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: default_enabled_preset_models(),
         }
     }
@@ -9216,6 +9419,9 @@ impl ProxyModelSettings {
             hijack_enabled: self.hijack_enabled,
             merge_upstream_enabled,
             fast_mode_rewrite_mode: self.fast_mode_rewrite_mode,
+            upstream_429_max_retries: normalize_proxy_upstream_429_max_retries(
+                self.upstream_429_max_retries,
+            ),
             enabled_preset_models: normalize_enabled_preset_models(self.enabled_preset_models),
         }
     }
@@ -9226,6 +9432,7 @@ struct ProxyModelSettingsRow {
     hijack_enabled: i64,
     merge_upstream_enabled: i64,
     fast_mode_rewrite_mode: Option<String>,
+    upstream_429_max_retries: Option<i64>,
     enabled_preset_models_json: Option<String>,
 }
 
@@ -9236,6 +9443,9 @@ impl From<ProxyModelSettingsRow> for ProxyModelSettings {
             merge_upstream_enabled: value.merge_upstream_enabled != 0,
             fast_mode_rewrite_mode: decode_proxy_fast_mode_rewrite_mode(
                 value.fast_mode_rewrite_mode.as_deref(),
+            ),
+            upstream_429_max_retries: decode_proxy_upstream_429_max_retries(
+                value.upstream_429_max_retries,
             ),
             enabled_preset_models: decode_enabled_preset_models(
                 value.enabled_preset_models_json.as_deref(),
@@ -9252,6 +9462,8 @@ struct ProxyModelSettingsUpdateRequest {
     merge_upstream_enabled: bool,
     #[serde(default)]
     fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
+    #[serde(default)]
+    upstream_429_max_retries: Option<u8>,
     #[serde(default = "default_enabled_preset_models")]
     enabled_models: Vec<String>,
 }
@@ -9262,6 +9474,7 @@ struct ProxyModelSettingsResponse {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
     fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
+    upstream_429_max_retries: u8,
     default_hijack_enabled: bool,
     models: Vec<String>,
     enabled_models: Vec<String>,
@@ -9273,6 +9486,7 @@ impl From<ProxyModelSettings> for ProxyModelSettingsResponse {
             hijack_enabled: value.hijack_enabled,
             merge_upstream_enabled: value.merge_upstream_enabled,
             fast_mode_rewrite_mode: value.fast_mode_rewrite_mode,
+            upstream_429_max_retries: value.upstream_429_max_retries,
             default_hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             models: PROXY_PRESET_MODEL_IDS
                 .iter()

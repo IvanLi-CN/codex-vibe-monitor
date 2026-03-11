@@ -23,6 +23,7 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   models: PRESET_MODELS,
   enabledModels: ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-mini'],
   fastModeRewriteMode: 'disabled',
+  upstream429MaxRetries: 3,
 }
 
 const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
@@ -112,6 +113,12 @@ function normalizeProxyFastModeRewriteMode(value: unknown): ProxyFastModeRewrite
   return value === 'fill_missing' || value === 'force_priority' ? value : 'disabled'
 }
 
+function normalizeProxyUpstream429MaxRetries(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 3
+  const normalized = Math.trunc(value)
+  return Math.min(5, Math.max(0, normalized))
+}
+
 function buildNodesFromSettings(settings: ForwardProxySettings): ForwardProxyNode[] {
   const manualNodes: ForwardProxyNode[] = settings.proxyUrls.map((proxyUrl, index) => ({
     key: proxyUrl,
@@ -165,6 +172,7 @@ function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayloa
       ? [...overrides.proxy.enabledModels]
       : [...DEFAULT_PROXY_SETTINGS.enabledModels],
     fastModeRewriteMode: normalizeProxyFastModeRewriteMode(overrides?.proxy?.fastModeRewriteMode),
+    upstream429MaxRetries: normalizeProxyUpstream429MaxRetries(overrides?.proxy?.upstream429MaxRetries),
   }
 
   const forwardProxyBase = {
@@ -274,11 +282,13 @@ function StorybookSettingsMock({
           mergeUpstreamEnabled: boolean
           enabledModels: string[]
           fastModeRewriteMode: ProxyFastModeRewriteMode
+          upstream429MaxRetries: number
         }>({
           hijackEnabled: false,
           mergeUpstreamEnabled: false,
           enabledModels: [],
           fastModeRewriteMode: 'disabled',
+          upstream429MaxRetries: settingsRef.current.proxy.upstream429MaxRetries,
         })
         const normalizedEnabledModels = settingsRef.current.proxy.models.filter((model) =>
           (body.enabledModels || []).includes(model),
@@ -289,6 +299,7 @@ function StorybookSettingsMock({
           mergeUpstreamEnabled: Boolean(body.hijackEnabled && body.mergeUpstreamEnabled),
           enabledModels: normalizedEnabledModels,
           fastModeRewriteMode: normalizeProxyFastModeRewriteMode(body.fastModeRewriteMode),
+          upstream429MaxRetries: normalizeProxyUpstream429MaxRetries(body.upstream429MaxRetries),
         }
         persistSettings(storageKey, settingsRef.current)
         return jsonResponse(settingsRef.current.proxy)
@@ -459,6 +470,17 @@ export const FastModeForcePriority: Story = {
     mockSettings: createStorySettings({
       proxy: {
         fastModeRewriteMode: 'force_priority',
+      },
+    }),
+  },
+  render: () => <SettingsPage />,
+}
+
+export const Upstream429RetriesMax: Story = {
+  parameters: {
+    mockSettings: createStorySettings({
+      proxy: {
+        upstream429MaxRetries: 5,
       },
     }),
   },
