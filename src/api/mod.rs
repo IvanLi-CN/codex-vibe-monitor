@@ -464,12 +464,20 @@ fn apply_invocation_records_filters(
     }
 
     if let Some(status) = filters.status.as_deref() {
-        if status.trim().eq_ignore_ascii_case("failed") {
+        let normalized_status = status.trim();
+        if normalized_status.eq_ignore_ascii_case("failed") {
             // Legacy rows can still represent failures while `status` is NULL/`none`, so align the
             // UI-level failed filter with the same resolved failure-class semantics used by summary.
             query.push(" AND ");
             query.push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL);
             query.push(" IN ('service_failure', 'client_failure', 'client_abort')");
+        } else if normalized_status.eq_ignore_ascii_case("success") {
+            // Keep the success filter symmetric with the resolved failure-class logic so legacy rows
+            // that still carry `status='success'` but classify as failures do not leak into success.
+            query.push(" AND ");
+            query.push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL);
+            query.push(" = 'none'");
+            push_exact_text_filter(query, INVOCATION_STATUS_NORMALIZED_SQL, normalized_status);
         } else {
             push_exact_text_filter(query, "status", status);
         }

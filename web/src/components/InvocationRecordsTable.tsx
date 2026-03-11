@@ -1,6 +1,7 @@
 import { Fragment, useMemo, useState } from 'react'
 import { Icon } from '@iconify/react'
 import type { ApiInvocation, InvocationFocus } from '../lib/api'
+import { resolveInvocationDisplayStatus } from '../lib/invocationStatus'
 import { useTranslation } from '../i18n'
 import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
@@ -69,15 +70,6 @@ function resolveStatusMeta(status?: string | null): StatusMeta {
   if (lower.startsWith('http_5')) return { variant: 'error', label: formatStatusLabel(raw) ?? raw }
   if (lower.startsWith('http_')) return { variant: 'secondary', label: formatStatusLabel(raw) ?? raw }
   return { variant: 'secondary', label: raw }
-}
-
-function resolveDisplayStatus(record: ApiInvocation) {
-  const raw = (record.status ?? '').trim()
-  const lower = raw.toLowerCase()
-  if (record.failureClass && record.failureClass !== 'none' && (!raw || lower === 'success')) {
-    return 'failed'
-  }
-  return raw
 }
 
 function formatOccurredAt(occurredAt: string, formatter: Intl.DateTimeFormat) {
@@ -273,7 +265,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
       <div className="space-y-3 md:hidden">
         {records.map((record) => {
           const isExpanded = expandedId === record.id
-          const statusMeta = resolveStatusMeta(resolveDisplayStatus(record))
+          const statusMeta = resolveStatusMeta(resolveInvocationDisplayStatus(record))
           const statusLabel = statusMeta.labelKey ? t(statusMeta.labelKey) : statusMeta.label ?? t('table.status.unknown')
           return (
             <article key={record.id} className="rounded-xl border border-base-300/70 bg-base-100/45 px-4 py-4">
@@ -334,7 +326,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
           <tbody>
             {records.map((record, index) => {
               const isExpanded = expandedId === record.id
-              const statusMeta = resolveStatusMeta(resolveDisplayStatus(record))
+              const statusMeta = resolveStatusMeta(resolveInvocationDisplayStatus(record))
               const statusLabel = statusMeta.labelKey ? t(statusMeta.labelKey) : statusMeta.label ?? t('table.status.unknown')
               return (
                 <Fragment key={record.id}>

@@ -71,6 +71,15 @@ export default function RecordsPage() {
   const customRangeTouchedRef = useRef(false)
 
   useEffect(() => {
+    suggestionsSeqRef.current += 1
+    setSuggestions(null)
+
+    if (!activeSuggestionField) {
+      setIsSuggestionsLoading(false)
+    }
+  }, [activeSuggestionField])
+
+  useEffect(() => {
     if (!activeSuggestionField) {
       setIsSuggestionsLoading(false)
       return

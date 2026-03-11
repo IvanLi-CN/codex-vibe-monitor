@@ -9730,6 +9730,88 @@ async fn list_invocations_status_failed_matches_http_failure_statuses() {
 }
 
 #[tokio::test]
+async fn list_invocations_status_success_excludes_resolved_failures() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, status, error_message, failure_kind, failure_class) in [
+        ("status-success-clean", Some("success"), None, None, None),
+        (
+            "status-success-trimmed",
+            Some(" SUCCESS "),
+            None,
+            None,
+            None,
+        ),
+        (
+            "status-success-explicit-failure-class",
+            Some("success"),
+            Some("upstream exploded"),
+            None,
+            Some("service_failure"),
+        ),
+        (
+            "status-success-legacy-failure-kind",
+            Some("success"),
+            Some("[upstream_response_failed] server_error"),
+            Some("upstream_response_failed"),
+            None,
+        ),
+        ("status-success-failed", Some("failed"), None, None, None),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                failure_kind,
+                failure_class,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 08:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(failure_class)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert success status row");
+    }
+
+    let Json(success_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            status: Some("success".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("success status filter should succeed");
+
+    let actual = success_filtered
+        .records
+        .into_iter()
+        .map(|record| record.invoke_id)
+        .collect::<HashSet<_>>();
+    let expected = ["status-success-clean", "status-success-trimmed"]
+        .into_iter()
+        .map(String::from)
+        .collect::<HashSet<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[tokio::test]
 async fn list_invocations_status_sort_uses_normalized_status_values() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

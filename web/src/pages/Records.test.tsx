@@ -103,7 +103,7 @@ function createSummary(): InvocationRecordsSummaryResponse {
   }
 }
 
-function createSuggestions(): InvocationSuggestionsResponse {
+function createSuggestions(overrides: Partial<InvocationSuggestionsResponse> = {}): InvocationSuggestionsResponse {
   const emptyBucket = { items: [], hasMore: false }
   return {
     model: emptyBucket,
@@ -112,6 +112,7 @@ function createSuggestions(): InvocationSuggestionsResponse {
     failureKind: emptyBucket,
     promptCacheKey: emptyBucket,
     requesterIp: emptyBucket,
+    ...overrides,
   }
 }
 
@@ -167,5 +168,104 @@ describe('RecordsPage suggestions', () => {
 
     expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(1)
     expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledWith(expect.objectContaining({ snapshotId: 84, suggestField: 'model', suggestQuery: 'alp' }))
+  })
+
+  it('ignores stale suggestions after the combobox closes', async () => {
+    vi.useFakeTimers()
+
+    let resolveFirst: ((value: InvocationSuggestionsResponse) => void) | null = null
+    apiMocks.fetchInvocationSuggestions
+      .mockImplementationOnce(
+        () =>
+          new Promise<InvocationSuggestionsResponse>((resolve) => {
+            resolveFirst = resolve
+          }),
+      )
+      .mockResolvedValueOnce(
+        createSuggestions({
+          model: {
+            items: [{ value: 'alp-fresh', count: 3 }],
+            hasMore: false,
+          },
+        }),
+      )
+
+    hookMocks.useInvocationRecords.mockReturnValue({
+      draft: { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange(), model: 'alp' },
+      focus: 'token',
+      page: 1,
+      pageSize: 20,
+      sortBy: 'occurredAt',
+      sortOrder: 'desc',
+      records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
+      summary: { ...createSummary(), snapshotId: 42 },
+      recordsError: null,
+      summaryError: null,
+      isSearching: false,
+      isRecordsLoading: false,
+      isSummaryLoading: false,
+      updateDraft: vi.fn(),
+      resetDraft: vi.fn(),
+      setFocus: vi.fn(),
+      search: vi.fn(),
+      setPage: vi.fn(),
+      setPageSize: vi.fn(),
+      setSort: vi.fn(),
+    })
+
+    render(<RecordsPage />)
+
+    const input = host?.querySelector('#records-filter-model')
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error('missing model input')
+    }
+
+    act(() => {
+      input.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      input.focus()
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300)
+    })
+    await flushAsync()
+    expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      input.blur()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await flushAsync()
+
+    act(() => {
+      resolveFirst?.(
+        createSuggestions({
+          model: {
+            items: [{ value: 'alp-stale', count: 1 }],
+            hasMore: false,
+          },
+        }),
+      )
+    })
+    await flushAsync()
+
+    act(() => {
+      input.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      input.focus()
+    })
+    await flushAsync()
+
+    expect(host?.textContent).not.toContain('alp-stale')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300)
+    })
+    await flushAsync()
+
+    expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(2)
+    expect(host?.textContent).toContain('alp-fresh')
+    expect(host?.textContent).not.toContain('alp-stale')
   })
 })
