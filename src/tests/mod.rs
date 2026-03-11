@@ -11417,7 +11417,7 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     .await;
 
     let before_pruned_at = Utc::now() - ChronoDuration::seconds(5);
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run retention prune");
     let after_pruned_at = Utc::now() + ChronoDuration::seconds(5);
@@ -11589,7 +11589,7 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
     let before = query_combined_totals(&pool, None, StatsFilter::All, InvocationSourceScope::All)
         .await
         .expect("query totals before retention");
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run retention archive");
     let after = query_combined_totals(&pool, None, StatsFilter::All, InvocationSourceScope::All)
@@ -11660,7 +11660,7 @@ async fn retention_archives_forward_proxy_attempts_and_stats_snapshots() {
     insert_stats_source_snapshot_row(&pool, &old_captured_at, &old_captured_at[..10]).await;
     insert_stats_source_snapshot_row(&pool, &recent_captured_at, &recent_captured_at[..10]).await;
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run timestamped retention");
     assert_eq!(summary.forward_proxy_attempt_rows_archived, 1);
@@ -11714,7 +11714,7 @@ async fn retention_compacts_old_quota_snapshots_by_shanghai_day() {
     seed_quota_snapshot(&pool, &same_day_late).await;
     seed_quota_snapshot(&pool, &next_day).await;
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run quota compaction");
     assert_eq!(summary.quota_snapshot_rows_archived, 1);
@@ -11744,7 +11744,7 @@ async fn retention_orphan_sweep_skips_fresh_raw_files() {
     let orphan = config.proxy_raw_dir.join("fresh-orphan.bin");
     fs::write(&orphan, b"fresh-orphan").expect("write fresh orphan");
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("run retention with fresh orphan");
     assert_eq!(summary.orphan_raw_files_removed, 0);
@@ -11828,7 +11828,7 @@ async fn retention_dry_run_does_not_mutate_database_or_files() {
     )
     .await;
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(true))
+    let summary = run_data_retention_maintenance(&pool, &config, Some(true), None)
         .await
         .expect("run dry-run retention");
     assert!(summary.dry_run);
@@ -11953,11 +11953,32 @@ while True: time.sleep(0.1)",
     );
 }
 #[tokio::test]
+async fn spawn_http_server_leaves_health_unready_until_runtime_declares_readiness() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (addr, server_handle) = spawn_http_server(state.clone())
+        .await
+        .expect("spawn http server");
+
+    assert!(
+        !state.startup_ready.load(Ordering::Acquire),
+        "HTTP startup should not mark the app ready before runtime startup completes"
+    );
+    let response = reqwest::get(format!("http://{addr}/health"))
+        .await
+        .expect("health endpoint should respond while startup is incomplete");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    state.shutdown.cancel();
+    server_handle.await.expect("http server task should join");
+}
+
+#[tokio::test]
 async fn http_server_graceful_shutdown_stops_accepting_new_connections() {
     let state = test_state_from_config(test_config(), false).await;
     let (addr, server_handle) = spawn_http_server(state.clone())
         .await
         .expect("spawn http server");
+    state.startup_ready.store(true, Ordering::Release);
 
     let healthy_response = reqwest::get(format!("http://{addr}/health"))
         .await
@@ -12072,39 +12093,6 @@ async fn scheduler_does_not_start_a_new_poll_after_shutdown_while_waiting_for_pe
         "shutdown should prevent a queued follow-up poll from starting once the permit is released"
     );
     crs_handle.abort();
-}
-
-#[tokio::test]
-async fn run_maintenance_pass_until_shutdown_interrupts_long_running_work() {
-    let cancel = CancellationToken::new();
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-
-    let handle = tokio::spawn({
-        let cancel = cancel.clone();
-        async move {
-            run_maintenance_pass_until_shutdown(&cancel, "test_maintenance", "tick", async move {
-                started_tx
-                    .send(())
-                    .expect("maintenance pass should report when it starts");
-                std::future::pending::<()>().await;
-            })
-            .await
-        }
-    });
-
-    started_rx
-        .await
-        .expect("maintenance pass should begin before shutdown");
-    cancel.cancel();
-
-    let result = tokio::time::timeout(Duration::from_secs(1), handle)
-        .await
-        .expect("maintenance helper should stop waiting once shutdown begins")
-        .expect("maintenance helper task should join cleanly");
-    assert!(
-        result.is_none(),
-        "shutdown should stop waiting for the in-flight maintenance pass"
-    );
 }
 
 #[tokio::test]

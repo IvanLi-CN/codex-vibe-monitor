@@ -1169,13 +1169,22 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
     let mut subscription_proxy_urls = Vec::new();
     let mut fetched_any_subscription = false;
     for subscription_url in &subscription_urls {
-        match fetch_subscription_proxy_urls(
-            &state.http_clients.shared,
-            subscription_url,
-            state.config.request_timeout,
-        )
-        .await
-        {
+        if state.shutdown.is_cancelled() {
+            info!("stopping forward proxy subscription refresh because shutdown is in progress");
+            return Ok(());
+        }
+        let fetch_result = tokio::select! {
+            _ = state.shutdown.cancelled() => {
+                info!("stopping forward proxy subscription refresh because shutdown is in progress");
+                return Ok(());
+            }
+            result = fetch_subscription_proxy_urls(
+                &state.http_clients.shared,
+                subscription_url,
+                state.config.request_timeout,
+            ) => result,
+        };
+        match fetch_result {
             Ok(urls) => {
                 fetched_any_subscription = true;
                 subscription_proxy_urls.extend(urls);
@@ -1193,10 +1202,20 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
     if !subscription_urls.is_empty() && !fetched_any_subscription {
         bail!("all forward proxy subscriptions failed to refresh");
     }
+    if state.shutdown.is_cancelled() {
+        info!("stopping forward proxy subscription refresh because shutdown is in progress");
+        return Ok(());
+    }
 
     let _refresh_guard = state.forward_proxy_subscription_refresh_lock.lock().await;
     let added_subscription_endpoints = {
         let mut manager = state.forward_proxy.lock().await;
+        if state.shutdown.is_cancelled() {
+            info!(
+                "stopping forward proxy subscription refresh before applying refreshed endpoints because shutdown is in progress"
+            );
+            return Ok(());
+        }
         if manager.settings.subscription_urls != subscription_urls {
             debug!("skip stale forward proxy subscription refresh after settings changed");
             return Ok(());

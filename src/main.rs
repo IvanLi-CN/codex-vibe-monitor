@@ -461,7 +461,8 @@ async fn main() -> Result<()> {
     log_startup_phase("schema", schema_started_at);
     if cli.retention_run_once {
         let summary =
-            run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run)).await?;
+            run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run), None)
+                .await?;
         info!(?summary, "retention maintenance run-once finished");
         return Ok(());
     }
@@ -825,11 +826,6 @@ where
             shutdown_requested
         }
     };
-    log_startup_phase("http_ready", http_ready_started_at);
-    info!(
-        time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
-        "application readiness reached"
-    );
     if http_shutdown_requested {
         return drain_runtime_after_pending_shutdown(
             state,
@@ -885,6 +881,13 @@ where
         .await;
     }
 
+    state.startup_ready.store(true, Ordering::Release);
+    log_startup_phase("http_ready", http_ready_started_at);
+    info!(
+        time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
+        "application readiness reached"
+    );
+
     tokio::select! {
         biased;
         _ = shutdown_signal => begin_runtime_shutdown(&cancel),
@@ -907,24 +910,6 @@ fn begin_runtime_shutdown(cancel: &CancellationToken) {
     if !cancel.is_cancelled() {
         info!("shutdown signal received; beginning graceful shutdown");
         cancel.cancel();
-    }
-}
-
-async fn run_maintenance_pass_until_shutdown<T, F>(
-    cancel: &CancellationToken,
-    task: &'static str,
-    phase: &'static str,
-    future: F,
-) -> Option<T>
-where
-    F: Future<Output = T>,
-{
-    tokio::select! {
-        _ = cancel.cancelled() => {
-            info!(task, phase, "maintenance pass stopped because shutdown is in progress");
-            None
-        }
-        result = future => Some(result),
     }
 }
 
@@ -1332,8 +1317,15 @@ async fn save_startup_backfill_progress(
     Ok(())
 }
 
-async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>) {
+async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &CancellationToken) {
     for task in StartupBackfillTask::ordered_tasks() {
+        if cancel.is_cancelled() {
+            info!(
+                task = task.log_label(),
+                "startup backfill maintenance stopped at a task boundary because shutdown is in progress"
+            );
+            break;
+        }
         if *task == StartupBackfillTask::ProxyUsage && !state.config.proxy_usage_backfill_on_startup
         {
             debug!(
@@ -1652,16 +1644,13 @@ fn spawn_startup_backfill_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if run_maintenance_pass_until_shutdown(
-            &cancel,
-            "startup_backfill",
-            "startup",
-            run_startup_backfill_maintenance_pass(state.clone()),
-        )
-        .await
-        .is_none()
-        {
-            return;
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                info!("startup backfill maintenance skipped because shutdown is already in progress");
+                return;
+            }
+            _ = run_startup_backfill_maintenance_pass(state.clone(), &cancel) => {}
         }
 
         let mut ticker = interval(Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
@@ -1675,17 +1664,7 @@ fn spawn_startup_backfill_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    if run_maintenance_pass_until_shutdown(
-                        &cancel,
-                        "startup_backfill",
-                        "tick",
-                        run_startup_backfill_maintenance_pass(state.clone()),
-                    )
-                    .await
-                    .is_none()
-                    {
-                        break;
-                    }
+                    run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
                 }
             }
         }
@@ -1748,22 +1727,21 @@ fn spawn_forward_proxy_maintenance(
             let manager = state.forward_proxy.lock().await;
             snapshot_known_subscription_proxy_keys(&manager)
         };
-        let startup_refresh = run_maintenance_pass_until_shutdown(
-            &cancel,
-            "forward_proxy_refresh",
-            "startup",
-            refresh_forward_proxy_subscriptions(
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                info!("forward proxy maintenance skipped because shutdown is already in progress");
+                return;
+            }
+            result = refresh_forward_proxy_subscriptions(
                 state.clone(),
                 true,
                 Some(startup_known_subscription_keys),
-            ),
-        )
-        .await;
-        let Some(startup_refresh) = startup_refresh else {
-            return;
-        };
-        if let Err(err) = startup_refresh {
-            warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
+            ) => {
+                if let Err(err) = result {
+                    warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
+                }
+            }
         }
 
         let mut ticker = interval(Duration::from_secs(60));
@@ -1775,17 +1753,7 @@ fn spawn_forward_proxy_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    let refresh = run_maintenance_pass_until_shutdown(
-                        &cancel,
-                        "forward_proxy_refresh",
-                        "tick",
-                        refresh_forward_proxy_subscriptions(state.clone(), false, None),
-                    )
-                    .await;
-                    let Some(refresh) = refresh else {
-                        break;
-                    };
-                    if let Err(err) = refresh {
+                    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
                         warn!(error = %err, "failed to refresh forward proxy subscriptions");
                     }
                 }
@@ -2026,18 +1994,17 @@ fn spawn_data_retention_maintenance(
             return;
         }
 
-        let startup_run = run_maintenance_pass_until_shutdown(
-            &cancel,
-            "data_retention",
-            "startup",
-            run_data_retention_maintenance(&state.pool, &state.config, None),
-        )
-        .await;
-        let Some(startup_run) = startup_run else {
-            return;
-        };
-        if let Err(err) = startup_run {
-            warn!(error = %err, "failed to run retention maintenance at startup");
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                info!("data retention maintenance skipped because shutdown is already in progress");
+                return;
+            }
+            result = run_data_retention_maintenance(&state.pool, &state.config, None, Some(&cancel)) => {
+                if let Err(err) = result {
+                    warn!(error = %err, "failed to run retention maintenance at startup");
+                }
+            }
         }
 
         let mut ticker = interval(state.config.retention_interval);
@@ -2050,17 +2017,12 @@ fn spawn_data_retention_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    let maintenance = run_maintenance_pass_until_shutdown(
-                        &cancel,
-                        "data_retention",
-                        "tick",
-                        run_data_retention_maintenance(&state.pool, &state.config, None),
-                    )
-                    .await;
-                    let Some(maintenance) = maintenance else {
-                        break;
-                    };
-                    if let Err(err) = maintenance {
+                    if let Err(err) = run_data_retention_maintenance(
+                        &state.pool,
+                        &state.config,
+                        None,
+                        Some(&cancel),
+                    ).await {
                         warn!(error = %err, "failed to run retention maintenance");
                     }
                 }
@@ -2069,10 +2031,21 @@ fn spawn_data_retention_maintenance(
     })
 }
 
+fn should_stop_data_retention_maintenance(shutdown: Option<&CancellationToken>) -> bool {
+    let should_stop = shutdown.is_some_and(CancellationToken::is_cancelled);
+    if should_stop {
+        info!(
+            "data retention maintenance stopped at a safe boundary because shutdown is in progress"
+        );
+    }
+    should_stop
+}
+
 async fn run_data_retention_maintenance(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     dry_run_override: Option<bool>,
+    shutdown: Option<&CancellationToken>,
 ) -> Result<RetentionRunSummary> {
     let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
     let mut summary = RetentionRunSummary {
@@ -2081,17 +2054,29 @@ async fn run_data_retention_maintenance(
     };
     let raw_path_fallback_root = config.database_path.parent();
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let pruned =
         prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await?;
     summary.invocation_details_pruned += pruned.0;
     summary.archive_batches_touched += pruned.1;
     summary.raw_files_removed += pruned.2;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let invocation_archive =
         archive_old_invocations(pool, config, raw_path_fallback_root, dry_run).await?;
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
 
     let proxy_archive = archive_timestamped_dataset(
         pool,
@@ -2105,6 +2090,10 @@ async fn run_data_retention_maintenance(
     summary.forward_proxy_attempt_rows_archived += proxy_archive.0;
     summary.archive_batches_touched += proxy_archive.1;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let snapshot_archive = archive_timestamped_dataset(
         pool,
         config,
@@ -2117,12 +2106,24 @@ async fn run_data_retention_maintenance(
     summary.stats_source_snapshot_rows_archived += snapshot_archive.0;
     summary.archive_batches_touched += snapshot_archive.1;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let quota_archive = compact_old_quota_snapshots(pool, config, dry_run).await?;
     summary.quota_snapshot_rows_archived += quota_archive.0;
     summary.archive_batches_touched += quota_archive.1;
 
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     summary.orphan_raw_files_removed +=
         sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, dry_run).await?;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
 
     if !dry_run && summary.touched_anything() {
         sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
@@ -3271,7 +3272,6 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
     let listener = TcpListener::bind(&state.config.http_bind).await?;
     let addr = listener.local_addr()?;
     info!(%addr, "http server listening");
-    state.startup_ready.store(true, Ordering::Release);
 
     let shutdown = state.shutdown.clone();
     let handle = tokio::spawn(async move {
