@@ -10,7 +10,7 @@
     "test": "vitest run src",
     "preview": "vite preview",
     "test:e2e": "playwright test",
-    "storybook": "storybook dev -p 6006",
+    "storybook": "node scripts/run-storybook.mjs",
     "build-storybook": "storybook build"
   },
   "dependencies": {
