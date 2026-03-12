@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "implementation_profile": "final",
   "policy": {
     "baseline_policy": "explicit-waiver-required",
     "require_signed_commits": true,

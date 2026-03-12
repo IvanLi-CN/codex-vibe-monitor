@@ -13,6 +13,17 @@ python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
   --metadata-script "$repo_root/.github/scripts/metadata_gate.py" \
   --profile bootstrap
 
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+  --repo-root "$repo_root" \
+  --declaration "$repo_root/.github/quality-gates.json" \
+  --metadata-script "$repo_root/.github/scripts/metadata_gate.py" \
+  --profile final >/dev/null 2>"$tmp_dir/profile-mismatch.log"; then
+  echo "expected bootstrap declaration to reject final profile validation" >&2
+  exit 1
+fi
+
+grep -q "implementation_profile='bootstrap' does not match workflow profile 'final'" "$tmp_dir/profile-mismatch.log"
+
 baseline_repo="$tmp_dir/baseline-repo"
 cp -R "$repo_root/." "$baseline_repo"
 cp "$fixtures_root/quality-gates.json" "$baseline_repo/.github/quality-gates.json"

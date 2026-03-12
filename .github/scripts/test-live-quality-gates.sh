@@ -124,6 +124,44 @@ fi
 grep -q "bypass actor verification unavailable without explicit waiver" "$fixtures_dir/.legacy-bypass.log"
 rm -f "$fixtures_dir/.legacy-bypass.log" "$legacy_rules"
 
+python3 - <<'PY' "$script" "$fixtures_dir/rules-main-ok.json" "$declaration"
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+script_path = Path(sys.argv[1])
+payload_path = Path(sys.argv[2])
+declaration_path = Path(sys.argv[3])
+spec = importlib.util.spec_from_file_location("check_live_quality_gates", script_path)
+module = importlib.util.module_from_spec(spec)
+assert spec is not None and spec.loader is not None
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+nested = json.loads(payload_path.read_text())
+flat = []
+for rule in nested[0]["rules"]:
+    item = dict(rule)
+    item["ruleset_id"] = nested[0]["id"]
+    item["ruleset_source_type"] = nested[0]["source_type"]
+    item["ruleset_source"] = nested[0]["source"]
+    flat.append(item)
+
+rules, rulesets, refs = module.extract_rules(flat)
+assert not rulesets, f"expected no nested rulesets, got {rulesets!r}"
+assert [ref.ruleset_id for ref in refs] == [nested[0]["id"]], refs
+
+module.fetch_ruleset = lambda *_args, **_kwargs: nested[0]
+hydrated = [
+    module.fetch_ruleset("https://api.github.com", "IvanLi-CN", "codex-vibe-monitor", ref.ruleset_id)
+    for ref in refs
+]
+errors, notes = module.validate_rules(json.loads(declaration_path.read_text()), rules, hydrated, "main")
+assert errors == [], f"expected hydrated flat rules to pass, got {errors!r}"
+assert notes == [], f"expected no notes for hydrated flat rules, got {notes!r}"
+PY
+
 linear_history_rules="$fixtures_dir/.rules-main-linear-history.json"
 python3 - <<'PY' "$fixtures_dir/rules-main-ok.json" "$linear_history_rules"
 import json
@@ -198,6 +236,7 @@ script_path = Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("check_live_quality_gates", script_path)
 module = importlib.util.module_from_spec(spec)
 assert spec is not None and spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 calls = []

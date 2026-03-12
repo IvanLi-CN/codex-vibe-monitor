@@ -8,6 +8,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,13 @@ API_VERSION = "2022-11-28"
 
 class ValidationError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class RulesetRef:
+    ruleset_id: int
+    source_type: str | None
+    source: str | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,6 +113,10 @@ def fetch_branch_rules(api_root: str, owner: str, repo: str, branch: str) -> Any
         repo=urllib.parse.quote(repo, safe=""),
         branch=urllib.parse.quote(branch, safe=""),
     )
+    return fetch_paged_json(api_root, base_path)
+
+
+def github_headers() -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "codex-vibe-monitor-quality-gates-live-check/1.0",
@@ -113,20 +125,28 @@ def fetch_branch_rules(api_root: str, owner: str, repo: str, branch: str) -> Any
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def fetch_json(api_root: str, path: str) -> Any:
+    url = api_root.rstrip("/") + path
+    request = urllib.request.Request(url, headers=github_headers())
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ValidationError(f"GitHub API request failed ({exc.code}): {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise ValidationError(f"GitHub API request failed: {exc.reason}") from exc
+
+
+def fetch_paged_json(api_root: str, base_path: str) -> list[Any]:
     rules: list[Any] = []
     page = 1
     while True:
         query = urllib.parse.urlencode({"per_page": 100, "page": page})
-        url = api_root.rstrip("/") + base_path + "?" + query
-        request = urllib.request.Request(url, headers=headers)
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                payload = json.load(response)
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise ValidationError(f"GitHub API request failed ({exc.code}): {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise ValidationError(f"GitHub API request failed: {exc.reason}") from exc
+        payload = fetch_json(api_root, base_path + "?" + query)
 
         if isinstance(payload, dict) and isinstance(payload.get("data"), list):
             page_rules = payload["data"]
@@ -143,13 +163,57 @@ def fetch_branch_rules(api_root: str, owner: str, repo: str, branch: str) -> Any
     return rules
 
 
-def extract_rules(payload: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def fetch_ruleset(api_root: str, owner: str, repo: str, ruleset_id: int) -> dict[str, Any]:
+    path = "/repos/{owner}/{repo}/rulesets/{ruleset_id}".format(
+        owner=urllib.parse.quote(owner, safe=""),
+        repo=urllib.parse.quote(repo, safe=""),
+        ruleset_id=ruleset_id,
+    )
+    payload = fetch_json(api_root, path)
+    if not isinstance(payload, dict):
+        raise ValidationError(f"Unsupported GitHub ruleset payload type for ruleset {ruleset_id}")
+    if "bypass_actors" not in payload:
+        payload["bypass_actors"] = []
+    return payload
+
+
+def ruleset_ref_label(ref: RulesetRef) -> str:
+    if ref.source:
+        return f"ruleset:{ref.ruleset_id}@{ref.source}"
+    return f"ruleset:{ref.ruleset_id}"
+
+
+def placeholder_ruleset(ref: RulesetRef) -> dict[str, Any]:
+    payload: dict[str, Any] = {"id": ref.ruleset_id}
+    if ref.source_type:
+        payload["source_type"] = ref.source_type
+    if ref.source:
+        payload["source"] = ref.source
+    return payload
+
+
+def merge_ruleset_ref(existing: RulesetRef, item: dict[str, Any]) -> RulesetRef:
+    source_type = existing.source_type
+    raw_source_type = item.get("ruleset_source_type") or item.get("source_type")
+    if source_type is None and isinstance(raw_source_type, str) and raw_source_type:
+        source_type = raw_source_type
+
+    source = existing.source
+    raw_source = item.get("ruleset_source") or item.get("source")
+    if source is None and isinstance(raw_source, str) and raw_source:
+        source = raw_source
+
+    return RulesetRef(ruleset_id=existing.ruleset_id, source_type=source_type, source=source)
+
+
+def extract_rules(payload: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[RulesetRef]]:
     if isinstance(payload, dict) and isinstance(payload.get("data"), list):
         payload = payload["data"]
     if not isinstance(payload, list):
         raise ValidationError("Unsupported GitHub branch rules payload type")
     rules: list[dict[str, Any]] = []
     rulesets: list[dict[str, Any]] = []
+    unresolved_rulesets: dict[int, RulesetRef] = {}
     for item in payload:
         if not isinstance(item, dict):
             continue
@@ -162,9 +226,17 @@ def extract_rules(payload: Any) -> tuple[list[dict[str, Any]], list[dict[str, An
             continue
         if isinstance(item.get("type"), str):
             rules.append(item)
+        raw_ruleset_id = item.get("ruleset_id")
+        if isinstance(raw_ruleset_id, int):
+            current = unresolved_rulesets.get(raw_ruleset_id) or RulesetRef(
+                ruleset_id=raw_ruleset_id,
+                source_type=None,
+                source=None,
+            )
+            unresolved_rulesets[raw_ruleset_id] = merge_ruleset_ref(current, item)
     if not rules:
         raise ValidationError("GitHub branch rules payload did not contain any typed rules")
-    return rules, rulesets
+    return rules, rulesets, sorted(unresolved_rulesets.values(), key=lambda ref: ref.ruleset_id)
 
 
 def ruleset_label(ruleset: dict[str, Any]) -> str:
@@ -173,6 +245,9 @@ def ruleset_label(ruleset: dict[str, Any]) -> str:
         return name
     ruleset_id = ruleset.get("id")
     if isinstance(ruleset_id, int):
+        source = ruleset.get("source")
+        if isinstance(source, str) and source:
+            return f"ruleset:{ruleset_id}@{source}"
         return f"ruleset:{ruleset_id}"
     source = ruleset.get("source")
     if isinstance(source, str) and source:
@@ -529,11 +604,36 @@ def main() -> int:
         notes: list[str] = []
         checked_rules: dict[str, list[str]] = {}
         for branch in branches:
-            rules, rulesets = extract_rules(
+            rules, rulesets, unresolved_rulesets = extract_rules(
                 rules_fixture if rules_fixture is not None else fetch_branch_rules(args.api_root, owner, repo, branch)
             )
+            hydrated_rulesets = list(rulesets)
+            known_ruleset_ids = {
+                item["id"] for item in hydrated_rulesets if isinstance(item.get("id"), int)
+            }
+            for ref in unresolved_rulesets:
+                if ref.ruleset_id in known_ruleset_ids:
+                    continue
+                if rules_fixture is None:
+                    ruleset_payload = fetch_ruleset(args.api_root, owner, repo, ref.ruleset_id)
+                    if ruleset_payload.get("id") != ref.ruleset_id:
+                        raise ValidationError(
+                            f"GitHub ruleset payload drifted for {ruleset_ref_label(ref)}"
+                        )
+                    if ref.source and not ruleset_payload.get("source"):
+                        ruleset_payload["source"] = ref.source
+                    if ref.source_type and not ruleset_payload.get("source_type"):
+                        ruleset_payload["source_type"] = ref.source_type
+                    hydrated_rulesets.append(ruleset_payload)
+                    known_ruleset_ids.add(ref.ruleset_id)
+                    continue
+                hydrated_rulesets.append(placeholder_ruleset(ref))
+                notes.append(
+                    f"{branch}: ruleset details unavailable for {ruleset_ref_label(ref)} when using a local fixture"
+                )
+                known_ruleset_ids.add(ref.ruleset_id)
             checked_rules[branch] = sorted({rule.get("type", "") for rule in rules})
-            branch_errors, branch_notes = validate_rules(declaration, rules, rulesets, branch)
+            branch_errors, branch_notes = validate_rules(declaration, rules, hydrated_rulesets, branch)
             errors.extend(branch_errors)
             notes.extend(branch_notes)
     except ValidationError as exc:

@@ -20,6 +20,7 @@ class ContractError(RuntimeError):
 
 @dataclass(frozen=True)
 class ContractModel:
+    implementation_profile: str
     required_checks: set[str]
     informational_checks: set[str]
     status_check_integrations: dict[str, int]
@@ -314,6 +315,11 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
     )
 
     require(payload.get("schema_version") == 1, "quality-gates.json: schema_version must be 1")
+    implementation_profile = payload.get("implementation_profile")
+    require(
+        implementation_profile in {"bootstrap", "final"},
+        "quality-gates.json: implementation_profile must be 'bootstrap' or 'final'",
+    )
     require(policy.get("baseline_policy") == "explicit-waiver-required", "quality-gates.json: baseline_policy drifted")
     require(policy.get("require_signed_commits") is True, "quality-gates.json: require_signed_commits must be true")
     require(branch_policy.get("protected_branches") == ["main"], "quality-gates.json: protected_branches drifted")
@@ -435,6 +441,7 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
             "quality-gates.json: waivers must include a non-empty reason",
         )
     return ContractModel(
+        implementation_profile=implementation_profile,
         required_checks=required_checks,
         informational_checks=informational_checks,
         status_check_integrations=normalized_integrations,
@@ -961,6 +968,10 @@ def main() -> int:
         profile = "final" if not args.repo_root and args.profile == "auto" else args.profile
         if profile == "auto":
             profile = detect_profile(repo_root)
+        require(
+            profile == contract.implementation_profile,
+            f"quality-gates.json: implementation_profile={contract.implementation_profile!r} does not match workflow profile {profile!r}",
+        )
         if profile == "final":
             validate_ci(repo_root / ".github" / "workflows" / "ci.yml", contract)
             validate_label_gate(repo_root / ".github" / "workflows" / "label-gate.yml", contract)
