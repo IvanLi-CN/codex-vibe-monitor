@@ -3,7 +3,6 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './AppLayout'
 import { I18nProvider } from '../i18n'
-import { ThemeProvider } from '../theme'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
 
 class MockEventSource implements EventTarget {
@@ -139,65 +138,63 @@ const meta = {
   tags: ['autodocs'],
   decorators: [
     (Story) => (
-      <ThemeProvider>
-        <I18nProvider>
-          <StorybookAppShellMock>
-            <MemoryRouter initialEntries={['/account-pool/upstream-accounts']}>
-              <Routes>
-                <Route path="/" element={<Story />}>
-                  <Route
-                    path="dashboard"
-                    element={
-                      <MockPage
-                        title="Dashboard overview"
-                        description="Global site layout preview with dashboard content mounted in the outlet."
-                      />
-                    }
-                  />
-                  <Route
-                    path="stats"
-                    element={
-                      <MockPage
-                        title="Stats workspace"
-                        description="The same app shell can host time-series analytics and quota summaries."
-                      />
-                    }
-                  />
-                  <Route
-                    path="live"
-                    element={
-                      <MockPage
-                        title="Live monitor"
-                        description="Realtime stream tables render inside the same site-wide shell."
-                      />
-                    }
-                  />
-                  <Route path="account-pool" element={<AccountPoolLayout />}>
-                    <Route
-                      path="upstream-accounts"
-                      element={
-                        <MockPage
-                          title="Account Pool module active"
-                          description="This story shows the whole site shell while the account-pool module is the active top-level tab."
-                        />
-                      }
+      <I18nProvider>
+        <StorybookAppShellMock>
+          <MemoryRouter initialEntries={['/account-pool/upstream-accounts']}>
+            <Routes>
+              <Route path="/" element={<Story />}>
+                <Route
+                  path="dashboard"
+                  element={
+                    <MockPage
+                      title="Dashboard overview"
+                      description="Global site layout preview with dashboard content mounted in the outlet."
                     />
-                  </Route>
+                  }
+                />
+                <Route
+                  path="stats"
+                  element={
+                    <MockPage
+                      title="Stats workspace"
+                      description="The same app shell can host time-series analytics and quota summaries."
+                    />
+                  }
+                />
+                <Route
+                  path="live"
+                  element={
+                    <MockPage
+                      title="Live monitor"
+                      description="Realtime stream tables render inside the same site-wide shell."
+                    />
+                  }
+                />
+                <Route path="account-pool" element={<AccountPoolLayout />}>
                   <Route
-                    path="settings"
+                    path="upstream-accounts"
                     element={
                       <MockPage
-                        title="Settings panel"
-                        description="Global controls and feature toggles remain framed by the same app shell."
+                        title="Account Pool module active"
+                        description="This story shows the whole site shell while the account-pool module is the active top-level tab."
                       />
                     }
                   />
                 </Route>
-              </Routes>
-            </MemoryRouter>
-          </StorybookAppShellMock>
-        </I18nProvider>
-      </ThemeProvider>
+                <Route
+                  path="settings"
+                  element={
+                    <MockPage
+                      title="Settings panel"
+                      description="Global controls and feature toggles remain framed by the same app shell."
+                    />
+                  }
+                />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </StorybookAppShellMock>
+      </I18nProvider>
     ),
   ],
   parameters: {
