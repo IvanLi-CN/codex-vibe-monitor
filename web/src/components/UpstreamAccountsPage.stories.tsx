@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { userEvent, within, expect } from 'storybook/test'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
 import type {
@@ -426,4 +427,17 @@ type Story = StoryObj<typeof meta>
 
 export const Operational: Story = {
   render: () => <UpstreamAccountsPage />,
+}
+
+export const DetailDrawer: Story = {
+  render: () => <UpstreamAccountsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const openButton = await canvas.findByRole('button', {
+      name: /打开详情/i,
+    })
+    await userEvent.click(openButton)
+    await expect(documentScope.getByRole('dialog', { name: /Codex Pro - Tokyo/i })).toBeInTheDocument()
+  },
 }

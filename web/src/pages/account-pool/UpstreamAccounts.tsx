@@ -215,18 +215,11 @@ export default function UpstreamAccountsPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
-  const [hasDrawerInteracted, setHasDrawerInteracted] = useState(false)
   const popupRef = useRef<Window | null>(null)
 
   useEffect(() => {
     setDraft(buildDraft(detail))
   }, [detail])
-
-  useEffect(() => {
-    if (selectedId != null && !hasDrawerInteracted) {
-      setIsDetailDrawerOpen(true)
-    }
-  }, [hasDrawerInteracted, selectedId])
 
   useEffect(() => {
     if (!selectedSummary && !detail) {
@@ -300,12 +293,10 @@ export default function UpstreamAccountsPage() {
       ? t('accountPool.upstreamAccounts.kind.oauth')
       : t('accountPool.upstreamAccounts.kind.apiKey')
   const handleSelectAccount = (accountId: number) => {
-    setHasDrawerInteracted(true)
     setIsDetailDrawerOpen(true)
     selectAccount(accountId)
   }
   const handleCloseDetailDrawer = () => {
-    setHasDrawerInteracted(true)
     setIsDetailDrawerOpen(false)
   }
 
