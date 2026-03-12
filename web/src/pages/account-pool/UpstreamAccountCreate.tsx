@@ -195,6 +195,9 @@ export default function UpstreamAccountCreatePage() {
     value: string,
   ) => {
     updateBatchRow(rowId, (row) => {
+      if (row.busyAction || row.session?.status === 'completed') {
+        return row
+      }
       const nextRow = {
         ...row,
         [field]: value,
@@ -214,6 +217,13 @@ export default function UpstreamAccountCreatePage() {
         actionError: field === 'callbackUrl' ? null : row.actionError,
       }
     })
+  }
+
+  const handleTabChange = (tab: CreateTab) => {
+    setActiveTab(tab)
+    if (isRelinking) return
+    const search = tab === 'oauth' ? '?mode=oauth' : `?mode=${tab}`
+    navigate(`${location.pathname}${search}`, { replace: true })
   }
 
   const handleGenerateOauthUrl = async () => {
@@ -498,7 +508,7 @@ export default function UpstreamAccountCreatePage() {
                   aria-selected={activeTab === tab}
                   className="segment-button"
                   data-active={activeTab === tab}
-                  onClick={() => setActiveTab(tab)}
+                  onClick={() => handleTabChange(tab)}
                 >
                   {tab === 'oauth'
                     ? t('accountPool.upstreamAccounts.createPage.tabs.oauth')
@@ -709,6 +719,7 @@ export default function UpstreamAccountCreatePage() {
                             const isCompleted = status === 'completed'
                             const isPending = status === 'pending'
                             const isBusy = row.busyAction != null
+                            const rowLocked = isBusy || isCompleted
                             const authUrl = row.session?.authUrl ?? ''
                             return (
                               <Fragment key={row.id}>
@@ -722,7 +733,7 @@ export default function UpstreamAccountCreatePage() {
                                       <Input
                                         name={`batchOauthDisplayName-${row.id}`}
                                         value={row.displayName}
-                                        disabled={isCompleted}
+                                        disabled={rowLocked}
                                         onChange={(event) => handleBatchMetadataChange(row.id, 'displayName', event.target.value)}
                                       />
                                     </label>
@@ -737,6 +748,7 @@ export default function UpstreamAccountCreatePage() {
                                       emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
                                       createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
                                       onValueChange={(value) => handleBatchMetadataChange(row.id, 'groupName', value)}
+                                      disabled={rowLocked}
                                       className="min-w-[13rem] whitespace-nowrap"
                                       triggerClassName="whitespace-nowrap"
                                     />
@@ -747,7 +759,7 @@ export default function UpstreamAccountCreatePage() {
                                       <Input
                                         name={`batchOauthNote-${row.id}`}
                                         value={row.note}
-                                        disabled={isCompleted}
+                                        disabled={rowLocked}
                                         onChange={(event) => handleBatchMetadataChange(row.id, 'note', event.target.value)}
                                       />
                                     </label>
@@ -824,7 +836,7 @@ export default function UpstreamAccountCreatePage() {
                                       <Input
                                         name={`batchOauthCallbackUrl-${row.id}`}
                                         value={row.callbackUrl}
-                                        disabled={isCompleted}
+                                        disabled={rowLocked}
                                         placeholder={t('accountPool.upstreamAccounts.oauth.callbackUrlPlaceholder')}
                                         onChange={(event) => handleBatchMetadataChange(row.id, 'callbackUrl', event.target.value)}
                                       />

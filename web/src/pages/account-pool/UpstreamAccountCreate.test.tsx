@@ -168,6 +168,18 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(host?.textContent).toContain('Batch Codex OAuth onboarding')
   })
 
+  it('updates the query-backed mode when tabs change', () => {
+    mockUpstreamAccounts()
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    clickButton(/^API key$/i)
+
+    expect(navigateMock).toHaveBeenCalledWith('/account-pool/upstream-accounts/new?mode=apiKey', {
+      replace: true,
+    })
+    expect(host?.textContent).toContain('Codex API key account')
+  })
+
   it('forces relink flows back to single oauth mode', () => {
     mockUpstreamAccounts()
     render('/account-pool/upstream-accounts/new?accountId=5&mode=batchOauth')
