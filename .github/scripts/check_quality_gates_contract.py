@@ -183,6 +183,77 @@ def script_body(step: dict[str, Any], where: str) -> str:
     return script
 
 
+def strip_js_comments(script: str) -> str:
+    result: list[str] = []
+    index = 0
+    length = len(script)
+    in_single = False
+    in_double = False
+    in_template = False
+    escape = False
+
+    while index < length:
+        char = script[index]
+        next_char = script[index + 1] if index + 1 < length else ""
+
+        if in_single:
+            result.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == "'":
+                in_single = False
+            index += 1
+            continue
+
+        if in_double:
+            result.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_double = False
+            index += 1
+            continue
+
+        if in_template:
+            result.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == "`":
+                in_template = False
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            index += 2
+            while index < length and script[index] != "\n":
+                index += 1
+            continue
+
+        if char == "/" and next_char == "*":
+            index += 2
+            while index + 1 < length and not (script[index] == "*" and script[index + 1] == "/"):
+                index += 1
+            index += 2
+            continue
+
+        result.append(char)
+        if char == "'":
+            in_single = True
+        elif char == '"':
+            in_double = True
+        elif char == "`":
+            in_template = True
+        index += 1
+
+    return "".join(result)
+
+
 def validate_quality_gates(payload: dict[str, Any]) -> None:
     policy = require_mapping(payload.get("policy"), "quality-gates.json.policy")
     branch_policy = require_mapping(policy.get("branch_protection"), "quality-gates.json.policy.branch_protection")
@@ -369,7 +440,7 @@ def validate_label_gate(path: Path) -> None:
     job = job_config(workflow, "label-gate", "Validate PR labels", "label-gate.yml")
     require_no_checkout(job, "label-gate.yml.jobs.label-gate")
     step = step_config(job, "Validate release intent labels", "label-gate.yml.jobs.label-gate")
-    script = script_body(step, "label-gate.yml.jobs.label-gate.steps['Validate release intent labels']")
+    script = strip_js_comments(script_body(step, "label-gate.yml.jobs.label-gate.steps['Validate release intent labels']"))
     require("github.rest.issues.get" in script, "label-gate.yml: label gate must read labels via github.rest.issues.get")
     require("channel:stable" in script, "label-gate.yml: label gate must enforce channel labels")
     require("type:patch" in script and "type:skip" in script, "label-gate.yml: label gate must enforce type labels")
@@ -396,7 +467,7 @@ def validate_review_policy(path: Path, declaration: dict[str, Any]) -> None:
     job = job_config(workflow, "review-policy", "Review Policy Gate", "review-policy.yml")
     require_no_checkout(job, "review-policy.yml.jobs.review-policy")
     step = step_config(job, "Evaluate review policy", "review-policy.yml.jobs.review-policy")
-    script = script_body(step, "review-policy.yml.jobs.review-policy.steps['Evaluate review policy']")
+    script = strip_js_comments(script_body(step, "review-policy.yml.jobs.review-policy.steps['Evaluate review policy']"))
     review_policy = declaration["policy"]["review_policy"]
     require("createCommitStatus" in script, "review-policy.yml: must keep legacy commit-status dual-write during rollout")
     require("GET /repos/{owner}/{repo}/collaborators/{username}/permission" in script, "review-policy.yml: collaborator permission lookup drifted")
