@@ -254,8 +254,8 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   const summarySnapshotId = summary?.snapshotId ?? null
 
   useEffect(() => {
-    if (!appliedRef.current || isSearching || !summary) return
-    if (summary.snapshotId !== appliedRef.current.snapshotId) return
+    if (!appliedRef.current || isSearching || summarySnapshotId === null) return
+    if (summarySnapshotId !== appliedRef.current.snapshotId) return
     const timer = window.setInterval(() => {
       if (!shouldPollRecordsSummary()) return
       const applied = appliedRef.current
@@ -282,7 +282,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         })
     }, RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [isSearching, summary, summarySnapshotId])
+  }, [isSearching, summarySnapshotId])
 
   const api = useMemo(
     () => ({

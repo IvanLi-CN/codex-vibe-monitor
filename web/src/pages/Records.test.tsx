@@ -80,6 +80,12 @@ function render(ui: React.ReactNode) {
   })
 }
 
+function rerender(ui: React.ReactNode) {
+  act(() => {
+    root?.render(ui)
+  })
+}
+
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve()
@@ -483,6 +489,84 @@ describe('RecordsPage new data action', () => {
 
     expect(button.dataset.state).toBe('idle')
     expect(button.disabled).toBe(false)
+  })
+
+  it('keeps the new-data button mounted during the minimum loading delay even after the count resets', async () => {
+    vi.useFakeTimers()
+
+    const search = vi.fn(() => Promise.resolve())
+    let state = {
+      draft: { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange(), model: 'alp' },
+      focus: 'token',
+      page: 1,
+      pageSize: 20,
+      sortBy: 'occurredAt',
+      sortOrder: 'desc',
+      records: { snapshotId: 42, total: 0, page: 1, pageSize: 20, records: [] },
+      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+      recordsError: null,
+      summaryError: null,
+      isSearching: false,
+      isRecordsLoading: false,
+      isSummaryLoading: false,
+      updateDraft: vi.fn(),
+      resetDraft: vi.fn(),
+      setFocus: vi.fn(),
+      search,
+      setPage: vi.fn(),
+      setPageSize: vi.fn(),
+      setSort: vi.fn(),
+    }
+
+    hookMocks.useInvocationRecords.mockImplementation(() => state)
+
+    render(<RecordsPage />)
+
+    act(() => {
+      getNewDataButton().click()
+    })
+    await flushAsync()
+
+    state = {
+      ...state,
+      records: { ...state.records, snapshotId: 84 },
+      summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 0 },
+    }
+    rerender(<RecordsPage />)
+    await flushAsync()
+
+    expect(getNewDataButton().dataset.state).toBe('loading')
+    expect(getNewDataButton().textContent).toContain('加载新数据')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600)
+    })
+    await flushAsync()
+
+    rerender(<RecordsPage />)
+    await flushAsync()
+
+    expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull()
+  })
+
+  it('hides stale summary metrics while a refreshed snapshot summary is still loading', () => {
+    mockInvocationRecords({
+      records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
+      summary: {
+        ...createSummary(),
+        snapshotId: 42,
+        token: {
+          ...createSummary().token,
+          requestCount: 999,
+        },
+      },
+      isSummaryLoading: true,
+    })
+
+    render(<RecordsPage />)
+
+    expect(host?.textContent).toContain('…')
+    expect(host?.textContent).not.toContain('999')
   })
 
   it('hides the new data button when there is no pending new data', () => {

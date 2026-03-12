@@ -65,6 +65,7 @@ export default function RecordsPage() {
   const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false)
   const [activeSuggestionField, setActiveSuggestionField] = useState<InvocationSuggestionField | null>(null)
   const [isNewDataRefreshPending, setIsNewDataRefreshPending] = useState(false)
+  const [cachedNewDataCount, setCachedNewDataCount] = useState(0)
   const suggestionQuery = useMemo(
     () => buildInvocationSuggestionsQuery(draft, appliedSnapshotId, activeSuggestionField ?? undefined),
     [activeSuggestionField, appliedSnapshotId, draft],
@@ -145,10 +146,13 @@ export default function RecordsPage() {
   const visiblePages = getVisiblePages(page, totalPages)
   const isCustomRange = draft.rangePreset === 'custom'
   const newRecordsCount = summary?.newRecordsCount ?? 0
+  const isNewDataLoading = isNewDataRefreshPending || isSearching
+  const displayNewDataCount = newRecordsCount > 0 ? newRecordsCount : cachedNewDataCount
+  const shouldShowNewDataButton = newRecordsCount > 0 || (isNewDataLoading && displayNewDataCount > 0)
+  const visibleSummary = summary && summary.snapshotId === records?.snapshotId ? summary : null
   const tableLoading = isRecordsLoading
   const listControlsDisabled = isSearching || isRecordsLoading
   const hasOpenSuggestion = activeSuggestionField !== null
-  const isNewDataLoading = isNewDataRefreshPending || isSearching
   const modelBucket = suggestions?.model
   const proxyBucket = suggestions?.proxy
   const endpointBucket = suggestions?.endpoint
@@ -169,6 +173,17 @@ export default function RecordsPage() {
       updateDraft('customTo', nextRange.customTo)
     }
   }
+
+  useEffect(() => {
+    if (newRecordsCount > 0) {
+      setCachedNewDataCount(newRecordsCount)
+      return
+    }
+
+    if (!isNewDataLoading) {
+      setCachedNewDataCount(0)
+    }
+  }, [isNewDataLoading, newRecordsCount])
 
   const handleSearch = () => {
     void search()
@@ -429,9 +444,9 @@ export default function RecordsPage() {
               <p className="section-description">{t('records.summary.description')}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              {newRecordsCount > 0 ? (
+              {shouldShowNewDataButton ? (
                 <RecordsNewDataButton
-                  count={newRecordsCount}
+                  count={displayNewDataCount}
                   isLoading={isNewDataLoading}
                   onRefresh={handleRefreshNewData}
                 />
@@ -457,7 +472,7 @@ export default function RecordsPage() {
 
           <InvocationRecordsSummaryCards
             focus={focus}
-            summary={summary}
+            summary={visibleSummary}
             isLoading={isSummaryLoading}
             error={summaryError}
           />
