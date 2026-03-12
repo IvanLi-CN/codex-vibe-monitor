@@ -19,6 +19,7 @@ const navItems = [
   { to: '/stats', labelKey: 'app.nav.stats' },
   { to: '/live', labelKey: 'app.nav.live' },
   { to: '/records', labelKey: 'app.nav.records' },
+  { to: '/account-pool', labelKey: 'app.nav.accountPool' },
   { to: '/settings', labelKey: 'app.nav.settings' },
 ] as const
 
