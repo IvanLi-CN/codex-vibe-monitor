@@ -1592,6 +1592,8 @@ fn app_config_from_sources_reads_renamed_public_envs() {
         (ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS, Some("32")),
         (ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS, Some("33")),
         (ENV_QUOTA_SNAPSHOT_FULL_DAYS, Some("34")),
+        (ENV_PROXY_RAW_COMPRESSION, Some("none")),
+        (ENV_PROXY_RAW_HOT_SECS, Some("1234")),
         (ENV_FORWARD_PROXY_ALGO, Some("v2")),
     ]);
     let _env = EnvVarGuard::set(&cases);
@@ -1630,6 +1632,8 @@ fn app_config_from_sources_reads_renamed_public_envs() {
     assert_eq!(config.forward_proxy_attempts_retention_days, 32);
     assert_eq!(config.stats_source_snapshots_retention_days, 33);
     assert_eq!(config.quota_snapshot_full_days, 34);
+    assert_eq!(config.proxy_raw_compression, RawCompressionCodec::None);
+    assert_eq!(config.proxy_raw_hot_secs, 1234);
 }
 
 #[test]
@@ -1761,6 +1765,8 @@ fn test_config() -> AppConfig {
         proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
         proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
         proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
+        proxy_raw_compression: DEFAULT_PROXY_RAW_COMPRESSION,
+        proxy_raw_hot_secs: DEFAULT_PROXY_RAW_HOT_SECS,
         xray_binary: DEFAULT_XRAY_BINARY.to_string(),
         xray_runtime_dir: PathBuf::from("target/xray-forward-tests"),
         forward_proxy_algo: ForwardProxyAlgo::V1,
@@ -1814,6 +1820,13 @@ fn set_file_mtime_seconds_ago(path: &Path, seconds: u64) {
     let modified_at = std::time::SystemTime::now() - Duration::from_secs(seconds);
     let modified_at = filetime::FileTime::from_system_time(modified_at);
     filetime::set_file_mtime(path, modified_at).expect("set file mtime");
+}
+
+fn write_gzip_test_file(path: &Path, content: &[u8]) {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(content).expect("write gzip payload");
+    let bytes = encoder.finish().expect("finish gzip payload");
+    fs::write(path, bytes).expect("write gzip file");
 }
 
 #[test]
@@ -1902,6 +1915,272 @@ fn read_proxy_raw_bytes_keeps_current_dir_compat_for_legacy_relative_paths() {
     .expect("read legacy cwd-relative raw file");
 
     assert_eq!(raw, b"cwd-copy");
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn read_proxy_raw_bytes_transparently_decompresses_gzip_files() {
+    let temp_dir = make_temp_test_dir("proxy-raw-read-gzip");
+    let raw_path = temp_dir.join("request.bin.gz");
+    write_gzip_test_file(&raw_path, b"{\"hello\":\"gzip\"}");
+
+    let raw = read_proxy_raw_bytes(raw_path.to_str().expect("utf-8 path"), None)
+        .expect("read gzip raw payload");
+
+    assert_eq!(raw, b"{\"hello\":\"gzip\"}");
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn read_proxy_raw_bytes_keeps_plain_bin_payloads_that_start_with_gzip_magic() {
+    let temp_dir = make_temp_test_dir("proxy-raw-read-bin-gzip-magic");
+    let raw_path = temp_dir.join("request.bin");
+    let bytes = vec![0x1f, 0x8b, b'n', b'o', b't', b'-', b'g', b'z'];
+    fs::write(&raw_path, &bytes).expect("write plain raw payload");
+
+    let raw = read_proxy_raw_bytes(raw_path.to_str().expect("utf-8 path"), None)
+        .expect("read plain raw payload");
+
+    assert_eq!(raw, bytes);
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn search_raw_script_matches_plain_and_gzip_files() {
+    let temp_dir = make_temp_test_dir("search-raw-script");
+    let root = temp_dir.join("proxy_raw_payloads");
+    fs::create_dir_all(&root).expect("create raw root");
+    let plain_path = root.join("plain.bin");
+    let gzip_path = root.join("cold.bin.gz");
+    fs::write(&plain_path, b"line-1\nshared-token\n").expect("write plain raw");
+    write_gzip_test_file(&gzip_path, b"line-a\nshared-token\n");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .arg("--root")
+    .arg(&root)
+    .arg("shared-token")
+    .output()
+    .expect("run search-raw script");
+
+    assert!(
+        output.status.success(),
+        "search-raw should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("search-raw stdout");
+    assert!(
+        stdout.contains(&format!("{}:2:shared-token", plain_path.display())),
+        "plain raw file should match, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("{}:2:shared-token", gzip_path.display())),
+        "gzip raw file should match, got: {stdout}"
+    );
+
+    let miss_output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .arg("--root")
+    .arg(&root)
+    .arg("absent-token")
+    .output()
+    .expect("run search-raw miss case");
+    assert_eq!(
+        miss_output.status.code(),
+        Some(1),
+        "search-raw should return 1 when no file matches"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn search_raw_script_resolves_root_from_database_and_proxy_envs() {
+    let temp_dir = make_temp_test_dir("search-raw-script-env-root");
+    let db_root = temp_dir.join("db");
+    let db_path = db_root.join("codex_vibe_monitor.db");
+    let raw_root = db_root.join("proxy_raw_payloads");
+    fs::create_dir_all(&raw_root).expect("create resolved raw root");
+    fs::write(&db_path, "").expect("create db file");
+    let plain_path = raw_root.join("resolved.bin");
+    fs::write(&plain_path, b"resolved-token\n").expect("write resolved raw");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .env("DATABASE_PATH", &db_path)
+    .env("PROXY_RAW_DIR", "proxy_raw_payloads")
+    .arg("resolved-token")
+    .output()
+    .expect("run search-raw with env-derived root");
+
+    assert!(
+        output.status.success(),
+        "search-raw should resolve root from envs: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("search-raw stdout");
+    assert!(
+        stdout.contains(&format!("{}:1:resolved-token", plain_path.display())),
+        "env-derived root should find the plain file, got: {stdout}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn search_raw_script_reports_missing_root_as_configuration_error() {
+    let temp_dir = make_temp_test_dir("search-raw-script-missing-root");
+    let db_path = temp_dir.join("missing/codex_vibe_monitor.db");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .env("DATABASE_PATH", &db_path)
+    .env("PROXY_RAW_DIR", "proxy_raw_payloads")
+    .arg("anything")
+    .output()
+    .expect("run search-raw with missing root");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "missing root should be treated as configuration error"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("search-raw stderr");
+    assert!(
+        stderr.contains("root directory not found"),
+        "missing root should explain the configuration error, got: {stderr}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn search_raw_script_reports_corrupt_gzip_as_error() {
+    let temp_dir = make_temp_test_dir("search-raw-script-corrupt-gzip");
+    let root = temp_dir.join("proxy_raw_payloads");
+    fs::create_dir_all(&root).expect("create raw root");
+    let gzip_path = root.join("broken.bin.gz");
+    fs::write(&gzip_path, b"not-gzip").expect("write corrupt gzip file");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .arg("--root")
+    .arg(&root)
+    .arg("needle")
+    .output()
+    .expect("run search-raw with corrupt gzip");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "corrupt gzip should be treated as hard error"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("search-raw stderr");
+    assert!(
+        stderr.contains("failed to decompress"),
+        "corrupt gzip should explain the decompression failure, got: {stderr}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn search_raw_script_reports_plain_file_read_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = make_temp_test_dir("search-raw-script-plain-permission-denied");
+    let root = temp_dir.join("proxy_raw_payloads");
+    fs::create_dir_all(&root).expect("create raw root");
+    let plain_path = root.join("plain.bin");
+    fs::write(&plain_path, b"permission-token\n").expect("write plain raw");
+
+    let mut permissions = fs::metadata(&plain_path)
+        .expect("read plain raw metadata")
+        .permissions();
+    permissions.set_mode(0o000);
+    fs::set_permissions(&plain_path, permissions).expect("chmod plain raw");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .arg("--root")
+    .arg(&root)
+    .arg("permission-token")
+    .output()
+    .expect("run search-raw with unreadable plain file");
+
+    let mut repaired_permissions = fs::metadata(&plain_path)
+        .expect("read plain raw metadata after run")
+        .permissions();
+    repaired_permissions.set_mode(0o644);
+    fs::set_permissions(&plain_path, repaired_permissions).expect("restore plain raw permissions");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "plain grep errors should be treated as hard errors"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("search-raw stderr");
+    assert!(
+        stderr.contains("grep failed"),
+        "plain grep failure should be explained, got: {stderr}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn search_raw_script_reports_find_enumeration_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = make_temp_test_dir("search-raw-script-find-permission-denied");
+    let root = temp_dir.join("proxy_raw_payloads");
+    let readable_dir = root.join("readable");
+    let blocked_dir = root.join("blocked");
+    fs::create_dir_all(&readable_dir).expect("create readable raw dir");
+    fs::create_dir_all(&blocked_dir).expect("create blocked raw dir");
+    fs::write(readable_dir.join("plain.bin"), b"permission-token\n").expect("write readable raw");
+
+    let mut permissions = fs::metadata(&blocked_dir)
+        .expect("read blocked dir metadata")
+        .permissions();
+    permissions.set_mode(0o000);
+    fs::set_permissions(&blocked_dir, permissions).expect("chmod blocked dir");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .arg("--root")
+    .arg(&root)
+    .arg("permission-token")
+    .output()
+    .expect("run search-raw with unreadable directory");
+
+    let mut repaired_permissions = fs::metadata(&blocked_dir)
+        .expect("read blocked dir metadata after run")
+        .permissions();
+    repaired_permissions.set_mode(0o755);
+    fs::set_permissions(&blocked_dir, repaired_permissions)
+        .expect("restore blocked dir permissions");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "find enumeration errors should be treated as hard errors"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("search-raw stderr");
+    assert!(
+        stderr.contains("failed to enumerate raw files"),
+        "find failures should be explained, got: {stderr}"
+    );
+
     cleanup_temp_test_dir(&temp_dir);
 }
 
@@ -14460,6 +14739,506 @@ async fn retention_dry_run_does_not_mutate_database_or_files() {
         .expect("read archive dir")
         .count();
     assert_eq!(archive_files, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_compresses_cold_raw_payloads_and_updates_paths() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-live").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let request_raw = config.proxy_raw_dir.join("cold-request.bin");
+    let response_raw = config.proxy_raw_dir.join("cold-response.bin");
+    fs::write(&request_raw, b"{\"type\":\"request\"}").expect("write cold request raw");
+    fs::write(&response_raw, b"{\"type\":\"response\"}").expect("write cold response raw");
+
+    let occurred_at = shanghai_local_days_ago(2, 10, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "cold-compress-live",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&request_raw),
+        Some(&response_raw),
+        Some(55),
+        Some(0.12),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run cold compression retention");
+    assert_eq!(summary.raw_files_compression_candidates, 2);
+    assert_eq!(summary.raw_files_compressed, 2);
+    assert!(summary.raw_bytes_before > 0);
+    assert!(summary.raw_bytes_after > 0);
+    assert_eq!(summary.raw_bytes_after_estimated, 0);
+    assert!(!request_raw.exists());
+    assert!(!response_raw.exists());
+
+    let compressed_request = PathBuf::from(format!("{}.gz", request_raw.display()));
+    let compressed_response = PathBuf::from(format!("{}.gz", response_raw.display()));
+    assert!(compressed_request.exists());
+    assert!(compressed_response.exists());
+
+    let row = sqlx::query(
+        r#"
+        SELECT
+            request_raw_path,
+            request_raw_size,
+            response_raw_path,
+            response_raw_size
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("cold-compress-live")
+    .fetch_one(&pool)
+    .await
+    .expect("load cold compressed row");
+
+    let request_raw_path = row.get::<Option<String>, _>("request_raw_path");
+    let response_raw_path = row.get::<Option<String>, _>("response_raw_path");
+    assert_eq!(
+        request_raw_path.as_deref(),
+        Some(compressed_request.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        response_raw_path.as_deref(),
+        Some(compressed_response.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        row.get::<Option<i64>, _>("request_raw_size"),
+        Some(b"{\"type\":\"request\"}".len() as i64)
+    );
+    assert_eq!(
+        row.get::<Option<i64>, _>("response_raw_size"),
+        Some(b"{\"type\":\"response\"}".len() as i64)
+    );
+    assert_eq!(
+        read_proxy_raw_bytes(
+            request_raw_path.as_deref().expect("request raw path"),
+            config.database_path.parent(),
+        )
+        .expect("read compressed request raw"),
+        b"{\"type\":\"request\"}"
+    );
+    assert_eq!(
+        read_proxy_raw_bytes(
+            response_raw_path.as_deref().expect("response raw path"),
+            config.database_path.parent(),
+        )
+        .expect("read compressed response raw"),
+        b"{\"type\":\"response\"}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_cold_compression_repair_keeps_relative_db_paths() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-relative-repair").await;
+    config.proxy_raw_dir = PathBuf::from("proxy_raw_payloads");
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let relative_raw = PathBuf::from("proxy_raw_payloads/relative-repair.bin");
+    let compressed_raw = temp_dir.join(format!("{}.gz", relative_raw.display()));
+    if let Some(parent) = compressed_raw.parent() {
+        fs::create_dir_all(parent).expect("create compressed raw parent");
+    }
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(b"{\"type\":\"relative-repair\"}")
+        .expect("write compressed payload");
+    fs::write(
+        &compressed_raw,
+        encoder.finish().expect("finish compressed payload"),
+    )
+    .expect("write compressed raw file");
+
+    let outcome = maybe_compress_proxy_raw_path(
+        &pool,
+        1,
+        "request_raw_path",
+        Some(relative_raw.to_str().expect("utf-8 relative path")),
+        RawCompressionCodec::Gzip,
+        config.database_path.parent(),
+        false,
+    )
+    .await
+    .expect("repair relative raw path");
+
+    assert_eq!(
+        outcome.new_db_path.as_deref(),
+        Some("proxy_raw_payloads/relative-repair.bin.gz")
+    );
+    assert!(!outcome.compressed);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_skips_cold_compression_for_archive_eligible_rows() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-skip-archive").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let request_raw = config.proxy_raw_dir.join("archive-eligible.bin");
+    fs::write(&request_raw, b"{\"type\":\"archive-eligible\"}")
+        .expect("write archive-eligible raw");
+
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 1) as i64, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "cold-compress-skip-archive",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&request_raw),
+        None,
+        Some(12),
+        Some(0.03),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention for archive-eligible row");
+
+    assert_eq!(summary.raw_files_compression_candidates, 0);
+    assert_eq!(summary.raw_files_compressed, 0);
+    assert_eq!(summary.invocation_rows_archived, 1);
+    assert!(!request_raw.exists());
+    assert!(!PathBuf::from(format!("{}.gz", request_raw.display())).exists());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retention_continues_when_one_cold_compression_file_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-continue-on-error").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let broken_raw = config.proxy_raw_dir.join("broken-request.bin");
+    let good_raw = config.proxy_raw_dir.join("good-request.bin");
+    fs::write(&broken_raw, b"{\"type\":\"broken\"}").expect("write broken raw");
+    fs::write(&good_raw, b"{\"type\":\"good\"}").expect("write good raw");
+
+    let mut broken_permissions = fs::metadata(&broken_raw)
+        .expect("read broken raw metadata")
+        .permissions();
+    broken_permissions.set_mode(0o000);
+    fs::set_permissions(&broken_raw, broken_permissions).expect("chmod broken raw");
+
+    let occurred_at = shanghai_local_days_ago(2, 8, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "cold-compress-broken",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":false}",
+        Some(&broken_raw),
+        None,
+        Some(21),
+        Some(0.04),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "cold-compress-good",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":false}",
+        Some(&good_raw),
+        None,
+        Some(22),
+        Some(0.05),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention with cold-compression failure");
+
+    let mut repaired_permissions = fs::metadata(&broken_raw)
+        .expect("read broken raw metadata after run")
+        .permissions();
+    repaired_permissions.set_mode(0o644);
+    fs::set_permissions(&broken_raw, repaired_permissions).expect("restore broken raw permissions");
+
+    assert_eq!(summary.raw_files_compression_candidates, 1);
+    assert_eq!(summary.raw_files_compressed, 1);
+    assert!(broken_raw.exists(), "broken file should be left in place");
+    assert!(!PathBuf::from(format!("{}.gz", broken_raw.display())).exists());
+    assert!(!good_raw.exists(), "good file should be replaced by gzip");
+    assert!(PathBuf::from(format!("{}.gz", good_raw.display())).exists());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retention_compresses_other_file_when_same_invocation_request_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-same-row-continue-on-error").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let broken_request = config.proxy_raw_dir.join("same-row-broken-request.bin");
+    let good_response = config.proxy_raw_dir.join("same-row-good-response.bin");
+    fs::write(&broken_request, b"{\"type\":\"broken-request\"}").expect("write broken request raw");
+    fs::write(&good_response, b"{\"type\":\"good-response\"}").expect("write good response raw");
+
+    let mut broken_permissions = fs::metadata(&broken_request)
+        .expect("read broken request metadata")
+        .permissions();
+    broken_permissions.set_mode(0o000);
+    fs::set_permissions(&broken_request, broken_permissions).expect("chmod broken request raw");
+
+    let occurred_at = shanghai_local_days_ago(2, 8, 30, 0);
+    insert_retention_invocation(
+        &pool,
+        "cold-compress-same-row-partial",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":false}",
+        Some(&broken_request),
+        Some(&good_response),
+        Some(30),
+        Some(0.06),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention with same-row cold-compression failure");
+
+    let mut repaired_permissions = fs::metadata(&broken_request)
+        .expect("read broken request metadata after run")
+        .permissions();
+    repaired_permissions.set_mode(0o644);
+    fs::set_permissions(&broken_request, repaired_permissions)
+        .expect("restore broken request permissions");
+
+    assert_eq!(summary.raw_files_compression_candidates, 1);
+    assert_eq!(summary.raw_files_compressed, 1);
+    assert!(
+        broken_request.exists(),
+        "broken request should be left in place"
+    );
+    assert!(!PathBuf::from(format!("{}.gz", broken_request.display())).exists());
+    assert!(
+        !good_response.exists(),
+        "good response should be replaced by gzip"
+    );
+    let compressed_response = PathBuf::from(format!("{}.gz", good_response.display()));
+    assert!(
+        compressed_response.exists(),
+        "good response should be compressed"
+    );
+
+    let row = sqlx::query(
+        "SELECT request_raw_path, response_raw_path FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("cold-compress-same-row-partial")
+    .fetch_one(&pool)
+    .await
+    .expect("load same-row partial cold compression row");
+    assert_eq!(
+        row.try_get::<Option<String>, _>("request_raw_path")
+            .expect("decode request path")
+            .as_deref(),
+        Some(broken_request.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("response_raw_path")
+            .expect("decode response path")
+            .as_deref(),
+        Some(compressed_response.to_string_lossy().as_ref())
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_dry_run_estimates_cold_raw_compression_without_mutating_files() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-dry-run").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let request_raw = config.proxy_raw_dir.join("cold-dry-run-request.bin");
+    fs::write(&request_raw, b"{\"type\":\"dry-run\"}").expect("write dry-run request raw");
+    let occurred_at = shanghai_local_days_ago(2, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "cold-compress-dry-run",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&request_raw),
+        None,
+        Some(33),
+        Some(0.08),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(true), None)
+        .await
+        .expect("run cold compression dry-run");
+    assert!(summary.dry_run);
+    assert_eq!(summary.raw_files_compression_candidates, 1);
+    assert_eq!(summary.raw_files_compressed, 0);
+    assert!(summary.raw_bytes_before > 0);
+    assert_eq!(summary.raw_bytes_after, 0);
+    assert!(summary.raw_bytes_after_estimated > 0);
+    assert!(request_raw.exists());
+    assert!(!PathBuf::from(format!("{}.gz", request_raw.display())).exists());
+
+    let row = sqlx::query("SELECT request_raw_path FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("cold-compress-dry-run")
+        .fetch_one(&pool)
+        .await
+        .expect("load dry-run cold row");
+    assert_eq!(
+        row.get::<Option<String>, _>("request_raw_path").as_deref(),
+        Some(request_raw.to_string_lossy().as_ref())
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_cold_compression_scans_batches_in_occurred_at_order() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-order").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+    config.retention_batch_rows = 1;
+
+    let newest = config.proxy_raw_dir.join("order-newest.bin");
+    let middle = config.proxy_raw_dir.join("order-middle.bin");
+    let oldest = config.proxy_raw_dir.join("order-oldest.bin");
+    fs::write(&newest, b"newest").expect("write newest raw");
+    fs::write(&middle, b"middle").expect("write middle raw");
+    fs::write(&oldest, b"oldest").expect("write oldest raw");
+
+    insert_retention_invocation(
+        &pool,
+        "order-newest",
+        &shanghai_local_days_ago(2, 23, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&newest),
+        None,
+        Some(10),
+        Some(0.01),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "order-middle",
+        &shanghai_local_days_ago(3, 12, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&middle),
+        None,
+        Some(10),
+        Some(0.01),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "order-oldest",
+        &shanghai_local_days_ago(4, 8, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&oldest),
+        None,
+        Some(10),
+        Some(0.01),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run ordered cold compression");
+    assert_eq!(summary.raw_files_compression_candidates, 3);
+    assert_eq!(summary.raw_files_compressed, 3);
+
+    let compressed_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations WHERE request_raw_path LIKE '%.bin.gz'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count compressed ordered rows");
+    assert_eq!(compressed_count, 3);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_archives_rows_with_compressed_raw_payload_files() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("retention-archive-compressed-raw").await;
+    let response_raw = config
+        .proxy_raw_dir
+        .join("archive-compressed-response.bin.gz");
+    write_gzip_test_file(&response_raw, b"{\"type\":\"archived\"}");
+    let occurred_at = shanghai_local_days_ago(91, 7, 30, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "archive-compressed-raw",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        Some(&response_raw),
+        Some(88),
+        Some(0.42),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run archive with compressed raw");
+    assert_eq!(summary.invocation_rows_archived, 1);
+    assert!(summary.raw_files_removed >= 1);
+    assert!(!response_raw.exists());
 
     cleanup_temp_test_dir(&temp_dir);
 }

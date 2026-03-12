@@ -1,0 +1,141 @@
+#!/bin/sh
+
+set -eu
+
+usage() {
+  echo "Usage: search-raw [--regex] [--root PATH] <needle>" >&2
+}
+
+mode="fixed"
+database_path="${DATABASE_PATH:-/srv/app/data/codex_vibe_monitor.db}"
+proxy_raw_dir="${PROXY_RAW_DIR:-proxy_raw_payloads}"
+
+resolve_default_root() {
+  if [ -n "${SEARCH_RAW_ROOT:-}" ]; then
+    printf '%s\n' "$SEARCH_RAW_ROOT"
+    return
+  fi
+  case "$proxy_raw_dir" in
+    /*)
+      printf '%s\n' "$proxy_raw_dir"
+      ;;
+    *)
+      printf '%s/%s\n' "$(dirname "$database_path")" "$proxy_raw_dir"
+      ;;
+  esac
+}
+
+root="$(resolve_default_root)"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --regex)
+      mode="regex"
+      shift
+      ;;
+    --root)
+      [ "$#" -ge 2 ] || {
+        usage
+        exit 2
+      }
+      root="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[ "$#" -eq 1 ] || {
+  usage
+  exit 2
+}
+
+needle="$1"
+[ -d "$root" ] || {
+  echo "search-raw: root directory not found: $root" >&2
+  exit 2
+}
+
+grep_mode="-F"
+[ "$mode" = "regex" ] && grep_mode="-E"
+
+file_list="$(mktemp "${TMPDIR:-/tmp}/search-raw.files.XXXXXX")"
+file_list_unsorted="$(mktemp "${TMPDIR:-/tmp}/search-raw.files.unsorted.XXXXXX")"
+find_error_file="$(mktemp "${TMPDIR:-/tmp}/search-raw.find-stderr.XXXXXX")"
+gzip_status_file="$(mktemp "${TMPDIR:-/tmp}/search-raw.gzip-status.XXXXXX")"
+match_file="$(mktemp "${TMPDIR:-/tmp}/search-raw.matches.XXXXXX")"
+cleanup() {
+  rm -f "$file_list" "$file_list_unsorted" "$find_error_file" "$gzip_status_file" "$match_file"
+}
+trap cleanup EXIT INT TERM HUP
+
+if ! find "$root" -type f \( -name '*.bin' -o -name '*.bin.gz' \) -print > "$file_list_unsorted" 2> "$find_error_file"
+then
+  cat "$find_error_file" >&2
+  echo "search-raw: failed to enumerate raw files under $root" >&2
+  exit 2
+fi
+sort "$file_list_unsorted" > "$file_list"
+
+matched=1
+while IFS= read -r path; do
+  [ -n "$path" ] || continue
+  case "$path" in
+    *.bin)
+      : > "$match_file"
+      if grep -nH ${grep_mode} -- "$needle" "$path" > "$match_file"; then
+        cat "$match_file"
+        matched=0
+      else
+        grep_status=$?
+        if [ "$grep_status" -gt 1 ]; then
+          echo "search-raw: grep failed for $path" >&2
+          exit 2
+        fi
+      fi
+      ;;
+    *.bin.gz)
+      : > "$match_file"
+      : > "$gzip_status_file"
+      if { gzip -cd -- "$path"; printf '%s' "$?" > "$gzip_status_file"; } \
+        | grep -n ${grep_mode} -- "$needle" > "$match_file"
+      then
+        gzip_status="$(cat "$gzip_status_file")"
+        if [ "${gzip_status:-1}" -ne 0 ]; then
+          echo "search-raw: failed to decompress $path" >&2
+          exit 2
+        fi
+        awk -v path="$path" '{ print path ":" $0 }' "$match_file"
+        matched=0
+      else
+        pipeline_status=$?
+        gzip_status="$(cat "$gzip_status_file")"
+        if [ "${gzip_status:-1}" -ne 0 ]; then
+          echo "search-raw: failed to decompress $path" >&2
+          exit 2
+        fi
+        if [ "$pipeline_status" -gt 1 ]; then
+          echo "search-raw: grep failed for $path" >&2
+          exit 2
+        fi
+      fi
+      ;;
+  esac
+done < "$file_list"
+
+exit "$matched"
