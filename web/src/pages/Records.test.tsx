@@ -29,7 +29,23 @@ vi.mock('../lib/api', async () => {
 vi.mock('../i18n', () => ({
   useTranslation: () => ({
     locale: 'zh',
-    t: (key: string) => key,
+    t: (key: string, values?: Record<string, string | number>) => {
+      const count = values?.count ?? ''
+      switch (key) {
+        case 'records.summary.notice.newData':
+          return `有 ${count} 条新数据`
+        case 'records.summary.notice.refreshAction':
+          return '加载新数据'
+        case 'records.summary.notice.newDataAria':
+          return `有 ${count} 条新数据，点击后会并入当前快照。`
+        case 'records.summary.notice.refreshAria':
+          return `加载这 ${count} 条新数据并刷新当前快照。`
+        case 'records.summary.notice.refreshingAria':
+          return `正在加载这 ${count} 条新数据并刷新当前快照。`
+        default:
+          return key
+      }
+    },
   }),
 }))
 
@@ -140,6 +156,14 @@ function mockInvocationRecords(overrides: Partial<ReturnType<typeof hookMocks.us
     setSort: vi.fn(),
     ...overrides,
   })
+}
+
+function getNewDataButton() {
+  const button = host?.querySelector('[data-testid="records-new-data-button"]')
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error('missing new data button')
+  }
+  return button
 }
 
 describe('RecordsPage suggestions', () => {
@@ -309,5 +333,101 @@ describe('RecordsPage suggestions', () => {
 
     expect(filtersPanel.dataset.suggestionsOpen).toBe('false')
     expect(filtersPanel.className).not.toContain('z-10')
+  })
+})
+
+describe('RecordsPage new data action', () => {
+  it('renders the new data button and switches to the refresh call-to-action on focus', async () => {
+    mockInvocationRecords({
+      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+    })
+
+    render(<RecordsPage />)
+
+    const button = getNewDataButton()
+
+    expect(button.dataset.state).toBe('idle')
+    expect(button.dataset.icon).toBe('help')
+    expect(button.textContent).toContain('有 9 条新数据')
+    expect(button.className).toContain('border-warning/35')
+    expect(button.getAttribute('aria-label')).toBe('有 9 条新数据，点击后会并入当前快照。')
+
+    act(() => {
+      button.focus()
+    })
+    await flushAsync()
+
+    expect(button.dataset.state).toBe('interactive')
+    expect(button.dataset.icon).toBe('help')
+    expect(button.textContent).toContain('加载新数据')
+    expect(button.className).toContain('border-primary/35')
+    expect(button.getAttribute('aria-label')).toBe('加载这 9 条新数据并刷新当前快照。')
+
+    act(() => {
+      button.blur()
+    })
+    await flushAsync()
+
+    expect(button.dataset.state).toBe('idle')
+    expect(button.textContent).toContain('有 9 条新数据')
+  })
+
+  it('triggers search once and shows a spinning refresh state while the refresh is pending', async () => {
+    let resolveSearch: (() => void) | null = null
+    const search = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSearch = resolve
+        }),
+    )
+
+    mockInvocationRecords({
+      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+      search,
+    })
+
+    render(<RecordsPage />)
+
+    const button = getNewDataButton()
+
+    act(() => {
+      button.click()
+    })
+    await flushAsync()
+
+    expect(search).toHaveBeenCalledTimes(1)
+    expect(search).toHaveBeenCalledWith({ source: 'applied', preserveSummary: true })
+    expect(button.disabled).toBe(true)
+    expect(button.dataset.state).toBe('loading')
+    expect(button.dataset.icon).toBe('refresh')
+    expect(button.className).toContain('border-primary/35')
+    expect(button.textContent).toContain('加载新数据')
+    expect(button.getAttribute('aria-label')).toBe('正在加载这 9 条新数据并刷新当前快照。')
+
+    act(() => {
+      button.click()
+    })
+    await flushAsync()
+
+    expect(search).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      resolveSearch?.()
+    })
+    await flushAsync()
+
+    expect(button.disabled).toBe(false)
+    expect(button.dataset.state).toBe('idle')
+    expect(button.dataset.icon).toBe('help')
+  })
+
+  it('hides the new data button when there is no pending new data', () => {
+    mockInvocationRecords({
+      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 0 },
+    })
+
+    render(<RecordsPage />)
+
+    expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull()
   })
 })

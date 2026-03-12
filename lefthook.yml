@@ -8,7 +8,7 @@ pre-commit:
       run: cd web && bun tsc -b
     format-markdown:
       files: git diff --cached --name-only --diff-filter=ACMR -- '*.md'
-      run: bun dprint fmt {files}
+      run: ./node_modules/.bin/dprint fmt {files}
       stage_fixed: true
     fmt:
       glob: "*.{rs}"
@@ -21,4 +21,4 @@ pre-commit:
 commit-msg:
   commands:
     commitlint:
-      run: bun commitlint --edit {1}
+      run: ./node_modules/.bin/commitlint --edit {1}
