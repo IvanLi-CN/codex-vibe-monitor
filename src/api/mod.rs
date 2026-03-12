@@ -8,7 +8,8 @@ const INVOCATION_ENDPOINT_SQL: &str =
 const INVOCATION_FAILURE_KIND_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind)";
 const INVOCATION_REQUESTER_IP_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
-const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END";
+const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
+const INVOCATION_UPSTREAM_SCOPE_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamScope') AS TEXT) END, 'external')";
 const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
 
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
@@ -42,7 +43,11 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
         .push(
             " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key, \
+         ",
+        )
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(
+            " AS prompt_cache_key, \
          CASE \
            WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
              THEN json_extract(payload, '$.requestedServiceTier') \
@@ -149,6 +154,7 @@ struct InvocationRecordsFilters {
     failure_class: Option<String>,
     failure_kind: Option<String>,
     prompt_cache_key: Option<String>,
+    upstream_scope: Option<String>,
     requester_ip: Option<String>,
     keyword: Option<String>,
     min_total_tokens: Option<i64>,
@@ -350,6 +356,10 @@ fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilte
         failure_class: normalize_query_text(params.failure_class.as_deref()),
         failure_kind: normalize_query_text(params.failure_kind.as_deref()),
         prompt_cache_key: normalize_query_text(params.prompt_cache_key.as_deref()),
+        upstream_scope: match normalize_query_text(params.upstream_scope.as_deref()) {
+            Some(value) if value.eq_ignore_ascii_case("all") => None,
+            other => other,
+        },
         requester_ip: normalize_query_text(params.requester_ip.as_deref()),
         keyword: normalize_query_text(params.keyword.as_deref()),
         min_total_tokens: params.min_total_tokens,
@@ -501,6 +511,10 @@ fn apply_invocation_records_filters(
 
     if let Some(prompt_cache_key) = filters.prompt_cache_key.as_deref() {
         push_exact_text_filter(query, INVOCATION_PROMPT_CACHE_KEY_SQL, prompt_cache_key);
+    }
+
+    if let Some(upstream_scope) = filters.upstream_scope.as_deref() {
+        push_exact_text_filter(query, INVOCATION_UPSTREAM_SCOPE_SQL, upstream_scope);
     }
 
     if let Some(requester_ip) = filters.requester_ip.as_deref() {
@@ -944,6 +958,7 @@ fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
         && params.failure_class.is_none()
         && params.failure_kind.is_none()
         && params.prompt_cache_key.is_none()
+        && params.upstream_scope.is_none()
         && params.requester_ip.is_none()
         && params.keyword.is_none()
         && params.min_total_tokens.is_none()
@@ -1536,7 +1551,7 @@ pub(crate) async fn query_prompt_cache_conversation_aggregates(
     source_scope: InvocationSourceScope,
     limit: i64,
 ) -> Result<Vec<PromptCacheConversationAggregateRow>> {
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
 
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH active AS (\
@@ -1612,7 +1627,7 @@ pub(crate) async fn query_prompt_cache_conversation_events(
         return Ok(Vec::new());
     }
 
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
 
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT occurred_at, COALESCE(status, 'unknown') AS status, \
@@ -3697,6 +3712,7 @@ pub(crate) struct ListQuery {
     pub(crate) failure_class: Option<String>,
     pub(crate) failure_kind: Option<String>,
     pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) upstream_scope: Option<String>,
     pub(crate) requester_ip: Option<String>,
     pub(crate) keyword: Option<String>,
     pub(crate) min_total_tokens: Option<i64>,

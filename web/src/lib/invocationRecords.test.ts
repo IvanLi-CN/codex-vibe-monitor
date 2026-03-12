@@ -97,6 +97,17 @@ describe('buildAppliedInvocationFilters', () => {
     expect(query.suggestQuery).toBe('gpt-5.4-mini')
     expect(query.model).toBe('gpt-5.4-mini')
   })
+
+  it('preserves upstream scope across applied filters and suggestion queries', () => {
+    const draft = {
+      ...createDefaultInvocationRecordsDraft(),
+      upstreamScope: 'internal' as const,
+    }
+
+    expect(buildAppliedInvocationFilters(draft).upstreamScope).toBe('internal')
+    expect(buildInvocationSuggestionsQuery(draft, 42).upstreamScope).toBe('internal')
+  })
+
   it('tolerates invalid draft values when building suggestion queries', () => {
     const draft = {
       ...createDefaultInvocationRecordsDraft(),

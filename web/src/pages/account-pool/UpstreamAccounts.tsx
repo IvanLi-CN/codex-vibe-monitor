@@ -11,8 +11,10 @@ import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountUsageCard } from '../../components/UpstreamAccountUsageCard'
+import { StickyKeyConversationTable } from '../../components/StickyKeyConversationTable'
 import { UpstreamAccountsTable } from '../../components/UpstreamAccountsTable'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
+import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyConversations'
 import type { UpstreamAccountDetail, UpstreamAccountSummary } from '../../lib/api'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
@@ -26,6 +28,8 @@ type AccountDraft = {
   localLimitUnit: string
   apiKey: string
 }
+
+const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
 
 type UpstreamAccountsLocationState = {
   selectedAccountId?: number
@@ -66,6 +70,13 @@ function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
       detail?.localLimits?.secondaryLimit == null ? '' : String(detail.localLimits.secondaryLimit),
     localLimitUnit: detail?.localLimits?.limitUnit ?? 'requests',
     apiKey: '',
+  }
+}
+
+function buildRoutingDraft(maskedApiKey?: string | null) {
+  return {
+    apiKey: '',
+    maskedApiKey: maskedApiKey ?? null,
   }
 }
 
@@ -200,13 +211,17 @@ export default function UpstreamAccountsPage() {
     saveAccount,
     runSync,
     removeAccount,
+    routing,
+    saveRouting,
   } = useUpstreamAccounts()
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
+  const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
+  const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
 
   useEffect(() => {
     setDraft(buildDraft(detail))
@@ -217,6 +232,10 @@ export default function UpstreamAccountsPage() {
       setIsDetailDrawerOpen(false)
     }
   }, [detail, selectedSummary])
+
+  useEffect(() => {
+    setRoutingDraft(buildRoutingDraft(routing?.maskedApiKey))
+  }, [routing?.maskedApiKey])
 
   useEffect(() => {
     const state = location.state as UpstreamAccountsLocationState | null
@@ -290,6 +309,12 @@ export default function UpstreamAccountsPage() {
     selectAccount(filteredItems[0].id)
   }, [filteredItems, selectAccount, selectedId])
 
+  const {
+    stats: stickyConversationStats,
+    isLoading: stickyConversationLoading,
+    error: stickyConversationError,
+  } = useUpstreamStickyConversations(selectedId, stickyConversationLimit, Boolean(selectedId && isDetailDrawerOpen))
+
   const selected = detail ?? selectedSummary
   const selectedVisible = filteredItems.some((item) => item.id === selectedId)
   const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
@@ -347,6 +372,20 @@ export default function UpstreamAccountsPage() {
     setBusyAction('toggle')
     try {
       await saveAccount(source.id, { enabled })
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+
+  const handleSaveRouting = async () => {
+    setActionError(null)
+    setBusyAction('routing')
+    try {
+      await saveRouting({ apiKey: routingDraft.apiKey.trim() })
+      setRoutingDraft((current) => ({ ...current, apiKey: '' }))
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -435,22 +474,55 @@ export default function UpstreamAccountsPage() {
           </div>
         </div>
 
-        <Card className="border-base-300/80 bg-base-100/72">
-          <CardHeader>
-            <CardTitle>{t('accountPool.upstreamAccounts.limitLegendTitle')}</CardTitle>
-            <CardDescription>{t('accountPool.upstreamAccounts.limitLegendDescription')}</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm text-base-content/65">
-            <div className="rounded-2xl border border-base-300/80 bg-base-100/75 p-3">
-              <p className="font-semibold text-base-content">{t('accountPool.upstreamAccounts.primaryWindowLabel')}</p>
-              <p className="mt-1">{t('accountPool.upstreamAccounts.primaryWindowDescription')}</p>
-            </div>
-            <div className="rounded-2xl border border-base-300/80 bg-base-100/75 p-3">
-              <p className="font-semibold text-base-content">{t('accountPool.upstreamAccounts.secondaryWindowLabel')}</p>
-              <p className="mt-1">{t('accountPool.upstreamAccounts.secondaryWindowDescription')}</p>
-            </div>
-          </CardContent>
-        </Card>
+        <div className="grid gap-4">
+          <Card className="border-base-300/80 bg-base-100/72">
+            <CardHeader>
+              <CardTitle>{t('accountPool.upstreamAccounts.routing.title')}</CardTitle>
+              <CardDescription>{t('accountPool.upstreamAccounts.routing.description')}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="rounded-2xl border border-base-300/80 bg-base-100/75 p-3 text-sm text-base-content/75">
+                <p className="metric-label">{t('accountPool.upstreamAccounts.routing.currentKey')}</p>
+                <p className="mt-2 break-all font-mono text-sm text-base-content">
+                  {routing?.apiKeyConfigured ? routing?.maskedApiKey ?? t('accountPool.upstreamAccounts.routing.configured') : t('accountPool.upstreamAccounts.routing.notConfigured')}
+                </p>
+              </div>
+              <label className="field">
+                <span className="field-label">{t('accountPool.upstreamAccounts.routing.apiKeyLabel')}</span>
+                <Input
+                  name="poolRoutingApiKey"
+                  type="password"
+                  value={routingDraft.apiKey}
+                  onChange={(event) => setRoutingDraft((current) => ({ ...current, apiKey: event.target.value }))}
+                  placeholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
+                />
+              </label>
+              <div className="flex justify-end">
+                <Button type="button" onClick={() => void handleSaveRouting()} disabled={busyAction === 'routing' || !writesEnabled}>
+                  {busyAction === 'routing' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:key-chain-variant" className="mr-2 h-4 w-4" aria-hidden />}
+                  {t('accountPool.upstreamAccounts.routing.save')}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-base-300/80 bg-base-100/72">
+            <CardHeader>
+              <CardTitle>{t('accountPool.upstreamAccounts.limitLegendTitle')}</CardTitle>
+              <CardDescription>{t('accountPool.upstreamAccounts.limitLegendDescription')}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm text-base-content/65">
+              <div className="rounded-2xl border border-base-300/80 bg-base-100/75 p-3">
+                <p className="font-semibold text-base-content">{t('accountPool.upstreamAccounts.primaryWindowLabel')}</p>
+                <p className="mt-1">{t('accountPool.upstreamAccounts.primaryWindowDescription')}</p>
+              </div>
+              <div className="rounded-2xl border border-base-300/80 bg-base-100/75 p-3">
+                <p className="font-semibold text-base-content">{t('accountPool.upstreamAccounts.secondaryWindowLabel')}</p>
+                <p className="mt-1">{t('accountPool.upstreamAccounts.secondaryWindowDescription')}</p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </section>
 
       <section className="grid gap-6">
@@ -679,6 +751,36 @@ export default function UpstreamAccountsPage() {
                     accentClassName="text-secondary"
                   />
                 </div>
+
+                <Card className="border-base-300/80 bg-base-100/72">
+                  <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <CardTitle>{t('accountPool.upstreamAccounts.stickyConversations.title')}</CardTitle>
+                      <CardDescription>{t('accountPool.upstreamAccounts.stickyConversations.description')}</CardDescription>
+                    </div>
+                    <label className="field w-36">
+                      <span className="field-label">{t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}</span>
+                      <select
+                        className="field-select field-select-sm"
+                        value={stickyConversationLimit}
+                        onChange={(event) => setStickyConversationLimit(Number(event.target.value))}
+                      >
+                        {STICKY_CONVERSATION_LIMIT_OPTIONS.map((value) => (
+                          <option key={value} value={value}>
+                            {t('accountPool.upstreamAccounts.stickyConversations.limitOption', { count: value })}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </CardHeader>
+                  <CardContent>
+                    <StickyKeyConversationTable
+                      stats={stickyConversationStats}
+                      isLoading={stickyConversationLoading}
+                      error={stickyConversationError}
+                    />
+                  </CardContent>
+                </Card>
 
                 <Card className="border-base-300/80 bg-base-100/72">
                   <CardHeader>

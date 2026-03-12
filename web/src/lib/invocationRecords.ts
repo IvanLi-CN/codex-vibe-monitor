@@ -1,4 +1,11 @@
-import type { InvocationRangePreset, InvocationRecordsQuery, InvocationSortBy, InvocationSortOrder, InvocationSuggestionField } from './api'
+import type {
+  InvocationRangePreset,
+  InvocationRecordsQuery,
+  InvocationSortBy,
+  InvocationSortOrder,
+  InvocationSuggestionField,
+  InvocationUpstreamScope,
+} from './api'
 
 export const RECORDS_PAGE_SIZE_OPTIONS = [20, 50, 100] as const
 export const RECORDS_NEW_COUNT_POLL_INTERVAL_MS = 15_000
@@ -19,6 +26,7 @@ export interface InvocationRecordsDraftFilters {
   failureKind: string
   promptCacheKey: string
   requesterIp: string
+  upstreamScope: InvocationUpstreamScope
   keyword: string
   minTotalTokens: string
   maxTotalTokens: string
@@ -39,6 +47,7 @@ export function createDefaultInvocationRecordsDraft(): InvocationRecordsDraftFil
     failureKind: '',
     promptCacheKey: '',
     requesterIp: '',
+    upstreamScope: 'all',
     keyword: '',
     minTotalTokens: '',
     maxTotalTokens: '',
@@ -185,6 +194,7 @@ export function buildAppliedInvocationFilters(
     failureKind: normalizeText(draft.failureKind),
     promptCacheKey: normalizeText(draft.promptCacheKey),
     requesterIp: normalizeText(draft.requesterIp),
+    upstreamScope: draft.upstreamScope,
     keyword: normalizeText(draft.keyword),
     minTotalTokens: normalizeInteger(draft.minTotalTokens, 'minTotalTokens'),
     maxTotalTokens: normalizeInteger(draft.maxTotalTokens, 'maxTotalTokens'),
@@ -231,6 +241,7 @@ export function buildInvocationSuggestionsQuery(
     failureKind: normalizeText(draft.failureKind),
     promptCacheKey: normalizeText(draft.promptCacheKey),
     requesterIp: normalizeText(draft.requesterIp),
+    upstreamScope: draft.upstreamScope,
     keyword: normalizeText(draft.keyword),
     minTotalTokens: normalizeIntegerSafely(draft.minTotalTokens, 'minTotalTokens'),
     maxTotalTokens: normalizeIntegerSafely(draft.maxTotalTokens, 'maxTotalTokens'),

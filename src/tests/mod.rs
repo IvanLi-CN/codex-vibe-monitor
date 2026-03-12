@@ -8469,6 +8469,27 @@ fn prepare_target_request_body_extracts_prompt_cache_key_from_metadata() {
 }
 
 #[test]
+fn prepare_target_request_body_extracts_sticky_key_aliases_from_metadata() {
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "stream": true,
+        "metadata": {
+            "sticky_key": "sticky-from-body"
+        }
+    }))
+    .expect("serialize request body");
+
+    let (_rewritten, info, _did_rewrite) = prepare_target_request_body(
+        ProxyCaptureTarget::Responses,
+        body,
+        true,
+        DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+    );
+
+    assert_eq!(info.prompt_cache_key.as_deref(), Some("sticky-from-body"));
+}
+
+#[test]
 fn prepare_target_request_body_extracts_requested_service_tier_without_rewriting_when_disabled() {
     let expected = json!({
         "model": "gpt-5.3-codex",
@@ -8767,6 +8788,24 @@ fn extract_prompt_cache_key_from_headers_reads_whitelist_keys() {
     assert_eq!(
         extract_prompt_cache_key_from_headers(&headers).as_deref(),
         Some("pck-from-header")
+    );
+}
+
+#[test]
+fn extract_prompt_cache_key_from_headers_prefers_sticky_aliases() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("x-prompt-cache-key"),
+        HeaderValue::from_static("pck-from-header"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-sticky-key"),
+        HeaderValue::from_static("sticky-from-header"),
+    );
+
+    assert_eq!(
+        extract_prompt_cache_key_from_headers(&headers).as_deref(),
+        Some("sticky-from-header")
     );
 }
 
@@ -9503,6 +9542,118 @@ async fn list_invocations_projects_payload_context_fields() {
     assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
     assert_eq!(record.proxy_weight_delta, Some(-0.68));
     assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[tokio::test]
+async fn invocation_queries_filter_upstream_scope_and_treat_legacy_rows_as_external() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, model, payload) in [
+        (
+            "scope-internal",
+            "model-internal",
+            Some(json!({
+                "upstreamScope": "internal",
+                "routeMode": "pool",
+                "stickyKey": "sticky-int-1",
+                "upstreamAccountId": 7,
+                "upstreamAccountName": "pool-account-a"
+            })),
+        ),
+        (
+            "scope-external",
+            "model-external",
+            Some(json!({
+                "upstreamScope": "external",
+                "routeMode": "forward_proxy",
+                "proxyDisplayName": "proxy-a"
+            })),
+        ),
+        (
+            "scope-legacy",
+            "model-legacy",
+            Some(json!({
+                "proxyDisplayName": "proxy-b"
+            })),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                payload,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-11 10:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind(payload.map(|value| value.to_string()))
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    let Json(internal_list) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            upstream_scope: Some("internal".to_string()),
+            page: Some(1),
+            page_size: Some(20),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("internal scope query should succeed");
+    assert_eq!(internal_list.total, 1);
+    assert_eq!(internal_list.records[0].invoke_id, "scope-internal");
+    assert_eq!(
+        internal_list.records[0].prompt_cache_key.as_deref(),
+        Some("sticky-int-1")
+    );
+
+    let Json(external_summary) = fetch_invocation_summary(
+        State(state.clone()),
+        Query(ListQuery {
+            upstream_scope: Some("external".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("external scope summary should succeed");
+    assert_eq!(external_summary.total_count, 2);
+    assert_eq!(external_summary.success_count, 2);
+
+    let Json(internal_suggestions) = fetch_invocation_suggestions(
+        State(state),
+        Query(ListQuery {
+            upstream_scope: Some("internal".to_string()),
+            suggest_field: Some("model".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("internal scope suggestions should succeed");
+
+    let values = internal_suggestions
+        .model
+        .items
+        .iter()
+        .map(|item| item.value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(values, vec!["model-internal"]);
 }
 
 #[tokio::test]

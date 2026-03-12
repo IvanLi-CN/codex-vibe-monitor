@@ -18,6 +18,10 @@ import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 
 type StoryStore = {
   writesEnabled: boolean
+  routing: {
+    apiKeyConfigured: boolean
+    maskedApiKey?: string | null
+  }
   accounts: UpstreamAccountSummary[]
   details: Record<number, UpstreamAccountDetail>
   nextId: number
@@ -171,6 +175,10 @@ function createStore(): StoryStore {
   const apiKey = createApiKeyAccount(102)
   return {
     writesEnabled: true,
+    routing: {
+      apiKeyConfigured: true,
+      maskedApiKey: 'pool-live••••••c0de',
+    },
     accounts: [toSummary(oauth), toSummary(apiKey)],
     details: {
       [oauth.id]: oauth,
@@ -186,6 +194,71 @@ function maskApiKey(value: string) {
   if (!trimmed) return 'sk-empty••••'
   const suffix = trimmed.slice(-4)
   return `sk-live••••••${suffix}`
+}
+
+function buildStickyConversations(accountId: number) {
+  const seedPrefix = accountId === 101 ? 'stky-prod' : 'stky-stage'
+  return {
+    rangeStart: '2026-03-10T12:30:00.000Z',
+    rangeEnd: '2026-03-11T12:30:00.000Z',
+    conversations: [
+      {
+        stickyKey: `${seedPrefix}-001`,
+        requestCount: 18,
+        totalTokens: 428_210,
+        totalCost: 0.2871,
+        createdAt: '2026-03-10T13:10:00.000Z',
+        lastActivityAt: '2026-03-11T11:58:00.000Z',
+        last24hRequests: [
+          {
+            occurredAt: '2026-03-10T16:00:00.000Z',
+            status: 'success',
+            isSuccess: true,
+            requestTokens: 12_000,
+            cumulativeTokens: 12_000,
+          },
+          {
+            occurredAt: '2026-03-11T03:00:00.000Z',
+            status: 'success',
+            isSuccess: true,
+            requestTokens: 42_000,
+            cumulativeTokens: 54_000,
+          },
+          {
+            occurredAt: '2026-03-11T10:00:00.000Z',
+            status: 'failed',
+            isSuccess: false,
+            requestTokens: 11_500,
+            cumulativeTokens: 65_500,
+          },
+        ],
+      },
+      {
+        stickyKey: `${seedPrefix}-002`,
+        requestCount: 7,
+        totalTokens: 132_800,
+        totalCost: 0.0912,
+        createdAt: '2026-03-10T19:45:00.000Z',
+        lastActivityAt: '2026-03-11T09:15:00.000Z',
+        last24hRequests: [
+          {
+            occurredAt: '2026-03-10T21:00:00.000Z',
+            status: 'success',
+            isSuccess: true,
+            requestTokens: 18_000,
+            cumulativeTokens: 18_000,
+          },
+          {
+            occurredAt: '2026-03-11T09:15:00.000Z',
+            status: 'success',
+            isSuccess: true,
+            requestTokens: 25_000,
+            cumulativeTokens: 43_000,
+          },
+        ],
+      },
+    ],
+  }
 }
 
 function jsonResponse(payload: unknown, status = 200) {
@@ -241,9 +314,20 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       if (path === '/api/pool/upstream-accounts' && method === 'GET') {
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
+          routing: clone(store.routing),
           items: store.accounts.map((item) => clone(item)),
         }
         return jsonResponse(payload)
+      }
+
+      if (path === '/api/pool/routing-settings' && method === 'PUT') {
+        const body = parseBody<{ apiKey?: string }>(init?.body, {})
+        const trimmed = body.apiKey?.trim() ?? ''
+        store.routing = {
+          apiKeyConfigured: trimmed.length > 0,
+          maskedApiKey: trimmed ? maskApiKey(trimmed) : null,
+        }
+        return jsonResponse(clone(store.routing))
       }
 
       if (path === '/api/pool/upstream-accounts/oauth/login-sessions' && method === 'POST') {
@@ -371,6 +455,12 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         const detail = store.details[accountId]
         if (!detail) return jsonResponse({ message: 'missing mock account' }, 404)
         return jsonResponse(clone(detail))
+      }
+
+      const stickyMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/sticky-keys$/)
+      if (stickyMatch && method === 'GET') {
+        const accountId = Number(stickyMatch[1])
+        return jsonResponse(buildStickyConversations(accountId))
       }
 
       if (detailMatch && method === 'PATCH') {

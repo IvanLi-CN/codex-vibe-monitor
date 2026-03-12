@@ -51,6 +51,8 @@ const DEFAULT_OAUTH_SCOPE: &str =
 const OAUTH_ORIGINATOR: &str = "Codex Desktop";
 const DEFAULT_USAGE_LIMIT_ID: &str = "codex";
 const DEFAULT_API_KEY_LIMIT_UNIT: &str = "requests";
+const POOL_SETTINGS_SINGLETON_ID: i64 = 1;
+const DEFAULT_STICKY_KEY_LIMIT: i64 = 50;
 const USAGE_PATH_STYLE_CHATGPT: &str = "/wham/usage";
 const USAGE_PATH_STYLE_CODEX_API: &str = "/api/codex/usage";
 
@@ -115,6 +117,7 @@ impl UpstreamAccountsRuntime {
 pub(crate) struct UpstreamAccountListResponse {
     writes_enabled: bool,
     items: Vec<UpstreamAccountSummary>,
+    routing: PoolRoutingSettingsResponse,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -151,6 +154,53 @@ pub(crate) struct UpstreamAccountDetail {
     chatgpt_user_id: Option<String>,
     last_refreshed_at: Option<String>,
     history: Vec<UpstreamAccountHistoryPoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PoolRoutingSettingsResponse {
+    writes_enabled: bool,
+    api_key_configured: bool,
+    masked_api_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdatePoolRoutingSettingsRequest {
+    api_key: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountStickyKeysResponse {
+    range_start: String,
+    range_end: String,
+    conversations: Vec<AccountStickyKeyConversation>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountStickyKeyConversation {
+    sticky_key: String,
+    request_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    created_at: String,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    last_activity_at: String,
+    last24h_requests: Vec<AccountStickyKeyRequestPoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountStickyKeyRequestPoint {
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    occurred_at: String,
+    status: String,
+    is_success: bool,
+    request_tokens: i64,
+    cumulative_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -238,6 +288,12 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountStickyKeysQuery {
+    limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,11 +421,57 @@ struct UpstreamAccountRow {
     last_successful_sync_at: Option<String>,
     last_error: Option<String>,
     last_error_at: Option<String>,
+    last_selected_at: Option<String>,
+    last_route_failure_at: Option<String>,
+    cooldown_until: Option<String>,
+    consecutive_route_failures: i64,
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, FromRow)]
+struct PoolRoutingSettingsRow {
+    encrypted_api_key: Option<String>,
+    masked_api_key: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+#[allow(dead_code)]
+struct PoolStickyRouteRow {
+    sticky_key: String,
+    account_id: i64,
+    created_at: String,
+    updated_at: String,
+    last_seen_at: String,
+}
+
+#[derive(Debug, FromRow)]
+struct AccountRoutingCandidateRow {
+    id: i64,
+    secondary_used_percent: Option<f64>,
+    primary_used_percent: Option<f64>,
+    last_selected_at: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct StickyKeyAggregateRow {
+    sticky_key: String,
+    request_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    created_at: String,
+    last_activity_at: String,
+}
+
+#[derive(Debug, FromRow)]
+struct StickyKeyEventRow {
+    occurred_at: String,
+    status: String,
+    request_tokens: i64,
+    sticky_key: String,
 }
 
 #[allow(dead_code)]
@@ -434,6 +536,10 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             last_successful_sync_at TEXT,
             last_error TEXT,
             last_error_at TEXT,
+            last_selected_at TEXT,
+            last_route_failure_at TEXT,
+            cooldown_until TEXT,
+            consecutive_route_failures INTEGER NOT NULL DEFAULT 0,
             local_primary_limit REAL,
             local_secondary_limit REAL,
             local_limit_unit TEXT,
@@ -449,6 +555,29 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "group_name")
         .await
         .context("failed to ensure pool_upstream_accounts.group_name")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_selected_at")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_selected_at")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_route_failure_at")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_route_failure_at")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "cooldown_until")
+        .await
+        .context("failed to ensure pool_upstream_accounts.cooldown_until")?;
+
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE pool_upstream_accounts
+        ADD COLUMN consecutive_route_failures INTEGER NOT NULL DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err)
+            .context("failed to ensure pool_upstream_accounts.consecutive_route_failures");
+    }
 
     sqlx::query(
         r#"
@@ -534,6 +663,59 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context("failed to ensure idx_pool_limit_samples_account_captured_at")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_sticky_routes (
+            sticky_key TEXT PRIMARY KEY,
+            account_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_sticky_routes table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_sticky_routes_account_updated
+        ON pool_sticky_routes (account_id, updated_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_sticky_routes_account_updated")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_routing_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            encrypted_api_key TEXT,
+            masked_api_key TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_routing_settings table existence")?;
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO pool_routing_settings (
+            id,
+            encrypted_api_key,
+            masked_api_key
+        ) VALUES (?1, NULL, NULL)
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .execute(pool)
+    .await
+    .context("failed to ensure default pool_routing_settings row")?;
+
     Ok(())
 }
 
@@ -591,9 +773,20 @@ pub(crate) async fn list_upstream_accounts(
     let items = load_upstream_account_summaries(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
+    let routing = load_pool_routing_settings(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
     Ok(Json(UpstreamAccountListResponse {
         writes_enabled: state.upstream_accounts.writes_enabled(),
         items,
+        routing: PoolRoutingSettingsResponse {
+            writes_enabled: state.upstream_accounts.writes_enabled(),
+            api_key_configured: routing
+                .encrypted_api_key
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            masked_api_key: routing.masked_api_key,
+        },
     }))
 }
 
@@ -606,6 +799,64 @@ pub(crate) async fn get_upstream_account(
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
     Ok(Json(detail))
+}
+
+pub(crate) async fn get_pool_routing_settings(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<PoolRoutingSettingsResponse>, (StatusCode, String)> {
+    let row = load_pool_routing_settings(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(Json(PoolRoutingSettingsResponse {
+        writes_enabled: state.upstream_accounts.writes_enabled(),
+        api_key_configured: row
+            .encrypted_api_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()),
+        masked_api_key: row.masked_api_key,
+    }))
+}
+
+pub(crate) async fn update_pool_routing_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdatePoolRoutingSettingsRequest>,
+) -> Result<Json<PoolRoutingSettingsResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let crypto_key = state.upstream_accounts.require_crypto_key()?;
+    let api_key = normalize_required_secret(&payload.api_key, "apiKey")?;
+    save_pool_routing_api_key(&state.pool, crypto_key, &api_key)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(Json(PoolRoutingSettingsResponse {
+        writes_enabled: true,
+        api_key_configured: true,
+        masked_api_key: Some(mask_api_key(&api_key)),
+    }))
+}
+
+pub(crate) async fn get_upstream_account_sticky_keys(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<i64>,
+    Query(params): Query<AccountStickyKeysQuery>,
+) -> Result<Json<AccountStickyKeysResponse>, (StatusCode, String)> {
+    let exists = load_upstream_account_row(&state.pool, id)
+        .await
+        .map_err(internal_error_tuple)?
+        .is_some();
+    if !exists {
+        return Err((StatusCode::NOT_FOUND, "account not found".to_string()));
+    }
+    let limit = normalize_sticky_key_limit(params.limit);
+    let response = build_account_sticky_keys_response(&state.pool, id, limit)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(Json(response))
 }
 
 pub(crate) async fn create_oauth_login_session(
@@ -1786,6 +2037,7 @@ async fn load_upstream_account_summaries(
             chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
+            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
             local_primary_limit, local_secondary_limit, local_limit_unit,
             created_at, updated_at
         FROM pool_upstream_accounts
@@ -2739,6 +2991,13 @@ fn mask_api_key(api_key: &str) -> String {
     format!("{}••••{}", &api_key[..4], &api_key[api_key.len() - 4..])
 }
 
+fn normalize_sticky_key_limit(raw: Option<i64>) -> i64 {
+    match raw {
+        Some(20 | 50 | 100) => raw.unwrap_or(DEFAULT_STICKY_KEY_LIMIT),
+        _ => DEFAULT_STICKY_KEY_LIMIT,
+    }
+}
+
 fn seconds_to_window_minutes(seconds: i64) -> i64 {
     (seconds + 59) / 60
 }
@@ -2826,6 +3085,702 @@ fn internal_error_html(err: impl ToString) -> (StatusCode, String) {
         StatusCode::INTERNAL_SERVER_ERROR,
         render_callback_page(false, "OAuth callback failed", &err.to_string()),
     )
+}
+
+async fn load_pool_routing_settings(pool: &Pool<Sqlite>) -> Result<PoolRoutingSettingsRow> {
+    sqlx::query_as::<_, PoolRoutingSettingsRow>(
+        r#"
+        SELECT encrypted_api_key, masked_api_key
+        FROM pool_routing_settings
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .fetch_one(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn save_pool_routing_api_key(
+    pool: &Pool<Sqlite>,
+    crypto_key: &[u8; 32],
+    api_key: &str,
+) -> Result<()> {
+    let encrypted_api_key = encrypt_secret_value(crypto_key, api_key)?;
+    let masked_api_key = mask_api_key(api_key);
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_routing_settings
+        SET encrypted_api_key = ?2,
+            masked_api_key = ?3,
+            updated_at = ?4
+        WHERE id = ?1
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .bind(encrypted_api_key)
+    .bind(masked_api_key)
+    .bind(now_iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn pool_api_key_matches(state: &AppState, api_key: &str) -> Result<bool> {
+    let Some(crypto_key) = state.upstream_accounts.crypto_key.as_ref() else {
+        return Ok(false);
+    };
+    let row = load_pool_routing_settings(&state.pool).await?;
+    let Some(encrypted_api_key) = row.encrypted_api_key.as_deref() else {
+        return Ok(false);
+    };
+    let decrypted = decrypt_secret_value(crypto_key, encrypted_api_key)?;
+    Ok(decrypted == api_key.trim())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PoolResolvedAccount {
+    pub(crate) account_id: i64,
+    pub(crate) display_name: String,
+    pub(crate) kind: String,
+    pub(crate) authorization: String,
+}
+
+pub(crate) async fn resolve_pool_account_for_request(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    excluded_ids: &[i64],
+) -> Result<Option<PoolResolvedAccount>> {
+    let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
+
+    if let Some(sticky_key) = sticky_key
+        && let Some(route) = load_sticky_route(&state.pool, sticky_key).await?
+        && !tried.contains(&route.account_id)
+        && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
+        && is_account_selectable_for_routing(&row)
+    {
+        tried.insert(route.account_id);
+        if let Some(account) = prepare_pool_account(state, &row).await? {
+            record_account_selected(&state.pool, row.id, Some(sticky_key)).await?;
+            return Ok(Some(account));
+        }
+    }
+
+    let mut candidates = load_account_routing_candidates(&state.pool, &tried).await?;
+    candidates.sort_by(compare_routing_candidates);
+    for candidate in candidates {
+        let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
+            continue;
+        };
+        if !is_account_selectable_for_routing(&row) {
+            continue;
+        }
+        if let Some(account) = prepare_pool_account(state, &row).await? {
+            record_account_selected(&state.pool, row.id, sticky_key).await?;
+            return Ok(Some(account));
+        }
+    }
+
+    Ok(None)
+}
+
+pub(crate) async fn record_pool_route_success(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_selected_at = COALESCE(last_selected_at, ?3),
+            last_error = NULL,
+            last_error_at = NULL,
+            last_route_failure_at = NULL,
+            cooldown_until = NULL,
+            consecutive_route_failures = 0,
+            updated_at = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+    .bind(&now_iso)
+    .execute(pool)
+    .await?;
+    if let Some(sticky_key) = sticky_key {
+        upsert_sticky_route(pool, sticky_key, account_id, &now_iso).await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn record_pool_route_http_failure(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    account_kind: &str,
+    sticky_key: Option<&str>,
+    status: StatusCode,
+    error_message: &str,
+) -> Result<()> {
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        if let Some(sticky_key) = sticky_key {
+            delete_sticky_route(pool, sticky_key).await?;
+        }
+        let next_status = if account_kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
+            UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+        } else {
+            UPSTREAM_ACCOUNT_STATUS_ERROR
+        };
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?2,
+                last_error = ?3,
+                last_error_at = ?4,
+                last_route_failure_at = ?4,
+                cooldown_until = NULL,
+                consecutive_route_failures = consecutive_route_failures + 1,
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(next_status)
+        .bind(error_message)
+        .bind(now_iso)
+        .execute(pool)
+        .await?;
+        return Ok(());
+    }
+
+    let base_secs = if status == StatusCode::TOO_MANY_REQUESTS {
+        15
+    } else {
+        5
+    };
+    apply_pool_route_cooldown_failure(pool, account_id, sticky_key, error_message, base_secs).await
+}
+
+pub(crate) async fn record_pool_route_transport_failure(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+) -> Result<()> {
+    apply_pool_route_cooldown_failure(pool, account_id, sticky_key, error_message, 5).await
+}
+
+pub(crate) async fn build_account_sticky_keys_response(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    limit: i64,
+) -> Result<AccountStickyKeysResponse> {
+    let range_end = Utc::now();
+    let range_start = range_end - ChronoDuration::hours(24);
+    let range_start_bound = db_occurred_at_lower_bound(range_start);
+    let aggregates =
+        query_account_sticky_key_aggregates(pool, account_id, &range_start_bound, limit).await?;
+    if aggregates.is_empty() {
+        return Ok(AccountStickyKeysResponse {
+            range_start: format_utc_iso(range_start),
+            range_end: format_utc_iso(range_end),
+            conversations: Vec::new(),
+        });
+    }
+
+    let selected_keys = aggregates
+        .iter()
+        .map(|row| row.sticky_key.clone())
+        .collect::<Vec<_>>();
+    let events =
+        query_account_sticky_key_events(pool, account_id, &range_start_bound, &selected_keys)
+            .await?;
+
+    let mut grouped_events: HashMap<String, Vec<AccountStickyKeyRequestPoint>> = HashMap::new();
+    for row in events {
+        let status = if row.status.trim().is_empty() {
+            "unknown".to_string()
+        } else {
+            row.status.trim().to_string()
+        };
+        let request_tokens = row.request_tokens.max(0);
+        let points = grouped_events.entry(row.sticky_key.clone()).or_default();
+        let cumulative_tokens = points
+            .last()
+            .map(|point| point.cumulative_tokens)
+            .unwrap_or(0)
+            + request_tokens;
+        points.push(AccountStickyKeyRequestPoint {
+            occurred_at: row.occurred_at,
+            status: status.clone(),
+            is_success: status.eq_ignore_ascii_case("success"),
+            request_tokens,
+            cumulative_tokens,
+        });
+    }
+
+    Ok(AccountStickyKeysResponse {
+        range_start: format_utc_iso(range_start),
+        range_end: format_utc_iso(range_end),
+        conversations: aggregates
+            .into_iter()
+            .map(|row| AccountStickyKeyConversation {
+                sticky_key: row.sticky_key.clone(),
+                request_count: row.request_count,
+                total_tokens: row.total_tokens,
+                total_cost: row.total_cost,
+                created_at: row.created_at,
+                last_activity_at: row.last_activity_at,
+                last24h_requests: grouped_events.remove(&row.sticky_key).unwrap_or_default(),
+            })
+            .collect(),
+    })
+}
+
+async fn query_account_sticky_key_aggregates(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    range_start_bound: &str,
+    limit: i64,
+) -> Result<Vec<StickyKeyAggregateRow>> {
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
+    const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+
+    let mut query = QueryBuilder::<Sqlite>::new("WITH active AS (SELECT ");
+    query
+        .push(KEY_EXPR)
+        .push(
+            " AS sticky_key, MIN(occurred_at) AS first_seen_24h \
+             FROM codex_invocations \
+             WHERE occurred_at >= ",
+        )
+        .push_bind(range_start_bound)
+        .push(" AND ")
+        .push(ACCOUNT_EXPR)
+        .push(" = ")
+        .push_bind(account_id)
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(KEY_EXPR)
+        .push(
+            " <> '' \
+             GROUP BY sticky_key \
+         ), aggregates AS ( \
+            SELECT ",
+        )
+        .push(KEY_EXPR)
+        .push(
+            " AS sticky_key, \
+                 COUNT(*) AS request_count, \
+                 COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+                 COALESCE(SUM(cost), 0.0) AS total_cost, \
+                 MIN(occurred_at) AS created_at, \
+                 MAX(occurred_at) AS last_activity_at \
+             FROM codex_invocations \
+             WHERE ",
+        )
+        .push(ACCOUNT_EXPR)
+        .push(" = ")
+        .push_bind(account_id)
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(
+            " IN (SELECT sticky_key FROM active) \
+             GROUP BY sticky_key \
+         ) \
+         SELECT sticky_key, request_count, total_tokens, total_cost, created_at, last_activity_at \
+         FROM aggregates \
+         ORDER BY created_at DESC \
+         LIMIT ",
+        )
+        .push_bind(limit);
+
+    query
+        .build_query_as::<StickyKeyAggregateRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn query_account_sticky_key_events(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    range_start_bound: &str,
+    selected_keys: &[String],
+) -> Result<Vec<StickyKeyEventRow>> {
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
+    const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT occurred_at, COALESCE(status, 'unknown') AS status, COALESCE(total_tokens, 0) AS request_tokens, ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(" AS sticky_key FROM codex_invocations WHERE occurred_at >= ")
+        .push_bind(range_start_bound)
+        .push(" AND ")
+        .push(ACCOUNT_EXPR)
+        .push(" = ")
+        .push_bind(account_id)
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IN (");
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(") ORDER BY sticky_key ASC, occurred_at ASC, id ASC");
+
+    query
+        .build_query_as::<StickyKeyEventRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn prepare_pool_account(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+) -> Result<Option<PoolResolvedAccount>> {
+    let Some(crypto_key) = state.upstream_accounts.crypto_key.as_ref() else {
+        return Ok(None);
+    };
+    let Some(encrypted_credentials) = row.encrypted_credentials.as_deref() else {
+        return Ok(None);
+    };
+    let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
+    match credentials {
+        StoredCredentials::ApiKey(value) => Ok(Some(PoolResolvedAccount {
+            account_id: row.id,
+            display_name: row.display_name.clone(),
+            kind: row.kind.clone(),
+            authorization: format!("Bearer {}", value.api_key),
+        })),
+        StoredCredentials::Oauth(mut value) => {
+            let expires_at = row.token_expires_at.as_deref().and_then(parse_rfc3339_utc);
+            let refresh_due = expires_at
+                .map(|expires| {
+                    expires
+                        <= Utc::now()
+                            + ChronoDuration::seconds(
+                                state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
+                            )
+                })
+                .unwrap_or(true);
+            if refresh_due {
+                match refresh_oauth_tokens(
+                    &state.http_clients.shared,
+                    &state.config,
+                    &value.refresh_token,
+                )
+                .await
+                {
+                    Ok(response) => {
+                        value.access_token = response.access_token;
+                        if let Some(refresh_token) = response.refresh_token {
+                            value.refresh_token = refresh_token;
+                        }
+                        if let Some(id_token) = response.id_token {
+                            value.id_token = id_token;
+                        }
+                        value.token_type = response.token_type;
+                        let token_expires_at = format_utc_iso(
+                            Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)),
+                        );
+                        persist_oauth_credentials(
+                            &state.pool,
+                            row.id,
+                            crypto_key,
+                            &value,
+                            &token_expires_at,
+                        )
+                        .await?;
+                    }
+                    Err(err) if is_reauth_error(&err) => {
+                        update_account_error(
+                            &state.pool,
+                            row.id,
+                            UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
+                            &err.to_string(),
+                        )
+                        .await?;
+                        return Ok(None);
+                    }
+                    Err(err) => {
+                        update_account_error(
+                            &state.pool,
+                            row.id,
+                            UPSTREAM_ACCOUNT_STATUS_ERROR,
+                            &err.to_string(),
+                        )
+                        .await?;
+                        return Ok(None);
+                    }
+                }
+            }
+
+            Ok(Some(PoolResolvedAccount {
+                account_id: row.id,
+                display_name: row.display_name.clone(),
+                kind: row.kind.clone(),
+                authorization: format!("Bearer {}", value.access_token),
+            }))
+        }
+    }
+}
+
+fn is_account_selectable_for_routing(row: &UpstreamAccountRow) -> bool {
+    if row.provider != UPSTREAM_ACCOUNT_PROVIDER_CODEX
+        || row.enabled == 0
+        || row.status != UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        || row.encrypted_credentials.is_none()
+    {
+        return false;
+    }
+    let Some(cooldown_until) = row.cooldown_until.as_deref() else {
+        return true;
+    };
+    parse_rfc3339_utc(cooldown_until)
+        .map(|until| until <= Utc::now())
+        .unwrap_or(true)
+}
+
+async fn load_account_routing_candidates(
+    pool: &Pool<Sqlite>,
+    excluded_ids: &HashSet<i64>,
+) -> Result<Vec<AccountRoutingCandidateRow>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            account.id,
+            (
+                SELECT sample.secondary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_used_percent,
+            (
+                SELECT sample.primary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_used_percent,
+            account.last_selected_at
+        FROM pool_upstream_accounts account
+        WHERE account.provider = 
+        "#,
+    );
+    query
+        .push_bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
+        .push(" AND account.enabled = 1")
+        .push(" AND account.status = ")
+        .push_bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .push(" AND account.encrypted_credentials IS NOT NULL");
+    if !excluded_ids.is_empty() {
+        query.push(" AND account.id NOT IN (");
+        {
+            let mut separated = query.separated(", ");
+            for account_id in excluded_ids {
+                separated.push_bind(account_id);
+            }
+        }
+        query.push(")");
+    }
+    query.push(" ORDER BY account.id ASC");
+
+    query
+        .build_query_as::<AccountRoutingCandidateRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+fn compare_routing_candidates(
+    lhs: &AccountRoutingCandidateRow,
+    rhs: &AccountRoutingCandidateRow,
+) -> std::cmp::Ordering {
+    let lhs_secondary = lhs.secondary_used_percent.unwrap_or(0.0);
+    let rhs_secondary = rhs.secondary_used_percent.unwrap_or(0.0);
+    lhs_secondary
+        .partial_cmp(&rhs_secondary)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| {
+            lhs.primary_used_percent
+                .unwrap_or(0.0)
+                .partial_cmp(&rhs.primary_used_percent.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| lhs.last_selected_at.cmp(&rhs.last_selected_at))
+        .then_with(|| lhs.id.cmp(&rhs.id))
+}
+
+async fn record_account_selected(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET last_selected_at = ?2,
+            updated_at = ?2
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(&now_iso)
+    .execute(pool)
+    .await?;
+    if let Some(sticky_key) = sticky_key {
+        upsert_sticky_route(pool, sticky_key, account_id, &now_iso).await?;
+    }
+    Ok(())
+}
+
+async fn apply_pool_route_cooldown_failure(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    base_secs: i64,
+) -> Result<()> {
+    if let Some(sticky_key) = sticky_key {
+        delete_sticky_route(pool, sticky_key).await?;
+    }
+    let row = load_upstream_account_row(pool, account_id)
+        .await?
+        .ok_or_else(|| anyhow!("account not found"))?;
+    let next_failures = row.consecutive_route_failures.max(0) + 1;
+    let exponent = (next_failures - 1).clamp(0, 5) as u32;
+    let cooldown_secs = (base_secs * (1_i64 << exponent)).min(300);
+    let now = Utc::now();
+    let now_iso = format_utc_iso(now);
+    let cooldown_until = format_utc_iso(now + ChronoDuration::seconds(cooldown_secs));
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_error = ?3,
+            last_error_at = ?4,
+            last_route_failure_at = ?4,
+            cooldown_until = ?5,
+            consecutive_route_failures = ?6,
+            updated_at = ?4
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+    .bind(error_message)
+    .bind(&now_iso)
+    .bind(cooldown_until)
+    .bind(next_failures)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn load_sticky_route(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+) -> Result<Option<PoolStickyRouteRow>> {
+    sqlx::query_as::<_, PoolStickyRouteRow>(
+        r#"
+        SELECT sticky_key, account_id, created_at, updated_at, last_seen_at
+        FROM pool_sticky_routes
+        WHERE sticky_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(sticky_key)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn upsert_sticky_route(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    account_id: i64,
+    now_iso: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO pool_sticky_routes (
+            sticky_key, account_id, created_at, updated_at, last_seen_at
+        ) VALUES (?1, ?2, ?3, ?3, ?3)
+        ON CONFLICT(sticky_key) DO UPDATE SET
+            account_id = excluded.account_id,
+            updated_at = excluded.updated_at,
+            last_seen_at = excluded.last_seen_at
+        "#,
+    )
+    .bind(sticky_key)
+    .bind(account_id)
+    .bind(now_iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn delete_sticky_route(pool: &Pool<Sqlite>, sticky_key: &str) -> Result<()> {
+    sqlx::query("DELETE FROM pool_sticky_routes WHERE sticky_key = ?1")
+        .bind(sticky_key)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+#[allow(deprecated)]
+fn encrypt_secret_value(key: &[u8; 32], value: &str) -> Result<String> {
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|err| anyhow!("invalid AES key: {err}"))?;
+    let mut nonce = [0_u8; 12];
+    OsRng.fill_bytes(&mut nonce);
+    let ciphertext = cipher
+        .encrypt(aes_gcm::Nonce::from_slice(&nonce), value.as_bytes())
+        .map_err(|err| anyhow!("failed to encrypt secret: {err}"))?;
+    serde_json::to_string(&EncryptedCredentialsPayload {
+        v: 1,
+        nonce: BASE64_STANDARD.encode(nonce),
+        ciphertext: BASE64_STANDARD.encode(ciphertext),
+    })
+    .context("failed to encode encrypted secret payload")
+}
+
+#[allow(deprecated)]
+fn decrypt_secret_value(key: &[u8; 32], payload: &str) -> Result<String> {
+    let payload: EncryptedCredentialsPayload =
+        serde_json::from_str(payload).context("failed to decode encrypted secret payload")?;
+    if payload.v != 1 {
+        bail!(
+            "unsupported encrypted secret payload version: {}",
+            payload.v
+        );
+    }
+    let nonce = BASE64_STANDARD
+        .decode(payload.nonce)
+        .context("failed to decode secret nonce")?;
+    let ciphertext = BASE64_STANDARD
+        .decode(payload.ciphertext)
+        .context("failed to decode secret ciphertext")?;
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|err| anyhow!("invalid AES key: {err}"))?;
+    let plaintext = cipher
+        .decrypt(aes_gcm::Nonce::from_slice(&nonce), ciphertext.as_ref())
+        .map_err(|err| anyhow!("failed to decrypt secret: {err}"))?;
+    String::from_utf8(plaintext).context("failed to decode decrypted secret")
 }
 
 #[cfg(test)]

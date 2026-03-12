@@ -52,7 +52,7 @@ describe('PromptCacheConversationTable', () => {
     expect(html).toContain('24h Token 累计')
     expect(html).toContain('sm:hidden')
     expect(html).toContain('sm:table')
-    expect(html).toContain('data-chart-kind="prompt-cache-sparkline"')
+    expect(html).toContain('data-chart-kind="keyed-conversation-sparkline"')
     expect(html).toContain('aria-label="pck-chat-001 24 小时 Token 累计图"')
     expect(html).not.toContain('<title>')
     expect(html).toContain('stroke="oklch(var(--color-success) / 0.95)"')
