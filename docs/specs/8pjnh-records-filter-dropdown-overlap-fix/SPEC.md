@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（3/4）
+- Status: 已完成
 - Created: 2026-03-12
 - Last: 2026-03-12
 
@@ -133,7 +133,7 @@ None
 - [x] M1: 为 Records 页筛选卡片增加基于 dropdown 打开状态的页面级抬层逻辑与稳定测试锚点。
 - [x] M2: 为 Records 页补齐 Vitest 与 Playwright 遮挡回归。
 - [x] M3: 完成本地测试、build 与浏览器视觉证据采集。
-- [ ] M4: 完成快车道提交、PR、checks 与 review-loop 收敛。
+- [x] M4: 完成快车道提交、PR、checks 与 review-loop 收敛。
 
 ## 方案概述（Approach, high-level）
 
@@ -152,6 +152,7 @@ None
 
 - 2026-03-12: 创建 hotfix spec，冻结页面级抬层方案、回归范围与视觉证据要求。
 - 2026-03-12: 已完成 Records 页层级热修、Vitest / Playwright / build 验证，并补充本地 mock overlap 视觉证据。
+- 2026-03-12: PR #116 checks 全部成功，codex review loop 清零，无剩余阻塞项。
 
 ## 参考（References）
 
