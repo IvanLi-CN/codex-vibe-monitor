@@ -45,12 +45,45 @@ def forbid_text(text: str, needle: str, where: str) -> None:
     require(needle not in text, f"{where}: unexpected text {needle!r}")
 
 
+def extract_js_int(text: str, constant: str, where: str) -> int:
+    match = re.search(rf"\bconst\s+{re.escape(constant)}\s*=\s*(\d+)\s*;", text)
+    require(match is not None, f"{where}: missing integer constant {constant}")
+    return int(match.group(1))
+
+
+def extract_js_string_set(text: str, constant: str, where: str) -> set[str]:
+    match = re.search(rf"\bconst\s+{re.escape(constant)}\s*=\s*new Set\(\[(.*?)\]\);", text, re.S)
+    require(match is not None, f"{where}: missing string-set constant {constant}")
+    return set(re.findall(r"'([^']+)'", match.group(1)))
+
+
 def validate_quality_gates(path: Path) -> None:
     payload = json.loads(path.read_text())
     branch_policy = payload["policy"]["branch_protection"]
     require(branch_policy.get("require_merge_queue") is False, "quality-gates.json: require_merge_queue must be false")
+    require(
+        branch_policy.get("disallow_branch_deletions") is True,
+        "quality-gates.json: disallow_branch_deletions must be true",
+    )
+    require(
+        branch_policy.get("disallow_force_pushes") is True,
+        "quality-gates.json: disallow_force_pushes must be true",
+    )
+    status_check_policy = branch_policy.get("required_status_checks")
+    require(isinstance(status_check_policy, dict), "quality-gates.json: branch_protection.required_status_checks must be an object")
+    require(status_check_policy.get("strict") is True, "quality-gates.json: required_status_checks.strict must be true")
+    integrations = status_check_policy.get("integrations")
+    require(isinstance(integrations, dict), "quality-gates.json: required_status_checks.integrations must be an object")
     required_checks = set(payload.get("required_checks", []))
     require(required_checks == REQUIRED_CHECKS, f"quality-gates.json: required_checks drifted: {sorted(required_checks)}")
+    require(
+        set(integrations) == REQUIRED_CHECKS,
+        f"quality-gates.json: required_status_checks.integrations drifted: {sorted(integrations)}",
+    )
+    require(
+        all(value == 15368 for value in integrations.values()),
+        f"quality-gates.json: required_status_checks.integrations must stay on GitHub Actions: {integrations}",
+    )
 
     expected = {
         (entry.get("workflow"), tuple(entry.get("jobs", [])))
@@ -97,8 +130,9 @@ def validate_label_gate(path: Path) -> None:
     forbid_text(text, "context.ref || process.env.GITHUB_REF", "label-gate.yml")
 
 
-def validate_review_policy(path: Path) -> None:
+def validate_review_policy(path: Path, declaration: dict[str, Any]) -> None:
     text = path.read_text()
+    review_policy = declaration["policy"]["review_policy"]
     require(re.search(r"(?m)^\s*pull_request:\s*$", text) is not None, "review-policy.yml: must trigger on pull_request")
     require(re.search(r"(?m)^\s*pull_request_review:\s*$", text) is not None, "review-policy.yml: must trigger on pull_request_review")
     require(re.search(r"(?m)^\s*merge_group:\s*$", text) is None, "review-policy.yml: merge_group must stay disabled")
@@ -115,6 +149,25 @@ def validate_review_policy(path: Path) -> None:
     forbid_text(text, "statuses: write", "review-policy.yml")
     forbid_text(text, "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls", "review-policy.yml")
     forbid_text(text, "context.ref || process.env.GITHUB_REF", "review-policy.yml")
+    require(
+        extract_js_int(text, "reviewRequiredApprovals", "review-policy.yml") == review_policy["required_approvals"],
+        "review-policy.yml: reviewRequiredApprovals must match quality-gates.json",
+    )
+    require(
+        extract_js_string_set(text, "reviewExemptPermissions", "review-policy.yml")
+        == set(review_policy["exempt_author_permissions"]),
+        "review-policy.yml: reviewExemptPermissions must match quality-gates.json",
+    )
+    require(
+        extract_js_string_set(text, "reviewAllowedPermissions", "review-policy.yml")
+        == set(review_policy["allowed_reviewer_permissions"]),
+        "review-policy.yml: reviewAllowedPermissions must match quality-gates.json",
+    )
+    owner_exempt = "key === context.repo.owner.toLowerCase()" in text
+    require(
+        owner_exempt == bool(review_policy["exempt_repository_owner"]),
+        "review-policy.yml: owner exemption must match quality-gates.json",
+    )
 
 
 def validate_merge_group_helpers(module: Any) -> None:
@@ -143,11 +196,12 @@ def main() -> int:
     scripts_dir = repo_root / ".github" / "scripts"
 
     try:
+        declaration = json.loads((repo_root / ".github" / "quality-gates.json").read_text())
         module = load_module(scripts_dir / "metadata_gate.py")
         validate_quality_gates(repo_root / ".github" / "quality-gates.json")
         validate_ci(repo_root / ".github" / "workflows" / "ci.yml")
         validate_label_gate(repo_root / ".github" / "workflows" / "label-gate.yml")
-        validate_review_policy(repo_root / ".github" / "workflows" / "review-policy.yml")
+        validate_review_policy(repo_root / ".github" / "workflows" / "review-policy.yml", declaration)
         validate_merge_group_helpers(module)
     except ContractError as exc:
         print(f"[quality-gates-contract] {exc}", file=sys.stderr)

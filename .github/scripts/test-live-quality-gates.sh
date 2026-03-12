@@ -26,6 +26,34 @@ fi
 grep -q "unexpected merge_queue rule" "$fixtures_dir/.unexpected-merge-queue.log"
 rm -f "$fixtures_dir/.unexpected-merge-queue.log"
 
+if python3 "$script" \
+  --mode require \
+  --repo IvanLi-CN/codex-vibe-monitor \
+  --declaration "$declaration" \
+  --rules-file "$fixtures_dir/rules-main-weak-branch-protection.json" \
+  --branch main >/dev/null 2>"$fixtures_dir/.weak-branch-protection.log"; then
+  echo "expected weak branch protection fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "missing deletion rule" "$fixtures_dir/.weak-branch-protection.log"
+grep -q "missing non_fast_forward rule" "$fixtures_dir/.weak-branch-protection.log"
+rm -f "$fixtures_dir/.weak-branch-protection.log"
+
+if python3 "$script" \
+  --mode require \
+  --repo IvanLi-CN/codex-vibe-monitor \
+  --declaration "$declaration" \
+  --rules-file "$fixtures_dir/rules-main-status-check-policy-drift.json" \
+  --branch main >/dev/null 2>"$fixtures_dir/.status-check-policy-drift.log"; then
+  echo "expected status-check policy drift fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "strict_required_status_checks_policy" "$fixtures_dir/.status-check-policy-drift.log"
+grep -q "required_status_check integrations drift" "$fixtures_dir/.status-check-policy-drift.log"
+rm -f "$fixtures_dir/.status-check-policy-drift.log"
+
 python3 - <<'PY' "$script"
 import importlib.util
 import json

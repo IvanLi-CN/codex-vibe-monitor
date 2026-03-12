@@ -1,5 +1,13 @@
 [
   {
+    "type": "deletion",
+    "parameters": {}
+  },
+  {
+    "type": "non_fast_forward",
+    "parameters": {}
+  },
+  {
     "type": "required_signatures",
     "parameters": {}
   },
@@ -21,21 +29,27 @@
   {
     "type": "required_status_checks",
     "parameters": {
+      "strict_required_status_checks_policy": true,
       "required_status_checks": [
         {
-          "context": "Validate PR labels"
+          "context": "Validate PR labels",
+          "integration_id": 15368
         },
         {
-          "context": "Lint & Format Check"
+          "context": "Lint & Format Check",
+          "integration_id": 15368
         },
         {
-          "context": "Backend Tests"
+          "context": "Backend Tests",
+          "integration_id": 15368
         },
         {
-          "context": "Build Artifacts"
+          "context": "Build Artifacts",
+          "integration_id": 15368
         },
         {
-          "context": "Review Policy Gate"
+          "context": "Review Policy Gate",
+          "integration_id": 15368
         }
       ]
     }

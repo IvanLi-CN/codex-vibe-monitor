@@ -9,7 +9,19 @@
       ],
       "require_pull_request": true,
       "disallow_direct_pushes": true,
-      "require_merge_queue": false
+      "disallow_branch_deletions": true,
+      "disallow_force_pushes": true,
+      "require_merge_queue": false,
+      "required_status_checks": {
+        "strict": true,
+        "integrations": {
+          "Validate PR labels": 15368,
+          "Lint & Format Check": 15368,
+          "Backend Tests": 15368,
+          "Build Artifacts": 15368,
+          "Review Policy Gate": 15368
+        }
+      }
     },
     "review_policy": {
       "mode": "conditional-required",

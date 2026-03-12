@@ -1,13 +1,5 @@
 [
   {
-    "type": "deletion",
-    "parameters": {}
-  },
-  {
-    "type": "non_fast_forward",
-    "parameters": {}
-  },
-  {
     "type": "required_signatures",
     "parameters": {}
   },

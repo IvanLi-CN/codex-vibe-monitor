@@ -158,12 +158,19 @@ def bool_field(parameters: dict[str, Any], name: str) -> bool:
     return bool(parameters.get(name, False))
 
 
-def normalize_status_contexts(rules: list[dict[str, Any]]) -> list[str]:
+def normalize_required_status_checks(
+    rules: list[dict[str, Any]],
+) -> tuple[list[str], dict[str, set[int | None]], set[bool]]:
     contexts: set[str] = set()
+    integrations: dict[str, set[int | None]] = {}
+    strict_values: set[bool] = set()
     for rule in rules:
         parameters = rule.get("parameters") or {}
         if not isinstance(parameters, dict):
             continue
+        strict = parameters.get("strict_required_status_checks_policy")
+        if isinstance(strict, bool):
+            strict_values.add(strict)
         raw_checks = parameters.get("required_status_checks") or []
         if not isinstance(raw_checks, list):
             continue
@@ -173,7 +180,11 @@ def normalize_status_contexts(rules: list[dict[str, Any]]) -> list[str]:
             context = item.get("context")
             if isinstance(context, str) and context:
                 contexts.add(context)
-    return sorted(contexts)
+                integration = item.get("integration_id")
+                if integration is not None and not isinstance(integration, int):
+                    integration = None
+                integrations.setdefault(context, set()).add(integration)
+    return sorted(contexts), integrations, strict_values
 
 
 def validate_rules(declaration: dict[str, Any], rules: list[dict[str, Any]], branch: str) -> list[str]:
@@ -201,13 +212,47 @@ def validate_rules(declaration: dict[str, Any], rules: list[dict[str, Any]], bra
 
     require_signed_commits = bool(policy.get("require_signed_commits", False))
     require_pull_request = bool(branch_policy.get("require_pull_request", False))
+    disallow_branch_deletions = bool(branch_policy.get("disallow_branch_deletions", False))
+    disallow_force_pushes = bool(branch_policy.get("disallow_force_pushes", False))
     require_merge_queue = bool(branch_policy.get("require_merge_queue", False))
+    status_check_policy = branch_policy.get("required_status_checks", {})
+    if status_check_policy is None:
+        status_check_policy = {}
+    if not isinstance(status_check_policy, dict):
+        raise ValidationError("policy.branch_protection.required_status_checks must be a JSON object")
+    expected_strict_status_checks = status_check_policy.get("strict")
+    if expected_strict_status_checks is not None and not isinstance(expected_strict_status_checks, bool):
+        raise ValidationError("policy.branch_protection.required_status_checks.strict must be a boolean")
+    expected_integrations = status_check_policy.get("integrations", {})
+    if expected_integrations is None:
+        expected_integrations = {}
+    if not isinstance(expected_integrations, dict):
+        raise ValidationError("policy.branch_protection.required_status_checks.integrations must be a JSON object")
+    normalized_expected_integrations: dict[str, int] = {}
+    for context, integration in expected_integrations.items():
+        if not isinstance(context, str) or not context:
+            raise ValidationError("policy.branch_protection.required_status_checks.integrations keys must be strings")
+        if not isinstance(integration, int):
+            raise ValidationError(
+                "policy.branch_protection.required_status_checks.integrations values must be integers"
+            )
+        normalized_expected_integrations[context] = integration
     enforcement_mode = str(review_enforcement.get("mode", ""))
     expected_native_approvals = int(review_policy.get("required_approvals", 0)) if enforcement_mode == "github-native" else 0
 
     grouped: dict[str, list[dict[str, Any]]] = {}
     for rule in rules:
         grouped.setdefault(rule.get("type", ""), []).append(rule)
+
+    if disallow_branch_deletions and "deletion" not in grouped:
+        errors.append(f"{branch}: missing deletion rule")
+    if not disallow_branch_deletions and "deletion" in grouped:
+        errors.append(f"{branch}: unexpected deletion rule")
+
+    if disallow_force_pushes and "non_fast_forward" not in grouped:
+        errors.append(f"{branch}: missing non_fast_forward rule")
+    if not disallow_force_pushes and "non_fast_forward" in grouped:
+        errors.append(f"{branch}: unexpected non_fast_forward rule")
 
     if require_signed_commits and "required_signatures" not in grouped:
         errors.append(f"{branch}: missing required_signatures rule")
@@ -272,7 +317,9 @@ def validate_rules(declaration: dict[str, Any], rules: list[dict[str, Any]], bra
         if not isinstance(check_name, str) or not check_name:
             errors.append(f"{branch}: review_policy.enforcement.check_name must be set for required-check mode")
 
-    live_required_checks = normalize_status_contexts(grouped.get("required_status_checks", []))
+    live_required_checks, live_integrations, live_strict_values = normalize_required_status_checks(
+        grouped.get("required_status_checks", [])
+    )
     if live_required_checks != required_checks:
         missing = sorted(set(required_checks) - set(live_required_checks))
         unexpected = sorted(set(live_required_checks) - set(required_checks))
@@ -284,6 +331,38 @@ def validate_rules(declaration: dict[str, Any], rules: list[dict[str, Any]], bra
         if not details:
             details.append("required status check order/content drifted")
         errors.append(f"{branch}: required_status_checks drift ({'; '.join(details)})")
+
+    if expected_strict_status_checks is not None:
+        if live_strict_values != {expected_strict_status_checks}:
+            errors.append(
+                f"{branch}: strict_required_status_checks_policy={sorted(live_strict_values)} expected={expected_strict_status_checks}"
+            )
+
+    if normalized_expected_integrations:
+        integration_errors: list[str] = []
+        live_contexts = set(live_integrations)
+        missing_contexts = sorted(set(normalized_expected_integrations) - live_contexts)
+        unexpected_contexts = sorted(live_contexts - set(normalized_expected_integrations))
+        for context in missing_contexts:
+            integration_errors.append(f"{context}: missing")
+        for context in unexpected_contexts:
+            integration_errors.append(f"{context}: unexpected")
+        for context, expected_integration in sorted(normalized_expected_integrations.items()):
+            if context not in live_integrations:
+                continue
+            actual_integrations = live_integrations[context]
+            if len(actual_integrations) != 1:
+                integration_errors.append(f"{context}: ambiguous={sorted(actual_integrations, key=lambda item: (-1 if item is None else item))}")
+                continue
+            actual_integration = next(iter(actual_integrations))
+            if actual_integration != expected_integration:
+                integration_errors.append(
+                    f"{context}: expected={expected_integration} actual={actual_integration}"
+                )
+        if integration_errors:
+            errors.append(
+                f"{branch}: required_status_check integrations drift ({'; '.join(integration_errors)})"
+            )
 
     return errors
 
