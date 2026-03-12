@@ -96,6 +96,17 @@ const SUGGESTIONS_FIXTURE = {
 }
 
 async function mockRecordsPageApis(page: Page) {
+  await page.route('**/events', async (route) => {
+    await route.fulfill({
+      status: 204,
+      headers: {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+      },
+      body: '',
+    })
+  })
+
   await page.route('**/api/**', async (route) => {
     const requestUrl = new URL(route.request().url())
     const { pathname } = requestUrl
@@ -139,11 +150,19 @@ async function mockRecordsPageApis(page: Page) {
       return
     }
 
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({}),
-    })
+    if (pathname === '/api/version') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          backend: '1.2.0',
+          frontend: '0.2.0',
+        }),
+      })
+      return
+    }
+
+    throw new Error(`unmocked API route in records overlay test: ${pathname}`)
   })
 }
 
