@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Icon } from '@iconify/react'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
@@ -99,6 +100,84 @@ function DetailField({ label, value }: { label: string; value: string }) {
   )
 }
 
+function AccountDetailDrawer({
+  open,
+  title,
+  subtitle,
+  closeLabel,
+  onClose,
+  children,
+}: {
+  open: boolean
+  title: string
+  subtitle?: string
+  closeLabel: string
+  onClose: () => void
+  children: ReactNode
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
+
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return undefined
+
+    const previousOverflow = document.body.style.overflow
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose()
+      }
+    }
+
+    document.body.style.overflow = 'hidden'
+    document.addEventListener('keydown', handleKeyDown)
+    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+
+    return () => {
+      window.clearTimeout(focusTimer)
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [onClose, open])
+
+  if (!open || typeof document === 'undefined') return null
+
+  return createPortal(
+    <div className="fixed inset-0 z-[70]">
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 bg-neutral/50 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <div className="absolute inset-y-0 right-0 flex w-full justify-end pl-4 sm:pl-8">
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="upstream-account-detail-title"
+          className="flex h-full w-full max-w-[60rem] flex-col border-l border-base-300/80 bg-base-200/96 shadow-[0_28px_80px_rgba(15,23,42,0.32)] backdrop-blur-xl"
+        >
+          <div className="border-b border-base-300/80 bg-base-100/82 px-5 py-4 backdrop-blur sm:px-6">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 space-y-1">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
+                  {subtitle}
+                </p>
+                <h2 id="upstream-account-detail-title" className="truncate text-xl font-semibold text-base-content">
+                  {title}
+                </h2>
+              </div>
+              <Button ref={closeButtonRef} type="button" variant="ghost" size="icon" onClick={onClose}>
+                <Icon icon="mdi:close" className="h-5 w-5" aria-hidden />
+                <span className="sr-only">{closeLabel}</span>
+              </Button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6">{children}</div>
+        </section>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 export default function UpstreamAccountsPage() {
   const { t } = useTranslation()
   const {
@@ -135,11 +214,25 @@ export default function UpstreamAccountsPage() {
   const [sessionHint, setSessionHint] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
+  const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
+  const [hasDrawerInteracted, setHasDrawerInteracted] = useState(false)
   const popupRef = useRef<Window | null>(null)
 
   useEffect(() => {
     setDraft(buildDraft(detail))
   }, [detail])
+
+  useEffect(() => {
+    if (selectedId != null && !hasDrawerInteracted) {
+      setIsDetailDrawerOpen(true)
+    }
+  }, [hasDrawerInteracted, selectedId])
+
+  useEffect(() => {
+    if (!selectedSummary && !detail) {
+      setIsDetailDrawerOpen(false)
+    }
+  }, [detail, selectedSummary])
 
   useEffect(() => {
     const currentSession = session
@@ -206,6 +299,15 @@ export default function UpstreamAccountsPage() {
     kind === 'oauth_codex'
       ? t('accountPool.upstreamAccounts.kind.oauth')
       : t('accountPool.upstreamAccounts.kind.apiKey')
+  const handleSelectAccount = (accountId: number) => {
+    setHasDrawerInteracted(true)
+    setIsDetailDrawerOpen(true)
+    selectAccount(accountId)
+  }
+  const handleCloseDetailDrawer = () => {
+    setHasDrawerInteracted(true)
+    setIsDetailDrawerOpen(false)
+  }
 
   const handleOauthLogin = async (accountId?: number) => {
     setActionError(null)
@@ -522,20 +624,28 @@ export default function UpstreamAccountsPage() {
         </Card>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+      <section className="grid gap-6">
         <div className="surface-panel overflow-hidden">
           <div className="surface-panel-body gap-4">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="section-heading">
                 <h2 className="section-title">{t('accountPool.upstreamAccounts.listTitle')}</h2>
                 <p className="section-description">{t('accountPool.upstreamAccounts.listDescription')}</p>
               </div>
-              {isLoading ? <Spinner className="text-primary" /> : null}
+              <div className="flex items-center gap-2">
+                {selected && !isDetailDrawerOpen ? (
+                  <Button type="button" variant="outline" onClick={() => setIsDetailDrawerOpen(true)}>
+                    <Icon icon="mdi:account-details-outline" className="mr-2 h-4 w-4" aria-hidden />
+                    {t('accountPool.upstreamAccounts.actions.openDetails')}
+                  </Button>
+                ) : null}
+                {isLoading ? <Spinner className="text-primary" /> : null}
+              </div>
             </div>
             <UpstreamAccountsTable
               items={items}
               selectedId={selectedId}
-              onSelect={selectAccount}
+              onSelect={handleSelectAccount}
               emptyTitle={t('accountPool.upstreamAccounts.emptyTitle')}
               emptyDescription={t('accountPool.upstreamAccounts.emptyDescription')}
               labels={{
@@ -550,188 +660,194 @@ export default function UpstreamAccountsPage() {
             />
           </div>
         </div>
+      </section>
 
-        <div className="surface-panel overflow-hidden">
-          <div className="surface-panel-body gap-5">
-            {!selected ? (
-              <div className="flex min-h-[28rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 text-center">
-                <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-                  <Icon icon="mdi:account-details-outline" className="h-7 w-7" aria-hidden />
+      <AccountDetailDrawer
+        open={Boolean(selected && isDetailDrawerOpen)}
+        title={selected?.displayName ?? t('accountPool.upstreamAccounts.detailTitle')}
+        subtitle={t('accountPool.upstreamAccounts.detailTitle')}
+        closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
+        onClose={handleCloseDetailDrawer}
+      >
+        {!selected ? (
+          <div className="flex min-h-[20rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 text-center">
+            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <Icon icon="mdi:account-details-outline" className="h-7 w-7" aria-hidden />
+            </div>
+            <h3 className="text-lg font-semibold">{t('accountPool.upstreamAccounts.detailEmptyTitle')}</h3>
+            <p className="mt-2 max-w-sm text-sm leading-6 text-base-content/65">
+              {t('accountPool.upstreamAccounts.detailEmptyDescription')}
+            </p>
+          </div>
+        ) : isDetailLoading && !detail ? (
+          <AccountDetailSkeleton />
+        ) : (
+          <>
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={statusVariant(selected.status)}>{accountStatusLabel(selected.status)}</Badge>
+                  <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
+                  {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}
+                  {selected.kind === 'api_key_codex' ? (
+                    <Badge variant="secondary">{t('accountPool.upstreamAccounts.apiKey.localPlaceholder')}</Badge>
+                  ) : null}
                 </div>
-                <h3 className="text-lg font-semibold">{t('accountPool.upstreamAccounts.detailEmptyTitle')}</h3>
-                <p className="mt-2 max-w-sm text-sm leading-6 text-base-content/65">
-                  {t('accountPool.upstreamAccounts.detailEmptyDescription')}
-                </p>
+                <div className="section-heading">
+                  <h3 className="section-title">{selected.displayName}</h3>
+                  <p className="section-description">
+                    {selected.email ?? selected.maskedApiKey ?? t('accountPool.upstreamAccounts.identityUnavailable')}
+                  </p>
+                </div>
               </div>
-            ) : isDetailLoading && !detail ? (
-              <AccountDetailSkeleton />
-            ) : (
-              <>
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant={statusVariant(selected.status)}>{accountStatusLabel(selected.status)}</Badge>
-                      <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
-                      {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}
-                      {selected.kind === 'api_key_codex' ? (
-                        <Badge variant="secondary">{t('accountPool.upstreamAccounts.apiKey.localPlaceholder')}</Badge>
-                      ) : null}
-                    </div>
-                    <div className="section-heading">
-                      <h2 className="section-title">{selected.displayName}</h2>
-                      <p className="section-description">{selected.email ?? selected.maskedApiKey ?? t('accountPool.upstreamAccounts.identityUnavailable')}</p>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="flex items-center gap-2 rounded-full border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm">
-                      <span className="text-base-content/60">{t('accountPool.upstreamAccounts.actions.enable')}</span>
-                      <Switch
-                        checked={selected.enabled}
-                        onCheckedChange={(checked) => void handleToggleEnabled(selected, checked)}
-                        disabled={busyAction === 'toggle' || !writesEnabled}
-                        aria-label={t('accountPool.upstreamAccounts.actions.enable')}
-                      />
-                    </div>
-                    <Button type="button" variant="secondary" onClick={() => void handleSync(selected)} disabled={busyAction === 'sync'}>
-                      {busyAction === 'sync' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:refresh-circle" className="mr-2 h-4 w-4" aria-hidden />}
-                      {t('accountPool.upstreamAccounts.actions.syncNow')}
-                    </Button>
-                    {selected.kind === 'oauth_codex' ? (
-                      <Button type="button" variant="outline" onClick={() => void handleOauthLogin(selected.id)} disabled={busyAction === 'relogin' || !writesEnabled}>
-                        {busyAction === 'relogin' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:login-variant" className="mr-2 h-4 w-4" aria-hidden />}
-                        {t('accountPool.upstreamAccounts.actions.relogin')}
-                      </Button>
-                    ) : null}
-                    <Button type="button" variant="destructive" onClick={() => void handleDelete(selected)} disabled={busyAction === 'delete' || !writesEnabled}>
-                      {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
-                      {t('accountPool.upstreamAccounts.actions.delete')}
-                    </Button>
-                  </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2 rounded-full border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm">
+                  <span className="text-base-content/60">{t('accountPool.upstreamAccounts.actions.enable')}</span>
+                  <Switch
+                    checked={selected.enabled}
+                    onCheckedChange={(checked) => void handleToggleEnabled(selected, checked)}
+                    disabled={busyAction === 'toggle' || !writesEnabled}
+                    aria-label={t('accountPool.upstreamAccounts.actions.enable')}
+                  />
+                </div>
+                <Button type="button" variant="secondary" onClick={() => void handleSync(selected)} disabled={busyAction === 'sync'}>
+                  {busyAction === 'sync' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:refresh-circle" className="mr-2 h-4 w-4" aria-hidden />}
+                  {t('accountPool.upstreamAccounts.actions.syncNow')}
+                </Button>
+                {selected.kind === 'oauth_codex' ? (
+                  <Button type="button" variant="outline" onClick={() => void handleOauthLogin(selected.id)} disabled={busyAction === 'relogin' || !writesEnabled}>
+                    {busyAction === 'relogin' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:login-variant" className="mr-2 h-4 w-4" aria-hidden />}
+                    {t('accountPool.upstreamAccounts.actions.relogin')}
+                  </Button>
+                ) : null}
+                <Button type="button" variant="destructive" onClick={() => void handleDelete(selected)} disabled={busyAction === 'delete' || !writesEnabled}>
+                  {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                  {t('accountPool.upstreamAccounts.actions.delete')}
+                </Button>
+              </div>
+            </div>
+
+            {detail ? (
+              <div className="grid gap-5">
+                <div className="metric-grid">
+                  <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={detail.email ?? ''} />
+                  <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={detail.chatgptAccountId ?? detail.maskedApiKey ?? ''} />
+                  <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={detail.chatgptUserId ?? ''} />
+                  <DetailField label={t('accountPool.upstreamAccounts.fields.lastSuccessSync')} value={formatDateTime(detail.lastSuccessfulSyncAt)} />
                 </div>
 
-                {detail ? (
-                  <>
-                    <div className="metric-grid">
-                      <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={detail.email ?? ''} />
-                      <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={detail.chatgptAccountId ?? detail.maskedApiKey ?? ''} />
-                      <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={detail.chatgptUserId ?? ''} />
-                      <DetailField label={t('accountPool.upstreamAccounts.fields.lastSuccessSync')} value={formatDateTime(detail.lastSuccessfulSyncAt)} />
-                    </div>
-
-                    <Card className="border-base-300/80 bg-base-100/72">
-                      <CardHeader>
-                        <CardTitle>{t('accountPool.upstreamAccounts.editTitle')}</CardTitle>
-                        <CardDescription>{t('accountPool.upstreamAccounts.editDescription')}</CardDescription>
-                      </CardHeader>
-                      <CardContent className="grid gap-4 md:grid-cols-2">
-                        <label className="field md:col-span-2">
-                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                          <Input name="detailDisplayName" value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} />
-                        </label>
-                        <label className="field md:col-span-2">
-                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
-                          <textarea
-                            className="min-h-24 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
-                            name="detailNote"
-                            value={draft.note}
-                            onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))}
+                <Card className="border-base-300/80 bg-base-100/72">
+                  <CardHeader>
+                    <CardTitle>{t('accountPool.upstreamAccounts.editTitle')}</CardTitle>
+                    <CardDescription>{t('accountPool.upstreamAccounts.editDescription')}</CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-4 md:grid-cols-2">
+                    <label className="field md:col-span-2">
+                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                      <Input name="detailDisplayName" value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} />
+                    </label>
+                    <label className="field md:col-span-2">
+                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
+                      <textarea
+                        className="min-h-24 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
+                        name="detailNote"
+                        value={draft.note}
+                        onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))}
+                      />
+                    </label>
+                    {detail.kind === 'api_key_codex' ? (
+                      <>
+                        <label className="field">
+                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.primaryLimit')}</span>
+                          <Input
+                            name="detailPrimaryLimit"
+                            value={draft.localPrimaryLimit}
+                            onChange={(event) => setDraft((current) => ({ ...current, localPrimaryLimit: event.target.value }))}
                           />
                         </label>
-                        {detail.kind === 'api_key_codex' ? (
-                          <>
-                            <label className="field">
-                              <span className="field-label">{t('accountPool.upstreamAccounts.fields.primaryLimit')}</span>
-                              <Input
-                                name="detailPrimaryLimit"
-                                value={draft.localPrimaryLimit}
-                                onChange={(event) => setDraft((current) => ({ ...current, localPrimaryLimit: event.target.value }))}
-                              />
-                            </label>
-                            <label className="field">
-                              <span className="field-label">{t('accountPool.upstreamAccounts.fields.secondaryLimit')}</span>
-                              <Input
-                                name="detailSecondaryLimit"
-                                value={draft.localSecondaryLimit}
-                                onChange={(event) => setDraft((current) => ({ ...current, localSecondaryLimit: event.target.value }))}
-                              />
-                            </label>
-                            <label className="field">
-                              <span className="field-label">{t('accountPool.upstreamAccounts.fields.limitUnit')}</span>
-                              <Input
-                                name="detailLimitUnit"
-                                value={draft.localLimitUnit}
-                                onChange={(event) => setDraft((current) => ({ ...current, localLimitUnit: event.target.value }))}
-                              />
-                            </label>
-                            <label className="field">
-                              <span className="field-label">{t('accountPool.upstreamAccounts.fields.rotateApiKey')}</span>
-                              <Input
-                                name="detailRotateApiKey"
-                                value={draft.apiKey}
-                                onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
-                                placeholder={t('accountPool.upstreamAccounts.fields.rotateApiKeyPlaceholder')}
-                              />
-                            </label>
-                          </>
-                        ) : null}
-                        <div className="md:col-span-2 flex justify-end">
-                          <Button type="button" onClick={() => void handleSave(detail)} disabled={busyAction === 'save' || !writesEnabled}>
-                            {busyAction === 'save' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:content-save-outline" className="mr-2 h-4 w-4" aria-hidden />}
-                            {t('accountPool.upstreamAccounts.actions.save')}
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-
-                    <div className="grid gap-4 xl:grid-cols-2">
-                      <UpstreamAccountUsageCard
-                        title={t('accountPool.upstreamAccounts.primaryWindowLabel')}
-                        description={t('accountPool.upstreamAccounts.usage.primaryDescription')}
-                        window={detail.primaryWindow}
-                        history={detail.history}
-                        historyKey="primaryUsedPercent"
-                        emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
-                        noteLabel={detail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
-                      />
-                      <UpstreamAccountUsageCard
-                        title={t('accountPool.upstreamAccounts.secondaryWindowLabel')}
-                        description={t('accountPool.upstreamAccounts.usage.secondaryDescription')}
-                        window={detail.secondaryWindow}
-                        history={detail.history}
-                        historyKey="secondaryUsedPercent"
-                        emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
-                        noteLabel={detail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
-                        accentClassName="text-secondary"
-                      />
+                        <label className="field">
+                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.secondaryLimit')}</span>
+                          <Input
+                            name="detailSecondaryLimit"
+                            value={draft.localSecondaryLimit}
+                            onChange={(event) => setDraft((current) => ({ ...current, localSecondaryLimit: event.target.value }))}
+                          />
+                        </label>
+                        <label className="field">
+                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.limitUnit')}</span>
+                          <Input
+                            name="detailLimitUnit"
+                            value={draft.localLimitUnit}
+                            onChange={(event) => setDraft((current) => ({ ...current, localLimitUnit: event.target.value }))}
+                          />
+                        </label>
+                        <label className="field">
+                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.rotateApiKey')}</span>
+                          <Input
+                            name="detailRotateApiKey"
+                            value={draft.apiKey}
+                            onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
+                            placeholder={t('accountPool.upstreamAccounts.fields.rotateApiKeyPlaceholder')}
+                          />
+                        </label>
+                      </>
+                    ) : null}
+                    <div className="md:col-span-2 flex justify-end">
+                      <Button type="button" onClick={() => void handleSave(detail)} disabled={busyAction === 'save' || !writesEnabled}>
+                        {busyAction === 'save' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:content-save-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                        {t('accountPool.upstreamAccounts.actions.save')}
+                      </Button>
                     </div>
+                  </CardContent>
+                </Card>
 
-                    <Card className="border-base-300/80 bg-base-100/72">
-                      <CardHeader>
-                        <CardTitle>{t('accountPool.upstreamAccounts.healthTitle')}</CardTitle>
-                        <CardDescription>{t('accountPool.upstreamAccounts.healthDescription')}</CardDescription>
-                      </CardHeader>
-                      <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                        <DetailField label={t('accountPool.upstreamAccounts.fields.lastSyncedAt')} value={formatDateTime(detail.lastSyncedAt)} />
-                        <DetailField label={t('accountPool.upstreamAccounts.fields.lastRefreshedAt')} value={formatDateTime(detail.lastRefreshedAt)} />
-                        <DetailField label={t('accountPool.upstreamAccounts.fields.tokenExpiresAt')} value={formatDateTime(detail.tokenExpiresAt)} />
-                        <DetailField
-                          label={t('accountPool.upstreamAccounts.fields.credits')}
-                          value={detail.credits?.balance ? `${detail.credits.balance}` : detail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
-                        />
-                        <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
-                          <p className="metric-label">{t('accountPool.upstreamAccounts.fields.lastError')}</p>
-                          <p className="mt-2 text-sm leading-6 text-base-content/75">{detail.lastError ?? t('accountPool.upstreamAccounts.noError')}</p>
-                          <p className="mt-2 text-xs text-base-content/55">{formatDateTime(detail.lastErrorAt)}</p>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </>
-                ) : null}
-              </>
-            )}
-          </div>
-        </div>
-      </section>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <UpstreamAccountUsageCard
+                    title={t('accountPool.upstreamAccounts.primaryWindowLabel')}
+                    description={t('accountPool.upstreamAccounts.usage.primaryDescription')}
+                    window={detail.primaryWindow}
+                    history={detail.history}
+                    historyKey="primaryUsedPercent"
+                    emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
+                    noteLabel={detail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
+                  />
+                  <UpstreamAccountUsageCard
+                    title={t('accountPool.upstreamAccounts.secondaryWindowLabel')}
+                    description={t('accountPool.upstreamAccounts.usage.secondaryDescription')}
+                    window={detail.secondaryWindow}
+                    history={detail.history}
+                    historyKey="secondaryUsedPercent"
+                    emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
+                    noteLabel={detail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
+                    accentClassName="text-secondary"
+                  />
+                </div>
+
+                <Card className="border-base-300/80 bg-base-100/72">
+                  <CardHeader>
+                    <CardTitle>{t('accountPool.upstreamAccounts.healthTitle')}</CardTitle>
+                    <CardDescription>{t('accountPool.upstreamAccounts.healthDescription')}</CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.lastSyncedAt')} value={formatDateTime(detail.lastSyncedAt)} />
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.lastRefreshedAt')} value={formatDateTime(detail.lastRefreshedAt)} />
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.tokenExpiresAt')} value={formatDateTime(detail.tokenExpiresAt)} />
+                    <DetailField
+                      label={t('accountPool.upstreamAccounts.fields.credits')}
+                      value={detail.credits?.balance ? `${detail.credits.balance}` : detail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
+                    />
+                    <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
+                      <p className="metric-label">{t('accountPool.upstreamAccounts.fields.lastError')}</p>
+                      <p className="mt-2 text-sm leading-6 text-base-content/75">{detail.lastError ?? t('accountPool.upstreamAccounts.noError')}</p>
+                      <p className="mt-2 text-xs text-base-content/55">{formatDateTime(detail.lastErrorAt)}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            ) : null}
+          </>
+        )}
+      </AccountDetailDrawer>
 
       {error ? (
         <Alert variant="warning">
