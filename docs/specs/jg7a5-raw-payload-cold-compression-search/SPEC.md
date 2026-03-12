@@ -96,7 +96,7 @@
 
 ## 运维全文搜索约定
 
-- 镜像内提供 `search-raw`，固定搜索根目录默认为 `/srv/app/data/proxy_raw_payloads`，可用 `--root` 覆盖。
+- 镜像内提供 `search-raw`，默认按 `DATABASE_PATH + PROXY_RAW_DIR` 解析搜索根目录；也可用 `SEARCH_RAW_ROOT` 或 `--root` 显式覆盖。
 - 默认模式为 fixed-string；使用 `--regex` 时才启用正则搜索。
 - 搜索同时扫描 `*.bin` 与 `*.bin.gz`，输出统一为 `path:line:text`。
 - 生产推荐固定命令：
@@ -140,6 +140,7 @@
 - 2026-03-13: 已完成后端冷压缩、透明解压、retention 统计与搜索脚本实现，等待文档与验证收口。
 - 2026-03-13: 已完成 README / deployment / spec 索引同步，`cargo fmt --check`、`cargo check`、`cargo test` 全部通过；本地 Docker daemon 不可用，镜像 smoke 待有 daemon 环境时补跑。
 - 2026-03-13: 根据 PR 阶段 review 修复 cold-compress 分页游标与 `search-raw` gzip 无命中退出码，并补齐对应回归测试。
+- 2026-03-13: 调整 `search-raw` 默认 root 解析，使其跟随 `DATABASE_PATH + PROXY_RAW_DIR`，并把缺失 root 改为显式配置错误退出码。
 
 ## 参考
 

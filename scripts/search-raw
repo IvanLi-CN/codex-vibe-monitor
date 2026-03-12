@@ -7,7 +7,25 @@ usage() {
 }
 
 mode="fixed"
-root="${SEARCH_RAW_ROOT:-/srv/app/data/proxy_raw_payloads}"
+database_path="${DATABASE_PATH:-/srv/app/data/codex_vibe_monitor.db}"
+proxy_raw_dir="${PROXY_RAW_DIR:-proxy_raw_payloads}"
+
+resolve_default_root() {
+  if [ -n "${SEARCH_RAW_ROOT:-}" ]; then
+    printf '%s\n' "$SEARCH_RAW_ROOT"
+    return
+  fi
+  case "$proxy_raw_dir" in
+    /*)
+      printf '%s\n' "$proxy_raw_dir"
+      ;;
+    *)
+      printf '%s/%s\n' "$(dirname "$database_path")" "$proxy_raw_dir"
+      ;;
+  esac
+}
+
+root="$(resolve_default_root)"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -48,7 +66,10 @@ done
 }
 
 needle="$1"
-[ -d "$root" ] || exit 1
+[ -d "$root" ] || {
+  echo "search-raw: root directory not found: $root" >&2
+  exit 2
+}
 
 grep_mode="-F"
 [ "$mode" = "regex" ] && grep_mode="-E"

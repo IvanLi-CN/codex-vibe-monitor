@@ -1967,6 +1967,68 @@ fn search_raw_script_matches_plain_and_gzip_files() {
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[test]
+fn search_raw_script_resolves_root_from_database_and_proxy_envs() {
+    let temp_dir = make_temp_test_dir("search-raw-script-env-root");
+    let db_root = temp_dir.join("db");
+    let db_path = db_root.join("codex_vibe_monitor.db");
+    let raw_root = db_root.join("proxy_raw_payloads");
+    fs::create_dir_all(&raw_root).expect("create resolved raw root");
+    fs::write(&db_path, "").expect("create db file");
+    let plain_path = raw_root.join("resolved.bin");
+    fs::write(&plain_path, b"resolved-token\n").expect("write resolved raw");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .env("DATABASE_PATH", &db_path)
+    .env("PROXY_RAW_DIR", "proxy_raw_payloads")
+    .arg("resolved-token")
+    .output()
+    .expect("run search-raw with env-derived root");
+
+    assert!(
+        output.status.success(),
+        "search-raw should resolve root from envs: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("search-raw stdout");
+    assert!(
+        stdout.contains(&format!("{}:1:resolved-token", plain_path.display())),
+        "env-derived root should find the plain file, got: {stdout}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn search_raw_script_reports_missing_root_as_configuration_error() {
+    let temp_dir = make_temp_test_dir("search-raw-script-missing-root");
+    let db_path = temp_dir.join("missing/codex_vibe_monitor.db");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .env("DATABASE_PATH", &db_path)
+    .env("PROXY_RAW_DIR", "proxy_raw_payloads")
+    .arg("anything")
+    .output()
+    .expect("run search-raw with missing root");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "missing root should be treated as configuration error"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("search-raw stderr");
+    assert!(
+        stderr.contains("root directory not found"),
+        "missing root should explain the configuration error, got: {stderr}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
 fn sqlite_url_for_path(path: &Path) -> String {
     format!("sqlite://{}", path.to_string_lossy())
 }
