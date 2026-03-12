@@ -8730,7 +8730,6 @@ fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Result<Vec<u8
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
-        || raw_payload_bytes_look_gzip(&bytes)
     {
         let mut decoder = GzDecoder::new(bytes.as_slice());
         let mut decoded = Vec::new();
@@ -8744,10 +8743,6 @@ fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Result<Vec<u8
     } else {
         Ok(bytes)
     }
-}
-
-fn raw_payload_bytes_look_gzip(bytes: &[u8]) -> bool {
-    bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b
 }
 
 async fn current_proxy_usage_backfill_snapshot_max_id(pool: &Pool<Sqlite>) -> Result<i64> {

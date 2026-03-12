@@ -75,9 +75,10 @@ grep_mode="-F"
 [ "$mode" = "regex" ] && grep_mode="-E"
 
 file_list="$(mktemp "${TMPDIR:-/tmp}/search-raw.files.XXXXXX")"
+decode_file="$(mktemp "${TMPDIR:-/tmp}/search-raw.decode.XXXXXX")"
 match_file="$(mktemp "${TMPDIR:-/tmp}/search-raw.matches.XXXXXX")"
 cleanup() {
-  rm -f "$file_list" "$match_file"
+  rm -f "$file_list" "$decode_file" "$match_file"
 }
 trap cleanup EXIT INT TERM HUP
 
@@ -93,8 +94,13 @@ while IFS= read -r path; do
       fi
       ;;
     *.bin.gz)
+      : > "$decode_file"
       : > "$match_file"
-      if gzip -cd -- "$path" | grep -n ${grep_mode} -- "$needle" > "$match_file"; then
+      if ! gzip -cd -- "$path" > "$decode_file"; then
+        echo "search-raw: failed to decompress $path" >&2
+        exit 2
+      fi
+      if grep -n ${grep_mode} -- "$needle" "$decode_file" > "$match_file"; then
         awk -v path="$path" '{ print path ":" $0 }' "$match_file"
         matched=0
       fi

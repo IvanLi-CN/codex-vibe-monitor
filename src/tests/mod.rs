@@ -1917,6 +1917,20 @@ fn read_proxy_raw_bytes_transparently_decompresses_gzip_files() {
 }
 
 #[test]
+fn read_proxy_raw_bytes_keeps_plain_bin_payloads_that_start_with_gzip_magic() {
+    let temp_dir = make_temp_test_dir("proxy-raw-read-bin-gzip-magic");
+    let raw_path = temp_dir.join("request.bin");
+    let bytes = vec![0x1f, 0x8b, b'n', b'o', b't', b'-', b'g', b'z'];
+    fs::write(&raw_path, &bytes).expect("write plain raw payload");
+
+    let raw = read_proxy_raw_bytes(raw_path.to_str().expect("utf-8 path"), None)
+        .expect("read plain raw payload");
+
+    assert_eq!(raw, bytes);
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
 fn search_raw_script_matches_plain_and_gzip_files() {
     let temp_dir = make_temp_test_dir("search-raw-script");
     let root = temp_dir.join("proxy_raw_payloads");
@@ -2024,6 +2038,37 @@ fn search_raw_script_reports_missing_root_as_configuration_error() {
     assert!(
         stderr.contains("root directory not found"),
         "missing root should explain the configuration error, got: {stderr}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn search_raw_script_reports_corrupt_gzip_as_error() {
+    let temp_dir = make_temp_test_dir("search-raw-script-corrupt-gzip");
+    let root = temp_dir.join("proxy_raw_payloads");
+    fs::create_dir_all(&root).expect("create raw root");
+    let gzip_path = root.join("broken.bin.gz");
+    fs::write(&gzip_path, b"not-gzip").expect("write corrupt gzip file");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .arg("--root")
+    .arg(&root)
+    .arg("needle")
+    .output()
+    .expect("run search-raw with corrupt gzip");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "corrupt gzip should be treated as hard error"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("search-raw stderr");
+    assert!(
+        stderr.contains("failed to decompress"),
+        "corrupt gzip should explain the decompression failure, got: {stderr}"
     );
 
     cleanup_temp_test_dir(&temp_dir);
