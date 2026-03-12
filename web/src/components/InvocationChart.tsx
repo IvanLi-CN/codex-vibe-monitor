@@ -9,6 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import type { Formatter, NameType, ValueType } from 'recharts/types/component/DefaultTooltipContent'
 import type { ApiInvocation } from '../lib/api'
 import { useTranslation } from '../i18n'
 import { chartBaseTokens, metricAccent, withOpacity } from '../lib/chartTheme'
@@ -87,15 +88,17 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
     }
   }, [themeMode])
 
-  const tooltipFormatter = useCallback(
-    (value: number, key: string | number) => {
+  const tooltipFormatter = useCallback<Formatter<ValueType, NameType>>(
+    (value, key) => {
+      const rawValue = Array.isArray(value) ? value[0] : value
+      const numericValue = typeof rawValue === 'number' ? rawValue : Number(rawValue ?? 0)
       if (key === 'cost') {
-        return [currencyFormatter.format(value), seriesNames.cost]
+        return [currencyFormatter.format(numericValue), seriesNames.cost]
       }
       if (key === 'totalTokens') {
-        return [numberFormatter.format(value), seriesNames.totalTokens]
+        return [numberFormatter.format(numericValue), seriesNames.totalTokens]
       }
-      return [numberFormatter.format(value), String(key)]
+      return [numberFormatter.format(numericValue), String(key)]
     },
     [currencyFormatter, numberFormatter, seriesNames],
   )

@@ -11,15 +11,17 @@
     "test": "vitest run src",
     "preview": "vite preview",
     "test:e2e": "playwright test",
-    "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build"
+    "storybook": "bun run scripts/run-storybook.mjs",
+    "build-storybook": "bunx --bun storybook build"
   },
   "dependencies": {
     "@iconify/react": "^6.0.2",
+    "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-slot": "^1.2.4",
     "@radix-ui/react-switch": "^1.2.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "react": "^19.1.1",
     "react-activity-calendar": "^2.7.15",
     "react-dom": "^19.1.1",

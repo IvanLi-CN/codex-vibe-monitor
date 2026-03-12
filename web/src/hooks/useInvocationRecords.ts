@@ -39,10 +39,15 @@ export interface UseInvocationRecordsResult {
   updateDraft: <K extends keyof InvocationRecordsDraftFilters>(key: K, value: InvocationRecordsDraftFilters[K]) => void
   resetDraft: () => void
   setFocus: (focus: InvocationFocus) => void
-  search: () => Promise<void>
+  search: (options?: InvocationRecordsSearchOptions) => Promise<void>
   setPage: (page: number) => Promise<void>
   setPageSize: (pageSize: number) => Promise<void>
   setSort: (sortBy: InvocationSortBy, sortOrder: InvocationSortOrder) => Promise<void>
+}
+
+export interface InvocationRecordsSearchOptions {
+  source?: 'draft' | 'applied'
+  preserveSummary?: boolean
 }
 
 interface SearchState {
@@ -144,7 +149,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     [],
   )
 
-  const search = useCallback(async () => {
+  const search = useCallback(async (options?: InvocationRecordsSearchOptions) => {
     const requestSeq = searchSeqRef.current + 1
     searchSeqRef.current = requestSeq
     recordsSeqRef.current += 1
@@ -157,7 +162,10 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     let listLoaded = false
 
     try {
-      const filters = buildAppliedInvocationFilters(draftRef.current)
+      const filters =
+        options?.source === 'applied' && appliedRef.current
+          ? appliedRef.current.filters
+          : buildAppliedInvocationFilters(draftRef.current)
       const listResponse = await fetchInvocationRecords(
         buildInvocationRecordsQuery(filters, {
           page: 1,
@@ -170,7 +178,9 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
 
       listLoaded = true
       appliedRef.current = { filters, snapshotId: listResponse.snapshotId, generation: requestSeq }
-      setSummary(null)
+      if (!options?.preserveSummary) {
+        setSummary(null)
+      }
       setRecords(listResponse)
       setPageState(listResponse.page)
       setPageSizeState(listResponse.pageSize)
@@ -235,8 +245,12 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     void search()
   }, [search])
 
+  const summarySnapshotId = summary?.snapshotId ?? null
+
   useEffect(() => {
-    if (!appliedRef.current || isSearching) return
+    if (!appliedRef.current || isSearching || !summary) return
+    const activeSnapshotId = appliedRef.current.snapshotId
+    if (records?.snapshotId !== activeSnapshotId) return
     const timer = window.setInterval(() => {
       if (!shouldPollRecordsSummary()) return
       const applied = appliedRef.current
@@ -263,7 +277,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         })
     }, RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [isSearching, summary?.snapshotId])
+  }, [isSearching, records?.snapshotId, summary, summarySnapshotId])
 
   const api = useMemo(
     () => ({
