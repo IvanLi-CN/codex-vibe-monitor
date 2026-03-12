@@ -5,8 +5,10 @@ import argparse
 import importlib.util
 import json
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate the codex-vibe-monitor quality-gates contract.")
     parser.add_argument(
         "--repo-root",
-        default=str(Path(__file__).resolve().parents[2]),
+        default="",
         help="Repository root containing .github/workflows and the candidate quality-gates files.",
     )
     parser.add_argument(
@@ -709,14 +711,32 @@ def validate_merge_group_helpers(module: Any) -> None:
         raise ContractError("metadata_gate: merge_group must fail closed")
 
 
+def materialize_default_repo_root(script_repo_root: Path) -> Path:
+    fixtures_root = script_repo_root / ".github" / "scripts" / "fixtures" / "quality-gates-contract"
+    if not fixtures_root.is_dir():
+        return script_repo_root
+
+    tempdir = Path(tempfile.mkdtemp(prefix="quality-gates-contract-"))
+    shutil.copytree(script_repo_root / ".github", tempdir / ".github", dirs_exist_ok=True)
+    shutil.copyfile(fixtures_root / "quality-gates.json", tempdir / ".github" / "quality-gates.json")
+    shutil.copyfile(fixtures_root / "ci.yml", tempdir / ".github" / "workflows" / "ci.yml")
+    shutil.copyfile(fixtures_root / "label-gate.yml", tempdir / ".github" / "workflows" / "label-gate.yml")
+    shutil.copyfile(fixtures_root / "review-policy.yml", tempdir / ".github" / "workflows" / "review-policy.yml")
+    return tempdir
+
+
 def main() -> int:
     args = parse_args()
-    repo_root = Path(args.repo_root).resolve()
+    script_repo_root = Path(__file__).resolve().parents[2]
+    temp_repo_root: Path | None = None
+    if args.repo_root:
+        repo_root = Path(args.repo_root).resolve()
+    else:
+        temp_repo_root = materialize_default_repo_root(script_repo_root)
+        repo_root = temp_repo_root
     scripts_dir = repo_root / ".github" / "scripts"
     declaration_path = Path(args.declaration).resolve() if args.declaration else repo_root / ".github" / "quality-gates.json"
-    metadata_script_path = (
-        Path(args.metadata_script).resolve() if args.metadata_script else scripts_dir / "metadata_gate.py"
-    )
+    metadata_script_path = Path(args.metadata_script).resolve() if args.metadata_script else script_repo_root / ".github" / "scripts" / "metadata_gate.py"
 
     try:
         declaration = json.loads(declaration_path.read_text())
@@ -731,6 +751,9 @@ def main() -> int:
     except ContractError as exc:
         print(f"[quality-gates-contract] {exc}", file=sys.stderr)
         return 1
+    finally:
+        if temp_repo_root is not None:
+            shutil.rmtree(temp_repo_root, ignore_errors=True)
 
     print("[quality-gates-contract] metadata workflow contract checks passed")
     return 0
