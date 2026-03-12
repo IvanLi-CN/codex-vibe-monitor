@@ -14768,6 +14768,117 @@ async fn retention_cold_compression_repair_keeps_relative_db_paths() {
 }
 
 #[tokio::test]
+async fn retention_skips_cold_compression_for_archive_eligible_rows() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-skip-archive").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let request_raw = config.proxy_raw_dir.join("archive-eligible.bin");
+    fs::write(&request_raw, b"{\"type\":\"archive-eligible\"}")
+        .expect("write archive-eligible raw");
+
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 1) as i64, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "cold-compress-skip-archive",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&request_raw),
+        None,
+        Some(12),
+        Some(0.03),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention for archive-eligible row");
+
+    assert_eq!(summary.raw_files_compression_candidates, 0);
+    assert_eq!(summary.raw_files_compressed, 0);
+    assert_eq!(summary.invocation_rows_archived, 1);
+    assert!(!request_raw.exists());
+    assert!(!PathBuf::from(format!("{}.gz", request_raw.display())).exists());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retention_continues_when_one_cold_compression_file_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-continue-on-error").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let broken_raw = config.proxy_raw_dir.join("broken-request.bin");
+    let good_raw = config.proxy_raw_dir.join("good-request.bin");
+    fs::write(&broken_raw, b"{\"type\":\"broken\"}").expect("write broken raw");
+    fs::write(&good_raw, b"{\"type\":\"good\"}").expect("write good raw");
+
+    let mut broken_permissions = fs::metadata(&broken_raw)
+        .expect("read broken raw metadata")
+        .permissions();
+    broken_permissions.set_mode(0o000);
+    fs::set_permissions(&broken_raw, broken_permissions).expect("chmod broken raw");
+
+    let occurred_at = shanghai_local_days_ago(2, 8, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "cold-compress-broken",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":false}",
+        Some(&broken_raw),
+        None,
+        Some(21),
+        Some(0.04),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "cold-compress-good",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":false}",
+        Some(&good_raw),
+        None,
+        Some(22),
+        Some(0.05),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention with cold-compression failure");
+
+    let mut repaired_permissions = fs::metadata(&broken_raw)
+        .expect("read broken raw metadata after run")
+        .permissions();
+    repaired_permissions.set_mode(0o644);
+    fs::set_permissions(&broken_raw, repaired_permissions).expect("restore broken raw permissions");
+
+    assert_eq!(summary.raw_files_compression_candidates, 1);
+    assert_eq!(summary.raw_files_compressed, 1);
+    assert!(broken_raw.exists(), "broken file should be left in place");
+    assert!(!PathBuf::from(format!("{}.gz", broken_raw.display())).exists());
+    assert!(!good_raw.exists(), "good file should be replaced by gzip");
+    assert!(PathBuf::from(format!("{}.gz", good_raw.display())).exists());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_dry_run_estimates_cold_raw_compression_without_mutating_files() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("retention-cold-compress-dry-run").await;

@@ -2304,6 +2304,8 @@ async fn compress_cold_proxy_raw_payloads(
     }
 
     let cutoff = shanghai_local_cutoff_for_age_secs_string(config.proxy_raw_hot_secs);
+    let prune_cutoff = shanghai_local_cutoff_string(config.invocation_success_full_days);
+    let archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let mut summary = RawCompressionPassSummary::default();
     let mut last_seen_occurred_at: Option<String> = None;
     let mut last_seen_id = 0_i64;
@@ -2314,20 +2316,30 @@ async fn compress_cold_proxy_raw_payloads(
             SELECT id, occurred_at, request_raw_path, response_raw_path
             FROM codex_invocations
             WHERE occurred_at < ?1
+              AND occurred_at >= ?2
+              AND (
+                status != 'success'
+                OR detail_level IS NULL
+                OR detail_level != ?3
+                OR occurred_at >= ?4
+              )
               AND (
                 (request_raw_path IS NOT NULL AND request_raw_path NOT LIKE '%.gz')
                 OR (response_raw_path IS NOT NULL AND response_raw_path NOT LIKE '%.gz')
               )
               AND (
-                ?2 IS NULL
-                OR occurred_at > ?2
-                OR (occurred_at = ?2 AND id > ?3)
+                ?5 IS NULL
+                OR occurred_at > ?5
+                OR (occurred_at = ?5 AND id > ?6)
               )
             ORDER BY occurred_at ASC, id ASC
-            LIMIT ?4
+            LIMIT ?7
             "#,
         )
         .bind(&cutoff)
+        .bind(&archive_cutoff)
+        .bind(DETAIL_LEVEL_FULL)
+        .bind(&prune_cutoff)
         .bind(last_seen_occurred_at.as_deref())
         .bind(last_seen_id)
         .bind(config.retention_batch_rows as i64)
@@ -2341,76 +2353,90 @@ async fn compress_cold_proxy_raw_payloads(
         for candidate in candidates {
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
-            let request_outcome = maybe_compress_proxy_raw_path(
-                pool,
-                candidate.id,
-                "request_raw_path",
-                candidate.request_raw_path.as_deref(),
-                config.proxy_raw_compression,
-                raw_path_fallback_root,
-                dry_run,
-            )
-            .await?;
-            let response_outcome = maybe_compress_proxy_raw_path(
-                pool,
-                candidate.id,
-                "response_raw_path",
-                candidate.response_raw_path.as_deref(),
-                config.proxy_raw_compression,
-                raw_path_fallback_root,
-                dry_run,
-            )
-            .await?;
-
-            for outcome in [&request_outcome, &response_outcome] {
-                if outcome.candidate_counted {
-                    summary.files_considered += 1;
-                }
-                if outcome.compressed {
-                    summary.files_compressed += 1;
-                }
-                summary.bytes_before += outcome.bytes_before;
-                summary.bytes_after += outcome.bytes_after;
-                summary.estimated_bytes_after += outcome.estimated_bytes_after;
-            }
-
-            if dry_run {
-                continue;
-            }
-
-            let request_path_changed = request_outcome.new_db_path != candidate.request_raw_path;
-            let response_path_changed = response_outcome.new_db_path != candidate.response_raw_path;
-            if !request_path_changed && !response_path_changed {
-                continue;
-            }
-
-            let mut tx = pool.begin().await?;
-            sqlx::query(
-                r#"
-                UPDATE codex_invocations
-                SET request_raw_path = ?1,
-                    response_raw_path = ?2
-                WHERE id = ?3
-                "#,
-            )
-            .bind(request_outcome.new_db_path.as_deref())
-            .bind(response_outcome.new_db_path.as_deref())
-            .bind(candidate.id)
-            .execute(tx.as_mut())
-            .await?;
-            tx.commit().await?;
-
-            if request_outcome.compressed {
-                delete_exact_proxy_raw_path(
-                    request_outcome.old_exact_path.as_deref(),
+            let candidate_result = async {
+                let request_outcome = maybe_compress_proxy_raw_path(
+                    pool,
+                    candidate.id,
+                    "request_raw_path",
+                    candidate.request_raw_path.as_deref(),
+                    config.proxy_raw_compression,
                     raw_path_fallback_root,
-                )?;
-            }
-            if response_outcome.compressed {
-                delete_exact_proxy_raw_path(
-                    response_outcome.old_exact_path.as_deref(),
+                    dry_run,
+                )
+                .await?;
+                let response_outcome = maybe_compress_proxy_raw_path(
+                    pool,
+                    candidate.id,
+                    "response_raw_path",
+                    candidate.response_raw_path.as_deref(),
+                    config.proxy_raw_compression,
                     raw_path_fallback_root,
-                )?;
+                    dry_run,
+                )
+                .await?;
+
+                if !dry_run {
+                    let request_path_changed =
+                        request_outcome.new_db_path != candidate.request_raw_path;
+                    let response_path_changed =
+                        response_outcome.new_db_path != candidate.response_raw_path;
+                    if request_path_changed || response_path_changed {
+                        let mut tx = pool.begin().await?;
+                        sqlx::query(
+                            r#"
+                            UPDATE codex_invocations
+                            SET request_raw_path = ?1,
+                                response_raw_path = ?2
+                            WHERE id = ?3
+                            "#,
+                        )
+                        .bind(request_outcome.new_db_path.as_deref())
+                        .bind(response_outcome.new_db_path.as_deref())
+                        .bind(candidate.id)
+                        .execute(tx.as_mut())
+                        .await?;
+                        tx.commit().await?;
+                    }
+
+                    if request_outcome.compressed {
+                        delete_exact_proxy_raw_path(
+                            request_outcome.old_exact_path.as_deref(),
+                            raw_path_fallback_root,
+                        )?;
+                    }
+                    if response_outcome.compressed {
+                        delete_exact_proxy_raw_path(
+                            response_outcome.old_exact_path.as_deref(),
+                            raw_path_fallback_root,
+                        )?;
+                    }
+                }
+
+                Ok::<_, anyhow::Error>((request_outcome, response_outcome))
+            }
+            .await;
+
+            match candidate_result {
+                Ok((request_outcome, response_outcome)) => {
+                    for outcome in [&request_outcome, &response_outcome] {
+                        if outcome.candidate_counted {
+                            summary.files_considered += 1;
+                        }
+                        if outcome.compressed {
+                            summary.files_compressed += 1;
+                        }
+                        summary.bytes_before += outcome.bytes_before;
+                        summary.bytes_after += outcome.bytes_after;
+                        summary.estimated_bytes_after += outcome.estimated_bytes_after;
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        invocation_id = candidate.id,
+                        error = %err,
+                        "failed to cold-compress raw payloads for invocation; continuing retention"
+                    );
+                }
             }
         }
     }
