@@ -138,6 +138,7 @@
 - 2026-03-10: PR #107 已更新并通过 checks，review-loop 收敛完成；补上搜索按钮回归与 `new-count` 强制 `snapshotId` 校验后，规格状态切换为已完成。
 - 2026-03-11: 补充 PR 可公开界面截图，并同步到规格固定视觉证据区与 PR 正文。
 - 2026-03-12: 将新数据提示从静态数量 + tooltip 说明调整为可点击刷新入口；hover/focus 切换“加载新数据”主题态，点击后显示旋转刷新图标并防止重复触发。
+- 2026-03-13: 将记录页新数据提示抽成独立 `RecordsNewDataButton` 组件，补充 Storybook 独立 stories，并新增组件三态截图作为 PR 视觉证据来源。
 
 ## Visual Evidence (PR)
 
@@ -145,6 +146,8 @@
   ![记录页整页概览](./assets/records-page-overview.png)
 - 模型筛选的可输入下拉过滤效果
   ![模型筛选下拉过滤](./assets/records-page-model-combobox.png)
+- 记录页新数据提示组件三态（默认 / hover / loading）
+  ![记录页新数据提示组件三态](./assets/records-new-data-button-states.png)
 
 ## 参考（References）
 
