@@ -2,6 +2,10 @@
   "name": "codex-vibe-monitor-hooks",
   "private": true,
   "version": "0.0.0",
+  "packageManager": "bun@1.3.10",
+  "scripts": {
+    "check:bun-first": "bash .github/scripts/check-bun-first.sh"
+  },
   "devDependencies": {
     "@commitlint/cli": "^20.1.0",
     "@commitlint/config-conventional": "^20.0.0",
