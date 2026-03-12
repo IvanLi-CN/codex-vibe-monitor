@@ -175,3 +175,4 @@ labels:
 - 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，而不是在线 UI。orphan sweep 只会清理超过宽限期的未引用文件，以避免误删进行中的请求落盘文件。
 - 运维在宿主机上统一通过容器内脚本搜索 raw：`docker exec ai-codex-vibe-monitor search-raw '<needle>'`。脚本默认按容器内 `DATABASE_PATH + PROXY_RAW_DIR` 解析搜索根目录，同时搜索明文 `*.bin` 和 gzip `*.bin.gz`；若需要正则，改用 `docker exec ai-codex-vibe-monitor search-raw --regex '<pattern>'`，若要扫非默认目录再显式传 `--root`。
 - 常驻 maintenance 只做 `wal_checkpoint(PASSIVE)` 与 `PRAGMA optimize`；首次真实 cleanup 完成后，再在维护窗口人工执行一次 `VACUUM`。
+- 若要在 shared-testbox 上复现完整的“镜像构建 -> retention cold-compress -> search-raw”链路，可在仓库根目录运行 `scripts/shared-testbox-raw-smoke`；脚本默认会保留远端 run 目录作为排查证据，追加 `--cleanup` 可在成功后删除本次 run 目录与镜像。

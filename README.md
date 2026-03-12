@@ -214,6 +214,20 @@ docker run --rm \
 
 容器内默认：`DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db`，`HTTP_BIND=0.0.0.0:8080`，`STATIC_DIR=/srv/app/web`，`PROXY_RAW_DIR=proxy_raw_payloads`（解析到 `/srv/app/data/proxy_raw_payloads`），`PROXY_RAW_COMPRESSION=gzip`，`PROXY_RAW_HOT_SECS=86400`。运行镜像已内置 `curl`、`gzip`、`search-raw` 与镜像级 `HEALTHCHECK`，会探测 `http://127.0.0.1:8080/health`。
 
+若要在共享测试机 `codex-testbox` 上复现“真实镜像 + retention + search-raw”链路，可直接运行：
+
+```bash
+scripts/shared-testbox-raw-smoke
+```
+
+该脚本会把当前仓库同步到 `/srv/codex/workspaces/$USER/.../runs/<RUN_ID>`，在远端构建镜像并验证：
+
+- 超过热窗口的 raw 是否从 `*.bin` 变成 `*.bin.gz`
+- SQLite 中的 `request_raw_path` 是否同步更新
+- `search-raw` 是否能同时命中明文与 gzip raw
+
+若想复用已存在的远端镜像以加快验证，可加 `--reuse-image <tag>`；若希望脚本成功后自动删除本次 run 目录与镜像，可加 `--cleanup`。
+
 推荐在 Compose 中显式覆盖 healthcheck 参数，确保启动窗口内也能正确等待 readiness：
 
 ```yaml

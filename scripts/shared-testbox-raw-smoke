@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/shared-testbox-raw-smoke [options]
+
+Build the current repo on codex-testbox and run a smoke test that verifies:
+- retention cold-compresses an old raw payload from *.bin to *.bin.gz
+- SQLite request_raw_path updates to the compressed path
+- search-raw finds both plain and gzip raw files
+
+Options:
+  --testbox HOST       SSH host alias (default: codex-testbox)
+  --reuse-image TAG    Skip docker build and reuse an existing remote image tag
+  --cleanup            Remove this run directory and image after success
+  -h, --help           Show this help message
+USAGE
+}
+
+TESTBOX="codex-testbox"
+REUSE_IMAGE_TAG=""
+CLEANUP=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --testbox)
+      TESTBOX="$2"
+      shift 2
+      ;;
+    --reuse-image)
+      REUSE_IMAGE_TAG="$2"
+      shift 2
+      ;;
+    --cleanup)
+      CLEANUP=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  :
+else
+  REPO_ROOT="$(pwd)"
+fi
+REPO_ROOT="$(python3 - <<'PY' "$REPO_ROOT"
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+REPO_NAME="$(basename "$REPO_ROOT")"
+PATH_HASH8="$(python3 - <<'PY' "$REPO_ROOT"
+import hashlib, os, sys
+print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:8])
+PY
+)"
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
+RUN_ID="$(date +%Y%m%d_%H%M%S)_shared_smoke_${GIT_SHA}"
+REMOTE_BASE="/srv/codex/workspaces/$USER"
+WORKSPACE_SLUG="${REPO_NAME}__${PATH_HASH8}"
+REMOTE_WORKSPACE="${REMOTE_BASE}/${WORKSPACE_SLUG}"
+REMOTE_RUN="${REMOTE_WORKSPACE}/runs/${RUN_ID}"
+IMAGE_TAG="${REUSE_IMAGE_TAG}"
+if [ -z "$IMAGE_TAG" ]; then
+  IMAGE_TAG_RAW="codex_${WORKSPACE_SLUG}_${RUN_ID}"
+  IMAGE_TAG="$(python3 - <<'PY' "$IMAGE_TAG_RAW"
+import re, sys
+value = re.sub(r'[^a-z0-9_.-]+', '_', sys.argv[1].lower()).strip('._-')
+print(value[:120])
+PY
+)"
+fi
+
+printf '== local repo ==\n%s\n' "$REPO_ROOT"
+printf '== remote run ==\n%s\n' "$REMOTE_RUN"
+printf '== image tag ==\n%s\n' "$IMAGE_TAG"
+
+ssh -o BatchMode=yes "$TESTBOX" "mkdir -p '$REMOTE_RUN'"
+rsync -az --delete \
+  --exclude '.git/' \
+  --exclude 'node_modules/' \
+  --exclude 'target/' \
+  --exclude 'web/node_modules/' \
+  --exclude 'web/dist/' \
+  --exclude 'data/' \
+  "$REPO_ROOT/" "$TESTBOX:$REMOTE_RUN/"
+
+ssh -o BatchMode=yes "$TESTBOX" env \
+  REMOTE_RUN="$REMOTE_RUN" \
+  IMAGE_TAG="$IMAGE_TAG" \
+  REUSE_IMAGE_TAG="$REUSE_IMAGE_TAG" \
+  CLEANUP="$CLEANUP" \
+  GIT_SHA="$GIT_SHA" \
+  bash -s <<'REMOTE'
+set -euo pipefail
+export TZ=Asia/Shanghai
+
+DATA_DIR="$REMOTE_RUN/data"
+RAW_DIR="$DATA_DIR/proxy_raw_payloads"
+TOKEN="mixed-token-$GIT_SHA"
+OLD_TIME="$(date -d '2 hours ago' '+%F %T')"
+SEED_SCRIPT="$REMOTE_RUN/.codex-seed-raw-smoke.py"
+
+mkdir -p "$DATA_DIR"
+chmod 0777 "$DATA_DIR"
+
+cat > "$SEED_SCRIPT" <<'PY'
+import os
+import sqlite3
+
+data_dir = '/data'
+raw_dir = os.path.join(data_dir, 'proxy_raw_payloads')
+token = os.environ['TOKEN']
+old_time = os.environ['OLD_TIME']
+os.makedirs(os.path.join(raw_dir, 'req'), exist_ok=True)
+req_rel = 'proxy_raw_payloads/req/request-old.bin'
+req_abs = os.path.join(data_dir, req_rel)
+with open(req_abs, 'w', encoding='utf-8') as fh:
+    fh.write('{"type":"request","token":"%s","line":"compressed hit"}\n' % token)
+plain_path = os.path.join(raw_dir, 'plain-live.bin')
+with open(plain_path, 'w', encoding='utf-8') as fh:
+    fh.write('plain search line %s\n' % token)
+conn = sqlite3.connect(os.path.join(data_dir, 'codex_vibe_monitor.db'))
+conn.execute(
+    '''
+    INSERT INTO codex_invocations (
+        invoke_id, occurred_at, source, model, input_tokens, output_tokens,
+        total_tokens, cost, status, payload, raw_response,
+        request_raw_path, request_raw_size
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''',
+    (
+        'smoke-raw-compression', old_time, 'smoke-test', 'gpt-5.2-codex',
+        12, 3, 15, 0.01, 'success', '{"ok":true}', '{}',
+        req_rel, os.path.getsize(req_abs),
+    ),
+)
+conn.commit()
+print('seeded_count=', conn.execute('select count(*) from codex_invocations').fetchone()[0])
+print('seeded_row=', conn.execute('select invoke_id, occurred_at, request_raw_path from codex_invocations where invoke_id = ?', ('smoke-raw-compression',)).fetchone())
+conn.close()
+PY
+
+cleanup_remote() {
+  rm -f "$SEED_SCRIPT"
+  if [ "$CLEANUP" = "1" ]; then
+    docker run --rm --cap-drop=all \
+      -v "$REMOTE_RUN:/work" \
+      python:3.12-alpine \
+      python -c "import shutil; shutil.rmtree('/work/data', ignore_errors=True)" >/dev/null 2>&1 || true
+    if [ -z "$REUSE_IMAGE_TAG" ]; then
+      docker image rm -f "$IMAGE_TAG" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$REMOTE_RUN"
+  fi
+}
+trap cleanup_remote EXIT
+
+if [ -z "$REUSE_IMAGE_TAG" ]; then
+  printf '== build image ==\n'
+  docker build -t "$IMAGE_TAG" --build-arg APP_EFFECTIVE_VERSION="testbox-smoke-$GIT_SHA" "$REMOTE_RUN"
+else
+  printf '== reuse image ==\n%s\n' "$IMAGE_TAG"
+  docker image inspect "$IMAGE_TAG" >/dev/null
+fi
+
+printf '== init schema ==\n'
+docker run --rm --cap-drop=all \
+  -v "$DATA_DIR:/srv/app/data" \
+  -e PROXY_RAW_COMPRESSION=gzip \
+  -e PROXY_RAW_HOT_SECS=60 \
+  "$IMAGE_TAG" \
+  codex-vibe-monitor --retention-run-once --retention-dry-run
+
+printf '== seed data ==\n'
+docker run --rm --cap-drop=all \
+  -v "$DATA_DIR:/data" \
+  -v "$SEED_SCRIPT:/seed.py:ro" \
+  -e TOKEN="$TOKEN" \
+  -e OLD_TIME="$OLD_TIME" \
+  python:3.12-alpine python /seed.py
+
+printf '== live retention ==\n'
+docker run --rm --cap-drop=all \
+  -v "$DATA_DIR:/srv/app/data" \
+  -e PROXY_RAW_COMPRESSION=gzip \
+  -e PROXY_RAW_HOT_SECS=60 \
+  "$IMAGE_TAG" \
+  codex-vibe-monitor --retention-run-once
+
+printf '== verify files ==\n'
+[ ! -f "$RAW_DIR/req/request-old.bin" ]
+[ -f "$RAW_DIR/req/request-old.bin.gz" ]
+[ -f "$RAW_DIR/plain-live.bin" ]
+ls -l "$RAW_DIR/req/request-old.bin.gz" "$RAW_DIR/plain-live.bin"
+
+printf '== verify db ==\n'
+docker run --rm --cap-drop=all \
+  -v "$DATA_DIR:/data" \
+  python:3.12-alpine python -c "import sqlite3; c=sqlite3.connect('/data/codex_vibe_monitor.db'); row=c.execute(\"select request_raw_path from codex_invocations where invoke_id = ?\", ('smoke-raw-compression',)).fetchone(); print('db_request_raw_path=', row[0]); assert row[0].endswith('.bin.gz'); c.close()"
+
+printf '== search-raw ==\n'
+SEARCH_OUTPUT="$(docker run --rm --cap-drop=all \
+  -v "$DATA_DIR:/srv/app/data" \
+  -e DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
+  "$IMAGE_TAG" \
+  search-raw "$TOKEN")"
+printf '%s\n' "$SEARCH_OUTPUT"
+printf '%s\n' "$SEARCH_OUTPUT" | grep 'request-old.bin.gz' >/dev/null
+printf '%s\n' "$SEARCH_OUTPUT" | grep 'plain-live.bin' >/dev/null
+
+printf '== smoke ok ==\nrun=%s\nimage=%s\n' "$REMOTE_RUN" "$IMAGE_TAG"
+REMOTE
