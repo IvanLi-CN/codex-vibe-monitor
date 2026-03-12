@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（2/3）
+- Status: 已完成
 - Created: 2026-03-12
 - Last: 2026-03-12
 
@@ -104,7 +104,7 @@
 
 - [x] M1: 建立 Bun-first spec，冻结“只改直接执行面、不动业务接口”的范围。
 - [x] M2: 完成仓库根与 `web/` 的 Bun lockfile、脚本、hooks、Docker、CI、文档迁移。
-- [ ] M3: 跑通本地验证、Docker smoke、PR checks 与 review-loop 收敛。
+- [x] M3: 跑通本地验证、Docker smoke、PR checks 与 review-loop 收敛。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -119,3 +119,4 @@
 - 2026-03-12: 创建 spec，冻结“Bun-first direct execution surface”定义、允许残留项与 PR 阶段 Docker smoke 要求。
 - 2026-03-12: 仓库根与 `web/` 已迁移到文本 `bun.lock`，`package-lock.json` 删除，`README.md`、`AGENTS.md`、`lefthook.yml`、`Dockerfile`、`.github/workflows/ci.yml` 全部切换到 Bun-first 入口。
 - 2026-03-12: 新增 `/.github/scripts/check-bun-first.sh` 作为运营面守门；本地已通过 `bun install --frozen-lockfile`（root + web）、`cargo fmt --all -- --check`、`cargo check --locked --all-targets --all-features`、`cargo test --locked --all-features`、`cd web && bun run lint`、`cd web && bun run test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并在 shared testbox 完成 Docker smoke。
+- 2026-03-12: PR #115 已创建并打上 `type:skip` / `channel:stable`；GitHub required checks 通过，`spec_drift_check.sh --base-ref origin/main --spec-path docs/specs/tr4ev-bun-first-toolchain/SPEC.md` 返回 `Spec同步状态=通过` / `Spec漂移=不存在`，`codex review --base origin/main` 未发现阻塞项。
