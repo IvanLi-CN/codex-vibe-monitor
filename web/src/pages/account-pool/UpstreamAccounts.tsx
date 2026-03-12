@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from '@iconify/react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -15,8 +16,6 @@ import type { LoginSessionStatusResponse, UpstreamAccountDetail, UpstreamAccount
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
-type ComposerKind = 'oauth' | 'apiKey' | null
-
 type AccountDraft = {
   displayName: string
   note: string
@@ -28,6 +27,11 @@ type AccountDraft = {
 
 const LOGIN_POLL_INTERVAL_MS = 1500
 const POPUP_CLOSE_CHECK_INTERVAL_MS = 1000
+
+type UpstreamAccountsLocationState = {
+  selectedAccountId?: number
+  openDetail?: boolean
+}
 
 function formatDateTime(value?: string | null) {
   if (!value) return '—'
@@ -180,6 +184,8 @@ function AccountDetailDrawer({
 
 export default function UpstreamAccountsPage() {
   const { t } = useTranslation()
+  const location = useLocation()
+  const navigate = useNavigate()
   const {
     items,
     writesEnabled,
@@ -191,24 +197,13 @@ export default function UpstreamAccountsPage() {
     error,
     selectAccount,
     refresh,
-    beginOauthLogin,
     beginRelogin,
     getLoginSession,
-    createApiKeyAccount,
     saveAccount,
     runSync,
     removeAccount,
   } = useUpstreamAccounts()
 
-  const [composer, setComposer] = useState<ComposerKind>(null)
-  const [oauthDisplayName, setOauthDisplayName] = useState('')
-  const [oauthNote, setOauthNote] = useState('')
-  const [apiKeyDisplayName, setApiKeyDisplayName] = useState('')
-  const [apiKeyNote, setApiKeyNote] = useState('')
-  const [apiKeyValue, setApiKeyValue] = useState('')
-  const [apiKeyPrimaryLimit, setApiKeyPrimaryLimit] = useState('')
-  const [apiKeySecondaryLimit, setApiKeySecondaryLimit] = useState('')
-  const [apiKeyLimitUnit, setApiKeyLimitUnit] = useState('requests')
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
   const [session, setSession] = useState<LoginSessionStatusResponse | null>(null)
   const [sessionHint, setSessionHint] = useState<string | null>(null)
@@ -226,6 +221,15 @@ export default function UpstreamAccountsPage() {
       setIsDetailDrawerOpen(false)
     }
   }, [detail, selectedSummary])
+
+  useEffect(() => {
+    const state = location.state as UpstreamAccountsLocationState | null
+    if (!state?.selectedAccountId) return
+
+    selectAccount(state.selectedAccountId)
+    setIsDetailDrawerOpen(Boolean(state.openDetail))
+    navigate(location.pathname, { replace: true, state: null })
+  }, [location.pathname, location.state, navigate, selectAccount])
 
   useEffect(() => {
     const currentSession = session
@@ -300,17 +304,12 @@ export default function UpstreamAccountsPage() {
     setIsDetailDrawerOpen(false)
   }
 
-  const handleOauthLogin = async (accountId?: number) => {
+  const handleOauthLogin = async (accountId: number) => {
     setActionError(null)
     setSessionHint(null)
-    setBusyAction(accountId ? 'relogin' : 'oauth')
+    setBusyAction('relogin')
     try {
-      const response = accountId
-        ? await beginRelogin(accountId)
-        : await beginOauthLogin({
-            displayName: oauthDisplayName.trim() || undefined,
-            note: oauthNote.trim() || undefined,
-          })
+      const response = await beginRelogin(accountId)
       setSession(response)
       const popup = response.authUrl
         ? window.open(response.authUrl, 'codex-upstream-login', 'popup=yes,width=560,height=760')
@@ -320,37 +319,6 @@ export default function UpstreamAccountsPage() {
         window.open(response.authUrl, '_blank', 'noopener,noreferrer')
         setSessionHint(t('accountPool.upstreamAccounts.oauth.popupFallback'))
       }
-      if (!accountId) {
-        setComposer(null)
-        setOauthDisplayName('')
-        setOauthNote('')
-      }
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusyAction(null)
-    }
-  }
-
-  const handleCreateApiKey = async () => {
-    setActionError(null)
-    setBusyAction('apiKey')
-    try {
-      await createApiKeyAccount({
-        displayName: apiKeyDisplayName.trim(),
-        note: apiKeyNote.trim() || undefined,
-        apiKey: apiKeyValue.trim(),
-        localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
-        localSecondaryLimit: normalizeNumberInput(apiKeySecondaryLimit),
-        localLimitUnit: apiKeyLimitUnit.trim() || 'requests',
-      })
-      setComposer(null)
-      setApiKeyDisplayName('')
-      setApiKeyNote('')
-      setApiKeyValue('')
-      setApiKeyPrimaryLimit('')
-      setApiKeySecondaryLimit('')
-      setApiKeyLimitUnit('requests')
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -432,24 +400,19 @@ export default function UpstreamAccountsPage() {
                   <Icon icon="mdi:refresh" className="mr-2 h-4 w-4" aria-hidden />
                   {t('accountPool.upstreamAccounts.actions.refresh')}
                 </Button>
-                <Button
-                  type="button"
-                  variant={composer === 'oauth' ? 'default' : 'outline'}
-                  onClick={() => setComposer((current) => (current === 'oauth' ? null : 'oauth'))}
-                  disabled={!writesEnabled}
-                >
-                  <Icon icon="mdi:badge-account-outline" className="mr-2 h-4 w-4" aria-hidden />
-                  {t('accountPool.upstreamAccounts.actions.addOauth')}
-                </Button>
-                <Button
-                  type="button"
-                  variant={composer === 'apiKey' ? 'default' : 'outline'}
-                  onClick={() => setComposer((current) => (current === 'apiKey' ? null : 'apiKey'))}
-                  disabled={!writesEnabled}
-                >
-                  <Icon icon="mdi:key-plus" className="mr-2 h-4 w-4" aria-hidden />
-                  {t('accountPool.upstreamAccounts.actions.addApiKey')}
-                </Button>
+                {writesEnabled ? (
+                  <Button asChild>
+                    <Link to="/account-pool/upstream-accounts/new">
+                      <Icon icon="mdi:plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
+                      {t('accountPool.upstreamAccounts.actions.addAccount')}
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button type="button" disabled>
+                    <Icon icon="mdi:plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
+                    {t('accountPool.upstreamAccounts.actions.addAccount')}
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -487,96 +450,6 @@ export default function UpstreamAccountsPage() {
                   ) : null}
                 </div>
               </Alert>
-            ) : null}
-
-            {composer ? (
-              <div className="grid gap-4 rounded-[1.6rem] border border-base-300/80 bg-base-100/65 p-4 lg:grid-cols-2">
-                {composer === 'oauth' ? (
-                  <>
-                    <div className="space-y-2">
-                      <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/12 text-primary">
-                        <Icon icon="mdi:badge-account-horizontal-outline" className="h-6 w-6" aria-hidden />
-                      </div>
-                      <h3 className="text-lg font-semibold">{t('accountPool.upstreamAccounts.oauth.createTitle')}</h3>
-                      <p className="text-sm text-base-content/65">{t('accountPool.upstreamAccounts.oauth.createDescription')}</p>
-                    </div>
-                    <div className="grid gap-3">
-                      <label className="field">
-                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                        <Input name="oauthDisplayName" value={oauthDisplayName} onChange={(event) => setOauthDisplayName(event.target.value)} />
-                      </label>
-                      <label className="field">
-                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
-                        <textarea
-                          className="min-h-24 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
-                          name="oauthNote"
-                          value={oauthNote}
-                          onChange={(event) => setOauthNote(event.target.value)}
-                        />
-                      </label>
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <Button type="button" variant="ghost" onClick={() => setComposer(null)}>
-                          {t('accountPool.upstreamAccounts.actions.cancel')}
-                        </Button>
-                        <Button type="button" onClick={() => void handleOauthLogin()} disabled={busyAction === 'oauth'}>
-                          {busyAction === 'oauth' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:login-variant" className="mr-2 h-4 w-4" aria-hidden />}
-                          {t('accountPool.upstreamAccounts.actions.startOauth')}
-                        </Button>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="space-y-2">
-                      <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-secondary/15 text-secondary">
-                        <Icon icon="mdi:key-chain-variant" className="h-6 w-6" aria-hidden />
-                      </div>
-                      <h3 className="text-lg font-semibold">{t('accountPool.upstreamAccounts.apiKey.createTitle')}</h3>
-                      <p className="text-sm text-base-content/65">{t('accountPool.upstreamAccounts.apiKey.createDescription')}</p>
-                    </div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="field md:col-span-2">
-                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                        <Input name="apiKeyDisplayName" value={apiKeyDisplayName} onChange={(event) => setApiKeyDisplayName(event.target.value)} />
-                      </label>
-                      <label className="field md:col-span-2">
-                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.apiKey')}</span>
-                        <Input name="apiKeyValue" value={apiKeyValue} onChange={(event) => setApiKeyValue(event.target.value)} />
-                      </label>
-                      <label className="field">
-                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.primaryLimit')}</span>
-                        <Input name="apiKeyPrimaryLimit" value={apiKeyPrimaryLimit} onChange={(event) => setApiKeyPrimaryLimit(event.target.value)} />
-                      </label>
-                      <label className="field">
-                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.secondaryLimit')}</span>
-                        <Input name="apiKeySecondaryLimit" value={apiKeySecondaryLimit} onChange={(event) => setApiKeySecondaryLimit(event.target.value)} />
-                      </label>
-                      <label className="field">
-                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.limitUnit')}</span>
-                        <Input name="apiKeyLimitUnit" value={apiKeyLimitUnit} onChange={(event) => setApiKeyLimitUnit(event.target.value)} />
-                      </label>
-                      <label className="field md:col-span-2">
-                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
-                        <textarea
-                          className="min-h-24 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
-                          name="apiKeyNote"
-                          value={apiKeyNote}
-                          onChange={(event) => setApiKeyNote(event.target.value)}
-                        />
-                      </label>
-                      <div className="md:col-span-2 flex flex-wrap justify-end gap-2">
-                        <Button type="button" variant="ghost" onClick={() => setComposer(null)}>
-                          {t('accountPool.upstreamAccounts.actions.cancel')}
-                        </Button>
-                        <Button type="button" onClick={() => void handleCreateApiKey()} disabled={busyAction === 'apiKey'}>
-                          {busyAction === 'apiKey' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:content-save-plus-outline" className="mr-2 h-4 w-4" aria-hidden />}
-                          {t('accountPool.upstreamAccounts.actions.createApiKey')}
-                        </Button>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
             ) : null}
 
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -644,6 +517,7 @@ export default function UpstreamAccountsPage() {
                 never: t('accountPool.upstreamAccounts.never'),
                 primary: t('accountPool.upstreamAccounts.primaryWindowLabel'),
                 secondary: t('accountPool.upstreamAccounts.secondaryWindowLabel'),
+                nextReset: t('accountPool.upstreamAccounts.table.nextReset'),
                 oauth: t('accountPool.upstreamAccounts.kind.oauth'),
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 status: accountStatusLabel,

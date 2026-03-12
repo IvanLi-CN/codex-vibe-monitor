@@ -85,6 +85,7 @@ const labels = {
   never: 'Never',
   primary: '5h',
   secondary: '7d',
+  nextReset: 'Reset',
   oauth: 'OAuth',
   apiKey: 'API key',
   status: (value: string) =>

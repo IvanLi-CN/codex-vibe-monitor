@@ -15,6 +15,7 @@ interface UpstreamAccountsTableProps {
     never: string
     primary: string
     secondary: string
+    nextReset: string
     oauth: string
     apiKey: string
     status: (value: string) => string
@@ -50,7 +51,17 @@ function badgeVariant(status: string): 'success' | 'warning' | 'error' | 'second
   return 'secondary'
 }
 
-function CompactMeter({ percent, text, accentClassName }: { percent: number; text: string; accentClassName?: string }) {
+function CompactMeter({
+  percent,
+  text,
+  resetText,
+  accentClassName,
+}: {
+  percent: number
+  text: string
+  resetText?: string
+  accentClassName?: string
+}) {
   return (
     <div className="min-w-[11rem]">
       <div className="h-2 overflow-hidden rounded-full bg-base-300/60">
@@ -63,6 +74,7 @@ function CompactMeter({ percent, text, accentClassName }: { percent: number; tex
         <span className="truncate">{text}</span>
         <span className="font-semibold text-base-content/72">{Math.round(percent)}%</span>
       </div>
+      {resetText ? <div className="mt-1 text-[11px] text-base-content/48">{resetText}</div> : null}
     </div>
   )
 }
@@ -132,6 +144,12 @@ export function UpstreamAccountsTable({
             {items.map((item, index) => {
               const primary = windowPercent(item.primaryWindow?.usedPercent)
               const secondary = windowPercent(item.secondaryWindow?.usedPercent)
+              const primaryResetText = item.primaryWindow?.resetsAt
+                ? `${labels.nextReset} ${formatDateTime(item.primaryWindow.resetsAt)}`
+                : undefined
+              const secondaryResetText = item.secondaryWindow?.resetsAt
+                ? `${labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
+                : undefined
               const selected = item.id === selectedId
               return (
                 <tr
@@ -170,12 +188,17 @@ export function UpstreamAccountsTable({
                     {formatDateTime(item.lastSuccessfulSyncAt, labels.never)}
                   </td>
                   <td className="px-4 py-4">
-                    <CompactMeter percent={primary} text={item.primaryWindow?.usedText ?? '—'} />
+                    <CompactMeter
+                      percent={primary}
+                      text={item.primaryWindow?.usedText ?? '—'}
+                      resetText={primaryResetText}
+                    />
                   </td>
                   <td className="px-4 py-4">
                     <CompactMeter
                       percent={secondary}
                       text={item.secondaryWindow?.usedText ?? '—'}
+                      resetText={secondaryResetText}
                       accentClassName="bg-secondary"
                     />
                   </td>

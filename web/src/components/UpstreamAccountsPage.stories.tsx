@@ -12,6 +12,7 @@ import type {
   UpstreamAccountSummary,
 } from '../lib/api'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
+import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 
 type StoryStore = {
@@ -395,6 +396,21 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
+function AccountPoolStoryRouter({ initialEntry }: { initialEntry: string }) {
+  return (
+    <div data-theme="light" className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          <Route path="/account-pool" element={<AccountPoolLayout />}>
+            <Route path="upstream-accounts" element={<UpstreamAccountsPage />} />
+            <Route path="upstream-accounts/new" element={<UpstreamAccountCreatePage />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </div>
+  )
+}
+
 const meta = {
   title: 'Account Pool/Pages/Upstream Accounts',
   component: UpstreamAccountsPage,
@@ -406,15 +422,7 @@ const meta = {
     (Story) => (
       <I18nProvider>
         <StorybookUpstreamAccountsMock>
-          <div data-theme="light" className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-            <MemoryRouter initialEntries={['/account-pool/upstream-accounts']}>
-              <Routes>
-                <Route path="/account-pool" element={<AccountPoolLayout />}>
-                  <Route path="upstream-accounts" element={<Story />} />
-                </Route>
-              </Routes>
-            </MemoryRouter>
-          </div>
+          <Story />
         </StorybookUpstreamAccountsMock>
       </I18nProvider>
     ),
@@ -426,11 +434,11 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const Operational: Story = {
-  render: () => <UpstreamAccountsPage />,
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
 }
 
 export const DetailDrawer: Story = {
-  render: () => <UpstreamAccountsPage />,
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const documentScope = within(canvasElement.ownerDocument.body)
@@ -440,4 +448,8 @@ export const DetailDrawer: Story = {
     await userEvent.click(openButton)
     await expect(documentScope.getByRole('dialog', { name: /Codex Pro - Tokyo/i })).toBeInTheDocument()
   },
+}
+
+export const CreateAccount: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
 }
