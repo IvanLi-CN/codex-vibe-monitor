@@ -114,6 +114,44 @@ body {
     box-shadow 220ms ease;
 }
 
+/* Align Storybook docs surfaces with the app theme instead of the default white canvas. */
+.sbdocs.sbdocs-wrapper {
+  background: transparent !important;
+  color: oklch(var(--color-base-content)) !important;
+}
+
+.sbdocs.sbdocs-content {
+  color: oklch(var(--color-base-content)) !important;
+}
+
+.sbdocs .sbdocs-title,
+.sbdocs h1,
+.sbdocs h2,
+.sbdocs h3,
+.sbdocs h4,
+.sbdocs h5,
+.sbdocs h6,
+.sbdocs p,
+.sbdocs li,
+.sbdocs td,
+.sbdocs th,
+.sbdocs code,
+.sbdocs span {
+  color: inherit !important;
+}
+
+.sbdocs .sbdocs-preview {
+  border: 1px solid var(--app-surface-border) !important;
+  border-radius: 1.25rem;
+  background: var(--app-surface-bg) !important;
+  box-shadow: var(--app-surface-shadow);
+  backdrop-filter: blur(10px);
+}
+
+.sbdocs .docs-story {
+  background: transparent !important;
+}
+
 @layer components {
   .app-link {
     @apply text-primary underline decoration-primary/60 underline-offset-4 transition-colors hover:text-primary/85;
