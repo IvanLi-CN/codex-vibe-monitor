@@ -164,9 +164,9 @@ def parse_pull_numbers_from_text(text: str) -> list[int]:
 
 
 def resolve_merge_group_pull_numbers_from_ref(merge_group_ref: str) -> list[int]:
-    # GitHub documents the merge group ref, not a stable API that maps the
-    # synthetic merge-group commit back to pull requests. Validate only the PR
-    # anchors GitHub discloses in the ref and fail closed otherwise.
+    # GitHub documents the merge-group ref, not a stable API that maps the
+    # synthetic merge-group commit back to pull requests. Validate only the
+    # PR anchor GitHub discloses in the ref and fail closed otherwise.
     anchors = parse_pull_numbers_from_text(normalize_ref(merge_group_ref))
     if not anchors:
         raise GateError("Merge queue member set could not be proven from GitHub-disclosed data")

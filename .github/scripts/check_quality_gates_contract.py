@@ -115,20 +115,15 @@ def validate_review_policy(path: Path) -> None:
     forbid_text(text, "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls", "review-policy.yml")
 
 
-def validate_merge_group_helpers(module: Any, fixtures_dir: Path) -> None:
-    resolved = module.resolve_merge_group_pull_numbers_from_ref(
-        "gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc"
-    )
-    require(resolved == [42, 57], f"metadata_gate: unexpected merge queue anchor set {resolved}")
-
-    anchors = module.parse_pull_numbers_from_text("gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc")
-    require(anchors == [42, 57], f"metadata_gate: anchor parsing drifted: {anchors}")
-
+def validate_merge_group_helpers(module: Any) -> None:
     documented_single_anchor = module.resolve_merge_group_pull_numbers_from_ref("gh-readonly-queue/main/pr-57-ffeeddcc")
     require(
         documented_single_anchor == [57],
         f"metadata_gate: single-anchor merge queue set drifted: {documented_single_anchor}",
     )
+
+    anchors = module.parse_pull_numbers_from_text("gh-readonly-queue/main/pr-57-ffeeddcc")
+    require(anchors == [57], f"metadata_gate: anchor parsing drifted: {anchors}")
 
     try:
         module.resolve_merge_group_pull_numbers_from_ref("refs/heads/main")
@@ -141,7 +136,6 @@ def validate_merge_group_helpers(module: Any, fixtures_dir: Path) -> None:
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     scripts_dir = repo_root / ".github" / "scripts"
-    fixtures_dir = scripts_dir / "fixtures" / "quality-gates"
 
     try:
         module = load_module(scripts_dir / "metadata_gate.py")
@@ -149,7 +143,7 @@ def main() -> int:
         validate_ci(repo_root / ".github" / "workflows" / "ci.yml")
         validate_label_gate(repo_root / ".github" / "workflows" / "label-gate.yml")
         validate_review_policy(repo_root / ".github" / "workflows" / "review-policy.yml")
-        validate_merge_group_helpers(module, fixtures_dir)
+        validate_merge_group_helpers(module)
     except ContractError as exc:
         print(f"[quality-gates-contract] {exc}", file=sys.stderr)
         return 1

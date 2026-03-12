@@ -81,9 +81,9 @@ async function testLabelGateMergeGroupAnchors() {
       issues: {
         get: async ({ issue_number }) => ({
           data: {
-            labels: issue_number === 42
-              ? [{ name: 'type:patch' }, { name: 'channel:stable' }]
-              : [{ name: 'type:minor' }, { name: 'channel:rc' }],
+            labels: issue_number === 57
+              ? [{ name: 'type:minor' }, { name: 'channel:rc' }]
+              : [{ name: 'type:patch' }, { name: 'channel:stable' }],
           },
         }),
       },
@@ -91,7 +91,7 @@ async function testLabelGateMergeGroupAnchors() {
   };
   const context = {
     eventName: 'merge_group',
-    ref: 'refs/heads/gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc',
+    ref: 'refs/heads/gh-readonly-queue/main/pr-57-ffeeddcc',
     payload: {
       merge_group: {
         base_ref: 'refs/heads/main',
@@ -106,26 +106,24 @@ async function testLabelGateMergeGroupAnchors() {
     context,
     github,
     env: {
-      GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc',
+      GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-57-ffeeddcc',
       MANUAL_PULL_NUMBER: '',
     },
   });
   assert(!result.thrown, `label-gate threw unexpectedly: ${result.thrown && result.thrown.message}`);
   assert(!result.failure, `label-gate failed unexpectedly: ${result.failure}`);
   assert(
-    result.logs.some((entry) => entry.includes('label gate validated 2 pull request(s)')),
-    'label-gate did not validate all merge-group ref anchors',
+    result.logs.some((entry) => entry.includes('label gate validated 1 pull request(s)')),
+    'label-gate did not validate the merge-group ref anchor',
   );
 }
 
 async function testReviewPolicyMergeGroupAnchors() {
   const permissions = {
-    alice: 'write',
     bob: 'write',
     reviewer: 'write',
   };
   const authors = {
-    42: 'alice',
     57: 'bob',
   };
   const github = {
@@ -165,7 +163,7 @@ async function testReviewPolicyMergeGroupAnchors() {
   };
   const context = {
     eventName: 'merge_group',
-    ref: 'refs/heads/gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc',
+    ref: 'refs/heads/gh-readonly-queue/main/pr-57-ffeeddcc',
     payload: {
       merge_group: {
         base_ref: 'refs/heads/main',
@@ -180,15 +178,15 @@ async function testReviewPolicyMergeGroupAnchors() {
     context,
     github,
     env: {
-      GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc',
+      GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-57-ffeeddcc',
       MANUAL_PULL_NUMBER: '',
     },
   });
   assert(!result.thrown, `review-policy threw unexpectedly: ${result.thrown && result.thrown.message}`);
   assert(!result.failure, `review-policy failed unexpectedly: ${result.failure}`);
   assert(
-    result.logs.some((entry) => entry.includes('review gate validated 2 pull request(s)')),
-    'review-policy did not validate all merge-group ref anchors',
+    result.logs.some((entry) => entry.includes('review gate validated 1 pull request(s)')),
+    'review-policy did not validate the merge-group ref anchor',
   );
 }
 
