@@ -2,330 +2,170 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "${tmp_dir}"' EXIT
+python3 - <<'PY' "$repo_root/.github/scripts/metadata_gate.py"
+from __future__ import annotations
 
-extract_script() {
-  local workflow_path="$1"
-  local job_name="$2"
-  local output_path="$3"
-  ruby - <<'RUBY' "$workflow_path" "$job_name" "$output_path"
-require "yaml"
+import importlib.util
+import os
+import sys
+import tempfile
+from pathlib import Path
 
-workflow_path, job_name, output_path = ARGV
-workflow = YAML.load_file(workflow_path)
-job = workflow.fetch("jobs").fetch(job_name)
-step = job.fetch("steps").find { |item| item["uses"] == "actions/github-script@v8" }
-abort("missing github-script step in #{workflow_path}:#{job_name}") unless step
-script = step.dig("with", "script")
-abort("missing github-script body in #{workflow_path}:#{job_name}") unless script.is_a?(String) && !script.empty?
-File.write(output_path, script)
-RUBY
-}
+script_path = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("metadata_gate", script_path)
+module = importlib.util.module_from_spec(spec)
+assert spec is not None and spec.loader is not None
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
 
-extract_script "$repo_root/.github/workflows/label-gate.yml" "label-gate" "$tmp_dir/label-gate.js"
-extract_script "$repo_root/.github/workflows/review-policy.yml" "review-policy" "$tmp_dir/review-policy.js"
 
-node - <<'NODE' "$tmp_dir/label-gate.js" "$tmp_dir/review-policy.js"
-const fs = require('fs');
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+class FakeClient:
+    def __init__(self) -> None:
+        self.owner = "IvanLi-CN"
+        self.repo = "codex-vibe-monitor"
+        self.issue_labels = {
+            57: ["type:minor", "channel:rc"],
+            58: ["type:patch", "type:minor", "channel:stable"],
+            59: ["type:patch"],
+        }
+        self.pulls = {
+            57: "bob",
+            58: "bob",
+            59: "bob",
+            60: "bob",
+            61: "maintainer",
+            62: "IvanLi-CN",
+        }
+        self.permissions = {
+            "bob": "write",
+            "reviewer": "write",
+            "maintainer": "maintain",
+        }
+        self.reviews = {
+            57: [
+                {
+                    "user": {"login": "reviewer"},
+                    "state": "APPROVED",
+                    "submitted_at": "2026-03-12T00:00:00Z",
+                }
+            ],
+            58: [],
+            59: [
+                {
+                    "user": {"login": "reviewer"},
+                    "state": "APPROVED",
+                    "submitted_at": "2026-03-12T00:00:00Z",
+                },
+                {
+                    "user": {"login": "reviewer"},
+                    "state": "CHANGES_REQUESTED",
+                    "submitted_at": "2026-03-12T00:05:00Z",
+                },
+            ],
+            60: [
+                {
+                    "user": {"login": "reviewer"},
+                    "state": "APPROVED",
+                    "submitted_at": "2026-03-12T00:00:00Z",
+                },
+                {
+                    "user": {"login": "reviewer"},
+                    "state": "DISMISSED",
+                    "submitted_at": "2026-03-12T00:05:00Z",
+                },
+            ],
+        }
 
-const [labelPath, reviewPath] = process.argv.slice(2);
+    def request_json(self, path: str, query=None):
+        del query
+        if path.startswith("/repos/IvanLi-CN/codex-vibe-monitor/issues/"):
+            pull_number = int(path.rsplit("/", 1)[-1])
+            return {"labels": [{"name": label} for label in self.issue_labels[pull_number]]}
+        if path.startswith("/repos/IvanLi-CN/codex-vibe-monitor/pulls/"):
+            pull_number = int(path.rsplit("/", 1)[-1])
+            return {
+                "user": {"login": self.pulls[pull_number]},
+                "head": {"sha": f"sha-{pull_number}"},
+            }
+        if "/collaborators/" in path and path.endswith("/permission"):
+            username = path.split("/collaborators/", 1)[1].rsplit("/", 1)[0]
+            return {"permission": self.permissions.get(username, "none")}
+        raise AssertionError(f"unexpected request_json path: {path}")
 
-async function runWorkflowScript(scriptPath, { context, github, env }) {
-  const script = fs.readFileSync(scriptPath, 'utf8');
-  const logs = [];
-  let failure = null;
-  const core = {
-    info(message) {
-      logs.push(String(message));
-    },
-    setFailed(message) {
-      failure = String(message);
-    },
-    summary: {
-      addHeading() {
-        return this;
-      },
-      addRaw() {
-        return this;
-      },
-      async write() {},
-    },
-  };
-  const proc = {
-    env: {
-      ...process.env,
-      ...env,
-    },
-  };
-  const fn = new AsyncFunction('context', 'github', 'core', 'process', script);
-  let thrown = null;
-  try {
-    await fn(context, github, core, proc);
-  } catch (error) {
-    thrown = error;
-  }
-  return { logs, failure, thrown };
-}
+    def paginate(self, path: str, query=None):
+        del query
+        if path.startswith("/repos/IvanLi-CN/codex-vibe-monitor/pulls/") and path.endswith("/reviews"):
+            pull_number = int(path.split("/pulls/", 1)[1].split("/", 1)[0])
+            return self.reviews.get(pull_number, [])
+        raise AssertionError(f"unexpected paginate path: {path}")
 
-function assert(condition, message) {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
 
-async function testLabelGatePullRequestEvent() {
-  const github = {
-    rest: {
-      issues: {
-        get: async ({ issue_number }) => ({
-          data: {
-            labels: issue_number === 57
-              ? [{ name: 'type:minor' }, { name: 'channel:rc' }]
-              : [{ name: 'type:patch' }, { name: 'channel:stable' }],
-          },
-        }),
-      },
-    },
-  };
-  const context = {
-    eventName: 'pull_request',
-    payload: {
-      pull_request: {
-        number: 57,
-      },
-    },
-    repo: {
-      owner: 'IvanLi-CN',
-      repo: 'codex-vibe-monitor',
-    },
-  };
-  const result = await runWorkflowScript(labelPath, {
-    context,
-    github,
-    env: {
-      MANUAL_PULL_NUMBER: '',
-    },
-  });
-  assert(!result.thrown, `label-gate threw unexpectedly: ${result.thrown && result.thrown.message}`);
-  assert(!result.failure, `label-gate failed unexpectedly: ${result.failure}`);
-  assert(
-    result.logs.some((entry) => entry.includes('label gate validated 1 pull request(s)')),
-    'label-gate did not validate the pull_request payload',
-  );
-}
+def make_context(gate: str, event_name: str, pull_number: int) -> object:
+    return module.GateContext(
+        gate=gate,
+        owner="IvanLi-CN",
+        repo="codex-vibe-monitor",
+        api_root="https://api.github.com",
+        token="",
+        event_name=event_name,
+        event_payload={"pull_request": {"number": pull_number}},
+        manual_pull_number=None,
+    )
 
-async function testLabelGateFailureCases() {
-  const github = {
-    rest: {
-      issues: {
-        get: async ({ issue_number }) => ({
-          data: {
-            labels: issue_number === 58
-              ? [{ name: 'type:patch' }, { name: 'type:minor' }, { name: 'channel:stable' }]
-              : [{ name: 'type:patch' }],
-          },
-        }),
-      },
-    },
-  };
 
-  for (const pullNumber of [58, 59]) {
-    const result = await runWorkflowScript(labelPath, {
-      context: {
-        eventName: 'pull_request',
-        payload: {
-          pull_request: {
-            number: pullNumber,
-          },
-        },
-        repo: {
-          owner: 'IvanLi-CN',
-          repo: 'codex-vibe-monitor',
-        },
-      },
-      github,
-      env: {},
-    });
-    assert(!result.thrown, `label-gate failure case threw unexpectedly: ${result.thrown && result.thrown.message}`);
-    assert(result.failure, `label-gate should fail for PR #${pullNumber}`);
-  }
-}
+def run_with_summary(fn, *args):
+    with tempfile.NamedTemporaryFile(delete=False) as handle:
+        summary_path = handle.name
+    try:
+        os.environ["GITHUB_STEP_SUMMARY"] = summary_path
+        exit_code = fn(*args)
+        summary = Path(summary_path).read_text()
+        return exit_code, summary
+    finally:
+        os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        Path(summary_path).unlink(missing_ok=True)
 
-async function testReviewPolicyReviewEvent() {
-  const permissions = {
-    bob: 'write',
-    reviewer: 'write',
-  };
-  const authors = {
-    57: 'bob',
-  };
-  const github = {
-    paginate: async (route, params) => {
-      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews') {
-        return [
-          {
-            user: { login: 'reviewer' },
-            state: 'APPROVED',
-            submitted_at: '2026-03-12T00:00:00Z',
-          },
-        ];
-      }
-      throw new Error(`unexpected paginate route: ${route} ${JSON.stringify(params || {})}`);
-    },
-    request: async (route, params) => {
-      if (route !== 'GET /repos/{owner}/{repo}/collaborators/{username}/permission') {
-        throw new Error(`unexpected request route: ${route}`);
-      }
-      return {
-        data: {
-          permission: permissions[String(params.username)] || 'none',
-        },
-      };
-    },
-    rest: {
-      pulls: {
-        get: async ({ pull_number }) => ({
-          data: {
-            user: {
-              login: authors[pull_number],
-            },
-            head: {
-              sha: `sha-${pull_number}`,
-            },
-          },
-        }),
-      },
-      repos: {
-        createCommitStatus: async () => ({}),
-      },
-    },
-  };
-  const context = {
-    eventName: 'pull_request_review',
-    payload: {
-      pull_request: {
-        number: 57,
-      },
-    },
-    repo: {
-      owner: 'IvanLi-CN',
-      repo: 'codex-vibe-monitor',
-    },
-  };
-  const result = await runWorkflowScript(reviewPath, {
-    context,
-    github,
-    env: {},
-  });
-  assert(!result.thrown, `review-policy threw unexpectedly: ${result.thrown && result.thrown.message}`);
-  assert(!result.failure, `review-policy failed unexpectedly: ${result.failure}`);
-  assert(
-    result.logs.some((entry) => entry.includes('review gate validated 1 pull request(s)')),
-    'review-policy did not validate the pull_request_review payload',
-  );
-}
 
-async function testReviewPolicyFailureCases() {
-  const permissions = {
-    bob: 'write',
-    reviewer: 'write',
-  };
-  const reviewMatrix = {
-    58: [],
-    59: [
-      {
-        user: { login: 'reviewer' },
-        state: 'APPROVED',
-        submitted_at: '2026-03-12T00:00:00Z',
-      },
-      {
-        user: { login: 'reviewer' },
-        state: 'CHANGES_REQUESTED',
-        submitted_at: '2026-03-12T00:05:00Z',
-      },
-    ],
-    60: [
-      {
-        user: { login: 'reviewer' },
-        state: 'APPROVED',
-        submitted_at: '2026-03-12T00:00:00Z',
-      },
-      {
-        user: { login: 'reviewer' },
-        state: 'DISMISSED',
-        submitted_at: '2026-03-12T00:05:00Z',
-      },
-    ],
-  };
-  const github = {
-    paginate: async (route, params) => {
-      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews') {
-        return reviewMatrix[params.pull_number] || [];
-      }
-      throw new Error(`unexpected paginate route: ${route} ${JSON.stringify(params || {})}`);
-    },
-    request: async (route, params) => {
-      if (route !== 'GET /repos/{owner}/{repo}/collaborators/{username}/permission') {
-        throw new Error(`unexpected request route: ${route}`);
-      }
-      return {
-        data: {
-          permission: permissions[String(params.username)] || 'none',
-        },
-      };
-    },
-    rest: {
-      pulls: {
-        get: async ({ pull_number }) => ({
-          data: {
-            user: {
-              login: 'bob',
-            },
-            head: {
-              sha: `sha-${pull_number}`,
-            },
-          },
-        }),
-      },
-      repos: {
-        createCommitStatus: async () => ({}),
-      },
-    },
-  };
+client = FakeClient()
 
-  for (const pullNumber of [58, 59, 60]) {
-    const result = await runWorkflowScript(reviewPath, {
-      context: {
-        eventName: 'pull_request_review',
-        payload: {
-          pull_request: {
-            number: pullNumber,
-          },
-        },
-        repo: {
-          owner: 'IvanLi-CN',
-          repo: 'codex-vibe-monitor',
-        },
-      },
-      github,
-      env: {},
-    });
-    assert(!result.thrown, `review-policy failure case threw unexpectedly: ${result.thrown && result.thrown.message}`);
-    assert(result.failure, `review-policy should fail for PR #${pullNumber}`);
-  }
-}
+exit_code, summary = run_with_summary(module.run_label_gate, make_context("label", "pull_request_target", 57), client)
+assert exit_code == 0, f"expected label gate success, got {exit_code}"
+assert "PR #57: pass - Labels OK: type:minor + channel:rc" in summary
 
-Promise.resolve()
-  .then(testLabelGatePullRequestEvent)
-  .then(testLabelGateFailureCases)
-  .then(testReviewPolicyReviewEvent)
-  .then(testReviewPolicyFailureCases)
-  .catch((error) => {
-    console.error(error.message || error);
-    process.exit(1);
-  });
-NODE
+for pull_number in (58, 59):
+    exit_code, summary = run_with_summary(
+        module.run_label_gate,
+        make_context("label", "pull_request_target", pull_number),
+        client,
+    )
+    assert exit_code == 1, f"expected label gate failure for PR #{pull_number}, got {exit_code}"
+    assert f"PR #{pull_number}: fail" in summary
 
-echo "test-inline-metadata-workflows: all checks passed"
+exit_code, summary = run_with_summary(
+    module.run_review_gate,
+    make_context("review", "pull_request_review", 57),
+    client,
+)
+assert exit_code == 0, f"expected review gate success, got {exit_code}"
+assert "Approval satisfied by @reviewer (write)." in summary
+
+for pull_number in (58, 59, 60):
+    exit_code, summary = run_with_summary(
+        module.run_review_gate,
+        make_context("review", "pull_request_review", pull_number),
+        client,
+    )
+    assert exit_code == 1, f"expected review gate failure for PR #{pull_number}, got {exit_code}"
+    assert f"PR #{pull_number}: fail" in summary
+
+for pull_number in (61, 62):
+    exit_code, summary = run_with_summary(
+        module.run_review_gate,
+        make_context("review", "pull_request_review", pull_number),
+        client,
+    )
+    assert exit_code == 0, f"expected review gate exemption for PR #{pull_number}, got {exit_code}"
+    assert "approval not required" in summary
+
+print("test-inline-metadata-workflows: all checks passed")
+PY

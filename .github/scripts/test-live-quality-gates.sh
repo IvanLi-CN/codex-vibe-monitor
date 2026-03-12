@@ -13,13 +13,6 @@ python3 "$script" \
   --rules-file "$fixtures_dir/rules-main-ok.json" \
   --branch main >/dev/null
 
-python3 "$script" \
-  --mode require \
-  --repo IvanLi-CN/codex-vibe-monitor \
-  --declaration "$declaration" \
-  --rules-file "$fixtures_dir/rules-main-review-policy-legacy-source.json" \
-  --branch main >/dev/null
-
 if python3 "$script" \
   --mode require \
   --repo IvanLi-CN/codex-vibe-monitor \
@@ -61,35 +54,18 @@ grep -q "strict_required_status_checks_policy" "$fixtures_dir/.status-check-poli
 grep -q "required_status_check integrations drift" "$fixtures_dir/.status-check-policy-drift.log"
 rm -f "$fixtures_dir/.status-check-policy-drift.log"
 
-compat_decl="$fixtures_dir/.quality-gates-no-compat-waiver.json"
-python3 - <<'PY' "$declaration" "$compat_decl"
-import json
-import sys
-from pathlib import Path
-
-source = Path(sys.argv[1])
-target = Path(sys.argv[2])
-payload = json.loads(source.read_text())
-payload["waivers"] = [
-    waiver
-    for waiver in payload["waivers"]
-    if waiver.get("kind") != "required-status-check-source-compat"
-]
-target.write_text(json.dumps(payload, indent=2) + "\n")
-PY
-
 if python3 "$script" \
   --mode require \
   --repo IvanLi-CN/codex-vibe-monitor \
-  --declaration "$compat_decl" \
+  --declaration "$declaration" \
   --rules-file "$fixtures_dir/rules-main-review-policy-legacy-source.json" \
   --branch main >/dev/null 2>"$fixtures_dir/.legacy-source.log"; then
-  echo "expected legacy review-policy source fixture to fail without compatibility waiver" >&2
+  echo "expected legacy review-policy source fixture to fail" >&2
   exit 1
 fi
 
 grep -q "Review Policy Gate: expected one of" "$fixtures_dir/.legacy-source.log"
-rm -f "$fixtures_dir/.legacy-source.log" "$compat_decl"
+rm -f "$fixtures_dir/.legacy-source.log"
 
 bypass_decl="$fixtures_dir/.quality-gates-no-bypass-waiver.json"
 python3 - <<'PY' "$declaration" "$bypass_decl"

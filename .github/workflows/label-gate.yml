@@ -1,7 +1,7 @@
 name: Label Gate
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, edited]
 
@@ -20,100 +20,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Validate release intent labels
-        uses: actions/github-script@v8
+      - name: Checkout trusted base
+        uses: actions/checkout@v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const allowedTypeLabels = new Set([
-              'type:patch',
-              'type:minor',
-              'type:major',
-              'type:docs',
-              'type:skip',
-            ]);
-            const allowedChannelLabels = new Set(['channel:stable', 'channel:rc']);
+          ref: ${{ github.event.pull_request.base.ref }}
+          path: trusted
+          persist-credentials: false
 
-            const resolvePullNumbers = async () => {
-              const payloadPullNumber = context.payload.pull_request?.number;
-              if (Number.isInteger(payloadPullNumber) && payloadPullNumber > 0) {
-                return [payloadPullNumber];
-              }
+      - name: Checkout candidate changes
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
 
-              throw new Error('Missing valid pull request number for label gate evaluation');
-            };
+      - name: Validate workflow contract
+        run: |
+          python3 trusted/.github/scripts/check_quality_gates_contract.py \
+            --repo-root candidate \
+            --declaration candidate/.github/quality-gates.json \
+            --metadata-script trusted/.github/scripts/metadata_gate.py
 
-            const describeLabels = (labels) => {
-              if (labels.length === 0) {
-                return '(none)';
-              }
-              return [...new Set(labels)].sort().join(', ');
-            };
-
-            const evaluateLabels = (labels) => {
-              const typeLabels = [...new Set(labels.filter((label) => label.startsWith('type:')))].sort();
-              const channelLabels = [...new Set(labels.filter((label) => label.startsWith('channel:')))].sort();
-              const unknownTypeLabels = typeLabels.filter((label) => !allowedTypeLabels.has(label));
-              const unknownChannelLabels = channelLabels.filter((label) => !allowedChannelLabels.has(label));
-              const selectedTypeLabels = typeLabels.filter((label) => allowedTypeLabels.has(label));
-              const selectedChannelLabels = channelLabels.filter((label) => allowedChannelLabels.has(label));
-              const problems = [];
-              if (unknownTypeLabels.length > 0) {
-                problems.push(`Unknown type label(s): ${unknownTypeLabels.join(', ')}`);
-              }
-              if (unknownChannelLabels.length > 0) {
-                problems.push(`Unknown channel label(s): ${unknownChannelLabels.join(', ')}`);
-              }
-              if (selectedTypeLabels.length !== 1) {
-                problems.push(`Expected exactly 1 type:* label, got ${selectedTypeLabels.length}`);
-              }
-              if (selectedChannelLabels.length !== 1) {
-                problems.push(`Expected exactly 1 channel:* label, got ${selectedChannelLabels.length}`);
-              }
-              if (problems.length > 0) {
-                return {
-                  passed: false,
-                  description: `${problems.join('; ')} | labels=${describeLabels(labels)}`,
-                };
-              }
-              return {
-                passed: true,
-                description: `Labels OK: ${selectedTypeLabels[0]} + ${selectedChannelLabels[0]}`,
-              };
-            };
-
-            const pullNumbers = await resolvePullNumbers();
-            const results = [];
-
-            for (const pullNumber of pullNumbers) {
-              const { data: issue } = await github.rest.issues.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pullNumber,
-              });
-              const labels = (issue.labels || [])
-                .map((label) => (typeof label === 'string' ? label : label?.name))
-                .filter((label) => typeof label === 'string' && label.length > 0)
-                .sort();
-              const evaluation = evaluateLabels(labels);
-              results.push({
-                pullNumber,
-                labels,
-                passed: evaluation.passed,
-                description: evaluation.description,
-              });
-            }
-
-            const summary = core.summary.addHeading('PR label gate', 2).addRaw('- Scope: ' + context.eventName + '\n\n');
-            for (const result of results) {
-              summary.addRaw('- PR #' + result.pullNumber + ': ' + (result.passed ? 'pass' : 'fail') + ' - ' + result.description + '\n');
-            }
-            await summary.write();
-
-            const failed = results.filter((result) => !result.passed);
-            if (failed.length > 0) {
-              core.setFailed(failed.map((result) => `PR #${result.pullNumber}: ${result.description}`).join(' | '));
-              return;
-            }
-
-            core.info(`label gate validated ${results.length} pull request(s)`);
+      - name: Validate release intent labels
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 trusted/.github/scripts/metadata_gate.py label

@@ -12,79 +12,65 @@ label_repo="$tmp_dir/label-repo"
 cp -R "$repo_root/." "$label_repo"
 python3 - <<'PY' "$label_repo"
 from pathlib import Path
-import re
 import sys
 
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/label-gate.yml"
 text = path.read_text()
-pattern = re.compile(
-    r"(      - name: Validate release intent labels\n        uses: actions/github-script@v8\n        with:\n          github-token: \$\{\{ secrets\.GITHUB_TOKEN \}\}\n          script: \|\n)(?:            .*\n)+",
-    re.M,
-)
-replacement = """      - name: Validate release intent labels
-        uses: actions/github-script@v8
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            core.info('label gate validated 1 pull request(s)');
-            // github.rest.issues.get
-            // channel:stable
-            // type:patch
-            // type:skip
+needle = """      - name: Validate workflow contract
+        run: |
+          python3 trusted/.github/scripts/check_quality_gates_contract.py \\
+            --repo-root candidate \\
+            --declaration candidate/.github/quality-gates.json \\
+            --metadata-script trusted/.github/scripts/metadata_gate.py
 """
-rewritten = pattern.sub(replacement, text)
-if rewritten == text:
+replacement = """      - name: Validate workflow contract
+        run: |
+          echo \"python3 trusted/.github/scripts/check_quality_gates_contract.py --repo-root candidate --declaration candidate/.github/quality-gates.json --metadata-script trusted/.github/scripts/metadata_gate.py\"
+"""
+if needle not in text:
     raise SystemExit("failed to rewrite label-gate workflow")
-path.write_text(rewritten)
+path.write_text(text.replace(needle, replacement, 1))
 PY
 
-if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$label_repo" >/dev/null 2>"$tmp_dir/label-gate-comment-bypass.log"; then
-  echo "expected label-gate comment bypass fixture to fail" >&2
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$label_repo" >/dev/null 2>"$tmp_dir/label-gate-bait.log"; then
+  echo "expected label-gate trusted contract bait fixture to fail" >&2
   exit 1
 fi
 
-grep -q "label gate must enforce channel labels" "$tmp_dir/label-gate-comment-bypass.log"
+grep -q "must invoke trusted contract checker" "$tmp_dir/label-gate-bait.log"
 
 review_repo="$tmp_dir/review-repo"
 cp -R "$repo_root/." "$review_repo"
 python3 - <<'PY' "$review_repo"
 from pathlib import Path
-import re
 import sys
 
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/review-policy.yml"
 text = path.read_text()
-pattern = re.compile(
-    r"(      - name: Evaluate review policy\n        uses: actions/github-script@v8\n        with:\n          github-token: \$\{\{ secrets\.GITHUB_TOKEN \}\}\n          script: \|\n)(?:            .*\n)+",
-    re.M,
-)
-replacement = """      - name: Evaluate review policy
-        uses: actions/github-script@v8
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            core.info('review gate validated 1 pull request(s)');
-            // createCommitStatus
-            // GET /repos/{owner}/{repo}/collaborators/{username}/permission
-            // GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews
-            // const reviewRequiredApprovals = 1;
-            // 'admin' 'maintain' 'write'
-            // const reviewGateContext = 'Review Policy Gate';
-            // Author @${author} has ${authorPermission} permission; approval not required.
+needle = """      - name: Evaluate review policy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 trusted/.github/scripts/metadata_gate.py review
 """
-rewritten = pattern.sub(replacement, text)
-if rewritten == text:
+replacement = """      - name: Evaluate review policy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo \"python3 trusted/.github/scripts/metadata_gate.py review\"
+"""
+if needle not in text:
     raise SystemExit("failed to rewrite review-policy workflow")
-path.write_text(rewritten)
+path.write_text(text.replace(needle, replacement, 1))
 PY
 
-if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$review_repo" >/dev/null 2>"$tmp_dir/review-policy-comment-bypass.log"; then
-  echo "expected review-policy comment bypass fixture to fail" >&2
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$review_repo" >/dev/null 2>"$tmp_dir/review-policy-bait.log"; then
+  echo "expected review-policy trusted metadata bait fixture to fail" >&2
   exit 1
 fi
 
-grep -q "required approvals drifted" "$tmp_dir/review-policy-comment-bypass.log"
+grep -q "must invoke trusted metadata gate" "$tmp_dir/review-policy-bait.log"
 
 echo "test-quality-gates-contract: all checks passed"

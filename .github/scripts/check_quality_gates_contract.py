@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -119,7 +120,6 @@ def require_mapping(value: Any, where: str) -> dict[str, Any]:
 
 def event_config(workflow: dict[str, Any], event_name: str, where: str) -> dict[str, Any]:
     on_section = require_mapping(mapping_get(workflow, "on"), f"{where}.on")
-    require("pull_request_target" not in on_section, f"{where}: pull_request_target must stay disabled")
     config = mapping_get(on_section, event_name)
     require(config is not None, f"{where}.on.{event_name} must be configured")
     if config is None:
@@ -165,93 +165,67 @@ def uses_step_config(job: dict[str, Any], step_name: str, expected_uses: str, wh
     return step
 
 
-def require_no_checkout(job: dict[str, Any], where: str) -> None:
-    steps = job.get("steps")
-    require(isinstance(steps, list), f"{where}.steps must be a list")
-    for index, step in enumerate(steps):
-        if not isinstance(step, dict):
+def step_run(step: dict[str, Any], where: str) -> str:
+    run = step.get("run")
+    require(isinstance(run, str) and run.strip(), f"{where}.run must be a non-empty string")
+    return run
+
+
+def shell_commands(step: dict[str, Any], where: str) -> list[list[str]]:
+    commands: list[list[str]] = []
+    current = ""
+    for raw_line in step_run(step, where).splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
             continue
-        uses = step.get("uses")
-        require(uses != "actions/checkout@v4", f"{where}.steps[{index}] must not use actions/checkout@v4")
+        if current:
+            current = f"{current} {line}"
+        else:
+            current = line
+        if current.endswith("\\"):
+            current = current[:-1].rstrip()
+            continue
+        try:
+            tokens = shlex.split(current, posix=True)
+        except ValueError as exc:
+            raise ContractError(f"{where}.run contains invalid shell syntax: {exc}") from exc
+        if tokens:
+            commands.append(tokens)
+        current = ""
+    require(not current, f"{where}.run ends with an unterminated shell continuation")
+    require(commands, f"{where}.run must contain at least one shell command")
+    return commands
 
 
-def script_body(step: dict[str, Any], where: str) -> str:
-    require(step.get("uses") == "actions/github-script@v8", f"{where}.uses must stay actions/github-script@v8")
-    with_config = require_mapping(step.get("with"), f"{where}.with")
-    script = with_config.get("script")
-    require(isinstance(script, str) and script, f"{where}.with.script must be a non-empty string")
-    return script
+def require_command(
+    step: dict[str, Any],
+    prefix: list[str],
+    where: str,
+    message: str,
+) -> list[str]:
+    for command in shell_commands(step, where):
+        if command[: len(prefix)] == prefix:
+            return command
+    raise ContractError(message)
 
 
-def strip_js_comments(script: str) -> str:
-    result: list[str] = []
+def command_option_map(command: list[str], where: str) -> dict[str, str]:
+    options: dict[str, str] = {}
     index = 0
-    length = len(script)
-    in_single = False
-    in_double = False
-    in_template = False
-    escape = False
-
-    while index < length:
-        char = script[index]
-        next_char = script[index + 1] if index + 1 < length else ""
-
-        if in_single:
-            result.append(char)
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == "'":
-                in_single = False
+    while index < len(command):
+        token = command[index]
+        if not token.startswith("--"):
             index += 1
             continue
+        require(index + 1 < len(command), f"{where}: option {token} is missing a value")
+        options[token] = command[index + 1]
+        index += 2
+    return options
 
-        if in_double:
-            result.append(char)
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == '"':
-                in_double = False
-            index += 1
-            continue
 
-        if in_template:
-            result.append(char)
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == "`":
-                in_template = False
-            index += 1
-            continue
-
-        if char == "/" and next_char == "/":
-            index += 2
-            while index < length and script[index] != "\n":
-                index += 1
-            continue
-
-        if char == "/" and next_char == "*":
-            index += 2
-            while index + 1 < length and not (script[index] == "*" and script[index + 1] == "/"):
-                index += 1
-            index += 2
-            continue
-
-        result.append(char)
-        if char == "'":
-            in_single = True
-        elif char == '"':
-            in_double = True
-        elif char == "`":
-            in_template = True
-        index += 1
-
-    return "".join(result)
+def checkout_step(job: dict[str, Any], step_name: str, where: str) -> dict[str, Any]:
+    step = uses_step_config(job, step_name, "actions/checkout@v4", where)
+    return require_mapping(step.get("with"), f"{where}.steps[{step_name!r}].with")
 
 
 def validate_quality_gates(payload: dict[str, Any]) -> None:
@@ -340,25 +314,6 @@ def validate_quality_gates(payload: dict[str, Any]) -> None:
 
     waivers = payload.get("waivers", [])
     require(isinstance(waivers, list), "quality-gates.json: waivers must be an array")
-    compat_waivers = [
-        waiver
-        for waiver in waivers
-        if isinstance(waiver, dict)
-        and waiver.get("kind") == "required-status-check-source-compat"
-        and waiver.get("branch") == "main"
-        and waiver.get("context") == "Review Policy Gate"
-    ]
-    require(len(compat_waivers) == 1, "quality-gates.json: missing Review Policy Gate source compatibility waiver")
-    compat_waiver = compat_waivers[0]
-    require(
-        compat_waiver.get("allowed_integration_ids") == [None, 15368],
-        "quality-gates.json: Review Policy Gate source compatibility waiver must allow [null, 15368]",
-    )
-    require(
-        isinstance(compat_waiver.get("reason"), str) and compat_waiver["reason"],
-        "quality-gates.json: Review Policy Gate source compatibility waiver must include a reason",
-    )
-
     bypass_waivers = [
         waiver
         for waiver in waivers
@@ -398,7 +353,8 @@ def validate_ci(path: Path) -> None:
     trusted_run = str(trusted_step.get("run", ""))
     require("git fetch --no-tags --depth=1 origin" in trusted_run, "ci.yml.jobs.lint: trusted-source fetch drifted")
     require("git show \"${source_ref}:${path}\"" in trusted_run, "ci.yml.jobs.lint: trusted-source materialization drifted")
-    require("bootstrap-current-branch" in trusted_run, "ci.yml.jobs.lint: bootstrap fallback drifted")
+    require("Base branch is missing trusted quality-gates source" in trusted_run, "ci.yml.jobs.lint: trusted-source hard-fail drifted")
+    require("bootstrap-current-branch" not in trusted_run, "ci.yml.jobs.lint: bootstrap fallback must stay removed")
     require("trusted_root/.github/scripts/check_quality_gates_contract.py" in trusted_run, "ci.yml.jobs.lint: trusted-source outputs drifted")
     contract_step = step_config(lint_job, "Quality-gates contract check", "ci.yml.jobs.lint")
     contract_run = str(contract_step.get("run", ""))
@@ -428,9 +384,10 @@ def validate_label_gate(path: Path) -> None:
     on_section = require_mapping(mapping_get(workflow, "on"), "label-gate.yml.on")
     require("merge_group" not in on_section, "label-gate.yml: merge_group must stay disabled")
     require("workflow_dispatch" not in on_section, "label-gate.yml: workflow_dispatch must stay disabled")
-    pull_request_config = event_config(workflow, "pull_request", "label-gate.yml")
-    assert_event_branches(pull_request_config, {"main"}, "label-gate.yml.on.pull_request")
-    assert_event_types(pull_request_config, LABEL_GATE_PULL_REQUEST_TYPES, "label-gate.yml.on.pull_request")
+    require("pull_request" not in on_section, "label-gate.yml: pull_request must stay disabled")
+    pull_request_target_config = event_config(workflow, "pull_request_target", "label-gate.yml")
+    assert_event_branches(pull_request_target_config, {"main"}, "label-gate.yml.on.pull_request_target")
+    assert_event_types(pull_request_target_config, LABEL_GATE_PULL_REQUEST_TYPES, "label-gate.yml.on.pull_request_target")
 
     permissions = require_mapping(workflow.get("permissions"), "label-gate.yml.permissions")
     require(permissions.get("contents") == "read", "label-gate.yml.permissions.contents must stay read")
@@ -438,47 +395,83 @@ def validate_label_gate(path: Path) -> None:
     require(permissions.get("issues") == "read", "label-gate.yml.permissions.issues must stay read")
 
     job = job_config(workflow, "label-gate", "Validate PR labels", "label-gate.yml")
-    require_no_checkout(job, "label-gate.yml.jobs.label-gate")
+    trusted_checkout = checkout_step(job, "Checkout trusted base", "label-gate.yml.jobs.label-gate")
+    require(trusted_checkout.get("ref") == "${{ github.event.pull_request.base.ref }}", "label-gate.yml: trusted checkout ref drifted")
+    require(trusted_checkout.get("path") == "trusted", "label-gate.yml: trusted checkout path must stay 'trusted'")
+    require(trusted_checkout.get("persist-credentials") is False, "label-gate.yml: trusted checkout must not persist credentials")
+
+    candidate_checkout = checkout_step(job, "Checkout candidate changes", "label-gate.yml.jobs.label-gate")
+    require(
+        candidate_checkout.get("repository") == "${{ github.event.pull_request.head.repo.full_name }}",
+        "label-gate.yml: candidate checkout repository drifted",
+    )
+    require(candidate_checkout.get("ref") == "${{ github.event.pull_request.head.sha }}", "label-gate.yml: candidate checkout ref drifted")
+    require(candidate_checkout.get("path") == "candidate", "label-gate.yml: candidate checkout path must stay 'candidate'")
+    require(candidate_checkout.get("persist-credentials") is False, "label-gate.yml: candidate checkout must not persist credentials")
+
+    contract_step = step_config(job, "Validate workflow contract", "label-gate.yml.jobs.label-gate")
+    contract_command = require_command(
+        contract_step,
+        ["python3", "trusted/.github/scripts/check_quality_gates_contract.py"],
+        "label-gate.yml.jobs.label-gate.steps['Validate workflow contract']",
+        "label-gate.yml: Validate workflow contract must invoke trusted contract checker",
+    )
+    contract_options = command_option_map(contract_command[2:], "label-gate.yml: Validate workflow contract")
+    require(contract_options.get("--repo-root") == "candidate", "label-gate.yml: contract checker must validate the candidate repo")
+    require(
+        contract_options.get("--declaration") == "candidate/.github/quality-gates.json",
+        "label-gate.yml: contract checker must read the candidate declaration",
+    )
+    require(
+        contract_options.get("--metadata-script") == "trusted/.github/scripts/metadata_gate.py",
+        "label-gate.yml: contract checker must anchor to trusted metadata_gate.py",
+    )
+
     step = step_config(job, "Validate release intent labels", "label-gate.yml.jobs.label-gate")
-    script = strip_js_comments(script_body(step, "label-gate.yml.jobs.label-gate.steps['Validate release intent labels']"))
-    require("github.rest.issues.get" in script, "label-gate.yml: label gate must read labels via github.rest.issues.get")
-    require("channel:stable" in script, "label-gate.yml: label gate must enforce channel labels")
-    require("type:patch" in script and "type:skip" in script, "label-gate.yml: label gate must enforce type labels")
-    require("createCommitStatus" not in script, "label-gate.yml: must not publish legacy commit statuses")
+    env = require_mapping(step.get("env"), "label-gate.yml.jobs.label-gate.steps['Validate release intent labels'].env")
+    require(env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "label-gate.yml: label gate must pass GITHUB_TOKEN via env")
+    require_command(
+        step,
+        ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
+        "label-gate.yml.jobs.label-gate.steps['Validate release intent labels']",
+        "label-gate.yml: Validate PR labels must invoke trusted metadata gate",
+    )
 
 
-def validate_review_policy(path: Path, declaration: dict[str, Any]) -> None:
+def validate_review_policy(path: Path) -> None:
     workflow = load_yaml(path)
     require(workflow.get("name") == "Review Policy", "review-policy.yml: workflow name must stay 'Review Policy'")
     on_section = require_mapping(mapping_get(workflow, "on"), "review-policy.yml.on")
     require("merge_group" not in on_section, "review-policy.yml: merge_group must stay disabled")
     require("workflow_dispatch" not in on_section, "review-policy.yml: workflow_dispatch must stay disabled")
-    pull_request_config = event_config(workflow, "pull_request", "review-policy.yml")
-    assert_event_branches(pull_request_config, {"main"}, "review-policy.yml.on.pull_request")
-    assert_event_types(pull_request_config, REVIEW_POLICY_PULL_REQUEST_TYPES, "review-policy.yml.on.pull_request")
+    require("pull_request" not in on_section, "review-policy.yml: pull_request must stay disabled")
+    pull_request_target_config = event_config(workflow, "pull_request_target", "review-policy.yml")
+    assert_event_branches(pull_request_target_config, {"main"}, "review-policy.yml.on.pull_request_target")
+    assert_event_types(pull_request_target_config, REVIEW_POLICY_PULL_REQUEST_TYPES, "review-policy.yml.on.pull_request_target")
     pull_request_review_config = event_config(workflow, "pull_request_review", "review-policy.yml")
     assert_event_types(pull_request_review_config, REVIEW_POLICY_REVIEW_TYPES, "review-policy.yml.on.pull_request_review")
 
     permissions = require_mapping(workflow.get("permissions"), "review-policy.yml.permissions")
     require(permissions.get("contents") == "read", "review-policy.yml.permissions.contents must stay read")
     require(permissions.get("pull-requests") == "read", "review-policy.yml.permissions.pull-requests must stay read")
-    require(permissions.get("statuses") == "write", "review-policy.yml.permissions.statuses must stay write for rollout compatibility")
+    require("statuses" not in permissions, "review-policy.yml.permissions.statuses must stay unset")
 
     job = job_config(workflow, "review-policy", "Review Policy Gate", "review-policy.yml")
-    require_no_checkout(job, "review-policy.yml.jobs.review-policy")
+    require(job.get("if") == "${{ github.event.pull_request.base.ref == 'main' }}", "review-policy.yml.jobs.review-policy.if must stay pinned to the main base branch")
+    trusted_checkout = checkout_step(job, "Checkout trusted base", "review-policy.yml.jobs.review-policy")
+    require(trusted_checkout.get("ref") == "${{ github.event.pull_request.base.ref }}", "review-policy.yml: trusted checkout ref drifted")
+    require(trusted_checkout.get("path") == "trusted", "review-policy.yml: trusted checkout path must stay 'trusted'")
+    require(trusted_checkout.get("persist-credentials") is False, "review-policy.yml: trusted checkout must not persist credentials")
+
     step = step_config(job, "Evaluate review policy", "review-policy.yml.jobs.review-policy")
-    script = strip_js_comments(script_body(step, "review-policy.yml.jobs.review-policy.steps['Evaluate review policy']"))
-    review_policy = declaration["policy"]["review_policy"]
-    require("createCommitStatus" in script, "review-policy.yml: must keep legacy commit-status dual-write during rollout")
-    require("GET /repos/{owner}/{repo}/collaborators/{username}/permission" in script, "review-policy.yml: collaborator permission lookup drifted")
-    require("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews" in script, "review-policy.yml: reviews lookup drifted")
-    require(f"const reviewRequiredApprovals = {review_policy['required_approvals']};" in script, "review-policy.yml: required approvals drifted")
-    for permission in review_policy["exempt_author_permissions"]:
-        require(f"'{permission}'" in script, f"review-policy.yml: missing exempt permission {permission!r}")
-    for permission in review_policy["allowed_reviewer_permissions"]:
-        require(f"'{permission}'" in script, f"review-policy.yml: missing reviewer permission {permission!r}")
-    require("const reviewGateContext = 'Review Policy Gate';" in script, "review-policy.yml: rollout status context drifted")
-    require("Author @${author} has ${authorPermission} permission; approval not required." in script, "review-policy.yml: owner/maintainer exemption copy drifted")
+    env = require_mapping(step.get("env"), "review-policy.yml.jobs.review-policy.steps['Evaluate review policy'].env")
+    require(env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "review-policy.yml: review gate must pass GITHUB_TOKEN via env")
+    require_command(
+        step,
+        ["python3", "trusted/.github/scripts/metadata_gate.py", "review"],
+        "review-policy.yml.jobs.review-policy.steps['Evaluate review policy']",
+        "review-policy.yml: Evaluate review policy must invoke trusted metadata gate",
+    )
 
 
 def validate_merge_group_helpers(module: Any) -> None:
@@ -518,7 +511,7 @@ def main() -> int:
         validate_quality_gates(declaration)
         validate_ci(repo_root / ".github" / "workflows" / "ci.yml")
         validate_label_gate(repo_root / ".github" / "workflows" / "label-gate.yml")
-        validate_review_policy(repo_root / ".github" / "workflows" / "review-policy.yml", declaration)
+        validate_review_policy(repo_root / ".github" / "workflows" / "review-policy.yml")
         validate_merge_group_helpers(module)
     except ContractError as exc:
         print(f"[quality-gates-contract] {exc}", file=sys.stderr)

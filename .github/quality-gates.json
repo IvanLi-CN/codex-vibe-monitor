@@ -58,16 +58,6 @@
   ],
   "waivers": [
     {
-      "kind": "required-status-check-source-compat",
-      "branch": "main",
-      "context": "Review Policy Gate",
-      "allowed_integration_ids": [
-        null,
-        15368
-      ],
-      "reason": "Allow the Review Policy Gate rollout while GitHub required checks migrate from the legacy commit status source to the GitHub Actions check run."
-    },
-    {
       "kind": "bypass-actors-unverified",
       "branch": "main",
       "reason": "GitHub branch-rules API omits bypass actors; verify bypass actors manually during live ruleset configuration."
