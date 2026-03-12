@@ -166,6 +166,14 @@ function getNewDataButton() {
   return button
 }
 
+function getNewDataLabel(testId: 'records-new-data-label-idle' | 'records-new-data-label-action') {
+  const label = host?.querySelector(`[data-testid="${testId}"]`)
+  if (!(label instanceof HTMLSpanElement)) {
+    throw new Error(`missing new data label: ${testId}`)
+  }
+  return label
+}
+
 describe('RecordsPage suggestions', () => {
   it('loads suggestions lazily after a combobox opens', async () => {
     vi.useFakeTimers()
@@ -345,10 +353,14 @@ describe('RecordsPage new data action', () => {
     render(<RecordsPage />)
 
     const button = getNewDataButton()
+    const idleLabel = getNewDataLabel('records-new-data-label-idle')
+    const actionLabel = getNewDataLabel('records-new-data-label-action')
 
     expect(button.dataset.state).toBe('idle')
     expect(button.dataset.icon).toBe('help')
-    expect(button.textContent).toContain('有 9 条新数据')
+    expect(idleLabel.textContent).toBe('有 9 条新数据')
+    expect(idleLabel.className).toContain('opacity-100')
+    expect(actionLabel.className).toContain('opacity-0')
     expect(button.className).toContain('border-warning/35')
     expect(button.getAttribute('aria-label')).toBe('有 9 条新数据，点击后会并入当前快照。')
 
@@ -359,7 +371,9 @@ describe('RecordsPage new data action', () => {
 
     expect(button.dataset.state).toBe('interactive')
     expect(button.dataset.icon).toBe('help')
-    expect(button.textContent).toContain('加载新数据')
+    expect(idleLabel.className).toContain('opacity-0')
+    expect(actionLabel.textContent).toBe('加载新数据')
+    expect(actionLabel.className).toContain('opacity-100')
     expect(button.className).toContain('border-primary/35')
     expect(button.getAttribute('aria-label')).toBe('加载这 9 条新数据并刷新当前快照。')
 
@@ -369,10 +383,12 @@ describe('RecordsPage new data action', () => {
     await flushAsync()
 
     expect(button.dataset.state).toBe('idle')
-    expect(button.textContent).toContain('有 9 条新数据')
+    expect(idleLabel.className).toContain('opacity-100')
+    expect(actionLabel.className).toContain('opacity-0')
   })
 
   it('triggers search once and shows a spinning refresh state while the refresh is pending', async () => {
+    vi.useFakeTimers()
     let resolveSearch: (() => void) | null = null
     const search = vi.fn(
       () =>
@@ -389,6 +405,8 @@ describe('RecordsPage new data action', () => {
     render(<RecordsPage />)
 
     const button = getNewDataButton()
+    const idleLabel = getNewDataLabel('records-new-data-label-idle')
+    const actionLabel = getNewDataLabel('records-new-data-label-action')
 
     act(() => {
       button.click()
@@ -401,7 +419,9 @@ describe('RecordsPage new data action', () => {
     expect(button.dataset.state).toBe('loading')
     expect(button.dataset.icon).toBe('refresh')
     expect(button.className).toContain('border-primary/35')
-    expect(button.textContent).toContain('加载新数据')
+    expect(idleLabel.className).toContain('opacity-0')
+    expect(actionLabel.className).toContain('opacity-100')
+    expect(actionLabel.textContent).toBe('加载新数据')
     expect(button.getAttribute('aria-label')).toBe('正在加载这 9 条新数据并刷新当前快照。')
 
     act(() => {
@@ -416,9 +436,53 @@ describe('RecordsPage new data action', () => {
     })
     await flushAsync()
 
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600)
+    })
+    await flushAsync()
+
     expect(button.disabled).toBe(false)
     expect(button.dataset.state).toBe('idle')
     expect(button.dataset.icon).toBe('help')
+  })
+
+  it('keeps the loading state visible briefly even when refresh resolves immediately', async () => {
+    vi.useFakeTimers()
+    const search = vi.fn(() => Promise.resolve())
+
+    mockInvocationRecords({
+      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+      search,
+    })
+
+    render(<RecordsPage />)
+
+    const button = getNewDataButton()
+
+    act(() => {
+      button.click()
+    })
+    await flushAsync()
+
+    expect(search).toHaveBeenCalledTimes(1)
+    expect(button.dataset.state).toBe('loading')
+    expect(button.disabled).toBe(true)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(599)
+    })
+    await flushAsync()
+
+    expect(button.dataset.state).toBe('loading')
+    expect(button.disabled).toBe(true)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    await flushAsync()
+
+    expect(button.dataset.state).toBe('idle')
+    expect(button.disabled).toBe(false)
   })
 
   it('hides the new data button when there is no pending new data', () => {

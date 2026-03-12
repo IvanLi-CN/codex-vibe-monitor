@@ -1,5 +1,5 @@
-import { Icon } from '@iconify/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { RecordsNewDataButton } from '../components/RecordsNewDataButton'
 import { Button } from '../components/ui/button'
 import { FilterableCombobox } from '../components/ui/filterable-combobox'
 import { InvocationRecordsSummaryCards } from '../components/InvocationRecordsSummaryCards'
@@ -22,6 +22,7 @@ const inputClassName =
   'h-9 w-full rounded-md border border-base-300/80 bg-base-100 px-3 text-sm text-base-content shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-60'
 
 const SUGGESTION_DEBOUNCE_MS = 250
+const NEW_DATA_REFRESH_MIN_LOADING_MS = 600
 
 function getVisiblePages(currentPage: number, totalPages: number) {
   if (totalPages <= 1) return [1]
@@ -63,8 +64,6 @@ export default function RecordsPage() {
   const [suggestions, setSuggestions] = useState<InvocationSuggestionsResponse | null>(null)
   const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false)
   const [activeSuggestionField, setActiveSuggestionField] = useState<InvocationSuggestionField | null>(null)
-  const [isNewDataHovered, setIsNewDataHovered] = useState(false)
-  const [isNewDataFocused, setIsNewDataFocused] = useState(false)
   const [isNewDataRefreshPending, setIsNewDataRefreshPending] = useState(false)
   const suggestionQuery = useMemo(
     () => buildInvocationSuggestionsQuery(draft, appliedSnapshotId, activeSuggestionField ?? undefined),
@@ -150,7 +149,6 @@ export default function RecordsPage() {
   const listControlsDisabled = isSearching || isRecordsLoading
   const hasOpenSuggestion = activeSuggestionField !== null
   const isNewDataLoading = isNewDataRefreshPending || isSearching
-  const isNewDataInteractive = isNewDataHovered || isNewDataFocused || isNewDataLoading
   const modelBucket = suggestions?.model
   const proxyBucket = suggestions?.proxy
   const endpointBucket = suggestions?.endpoint
@@ -179,7 +177,14 @@ export default function RecordsPage() {
   const handleRefreshNewData = () => {
     if (isNewDataLoading) return
     setIsNewDataRefreshPending(true)
-    void search({ source: 'applied', preserveSummary: true }).finally(() => {
+    const minLoadingDelay = new Promise<void>((resolve) => {
+      window.setTimeout(resolve, NEW_DATA_REFRESH_MIN_LOADING_MS)
+    })
+
+    void Promise.all([
+      search({ source: 'applied', preserveSummary: true }),
+      minLoadingDelay,
+    ]).finally(() => {
       setIsNewDataRefreshPending(false)
     })
   }
@@ -425,49 +430,11 @@ export default function RecordsPage() {
             </div>
             <div className="flex flex-wrap items-center gap-3">
               {newRecordsCount > 0 ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  data-testid="records-new-data-button"
-                  data-state={isNewDataLoading ? 'loading' : isNewDataInteractive ? 'interactive' : 'idle'}
-                  data-icon={isNewDataLoading ? 'refresh' : 'help'}
-                  aria-label={
-                    isNewDataLoading
-                      ? t('records.summary.notice.refreshingAria', { count: newRecordsCount })
-                      : isNewDataInteractive
-                        ? t('records.summary.notice.refreshAria', { count: newRecordsCount })
-                        : t('records.summary.notice.newDataAria', { count: newRecordsCount })
-                  }
-                  aria-busy={isNewDataLoading}
-                  disabled={isNewDataLoading}
-                  className={cn(
-                    'group h-auto rounded-full border px-3 py-1 text-xs font-semibold shadow-sm disabled:opacity-100',
-                    isNewDataInteractive
-                      ? 'border-primary/35 bg-primary/15 text-primary hover:bg-primary/20'
-                      : 'border-warning/35 bg-warning/10 text-warning hover:bg-warning/15',
-                  )}
-                  onClick={handleRefreshNewData}
-                  onMouseEnter={() => setIsNewDataHovered(true)}
-                  onMouseLeave={() => setIsNewDataHovered(false)}
-                  onFocus={() => setIsNewDataFocused(true)}
-                  onBlur={() => setIsNewDataFocused(false)}
-                >
-                  <span>
-                    {isNewDataInteractive
-                      ? t('records.summary.notice.refreshAction')
-                      : t('records.summary.notice.newData', { count: newRecordsCount })}
-                  </span>
-                  <span
-                    className={cn(
-                      'ml-1.5 inline-flex h-4 w-4 items-center justify-center rounded-full',
-                      isNewDataInteractive ? 'text-primary' : 'text-warning',
-                    )}
-                    aria-hidden
-                  >
-                    <Icon icon={isNewDataLoading ? 'mdi:refresh' : 'mdi:help-circle-outline'} className={cn('h-4 w-4', isNewDataLoading && 'animate-spin')} />
-                  </span>
-                </Button>
+                <RecordsNewDataButton
+                  count={newRecordsCount}
+                  isLoading={isNewDataLoading}
+                  onRefresh={handleRefreshNewData}
+                />
               ) : null}
               <div className="segment-group" role="tablist" aria-label={t('records.focus.label')}>
                 {focusOptions.map((option) => (
