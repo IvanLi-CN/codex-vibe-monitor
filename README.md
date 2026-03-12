@@ -4,7 +4,7 @@
 [![Git Tags](https://img.shields.io/github/v/tag/IvanLi-CN/codex-vibe-monitor?sort=semver)](https://github.com/IvanLi-CN/codex-vibe-monitor/tags)
 [![Container](https://img.shields.io/badge/ghcr.io%2FIvanLi--CN%2Fcodex--vibe--monitor-available-2ea44f?logo=docker)](https://github.com/IvanLi-CN/codex-vibe-monitor/pkgs/container/codex-vibe-monitor)
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)
-![Node](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)
+![Bun](https://img.shields.io/badge/Bun-1.3.10%2B-f9f1e1?logo=bun&logoColor=111111)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
 ![Vite](https://img.shields.io/badge/Vite-7-646CFF?logo=vite&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)
@@ -52,8 +52,8 @@ cargo run
 
 ```bash
 cd web
-npm install
-npm run dev -- --host 127.0.0.1 --port 60080
+bun install
+bun run dev -- --host 127.0.0.1 --port 60080
 ```
 
 开发服务器默认代理到 `http://127.0.0.1:8080`，也可用 `VITE_BACKEND_PROXY` 覆盖。

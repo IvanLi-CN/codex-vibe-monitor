@@ -1,14 +1,14 @@
 # Stage 1: build the web assets
-FROM node:20-alpine AS web-builder
+FROM oven/bun:1.3.10-alpine AS web-builder
 ARG APP_EFFECTIVE_VERSION
 WORKDIR /app/web
 
-COPY web/package*.json ./
-RUN npm ci
+COPY web/package.json web/bun.lock ./
+RUN bun install --frozen-lockfile
 
 COPY web/ ./
 ENV VITE_APP_VERSION=${APP_EFFECTIVE_VERSION}
-RUN npm run build
+RUN bun run build
 
 # Stage 2: build the Rust binary
 # IMPORTANT: runtime image is Debian bookworm (glibc 2.36). Pin the Rust build stage to bookworm too,

@@ -12,17 +12,18 @@
 - `cargo fmt` — format Rust sources with project defaults.
 - `cargo check` — type-check backend without producing binaries.
 - `cargo run` — start the backend (reads `.env.local`, listens on `127.0.0.1:8080`).
-- `cd web && npm install` — install SPA dependencies once per setup.
-- `cd web && npm run dev -- --host 127.0.0.1 --port 60080` — run the front-end dev server with proxy to the backend.
-- `cd web && npm run build` — produce production assets for `web/dist`.
-- `cd web && npm run test` — execute front-end unit tests (Vitest).
+- `bun install` — install repo-level tooling for hooks and docs checks.
+- `cd web && bun install` — install SPA dependencies once per setup.
+- `cd web && bun run dev -- --host 127.0.0.1 --port 60080` — run the front-end dev server with proxy to the backend.
+- `cd web && bun run build` — produce production assets for `web/dist`.
+- `cd web && bun run test` — execute front-end unit tests (Vitest).
 
 ## Development Runtime (Background, Non-blocking)
 
 Use non-blocking runtime management for long-lived services, but do not require any specific process manager.
 
 - Backend start: `cargo run` (default `127.0.0.1:8080`)
-- Frontend start: `cd web && npm install && npm run dev -- --host 127.0.0.1 --port 60080`
+- Frontend start: `cd web && bun install && bun run dev -- --host 127.0.0.1 --port 60080`
 - Readiness checks:
   - Backend: `curl -sS -m 1 http://127.0.0.1:8080/health | grep -q ok`
   - Frontend: `curl -sS -m 1 http://127.0.0.1:60080/ >/dev/null`
@@ -40,7 +41,7 @@ Use non-blocking runtime management for long-lived services, but do not require 
 
 - Backend tests should target polling, persistence, and aggregation (use `#[tokio::test]` + in-memory SQLite). Place files beside implementation or under `tests/` as integration suites.
 - Front-end testing uses Vitest + React Testing Library. Name files `ComponentName.test.tsx` and cover hooks (`useXyz.test.ts`).
-- Run relevant suites (`cargo test`, `npm run test`) before opening a PR; aim to cover new branches and SSE flows with mocks.
+- Run relevant suites (`cargo test`, `cd web && bun run test`) before opening a PR; aim to cover new branches and SSE flows with mocks.
 
 ## Commit & Pull Request Guidelines
 
