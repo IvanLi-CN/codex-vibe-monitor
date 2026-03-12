@@ -657,6 +657,59 @@ describe('useInvocationRecords', () => {
     expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1)
   })
 
+  it('clears a preserved summary when refreshing the list succeeds but the new summary fails', async () => {
+    vi.useFakeTimers()
+
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      if (query.snapshotId === undefined) {
+        return createListResponse({
+          snapshotId: 84,
+          total: 1,
+          records: [
+            {
+              id: 84,
+              invokeId: 'invoke-refresh',
+              occurredAt: '2026-03-10T02:00:00Z',
+              createdAt: '2026-03-10T02:00:00Z',
+              model: 'baseline-refreshed',
+              status: 'success',
+            },
+          ],
+        })
+      }
+
+      return createListResponse({ snapshotId: 42 })
+    })
+    apiMocks.fetchInvocationRecordsSummary
+      .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }))
+      .mockRejectedValueOnce(new Error('summary failed'))
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(createNewCountResponse({ snapshotId: 84, newRecordsCount: 9 }))
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('summary-snapshot')).toBe('42')
+    expect(text('new-count')).toBe('0')
+
+    click('refresh-applied')
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('84')
+    expect(text('model')).toBe('baseline-refreshed')
+    expect(text('summary-snapshot')).toBe('0')
+    expect(text('new-count')).toBe('0')
+    expect(text('summary-error')).toContain('summary failed')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
+    })
+    await flushAsync()
+
+    expect(apiMocks.fetchInvocationRecordsNewCount).not.toHaveBeenCalled()
+    expect(text('summary-snapshot')).toBe('0')
+    expect(text('new-count')).toBe('0')
+  })
+
   it('keeps the previous page size when a page-size request fails before search', async () => {
     apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
       if (query.model === 'next-model') {
