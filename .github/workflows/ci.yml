@@ -82,55 +82,28 @@ jobs:
       - name: Bun-first guard
         run: bun run check:bun-first
 
-      - name: Prepare trusted quality-gates baseline
-        run: |
-          trusted_dir="$RUNNER_TEMP/quality-gates-trusted"
-          mkdir -p "$trusted_dir"
-
-          verify_trusted_asset() {
-            local path="$1"
-            local expected_sha="$2"
-            local actual_sha
-            actual_sha="$(sha256sum "$path" | awk '{print $1}')"
-            if [ "$actual_sha" != "$expected_sha" ]; then
-              echo "trusted quality-gates asset drifted: $path" >&2
-              echo "expected=$expected_sha actual=$actual_sha" >&2
-              exit 1
-            fi
-            cp "$path" "$trusted_dir/$(basename "$path")"
-          }
-
-          verify_trusted_asset .github/scripts/metadata_gate.py 0ddf7bef5b9dd4420eb2d0b297ea7a15efec59232f8d696f5d7323a2cb9b5337
-          verify_trusted_asset .github/scripts/check_live_quality_gates.py 039b0cbebd0914b35f0eaf14f9c681cbbc87a5e72a1f00496ae95d5d1b44401f
-          verify_trusted_asset .github/scripts/check_quality_gates_contract.py 68b9f45aa6d0ec9060c3d5934e6184bf6a6fbe03647f751d41c64d8d2e8932f0
-          verify_trusted_asset .github/quality-gates.json 44e72ad2a7ed6dbb468e32d9c7f1dfa3b3a23546925e9c74466cd1f97c3a6ec3
-
-          {
-            echo "QUALITY_GATES_TRUSTED_DIR=$trusted_dir"
-          } >> "$GITHUB_ENV"
-
-      - name: Check trusted quality-gates scripts
+      - name: Check quality-gates scripts
         run: |
           python3 -m py_compile \
-            "$QUALITY_GATES_TRUSTED_DIR/metadata_gate.py" \
-            "$QUALITY_GATES_TRUSTED_DIR/check_live_quality_gates.py" \
-            "$QUALITY_GATES_TRUSTED_DIR/check_quality_gates_contract.py"
+            .github/scripts/metadata_gate.py \
+            .github/scripts/check_live_quality_gates.py \
+            .github/scripts/check_quality_gates_contract.py
 
-      - name: Trusted quality-gates contract check
+      - name: Quality-gates contract check
         run: |
-          python3 "$QUALITY_GATES_TRUSTED_DIR/check_quality_gates_contract.py" \
+          python3 .github/scripts/check_quality_gates_contract.py \
             --repo-root "$PWD" \
-            --declaration "$QUALITY_GATES_TRUSTED_DIR/quality-gates.json" \
-            --metadata-script "$QUALITY_GATES_TRUSTED_DIR/metadata_gate.py"
+            --declaration .github/quality-gates.json \
+            --metadata-script .github/scripts/metadata_gate.py
 
-      - name: Trusted quality-gates live rules check
+      - name: Quality-gates live rules check
         env:
           QUALITY_GATES_LIVE_RULES_MODE: require
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 "$QUALITY_GATES_TRUSTED_DIR/check_live_quality_gates.py" \
+          python3 .github/scripts/check_live_quality_gates.py \
             --repo "${{ github.repository }}" \
-            --declaration "$QUALITY_GATES_TRUSTED_DIR/quality-gates.json"
+            --declaration .github/quality-gates.json
 
       - name: Quality gates self-tests
         run: |
