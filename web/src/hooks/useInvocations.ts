@@ -24,9 +24,21 @@ function recordsChanged(next: ApiInvocation[], current: ApiInvocation[]) {
   )
 }
 
+function matchesFailedStatus(record: ApiInvocation) {
+  const failureClass = record.failureClass?.trim().toLowerCase()
+  if (failureClass && failureClass !== 'none') return true
+
+  const normalizedStatus = record.status?.trim().toLowerCase() ?? ''
+  if (normalizedStatus === 'failed') return true
+  if (normalizedStatus === 'http_429' || normalizedStatus.startsWith('http_4') || normalizedStatus.startsWith('http_5')) return true
+
+  return Boolean(record.errorMessage?.trim())
+}
+
 function matchesFilters(record: ApiInvocation, filters?: InvocationFilters) {
   if (!filters) return true
   if (filters.model && record.model !== filters.model) return false
+  if (filters.status === 'failed') return matchesFailedStatus(record)
   if (filters.status && record.status !== filters.status) return false
   return true
 }

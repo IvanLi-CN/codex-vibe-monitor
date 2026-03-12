@@ -34,6 +34,16 @@ pub(crate) struct StatsDeltaRecord {
     pub(crate) total_cost: f64,
 }
 
+#[derive(Debug, FromRow)]
+pub(crate) struct InvocationRollupRecord {
+    pub(crate) stats_date: String,
+    pub(crate) total_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+}
+
 #[derive(Default)]
 pub(crate) struct BucketAggregate {
     pub(crate) total_count: i64,
@@ -493,6 +503,41 @@ pub(crate) async fn query_invocation_rollup_totals(
     Ok(StatsTotals::from(row))
 }
 
+pub(crate) async fn query_invocation_rollup_daily_range(
+    pool: &Pool<Sqlite>,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<InvocationRollupRecord>> {
+    let mut query = QueryBuilder::new(
+        r#"
+        SELECT
+            stats_date,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost
+        FROM invocation_rollup_daily
+        WHERE stats_date >=
+        "#,
+    );
+    query.push_bind(start_date.to_string());
+    query
+        .push(" AND stats_date <= ")
+        .push_bind(end_date.to_string());
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY stats_date ASC");
+
+    query
+        .build_query_as::<InvocationRollupRecord>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn query_crs_totals(
     pool: &Pool<Sqlite>,
     relay: Option<&CrsStatsConfig>,
@@ -637,12 +682,27 @@ pub(crate) struct CrsTotals {
 }
 
 #[derive(Debug)]
-pub(crate) struct ApiError(pub(crate) anyhow::Error);
+pub(crate) enum ApiError {
+    BadRequest(anyhow::Error),
+    Internal(anyhow::Error),
+}
+
+impl ApiError {
+    pub(crate) fn bad_request<E>(err: E) -> Self
+    where
+        E: Into<anyhow::Error>,
+    {
+        Self::BadRequest(err.into())
+    }
+}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = StatusCode::INTERNAL_SERVER_ERROR;
-        let message = format!("{}", self.0);
+        let (status, err) = match self {
+            ApiError::BadRequest(err) => (StatusCode::BAD_REQUEST, err),
+            ApiError::Internal(err) => (StatusCode::INTERNAL_SERVER_ERROR, err),
+        };
+        let message = format!("{err}");
         (status, message).into_response()
     }
 }
@@ -652,7 +712,7 @@ where
     E: Into<anyhow::Error>,
 {
     fn from(err: E) -> Self {
-        Self(err.into())
+        Self::Internal(err.into())
     }
 }
 

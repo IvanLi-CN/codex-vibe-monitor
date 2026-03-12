@@ -3,12 +3,12 @@ pre-commit:
   commands:
     check-web:
       glob: "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
-      run: cd web && npm run lint -- --max-warnings=0
+      run: cd web && bun run lint -- --max-warnings=0
     typecheck-web:
-      run: cd web && npx tsc -b
+      run: cd web && bun tsc -b
     format-markdown:
       files: git diff --cached --name-only --diff-filter=ACMR -- '*.md'
-      run: npx dprint fmt {files}
+      run: bun dprint fmt {files}
       stage_fixed: true
     fmt:
       glob: "*.{rs}"
@@ -21,4 +21,4 @@ pre-commit:
 commit-msg:
   commands:
     commitlint:
-      run: npx commitlint --edit {1}
+      run: bun commitlint --edit {1}

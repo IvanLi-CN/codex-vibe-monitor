@@ -111,7 +111,6 @@ const STARTUP_BACKFILL_TASK_INVOCATION_SERVICE_TIER: &str = "invocation_service_
 const STARTUP_BACKFILL_TASK_REASONING_EFFORT: &str = "proxy_reasoning_effort_v1";
 const STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION: &str = "failure_classification_v1";
 const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
-const DEFAULT_PROXY_RAW_RETENTION_DAYS: u64 = 7;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
 const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
 const ENV_DATABASE_PATH: &str = "DATABASE_PATH";
@@ -1964,7 +1963,7 @@ struct DryRunBatchCount {
     row_count: i64,
 }
 
-const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, raw_expires_at, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
+const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
 const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
 const STATS_SOURCE_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, source, period, stats_date, model, requests, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, all_tokens, cost_input, cost_output, cost_cache_write, cost_cache_read, cost_total, raw_response, captured_at, captured_at_epoch, created_at";
@@ -2000,7 +1999,6 @@ CREATE TABLE IF NOT EXISTS archive_db.codex_invocations (
     response_raw_size INTEGER,
     response_raw_truncated INTEGER NOT NULL DEFAULT 0,
     response_raw_truncated_reason TEXT,
-    raw_expires_at TEXT,
     detail_level TEXT NOT NULL DEFAULT 'full',
     detail_pruned_at TEXT,
     detail_prune_reason TEXT,
@@ -2374,7 +2372,7 @@ async fn prune_old_invocation_details(
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             let mut query = QueryBuilder::<Sqlite>::new(
-                "UPDATE codex_invocations SET payload = NULL, raw_response = '', request_raw_path = NULL, request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, raw_expires_at = NULL, detail_level = ",
+                "UPDATE codex_invocations SET payload = NULL, raw_response = '', request_raw_path = NULL, request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
             );
             query
                 .push_bind(DETAIL_LEVEL_STRUCTURED_ONLY)
@@ -3348,6 +3346,15 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
         )
         .route("/api/settings/pricing", put(put_pricing_settings))
         .route("/api/invocations", get(list_invocations))
+        .route("/api/invocations/summary", get(fetch_invocation_summary))
+        .route(
+            "/api/invocations/suggestions",
+            get(fetch_invocation_suggestions),
+        )
+        .route(
+            "/api/invocations/new-count",
+            get(fetch_invocation_new_records_count),
+        )
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
         .route(
@@ -3916,10 +3923,10 @@ async fn persist_crs_stats(
     Ok(if has_delta { Some(delta) } else { None })
 }
 
-async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
-    sqlx::query(
+fn codex_invocations_create_sql(table_name: &str) -> String {
+    format!(
         r#"
-        CREATE TABLE IF NOT EXISTS codex_invocations (
+        CREATE TABLE IF NOT EXISTS {table_name} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             invoke_id TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
@@ -3948,7 +3955,6 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             response_raw_size INTEGER,
             response_raw_truncated INTEGER NOT NULL DEFAULT 0,
             response_raw_truncated_reason TEXT,
-            raw_expires_at TEXT,
             detail_level TEXT NOT NULL DEFAULT 'full',
             detail_pruned_at TEXT,
             detail_prune_reason TEXT,
@@ -3964,18 +3970,92 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             UNIQUE(invoke_id, occurred_at)
         )
         "#,
+        table_name = table_name,
     )
-    .execute(pool)
-    .await
-    .context("failed to ensure codex_invocations table existence")?;
+}
 
-    let existing: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
+async fn load_sqlite_table_columns(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+) -> Result<HashSet<String>> {
+    let pragma = format!("PRAGMA table_info('{table_name}')");
+    let columns = sqlx::query(&pragma)
         .fetch_all(pool)
         .await
-        .context("failed to inspect codex_invocations schema")?
+        .with_context(|| format!("failed to inspect {table_name} schema"))?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+    Ok(columns)
+}
+
+async fn migrate_codex_invocations_drop_raw_expires_at(
+    pool: &Pool<Sqlite>,
+    existing: &HashSet<String>,
+) -> Result<()> {
+    const TEMP_TABLE: &str = "codex_invocations_drop_raw_expires_at_new";
+
+    let mut tx = pool.begin().await?;
+    let drop_temp_sql = format!("DROP TABLE IF EXISTS {TEMP_TABLE}");
+    sqlx::query(&drop_temp_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to clear stale codex_invocations migration temp table")?;
+    let create_temp_sql = codex_invocations_create_sql(TEMP_TABLE);
+    sqlx::query(&create_temp_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to create codex_invocations migration temp table")?;
+
+    let temp_pragma_sql = format!("PRAGMA table_info('{TEMP_TABLE}')");
+    let new_columns: Vec<String> = sqlx::query(&temp_pragma_sql)
+        .fetch_all(tx.as_mut())
+        .await
+        .context("failed to inspect codex_invocations migration temp schema")?
         .into_iter()
         .filter_map(|row| row.try_get::<String, _>("name").ok())
         .collect();
+    let copy_columns: Vec<String> = new_columns
+        .into_iter()
+        .filter(|column| existing.contains(column))
+        .collect();
+    if copy_columns.is_empty() {
+        bail!("codex_invocations migration found no shared columns to copy");
+    }
+
+    let copy_columns_csv = copy_columns.join(", ");
+    let copy_sql = format!(
+        "INSERT INTO {TEMP_TABLE} ({copy_columns_csv}) SELECT {copy_columns_csv} FROM codex_invocations"
+    );
+    sqlx::query(&copy_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to copy codex_invocations rows into migration temp table")?;
+    sqlx::query("DROP TABLE codex_invocations")
+        .execute(tx.as_mut())
+        .await
+        .context("failed to drop legacy codex_invocations table during migration")?;
+    let rename_sql = format!("ALTER TABLE {TEMP_TABLE} RENAME TO codex_invocations");
+    sqlx::query(&rename_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to swap migrated codex_invocations table into place")?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let create_sql = codex_invocations_create_sql("codex_invocations");
+    sqlx::query(&create_sql)
+        .execute(pool)
+        .await
+        .context("failed to ensure codex_invocations table existence")?;
+
+    let mut existing = load_sqlite_table_columns(pool, "codex_invocations").await?;
+    if existing.contains("raw_expires_at") {
+        migrate_codex_invocations_drop_raw_expires_at(pool, &existing).await?;
+        existing = load_sqlite_table_columns(pool, "codex_invocations").await?;
+    }
 
     for (column, ty) in [
         ("source", "TEXT NOT NULL DEFAULT 'xy'"),
@@ -4002,7 +4082,6 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("response_raw_size", "INTEGER"),
         ("response_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
         ("response_raw_truncated_reason", "TEXT"),
-        ("raw_expires_at", "TEXT"),
         ("detail_level", "TEXT NOT NULL DEFAULT 'full'"),
         ("detail_pruned_at", "TEXT"),
         ("detail_prune_reason", "TEXT"),
@@ -4078,6 +4157,150 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_model_occurred_at
+        ON codex_invocations (model, occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_model_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_failure_kind_occurred_at
+        ON codex_invocations (failure_kind, occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_failure_kind_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_endpoint_occurred_at
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.endpoint') AS TEXT)) END),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_endpoint_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_requester_ip_occurred_at
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.requesterIp') AS TEXT)) END),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_requester_ip_occurred_at")?;
+
+    // The records analytics page compares trimmed lowercase text for exact-match filters.
+    // Mirror those expressions in dedicated indexes so high-volume searches avoid full index scans.
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_model_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(model, '')))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_model_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_failure_kind_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END,
+                failure_kind
+            ), '')))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_failure_kind_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_endpoint_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.endpoint') AS TEXT) END,
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_endpoint_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_requester_ip_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END,
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_requester_ip_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END,
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_proxy_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                COALESCE(
+                    NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), ''),
+                    CASE WHEN TRIM(source) != 'proxy' THEN TRIM(source) END
+                ),
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_proxy_filter_occurred_at")?;
 
     sqlx::query(
         r#"
@@ -6047,7 +6270,6 @@ async fn proxy_openai_v1_capture_target(
         "proxy-{proxy_request_id}-{}",
         occurred_at_utc.timestamp_millis()
     );
-    let raw_expires_at = compute_raw_expires_at(occurred_at_utc, state.config.proxy_raw_retention);
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let requester_ip = extract_requester_ip(&headers, peer_ip);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
@@ -6124,7 +6346,6 @@ async fn proxy_openai_v1_capture_target(
                 raw_response: "{}".to_string(),
                 req_raw,
                 resp_raw: RawPayloadMeta::default(),
-                raw_expires_at,
                 timings: StageTimings {
                     t_total_ms: 0.0,
                     t_req_read_ms,
@@ -6238,7 +6459,6 @@ async fn proxy_openai_v1_capture_target(
                 raw_response: "{}".to_string(),
                 req_raw,
                 resp_raw: RawPayloadMeta::default(),
-                raw_expires_at,
                 timings: StageTimings {
                     t_total_ms: 0.0,
                     t_req_read_ms,
@@ -6324,7 +6544,6 @@ async fn proxy_openai_v1_capture_target(
                 raw_response: "{}".to_string(),
                 req_raw,
                 resp_raw: RawPayloadMeta::default(),
-                raw_expires_at,
                 timings: StageTimings {
                     t_total_ms: 0.0,
                     t_req_read_ms,
@@ -6369,7 +6588,6 @@ async fn proxy_openai_v1_capture_target(
     let req_raw_for_task = req_raw.clone();
     let invoke_id_for_task = invoke_id.clone();
     let occurred_at_for_task = occurred_at.clone();
-    let raw_expires_at_for_task = raw_expires_at.clone();
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let requester_ip_for_task = requester_ip.clone();
     let prompt_cache_key_for_task = prompt_cache_key.clone();
@@ -6568,7 +6786,6 @@ async fn proxy_openai_v1_capture_target(
             raw_response: build_raw_response_preview(&response_bytes),
             req_raw: req_raw_for_task,
             resp_raw,
-            raw_expires_at: raw_expires_at_for_task,
             timings: StageTimings {
                 t_total_ms: 0.0,
                 t_req_read_ms,
@@ -7563,12 +7780,6 @@ fn store_raw_payload_file(
     meta
 }
 
-fn compute_raw_expires_at(now_utc: DateTime<Utc>, retention: Duration) -> Option<String> {
-    ChronoDuration::from_std(retention)
-        .ok()
-        .map(|d| format_naive((now_utc + d).naive_utc()))
-}
-
 async fn broadcast_proxy_capture_follow_up(
     pool: &Pool<Sqlite>,
     broadcaster: &broadcast::Sender<BroadcastPayload>,
@@ -7979,7 +8190,6 @@ async fn persist_proxy_capture_record(
             response_raw_size,
             response_raw_truncated,
             response_raw_truncated_reason,
-            raw_expires_at,
             t_total_ms,
             t_req_read_ms,
             t_req_parse_ms,
@@ -7991,7 +8201,7 @@ async fn persist_proxy_capture_record(
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
+            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35
         )
         "#,
     )
@@ -8022,7 +8232,6 @@ async fn persist_proxy_capture_record(
     .bind(record.resp_raw.size_bytes)
     .bind(record.resp_raw.truncated as i64)
     .bind(record.resp_raw.truncated_reason.as_deref())
-    .bind(record.raw_expires_at.as_deref())
     .bind(record.timings.t_total_ms)
     .bind(record.timings.t_req_read_ms)
     .bind(record.timings.t_req_parse_ms)
@@ -8109,7 +8318,6 @@ async fn persist_proxy_capture_record(
             response_raw_size,
             response_raw_truncated,
             response_raw_truncated_reason,
-            raw_expires_at,
             detail_level,
             detail_pruned_at,
             detail_prune_reason,
@@ -11324,7 +11532,6 @@ struct AppConfig {
     proxy_enforce_stream_include_usage: bool,
     proxy_usage_backfill_on_startup: bool,
     proxy_raw_max_bytes: Option<usize>,
-    proxy_raw_retention: Duration,
     proxy_raw_dir: PathBuf,
     xray_binary: String,
     xray_runtime_dir: PathBuf,
@@ -11446,18 +11653,6 @@ impl AppConfig {
                 return Err(anyhow!("failed to read PROXY_RAW_MAX_BYTES: {err}"));
             }
         };
-        let proxy_raw_retention_days = env::var("PROXY_RAW_RETENTION_DAYS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .or_else(|| {
-                env::var("PROXY_RAW_RETENTION_SECS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .map(|secs| secs / 86_400)
-            })
-            .unwrap_or(DEFAULT_PROXY_RAW_RETENTION_DAYS);
-        let proxy_raw_retention =
-            Duration::from_secs(proxy_raw_retention_days.saturating_mul(86_400));
         let proxy_raw_dir = env::var("PROXY_RAW_DIR")
             .ok()
             .map(PathBuf::from)
@@ -11638,7 +11833,6 @@ impl AppConfig {
             proxy_enforce_stream_include_usage,
             proxy_usage_backfill_on_startup,
             proxy_raw_max_bytes,
-            proxy_raw_retention,
             proxy_raw_dir,
             xray_binary,
             xray_runtime_dir,

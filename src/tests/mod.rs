@@ -1385,6 +1385,16 @@ fn classify_invocation_failure_marks_upstream_errors_as_service_failure() {
 }
 
 #[test]
+fn classify_invocation_failure_treats_running_and_pending_as_none() {
+    for status in ["running", "pending"] {
+        let result = classify_invocation_failure(Some(status), None);
+        assert_eq!(result.failure_class, FailureClass::None);
+        assert!(!result.is_actionable);
+        assert_eq!(result.failure_kind, None);
+    }
+}
+
+#[test]
 fn classify_invocation_failure_marks_upstream_response_failed_as_service_failure() {
     let result = classify_invocation_failure(
         Some("http_200"),
@@ -1449,12 +1459,16 @@ fn failure_scope_parse_defaults_to_service() {
 #[test]
 fn failure_scope_parse_rejects_unknown_value() {
     let err = FailureScope::parse(Some("unexpected")).expect_err("invalid scope should fail");
-    assert!(
-        err.0
-            .to_string()
-            .contains("unsupported failure scope: unexpected"),
-        "error should mention rejected scope"
-    );
+    match err {
+        ApiError::BadRequest(err) => {
+            assert!(
+                err.to_string()
+                    .contains("unsupported failure scope: unexpected"),
+                "error should mention rejected scope"
+            );
+        }
+        other => panic!("expected BadRequest, got: {other:?}"),
+    }
 }
 
 #[test]
@@ -1746,7 +1760,6 @@ fn test_config() -> AppConfig {
         proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
         proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
         proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
-        proxy_raw_retention: Duration::from_secs(DEFAULT_PROXY_RAW_RETENTION_DAYS * 86_400),
         proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
         xray_binary: DEFAULT_XRAY_BINARY.to_string(),
         xray_runtime_dir: PathBuf::from("target/xray-forward-tests"),
@@ -1972,10 +1985,9 @@ async fn insert_retention_invocation(
             request_raw_path,
             request_raw_size,
             response_raw_path,
-            response_raw_size,
-            raw_expires_at
+            response_raw_size
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
         "#,
     )
     .bind(invoke_id)
@@ -2001,7 +2013,6 @@ async fn insert_retention_invocation(
             .and_then(|path| fs::metadata(path).ok())
             .map(|meta| meta.len() as i64),
     )
-    .bind(Some("2099-01-01 00:00:00"))
     .execute(pool)
     .await
     .expect("insert retention invocation");
@@ -2434,7 +2445,6 @@ fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCapture
         raw_response: "{}".to_string(),
         req_raw: RawPayloadMeta::default(),
         resp_raw: RawPayloadMeta::default(),
-        raw_expires_at: None,
         timings: test_stage_timings(),
     }
 }
@@ -9191,6 +9201,7 @@ async fn list_invocations_projects_payload_context_fields() {
             limit: Some(10),
             model: None,
             status: None,
+            ..Default::default()
         }),
     )
     .await
@@ -9213,6 +9224,58 @@ async fn list_invocations_projects_payload_context_fields() {
     assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
     assert_eq!(record.proxy_weight_delta, Some(-0.68));
     assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[tokio::test]
+async fn list_invocations_response_omits_raw_expires_at_field() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("proxy-no-raw-expires")
+    .bind("2026-02-25 10:02:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert proxy invocation");
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            limit: Some(10),
+            model: None,
+            status: None,
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list invocations should succeed");
+
+    let record = response
+        .records
+        .into_iter()
+        .find(|item| item.invoke_id == "proxy-no-raw-expires")
+        .expect("inserted invocation should be present");
+    let json = serde_json::to_value(&record).expect("serialize invocation record");
+    assert!(
+        json.get("rawExpiresAt").is_none(),
+        "rawExpiresAt should not be exposed by the API anymore"
+    );
 }
 
 #[tokio::test]
@@ -9251,6 +9314,7 @@ async fn list_invocations_tolerates_malformed_payload_json() {
             limit: Some(10),
             model: None,
             status: None,
+            ..Default::default()
         }),
     )
     .await
@@ -9309,6 +9373,7 @@ async fn list_invocations_ignores_non_numeric_proxy_weight_delta() {
             limit: Some(10),
             model: None,
             status: None,
+            ..Default::default()
         }),
     )
     .await
@@ -9365,6 +9430,7 @@ async fn list_invocations_preserves_historical_xy_records() {
             limit: Some(10),
             model: None,
             status: None,
+            ..Default::default()
         }),
     )
     .await
@@ -9378,6 +9444,1472 @@ async fn list_invocations_preserves_historical_xy_records() {
     assert_eq!(record.source, SOURCE_XY);
     assert_eq!(record.service_tier.as_deref(), Some("priority"));
     assert_eq!(record.requested_service_tier, None);
+}
+
+#[tokio::test]
+async fn list_invocations_legacy_limit_query_skips_snapshot_shape() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at) in [
+        ("legacy-stream-1", "2026-03-10 07:00:00"),
+        ("legacy-stream-2", "2026-03-10 07:01:00"),
+        ("legacy-stream-3", "2026-03-10 07:02:00"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert legacy stream row");
+    }
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            limit: Some(2),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("legacy list query should succeed");
+
+    assert_eq!(response.snapshot_id, 0);
+    assert_eq!(response.total, 2);
+    assert_eq!(response.page, 1);
+    assert_eq!(response.page_size, 2);
+    assert_eq!(response.records.len(), 2);
+    assert_eq!(response.records[0].invoke_id, "legacy-stream-3");
+    assert_eq!(response.records[1].invoke_id, "legacy-stream-2");
+}
+
+#[tokio::test]
+async fn list_invocations_keeps_snapshot_stable_across_pagination_and_sorting() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at, total_tokens) in [
+        ("snapshot-1", "2026-03-10 08:00:00", 100_i64),
+        ("snapshot-2", "2026-03-10 08:01:00", 200_i64),
+        ("snapshot-3", "2026-03-10 08:02:00", 300_i64),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                total_tokens,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(total_tokens)
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert snapshot seed row");
+    }
+
+    let Json(first_page) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            page: Some(1),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("initial snapshot query should succeed");
+
+    assert_eq!(first_page.snapshot_id, 3);
+    assert_eq!(first_page.total, 3);
+    assert_eq!(first_page.records.len(), 1);
+    assert_eq!(first_page.records[0].invoke_id, "snapshot-3");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("snapshot-4")
+    .bind("2026-03-10 08:03:00")
+    .bind(SOURCE_PROXY)
+    .bind(50_i64)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert newer row after snapshot");
+
+    let Json(second_page) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            page: Some(2),
+            page_size: Some(1),
+            snapshot_id: Some(first_page.snapshot_id),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("second page should honor snapshot");
+    assert_eq!(second_page.snapshot_id, first_page.snapshot_id);
+    assert_eq!(second_page.total, 3);
+    assert_eq!(second_page.records[0].invoke_id, "snapshot-2");
+
+    let Json(sorted_page) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            page: Some(1),
+            page_size: Some(1),
+            snapshot_id: Some(first_page.snapshot_id),
+            sort_by: Some("totalTokens".to_string()),
+            sort_order: Some("asc".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("sorting within snapshot should succeed");
+    assert_eq!(sorted_page.total, 3);
+    assert_eq!(sorted_page.records[0].invoke_id, "snapshot-1");
+}
+
+#[tokio::test]
+async fn list_invocations_failure_class_filter_matches_resolved_classification() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, status, error_message) in [
+        ("filter-client", "http_401", None),
+        (
+            "filter-abort",
+            "failed",
+            Some("[downstream_closed] user cancelled"),
+        ),
+        ("filter-running", "running", None),
+        ("filter-service", "failed", None),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 08:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(error_message)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert failure row");
+    }
+
+    let Json(client_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            failure_class: Some("client_failure".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("client failure class filter should succeed");
+
+    assert_eq!(client_filtered.total, 1);
+    assert_eq!(client_filtered.records[0].invoke_id, "filter-client");
+    assert_eq!(
+        client_filtered.records[0].failure_class.as_deref(),
+        Some("client_failure")
+    );
+
+    let Json(abort_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            failure_class: Some("client_abort".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("client abort failure class filter should succeed");
+
+    assert_eq!(abort_filtered.total, 1);
+    assert_eq!(abort_filtered.records[0].invoke_id, "filter-abort");
+    assert_eq!(
+        abort_filtered.records[0].failure_class.as_deref(),
+        Some("client_abort")
+    );
+
+    let Json(service_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            failure_class: Some("service_failure".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("service failure class filter should succeed");
+
+    assert_eq!(service_filtered.total, 1);
+    assert_eq!(service_filtered.records[0].invoke_id, "filter-service");
+    assert_eq!(
+        service_filtered.records[0].failure_class.as_deref(),
+        Some("service_failure")
+    );
+}
+
+#[tokio::test]
+async fn list_invocations_status_failed_matches_http_failure_statuses() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, status) in [
+        ("status-success", "success"),
+        ("status-running", "running"),
+        ("status-pending", "pending"),
+        ("status-failed", "failed"),
+        ("status-http401", "http_401"),
+        ("status-http502", "http_502"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 08:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert status row");
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            error_message,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("status-legacy-null")
+    .bind("2026-03-10 08:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("upstream exploded")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy null-status failure row");
+
+    let Json(failed_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            status: Some("failed".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("failed status filter should succeed");
+
+    assert_eq!(failed_filtered.total, 4);
+    let actual = failed_filtered
+        .records
+        .into_iter()
+        .map(|record| record.invoke_id)
+        .collect::<HashSet<_>>();
+    let expected = [
+        "status-failed",
+        "status-http401",
+        "status-http502",
+        "status-legacy-null",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<HashSet<_>>();
+    assert_eq!(actual, expected);
+
+    let Json(running_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            status: Some("running".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("running status filter should still use exact match");
+
+    assert_eq!(running_filtered.total, 1);
+    assert_eq!(running_filtered.records[0].invoke_id, "status-running");
+}
+
+#[tokio::test]
+async fn list_invocations_status_success_excludes_resolved_failures() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, status, error_message, failure_kind, failure_class) in [
+        ("status-success-clean", Some("success"), None, None, None),
+        (
+            "status-success-trimmed",
+            Some(" SUCCESS "),
+            None,
+            None,
+            None,
+        ),
+        (
+            "status-success-explicit-failure-class",
+            Some("success"),
+            Some("upstream exploded"),
+            None,
+            Some("service_failure"),
+        ),
+        (
+            "status-success-legacy-failure-kind",
+            Some("success"),
+            Some("[upstream_response_failed] server_error"),
+            Some("upstream_response_failed"),
+            None,
+        ),
+        ("status-success-failed", Some("failed"), None, None, None),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                failure_kind,
+                failure_class,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 08:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(failure_class)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert success status row");
+    }
+
+    let Json(success_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            status: Some("success".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("success status filter should succeed");
+
+    let actual = success_filtered
+        .records
+        .into_iter()
+        .map(|record| record.invoke_id)
+        .collect::<HashSet<_>>();
+    let expected = ["status-success-clean", "status-success-trimmed"]
+        .into_iter()
+        .map(String::from)
+        .collect::<HashSet<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[tokio::test]
+async fn list_invocations_status_sort_uses_normalized_status_values() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at, status, error_message, failure_kind) in [
+        (
+            "status-sort-trimmed-success",
+            "2026-03-10 08:02:00",
+            Some(" SUCCESS "),
+            None,
+            None,
+        ),
+        (
+            "status-sort-success",
+            "2026-03-10 08:01:00",
+            Some("success"),
+            None,
+            None,
+        ),
+        (
+            "status-sort-failed",
+            "2026-03-10 08:03:00",
+            Some("failed"),
+            None,
+            None,
+        ),
+        (
+            "status-sort-legacy-success-failure",
+            "2026-03-10 08:04:00",
+            Some("success"),
+            Some("[upstream_response_failed] server_error"),
+            Some("upstream_response_failed"),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                failure_kind,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert status sort row");
+    }
+
+    let Json(sorted) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            page: Some(1),
+            page_size: Some(20),
+            sort_by: Some("status".to_string()),
+            sort_order: Some("asc".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("status sort should succeed");
+
+    let actual = sorted
+        .records
+        .into_iter()
+        .map(|record| record.invoke_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        vec![
+            "status-sort-legacy-success-failure".to_string(),
+            "status-sort-failed".to_string(),
+            "status-sort-trimmed-success".to_string(),
+            "status-sort-success".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn fetch_invocation_summary_reports_new_records_count_for_applied_filters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            total_tokens,
+            cache_input_tokens,
+            cost,
+            status,
+            t_upstream_ttfb_ms,
+            t_total_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind("summary-base")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("gpt-5.4")
+    .bind(120_i64)
+    .bind(20_i64)
+    .bind(0.012_f64)
+    .bind("success")
+    .bind(100.0_f64)
+    .bind(250.0_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert base summary row");
+
+    let Json(initial_list) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            model: Some("gpt-5.4".to_string()),
+            page: Some(1),
+            page_size: Some(20),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("seed list query should succeed");
+
+    for (invoke_id, model) in [
+        ("summary-new-match", "gpt-5.4"),
+        ("summary-new-other", "gpt-5.3-codex"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                total_tokens,
+                cache_input_tokens,
+                cost,
+                status,
+                t_upstream_ttfb_ms,
+                t_total_ms,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 09:05:00")
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind(240_i64)
+        .bind(40_i64)
+        .bind(0.024_f64)
+        .bind("failed")
+        .bind(180.0_f64)
+        .bind(500.0_f64)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert post-snapshot row");
+    }
+
+    let Json(summary) = fetch_invocation_summary(
+        State(state),
+        Query(ListQuery {
+            model: Some("gpt-5.4".to_string()),
+            snapshot_id: Some(initial_list.snapshot_id),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("summary query should succeed");
+
+    assert_eq!(summary.snapshot_id, initial_list.snapshot_id);
+    assert_eq!(summary.new_records_count, 1);
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.token.request_count, 1);
+    assert_eq!(summary.token.total_tokens, 120);
+    assert_eq!(summary.token.cache_input_tokens, 20);
+    assert_f64_close(summary.token.avg_tokens_per_request, 120.0);
+    assert_f64_close(summary.network.avg_ttfb_ms.unwrap_or_default(), 100.0);
+    assert_f64_close(summary.network.p95_total_ms.unwrap_or_default(), 250.0);
+    assert_eq!(summary.exception.failure_count, 0);
+}
+
+#[tokio::test]
+async fn fetch_invocation_summary_resolves_failure_class_for_legacy_rows() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, status, error_message) in [
+        ("legacy-service", "failed", None),
+        ("legacy-client", "http_401", None),
+        (
+            "legacy-abort",
+            "failed",
+            Some("[downstream_closed] user cancelled"),
+        ),
+        ("legacy-running", "running", None),
+        ("legacy-pending", "pending", None),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-10 09:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(error_message)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert legacy failure row");
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            failure_kind,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("legacy-429")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("failed")
+    .bind("upstream_http_429")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy 429 row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            failure_kind,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("legacy-stream-success")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("[upstream_response_failed] server_error")
+    .bind("upstream_response_failed")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy stream failure row");
+
+    let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
+        .await
+        .expect("summary query should succeed");
+
+    assert_eq!(summary.total_count, 7);
+    assert_eq!(summary.failure_count, 5);
+    assert_eq!(summary.exception.failure_count, 5);
+    assert_eq!(summary.exception.service_failure_count, 3);
+    assert_eq!(summary.exception.client_failure_count, 1);
+    assert_eq!(summary.exception.client_abort_count, 1);
+    assert_eq!(summary.exception.actionable_failure_count, 3);
+}
+
+#[tokio::test]
+async fn fetch_invocation_summary_normalizes_top_level_success_and_failure_counts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("summary-success-trimmed")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind(" SUCCESS ")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert trimmed success row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            error_message,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("summary-null-status-failure")
+    .bind("2026-03-10 09:01:00")
+    .bind(SOURCE_PROXY)
+    .bind("upstream exploded")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert null-status failure row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            failure_kind,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("summary-legacy-success-failure")
+    .bind("2026-03-10 09:02:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("[upstream_response_failed] server_error")
+    .bind("upstream_response_failed")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy success failure row");
+
+    let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
+        .await
+        .expect("summary query should succeed");
+
+    assert_eq!(summary.total_count, 3);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 2);
+    assert_eq!(summary.exception.failure_count, 2);
+    assert_eq!(summary.exception.service_failure_count, 2);
+}
+
+#[tokio::test]
+async fn fetch_invocation_summary_keeps_zero_ms_network_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            t_upstream_ttfb_ms,
+            t_total_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("summary-zero-network")
+    .bind("2026-03-10 09:10:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(0.0_f64)
+    .bind(0.0_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert zero-ms summary row");
+
+    let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
+        .await
+        .expect("summary query with zero-ms samples should succeed");
+
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.network.avg_ttfb_ms, Some(0.0));
+    assert_eq!(summary.network.p95_ttfb_ms, Some(0.0));
+    assert_eq!(summary.network.avg_total_ms, Some(0.0));
+    assert_eq!(summary.network.p95_total_ms, Some(0.0));
+}
+
+#[tokio::test]
+async fn fetch_invocation_summary_returns_zero_values_for_empty_results() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(summary) = fetch_invocation_summary(
+        State(state),
+        Query(ListQuery {
+            model: Some("missing-model".to_string()),
+            snapshot_id: Some(999),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("empty summary query should succeed");
+
+    assert_eq!(summary.snapshot_id, 999);
+    assert_eq!(summary.new_records_count, 0);
+    assert_eq!(summary.total_count, 0);
+    assert_eq!(summary.success_count, 0);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 0);
+    assert_f64_close(summary.total_cost, 0.0);
+    assert_eq!(summary.token.request_count, 0);
+    assert_eq!(summary.token.total_tokens, 0);
+    assert_f64_close(summary.token.avg_tokens_per_request, 0.0);
+    assert_eq!(summary.token.cache_input_tokens, 0);
+    assert_f64_close(summary.token.total_cost, 0.0);
+    assert_eq!(summary.network.avg_ttfb_ms, None);
+    assert_eq!(summary.network.p95_ttfb_ms, None);
+    assert_eq!(summary.network.avg_total_ms, None);
+    assert_eq!(summary.network.p95_total_ms, None);
+    assert_eq!(summary.exception.failure_count, 0);
+    assert_eq!(summary.exception.service_failure_count, 0);
+    assert_eq!(summary.exception.client_failure_count, 0);
+    assert_eq!(summary.exception.client_abort_count, 0);
+    assert_eq!(summary.exception.actionable_failure_count, 0);
+}
+
+#[tokio::test]
+async fn fetch_invocation_new_records_count_requires_snapshot_id() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let error = fetch_invocation_new_records_count(State(state), Query(ListQuery::default()))
+        .await
+        .expect_err("new-count query should reject missing snapshot id");
+
+    match error {
+        ApiError::BadRequest(err) => {
+            assert_eq!(err.to_string(), "snapshotId is required");
+        }
+        other => panic!("expected BadRequest, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn fetch_invocation_new_records_count_uses_snapshot_boundary() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            total_tokens,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("new-count-base")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("gpt-5.4")
+    .bind(120_i64)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert base invocation row");
+
+    let Json(initial_list) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            model: Some("gpt-5.4".to_string()),
+            page: Some(1),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("initial list query should succeed");
+
+    for (invoke_id, occurred_at, model) in [
+        ("new-count-match", "2026-03-10 09:05:00", "gpt-5.4"),
+        ("new-count-other", "2026-03-10 09:06:00", "gpt-5.3"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                total_tokens,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind(120_i64)
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert post-snapshot invocation row");
+    }
+
+    let Json(new_count) = fetch_invocation_new_records_count(
+        State(state),
+        Query(ListQuery {
+            model: Some("gpt-5.4".to_string()),
+            snapshot_id: Some(initial_list.snapshot_id),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("new count query should succeed");
+
+    assert_eq!(new_count.snapshot_id, initial_list.snapshot_id);
+    assert_eq!(new_count.new_records_count, 1);
+}
+
+#[tokio::test]
+async fn list_invocations_total_tokens_range_filters_exclude_null_values() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("tokens-null")
+    .bind("2026-03-10 09:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert null total_tokens row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("tokens-set")
+    .bind("2026-03-10 09:01:00")
+    .bind(SOURCE_PROXY)
+    .bind(10_i64)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert total_tokens row");
+
+    let Json(max_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            max_total_tokens: Some(0),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with maxTotalTokens should succeed");
+
+    assert_eq!(max_filtered.total, 0);
+    assert!(max_filtered.records.is_empty());
+
+    let Json(min_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            min_total_tokens: Some(0),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with minTotalTokens should succeed");
+
+    assert_eq!(min_filtered.total, 1);
+    assert_eq!(min_filtered.records.len(), 1);
+    assert_eq!(min_filtered.records[0].invoke_id, "tokens-set");
+    assert_eq!(min_filtered.records[0].total_tokens, Some(10));
+}
+
+#[tokio::test]
+async fn list_invocations_total_ms_range_filters_exclude_null_values() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("ms-null")
+    .bind("2026-03-10 09:10:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert null t_total_ms row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            t_total_ms,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("ms-set")
+    .bind("2026-03-10 09:11:00")
+    .bind(SOURCE_PROXY)
+    .bind(50.0_f64)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert t_total_ms row");
+
+    let Json(max_filtered) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            max_total_ms: Some(0.0),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with maxTotalMs should succeed");
+
+    assert_eq!(max_filtered.total, 0);
+    assert!(max_filtered.records.is_empty());
+
+    let Json(min_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            min_total_ms: Some(0.0),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with minTotalMs should succeed");
+
+    assert_eq!(min_filtered.total, 1);
+    assert_eq!(min_filtered.records.len(), 1);
+    assert_eq!(min_filtered.records[0].invoke_id, "ms-set");
+    assert_f64_close(min_filtered.records[0].t_total_ms.unwrap_or_default(), 50.0);
+}
+
+#[tokio::test]
+async fn fetch_invocation_suggestions_orders_by_count_and_respects_time_bounds() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at, model) in [
+        (
+            "suggest-alpha-1",
+            "2026-03-10 09:00:00",
+            Some("model-alpha"),
+        ),
+        (
+            "suggest-alpha-2",
+            "2026-03-10 09:05:00",
+            Some("model-alpha"),
+        ),
+        ("suggest-beta-1", "2026-03-10 09:06:00", Some("model-beta")),
+        ("suggest-old-1", "2026-03-09 09:00:00", Some("model-old")),
+        ("suggest-null", "2026-03-10 09:08:00", None),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert suggestion invocation row");
+    }
+
+    let Json(suggestions) = fetch_invocation_suggestions(
+        State(state),
+        Query(ListQuery {
+            from: Some("2026-03-10T00:00:00Z".to_string()),
+            to: Some("2026-03-11T00:00:00Z".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("suggestions query should succeed");
+
+    assert!(
+        suggestions
+            .model
+            .items
+            .iter()
+            .all(|item| item.value != "model-old"),
+        "model suggestions should exclude rows outside the time window"
+    );
+
+    let first = suggestions
+        .model
+        .items
+        .first()
+        .expect("model suggestions should include matching rows");
+    assert_eq!(first.value, "model-alpha");
+    assert_eq!(first.count, 2);
+    assert!(
+        suggestions
+            .model
+            .items
+            .iter()
+            .all(|item| !item.value.is_empty()),
+        "suggestions should not contain empty values"
+    );
+    assert!(!suggestions.model.has_more);
+}
+
+#[tokio::test]
+async fn fetch_invocation_suggestions_filters_active_bucket_before_limit() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for index in 0..35 {
+        let model = format!("model-hot-{index:02}");
+        for occurrence in 0..2 {
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    invoke_id,
+                    occurred_at,
+                    source,
+                    model,
+                    status,
+                    raw_response
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+            )
+            .bind(format!("suggest-hot-{index:02}-{occurrence}"))
+            .bind(format!("2026-03-10 10:{index:02}:{occurrence:02}"))
+            .bind(SOURCE_PROXY)
+            .bind(&model)
+            .bind("success")
+            .bind("{}")
+            .execute(&state.pool)
+            .await
+            .expect("insert hot suggestion row");
+        }
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("suggest-needle")
+    .bind("2026-03-10 11:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("model-needle")
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert needle suggestion row");
+
+    let Json(suggestions) = fetch_invocation_suggestions(
+        State(state),
+        Query(ListQuery {
+            suggest_field: Some("model".to_string()),
+            suggest_query: Some("needle".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("filtered suggestions query should succeed");
+
+    let model_values = suggestions
+        .model
+        .items
+        .iter()
+        .map(|item| item.value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(model_values, vec!["model-needle"]);
+    assert!(!suggestions.model.has_more);
+    assert!(suggestions.proxy.items.is_empty());
+    assert!(suggestions.endpoint.items.is_empty());
+    assert!(suggestions.failure_kind.items.is_empty());
+    assert!(suggestions.prompt_cache_key.items.is_empty());
+    assert!(suggestions.requester_ip.items.is_empty());
+}
+
+#[tokio::test]
+async fn fetch_invocation_suggestions_use_snapshot_and_keep_other_filters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, occurred_at, model, proxy) in [
+        (
+            "suggest-snapshot-alpha",
+            "2026-03-10 09:00:00",
+            "model-alpha",
+            "proxy-a",
+        ),
+        (
+            "suggest-snapshot-beta",
+            "2026-03-10 09:01:00",
+            "model-beta",
+            "proxy-a",
+        ),
+        (
+            "suggest-snapshot-gamma",
+            "2026-03-10 09:02:00",
+            "model-gamma",
+            "proxy-b",
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                payload,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind(json!({ "proxyDisplayName": proxy }).to_string())
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert suggestion snapshot row");
+    }
+
+    let Json(initial_list) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            page: Some(1),
+            page_size: Some(20),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("seed list query should succeed");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            payload,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("suggest-snapshot-delta")
+    .bind("2026-03-10 09:03:00")
+    .bind(SOURCE_PROXY)
+    .bind("model-delta")
+    .bind(json!({ "proxyDisplayName": "proxy-a" }).to_string())
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert post-snapshot suggestion row");
+
+    let Json(suggestions) = fetch_invocation_suggestions(
+        State(state),
+        Query(ListQuery {
+            snapshot_id: Some(initial_list.snapshot_id),
+            model: Some("model-alpha".to_string()),
+            proxy: Some("proxy-a".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("suggestions query should succeed");
+
+    let model_values = suggestions
+        .model
+        .items
+        .iter()
+        .map(|item| item.value.as_str())
+        .collect::<Vec<_>>();
+    assert!(model_values.contains(&"model-alpha"));
+    assert!(model_values.contains(&"model-beta"));
+    assert!(
+        !model_values.contains(&"model-delta"),
+        "suggestions should stay inside the frozen snapshot"
+    );
+    assert!(
+        !model_values.contains(&"model-gamma"),
+        "suggestions should keep the other applied proxy filter"
+    );
 }
 
 #[tokio::test]
@@ -11310,6 +12842,54 @@ async fn insert_timeseries_invocation(
     .expect("insert timeseries invocation");
 }
 
+async fn insert_invocation_rollup(
+    pool: &SqlitePool,
+    stats_date: NaiveDate,
+    source: &str,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_daily (
+            stats_date,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
+        "#,
+    )
+    .bind(stats_date.to_string())
+    .bind(source)
+    .bind(total_count)
+    .bind(success_count)
+    .bind(failure_count)
+    .bind(total_tokens)
+    .bind(total_cost)
+    .execute(pool)
+    .await
+    .expect("insert invocation rollup");
+}
+
+fn bucket_date_in_tz(bucket_start: &str, tz: Tz) -> NaiveDate {
+    DateTime::parse_from_rfc3339(bucket_start)
+        .expect("valid bucket start")
+        .with_timezone(&tz)
+        .date_naive()
+}
+
+fn shanghai_bucket_date(bucket_start: &str) -> NaiveDate {
+    bucket_date_in_tz(bucket_start, Shanghai)
+}
+
 fn assert_f64_close(actual: f64, expected: f64) {
     let diff = (actual - expected).abs();
     assert!(
@@ -11532,7 +13112,275 @@ async fn timeseries_daily_bucket_includes_first_byte_stats() {
 }
 
 #[tokio::test]
-async fn ensure_schema_adds_retention_columns_and_tables() {
+async fn timeseries_daily_includes_archived_rollup_days_without_ttfb() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(40);
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 7, 5, 2, 700, 1.75).await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch daily timeseries");
+
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == archived_date)
+        .expect("should include archived rollup day");
+
+    assert_eq!(bucket.total_count, 7);
+    assert_eq!(bucket.success_count, 5);
+    assert_eq!(bucket.failure_count, 2);
+    assert_eq!(bucket.total_tokens, 700);
+    assert_f64_close(bucket.total_cost, 1.75);
+    assert_eq!(bucket.first_byte_sample_count, 0);
+    assert!(bucket.first_byte_avg_ms.is_none());
+    assert!(bucket.first_byte_p95_ms.is_none());
+}
+
+#[tokio::test]
+async fn timeseries_daily_stays_continuous_after_rollup_archive() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(12);
+    let live_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(2);
+    let live_occurred_at = format_naive(live_date.and_hms_opt(15, 30, 0).expect("valid live time"));
+
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 3, 2, 1, 300, 3.0).await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-live-after-rollup",
+        &live_occurred_at,
+        "success",
+        Some(120.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state.clone()),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch daily timeseries");
+
+    let archived_bucket = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == archived_date)
+        .expect("should include archived bucket");
+    let live_bucket = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == live_date)
+        .expect("should include live bucket");
+
+    assert_eq!(archived_bucket.total_count, 3);
+    assert_eq!(live_bucket.total_count, 1);
+    assert_eq!(live_bucket.first_byte_sample_count, 1);
+
+    let summed_count: i64 = response.points.iter().map(|point| point.total_count).sum();
+    let summed_tokens: i64 = response.points.iter().map(|point| point.total_tokens).sum();
+    let summed_cost: f64 = response.points.iter().map(|point| point.total_cost).sum();
+    assert_eq!(summed_count, 4);
+    assert_eq!(summed_tokens, 310);
+    assert_f64_close(summed_cost, 3.01);
+
+    let totals = query_combined_totals(
+        &state.pool,
+        None,
+        StatsFilter::All,
+        InvocationSourceScope::All,
+    )
+    .await
+    .expect("query combined totals");
+    assert_eq!(totals.total_count, summed_count);
+    assert_eq!(totals.total_tokens, summed_tokens);
+    assert_f64_close(totals.total_cost, summed_cost);
+}
+
+#[tokio::test]
+async fn timeseries_daily_combines_rollup_and_live_within_same_day() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mixed_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(8);
+    let live_occurred_at = format_naive(
+        mixed_date
+            .and_hms_opt(18, 0, 0)
+            .expect("valid mixed live time"),
+    );
+
+    insert_invocation_rollup(&state.pool, mixed_date, SOURCE_PROXY, 2, 1, 1, 20, 0.2).await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-mixed-rollup-live",
+        &live_occurred_at,
+        "success",
+        Some(150.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch mixed daily timeseries");
+
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == mixed_date)
+        .expect("should include mixed bucket");
+
+    assert_eq!(bucket.total_count, 3);
+    assert_eq!(bucket.success_count, 2);
+    assert_eq!(bucket.failure_count, 1);
+    assert_eq!(bucket.total_tokens, 30);
+    assert_f64_close(bucket.total_cost, 0.21);
+    assert_eq!(bucket.first_byte_sample_count, 1);
+    assert_f64_close(
+        bucket.first_byte_avg_ms.expect("avg should be present"),
+        150.0,
+    );
+    assert_f64_close(
+        bucket.first_byte_p95_ms.expect("p95 should be present"),
+        150.0,
+    );
+}
+
+#[tokio::test]
+async fn timeseries_daily_skips_rollups_when_timezone_boundaries_differ() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(30);
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 9, 7, 2, 900, 2.25).await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("UTC".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch utc daily timeseries");
+
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        0
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.first_byte_sample_count)
+            .sum::<i64>(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn timeseries_daily_includes_rollups_for_equivalent_day_boundaries() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(18);
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 4, 4, 0, 400, 1.0).await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Singapore".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch singapore daily timeseries");
+
+    let singapore = "Asia/Singapore".parse::<Tz>().expect("valid singapore tz");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| bucket_date_in_tz(&point.bucket_start, singapore) == archived_date)
+        .expect("should include archived rollup day for matching boundaries");
+
+    assert_eq!(bucket.total_count, 4);
+    assert_eq!(bucket.success_count, 4);
+    assert_eq!(bucket.failure_count, 0);
+    assert_eq!(bucket.total_tokens, 400);
+    assert_f64_close(bucket.total_cost, 1.0);
+}
+
+#[tokio::test]
+async fn invocation_rollup_daily_range_respects_proxy_only_scope() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let stats_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(20);
+    insert_invocation_rollup(&state.pool, stats_date, SOURCE_PROXY, 2, 1, 1, 20, 0.2).await;
+    insert_invocation_rollup(&state.pool, stats_date, SOURCE_XY, 5, 5, 0, 50, 0.5).await;
+
+    let proxy_rows = query_invocation_rollup_daily_range(
+        &state.pool,
+        stats_date,
+        stats_date,
+        InvocationSourceScope::ProxyOnly,
+    )
+    .await
+    .expect("query proxy rollup range");
+    let all_rows = query_invocation_rollup_daily_range(
+        &state.pool,
+        stats_date,
+        stats_date,
+        InvocationSourceScope::All,
+    )
+    .await
+    .expect("query all rollup range");
+
+    assert_eq!(proxy_rows.len(), 1);
+    assert_eq!(proxy_rows[0].total_count, 2);
+    assert_eq!(all_rows.len(), 2);
+    assert_eq!(all_rows.iter().map(|row| row.total_count).sum::<i64>(), 7);
+}
+
+#[tokio::test]
+async fn ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_retention_tables() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("in-memory sqlite");
@@ -11545,6 +13393,7 @@ async fn ensure_schema_adds_retention_columns_and_tables() {
             source TEXT NOT NULL DEFAULT 'xy',
             payload TEXT,
             raw_response TEXT NOT NULL,
+            raw_expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(invoke_id, occurred_at)
         )
@@ -11553,6 +13402,28 @@ async fn ensure_schema_adds_retention_columns_and_tables() {
     .execute(&pool)
     .await
     .expect("create legacy invocation schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            payload,
+            raw_response,
+            raw_expires_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("legacy-row")
+    .bind("2026-03-09 10:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("{\"endpoint\":\"/v1/responses\"}")
+    .bind("{\"ok\":true}")
+    .bind("2099-01-01 00:00:00")
+    .execute(&pool)
+    .await
+    .expect("insert legacy invocation row");
 
     ensure_schema(&pool).await.expect("ensure schema migration");
 
@@ -11563,9 +13434,30 @@ async fn ensure_schema_adds_retention_columns_and_tables() {
         .into_iter()
         .map(|row| row.get::<String, _>("name"))
         .collect();
+    assert!(!columns.contains("raw_expires_at"));
     assert!(columns.contains("detail_level"));
     assert!(columns.contains("detail_pruned_at"));
     assert!(columns.contains("detail_prune_reason"));
+
+    let row = sqlx::query(
+        r#"
+        SELECT invoke_id, source, payload, raw_response, detail_level
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("legacy-row")
+    .fetch_one(&pool)
+    .await
+    .expect("load migrated invocation row");
+    assert_eq!(row.get::<String, _>("invoke_id"), "legacy-row");
+    assert_eq!(row.get::<String, _>("source"), SOURCE_PROXY);
+    assert_eq!(
+        row.get::<Option<String>, _>("payload").as_deref(),
+        Some("{\"endpoint\":\"/v1/responses\"}")
+    );
+    assert_eq!(row.get::<String, _>("raw_response"), "{\"ok\":true}");
+    assert_eq!(row.get::<String, _>("detail_level"), DETAIL_LEVEL_FULL);
 
     let tables: HashSet<String> = sqlx::query_scalar(
         r#"
@@ -12095,6 +13987,17 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
         .await
         .expect("open prune archive sqlite");
+    let archive_columns: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
+        .fetch_all(&archive_pool)
+        .await
+        .expect("inspect prune archive schema")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert!(
+        !archive_columns.contains("raw_expires_at"),
+        "new archive batches should not carry raw_expires_at anymore"
+    );
     let archived = sqlx::query(
         r#"
         SELECT payload, raw_response, detail_level, detail_pruned_at, detail_prune_reason
@@ -12236,6 +14139,110 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
     assert!(file_path.exists());
     assert!(batch.get::<i64, _>("row_count") >= 2);
     assert_eq!(batch.get::<String, _>("status"), ARCHIVE_STATUS_COMPLETED);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("retention-legacy-archive").await;
+    let occurred_at = shanghai_local_days_ago(91, 9, 0, 0);
+    let month_key = occurred_at[..7].to_string();
+    let final_archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve legacy archive path");
+    fs::create_dir_all(
+        final_archive_path
+            .parent()
+            .expect("legacy archive path should have parent"),
+    )
+    .expect("create legacy archive dir");
+
+    let legacy_archive_db_path = temp_dir.join("legacy-archive.sqlite");
+    fs::File::create(&legacy_archive_db_path).expect("create legacy archive sqlite file");
+    let legacy_archive_pool = SqlitePool::connect(&sqlite_url_for_path(&legacy_archive_db_path))
+        .await
+        .expect("open legacy archive sqlite");
+    let legacy_create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&legacy_create_sql)
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("create legacy archive schema baseline");
+    sqlx::query("ALTER TABLE codex_invocations ADD COLUMN raw_expires_at TEXT")
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("add legacy raw_expires_at column");
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("checkpoint legacy archive sqlite before compression");
+    legacy_archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&legacy_archive_db_path, &final_archive_path)
+        .expect("compress legacy archive batch");
+
+    insert_retention_invocation(
+        &pool,
+        "archive-into-legacy-batch",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"error\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    let live_row_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind("archive-into-legacy-batch")
+    .bind(&occurred_at)
+    .fetch_one(&pool)
+    .await
+    .expect("load live invocation row id");
+    let archive_outcome = archive_rows_into_month_batch(
+        &pool,
+        &config,
+        archive_table_spec("codex_invocations"),
+        &month_key,
+        &[live_row_id],
+    )
+    .await
+    .expect("append into legacy archive batch");
+    assert!(
+        archive_outcome.row_count >= 1,
+        "legacy archive batch should accept appended rows with legacy schema (row_count={})",
+        archive_outcome.row_count
+    );
+
+    let inflated_legacy_path = temp_dir.join("legacy-archive-inflated.sqlite");
+    inflate_gzip_sqlite_file(&final_archive_path, &inflated_legacy_path)
+        .expect("inflate retained legacy archive batch");
+    let archived_pool = SqlitePool::connect(&sqlite_url_for_path(&inflated_legacy_path))
+        .await
+        .expect("open retained legacy archive batch");
+    let archived_ids: HashSet<String> =
+        sqlx::query_scalar("SELECT invoke_id FROM codex_invocations")
+            .fetch_all(&archived_pool)
+            .await
+            .expect("load legacy archive invoke ids")
+            .into_iter()
+            .collect();
+    assert!(archived_ids.contains("archive-into-legacy-batch"));
+    let archive_columns: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
+        .fetch_all(&archived_pool)
+        .await
+        .expect("inspect retained legacy archive schema")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert!(
+        archive_columns.contains("raw_expires_at"),
+        "historical archive files should keep their legacy schema"
+    );
+    archived_pool.close().await;
 
     cleanup_temp_test_dir(&temp_dir);
 }

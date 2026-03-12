@@ -1,5 +1,6 @@
 import { Icon } from '@iconify/react'
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import type { Formatter, NameType, ValueType } from 'recharts/types/component/DefaultTooltipContent'
 import { Badge } from './ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import type { RateWindowSnapshot, UpstreamAccountHistoryPoint } from '../lib/api'
@@ -50,6 +51,11 @@ export function UpstreamAccountUsageCard({
   const resetLabel = window?.resetsAt
     ? historyLabel(window.resetsAt)
     : emptyLabel
+  const tooltipFormatter: Formatter<ValueType, NameType> = (value) => {
+    const rawValue = Array.isArray(value) ? value[0] : value
+    const numericValue = typeof rawValue === 'number' ? rawValue : Number(rawValue ?? 0)
+    return [`${Math.round(numericValue)}%`, title]
+  }
 
   return (
     <Card className="border-base-300/80 bg-base-100/75">
@@ -90,7 +96,7 @@ export function UpstreamAccountUsageCard({
                   <YAxis hide domain={[0, 100]} />
                   <Tooltip
                     cursor={{ stroke: 'oklch(var(--color-base-content) / 0.14)', strokeWidth: 1 }}
-                    formatter={(value: number) => [`${Math.round(value)}%`, title]}
+                    formatter={tooltipFormatter}
                     labelFormatter={(value) => String(value)}
                     contentStyle={{
                       borderRadius: '0.9rem',
