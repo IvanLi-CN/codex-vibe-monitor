@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "baseline_policy": "explicit-waiver-required",
+    "require_signed_commits": true,
+    "branch_protection": {
+      "protected_branches": [
+        "main"
+      ],
+      "require_pull_request": true,
+      "disallow_direct_pushes": true,
+      "disallow_branch_deletions": true,
+      "disallow_force_pushes": true,
+      "allow_merge_commits": true,
+      "require_merge_queue": false,
+      "required_reviewers": [],
+      "required_status_checks": {
+        "strict": true,
+        "integrations": {
+          "Validate PR labels": 15368,
+          "Lint & Format Check": 15368,
+          "Backend Tests": 15368,
+          "Build Artifacts": 15368,
+          "Review Policy Gate": 15368
+        }
+      }
+    },
+    "review_policy": {
+      "mode": "conditional-required",
+      "required_approvals": 1,
+      "exempt_repository_owner": true,
+      "exempt_author_permissions": [
+        "admin",
+        "maintain"
+      ],
+      "allowed_reviewer_permissions": [
+        "write",
+        "maintain",
+        "admin"
+      ],
+      "enforcement": {
+        "mode": "required-check",
+        "check_name": "Review Policy Gate"
+      }
+    }
+  },
+  "required_checks": [
+    "Validate PR labels",
+    "Lint & Format Check",
+    "Backend Tests",
+    "Build Artifacts",
+    "Review Policy Gate"
+  ],
+  "informational_checks": [
+    "Release Meta (intent + version + tags)",
+    "Build + Smoke + Push Candidate (linux/amd64)",
+    "Build + Smoke + Push Candidate (linux/arm64)"
+  ],
+  "waivers": [
+    {
+      "kind": "bypass-actors-unverified",
+      "branch": "main",
+      "reason": "GitHub branch-rules API omits bypass actors; verify bypass actors manually during live ruleset configuration."
+    }
+  ],
+  "expected_pr_workflows": [
+    {
+      "workflow": "Label Gate",
+      "jobs": [
+        "Validate PR labels"
+      ]
+    },
+    {
+      "workflow": "CI Pipeline",
+      "jobs": [
+        "Lint & Format Check",
+        "Backend Tests",
+        "Build Artifacts",
+        "Release Meta (intent + version + tags)",
+        "Build + Smoke + Push Candidate (linux/amd64)",
+        "Build + Smoke + Push Candidate (linux/arm64)"
+      ]
+    },
+    {
+      "workflow": "Review Policy",
+      "jobs": [
+        "Review Policy Gate"
+      ]
+    }
+  ]
+}

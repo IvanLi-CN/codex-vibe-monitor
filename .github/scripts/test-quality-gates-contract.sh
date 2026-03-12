@@ -2,14 +2,23 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-python3 "$repo_root/.github/scripts/check_quality_gates_contract.py"
-bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
+fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
+baseline_repo="$tmp_dir/baseline-repo"
+cp -R "$repo_root/." "$baseline_repo"
+cp "$fixtures_root/quality-gates.json" "$baseline_repo/.github/quality-gates.json"
+cp "$fixtures_root/ci.yml" "$baseline_repo/.github/workflows/ci.yml"
+cp "$fixtures_root/label-gate.yml" "$baseline_repo/.github/workflows/label-gate.yml"
+cp "$fixtures_root/review-policy.yml" "$baseline_repo/.github/workflows/review-policy.yml"
+
+python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo"
+bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
+
 label_repo="$tmp_dir/label-repo"
-cp -R "$repo_root/." "$label_repo"
+cp -R "$baseline_repo/." "$label_repo"
 python3 - <<'PY' "$label_repo"
 from pathlib import Path
 import sys
@@ -41,7 +50,7 @@ fi
 grep -q "trusted label gate must invoke the trusted contract checker" "$tmp_dir/label-gate-bait.log"
 
 label_concurrency_repo="$tmp_dir/label-concurrency-repo"
-cp -R "$repo_root/." "$label_concurrency_repo"
+cp -R "$baseline_repo/." "$label_concurrency_repo"
 python3 - <<'PY' "$label_concurrency_repo"
 from pathlib import Path
 import sys
@@ -64,7 +73,7 @@ fi
 grep -q "concurrency.group drifted" "$tmp_dir/label-concurrency.log"
 
 dynamic_contract_repo="$tmp_dir/dynamic-contract-repo"
-cp -R "$repo_root/." "$dynamic_contract_repo"
+cp -R "$baseline_repo/." "$dynamic_contract_repo"
 python3 - <<'PY' "$dynamic_contract_repo"
 from pathlib import Path
 import sys
@@ -84,7 +93,7 @@ PY
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$dynamic_contract_repo" >/dev/null
 
 review_repo="$tmp_dir/review-repo"
-cp -R "$repo_root/." "$review_repo"
+cp -R "$baseline_repo/." "$review_repo"
 python3 - <<'PY' "$review_repo"
 from pathlib import Path
 import sys
@@ -117,7 +126,7 @@ fi
 grep -q "must invoke trusted metadata gate" "$tmp_dir/review-policy-bait.log"
 
 review_if_repo="$tmp_dir/review-if-repo"
-cp -R "$repo_root/." "$review_if_repo"
+cp -R "$baseline_repo/." "$review_if_repo"
 python3 - <<'PY' "$review_if_repo"
 from pathlib import Path
 import sys
@@ -149,7 +158,7 @@ fi
 grep -q "Evaluate review policy'].if must stay unset" "$tmp_dir/review-policy-if.log"
 
 ci_if_repo="$tmp_dir/ci-if-repo"
-cp -R "$repo_root/." "$ci_if_repo"
+cp -R "$baseline_repo/." "$ci_if_repo"
 python3 - <<'PY' "$ci_if_repo"
 from pathlib import Path
 import sys
@@ -183,7 +192,7 @@ fi
 grep -q "Quality-gates live rules check'].if must stay unset" "$tmp_dir/ci-if.log"
 
 ci_live_contract_repo="$tmp_dir/ci-live-contract-repo"
-cp -R "$repo_root/." "$ci_live_contract_repo"
+cp -R "$baseline_repo/." "$ci_live_contract_repo"
 python3 - <<'PY' "$ci_live_contract_repo"
 from pathlib import Path
 import sys
@@ -206,7 +215,7 @@ fi
 grep -q "live rules step must use the trusted checker against the candidate declaration" "$tmp_dir/ci-live-contract.log"
 
 ci_merge_group_repo="$tmp_dir/ci-merge-group-repo"
-cp -R "$repo_root/." "$ci_merge_group_repo"
+cp -R "$baseline_repo/." "$ci_merge_group_repo"
 python3 - <<'PY' "$ci_merge_group_repo"
 from pathlib import Path
 import sys
@@ -244,7 +253,7 @@ fi
 grep -q "merge_group trusted-source branch handling drifted" "$tmp_dir/ci-merge-group.log"
 
 ci_bootstrap_repo="$tmp_dir/ci-bootstrap-repo"
-cp -R "$repo_root/." "$ci_bootstrap_repo"
+cp -R "$baseline_repo/." "$ci_bootstrap_repo"
 python3 - <<'PY' "$ci_bootstrap_repo"
 from pathlib import Path
 import sys
@@ -267,7 +276,7 @@ fi
 grep -q "bootstrap fallback must stay disabled" "$tmp_dir/ci-bootstrap.log"
 
 review_bootstrap_repo="$tmp_dir/review-bootstrap-repo"
-cp -R "$repo_root/." "$review_bootstrap_repo"
+cp -R "$baseline_repo/." "$review_bootstrap_repo"
 python3 - <<'PY' "$review_bootstrap_repo"
 from pathlib import Path
 import sys
@@ -290,7 +299,7 @@ fi
 grep -q "bootstrap fallback must stay disabled" "$tmp_dir/review-bootstrap.log"
 
 metadata_repo="$tmp_dir/metadata-repo"
-cp -R "$repo_root/." "$metadata_repo"
+cp -R "$baseline_repo/." "$metadata_repo"
 python3 - <<'PY' "$metadata_repo"
 from pathlib import Path
 import sys
@@ -315,7 +324,7 @@ fi
 grep -q "REVIEW_REQUIRED_APPROVALS drifted from quality-gates.json" "$tmp_dir/metadata-policy.log"
 
 unsafe_yaml_repo="$tmp_dir/unsafe-yaml-repo"
-cp -R "$repo_root/." "$unsafe_yaml_repo"
+cp -R "$baseline_repo/." "$unsafe_yaml_repo"
 python3 - <<'PY' "$unsafe_yaml_repo"
 from pathlib import Path
 import sys
