@@ -116,32 +116,37 @@ function createSuggestions(overrides: Partial<InvocationSuggestionsResponse> = {
   }
 }
 
+function mockInvocationRecords(overrides: Partial<ReturnType<typeof hookMocks.useInvocationRecords>> = {}) {
+  hookMocks.useInvocationRecords.mockReturnValue({
+    draft: { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange(), model: 'alp' },
+    focus: 'token',
+    page: 1,
+    pageSize: 20,
+    sortBy: 'occurredAt',
+    sortOrder: 'desc',
+    records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
+    summary: { ...createSummary(), snapshotId: 42 },
+    recordsError: null,
+    summaryError: null,
+    isSearching: false,
+    isRecordsLoading: false,
+    isSummaryLoading: false,
+    updateDraft: vi.fn(),
+    resetDraft: vi.fn(),
+    setFocus: vi.fn(),
+    search: vi.fn(),
+    setPage: vi.fn(),
+    setPageSize: vi.fn(),
+    setSort: vi.fn(),
+    ...overrides,
+  })
+}
+
 describe('RecordsPage suggestions', () => {
   it('loads suggestions lazily after a combobox opens', async () => {
     vi.useFakeTimers()
     apiMocks.fetchInvocationSuggestions.mockResolvedValue(createSuggestions())
-    hookMocks.useInvocationRecords.mockReturnValue({
-      draft: { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange(), model: 'alp' },
-      focus: 'token',
-      page: 1,
-      pageSize: 20,
-      sortBy: 'occurredAt',
-      sortOrder: 'desc',
-      records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
-      summary: { ...createSummary(), snapshotId: 42 },
-      recordsError: null,
-      summaryError: null,
-      isSearching: false,
-      isRecordsLoading: false,
-      isSummaryLoading: false,
-      updateDraft: vi.fn(),
-      resetDraft: vi.fn(),
-      setFocus: vi.fn(),
-      search: vi.fn(),
-      setPage: vi.fn(),
-      setPageSize: vi.fn(),
-      setSort: vi.fn(),
-    })
+    mockInvocationRecords()
 
     render(<RecordsPage />)
 
@@ -190,28 +195,7 @@ describe('RecordsPage suggestions', () => {
         }),
       )
 
-    hookMocks.useInvocationRecords.mockReturnValue({
-      draft: { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange(), model: 'alp' },
-      focus: 'token',
-      page: 1,
-      pageSize: 20,
-      sortBy: 'occurredAt',
-      sortOrder: 'desc',
-      records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
-      summary: { ...createSummary(), snapshotId: 42 },
-      recordsError: null,
-      summaryError: null,
-      isSearching: false,
-      isRecordsLoading: false,
-      isSummaryLoading: false,
-      updateDraft: vi.fn(),
-      resetDraft: vi.fn(),
-      setFocus: vi.fn(),
-      search: vi.fn(),
-      setPage: vi.fn(),
-      setPageSize: vi.fn(),
-      setSort: vi.fn(),
-    })
+    mockInvocationRecords()
 
     render(<RecordsPage />)
 
@@ -267,5 +251,63 @@ describe('RecordsPage suggestions', () => {
     expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(2)
     expect(host?.textContent).toContain('alp-fresh')
     expect(host?.textContent).not.toContain('alp-stale')
+  })
+
+  it('raises the filters panel while a suggestion dropdown is open', async () => {
+    vi.useFakeTimers()
+    apiMocks.fetchInvocationSuggestions.mockResolvedValue(
+      createSuggestions({
+        promptCacheKey: {
+          items: [{ value: 'pck-open-1', count: 2 }],
+          hasMore: false,
+        },
+      }),
+    )
+    mockInvocationRecords({
+      draft: { ...createDefaultInvocationRecordsDraft(), ...createDefaultCustomRange(), promptCacheKey: 'pck' },
+    })
+
+    render(<RecordsPage />)
+
+    const filtersPanel = host?.querySelector('[data-testid="records-filters-panel"]')
+    const summaryPanel = host?.querySelector('[data-testid="records-summary-panel"]')
+    if (!(filtersPanel instanceof HTMLElement) || !(summaryPanel instanceof HTMLElement)) {
+      throw new Error('missing panel anchors')
+    }
+
+    expect(filtersPanel.dataset.suggestionsOpen).toBe('false')
+    expect(filtersPanel.className).not.toContain('z-10')
+
+    const input = host?.querySelector('#records-filter-prompt-cache-key')
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error('missing prompt cache key input')
+    }
+
+    act(() => {
+      input.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      input.focus()
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300)
+    })
+    await flushAsync()
+
+    expect(filtersPanel.dataset.suggestionsOpen).toBe('true')
+    expect(filtersPanel.className).toContain('relative')
+    expect(filtersPanel.className).toContain('z-10')
+    expect(filtersPanel.className).toContain('overflow-visible')
+    expect(summaryPanel.className).toBe('surface-panel')
+
+    act(() => {
+      input.blur()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await flushAsync()
+
+    expect(filtersPanel.dataset.suggestionsOpen).toBe('false')
+    expect(filtersPanel.className).not.toContain('z-10')
   })
 })

@@ -145,6 +145,7 @@ export default function RecordsPage() {
   const newRecordsCount = summary?.newRecordsCount ?? 0
   const tableLoading = isRecordsLoading
   const listControlsDisabled = isSearching || isRecordsLoading
+  const hasOpenSuggestion = activeSuggestionField !== null
   const modelBucket = suggestions?.model
   const proxyBucket = suggestions?.proxy
   const endpointBucket = suggestions?.endpoint
@@ -187,7 +188,11 @@ export default function RecordsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
-      <section className="surface-panel">
+      <section
+        className={cn('surface-panel', hasOpenSuggestion && 'relative z-10 overflow-visible')}
+        data-testid="records-filters-panel"
+        data-suggestions-open={hasOpenSuggestion ? 'true' : 'false'}
+      >
         <div className="surface-panel-body gap-5">
           <div className="section-heading">
             <h1 className="section-title">{t('records.title')}</h1>
@@ -398,7 +403,7 @@ export default function RecordsPage() {
         </div>
       </section>
 
-      <section className="surface-panel">
+      <section className="surface-panel" data-testid="records-summary-panel">
         <div className="surface-panel-body gap-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="section-heading">
