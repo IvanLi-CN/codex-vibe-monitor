@@ -68,6 +68,26 @@ fi
 
 grep -q "concurrency.group must isolate pull_request and pull_request_target runs" "$tmp_dir/label-concurrency.log"
 
+dynamic_contract_repo="$tmp_dir/dynamic-contract-repo"
+cp -R "$repo_root/." "$dynamic_contract_repo"
+python3 - <<'PY' "$dynamic_contract_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+contract_path = repo / ".github/quality-gates.json"
+contract_text = contract_path.read_text()
+contract_text = contract_text.replace('"Validate PR labels"', '"Release Labels Gate"')
+contract_path.write_text(contract_text)
+
+workflow_path = repo / ".github/workflows/label-gate.yml"
+workflow_text = workflow_path.read_text()
+workflow_text = workflow_text.replace('--check-name "Validate PR labels"', '--check-name "Release Labels Gate"')
+workflow_path.write_text(workflow_text)
+PY
+
+python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$dynamic_contract_repo" >/dev/null
+
 review_repo="$tmp_dir/review-repo"
 cp -R "$repo_root/." "$review_repo"
 python3 - <<'PY' "$review_repo"
@@ -166,6 +186,29 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
 fi
 
 grep -q "Quality-gates live rules check'].if must stay unset" "$tmp_dir/ci-if.log"
+
+ci_live_contract_repo="$tmp_dir/ci-live-contract-repo"
+cp -R "$repo_root/." "$ci_live_contract_repo"
+python3 - <<'PY' "$ci_live_contract_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci.yml"
+text = path.read_text()
+needle = '--declaration ".github/quality-gates.json"'
+replacement = '--declaration "${{ steps.trusted-quality-gates.outputs.declaration }}"'
+if needle not in text:
+    raise SystemExit("failed to rewrite ci live declaration source")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$ci_live_contract_repo" >/dev/null 2>"$tmp_dir/ci-live-contract.log"; then
+  echo "expected ci live declaration source fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "live rules step must use the trusted checker against the candidate declaration" "$tmp_dir/ci-live-contract.log"
 
 ci_merge_group_repo="$tmp_dir/ci-merge-group-repo"
 cp -R "$repo_root/." "$ci_merge_group_repo"

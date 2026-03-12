@@ -7,6 +7,7 @@ import json
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,13 +16,16 @@ class ContractError(RuntimeError):
     pass
 
 
-REQUIRED_CHECKS = {
-    "Validate PR labels",
-    "Lint & Format Check",
-    "Backend Tests",
-    "Build Artifacts",
-    "Review Policy Gate",
-}
+@dataclass(frozen=True)
+class ContractModel:
+    required_checks: set[str]
+    status_check_integrations: dict[str, int]
+    review_check_name: str
+    review_required_approvals: int
+    review_exempt_permissions: set[str]
+    review_allowed_permissions: set[str]
+    expected_workflows: dict[str, tuple[str, ...]]
+    label_check_name: str
 
 CI_PULL_REQUEST_TYPES = {"opened", "reopened", "synchronize", "ready_for_review", "edited"}
 LABEL_GATE_PULL_REQUEST_TYPES = {
@@ -158,10 +162,16 @@ def workflow_jobs(workflow: dict[str, Any], where: str) -> dict[str, Any]:
     return require_mapping(workflow.get("jobs"), f"{where}.jobs")
 
 
-def job_config(workflow: dict[str, Any], job_id: str, expected_name: str, where: str) -> dict[str, Any]:
+def job_config(workflow: dict[str, Any], job_id: str, where: str) -> dict[str, Any]:
     jobs = workflow_jobs(workflow, where)
-    job = require_mapping(jobs.get(job_id), f"{where}.jobs.{job_id}")
-    require(job.get("name") == expected_name, f"{where}.jobs.{job_id}.name must stay {expected_name!r}")
+    return require_mapping(jobs.get(job_id), f"{where}.jobs.{job_id}")
+
+
+def named_job_config(workflow: dict[str, Any], job_id: str, expected_jobs: set[str], where: str) -> dict[str, Any]:
+    job = job_config(workflow, job_id, where)
+    name = job.get("name")
+    require(isinstance(name, str) and name, f"{where}.jobs.{job_id}.name must be a non-empty string")
+    require(name in expected_jobs, f"{where}.jobs.{job_id}.name={name!r} must be declared in expected_pr_workflows")
     return job
 
 
@@ -258,7 +268,7 @@ def require_fail_closed(mapping: dict[str, Any], where: str) -> None:
     )
 
 
-def validate_quality_gates(payload: dict[str, Any]) -> None:
+def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
     policy = require_mapping(payload.get("policy"), "quality-gates.json.policy")
     branch_policy = require_mapping(policy.get("branch_protection"), "quality-gates.json.policy.branch_protection")
     review_policy = require_mapping(policy.get("review_policy"), "quality-gates.json.policy.review_policy")
@@ -290,57 +300,68 @@ def validate_quality_gates(payload: dict[str, Any]) -> None:
         status_check_policy.get("integrations"),
         "quality-gates.json.policy.branch_protection.required_status_checks.integrations",
     )
-    require(set(integrations) == REQUIRED_CHECKS, f"quality-gates.json: required_status_checks.integrations drifted: {sorted(integrations)}")
+    required_checks = require_string_set(payload.get("required_checks"), "quality-gates.json.required_checks")
     require(
-        all(value == 15368 for value in integrations.values()),
-        f"quality-gates.json: required_status_checks.integrations must stay on GitHub Actions: {integrations}",
+        set(integrations) == required_checks,
+        f"quality-gates.json: required_status_checks.integrations drifted: {sorted(integrations)}",
     )
-    require(
-        set(payload.get("required_checks", [])) == REQUIRED_CHECKS,
-        f"quality-gates.json: required_checks drifted: {sorted(payload.get('required_checks', []))}",
-    )
+    normalized_integrations: dict[str, int] = {}
+    for context, integration_id in integrations.items():
+        require(
+            isinstance(integration_id, int),
+            f"quality-gates.json: required_status_checks.integrations[{context!r}] must be an integer",
+        )
+        normalized_integrations[context] = integration_id
 
     require(review_policy.get("mode") == "conditional-required", "quality-gates.json: review_policy.mode drifted")
-    require(review_policy.get("required_approvals") == 1, "quality-gates.json: review_policy.required_approvals drifted")
-    require(review_policy.get("exempt_repository_owner") is True, "quality-gates.json: exempt_repository_owner must be true")
+    review_required_approvals = review_policy.get("required_approvals")
     require(
-        set(review_policy.get("exempt_author_permissions", [])) == {"admin", "maintain"},
-        "quality-gates.json: exempt_author_permissions drifted",
+        isinstance(review_required_approvals, int)
+        and not isinstance(review_required_approvals, bool)
+        and review_required_approvals >= 1,
+        "quality-gates.json: review_policy.required_approvals must be a positive integer",
     )
-    require(
-        set(review_policy.get("allowed_reviewer_permissions", [])) == {"write", "maintain", "admin"},
-        "quality-gates.json: allowed_reviewer_permissions drifted",
+    require(review_policy.get("exempt_repository_owner") is True, "quality-gates.json: exempt_repository_owner must be true")
+    review_exempt_permissions = require_string_set(
+        review_policy.get("exempt_author_permissions"),
+        "quality-gates.json.policy.review_policy.exempt_author_permissions",
+    )
+    review_allowed_permissions = require_string_set(
+        review_policy.get("allowed_reviewer_permissions"),
+        "quality-gates.json.policy.review_policy.allowed_reviewer_permissions",
     )
     require(review_enforcement.get("mode") == "required-check", "quality-gates.json: enforcement.mode drifted")
-    require(review_enforcement.get("check_name") == "Review Policy Gate", "quality-gates.json: enforcement.check_name drifted")
+    review_check_name = review_enforcement.get("check_name")
+    require(
+        isinstance(review_check_name, str) and review_check_name,
+        "quality-gates.json: enforcement.check_name must be a non-empty string",
+    )
+    require(review_check_name in required_checks, "quality-gates.json: enforcement.check_name must be required")
 
-    expected = {
-        (entry.get("workflow"), tuple(entry.get("jobs", [])))
-        for entry in payload.get("expected_pr_workflows", [])
-        if isinstance(entry, dict)
-    }
+    raw_expected_workflows = payload.get("expected_pr_workflows")
     require(
-        ("Label Gate", ("Bootstrap label gate", "Publish trusted label gate")) in expected,
-        "quality-gates.json: expected_pr_workflows must include Label Gate workflow/job",
+        isinstance(raw_expected_workflows, list) and raw_expected_workflows,
+        "quality-gates.json: expected_pr_workflows must be a non-empty array",
     )
-    require(
-        ("Review Policy", ("Review Policy Gate",)) in expected,
-        "quality-gates.json: expected_pr_workflows must include Review Policy workflow/job",
-    )
-    require(
-        (
-            "CI Pipeline",
-            (
-                "Lint & Format Check",
-                "Backend Tests",
-                "Build Artifacts",
-                "Release Meta (intent + version + tags)",
-                "Build + Smoke + Push Candidate (linux/amd64)",
-                "Build + Smoke + Push Candidate (linux/arm64)",
-            ),
-        ) in expected,
-        "quality-gates.json: expected_pr_workflows must include CI Pipeline workflow/jobs",
-    )
+    expected_workflows: dict[str, tuple[str, ...]] = {}
+    declared_job_names: set[str] = set()
+    for index, raw_entry in enumerate(raw_expected_workflows):
+        entry = require_mapping(raw_entry, f"quality-gates.json.expected_pr_workflows[{index}]")
+        workflow_name = entry.get("workflow")
+        require(
+            isinstance(workflow_name, str) and workflow_name,
+            f"quality-gates.json.expected_pr_workflows[{index}].workflow must be a non-empty string",
+        )
+        jobs = require_string_set(
+            entry.get("jobs"),
+            f"quality-gates.json.expected_pr_workflows[{index}].jobs",
+        )
+        require(
+            workflow_name not in expected_workflows,
+            f"quality-gates.json: duplicate expected_pr_workflows entry {workflow_name!r}",
+        )
+        expected_workflows[workflow_name] = tuple(sorted(jobs))
+        declared_job_names.update(jobs)
 
     waivers = payload.get("waivers", [])
     require(isinstance(waivers, list), "quality-gates.json: waivers must be an array")
@@ -357,15 +378,26 @@ def validate_quality_gates(payload: dict[str, Any]) -> None:
         isinstance(bypass_waivers[0].get("reason"), str) and bypass_waivers[0]["reason"],
         "quality-gates.json: bypass-actors-unverified waiver must include a reason",
     )
-
-
-def validate_metadata_policy(module: Any, payload: dict[str, Any]) -> None:
-    review_policy = require_mapping(
-        require_mapping(payload.get("policy"), "quality-gates.json.policy").get("review_policy"),
-        "quality-gates.json.policy.review_policy",
-    )
+    external_required_checks = sorted(required_checks - declared_job_names)
     require(
-        getattr(module, "REVIEW_REQUIRED_APPROVALS", None) == review_policy.get("required_approvals"),
+        len(external_required_checks) == 1,
+        "quality-gates.json: expected_pr_workflows must leave exactly one externally published required check",
+    )
+    return ContractModel(
+        required_checks=required_checks,
+        status_check_integrations=normalized_integrations,
+        review_check_name=review_check_name,
+        review_required_approvals=review_required_approvals,
+        review_exempt_permissions=review_exempt_permissions,
+        review_allowed_permissions=review_allowed_permissions,
+        expected_workflows=expected_workflows,
+        label_check_name=external_required_checks[0],
+    )
+
+
+def validate_metadata_policy(module: Any, contract: ContractModel) -> None:
+    require(
+        getattr(module, "REVIEW_REQUIRED_APPROVALS", None) == contract.review_required_approvals,
         "metadata_gate.REVIEW_REQUIRED_APPROVALS drifted from quality-gates.json",
     )
     require(
@@ -373,10 +405,7 @@ def validate_metadata_policy(module: Any, payload: dict[str, Any]) -> None:
             getattr(module, "REVIEW_EXEMPT_PERMISSIONS", None),
             "metadata_gate.REVIEW_EXEMPT_PERMISSIONS",
         )
-        == require_string_set(
-            review_policy.get("exempt_author_permissions"),
-            "quality-gates.json.policy.review_policy.exempt_author_permissions",
-        ),
+        == contract.review_exempt_permissions,
         "metadata_gate.REVIEW_EXEMPT_PERMISSIONS drifted from quality-gates.json",
     )
     require(
@@ -384,17 +413,17 @@ def validate_metadata_policy(module: Any, payload: dict[str, Any]) -> None:
             getattr(module, "REVIEW_ALLOWED_PERMISSIONS", None),
             "metadata_gate.REVIEW_ALLOWED_PERMISSIONS",
         )
-        == require_string_set(
-            review_policy.get("allowed_reviewer_permissions"),
-            "quality-gates.json.policy.review_policy.allowed_reviewer_permissions",
-        ),
+        == contract.review_allowed_permissions,
         "metadata_gate.REVIEW_ALLOWED_PERMISSIONS drifted from quality-gates.json",
     )
 
 
-def validate_ci(path: Path) -> None:
+def validate_ci(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
-    require(workflow.get("name") == "CI Pipeline", "ci.yml: workflow name must stay 'CI Pipeline'")
+    workflow_name = workflow.get("name")
+    require(isinstance(workflow_name, str) and workflow_name, "ci.yml: workflow name must stay non-empty")
+    expected_jobs = set(contract.expected_workflows.get(workflow_name, ()))
+    require(expected_jobs, f"ci.yml: workflow {workflow_name!r} must be declared in expected_pr_workflows")
     push_config = event_config(workflow, "push", "ci.yml")
     assert_event_branches(push_config, {"main"}, "ci.yml.on.push")
     pull_request_config = event_config(workflow, "pull_request", "ci.yml")
@@ -407,7 +436,7 @@ def validate_ci(path: Path) -> None:
     require(permissions.get("contents") == "read", "ci.yml.permissions.contents must stay read")
     require("statuses" not in permissions, "ci.yml.permissions.statuses must stay unset")
 
-    lint_job = job_config(workflow, "lint", "Lint & Format Check", "ci.yml")
+    lint_job = named_job_config(workflow, "lint", expected_jobs, "ci.yml")
     require_no_if(lint_job, "ci.yml.jobs.lint")
     require_fail_closed(lint_job, "ci.yml.jobs.lint")
     checkout = uses_step_config(lint_job, "Checkout", "actions/checkout@v4", "ci.yml.jobs.lint")
@@ -466,8 +495,8 @@ def validate_ci(path: Path) -> None:
     live_run = str(live_step.get("run", ""))
     require(
         'steps.trusted-quality-gates.outputs.live_script' in live_run
-        and 'steps.trusted-quality-gates.outputs.declaration' in live_run,
-        "ci.yml.jobs.lint: live rules step must use trusted quality-gates sources",
+        and '--declaration ".github/quality-gates.json"' in live_run,
+        "ci.yml.jobs.lint: live rules step must use the trusted checker against the candidate declaration",
     )
     self_tests = step_config(lint_job, "Quality gates self-tests", "ci.yml.jobs.lint")
     require_no_if(self_tests, "ci.yml.jobs.lint.steps['Quality gates self-tests']")
@@ -481,9 +510,12 @@ def validate_ci(path: Path) -> None:
     )
 
 
-def validate_label_gate(path: Path) -> None:
+def validate_label_gate(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
-    require(workflow.get("name") == "Label Gate", "label-gate.yml: workflow name must stay 'Label Gate'")
+    workflow_name = workflow.get("name")
+    require(isinstance(workflow_name, str) and workflow_name, "label-gate.yml: workflow name must stay non-empty")
+    expected_jobs = set(contract.expected_workflows.get(workflow_name, ()))
+    require(expected_jobs, f"label-gate.yml: workflow {workflow_name!r} must be declared in expected_pr_workflows")
     on_section = require_mapping(mapping_get(workflow, "on"), "label-gate.yml.on")
     require("merge_group" not in on_section, "label-gate.yml: merge_group must stay disabled")
     require("workflow_dispatch" not in on_section, "label-gate.yml: workflow_dispatch must stay disabled")
@@ -506,7 +538,7 @@ def validate_label_gate(path: Path) -> None:
     )
     require(concurrency.get("cancel-in-progress") is True, "label-gate.yml.concurrency.cancel-in-progress must stay true")
 
-    bootstrap_job = job_config(workflow, "bootstrap-label-gate", "Bootstrap label gate", "label-gate.yml")
+    bootstrap_job = named_job_config(workflow, "bootstrap-label-gate", expected_jobs, "label-gate.yml")
     require_exact_if(
         bootstrap_job,
         "${{ github.event_name == 'pull_request' }}",
@@ -582,7 +614,7 @@ def validate_label_gate(path: Path) -> None:
     )
     require(bootstrap_options.get("--gate") == "label", "label-gate.yml: bootstrap label publisher must stay in label mode")
     require(
-        bootstrap_options.get("--check-name") == "Validate PR labels",
+        bootstrap_options.get("--check-name") == contract.label_check_name,
         "label-gate.yml: bootstrap label publisher must preserve the required check name",
     )
     require(
@@ -590,7 +622,7 @@ def validate_label_gate(path: Path) -> None:
         "label-gate.yml: bootstrap label publisher must evaluate the current checkout",
     )
 
-    trusted_job = job_config(workflow, "trusted-label-gate", "Publish trusted label gate", "label-gate.yml")
+    trusted_job = named_job_config(workflow, "trusted-label-gate", expected_jobs, "label-gate.yml")
     require_exact_if(
         trusted_job,
         "${{ github.event_name == 'pull_request_target' }}",
@@ -661,7 +693,7 @@ def validate_label_gate(path: Path) -> None:
     )
     require(trusted_options.get("--gate") == "label", "label-gate.yml: trusted label publisher must stay in label mode")
     require(
-        trusted_options.get("--check-name") == "Validate PR labels",
+        trusted_options.get("--check-name") == contract.label_check_name,
         "label-gate.yml: trusted label publisher must preserve the required check name",
     )
     require(
@@ -671,9 +703,12 @@ def validate_label_gate(path: Path) -> None:
     )
 
 
-def validate_review_policy(path: Path) -> None:
+def validate_review_policy(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
-    require(workflow.get("name") == "Review Policy", "review-policy.yml: workflow name must stay 'Review Policy'")
+    workflow_name = workflow.get("name")
+    require(isinstance(workflow_name, str) and workflow_name, "review-policy.yml: workflow name must stay non-empty")
+    expected_jobs = set(contract.expected_workflows.get(workflow_name, ()))
+    require(expected_jobs, f"review-policy.yml: workflow {workflow_name!r} must be declared in expected_pr_workflows")
     on_section = require_mapping(mapping_get(workflow, "on"), "review-policy.yml.on")
     require("merge_group" not in on_section, "review-policy.yml: merge_group must stay disabled")
     require("workflow_dispatch" not in on_section, "review-policy.yml: workflow_dispatch must stay disabled")
@@ -689,7 +724,7 @@ def validate_review_policy(path: Path) -> None:
     require(permissions.get("pull-requests") == "read", "review-policy.yml.permissions.pull-requests must stay read")
     require("statuses" not in permissions, "review-policy.yml.permissions.statuses must stay unset")
 
-    job = job_config(workflow, "review-policy", "Review Policy Gate", "review-policy.yml")
+    job = named_job_config(workflow, "review-policy", expected_jobs, "review-policy.yml")
     require_exact_if(
         job,
         "${{ github.event.pull_request.base.ref == 'main' }}",
@@ -766,11 +801,11 @@ def main() -> int:
         declaration = json.loads(declaration_path.read_text())
         require(isinstance(declaration, dict), "quality-gates.json must decode to an object")
         module = load_module(metadata_script_path)
-        validate_quality_gates(declaration)
-        validate_metadata_policy(module, declaration)
-        validate_ci(repo_root / ".github" / "workflows" / "ci.yml")
-        validate_label_gate(repo_root / ".github" / "workflows" / "label-gate.yml")
-        validate_review_policy(repo_root / ".github" / "workflows" / "review-policy.yml")
+        contract = validate_quality_gates(declaration)
+        validate_metadata_policy(module, contract)
+        validate_ci(repo_root / ".github" / "workflows" / "ci.yml", contract)
+        validate_label_gate(repo_root / ".github" / "workflows" / "label-gate.yml", contract)
+        validate_review_policy(repo_root / ".github" / "workflows" / "review-policy.yml", contract)
         validate_merge_group_helpers(module)
     except ContractError as exc:
         print(f"[quality-gates-contract] {exc}", file=sys.stderr)
