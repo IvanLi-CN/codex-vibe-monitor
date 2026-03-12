@@ -135,7 +135,38 @@
 
 ## Visual Evidence (PR)
 
-- PR 界面证据将在获得主人对截图提交的明确许可后补充。
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Operational
+  state: default
+  evidence_note: 验证上游账号列表页的表格布局、分组筛选，以及 5 小时 / 7 天窗口的使用率与下次重置时间。
+  image:
+  ![Account pool operational page](./assets/account-pool-operational.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Detail Drawer
+  state: drawer-open
+  evidence_note: 验证账号详情抽屉中的身份信息、登录健康度，以及 5 小时 / 7 天窗口详情卡片。
+  image:
+  ![Account pool detail drawer](./assets/account-pool-detail-drawer.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Create Account
+  state: oauth-link-generated
+  evidence_note: 验证手动 OAuth 账号新增页的 tab 结构、复制授权链接动作，以及回调链接回填入口。
+  image:
+  ![Account pool manual OAuth create page](./assets/account-pool-create-oauth-ready.png)
 
 ## 风险 / 假设
 
