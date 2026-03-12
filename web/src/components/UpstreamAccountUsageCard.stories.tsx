@@ -13,7 +13,7 @@ const history: UpstreamAccountHistoryPoint[] = [
 ]
 
 const meta = {
-  title: 'Modules/Account Pool/Components/Upstream Account Usage Card',
+  title: 'Account Pool/Components/Upstream Account Usage Card',
   component: UpstreamAccountUsageCard,
   tags: ['autodocs'],
   parameters: {
