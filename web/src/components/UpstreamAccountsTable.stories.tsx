@@ -107,7 +107,7 @@ const meta = {
   decorators: [
     (Story) => (
       <div data-theme="light" className="min-h-screen bg-base-200 px-6 py-8 text-base-content">
-        <div className="mx-auto max-w-4xl">
+        <div className="mx-auto max-w-6xl">
           <Story />
         </div>
       </div>

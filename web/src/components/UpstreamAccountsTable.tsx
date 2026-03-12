@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from 'react'
 import { Icon } from '@iconify/react'
 import { Badge } from './ui/badge'
 import type { UpstreamAccountSummary } from '../lib/api'
@@ -25,6 +26,19 @@ function windowPercent(value?: number | null) {
   return Math.max(0, Math.min(value ?? 0, 100))
 }
 
+function formatDateTime(value?: string | null, fallback = '—') {
+  if (!value) return fallback
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat(undefined, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date)
+}
+
 function kindLabel(item: UpstreamAccountSummary, labels: UpstreamAccountsTableProps['labels']) {
   return item.kind === 'oauth_codex' ? labels.oauth : labels.apiKey
 }
@@ -36,22 +50,42 @@ function badgeVariant(status: string): 'success' | 'warning' | 'error' | 'second
   return 'secondary'
 }
 
-function MiniBar({ label, percent, text }: { label: string; percent: number; text: string }) {
+function CompactMeter({ percent, text, accentClassName }: { percent: number; text: string; accentClassName?: string }) {
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between gap-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
-        <span>{label}</span>
-        <span>{Math.round(percent)}%</span>
+    <div className="min-w-[11rem]">
+      <div className="h-2 overflow-hidden rounded-full bg-base-300/60">
+        <div
+          className={cn('h-full rounded-full bg-primary', accentClassName)}
+          style={{ width: `${percent}%` }}
+        />
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-base-300/70">
-        <div className="h-full rounded-full bg-primary" style={{ width: `${percent}%` }} />
+      <div className="mt-2 flex items-center justify-between gap-3 text-xs text-base-content/62">
+        <span className="truncate">{text}</span>
+        <span className="font-semibold text-base-content/72">{Math.round(percent)}%</span>
       </div>
-      <p className="text-xs text-base-content/60">{text}</p>
     </div>
   )
 }
 
-export function UpstreamAccountsTable({ items, selectedId, onSelect, emptyTitle, emptyDescription, labels }: UpstreamAccountsTableProps) {
+function handleRowKeyDown(
+  event: KeyboardEvent<HTMLTableRowElement>,
+  accountId: number,
+  onSelect: (accountId: number) => void,
+) {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    onSelect(accountId)
+  }
+}
+
+export function UpstreamAccountsTable({
+  items,
+  selectedId,
+  onSelect,
+  emptyTitle,
+  emptyDescription,
+  labels,
+}: UpstreamAccountsTableProps) {
   if (items.length === 0) {
     return (
       <div className="flex min-h-[16rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 py-10 text-center">
@@ -65,52 +99,104 @@ export function UpstreamAccountsTable({ items, selectedId, onSelect, emptyTitle,
   }
 
   return (
-    <div className="space-y-3">
-      {items.map((item) => {
-        const primary = windowPercent(item.primaryWindow?.usedPercent)
-        const secondary = windowPercent(item.secondaryWindow?.usedPercent)
-        const selected = item.id === selectedId
-        return (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => onSelect(item.id)}
-            className={cn(
-              'w-full rounded-[1.35rem] border px-4 py-4 text-left shadow-sm transition-transform hover:-translate-y-0.5',
-              selected
-                ? 'border-primary/45 bg-primary/10 shadow-[0_18px_38px_rgba(37,99,235,0.16)]'
-                : 'border-base-300/80 bg-base-100/72 hover:border-base-300 hover:bg-base-100/92',
-            )}
-          >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0 space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="truncate text-base font-semibold text-base-content">{item.displayName}</h3>
-                  <Badge variant={badgeVariant(item.status)}>{labels.status(item.status)}</Badge>
-                  <Badge variant="secondary">{kindLabel(item, labels)}</Badge>
-                  {item.planType ? <Badge variant="secondary">{item.planType}</Badge> : null}
-                </div>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-base-content/60">
-                  {item.email ? <span>{item.email}</span> : null}
-                  {item.maskedApiKey ? <span>{item.maskedApiKey}</span> : null}
-                  <span>
-                    {labels.sync}: {item.lastSuccessfulSyncAt ?? labels.never}
-                  </span>
-                </div>
-              </div>
-              <Icon
-                icon={selected ? 'mdi:chevron-right-circle' : 'mdi:chevron-right'}
-                className={cn('h-5 w-5 shrink-0', selected ? 'text-primary' : 'text-base-content/35')}
-                aria-hidden
-              />
-            </div>
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              <MiniBar label={labels.primary} percent={primary} text={item.primaryWindow?.usedText ?? '—'} />
-              <MiniBar label={labels.secondary} percent={secondary} text={item.secondaryWindow?.usedText ?? '—'} />
-            </div>
-          </button>
-        )
-      })}
+    <div className="overflow-hidden rounded-[1.35rem] border border-base-300/80 bg-base-100/72">
+      <div className="overflow-x-auto">
+        <table className="min-w-[940px] w-full border-collapse">
+          <thead>
+            <tr className="border-b border-base-300/80 bg-base-100/86 text-left">
+              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                Account
+              </th>
+              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                Status
+              </th>
+              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                Type
+              </th>
+              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                Plan
+              </th>
+              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                {labels.sync}
+              </th>
+              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                {labels.primary}
+              </th>
+              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                {labels.secondary}
+              </th>
+              <th className="w-12 px-4 py-3" aria-hidden />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, index) => {
+              const primary = windowPercent(item.primaryWindow?.usedPercent)
+              const secondary = windowPercent(item.secondaryWindow?.usedPercent)
+              const selected = item.id === selectedId
+              return (
+                <tr
+                  key={item.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={selected}
+                  onClick={() => onSelect(item.id)}
+                  onKeyDown={(event) => handleRowKeyDown(event, item.id, onSelect)}
+                  className={cn(
+                    'cursor-pointer border-b border-base-300/70 align-top outline-none transition-colors last:border-b-0 hover:bg-base-100/88 focus-visible:bg-base-100/88',
+                    selected && 'bg-primary/10',
+                    index % 2 === 1 && !selected && 'bg-base-100/32',
+                  )}
+                >
+                  <td className="px-4 py-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="max-w-[18rem] truncate text-base font-semibold text-base-content">
+                          {item.displayName}
+                        </span>
+                        {!item.enabled ? (
+                          <span className="rounded-full bg-base-300/70 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
+                            Off
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="max-w-[22rem] truncate text-sm text-base-content/60">
+                        {item.email ?? item.maskedApiKey ?? '—'}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-4">
+                    <Badge variant={badgeVariant(item.status)}>{labels.status(item.status)}</Badge>
+                  </td>
+                  <td className="px-4 py-4">
+                    <Badge variant="secondary">{kindLabel(item, labels)}</Badge>
+                  </td>
+                  <td className="px-4 py-4 text-sm text-base-content/72">{item.planType ?? '—'}</td>
+                  <td className="px-4 py-4 text-sm text-base-content/72">
+                    {formatDateTime(item.lastSuccessfulSyncAt, labels.never)}
+                  </td>
+                  <td className="px-4 py-4">
+                    <CompactMeter percent={primary} text={item.primaryWindow?.usedText ?? '—'} />
+                  </td>
+                  <td className="px-4 py-4">
+                    <CompactMeter
+                      percent={secondary}
+                      text={item.secondaryWindow?.usedText ?? '—'}
+                      accentClassName="bg-secondary"
+                    />
+                  </td>
+                  <td className="px-4 py-4 text-right">
+                    <Icon
+                      icon={selected ? 'mdi:chevron-right-circle' : 'mdi:chevron-right'}
+                      className={cn('h-5 w-5', selected ? 'text-primary' : 'text-base-content/35')}
+                      aria-hidden
+                    />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
