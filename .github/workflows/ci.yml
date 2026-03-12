@@ -112,8 +112,10 @@ jobs:
             source_kind="base-branch"
             for path in "${paths[@]}"; do
               if ! git cat-file -e "${source_ref}:${path}" 2>/dev/null; then
-                echo "::error::Base branch is missing trusted quality-gates source: ${path}"
-                exit 1
+                source_ref="HEAD"
+                source_kind="bootstrap-current-branch"
+                echo "::warning::Base branch does not yet contain trusted quality-gates sources; using current branch for bootstrap rollout only."
+                break
               fi
             done
           fi

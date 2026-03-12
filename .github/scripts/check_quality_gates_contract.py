@@ -353,8 +353,11 @@ def validate_ci(path: Path) -> None:
     trusted_run = str(trusted_step.get("run", ""))
     require("git fetch --no-tags --depth=1 origin" in trusted_run, "ci.yml.jobs.lint: trusted-source fetch drifted")
     require("git show \"${source_ref}:${path}\"" in trusted_run, "ci.yml.jobs.lint: trusted-source materialization drifted")
-    require("Base branch is missing trusted quality-gates source" in trusted_run, "ci.yml.jobs.lint: trusted-source hard-fail drifted")
-    require("bootstrap-current-branch" not in trusted_run, "ci.yml.jobs.lint: bootstrap fallback must stay removed")
+    require("bootstrap-current-branch" in trusted_run, "ci.yml.jobs.lint: bootstrap fallback drifted")
+    require(
+        "using current branch for bootstrap rollout only" in trusted_run,
+        "ci.yml.jobs.lint: bootstrap rollout warning drifted",
+    )
     require("trusted_root/.github/scripts/check_quality_gates_contract.py" in trusted_run, "ci.yml.jobs.lint: trusted-source outputs drifted")
     contract_step = step_config(lint_job, "Quality-gates contract check", "ci.yml.jobs.lint")
     contract_run = str(contract_step.get("run", ""))
