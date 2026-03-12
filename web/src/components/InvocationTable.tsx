@@ -7,6 +7,7 @@ import {
   getFastIndicatorState,
   type FastIndicatorState,
 } from '../lib/invocation'
+import { resolveInvocationDisplayStatus } from '../lib/invocationStatus'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { Alert } from './ui/alert'
@@ -300,7 +301,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
     () =>
       records.map((record) => {
         const occurred = new Date(record.occurredAt)
-        const normalizedStatus = (record.status ?? 'unknown').toLowerCase()
+        const normalizedStatus = (resolveInvocationDisplayStatus(record) || 'unknown').toLowerCase()
         const meta = STATUS_META[normalizedStatus] ?? FALLBACK_STATUS_META
         const recordId = record.id
         const errorMessage = record.errorMessage?.trim() ?? ''

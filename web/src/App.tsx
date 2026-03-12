@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './components/AppLayout'
 import DashboardPage from './pages/Dashboard'
 import LivePage from './pages/Live'
+import RecordsPage from './pages/Records'
 import SettingsPage from './pages/Settings'
 import StatsPage from './pages/Stats'
 
@@ -13,6 +14,7 @@ function App() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="stats" element={<StatsPage />} />
         <Route path="live" element={<LivePage />} />
+        <Route path="records" element={<RecordsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>

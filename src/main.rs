@@ -3275,6 +3275,15 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
         )
         .route("/api/settings/pricing", put(put_pricing_settings))
         .route("/api/invocations", get(list_invocations))
+        .route("/api/invocations/summary", get(fetch_invocation_summary))
+        .route(
+            "/api/invocations/suggestions",
+            get(fetch_invocation_suggestions),
+        )
+        .route(
+            "/api/invocations/new-count",
+            get(fetch_invocation_new_records_count),
+        )
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
         .route(
@@ -3970,6 +3979,150 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_model_occurred_at
+        ON codex_invocations (model, occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_model_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_failure_kind_occurred_at
+        ON codex_invocations (failure_kind, occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_failure_kind_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_endpoint_occurred_at
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.endpoint') AS TEXT)) END),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_endpoint_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_requester_ip_occurred_at
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.requesterIp') AS TEXT)) END),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_requester_ip_occurred_at")?;
+
+    // The records analytics page compares trimmed lowercase text for exact-match filters.
+    // Mirror those expressions in dedicated indexes so high-volume searches avoid full index scans.
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_model_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(model, '')))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_model_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_failure_kind_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END,
+                failure_kind
+            ), '')))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_failure_kind_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_endpoint_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.endpoint') AS TEXT) END,
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_endpoint_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_requester_ip_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END,
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_requester_ip_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END,
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_proxy_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                COALESCE(
+                    NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), ''),
+                    CASE WHEN TRIM(source) != 'proxy' THEN TRIM(source) END
+                ),
+                ''
+            )))),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_proxy_filter_occurred_at")?;
 
     sqlx::query(
         r#"
