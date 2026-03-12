@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@iconify/react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../../components/ui/alert'
 import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { Spinner } from '../../components/ui/spinner'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import type { LoginSessionStatusResponse } from '../../lib/api'
+import { copyText, selectAllReadonlyText } from '../../lib/clipboard'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
@@ -41,26 +43,6 @@ function parseAccountId(search: string): number | null {
   if (!value) return null
   const parsed = Number(value)
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null
-}
-
-async function copyText(value: string) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value)
-    return
-  }
-
-  const input = document.createElement('textarea')
-  input.value = value
-  input.setAttribute('readonly', '')
-  input.style.position = 'absolute'
-  input.style.left = '-9999px'
-  document.body.appendChild(input)
-  input.select()
-  const copied = document.execCommand('copy')
-  document.body.removeChild(input)
-  if (!copied) {
-    throw new Error('copy failed')
-  }
 }
 
 export default function UpstreamAccountCreatePage() {
@@ -100,6 +82,8 @@ export default function UpstreamAccountCreatePage() {
   const [sessionHint, setSessionHint] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
+  const [manualCopyOpen, setManualCopyOpen] = useState(false)
+  const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
 
   const groupSuggestions = Array.from(
     new Set(
@@ -116,6 +100,14 @@ export default function UpstreamAccountCreatePage() {
     setOauthGroupName((current) => current || relinkSummary.groupName || '')
   }, [isRelinking, relinkSummary])
 
+  useEffect(() => {
+    if (!manualCopyOpen) return
+    const frame = window.requestAnimationFrame(() => {
+      selectAllReadonlyText(manualCopyFieldRef.current)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [manualCopyOpen])
+
   const handleGenerateOauthUrl = async () => {
     setActionError(null)
     setSessionHint(null)
@@ -128,6 +120,7 @@ export default function UpstreamAccountCreatePage() {
         accountId: relinkAccountId ?? undefined,
       })
       setSession(response)
+      setManualCopyOpen(false)
       setOauthCallbackUrl('')
       setSessionHint(
         t('accountPool.upstreamAccounts.oauth.generated', {
@@ -144,16 +137,17 @@ export default function UpstreamAccountCreatePage() {
   const handleCopyOauthUrl = async () => {
     if (!session?.authUrl) return
     setActionError(null)
-    try {
-      await copyText(session.authUrl)
+    const result = await copyText(session.authUrl, {
+      preferExecCommand: true,
+    })
+    if (result.ok) {
+      setManualCopyOpen(false)
       setSessionHint(t('accountPool.upstreamAccounts.oauth.copied'))
-    } catch (err) {
-      setActionError(
-        err instanceof Error && err.message !== 'copy failed'
-          ? err.message
-          : t('accountPool.upstreamAccounts.oauth.copyFailed'),
-      )
+      return
     }
+
+    setManualCopyOpen(true)
+    setSessionHint(t('accountPool.upstreamAccounts.oauth.copyFailed'))
   }
 
   const handleCompleteOauth = async () => {
@@ -339,52 +333,69 @@ export default function UpstreamAccountCreatePage() {
                   </label>
 
                   <div className="rounded-2xl border border-base-300/80 bg-base-200/40 p-4 sm:p-5">
-                    <div className="space-y-1">
-                      <h3 className="text-sm font-semibold text-base-content">
-                        {t('accountPool.upstreamAccounts.oauth.manualFlowTitle')}
-                      </h3>
-                      <p className="text-sm text-base-content/70">
-                        {t('accountPool.upstreamAccounts.oauth.manualFlowDescription')}
-                      </p>
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="space-y-1">
+                        <h3 className="text-sm font-semibold text-base-content">
+                          {t('accountPool.upstreamAccounts.oauth.manualFlowTitle')}
+                        </h3>
+                        <p className="text-sm text-base-content/70">
+                          {t('accountPool.upstreamAccounts.oauth.manualFlowDescription')}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => void handleGenerateOauthUrl()}
+                          disabled={busyAction === 'oauth-generate' || !writesEnabled}
+                        >
+                          {busyAction === 'oauth-generate' ? (
+                            <Spinner size="sm" className="mr-2" />
+                          ) : (
+                            <Icon icon="mdi:link-variant-plus" className="mr-2 h-4 w-4" aria-hidden />
+                          )}
+                          {session?.status === 'pending'
+                            ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
+                            : t('accountPool.upstreamAccounts.actions.generateOauthUrl')}
+                        </Button>
+                        <Popover open={manualCopyOpen} onOpenChange={setManualCopyOpen}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              onClick={() => void handleCopyOauthUrl()}
+                              disabled={!oauthSessionActive || !session?.authUrl}
+                            >
+                              <Icon icon="mdi:content-copy" className="mr-2 h-4 w-4" aria-hidden />
+                              {t('accountPool.upstreamAccounts.actions.copyOauthUrl')}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent align="end" sideOffset={10} className="w-[min(36rem,calc(100vw-2rem))] rounded-2xl border-base-300 bg-base-100 p-4 shadow-xl">
+                            <div className="space-y-3">
+                              <div className="space-y-1">
+                                <p className="text-sm font-semibold text-base-content">
+                                  {t('accountPool.upstreamAccounts.oauth.manualCopyTitle')}
+                                </p>
+                                <p className="text-sm text-base-content/65">
+                                  {t('accountPool.upstreamAccounts.oauth.manualCopyDescription')}
+                                </p>
+                              </div>
+                              <textarea
+                                ref={manualCopyFieldRef}
+                                readOnly
+                                value={session?.authUrl ?? ''}
+                                className="min-h-28 w-full rounded-xl border border-base-300 bg-base-100 px-3 py-2 font-mono text-xs text-base-content shadow-sm focus-visible:outline-none"
+                                onClick={(event) => selectAllReadonlyText(event.currentTarget)}
+                                onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
+                              />
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      </div>
                     </div>
 
                     <div className="mt-4 grid gap-4">
-                      <div className="rounded-xl border border-dashed border-base-300/90 bg-base-100/55 p-4">
-                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                          <div className="space-y-1">
-                            <p className="text-sm font-medium text-base-content">
-                              {t('accountPool.upstreamAccounts.oauth.authUrlLabel')}
-                            </p>
-                            <p className="text-xs text-base-content/65">
-                              {t('accountPool.upstreamAccounts.oauth.authUrlDescription')}
-                            </p>
-                          </div>
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            onClick={() => void handleCopyOauthUrl()}
-                            disabled={!oauthSessionActive || !session?.authUrl}
-                          >
-                            <Icon icon="mdi:content-copy" className="mr-2 h-4 w-4" aria-hidden />
-                            {t('accountPool.upstreamAccounts.actions.copyOauthUrl')}
-                          </Button>
-                        </div>
-                        <textarea
-                          readOnly
-                          value={session?.authUrl ?? ''}
-                          placeholder={t('accountPool.upstreamAccounts.oauth.authUrlPlaceholder')}
-                          className="mt-3 min-h-28 w-full rounded-xl border border-base-300 bg-base-100 px-3 py-2 font-mono text-xs text-base-content/80 shadow-sm focus-visible:outline-none"
-                        />
-                      </div>
-
-                      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                        <label className="field">
-                          <span className="field-label">{t('accountPool.upstreamAccounts.oauth.redirectUriLabel')}</span>
-                          <Input readOnly value={session?.redirectUri ?? ''} placeholder={t('accountPool.upstreamAccounts.oauth.redirectUriPlaceholder')} />
-                          <span className="text-xs text-base-content/60">
-                            {t('accountPool.upstreamAccounts.oauth.redirectUriDescription')}
-                          </span>
-                        </label>
+                      <div className="grid gap-4">
                         <label className="field">
                           <span className="field-label">{t('accountPool.upstreamAccounts.oauth.callbackUrlLabel')}</span>
                           <textarea
@@ -405,21 +416,6 @@ export default function UpstreamAccountCreatePage() {
                   <div className="flex flex-wrap justify-end gap-2">
                     <Button asChild type="button" variant="ghost">
                       <Link to="/account-pool/upstream-accounts">{t('accountPool.upstreamAccounts.actions.cancel')}</Link>
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => void handleGenerateOauthUrl()}
-                      disabled={busyAction === 'oauth-generate' || !writesEnabled}
-                    >
-                      {busyAction === 'oauth-generate' ? (
-                        <Spinner size="sm" className="mr-2" />
-                      ) : (
-                        <Icon icon="mdi:link-variant-plus" className="mr-2 h-4 w-4" aria-hidden />
-                      )}
-                      {session?.status === 'pending'
-                        ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
-                        : t('accountPool.upstreamAccounts.actions.generateOauthUrl')}
                     </Button>
                     <Button
                       type="button"
