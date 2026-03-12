@@ -1,5 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useMemo, useState } from 'react'
 import { Icon } from '@iconify/react'
+import { Button } from './ui/button'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from './ui/command'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { cn } from '../lib/utils'
 
 interface UpstreamAccountGroupComboboxProps {
@@ -8,9 +19,12 @@ interface UpstreamAccountGroupComboboxProps {
   suggestions: string[]
   name?: string
   placeholder?: string
+  searchPlaceholder?: string
+  emptyLabel?: string
+  createLabel?: (value: string) => string
   ariaLabel?: string
   className?: string
-  inputClassName?: string
+  triggerClassName?: string
 }
 
 function normalizeSuggestions(suggestions: string[]) {
@@ -30,166 +44,97 @@ export function UpstreamAccountGroupCombobox({
   suggestions,
   name,
   placeholder,
+  searchPlaceholder,
+  emptyLabel = 'No groups found.',
+  createLabel = (nextValue) => `Use "${nextValue}"`,
   ariaLabel,
   className,
-  inputClassName,
+  triggerClassName,
 }: UpstreamAccountGroupComboboxProps) {
-  const rootRef = useRef<HTMLDivElement | null>(null)
-  const inputRef = useRef<HTMLInputElement | null>(null)
   const [open, setOpen] = useState(false)
-  const [highlightedIndex, setHighlightedIndex] = useState(0)
-
+  const [query, setQuery] = useState('')
   const uniqueSuggestions = useMemo(() => normalizeSuggestions(suggestions), [suggestions])
-  const normalizedValue = value.trim().toLocaleLowerCase()
-  const filteredSuggestions = useMemo(() => {
-    if (!normalizedValue) return uniqueSuggestions
-    return uniqueSuggestions.filter((suggestion) =>
-      suggestion.toLocaleLowerCase().includes(normalizedValue),
+  const trimmedValue = value.trim()
+  const trimmedQuery = query.trim()
+  const showCreateOption =
+    trimmedQuery.length > 0
+    && !uniqueSuggestions.some(
+      (suggestion) => suggestion.toLocaleLowerCase() === trimmedQuery.toLocaleLowerCase(),
     )
-  }, [normalizedValue, uniqueSuggestions])
-
-  useEffect(() => {
-    setHighlightedIndex(0)
-  }, [normalizedValue, open])
-
-  useEffect(() => {
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false)
-      }
-    }
-
-    document.addEventListener('pointerdown', handlePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePointerDown)
-  }, [])
 
   const commitValue = (nextValue: string) => {
     onValueChange(nextValue)
+    setQuery('')
     setOpen(false)
   }
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      if (!open) {
-        setOpen(true)
-        return
-      }
-      setHighlightedIndex((current) =>
-        filteredSuggestions.length === 0 ? 0 : Math.min(current + 1, filteredSuggestions.length - 1),
-      )
-      return
-    }
-
-    if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      if (!open) {
-        setOpen(true)
-        return
-      }
-      setHighlightedIndex((current) => Math.max(current - 1, 0))
-      return
-    }
-
-    if (event.key === 'Enter') {
-      if (!open) return
-      event.preventDefault()
-      const highlighted = filteredSuggestions[highlightedIndex]
-      if (highlighted) {
-        commitValue(highlighted)
-      } else {
-        setOpen(false)
-      }
-      return
-    }
-
-    if (event.key === 'Escape') {
-      setOpen(false)
-    }
-  }
-
   return (
-    <div ref={rootRef} className={cn('relative', className)}>
-      <div
-        className={cn(
-          'flex h-10 w-full items-center overflow-hidden rounded-lg border border-base-300 bg-base-100 shadow-sm',
-          'focus-within:ring-2 focus-within:ring-primary focus-within:ring-offset-2 focus-within:ring-offset-base-100',
-        )}
+    <div className={className}>
+      <input type="hidden" name={name} value={value} />
+      <Popover
+        open={open}
+        onOpenChange={(nextOpen) => {
+          setOpen(nextOpen)
+          if (!nextOpen) {
+            setQuery('')
+          }
+        }}
       >
-        <input
-          ref={inputRef}
-          type="text"
-          name={name}
-          value={value}
-          autoComplete="off"
-          aria-label={ariaLabel}
-          aria-autocomplete="list"
-          aria-expanded={open}
-          role="combobox"
-          placeholder={placeholder}
-          className={cn(
-            'h-full w-full border-0 bg-transparent px-3 text-sm text-base-content placeholder:text-base-content/45 focus:outline-none',
-            inputClassName,
-          )}
-          onFocus={() => setOpen(true)}
-          onKeyDown={handleKeyDown}
-          onChange={(event) => {
-            onValueChange(event.target.value)
-            setOpen(true)
-          }}
-        />
-        <button
-          type="button"
-          aria-label="Toggle group suggestions"
-          className={cn(
-            'flex h-full w-11 shrink-0 items-center justify-center border-l border-base-300/80 bg-base-100/95 text-base-content/55',
-            'hover:bg-base-200/70 hover:text-base-content/85',
-          )}
-          onClick={() => {
-            setOpen((current) => !current)
-            inputRef.current?.focus()
-          }}
-        >
-          <Icon
-            icon={open ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-            className="h-4 w-4"
-            aria-hidden
-          />
-        </button>
-      </div>
-
-      {open && filteredSuggestions.length > 0 ? (
-        <div className="absolute left-0 right-0 top-[calc(100%+0.4rem)] z-30 rounded-xl border border-base-300/90 bg-base-100/98 p-1.5 shadow-2xl backdrop-blur">
-          <ul className="max-h-56 overflow-y-auto" role="listbox">
-            {filteredSuggestions.map((suggestion, index) => {
-              const selected = suggestion === value
-              const highlighted = highlightedIndex === index
-              return (
-                <li key={suggestion}>
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={selected}
-                    className={cn(
-                      'flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-base-content/82',
-                      highlighted && 'bg-primary/16 text-base-content',
-                      selected && 'font-semibold text-primary',
-                    )}
-                    onMouseEnter={() => setHighlightedIndex(index)}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => commitValue(suggestion)}
-                  >
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            aria-label={ariaLabel}
+            className={cn(
+              'h-10 w-full justify-between rounded-lg bg-base-100 px-3 text-left font-normal hover:bg-base-100',
+              'border-base-300 text-base-content shadow-sm',
+              !trimmedValue && 'text-base-content/45',
+              triggerClassName,
+            )}
+          >
+            <span className="truncate">{trimmedValue || placeholder}</span>
+            <Icon icon="mdi:chevron-down" className="ml-2 h-4 w-4 shrink-0 text-base-content/45" aria-hidden />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+          <Command shouldFilter>
+            <CommandInput
+              value={query}
+              placeholder={searchPlaceholder}
+              onValueChange={setQuery}
+            />
+            <CommandList>
+              <CommandEmpty>{emptyLabel}</CommandEmpty>
+              <CommandGroup>
+                {showCreateOption ? (
+                  <>
+                    <CommandItem value={trimmedQuery} onSelect={() => commitValue(trimmedQuery)}>
+                      <Icon icon="mdi:plus-circle-outline" className="mr-2 h-4 w-4 text-primary" aria-hidden />
+                      <span className="truncate">{createLabel(trimmedQuery)}</span>
+                    </CommandItem>
+                    <CommandSeparator />
+                  </>
+                ) : null}
+                {uniqueSuggestions.map((suggestion) => (
+                  <CommandItem key={suggestion} value={suggestion} onSelect={() => commitValue(suggestion)}>
+                    <Icon
+                      icon="mdi:check"
+                      className={cn(
+                        'mr-2 h-4 w-4 text-primary transition-opacity',
+                        suggestion === trimmedValue ? 'opacity-100' : 'opacity-0',
+                      )}
+                      aria-hidden
+                    />
                     <span className="truncate">{suggestion}</span>
-                    {selected ? (
-                      <Icon icon="mdi:check" className="ml-auto h-4 w-4 shrink-0 text-primary" aria-hidden />
-                    ) : null}
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        </div>
-      ) : null}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
     </div>
   )
 }

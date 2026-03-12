@@ -554,6 +554,9 @@ export default function UpstreamAccountsPage() {
                     value={groupFilterQuery}
                     suggestions={groupFilterSuggestions}
                     placeholder={t('accountPool.upstreamAccounts.groupFilterPlaceholder')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.groupFilterSearchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.groupFilterEmpty')}
+                    createLabel={(value) => t('accountPool.upstreamAccounts.groupFilterUseValue', { value })}
                     onValueChange={setGroupFilterQuery}
                   />
                 </label>
@@ -680,6 +683,9 @@ export default function UpstreamAccountsPage() {
                       value={draft.groupName}
                       suggestions={availableGroups.names}
                       placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                      searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                      emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                      createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
                       onValueChange={(value) => setDraft((current) => ({ ...current, groupName: value }))}
                     />
                   </label>

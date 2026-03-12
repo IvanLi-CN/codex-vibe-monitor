@@ -274,6 +274,9 @@ export default function UpstreamAccountCreatePage() {
                       value={oauthGroupName}
                       suggestions={groupSuggestions}
                       placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                      searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                      emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                      createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
                       onValueChange={setOauthGroupName}
                     />
                   </label>
@@ -317,6 +320,9 @@ export default function UpstreamAccountCreatePage() {
                       value={apiKeyGroupName}
                       suggestions={groupSuggestions}
                       placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                      searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                      emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                      createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
                       onValueChange={setApiKeyGroupName}
                     />
                   </label>
