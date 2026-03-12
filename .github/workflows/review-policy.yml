@@ -2,6 +2,8 @@ name: Review Policy
 
 on:
   pull_request:
+    branches:
+      - main
     types:
       - opened
       - reopened
@@ -9,6 +11,7 @@ on:
       - ready_for_review
       - labeled
       - unlabeled
+      - edited
   pull_request_review:
     types:
       - submitted
@@ -120,9 +123,13 @@ jobs:
               })
 
               const latestByUser = new Map()
+              const decisionStates = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'])
               for (const review of reviews) {
                 const reviewer = review.user?.login
                 if (!reviewer || review.state === 'PENDING') {
+                  continue
+                }
+                if (!decisionStates.has(review.state)) {
                   continue
                 }
                 latestByUser.set(reviewer, review)
