@@ -98,7 +98,7 @@ const labels = {
 }
 
 const meta = {
-  title: 'Components/Account Pool/Upstream Accounts Table',
+  title: 'Account Pool/Components/Upstream Accounts Table',
   component: UpstreamAccountsTable,
   tags: ['autodocs'],
   parameters: {
