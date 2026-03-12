@@ -694,6 +694,7 @@ export interface UpstreamAccountSummary {
   kind: 'oauth_codex' | 'api_key_codex' | string
   provider: string
   displayName: string
+  groupName?: string | null
   status: 'active' | 'syncing' | 'needs_reauth' | 'error' | 'disabled' | string
   enabled: boolean
   email?: string | null
@@ -734,12 +735,14 @@ export interface LoginSessionStatusResponse {
 
 export interface CreateOauthLoginSessionPayload {
   displayName?: string
+  groupName?: string
   note?: string
   accountId?: number
 }
 
 export interface CreateApiKeyAccountPayload {
   displayName: string
+  groupName?: string
   note?: string
   apiKey: string
   localPrimaryLimit?: number
@@ -749,6 +752,7 @@ export interface CreateApiKeyAccountPayload {
 
 export interface UpdateUpstreamAccountPayload {
   displayName?: string
+  groupName?: string
   note?: string
   enabled?: boolean
   apiKey?: string
@@ -806,6 +810,7 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
     kind,
     provider,
     displayName,
+    groupName: typeof payload.groupName === 'string' ? payload.groupName : null,
     status,
     enabled: payload.enabled !== false,
     email: typeof payload.email === 'string' ? payload.email : null,

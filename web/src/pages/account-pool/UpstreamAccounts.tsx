@@ -18,6 +18,7 @@ import { useTranslation } from '../../i18n'
 
 type AccountDraft = {
   displayName: string
+  groupName: string
   note: string
   localPrimaryLimit: string
   localSecondaryLimit: string
@@ -59,6 +60,7 @@ function normalizeNumberInput(value: string): number | undefined {
 function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
   return {
     displayName: detail?.displayName ?? '',
+    groupName: detail?.groupName ?? '',
     note: detail?.note ?? '',
     localPrimaryLimit:
       detail?.localLimits?.primaryLimit == null ? '' : String(detail.localLimits.primaryLimit),
@@ -210,6 +212,7 @@ export default function UpstreamAccountsPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
+  const [activeGroupFilter, setActiveGroupFilter] = useState('__all__')
   const popupRef = useRef<Window | null>(null)
 
   useEffect(() => {
@@ -290,6 +293,45 @@ export default function UpstreamAccountsPage() {
     ]
   }, [items, t])
 
+  const availableGroups = useMemo(() => {
+    const values = new Set<string>()
+    let hasUngrouped = false
+    for (const item of items) {
+      const groupName = item.groupName?.trim()
+      if (groupName) {
+        values.add(groupName)
+      } else {
+        hasUngrouped = true
+      }
+    }
+    return {
+      names: Array.from(values).sort((left, right) => left.localeCompare(right)),
+      hasUngrouped,
+    }
+  }, [items])
+
+  const filteredItems = useMemo(() => {
+    if (activeGroupFilter === '__all__') return items
+    if (activeGroupFilter === '__ungrouped__') {
+      return items.filter((item) => !item.groupName?.trim())
+    }
+    return items.filter((item) => item.groupName?.trim() === activeGroupFilter)
+  }, [activeGroupFilter, items])
+
+  useEffect(() => {
+    const visible = activeGroupFilter === '__all__'
+      || activeGroupFilter === '__ungrouped__' && availableGroups.hasUngrouped
+      || availableGroups.names.includes(activeGroupFilter)
+    if (visible) return
+    setActiveGroupFilter('__all__')
+  }, [activeGroupFilter, availableGroups])
+
+  useEffect(() => {
+    if (filteredItems.length === 0) return
+    if (filteredItems.some((item) => item.id === selectedId)) return
+    selectAccount(filteredItems[0].id)
+  }, [filteredItems, selectAccount, selectedId])
+
   const selected = detail ?? selectedSummary
   const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
   const accountKindLabel = (kind: string) =>
@@ -332,6 +374,7 @@ export default function UpstreamAccountsPage() {
     try {
       await saveAccount(source.id, {
         displayName: draft.displayName.trim() || undefined,
+        groupName: draft.groupName.trim(),
         note: draft.note.trim() || undefined,
         apiKey: source.kind === 'api_key_codex' && draft.apiKey.trim() ? draft.apiKey.trim() : undefined,
         localPrimaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localPrimaryLimit) : undefined,
@@ -506,8 +549,45 @@ export default function UpstreamAccountsPage() {
                 {isLoading ? <Spinner className="text-primary" /> : null}
               </div>
             </div>
+            <div className="segment-group self-start" role="tablist" aria-label={t('accountPool.upstreamAccounts.groupFilterLabel')}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeGroupFilter === '__all__'}
+                className="segment-button"
+                data-active={activeGroupFilter === '__all__'}
+                onClick={() => setActiveGroupFilter('__all__')}
+              >
+                {t('accountPool.upstreamAccounts.groupFilter.all')}
+              </button>
+              {availableGroups.names.map((groupName) => (
+                <button
+                  key={groupName}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeGroupFilter === groupName}
+                  className="segment-button"
+                  data-active={activeGroupFilter === groupName}
+                  onClick={() => setActiveGroupFilter(groupName)}
+                >
+                  {groupName}
+                </button>
+              ))}
+              {availableGroups.hasUngrouped ? (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeGroupFilter === '__ungrouped__'}
+                  className="segment-button"
+                  data-active={activeGroupFilter === '__ungrouped__'}
+                  onClick={() => setActiveGroupFilter('__ungrouped__')}
+                >
+                  {t('accountPool.upstreamAccounts.groupFilter.ungrouped')}
+                </button>
+              ) : null}
+            </div>
             <UpstreamAccountsTable
-              items={items}
+              items={filteredItems}
               selectedId={selectedId}
               onSelect={handleSelectAccount}
               emptyTitle={t('accountPool.upstreamAccounts.emptyTitle')}
@@ -515,6 +595,7 @@ export default function UpstreamAccountsPage() {
               labels={{
                 sync: t('accountPool.upstreamAccounts.table.lastSync'),
                 never: t('accountPool.upstreamAccounts.never'),
+                group: t('accountPool.upstreamAccounts.fields.groupName'),
                 primary: t('accountPool.upstreamAccounts.primaryWindowLabel'),
                 secondary: t('accountPool.upstreamAccounts.secondaryWindowLabel'),
                 nextReset: t('accountPool.upstreamAccounts.table.nextReset'),
@@ -595,6 +676,7 @@ export default function UpstreamAccountsPage() {
             {detail ? (
               <div className="grid gap-5">
                 <div className="metric-grid">
+                  <DetailField label={t('accountPool.upstreamAccounts.fields.groupName')} value={detail.groupName ?? ''} />
                   <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={detail.email ?? ''} />
                   <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={detail.chatgptAccountId ?? detail.maskedApiKey ?? ''} />
                   <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={detail.chatgptUserId ?? ''} />
@@ -607,12 +689,20 @@ export default function UpstreamAccountsPage() {
                     <CardDescription>{t('accountPool.upstreamAccounts.editDescription')}</CardDescription>
                   </CardHeader>
                   <CardContent className="grid gap-4 md:grid-cols-2">
-                    <label className="field md:col-span-2">
-                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                      <Input name="detailDisplayName" value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} />
-                    </label>
-                    <label className="field md:col-span-2">
-                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
+                  <label className="field md:col-span-2">
+                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                    <Input name="detailDisplayName" value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} />
+                  </label>
+                  <label className="field md:col-span-2">
+                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
+                    <Input
+                      name="detailGroupName"
+                      value={draft.groupName}
+                      onChange={(event) => setDraft((current) => ({ ...current, groupName: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field md:col-span-2">
+                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
                       <textarea
                         className="min-h-24 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
                         name="detailNote"

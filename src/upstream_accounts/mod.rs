@@ -122,6 +122,7 @@ pub(crate) struct UpstreamAccountSummary {
     kind: String,
     provider: String,
     display_name: String,
+    group_name: Option<String>,
     status: String,
     enabled: bool,
     email: Option<String>,
@@ -200,6 +201,7 @@ pub(crate) struct LoginSessionStatusResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateOauthLoginSessionRequest {
     display_name: Option<String>,
+    group_name: Option<String>,
     note: Option<String>,
     account_id: Option<i64>,
 }
@@ -208,6 +210,7 @@ pub(crate) struct CreateOauthLoginSessionRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateApiKeyAccountRequest {
     display_name: String,
+    group_name: Option<String>,
     note: Option<String>,
     api_key: String,
     local_primary_limit: Option<f64>,
@@ -219,6 +222,7 @@ pub(crate) struct CreateApiKeyAccountRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateUpstreamAccountRequest {
     display_name: Option<String>,
+    group_name: Option<String>,
     note: Option<String>,
     enabled: Option<bool>,
     api_key: Option<String>,
@@ -336,6 +340,7 @@ struct UpstreamAccountRow {
     kind: String,
     provider: String,
     display_name: String,
+    group_name: Option<String>,
     note: Option<String>,
     status: String,
     enabled: i64,
@@ -382,6 +387,7 @@ struct OauthLoginSessionRow {
     login_id: String,
     account_id: Option<i64>,
     display_name: Option<String>,
+    group_name: Option<String>,
     note: Option<String>,
     state: String,
     pkce_verifier: String,
@@ -403,6 +409,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             kind TEXT NOT NULL,
             provider TEXT NOT NULL DEFAULT 'codex',
             display_name TEXT NOT NULL,
+            group_name TEXT,
             note TEXT,
             status TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
@@ -430,6 +437,10 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context("failed to ensure pool_upstream_accounts table existence")?;
 
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "group_name")
+        .await
+        .context("failed to ensure pool_upstream_accounts.group_name")?;
+
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_pool_upstream_accounts_kind_enabled
@@ -456,6 +467,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             login_id TEXT PRIMARY KEY,
             account_id INTEGER,
             display_name TEXT,
+            group_name TEXT,
             note TEXT,
             state TEXT NOT NULL UNIQUE,
             pkce_verifier TEXT NOT NULL,
@@ -473,6 +485,10 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_oauth_login_sessions table existence")?;
+
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_name")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.group_name")?;
 
     sqlx::query(
         r#"
@@ -533,6 +549,28 @@ pub(crate) fn spawn_upstream_account_maintenance(
             }
         }
     })
+}
+
+async fn ensure_nullable_text_column(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+    column_name: &str,
+) -> Result<()> {
+    let pragma = format!("PRAGMA table_info('{table_name}')");
+    let columns = sqlx::query(&pragma)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+
+    if columns.contains(column_name) {
+        return Ok(());
+    }
+
+    let statement = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} TEXT");
+    sqlx::query(&statement).execute(pool).await?;
+    Ok(())
 }
 
 pub(crate) async fn list_upstream_accounts(
@@ -612,14 +650,15 @@ pub(crate) async fn create_oauth_login_session(
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
-            login_id, account_id, display_name, note, state, pkce_verifier, redirect_uri,
+            login_id, account_id, display_name, group_name, note, state, pkce_verifier, redirect_uri,
             status, auth_url, error_message, expires_at, consumed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, NULL, ?11, ?11)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, NULL, ?12, ?12)
         "#,
     )
     .bind(&login_id)
     .bind(payload.account_id)
     .bind(normalize_optional_text(payload.display_name))
+    .bind(normalize_optional_text(payload.group_name))
     .bind(normalize_optional_text(payload.note))
     .bind(&state_token)
     .bind(&pkce_verifier)
@@ -673,6 +712,7 @@ pub(crate) async fn relogin_upstream_account(
 ) -> Result<Json<LoginSessionStatusResponse>, (StatusCode, String)> {
     let payload = CreateOauthLoginSessionRequest {
         display_name: None,
+        group_name: None,
         note: None,
         account_id: Some(id),
     };
@@ -694,6 +734,7 @@ pub(crate) async fn create_api_key_account(
     let display_name = normalize_required_display_name(&payload.display_name)?;
     validate_local_limits(payload.local_primary_limit, payload.local_secondary_limit)?;
     let api_key = normalize_required_secret(&payload.api_key, "apiKey")?;
+    let group_name = normalize_optional_text(payload.group_name);
     let note = normalize_optional_text(payload.note);
     let limit_unit = normalize_limit_unit(payload.local_limit_unit);
     let masked_api_key = mask_api_key(&api_key);
@@ -707,21 +748,22 @@ pub(crate) async fn create_api_key_account(
     let inserted_id = sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO pool_upstream_accounts (
-            kind, provider, display_name, note, status, enabled, email, chatgpt_account_id,
+            kind, provider, display_name, group_name, note, status, enabled, email, chatgpt_account_id,
             chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
             last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
             local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
         ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, 1, NULL, NULL,
-            NULL, NULL, ?6, ?7, NULL,
+            ?1, ?2, ?3, ?4, ?5, ?6, 1, NULL, NULL,
+            NULL, NULL, ?7, ?8, NULL,
             NULL, NULL, NULL, NULL, NULL,
-            ?8, ?9, ?10, ?11, ?11
+            ?9, ?10, ?11, ?12, ?12
         ) RETURNING id
         "#,
     )
     .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
     .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
     .bind(display_name)
+    .bind(group_name)
     .bind(note)
     .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
     .bind(masked_api_key)
@@ -761,6 +803,9 @@ pub(crate) async fn update_upstream_account(
     if let Some(display_name) = payload.display_name {
         row.display_name = normalize_required_display_name(&display_name)?;
     }
+    if let Some(group_name) = payload.group_name {
+        row.group_name = normalize_optional_text(Some(group_name));
+    }
     if let Some(note) = payload.note {
         row.note = normalize_optional_text(Some(note));
     }
@@ -797,19 +842,21 @@ pub(crate) async fn update_upstream_account(
         r#"
         UPDATE pool_upstream_accounts
         SET display_name = ?2,
-            note = ?3,
-            enabled = ?4,
-            masked_api_key = ?5,
-            encrypted_credentials = ?6,
-            local_primary_limit = ?7,
-            local_secondary_limit = ?8,
-            local_limit_unit = ?9,
-            updated_at = ?10
+            group_name = ?3,
+            note = ?4,
+            enabled = ?5,
+            masked_api_key = ?6,
+            encrypted_credentials = ?7,
+            local_primary_limit = ?8,
+            local_secondary_limit = ?9,
+            local_limit_unit = ?10,
+            updated_at = ?11
         WHERE id = ?1
         "#,
     )
     .bind(id)
     .bind(&row.display_name)
+    .bind(&row.group_name)
     .bind(&row.note)
     .bind(row.enabled)
     .bind(&row.masked_api_key)
@@ -1061,16 +1108,17 @@ async fn handle_oauth_callback(
         .clone()
         .and_then(|value| normalize_optional_text(Some(value)))
         .unwrap_or(default_display_name);
-    let note = session.note.clone();
-
     let account_id = upsert_oauth_account(
         &state.pool,
-        session.account_id,
-        &display_name,
-        note,
-        &claims,
-        credentials,
-        &token_expires_at,
+        OauthAccountUpsert {
+            account_id: session.account_id,
+            display_name: &display_name,
+            group_name: session.group_name.clone(),
+            note: session.note.clone(),
+            claims: &claims,
+            encrypted_credentials: credentials,
+            token_expires_at: &token_expires_at,
+        },
     )
     .await
     .map_err(internal_error_html)?;
@@ -1515,15 +1563,26 @@ async fn persist_usage_snapshot(
     Ok(())
 }
 
-async fn upsert_oauth_account(
-    pool: &Pool<Sqlite>,
+struct OauthAccountUpsert<'a> {
     account_id: Option<i64>,
-    display_name: &str,
+    display_name: &'a str,
+    group_name: Option<String>,
     note: Option<String>,
-    claims: &ChatgptJwtClaims,
+    claims: &'a ChatgptJwtClaims,
     encrypted_credentials: String,
-    token_expires_at: &str,
-) -> Result<i64> {
+    token_expires_at: &'a str,
+}
+
+async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'_>) -> Result<i64> {
+    let OauthAccountUpsert {
+        account_id,
+        display_name,
+        group_name,
+        note,
+        claims,
+        encrypted_credentials,
+        token_expires_at,
+    } = payload;
     let now_iso = format_utc_iso(Utc::now());
     let resolved_account_id = if let Some(account_id) = account_id {
         Some(account_id)
@@ -1552,19 +1611,20 @@ async fn upsert_oauth_account(
             SET kind = ?2,
                 provider = ?3,
                 display_name = ?4,
-                note = ?5,
-                status = ?6,
+                group_name = COALESCE(?5, group_name),
+                note = ?6,
+                status = ?7,
                 enabled = 1,
-                email = ?7,
-                chatgpt_account_id = ?8,
-                chatgpt_user_id = ?9,
-                plan_type = ?10,
-                encrypted_credentials = ?11,
-                token_expires_at = ?12,
-                last_refreshed_at = ?13,
+                email = ?8,
+                chatgpt_account_id = ?9,
+                chatgpt_user_id = ?10,
+                plan_type = ?11,
+                encrypted_credentials = ?12,
+                token_expires_at = ?13,
+                last_refreshed_at = ?14,
                 last_error = NULL,
                 last_error_at = NULL,
-                updated_at = ?13
+                updated_at = ?14
             WHERE id = ?1
             "#,
         )
@@ -1572,6 +1632,7 @@ async fn upsert_oauth_account(
         .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
         .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
         .bind(display_name)
+        .bind(group_name)
         .bind(note)
         .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
         .bind(claims.email.clone())
@@ -1588,25 +1649,26 @@ async fn upsert_oauth_account(
         let inserted_account_id: i64 = sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO pool_upstream_accounts (
-                kind, provider, display_name, note, status, enabled,
+                kind, provider, display_name, group_name, note, status, enabled,
                 email, chatgpt_account_id, chatgpt_user_id, plan_type,
                 masked_api_key, encrypted_credentials, token_expires_at,
                 last_refreshed_at, last_synced_at, last_successful_sync_at,
                 last_error, last_error_at, local_primary_limit, local_secondary_limit,
                 local_limit_unit, created_at, updated_at
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, 1,
-                ?6, ?7, ?8, ?9,
-                NULL, ?10, ?11,
-                ?12, NULL, NULL,
+                ?1, ?2, ?3, ?4, ?5, ?6, 1,
+                ?7, ?8, ?9, ?10,
+                NULL, ?11, ?12,
+                ?13, NULL, NULL,
                 NULL, NULL, NULL, NULL,
-                NULL, ?12, ?12
+                NULL, ?13, ?13
             ) RETURNING id
             "#,
         )
         .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
         .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
         .bind(display_name)
+        .bind(group_name)
         .bind(note)
         .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
         .bind(claims.email.clone())
@@ -1628,7 +1690,7 @@ async fn load_upstream_account_summaries(
     let rows = sqlx::query_as::<_, UpstreamAccountRow>(
         r#"
         SELECT
-            id, kind, provider, display_name, note, status, enabled, email,
+            id, kind, provider, display_name, group_name, note, status, enabled, email,
             chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
@@ -1701,7 +1763,7 @@ async fn load_upstream_account_row(
     sqlx::query_as::<_, UpstreamAccountRow>(
         r#"
         SELECT
-            id, kind, provider, display_name, note, status, enabled, email,
+            id, kind, provider, display_name, group_name, note, status, enabled, email,
             chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
@@ -1802,6 +1864,7 @@ fn build_summary_from_row(
         kind: row.kind.clone(),
         provider: row.provider.clone(),
         display_name: row.display_name.clone(),
+        group_name: row.group_name.clone(),
         status: effective_account_status(row),
         enabled: row.enabled != 0,
         email: row.email.clone(),
@@ -1830,7 +1893,7 @@ async fn load_login_session_by_login_id(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, note, state, pkce_verifier, redirect_uri,
+            login_id, account_id, display_name, group_name, note, state, pkce_verifier, redirect_uri,
             status, auth_url, error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
         WHERE login_id = ?1
@@ -1850,7 +1913,7 @@ async fn load_login_session_by_state(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, note, state, pkce_verifier, redirect_uri,
+            login_id, account_id, display_name, group_name, note, state, pkce_verifier, redirect_uri,
             status, auth_url, error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
         WHERE state = ?1

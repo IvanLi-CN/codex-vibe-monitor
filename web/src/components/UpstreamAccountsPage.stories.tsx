@@ -24,6 +24,7 @@ type StoryStore = {
     string,
     LoginSessionStatusResponse & {
       displayName?: string
+      groupName?: string
       note?: string
       polls?: number
     }
@@ -61,6 +62,7 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
     kind: 'oauth_codex',
     provider: 'codex',
     displayName: 'Codex Pro - Tokyo',
+    groupName: 'production',
     status: 'active',
     enabled: true,
     email: 'tokyo@example.com',
@@ -101,6 +103,7 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
     kind: 'api_key_codex',
     provider: 'codex',
     displayName: 'Team key - staging',
+    groupName: 'staging',
     status: 'active',
     enabled: true,
     email: null,
@@ -143,6 +146,7 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     kind: detail.kind,
     provider: detail.provider,
     displayName: detail.displayName,
+    groupName: detail.groupName,
     status: detail.status,
     enabled: detail.enabled,
     email: detail.email,
@@ -242,7 +246,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       }
 
       if (path === '/api/pool/upstream-accounts/oauth/login-sessions' && method === 'POST') {
-        const body = parseBody<{ displayName?: string; note?: string }>(init?.body, {})
+        const body = parseBody<{ displayName?: string; groupName?: string; note?: string }>(init?.body, {})
         const loginId = `login_${Date.now()}`
         const session: StoryStore['sessions'][string] = {
           loginId,
@@ -252,6 +256,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
           accountId: null,
           error: null,
           displayName: body.displayName,
+          groupName: body.groupName,
           note: body.note,
           polls: 0,
         }
@@ -270,6 +275,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
             const nextId = store.nextId++
             const detail = createOauthAccount(nextId, {
               displayName: session.displayName || 'Codex Pro - New login',
+              groupName: session.groupName ?? 'default',
               note: session.note ?? 'Freshly connected from Storybook OAuth mock.',
             })
             store.details[nextId] = detail
@@ -289,6 +295,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         const nextId = store.nextId++
         const detail = createApiKeyAccount(nextId, {
           displayName: body.displayName,
+          groupName: body.groupName ?? 'default',
           note: body.note ?? null,
           maskedApiKey: maskApiKey(body.apiKey),
           localLimits: {
@@ -353,6 +360,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         const updated = syncLocalWindows({
           ...detail,
           displayName: body.displayName ?? detail.displayName,
+          groupName: body.groupName ?? detail.groupName,
           note: body.note ?? detail.note,
           enabled: body.enabled ?? detail.enabled,
           status: body.enabled === false ? 'disabled' : detail.status === 'disabled' ? 'active' : detail.status,

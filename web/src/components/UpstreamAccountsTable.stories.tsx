@@ -10,6 +10,7 @@ const items: UpstreamAccountSummary[] = [
     kind: 'oauth_codex',
     provider: 'codex',
     displayName: 'Codex Pro - Tokyo',
+    groupName: 'production',
     status: 'active',
     enabled: true,
     email: 'tokyo@example.com',
@@ -47,6 +48,7 @@ const items: UpstreamAccountSummary[] = [
     kind: 'api_key_codex',
     provider: 'codex',
     displayName: 'Team key - staging',
+    groupName: 'staging',
     status: 'needs_reauth',
     enabled: true,
     maskedApiKey: 'sk-live••••••c9f2',
@@ -83,6 +85,7 @@ const items: UpstreamAccountSummary[] = [
 const labels = {
   sync: 'Last sync',
   never: 'Never',
+  group: 'Group',
   primary: '5h',
   secondary: '7d',
   nextReset: 'Reset',

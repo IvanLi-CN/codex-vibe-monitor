@@ -52,8 +52,10 @@ export default function UpstreamAccountCreatePage() {
 
   const [activeTab, setActiveTab] = useState<CreateTab>('oauth')
   const [oauthDisplayName, setOauthDisplayName] = useState('')
+  const [oauthGroupName, setOauthGroupName] = useState('')
   const [oauthNote, setOauthNote] = useState('')
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState('')
+  const [apiKeyGroupName, setApiKeyGroupName] = useState('')
   const [apiKeyNote, setApiKeyNote] = useState('')
   const [apiKeyValue, setApiKeyValue] = useState('')
   const [apiKeyPrimaryLimit, setApiKeyPrimaryLimit] = useState('')
@@ -114,6 +116,7 @@ export default function UpstreamAccountCreatePage() {
     try {
       const response = await beginOauthLogin({
         displayName: oauthDisplayName.trim() || undefined,
+        groupName: oauthGroupName.trim() || undefined,
         note: oauthNote.trim() || undefined,
       })
       setSession(response)
@@ -138,6 +141,7 @@ export default function UpstreamAccountCreatePage() {
     try {
       const response = await createApiKeyAccount({
         displayName: apiKeyDisplayName.trim(),
+        groupName: apiKeyGroupName.trim() || undefined,
         note: apiKeyNote.trim() || undefined,
         apiKey: apiKeyValue.trim(),
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
@@ -158,7 +162,7 @@ export default function UpstreamAccountCreatePage() {
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_19rem]">
+    <div className="grid gap-6">
       <section className="surface-panel overflow-hidden">
         <div className="surface-panel-body gap-5">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -254,6 +258,14 @@ export default function UpstreamAccountCreatePage() {
                     />
                   </label>
                   <label className="field">
+                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
+                    <Input
+                      name="oauthGroupName"
+                      value={oauthGroupName}
+                      onChange={(event) => setOauthGroupName(event.target.value)}
+                    />
+                  </label>
+                  <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
                     <textarea
                       className="min-h-28 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
@@ -284,6 +296,14 @@ export default function UpstreamAccountCreatePage() {
                       name="apiKeyDisplayName"
                       value={apiKeyDisplayName}
                       onChange={(event) => setApiKeyDisplayName(event.target.value)}
+                    />
+                  </label>
+                  <label className="field md:col-span-2">
+                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
+                    <Input
+                      name="apiKeyGroupName"
+                      value={apiKeyGroupName}
+                      onChange={(event) => setApiKeyGroupName(event.target.value)}
                     />
                   </label>
                   <label className="field md:col-span-2">
@@ -347,22 +367,6 @@ export default function UpstreamAccountCreatePage() {
         </div>
       </section>
 
-      <Card className="border-base-300/80 bg-base-100/72">
-        <CardHeader>
-          <CardTitle>{t('accountPool.upstreamAccounts.createPage.helpTitle')}</CardTitle>
-          <CardDescription>{t('accountPool.upstreamAccounts.createPage.helpDescription')}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3 text-sm text-base-content/65">
-          <div className="rounded-2xl border border-base-300/80 bg-base-100/75 p-3">
-            <p className="font-semibold text-base-content">{t('accountPool.upstreamAccounts.primaryWindowLabel')}</p>
-            <p className="mt-1">{t('accountPool.upstreamAccounts.primaryWindowDescription')}</p>
-          </div>
-          <div className="rounded-2xl border border-base-300/80 bg-base-100/75 p-3">
-            <p className="font-semibold text-base-content">{t('accountPool.upstreamAccounts.secondaryWindowLabel')}</p>
-            <p className="mt-1">{t('accountPool.upstreamAccounts.secondaryWindowDescription')}</p>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   )
 }

@@ -13,6 +13,7 @@ interface UpstreamAccountsTableProps {
   labels: {
     sync: string
     never: string
+    group: string
     primary: string
     secondary: string
     nextReset: string
@@ -120,6 +121,9 @@ export function UpstreamAccountsTable({
                 Account
               </th>
               <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                {labels.group}
+              </th>
+              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
                 Status
               </th>
               <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
@@ -175,6 +179,11 @@ export function UpstreamAccountsTable({
                           Off
                         </span>
                       ) : null}
+                    </div>
+                  </td>
+                  <td className="px-4 py-4">
+                    <div className="max-w-[12rem] truncate text-sm text-base-content/72">
+                      {item.groupName?.trim() || '—'}
                     </div>
                   </td>
                   <td className="px-4 py-4">
