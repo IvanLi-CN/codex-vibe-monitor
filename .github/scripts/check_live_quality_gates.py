@@ -187,7 +187,63 @@ def normalize_required_status_checks(
     return sorted(contexts), integrations, strict_values
 
 
-def validate_rules(declaration: dict[str, Any], rules: list[dict[str, Any]], branch: str) -> list[str]:
+def branch_waivers(
+    declaration: dict[str, Any], branch: str
+) -> tuple[dict[str, set[int | None]], str | None]:
+    raw_waivers = declaration.get("waivers", [])
+    if raw_waivers is None:
+        raw_waivers = []
+    if not isinstance(raw_waivers, list):
+        raise ValidationError("waivers must be a JSON array")
+
+    source_compat: dict[str, set[int | None]] = {}
+    bypass_reason: str | None = None
+    for index, waiver in enumerate(raw_waivers):
+        if not isinstance(waiver, dict):
+            raise ValidationError(f"waivers[{index}] must be a JSON object")
+        kind = waiver.get("kind")
+        waiver_branch = waiver.get("branch")
+        reason = waiver.get("reason")
+        if not isinstance(kind, str) or not kind:
+            raise ValidationError(f"waivers[{index}].kind must be a non-empty string")
+        if not isinstance(waiver_branch, str) or not waiver_branch:
+            raise ValidationError(f"waivers[{index}].branch must be a non-empty string")
+        if not isinstance(reason, str) or not reason:
+            raise ValidationError(f"waivers[{index}].reason must be a non-empty string")
+        if waiver_branch != branch:
+            continue
+        if kind == "required-status-check-source-compat":
+            context = waiver.get("context")
+            raw_integrations = waiver.get("allowed_integration_ids")
+            if not isinstance(context, str) or not context:
+                raise ValidationError(
+                    f"waivers[{index}].context must be a non-empty string for required-status-check-source-compat"
+                )
+            if not isinstance(raw_integrations, list) or not raw_integrations:
+                raise ValidationError(
+                    f"waivers[{index}].allowed_integration_ids must be a non-empty array for required-status-check-source-compat"
+                )
+            normalized: set[int | None] = set()
+            for value in raw_integrations:
+                if value is None:
+                    normalized.add(None)
+                elif isinstance(value, int):
+                    normalized.add(value)
+                else:
+                    raise ValidationError(
+                        f"waivers[{index}].allowed_integration_ids entries must be integers or null"
+                    )
+            source_compat[context] = normalized
+        elif kind == "bypass-actors-unverified":
+            bypass_reason = reason
+
+    return source_compat, bypass_reason
+
+
+def validate_rules(
+    declaration: dict[str, Any], rules: list[dict[str, Any]], branch: str
+) -> tuple[list[str], list[str]]:
+    notes: list[str] = []
     errors: list[str] = []
     policy = declaration.get("policy", {})
     if not isinstance(policy, dict):
@@ -237,6 +293,7 @@ def validate_rules(declaration: dict[str, Any], rules: list[dict[str, Any]], bra
                 "policy.branch_protection.required_status_checks.integrations values must be integers"
             )
         normalized_expected_integrations[context] = integration
+    source_compat_waivers, bypass_reason = branch_waivers(declaration, branch)
     enforcement_mode = str(review_enforcement.get("mode", ""))
     expected_native_approvals = int(review_policy.get("required_approvals", 0)) if enforcement_mode == "github-native" else 0
 
@@ -351,20 +408,35 @@ def validate_rules(declaration: dict[str, Any], rules: list[dict[str, Any]], bra
             if context not in live_integrations:
                 continue
             actual_integrations = live_integrations[context]
-            if len(actual_integrations) != 1:
-                integration_errors.append(f"{context}: ambiguous={sorted(actual_integrations, key=lambda item: (-1 if item is None else item))}")
+            allowed_integrations = {expected_integration}
+            compat_integrations = source_compat_waivers.get(context, set())
+            if compat_integrations:
+                allowed_integrations |= compat_integrations
+            if not actual_integrations:
+                integration_errors.append(f"{context}: missing integration source")
                 continue
-            actual_integration = next(iter(actual_integrations))
-            if actual_integration != expected_integration:
-                integration_errors.append(
-                    f"{context}: expected={expected_integration} actual={actual_integration}"
-                )
+            if actual_integrations.issubset(allowed_integrations):
+                if actual_integrations != {expected_integration} and compat_integrations:
+                    notes.append(
+                        f"{branch}: {context} is using compatibility status sources {sorted(actual_integrations, key=lambda item: (-1 if item is None else item))}"
+                    )
+                continue
+            integration_errors.append(
+                f"{context}: expected one of {sorted(allowed_integrations, key=lambda item: (-1 if item is None else item))} actual={sorted(actual_integrations, key=lambda item: (-1 if item is None else item))}"
+            )
         if integration_errors:
             errors.append(
                 f"{branch}: required_status_check integrations drift ({'; '.join(integration_errors)})"
             )
 
-    return errors
+    if bypass_reason:
+        notes.append(f"{branch}: bypass actor verification waived explicitly ({bypass_reason})")
+    else:
+        errors.append(
+            f"{branch}: bypass actor verification unavailable without explicit waiver"
+        )
+
+    return errors, notes
 
 
 def main() -> int:
@@ -378,11 +450,14 @@ def main() -> int:
         owner, repo = split_repo(args.repo)
         rules_fixture = json.loads(Path(args.rules_file).read_text()) if args.rules_file else None
         errors: list[str] = []
+        notes: list[str] = []
         checked_rules: dict[str, list[str]] = {}
         for branch in branches:
             rules = extract_rules(rules_fixture if rules_fixture is not None else fetch_branch_rules(args.api_root, owner, repo, branch))
             checked_rules[branch] = sorted({rule.get("type", "") for rule in rules})
-            errors.extend(validate_rules(declaration, rules, branch))
+            branch_errors, branch_notes = validate_rules(declaration, rules, branch)
+            errors.extend(branch_errors)
+            notes.extend(branch_notes)
     except ValidationError as exc:
         print(f"[live-quality-gates] {exc}", file=sys.stderr)
         return 1
@@ -402,7 +477,7 @@ def main() -> int:
                 "checked_rules": checked_rules,
                 "notes": [
                     "Validated effective branch rules via GET /repos/{owner}/{repo}/rules/branches/{branch} or a local fixture.",
-                    "Bypass actors are not exposed by that endpoint and must be verified during live ruleset configuration.",
+                    *notes,
                 ],
             },
             indent=2,

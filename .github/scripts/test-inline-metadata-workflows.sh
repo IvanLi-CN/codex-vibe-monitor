@@ -191,8 +191,14 @@ async function testReviewPolicyReviewEvent() {
             user: {
               login: authors[pull_number],
             },
+            head: {
+              sha: `sha-${pull_number}`,
+            },
           },
         }),
+      },
+      repos: {
+        createCommitStatus: async () => ({}),
       },
     },
   };
@@ -272,13 +278,19 @@ async function testReviewPolicyFailureCases() {
     },
     rest: {
       pulls: {
-        get: async () => ({
+        get: async ({ pull_number }) => ({
           data: {
             user: {
               login: 'bob',
             },
+            head: {
+              sha: `sha-${pull_number}`,
+            },
           },
         }),
+      },
+      repos: {
+        createCommitStatus: async () => ({}),
       },
     },
   };

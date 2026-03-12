@@ -22,6 +22,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read
+  statuses: write
 
 jobs:
   review-policy:
@@ -36,6 +37,8 @@ jobs:
             const reviewRequiredApprovals = 1;
             const reviewExemptPermissions = new Set(['admin', 'maintain']);
             const reviewAllowedPermissions = new Set(['write', 'maintain', 'admin']);
+            const reviewGateContext = 'Review Policy Gate';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
 
             const resolvePullNumbers = async () => {
               const payloadPullNumber = context.payload.pull_request?.number;
@@ -118,8 +121,12 @@ jobs:
                 pull_number: pullNumber,
               });
               const author = pull?.user?.login;
+              const headSha = pull?.head?.sha;
               if (!author) {
                 throw new Error(`PR #${pullNumber} is missing an author`);
+              }
+              if (!headSha) {
+                throw new Error(`PR #${pullNumber} is missing a head SHA`);
               }
 
               const authorPermission = await getPermission(author);
@@ -127,6 +134,7 @@ jobs:
                 results.push({
                   pullNumber,
                   author,
+                  headSha,
                   authorPermission,
                   approvals: [],
                   passed: true,
@@ -140,6 +148,7 @@ jobs:
               results.push({
                 pullNumber,
                 author,
+                headSha,
                 authorPermission,
                 approvals,
                 passed,
@@ -155,6 +164,15 @@ jobs:
                 .addRaw('- PR #' + result.pullNumber + ': ' + (result.passed ? 'pass' : 'fail') + '\n')
                 .addRaw('  - Author: @' + result.author + ' (' + result.authorPermission + ')\n')
                 .addRaw('  - ' + result.description + '\n');
+              await github.rest.repos.createCommitStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha: result.headSha,
+                state: result.passed ? 'success' : 'failure',
+                context: reviewGateContext,
+                description: result.description.slice(0, 140),
+                target_url: runUrl,
+              });
             }
             await summary.write();
 
