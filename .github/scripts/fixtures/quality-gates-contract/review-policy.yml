@@ -1,0 +1,78 @@
+name: Review Policy
+
+on:
+  pull_request:
+    branches: [main]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - edited
+  pull_request_review:
+    types:
+      - submitted
+      - dismissed
+      - edited
+
+concurrency:
+  group: review-policy-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  review-policy:
+    name: Review Policy Gate
+    if: ${{ github.event.pull_request.base.ref == 'main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve trusted quality-gates sources
+        id: trusted-quality-gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted_root="$RUNNER_TEMP/trusted-quality-gates"
+          mkdir -p "$trusted_root/.github/scripts"
+          paths=(
+            ".github/quality-gates.json"
+            ".github/scripts/metadata_gate.py"
+          )
+          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+          source_ref="origin/${{ github.event.pull_request.base.ref }}"
+          source_kind="base-branch"
+          for path in "${paths[@]}"; do
+            if ! git cat-file -e "${source_ref}:${path}" 2>/dev/null; then
+              echo "::error::Base branch ${{ github.event.pull_request.base.ref }} does not contain the trusted quality-gates sources required for review policy."
+              exit 1
+            fi
+          done
+
+          for path in "${paths[@]}"; do
+            mkdir -p "$trusted_root/$(dirname "$path")"
+            if [ "$source_ref" = "HEAD" ]; then
+              cp "$path" "$trusted_root/$path"
+            else
+              git show "${source_ref}:${path}" > "$trusted_root/$path"
+            fi
+          done
+
+          {
+            echo "source_kind=$source_kind"
+            echo "source_ref=$source_ref"
+            echo "metadata_script=$trusted_root/.github/scripts/metadata_gate.py"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Evaluate review policy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 "${{ steps.trusted-quality-gates.outputs.metadata_script }}" review
