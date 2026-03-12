@@ -19,14 +19,14 @@ path = repo / ".github/workflows/label-gate.yml"
 text = path.read_text()
 needle = """      - name: Validate workflow contract
         run: |
-          python3 trusted/.github/scripts/check_quality_gates_contract.py \\
-            --repo-root candidate \\
-            --declaration candidate/.github/quality-gates.json \\
-            --metadata-script trusted/.github/scripts/metadata_gate.py
+          python3 "${{ steps.trusted-quality-gates.outputs.contract_script }}" \\
+            --repo-root "$PWD" \\
+            --declaration .github/quality-gates.json \\
+            --metadata-script "${{ steps.trusted-quality-gates.outputs.metadata_script }}"
 """
 replacement = """      - name: Validate workflow contract
         run: |
-          echo \"python3 trusted/.github/scripts/check_quality_gates_contract.py --repo-root candidate --declaration candidate/.github/quality-gates.json --metadata-script trusted/.github/scripts/metadata_gate.py\"
+          echo \"python3 ${{ steps.trusted-quality-gates.outputs.contract_script }} --repo-root $PWD --declaration .github/quality-gates.json --metadata-script ${{ steps.trusted-quality-gates.outputs.metadata_script }}\"
 """
 if needle not in text:
     raise SystemExit("failed to rewrite label-gate workflow")
@@ -53,13 +53,13 @@ needle = """      - name: Evaluate review policy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 trusted/.github/scripts/metadata_gate.py review
+          python3 "${{ steps.trusted-quality-gates.outputs.metadata_script }}" review
 """
 replacement = """      - name: Evaluate review policy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo \"python3 trusted/.github/scripts/metadata_gate.py review\"
+          echo \"python3 ${{ steps.trusted-quality-gates.outputs.metadata_script }} review\"
 """
 if needle not in text:
     raise SystemExit("failed to rewrite review-policy workflow")

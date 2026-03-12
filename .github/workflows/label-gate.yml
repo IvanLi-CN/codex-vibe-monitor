@@ -1,7 +1,7 @@
 name: Label Gate
 
 on:
-  pull_request_target:
+  pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, edited]
 
@@ -20,30 +20,64 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout trusted base
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.ref }}
-          path: trusted
-          persist-credentials: false
+          fetch-depth: 0
 
-      - name: Checkout candidate changes
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: candidate
-          persist-credentials: false
+      - name: Resolve trusted quality-gates sources
+        id: trusted-quality-gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted_root="$RUNNER_TEMP/trusted-quality-gates"
+          mkdir -p "$trusted_root/.github/scripts"
+          paths=(
+            ".github/quality-gates.json"
+            ".github/scripts/check_quality_gates_contract.py"
+            ".github/scripts/metadata_gate.py"
+          )
+          source_ref="HEAD"
+          source_kind="current-branch"
+          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+          source_ref="origin/${{ github.event.pull_request.base.ref }}"
+          source_kind="base-branch"
+          for path in "${paths[@]}"; do
+            if ! git cat-file -e "${source_ref}:${path}" 2>/dev/null; then
+              source_ref="HEAD"
+              source_kind="bootstrap-current-branch"
+              echo "::warning::Base branch does not yet contain trusted quality-gates sources; using current branch for bootstrap rollout only."
+              break
+            fi
+          done
+
+          for path in "${paths[@]}"; do
+            mkdir -p "$trusted_root/$(dirname "$path")"
+            if [ "$source_ref" = "HEAD" ]; then
+              cp "$path" "$trusted_root/$path"
+            else
+              git show "${source_ref}:${path}" > "$trusted_root/$path"
+            fi
+          done
+
+          {
+            echo "source_kind=$source_kind"
+            echo "source_ref=$source_ref"
+            echo "trusted_root=$trusted_root"
+            echo "declaration=$trusted_root/.github/quality-gates.json"
+            echo "contract_script=$trusted_root/.github/scripts/check_quality_gates_contract.py"
+            echo "metadata_script=$trusted_root/.github/scripts/metadata_gate.py"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Validate workflow contract
         run: |
-          python3 trusted/.github/scripts/check_quality_gates_contract.py \
-            --repo-root candidate \
-            --declaration candidate/.github/quality-gates.json \
-            --metadata-script trusted/.github/scripts/metadata_gate.py
+          python3 "${{ steps.trusted-quality-gates.outputs.contract_script }}" \
+            --repo-root "$PWD" \
+            --declaration .github/quality-gates.json \
+            --metadata-script "${{ steps.trusted-quality-gates.outputs.metadata_script }}"
 
       - name: Validate release intent labels
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 trusted/.github/scripts/metadata_gate.py label
+          python3 "${{ steps.trusted-quality-gates.outputs.metadata_script }}" label
