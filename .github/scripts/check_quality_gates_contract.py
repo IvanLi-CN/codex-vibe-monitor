@@ -159,6 +159,12 @@ def step_config(job: dict[str, Any], step_name: str, where: str) -> dict[str, An
     raise ContractError(f"{where}: missing step {step_name!r}")
 
 
+def uses_step_config(job: dict[str, Any], step_name: str, expected_uses: str, where: str) -> dict[str, Any]:
+    step = step_config(job, step_name, where)
+    require(step.get("uses") == expected_uses, f"{where}.steps[{step_name!r}].uses must stay {expected_uses!r}")
+    return step
+
+
 def require_no_checkout(job: dict[str, Any], where: str) -> None:
     steps = job.get("steps")
     require(isinstance(steps, list), f"{where}.steps must be a list")
@@ -312,14 +318,34 @@ def validate_ci(path: Path) -> None:
     require("statuses" not in permissions, "ci.yml.permissions.statuses must stay unset")
 
     lint_job = job_config(workflow, "lint", "Lint & Format Check", "ci.yml")
+    checkout = uses_step_config(lint_job, "Checkout", "actions/checkout@v4", "ci.yml.jobs.lint")
+    checkout_with = require_mapping(checkout.get("with"), "ci.yml.jobs.lint.steps['Checkout'].with")
+    require(checkout_with.get("fetch-depth") == 0, "ci.yml.jobs.lint Checkout must fetch full history for trusted source resolution")
     check_scripts = step_config(lint_job, "Check quality-gates scripts", "ci.yml.jobs.lint")
     require(".github/scripts/check_live_quality_gates.py" in str(check_scripts.get("run", "")), "ci.yml.jobs.lint: script check step drifted")
+    trusted_step = step_config(lint_job, "Resolve trusted quality-gates sources", "ci.yml.jobs.lint")
+    trusted_run = str(trusted_step.get("run", ""))
+    require("git fetch --no-tags --depth=1 origin" in trusted_run, "ci.yml.jobs.lint: trusted-source fetch drifted")
+    require("git show \"${source_ref}:${path}\"" in trusted_run, "ci.yml.jobs.lint: trusted-source materialization drifted")
+    require("bootstrap-current-branch" in trusted_run, "ci.yml.jobs.lint: bootstrap fallback drifted")
+    require("trusted_root/.github/scripts/check_quality_gates_contract.py" in trusted_run, "ci.yml.jobs.lint: trusted-source outputs drifted")
     contract_step = step_config(lint_job, "Quality-gates contract check", "ci.yml.jobs.lint")
-    require(".github/scripts/check_quality_gates_contract.py" in str(contract_step.get("run", "")), "ci.yml.jobs.lint: contract check step drifted")
+    contract_run = str(contract_step.get("run", ""))
+    require(
+        'steps.trusted-quality-gates.outputs.contract_script' in contract_run
+        and 'steps.trusted-quality-gates.outputs.declaration' in contract_run
+        and 'steps.trusted-quality-gates.outputs.metadata_script' in contract_run,
+        "ci.yml.jobs.lint: contract check must use trusted quality-gates sources",
+    )
     live_step = step_config(lint_job, "Quality-gates live rules check", "ci.yml.jobs.lint")
     live_env = require_mapping(live_step.get("env"), "ci.yml.jobs.lint.steps['Quality-gates live rules check'].env")
     require(live_env.get("QUALITY_GATES_LIVE_RULES_MODE") == "require", "ci.yml.jobs.lint: live rules mode must stay require")
-    require(".github/scripts/check_live_quality_gates.py" in str(live_step.get("run", "")), "ci.yml.jobs.lint: live rules step drifted")
+    live_run = str(live_step.get("run", ""))
+    require(
+        'steps.trusted-quality-gates.outputs.live_script' in live_run
+        and 'steps.trusted-quality-gates.outputs.declaration' in live_run,
+        "ci.yml.jobs.lint: live rules step must use trusted quality-gates sources",
+    )
     self_tests = step_config(lint_job, "Quality gates self-tests", "ci.yml.jobs.lint")
     run = str(self_tests.get("run", ""))
     require("test-quality-gates-contract.sh" in run and "test-live-quality-gates.sh" in run, "ci.yml.jobs.lint: self-tests step drifted")
