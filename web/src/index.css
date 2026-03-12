@@ -172,40 +172,20 @@ body {
   .drawer-shell {
     @apply text-base-content;
     border-left: 1px solid var(--app-surface-border);
-    background:
-      radial-gradient(
-        circle at top left,
-        color-mix(in oklab, oklch(var(--color-primary)) 16%, transparent),
-        transparent 32%
-      ),
-      linear-gradient(
-        180deg,
-        oklch(var(--color-base-100) / 0.995) 0%,
-        oklch(var(--color-base-200) / 0.985) 100%
-      );
+    background-color: oklch(var(--color-base-100) / 0.985);
     box-shadow:
-      -32px 0 84px rgba(15, 23, 42, 0.2),
+      -32px 0 84px rgba(15, 23, 42, 0.18),
       -1px 0 0 rgba(148, 163, 184, 0.28);
   }
 
   .drawer-header {
-    background:
-      linear-gradient(
-        180deg,
-        oklch(var(--color-base-100) / 0.98) 0%,
-        oklch(var(--color-base-100) / 0.9) 100%
-      );
+    background-color: oklch(var(--color-base-100) / 0.94);
     border-bottom: 1px solid color-mix(in oklab, oklch(var(--color-base-content)) 10%, transparent);
     backdrop-filter: blur(10px);
   }
 
   .drawer-body {
-    background:
-      linear-gradient(
-        180deg,
-        rgba(255, 255, 255, 0.02) 0%,
-        rgba(255, 255, 255, 0) 10%
-      );
+    background-color: transparent;
   }
 
   .section-heading {
