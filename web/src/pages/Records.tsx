@@ -66,6 +66,7 @@ export default function RecordsPage() {
   const [activeSuggestionField, setActiveSuggestionField] = useState<InvocationSuggestionField | null>(null)
   const [isNewDataRefreshPending, setIsNewDataRefreshPending] = useState(false)
   const [cachedNewDataCount, setCachedNewDataCount] = useState(0)
+  const newDataRefreshSeqRef = useRef(0)
   const suggestionQuery = useMemo(
     () => buildInvocationSuggestionsQuery(draft, appliedSnapshotId, activeSuggestionField ?? undefined),
     [activeSuggestionField, appliedSnapshotId, draft],
@@ -187,11 +188,15 @@ export default function RecordsPage() {
   }, [isNewDataLoading, newRecordsCount])
 
   const handleSearch = () => {
+    newDataRefreshSeqRef.current += 1
+    setIsNewDataRefreshPending(false)
     void search()
   }
 
   const handleRefreshNewData = () => {
     if (isNewDataLoading) return
+    const refreshSeq = newDataRefreshSeqRef.current + 1
+    newDataRefreshSeqRef.current = refreshSeq
     setIsNewDataRefreshPending(true)
     const minLoadingDelay = new Promise<void>((resolve) => {
       window.setTimeout(resolve, NEW_DATA_REFRESH_MIN_LOADING_MS)
@@ -201,7 +206,9 @@ export default function RecordsPage() {
       search({ source: 'applied', preserveSummary: true }),
       minLoadingDelay,
     ]).finally(() => {
-      setIsNewDataRefreshPending(false)
+      if (newDataRefreshSeqRef.current === refreshSeq) {
+        setIsNewDataRefreshPending(false)
+      }
     })
   }
 

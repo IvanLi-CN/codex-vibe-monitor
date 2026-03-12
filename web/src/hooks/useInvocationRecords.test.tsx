@@ -657,7 +657,7 @@ describe('useInvocationRecords', () => {
     expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1)
   })
 
-  it('clears a preserved summary when refreshing the list succeeds but the new summary fails', async () => {
+  it('keeps the preserved summary alive for lightweight polling when a refreshed summary fails', async () => {
     vi.useFakeTimers()
 
     apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
@@ -696,7 +696,7 @@ describe('useInvocationRecords', () => {
 
     expect(text('snapshot')).toBe('84')
     expect(text('model')).toBe('baseline-refreshed')
-    expect(text('summary-snapshot')).toBe('0')
+    expect(text('summary-snapshot')).toBe('42')
     expect(text('new-count')).toBe('0')
     expect(text('summary-error')).toContain('summary failed')
 
@@ -705,9 +705,9 @@ describe('useInvocationRecords', () => {
     })
     await flushAsync()
 
-    expect(apiMocks.fetchInvocationRecordsNewCount).not.toHaveBeenCalled()
-    expect(text('summary-snapshot')).toBe('0')
-    expect(text('new-count')).toBe('0')
+    expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1)
+    expect(text('summary-snapshot')).toBe('42')
+    expect(text('new-count')).toBe('9')
   })
 
   it('keeps the previous page size when a page-size request fails before search', async () => {

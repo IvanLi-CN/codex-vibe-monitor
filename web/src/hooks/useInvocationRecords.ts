@@ -160,7 +160,6 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     setSummaryError(null)
 
     let listLoaded = false
-    let nextSnapshotId: number | null = null
 
     try {
       const filters =
@@ -178,7 +177,6 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       if (requestSeq !== searchSeqRef.current) return
 
       listLoaded = true
-      nextSnapshotId = listResponse.snapshotId
       appliedRef.current = { filters, snapshotId: listResponse.snapshotId, generation: requestSeq }
       if (!options?.preserveSummary) {
         setSummary(null)
@@ -204,10 +202,6 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       if (requestSeq !== searchSeqRef.current) return
       const message = error instanceof Error ? error.message : String(error)
       if (listLoaded) {
-        setSummary((current) => {
-          if (!current) return null
-          return current.snapshotId === nextSnapshotId ? current : null
-        })
         setSummaryError(message)
       } else {
         setRecordsError(message)
@@ -254,8 +248,9 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   const summarySnapshotId = summary?.snapshotId ?? null
 
   useEffect(() => {
-    if (!appliedRef.current || isSearching || summarySnapshotId === null) return
-    if (summarySnapshotId !== appliedRef.current.snapshotId) return
+    if (!appliedRef.current || isSearching || !summary) return
+    const activeSnapshotId = appliedRef.current.snapshotId
+    if (records?.snapshotId !== activeSnapshotId) return
     const timer = window.setInterval(() => {
       if (!shouldPollRecordsSummary()) return
       const applied = appliedRef.current
@@ -282,7 +277,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         })
     }, RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [isSearching, summarySnapshotId])
+  }, [isSearching, records?.snapshotId, summary, summarySnapshotId])
 
   const api = useMemo(
     () => ({
