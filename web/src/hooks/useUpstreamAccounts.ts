@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   createApiKeyUpstreamAccount,
+  completeOauthLoginSession,
   createOauthLoginSession,
   deleteUpstreamAccount,
   fetchOauthLoginSession,
@@ -10,6 +11,7 @@ import {
   syncUpstreamAccount,
   updateUpstreamAccount,
   type CreateApiKeyAccountPayload,
+  type CompleteOauthLoginSessionPayload,
   type CreateOauthLoginSessionPayload,
   type LoginSessionStatusResponse,
   type UpdateUpstreamAccountPayload,
@@ -115,6 +117,18 @@ export function useUpstreamAccounts() {
     return response
   }, [])
 
+  const completeOauthLogin = useCallback(
+    async (loginId: string, payload: CompleteOauthLoginSessionPayload) => {
+      const response = await completeOauthLoginSession(loginId, payload)
+      await loadList(response.id)
+      setDetail(response)
+      setSelectedId(response.id)
+      setError(null)
+      return response
+    },
+    [loadList],
+  )
+
   const createApiKeyAccount = useCallback(
     async (payload: CreateApiKeyAccountPayload) => {
       const response = await createApiKeyUpstreamAccount(payload)
@@ -178,6 +192,7 @@ export function useUpstreamAccounts() {
     beginOauthLogin,
     beginRelogin,
     getLoginSession,
+    completeOauthLogin,
     createApiKeyAccount,
     saveAccount,
     runSync,

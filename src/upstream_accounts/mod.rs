@@ -192,6 +192,7 @@ pub(crate) struct LoginSessionStatusResponse {
     login_id: String,
     status: String,
     auth_url: Option<String>,
+    redirect_uri: Option<String>,
     expires_at: String,
     account_id: Option<i64>,
     error: Option<String>,
@@ -204,6 +205,12 @@ pub(crate) struct CreateOauthLoginSessionRequest {
     group_name: Option<String>,
     note: Option<String>,
     account_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CompleteOauthLoginSessionRequest {
+    callback_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -627,8 +634,7 @@ pub(crate) async fn create_oauth_login_session(
         }
     }
 
-    let redirect_uri = build_callback_redirect_uri(&headers)
-        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    let redirect_uri = build_manual_callback_redirect_uri().map_err(internal_error_tuple)?;
     let login_id = random_hex(16)?;
     let state_token = random_hex(32)?;
     let pkce_verifier = random_hex(64)?;
@@ -675,6 +681,7 @@ pub(crate) async fn create_oauth_login_session(
         login_id,
         status: LOGIN_SESSION_STATUS_PENDING.to_string(),
         auth_url: Some(auth_url),
+        redirect_uri: Some(redirect_uri),
         expires_at: expires_at_iso,
         account_id: payload.account_id,
         error: None,
@@ -703,6 +710,43 @@ pub(crate) async fn oauth_callback(
         Ok(html) => (StatusCode::OK, Html(html)).into_response(),
         Err((status, html)) => (status, Html(html)).into_response(),
     }
+}
+
+pub(crate) async fn complete_oauth_login_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(login_id): AxumPath<String>,
+    Json(payload): Json<CompleteOauthLoginSessionRequest>,
+) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+
+    expire_pending_login_sessions(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+    let session = load_login_session_by_login_id(&state.pool, &login_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    let query = parse_manual_oauth_callback(&payload.callback_url, &session.redirect_uri)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    let account_id =
+        complete_oauth_login_session_with_query(state.as_ref(), session, query).await?;
+    let detail = load_upstream_account_detail(&state.pool, account_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "account not found after oauth completion".to_string(),
+            )
+        })?;
+    Ok(Json(detail))
 }
 
 pub(crate) async fn relogin_upstream_account(
@@ -952,40 +996,67 @@ async fn handle_oauth_callback(
         ));
     };
 
+    complete_oauth_login_session_with_query(state, session, query)
+        .await
+        .map_err(|(status, message)| {
+            let title = match status {
+                StatusCode::BAD_GATEWAY => "OAuth token exchange failed",
+                StatusCode::SERVICE_UNAVAILABLE => "Credential storage disabled",
+                _ if message.contains("expired") => "OAuth callback expired",
+                _ if message.contains("authorization failed") => "OAuth authorization failed",
+                _ => "OAuth callback rejected",
+            };
+            (status, render_callback_page(false, title, &message))
+        })?;
+
+    Ok(render_callback_page(
+        true,
+        "OAuth login complete",
+        "The upstream account is ready. You can close this window.",
+    ))
+}
+
+async fn complete_oauth_login_session_with_query(
+    state: &AppState,
+    session: OauthLoginSessionRow,
+    query: OauthCallbackQuery,
+) -> Result<i64, (StatusCode, String)> {
     let now = Utc::now();
     let Some(expires_at) = parse_rfc3339_utc(&session.expires_at) else {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            render_callback_page(
-                false,
-                "OAuth callback failed",
-                "Stored session expiry is invalid.",
-            ),
+            "Stored session expiry is invalid.".to_string(),
         ));
     };
     if session.status != LOGIN_SESSION_STATUS_PENDING {
         return Err((
             StatusCode::BAD_REQUEST,
-            render_callback_page(
-                false,
-                "OAuth callback rejected",
-                "This login session has already been consumed.",
-            ),
+            "This login session has already been consumed.".to_string(),
         ));
     }
     if now > expires_at {
         mark_login_session_expired(&state.pool, &session.login_id)
             .await
-            .map_err(internal_error_html)?;
+            .map_err(internal_error_tuple)?;
         return Err((
             StatusCode::BAD_REQUEST,
-            render_callback_page(
-                false,
-                "OAuth callback expired",
-                "The login session has expired. Please try again.",
-            ),
+            "The login session has expired. Please create a new authorization link.".to_string(),
         ));
     }
+
+    let callback_state = normalize_optional_text(query.state.clone()).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Missing state parameter.".to_string(),
+        )
+    })?;
+    if callback_state != session.state {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "The callback URL does not belong to this login session.".to_string(),
+        ));
+    }
+
     if let Some(error) = normalize_optional_text(query.error) {
         let detail = normalize_optional_text(query.error_description)
             .unwrap_or_else(|| "Authorization was cancelled or rejected.".to_string());
@@ -995,25 +1066,19 @@ async fn handle_oauth_callback(
             &format!("{error}: {detail}"),
         )
         .await
-        .map_err(internal_error_html)?;
+        .map_err(internal_error_tuple)?;
         return Err((
             StatusCode::BAD_REQUEST,
-            render_callback_page(false, "OAuth authorization failed", &detail),
+            format!("OAuth authorization failed: {detail}"),
         ));
     }
-    let Some(code) = normalize_optional_text(query.code) else {
-        fail_login_session(&state.pool, &session.login_id, "missing authorization code")
-            .await
-            .map_err(internal_error_html)?;
-        return Err((
+
+    let code = normalize_optional_text(query.code).ok_or_else(|| {
+        (
             StatusCode::BAD_REQUEST,
-            render_callback_page(
-                false,
-                "OAuth callback rejected",
-                "Missing authorization code.",
-            ),
-        ));
-    };
+            "Missing authorization code.".to_string(),
+        )
+    })?;
 
     let token_response = exchange_authorization_code(
         &state.http_clients.shared,
@@ -1023,12 +1088,7 @@ async fn handle_oauth_callback(
         &session.redirect_uri,
     )
     .await
-    .map_err(|err| {
-        (
-            StatusCode::BAD_GATEWAY,
-            render_callback_page(false, "OAuth token exchange failed", &err.to_string()),
-        )
-    })?;
+    .map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
 
     let Some(id_token) = token_response.id_token.clone() else {
         fail_login_session(
@@ -1037,14 +1097,10 @@ async fn handle_oauth_callback(
             "id_token missing in token exchange response",
         )
         .await
-        .map_err(internal_error_html)?;
+        .map_err(internal_error_tuple)?;
         return Err((
             StatusCode::BAD_GATEWAY,
-            render_callback_page(
-                false,
-                "OAuth token exchange failed",
-                "The token response did not include an id_token.",
-            ),
+            "The token response did not include an id_token.".to_string(),
         ));
     };
     let Some(refresh_token) = token_response.refresh_token.clone() else {
@@ -1054,33 +1110,21 @@ async fn handle_oauth_callback(
             "refresh_token missing in token exchange response",
         )
         .await
-        .map_err(internal_error_html)?;
+        .map_err(internal_error_tuple)?;
         return Err((
             StatusCode::BAD_GATEWAY,
-            render_callback_page(
-                false,
-                "OAuth token exchange failed",
-                "The token response did not include a refresh token.",
-            ),
+            "The token response did not include a refresh token.".to_string(),
         ));
     };
 
-    let claims = parse_chatgpt_jwt_claims(&id_token).map_err(|err| {
-        (
-            StatusCode::BAD_GATEWAY,
-            render_callback_page(false, "OAuth token parse failed", &err.to_string()),
-        )
-    })?;
+    let claims = parse_chatgpt_jwt_claims(&id_token)
+        .map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
     let crypto_key = state.upstream_accounts.crypto_key.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            render_callback_page(
-                false,
-                "Credential storage disabled",
-                &format!(
-                    "{} is required to persist OAuth credentials.",
-                    ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET
-                ),
+            format!(
+                "{} is required to persist OAuth credentials.",
+                ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET
             ),
         )
     })?;
@@ -1096,7 +1140,7 @@ async fn handle_oauth_callback(
             token_type: token_response.token_type.clone(),
         }),
     )
-    .map_err(internal_error_html)?;
+    .map_err(internal_error_tuple)?;
 
     let default_display_name = claims
         .email
@@ -1121,20 +1165,66 @@ async fn handle_oauth_callback(
         },
     )
     .await
-    .map_err(internal_error_html)?;
+    .map_err(internal_error_tuple)?;
     complete_login_session(&state.pool, &session.login_id, account_id)
         .await
-        .map_err(internal_error_html)?;
+        .map_err(internal_error_tuple)?;
 
     if let Err(err) = sync_upstream_account_by_id(state, account_id, false).await {
         warn!(account_id, error = %err, "OAuth callback created account but initial sync failed");
     }
 
-    Ok(render_callback_page(
-        true,
-        "OAuth login complete",
-        "The upstream account is ready. You can close this window.",
-    ))
+    Ok(account_id)
+}
+
+fn parse_manual_oauth_callback(
+    callback_url: &str,
+    expected_redirect_uri: &str,
+) -> Result<OauthCallbackQuery> {
+    let trimmed = callback_url.trim();
+    if trimmed.is_empty() {
+        bail!("Callback URL is required.");
+    }
+
+    let expected =
+        Url::parse(expected_redirect_uri).context("failed to parse stored redirect URI")?;
+    let parsed = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        Url::parse(trimmed).context("callback URL must be a valid absolute URL")?
+    } else if trimmed.starts_with('?') || trimmed.contains("code=") || trimmed.contains("state=") {
+        let mut url = expected.clone();
+        let query = trimmed.strip_prefix('?').unwrap_or(trimmed);
+        url.set_query(Some(query));
+        url
+    } else {
+        bail!("Callback URL must be a full URL or query string.");
+    };
+
+    if parsed.scheme() != expected.scheme()
+        || parsed.host_str() != expected.host_str()
+        || parsed.port_or_known_default() != expected.port_or_known_default()
+        || parsed.path() != expected.path()
+    {
+        bail!("Callback URL does not match the generated localhost redirect address.");
+    }
+
+    let mut query = OauthCallbackQuery {
+        code: None,
+        state: None,
+        error: None,
+        error_description: None,
+    };
+    for (key, value) in parsed.query_pairs() {
+        match key.as_ref() {
+            "code" if query.code.is_none() => query.code = Some(value.into_owned()),
+            "state" if query.state.is_none() => query.state = Some(value.into_owned()),
+            "error" if query.error.is_none() => query.error = Some(value.into_owned()),
+            "error_description" if query.error_description.is_none() => {
+                query.error_description = Some(value.into_owned())
+            }
+            _ => {}
+        }
+    }
+    Ok(query)
 }
 
 async fn run_upstream_account_maintenance_once(state: &AppState) -> Result<()> {
@@ -2020,6 +2110,11 @@ fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusRe
         } else {
             None
         },
+        redirect_uri: if row.status == LOGIN_SESSION_STATUS_PENDING {
+            Some(row.redirect_uri.clone())
+        } else {
+            None
+        },
         expires_at: row.expires_at.clone(),
         account_id: row.account_id,
         error: row.error_message.clone(),
@@ -2370,29 +2465,12 @@ fn build_oauth_authorize_url(
     Ok(url.to_string())
 }
 
-fn build_callback_redirect_uri(headers: &HeaderMap) -> Result<String> {
-    if let Some(origin_raw) = headers.get(header::ORIGIN)
-        && let Ok(origin) = origin_raw.to_str()
-        && let Ok(mut origin_url) = Url::parse(origin)
-    {
-        origin_url.set_path("/api/pool/upstream-accounts/oauth/callback");
-        origin_url.set_query(None);
-        origin_url.set_fragment(None);
-        return Ok(origin_url.to_string());
-    }
-
-    let scheme = header_value_as_str(headers, "x-forwarded-proto")
-        .filter(|value| matches!(*value, "http" | "https"))
-        .unwrap_or("http");
-    let Some((host, port)) = forwarded_or_host_authority(headers, scheme) else {
-        bail!("failed to determine request origin for OAuth callback");
-    };
+fn build_manual_callback_redirect_uri() -> Result<String> {
+    let port = 32000 + (OsRng.next_u32() % 20000) as u16;
     let mut url =
-        Url::parse(&format!("{scheme}://{host}")).context("failed to build callback origin URL")?;
-    if let Some(port) = port {
-        let _ = url.set_port(Some(port));
-    }
-    url.set_path("/api/pool/upstream-accounts/oauth/callback");
+        Url::parse("http://localhost").context("failed to build localhost callback URL")?;
+    let _ = url.set_port(Some(port));
+    url.set_path("/oauth/callback");
     Ok(url.to_string())
 }
 
@@ -2859,16 +2937,20 @@ mod tests {
     }
 
     #[test]
-    fn build_callback_redirect_uri_prefers_origin_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::ORIGIN,
-            HeaderValue::from_static("http://127.0.0.1:60080"),
-        );
-        let redirect = build_callback_redirect_uri(&headers).expect("redirect uri");
-        assert_eq!(
-            redirect,
-            "http://127.0.0.1:60080/api/pool/upstream-accounts/oauth/callback"
-        );
+    fn build_manual_callback_redirect_uri_targets_localhost() {
+        let redirect = build_manual_callback_redirect_uri().expect("redirect uri");
+        assert!(redirect.starts_with("http://localhost:"));
+        assert!(redirect.ends_with("/oauth/callback"));
+    }
+
+    #[test]
+    fn parse_manual_oauth_callback_accepts_expected_redirect() {
+        let query = parse_manual_oauth_callback(
+            "http://localhost:37891/oauth/callback?code=test-code&state=test-state",
+            "http://localhost:37891/oauth/callback",
+        )
+        .expect("callback query");
+        assert_eq!(query.code.as_deref(), Some("test-code"));
+        assert_eq!(query.state.as_deref(), Some("test-state"));
     }
 }

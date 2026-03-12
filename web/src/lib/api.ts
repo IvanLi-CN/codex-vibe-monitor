@@ -728,6 +728,7 @@ export interface LoginSessionStatusResponse {
   loginId: string
   status: 'pending' | 'completed' | 'failed' | 'expired' | string
   authUrl?: string | null
+  redirectUri?: string | null
   expiresAt: string
   accountId?: number | null
   error?: string | null
@@ -738,6 +739,10 @@ export interface CreateOauthLoginSessionPayload {
   groupName?: string
   note?: string
   accountId?: number
+}
+
+export interface CompleteOauthLoginSessionPayload {
+  callbackUrl: string
 }
 
 export interface CreateApiKeyAccountPayload {
@@ -880,6 +885,7 @@ function normalizeLoginSessionStatusResponse(raw: unknown): LoginSessionStatusRe
     loginId,
     status: typeof payload.status === 'string' ? payload.status : 'failed',
     authUrl: typeof payload.authUrl === 'string' ? payload.authUrl : null,
+    redirectUri: typeof payload.redirectUri === 'string' ? payload.redirectUri : null,
     expiresAt,
     accountId: accountId == null ? null : accountId,
     error: typeof payload.error === 'string' ? payload.error : null,
@@ -1058,6 +1064,20 @@ export async function reloginUpstreamAccount(accountId: number): Promise<LoginSe
     method: 'POST',
   })
   return normalizeLoginSessionStatusResponse(response)
+}
+
+export async function completeOauthLoginSession(
+  loginId: string,
+  payload: CompleteOauthLoginSessionPayload,
+): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}/complete`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+  return normalizeUpstreamAccountDetail(response)
 }
 
 export async function createApiKeyUpstreamAccount(

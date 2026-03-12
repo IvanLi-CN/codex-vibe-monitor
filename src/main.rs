@@ -3392,6 +3392,10 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             get(get_oauth_login_session),
         )
         .route(
+            "/api/pool/upstream-accounts/oauth/login-sessions/:loginId/complete",
+            post(complete_oauth_login_session),
+        )
+        .route(
             "/api/pool/upstream-accounts/oauth/callback",
             get(oauth_callback),
         )

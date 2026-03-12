@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
 import type {
   CreateApiKeyAccountPayload,
+  CompleteOauthLoginSessionPayload,
   LoginSessionStatusResponse,
   UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
@@ -26,7 +27,7 @@ type StoryStore = {
       displayName?: string
       groupName?: string
       note?: string
-      polls?: number
+      state?: string
     }
   >
 }
@@ -248,17 +249,20 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       if (path === '/api/pool/upstream-accounts/oauth/login-sessions' && method === 'POST') {
         const body = parseBody<{ displayName?: string; groupName?: string; note?: string }>(init?.body, {})
         const loginId = `login_${Date.now()}`
+        const redirectUri = `http://localhost:431${String(store.nextId).slice(-1)}/oauth/callback`
+        const state = `state_${loginId}`
         const session: StoryStore['sessions'][string] = {
           loginId,
           status: 'pending',
-          authUrl: `https://auth.openai.com/authorize?mock=1&loginId=${loginId}`,
+          authUrl: `https://auth.openai.com/authorize?mock=1&loginId=${loginId}&state=${state}`,
+          redirectUri,
           expiresAt: '2026-03-11T12:40:00.000Z',
           accountId: null,
           error: null,
           displayName: body.displayName,
           groupName: body.groupName,
           note: body.note,
-          polls: 0,
+          state,
         }
         store.sessions[loginId] = session
         return jsonResponse(clone(session), 201)
@@ -269,22 +273,37 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         const loginId = decodeURIComponent(loginSessionMatch[1])
         const session = store.sessions[loginId]
         if (!session) return jsonResponse({ message: 'missing mock session' }, 404)
-        session.polls = (session.polls ?? 0) + 1
-        if (session.status === 'pending' && session.polls >= 2) {
-          if (session.accountId == null) {
-            const nextId = store.nextId++
-            const detail = createOauthAccount(nextId, {
-              displayName: session.displayName || 'Codex Pro - New login',
-              groupName: session.groupName ?? 'default',
-              note: session.note ?? 'Freshly connected from Storybook OAuth mock.',
-            })
-            store.details[nextId] = detail
-            store.accounts = [toSummary(detail), ...store.accounts]
-            session.accountId = nextId
-          }
-          session.status = 'completed'
-        }
         return jsonResponse(clone(session))
+      }
+
+      const completeLoginSessionMatch = path.match(/^\/api\/pool\/upstream-accounts\/oauth\/login-sessions\/([^/]+)\/complete$/)
+      if (completeLoginSessionMatch && method === 'POST') {
+        const loginId = decodeURIComponent(completeLoginSessionMatch[1])
+        const session = store.sessions[loginId]
+        if (!session) return jsonResponse({ message: 'missing mock session' }, 404)
+        const body = parseBody<CompleteOauthLoginSessionPayload>(init?.body, { callbackUrl: '' })
+        const callbackUrl = body.callbackUrl.trim()
+        if (!callbackUrl || !session.state || !callbackUrl.includes(session.state)) {
+          session.status = 'failed'
+          session.error = 'Mock callback URL does not contain the expected state token.'
+          return jsonResponse({ message: session.error }, 400)
+        }
+        const nextId = session.accountId ?? store.nextId++
+        const existing = store.details[nextId]
+        const detail = createOauthAccount(nextId, {
+          displayName: session.displayName || existing?.displayName || 'Codex Pro - New login',
+          groupName: session.groupName ?? existing?.groupName ?? 'default',
+          note: session.note ?? existing?.note ?? 'Freshly connected from Storybook OAuth mock.',
+        })
+        store.details[nextId] = detail
+        const summary = toSummary(detail)
+        store.accounts = [summary, ...store.accounts.filter((item) => item.id !== nextId)]
+        session.accountId = nextId
+        session.status = 'completed'
+        session.authUrl = null
+        session.redirectUri = null
+        session.error = null
+        return jsonResponse(clone(detail))
       }
 
       if (path === '/api/pool/upstream-accounts/api-keys' && method === 'POST') {
@@ -313,14 +332,16 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       const reloginMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/oauth\/relogin$/)
       if (reloginMatch && method === 'POST') {
         const accountId = Number(reloginMatch[1])
+        const state = `state_relogin_${accountId}`
         const session: StoryStore['sessions'][string] = {
           loginId: `relogin_${accountId}_${Date.now()}`,
           status: 'pending',
-          authUrl: `https://auth.openai.com/authorize?mock=1&accountId=${accountId}`,
+          authUrl: `https://auth.openai.com/authorize?mock=1&accountId=${accountId}&state=${state}`,
+          redirectUri: `http://localhost:432${String(accountId).slice(-1)}/oauth/callback`,
           expiresAt: '2026-03-11T12:40:00.000Z',
           accountId,
           error: null,
-          polls: 0,
+          state,
         }
         store.sessions[session.loginId] = session
         return jsonResponse(clone(session), 201)
@@ -460,4 +481,15 @@ export const DetailDrawer: Story = {
 
 export const CreateAccount: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
+}
+
+export const CreateAccountOauthReady: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.type(canvas.getByLabelText(/display name/i), 'Codex Pro - Manual')
+    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
+    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeInTheDocument()
+    await expect(canvas.getByLabelText(/callback url/i)).toBeInTheDocument()
+  },
 }

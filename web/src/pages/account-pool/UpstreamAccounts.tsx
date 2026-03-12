@@ -13,7 +13,7 @@ import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGr
 import { UpstreamAccountUsageCard } from '../../components/UpstreamAccountUsageCard'
 import { UpstreamAccountsTable } from '../../components/UpstreamAccountsTable'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
-import type { LoginSessionStatusResponse, UpstreamAccountDetail, UpstreamAccountSummary } from '../../lib/api'
+import type { UpstreamAccountDetail, UpstreamAccountSummary } from '../../lib/api'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
@@ -26,9 +26,6 @@ type AccountDraft = {
   localLimitUnit: string
   apiKey: string
 }
-
-const LOGIN_POLL_INTERVAL_MS = 1500
-const POPUP_CLOSE_CHECK_INTERVAL_MS = 1000
 
 type UpstreamAccountsLocationState = {
   selectedAccountId?: number
@@ -200,21 +197,16 @@ export default function UpstreamAccountsPage() {
     error,
     selectAccount,
     refresh,
-    beginRelogin,
-    getLoginSession,
     saveAccount,
     runSync,
     removeAccount,
   } = useUpstreamAccounts()
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
-  const [session, setSession] = useState<LoginSessionStatusResponse | null>(null)
-  const [sessionHint, setSessionHint] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
-  const popupRef = useRef<Window | null>(null)
 
   useEffect(() => {
     setDraft(buildDraft(detail))
@@ -234,47 +226,6 @@ export default function UpstreamAccountsPage() {
     setIsDetailDrawerOpen(Boolean(state.openDetail))
     navigate(location.pathname, { replace: true, state: null })
   }, [location.pathname, location.state, navigate, selectAccount])
-
-  useEffect(() => {
-    const currentSession = session
-    if (!currentSession || currentSession.status !== 'pending') return undefined
-
-    const loginId = currentSession.loginId
-    const pollTimer = window.setInterval(() => {
-      void (async () => {
-        try {
-          const next = await getLoginSession(loginId)
-          setSession(next)
-          if (next.status === 'completed') {
-            setSessionHint(t('accountPool.upstreamAccounts.oauth.completed'))
-            await refresh()
-            if (next.accountId != null) {
-              selectAccount(next.accountId)
-            }
-            if (popupRef.current && !popupRef.current.closed) {
-              popupRef.current.close()
-            }
-          }
-          if (next.status === 'failed' || next.status === 'expired') {
-            setSessionHint(next.error ?? t('accountPool.upstreamAccounts.oauth.failed'))
-          }
-        } catch (err) {
-          setActionError(err instanceof Error ? err.message : String(err))
-        }
-      })()
-    }, LOGIN_POLL_INTERVAL_MS)
-
-    const popupTimer = window.setInterval(() => {
-      if (popupRef.current && popupRef.current.closed) {
-        setSessionHint(t('accountPool.upstreamAccounts.oauth.popupClosed'))
-      }
-    }, POPUP_CLOSE_CHECK_INTERVAL_MS)
-
-    return () => {
-      window.clearInterval(pollTimer)
-      window.clearInterval(popupTimer)
-    }
-  }, [getLoginSession, refresh, selectAccount, session, t])
 
   const metrics = useMemo(() => {
     const oauthCount = items.filter((item) => item.kind === 'oauth_codex').length
@@ -355,25 +306,7 @@ export default function UpstreamAccountsPage() {
   }
 
   const handleOauthLogin = async (accountId: number) => {
-    setActionError(null)
-    setSessionHint(null)
-    setBusyAction('relogin')
-    try {
-      const response = await beginRelogin(accountId)
-      setSession(response)
-      const popup = response.authUrl
-        ? window.open(response.authUrl, 'codex-upstream-login', 'popup=yes,width=560,height=760')
-        : null
-      popupRef.current = popup
-      if (!popup && response.authUrl) {
-        window.open(response.authUrl, '_blank', 'noopener,noreferrer')
-        setSessionHint(t('accountPool.upstreamAccounts.oauth.popupFallback'))
-      }
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusyAction(null)
-    }
+    navigate(`/account-pool/upstream-accounts/new?accountId=${accountId}`)
   }
 
   const handleSave = async (source: UpstreamAccountDetail) => {
@@ -481,25 +414,6 @@ export default function UpstreamAccountsPage() {
               <Alert variant="error">
                 <Icon icon="mdi:alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                 <div>{actionError}</div>
-              </Alert>
-            ) : null}
-
-            {session ? (
-              <Alert variant={session.status === 'completed' ? 'success' : session.status === 'pending' ? 'info' : 'warning'}>
-                <Icon
-                  icon={session.status === 'completed' ? 'mdi:check-circle-outline' : 'mdi:account-clock-outline'}
-                  className="mt-0.5 h-4 w-4 shrink-0"
-                  aria-hidden
-                />
-                <div className="space-y-1">
-                  <p className="font-medium">{t(`accountPool.upstreamAccounts.oauth.status.${session.status}`)}</p>
-                  <p className="text-sm opacity-90">{sessionHint ?? session.error ?? formatDateTime(session.expiresAt)}</p>
-                  {session.authUrl ? (
-                    <a className="app-link text-xs" href={session.authUrl} target="_blank" rel="noreferrer">
-                      {t('accountPool.upstreamAccounts.oauth.openAgain')}
-                    </a>
-                  ) : null}
-                </div>
               </Alert>
             ) : null}
 
