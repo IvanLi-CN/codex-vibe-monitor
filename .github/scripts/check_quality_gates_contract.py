@@ -82,30 +82,29 @@ def validate_ci(path: Path) -> None:
 def validate_label_gate(path: Path) -> None:
     text = path.read_text()
     require(re.search(r"(?m)^\s*pull_request:\s*$", text) is not None, "label-gate.yml: must trigger on pull_request")
-    require(re.search(r"(?m)^\s*merge_group:\s*$", text) is not None, "label-gate.yml: must trigger on merge_group")
+    require(re.search(r"(?m)^\s*merge_group:\s*$", text) is None, "label-gate.yml: merge_group must stay disabled")
     require(re.search(r"(?m)^\s*pull_request_target:\s*$", text) is None, "label-gate.yml: must not trigger on pull_request_target")
     require_text(text, "edited", "label-gate.yml")
     require_text(text, "contents: read", "label-gate.yml")
     require_text(text, "actions/github-script@v8", "label-gate.yml")
-    require_text(text, "context.ref || process.env.GITHUB_REF", "label-gate.yml")
     require_text(text, "issues.get", "label-gate.yml")
     require_text(text, "channel:stable", "label-gate.yml")
     forbid_text(text, "actions/checkout", "label-gate.yml")
     forbid_text(text, "metadata_gate.py", "label-gate.yml")
     forbid_text(text, "createCommitStatus", "label-gate.yml")
     forbid_text(text, "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls", "label-gate.yml")
+    forbid_text(text, "context.ref || process.env.GITHUB_REF", "label-gate.yml")
 
 
 def validate_review_policy(path: Path) -> None:
     text = path.read_text()
     require(re.search(r"(?m)^\s*pull_request:\s*$", text) is not None, "review-policy.yml: must trigger on pull_request")
     require(re.search(r"(?m)^\s*pull_request_review:\s*$", text) is not None, "review-policy.yml: must trigger on pull_request_review")
-    require(re.search(r"(?m)^\s*merge_group:\s*$", text) is not None, "review-policy.yml: must trigger on merge_group")
+    require(re.search(r"(?m)^\s*merge_group:\s*$", text) is None, "review-policy.yml: merge_group must stay disabled")
     require(re.search(r"(?m)^\s*pull_request_target:\s*$", text) is None, "review-policy.yml: must not trigger on pull_request_target")
     require_text(text, "edited", "review-policy.yml")
     require_text(text, "contents: read", "review-policy.yml")
     require_text(text, "actions/github-script@v8", "review-policy.yml")
-    require_text(text, "context.ref || process.env.GITHUB_REF", "review-policy.yml")
     require_text(text, "GET /repos/{owner}/{repo}/collaborators/{username}/permission", "review-policy.yml")
     require_text(text, "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", "review-policy.yml")
     forbid_text(text, "actions/checkout", "review-policy.yml")
@@ -113,24 +112,28 @@ def validate_review_policy(path: Path) -> None:
     forbid_text(text, "createCommitStatus", "review-policy.yml")
     forbid_text(text, "statuses: write", "review-policy.yml")
     forbid_text(text, "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls", "review-policy.yml")
+    forbid_text(text, "context.ref || process.env.GITHUB_REF", "review-policy.yml")
 
 
 def validate_merge_group_helpers(module: Any) -> None:
-    documented_single_anchor = module.resolve_merge_group_pull_numbers_from_ref("gh-readonly-queue/main/pr-57-ffeeddcc")
-    require(
-        documented_single_anchor == [57],
-        f"metadata_gate: single-anchor merge queue set drifted: {documented_single_anchor}",
-    )
-
-    anchors = module.parse_pull_numbers_from_text("gh-readonly-queue/main/pr-57-ffeeddcc")
-    require(anchors == [57], f"metadata_gate: anchor parsing drifted: {anchors}")
-
     try:
-        module.resolve_merge_group_pull_numbers_from_ref("refs/heads/main")
+        module.resolve_pull_numbers(
+            module.GateContext(
+                gate="label",
+                owner="IvanLi-CN",
+                repo="codex-vibe-monitor",
+                api_root="https://api.github.com",
+                token="",
+                event_name="merge_group",
+                event_payload={},
+                manual_pull_number=None,
+            ),
+            module.GitHubClient("IvanLi-CN", "codex-vibe-monitor", "https://api.github.com", ""),
+        )
     except module.GateError as exc:
-        require("could not be proven" in str(exc), f"metadata_gate: unexpected proof error {exc}")
+        require("unsupported" in str(exc), f"metadata_gate: unexpected merge_group error {exc}")
     else:
-        raise ContractError("metadata_gate: missing merge queue proof failure")
+        raise ContractError("metadata_gate: merge_group must fail closed")
 
 
 def main() -> int:

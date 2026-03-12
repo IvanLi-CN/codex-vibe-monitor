@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import urllib.error
 import urllib.parse
@@ -27,7 +26,6 @@ ALLOWED_CHANNEL_LABELS = frozenset({"channel:stable", "channel:rc"})
 REVIEW_REQUIRED_APPROVALS = 1
 REVIEW_EXEMPT_PERMISSIONS = frozenset({"admin", "maintain"})
 REVIEW_ALLOWED_PERMISSIONS = frozenset({"write", "maintain", "admin"})
-ANCHOR_PATTERN = re.compile(r"(?:^|/)pr-(\d+)(?:-|$)")
 
 
 class GateError(RuntimeError):
@@ -50,10 +48,6 @@ class GateContext:
     event_name: str
     event_payload: dict[str, Any]
     manual_pull_number: int | None
-    merge_group_ref: str
-    merge_group_head_ref: str
-    merge_group_base_ref: str
-    merge_group_head_sha: str
 
 
 class GitHubClient:
@@ -107,13 +101,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     parser.add_argument("--event-path", default=os.environ.get("GITHUB_EVENT_PATH", ""))
     parser.add_argument("--pull-number", type=int, default=None)
-    parser.add_argument("--merge-group-ref", default=os.environ.get("GITHUB_REF", ""))
-    parser.add_argument("--merge-group-head-ref", default=os.environ.get("MERGE_GROUP_HEAD_REF", ""))
-    parser.add_argument("--merge-group-base-ref", default=os.environ.get("MERGE_GROUP_BASE_REF", ""))
-    parser.add_argument(
-        "--merge-group-head-sha",
-        default=os.environ.get("MERGE_GROUP_HEAD_SHA", os.environ.get("GITHUB_SHA", "")),
-    )
     return parser.parse_args()
 
 
@@ -149,30 +136,6 @@ def split_repo(full_name: str) -> tuple[str, str]:
     return owner, repo
 
 
-def normalize_ref(ref: str) -> str:
-    value = str(ref or "")
-    if value.startswith("refs/heads/"):
-        return value[len("refs/heads/") :]
-    return value
-
-
-def parse_pull_numbers_from_text(text: str) -> list[int]:
-    if not text:
-        return []
-    values = {int(match.group(1)) for match in ANCHOR_PATTERN.finditer(str(text))}
-    return sorted(value for value in values if value > 0)
-
-
-def resolve_merge_group_pull_numbers_from_ref(merge_group_ref: str) -> list[int]:
-    # GitHub documents the merge-group ref, not a stable API that maps the
-    # synthetic merge-group commit back to pull requests. Validate only the
-    # PR anchor GitHub discloses in the ref and fail closed otherwise.
-    anchors = parse_pull_numbers_from_text(normalize_ref(merge_group_ref))
-    if not anchors:
-        raise GateError("Merge queue member set could not be proven from GitHub-disclosed data")
-    return anchors
-
-
 def build_context(args: argparse.Namespace) -> GateContext:
     owner, repo = split_repo(args.repo)
     manual_pull_number = args.pull_number
@@ -190,10 +153,6 @@ def build_context(args: argparse.Namespace) -> GateContext:
         event_name=args.event_name,
         event_payload=payload,
         manual_pull_number=manual_pull_number,
-        merge_group_ref=args.merge_group_ref,
-        merge_group_head_ref=args.merge_group_head_ref,
-        merge_group_base_ref=args.merge_group_base_ref,
-        merge_group_head_sha=args.merge_group_head_sha,
     )
 
 
@@ -208,12 +167,7 @@ def get_payload_value(payload: dict[str, Any], *path: str) -> Any:
 
 def resolve_pull_numbers(context: GateContext, client: GitHubClient) -> list[int]:
     if context.event_name == "merge_group":
-        merge_group_ref = (
-            context.merge_group_ref
-            or context.merge_group_head_ref
-            or str(get_payload_value(context.event_payload, "merge_group", "head_ref") or "")
-        )
-        return resolve_merge_group_pull_numbers_from_ref(merge_group_ref)
+        raise GateError("merge_group is unsupported for PR-only metadata gates")
 
     payload_pull_number = get_payload_value(context.event_payload, "pull_request", "number")
     if isinstance(payload_pull_number, int) and payload_pull_number > 0:

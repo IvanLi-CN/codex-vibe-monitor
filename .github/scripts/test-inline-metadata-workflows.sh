@@ -75,7 +75,7 @@ function assert(condition, message) {
   }
 }
 
-async function testLabelGateMergeGroupAnchors() {
+async function testLabelGatePullRequestEvent() {
   const github = {
     rest: {
       issues: {
@@ -90,11 +90,10 @@ async function testLabelGateMergeGroupAnchors() {
     },
   };
   const context = {
-    eventName: 'merge_group',
-    ref: 'refs/heads/gh-readonly-queue/main/pr-57-ffeeddcc',
+    eventName: 'pull_request',
     payload: {
-      merge_group: {
-        base_ref: 'refs/heads/main',
+      pull_request: {
+        number: 57,
       },
     },
     repo: {
@@ -106,7 +105,6 @@ async function testLabelGateMergeGroupAnchors() {
     context,
     github,
     env: {
-      GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-57-ffeeddcc',
       MANUAL_PULL_NUMBER: '',
     },
   });
@@ -114,11 +112,11 @@ async function testLabelGateMergeGroupAnchors() {
   assert(!result.failure, `label-gate failed unexpectedly: ${result.failure}`);
   assert(
     result.logs.some((entry) => entry.includes('label gate validated 1 pull request(s)')),
-    'label-gate did not validate the merge-group ref anchor',
+    'label-gate did not validate the pull_request payload',
   );
 }
 
-async function testReviewPolicyMergeGroupAnchors() {
+async function testReviewPolicyManualPullNumber() {
   const permissions = {
     bob: 'write',
     reviewer: 'write',
@@ -162,13 +160,8 @@ async function testReviewPolicyMergeGroupAnchors() {
     },
   };
   const context = {
-    eventName: 'merge_group',
-    ref: 'refs/heads/gh-readonly-queue/main/pr-57-ffeeddcc',
-    payload: {
-      merge_group: {
-        base_ref: 'refs/heads/main',
-      },
-    },
+    eventName: 'workflow_dispatch',
+    payload: {},
     repo: {
       owner: 'IvanLi-CN',
       repo: 'codex-vibe-monitor',
@@ -178,59 +171,20 @@ async function testReviewPolicyMergeGroupAnchors() {
     context,
     github,
     env: {
-      GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-57-ffeeddcc',
-      MANUAL_PULL_NUMBER: '',
+      MANUAL_PULL_NUMBER: '57',
     },
   });
   assert(!result.thrown, `review-policy threw unexpectedly: ${result.thrown && result.thrown.message}`);
   assert(!result.failure, `review-policy failed unexpectedly: ${result.failure}`);
   assert(
     result.logs.some((entry) => entry.includes('review gate validated 1 pull request(s)')),
-    'review-policy did not validate the merge-group ref anchor',
-  );
-}
-
-async function testMergeGroupWithoutAnchorsFailsClosed() {
-  const context = {
-    eventName: 'merge_group',
-    ref: 'refs/heads/gh-readonly-queue/main/group-opaque',
-    payload: {
-      merge_group: {
-        base_ref: 'refs/heads/main',
-      },
-    },
-    repo: {
-      owner: 'IvanLi-CN',
-      repo: 'codex-vibe-monitor',
-    },
-  };
-  const result = await runWorkflowScript(labelPath, {
-    context,
-    github: {
-      rest: {
-        issues: {
-          get: async () => {
-            throw new Error('label lookup should not run without merge-group anchors');
-          },
-        },
-      },
-    },
-    env: {
-      GITHUB_REF: 'refs/heads/gh-readonly-queue/main/group-opaque',
-      MANUAL_PULL_NUMBER: '',
-    },
-  });
-  assert(result.thrown, 'label-gate should fail closed when merge-group anchors are missing');
-  assert(
-    String(result.thrown && result.thrown.message).includes('could not be proven'),
-    `label-gate returned unexpected anchor failure: ${result.thrown && result.thrown.message}`,
+    'review-policy did not validate the manual pull_number path',
   );
 }
 
 Promise.resolve()
-  .then(testLabelGateMergeGroupAnchors)
-  .then(testReviewPolicyMergeGroupAnchors)
-  .then(testMergeGroupWithoutAnchorsFailsClosed)
+  .then(testLabelGatePullRequestEvent)
+  .then(testReviewPolicyManualPullNumber)
   .catch((error) => {
     console.error(error.message || error);
     process.exit(1);

@@ -14,9 +14,6 @@ on:
       - submitted
       - dismissed
       - edited
-  merge_group:
-    types:
-      - checks_requested
   workflow_dispatch:
     inputs:
       pull_number:
@@ -48,27 +45,7 @@ jobs:
             const reviewExemptPermissions = new Set(['admin', 'maintain']);
             const reviewAllowedPermissions = new Set(['write', 'maintain', 'admin']);
 
-            const normalizeRef = (ref) => String(ref || '').replace(/^refs\/heads\//, '');
-
-            const parsePullNumbersFromText = (text) => {
-              const numbers = new Set();
-              const pattern = /(?:^|\/)pr-(\d+)(?:-|$)/g;
-              for (const match of String(text || '').matchAll(pattern)) {
-                numbers.add(Number(match[1]));
-              }
-              return [...numbers].filter((value) => Number.isInteger(value) && value > 0).sort((a, b) => a - b);
-            };
-
             const resolvePullNumbers = async () => {
-              if (context.eventName === 'merge_group') {
-                const mergeGroupRef = context.ref || process.env.GITHUB_REF || context.payload.merge_group?.head_ref || '';
-                const anchors = parsePullNumbersFromText(normalizeRef(mergeGroupRef));
-                if (anchors.length === 0) {
-                  throw new Error('Merge queue member set could not be proven from GitHub-disclosed data');
-                }
-                return anchors;
-              }
-
               const payloadPullNumber = context.payload.pull_request?.number;
               if (Number.isInteger(payloadPullNumber) && payloadPullNumber > 0) {
                 return [payloadPullNumber];
