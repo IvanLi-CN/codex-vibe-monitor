@@ -152,9 +152,9 @@ function AccountDetailDrawer({
           role="dialog"
           aria-modal="true"
           aria-labelledby="upstream-account-detail-title"
-          className="flex h-full w-full max-w-[60rem] flex-col border-l border-base-300/80 bg-base-200/96 shadow-[0_28px_80px_rgba(15,23,42,0.32)] backdrop-blur-xl"
+          className="drawer-shell flex h-full w-full max-w-[60rem] flex-col"
         >
-          <div className="border-b border-base-300/80 bg-base-100/82 px-5 py-4 backdrop-blur sm:px-6">
+          <div className="drawer-header px-5 py-4 sm:px-6">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 space-y-1">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
@@ -170,7 +170,7 @@ function AccountDetailDrawer({
               </Button>
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6">{children}</div>
+          <div className="drawer-body min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6">{children}</div>
         </section>
       </div>
     </div>,
