@@ -88,7 +88,6 @@ jobs:
         run: |
           python3 -m py_compile \
             .github/scripts/metadata_gate.py \
-            .github/scripts/run_trusted_metadata_check.py \
             .github/scripts/check_live_quality_gates.py \
             .github/scripts/check_quality_gates_contract.py
 
@@ -135,15 +134,10 @@ jobs:
             if [ "${{ github.event_name }}" = "merge_group" ]; then
               source_kind="merge-group-base-branch"
             fi
+            event_name="${{ github.event_name }}"
             for path in "${paths[@]}"; do
               if ! git cat-file -e "${source_ref}:${path}" 2>/dev/null; then
-                if [ "${{ github.event_name }}" = "pull_request" ]; then
-                  source_ref="HEAD"
-                  source_kind="bootstrap-current-branch"
-                  echo "::warning::Base branch does not yet contain trusted quality-gates sources; using current branch for bootstrap rollout only."
-                  break
-                fi
-                echo "::error::Base branch ${base_branch} does not contain the trusted quality-gates sources required for merge_group."
+                echo "::error::Base branch ${base_branch} does not contain the trusted quality-gates sources required for ${event_name}."
                 exit 1
               fi
             done
@@ -187,7 +181,6 @@ jobs:
       - name: Quality gates self-tests
         run: |
           bash .github/scripts/test-quality-gates-contract.sh
-          bash .github/scripts/test-run-trusted-metadata-check.sh
           bash .github/scripts/test-live-quality-gates.sh
 
       - name: Front-end lint

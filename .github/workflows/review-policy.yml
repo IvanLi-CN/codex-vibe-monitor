@@ -46,17 +46,13 @@ jobs:
             ".github/quality-gates.json"
             ".github/scripts/metadata_gate.py"
           )
-          source_ref="HEAD"
-          source_kind="current-branch"
           git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref }}"
           source_ref="origin/${{ github.event.pull_request.base.ref }}"
           source_kind="base-branch"
           for path in "${paths[@]}"; do
             if ! git cat-file -e "${source_ref}:${path}" 2>/dev/null; then
-              source_ref="HEAD"
-              source_kind="bootstrap-current-branch"
-              echo "::warning::Base branch does not yet contain trusted quality-gates sources; using current branch for bootstrap rollout only."
-              break
+              echo "::error::Base branch ${{ github.event.pull_request.base.ref }} does not contain the trusted quality-gates sources required for review policy."
+              exit 1
             fi
           done
 

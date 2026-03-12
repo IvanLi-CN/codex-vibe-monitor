@@ -17,24 +17,19 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/label-gate.yml"
 text = path.read_text()
-needle = """      - name: Publish trusted Validate PR labels check
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+needle = """      - name: Validate trusted label-gate contract
         run: |
-          python3 trusted/.github/scripts/run_trusted_metadata_check.py \\
-            --gate label \\
-            --check-name "Validate PR labels" \\
-            --candidate-root "$PWD/candidate" \\
-            --trusted-root "$PWD/trusted"
+          python3 trusted/.github/scripts/check_quality_gates_contract.py \\
+            --repo-root \"$PWD/candidate\" \\
+            --declaration \"$PWD/candidate/.github/quality-gates.json\" \\
+            --metadata-script \"$PWD/trusted/.github/scripts/metadata_gate.py\"
 """
-replacement = """      - name: Publish trusted Validate PR labels check
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+replacement = """      - name: Validate trusted label-gate contract
         run: |
-          echo "python3 trusted/.github/scripts/run_trusted_metadata_check.py --gate label --check-name Validate PR labels --candidate-root $PWD/candidate --trusted-root $PWD/trusted"
+          echo \"python3 trusted/.github/scripts/check_quality_gates_contract.py --repo-root $PWD/candidate --declaration $PWD/candidate/.github/quality-gates.json --metadata-script $PWD/trusted/.github/scripts/metadata_gate.py\"
 """
 if needle not in text:
-    raise SystemExit("failed to rewrite label-gate workflow")
+    raise SystemExit("failed to rewrite label-gate contract step")
 path.write_text(text.replace(needle, replacement, 1))
 PY
 
@@ -43,7 +38,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "trusted label publisher must invoke trusted metadata publisher" "$tmp_dir/label-gate-bait.log"
+grep -q "trusted label gate must invoke the trusted contract checker" "$tmp_dir/label-gate-bait.log"
 
 label_concurrency_repo="$tmp_dir/label-concurrency-repo"
 cp -R "$repo_root/." "$label_concurrency_repo"
@@ -54,8 +49,8 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/label-gate.yml"
 text = path.read_text()
-needle = "  group: label-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}\n"
-replacement = "  group: label-gate-${{ github.event.pull_request.number || github.run_id }}\n"
+needle = "  group: label-gate-${{ github.event.pull_request.number || github.run_id }}\n"
+replacement = "  group: label-gate-static\n"
 if needle not in text:
     raise SystemExit("failed to rewrite label-gate concurrency group")
 path.write_text(text.replace(needle, replacement, 1))
@@ -66,7 +61,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "concurrency.group must isolate pull_request and pull_request_target runs" "$tmp_dir/label-concurrency.log"
+grep -q "concurrency.group drifted" "$tmp_dir/label-concurrency.log"
 
 dynamic_contract_repo="$tmp_dir/dynamic-contract-repo"
 cp -R "$repo_root/." "$dynamic_contract_repo"
@@ -82,7 +77,7 @@ contract_path.write_text(contract_text)
 
 workflow_path = repo / ".github/workflows/label-gate.yml"
 workflow_text = workflow_path.read_text()
-workflow_text = workflow_text.replace('--check-name "Validate PR labels"', '--check-name "Release Labels Gate"')
+workflow_text = workflow_text.replace('name: Validate PR labels', 'name: Release Labels Gate')
 workflow_path.write_text(workflow_text)
 PY
 
@@ -101,7 +96,7 @@ needle = """      - name: Evaluate review policy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 "${{ steps.trusted-quality-gates.outputs.metadata_script }}" review
+          python3 \"${{ steps.trusted-quality-gates.outputs.metadata_script }}\" review
 """
 replacement = """      - name: Evaluate review policy
         env:
@@ -247,6 +242,52 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
 fi
 
 grep -q "merge_group trusted-source branch handling drifted" "$tmp_dir/ci-merge-group.log"
+
+ci_bootstrap_repo="$tmp_dir/ci-bootstrap-repo"
+cp -R "$repo_root/." "$ci_bootstrap_repo"
+python3 - <<'PY' "$ci_bootstrap_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci.yml"
+text = path.read_text()
+needle = '            event_name="${{ github.event_name }}"\n'
+replacement = '            source_kind="bootstrap-current-branch"\n            echo "::warning::Base branch does not yet contain trusted quality-gates sources; using current branch for bootstrap rollout only."\n            event_name="${{ github.event_name }}"\n'
+if needle not in text:
+    raise SystemExit("failed to inject ci bootstrap fallback")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$ci_bootstrap_repo" >/dev/null 2>"$tmp_dir/ci-bootstrap.log"; then
+  echo "expected ci bootstrap fallback fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "bootstrap fallback must stay disabled" "$tmp_dir/ci-bootstrap.log"
+
+review_bootstrap_repo="$tmp_dir/review-bootstrap-repo"
+cp -R "$repo_root/." "$review_bootstrap_repo"
+python3 - <<'PY' "$review_bootstrap_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/review-policy.yml"
+text = path.read_text()
+needle = '          for path in "${paths[@]}"; do\n'
+replacement = '          source_kind="bootstrap-current-branch"\n          echo "::warning::Base branch does not yet contain trusted quality-gates sources; using current branch for bootstrap rollout only."\n          for path in "${paths[@]}"; do\n'
+if needle not in text:
+    raise SystemExit("failed to inject review bootstrap fallback")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$review_bootstrap_repo" >/dev/null 2>"$tmp_dir/review-bootstrap.log"; then
+  echo "expected review bootstrap fallback fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "bootstrap fallback must stay disabled" "$tmp_dir/review-bootstrap.log"
 
 metadata_repo="$tmp_dir/metadata-repo"
 cp -R "$repo_root/." "$metadata_repo"

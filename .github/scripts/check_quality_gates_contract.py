@@ -363,6 +363,14 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
         expected_workflows[workflow_name] = tuple(sorted(jobs))
         declared_job_names.update(jobs)
 
+    label_workflow_jobs = set(expected_workflows.get("Label Gate", ()))
+    require(label_workflow_jobs, "quality-gates.json: expected_pr_workflows must declare Label Gate jobs")
+    label_required_checks = sorted(required_checks & label_workflow_jobs)
+    require(
+        len(label_required_checks) == 1,
+        "quality-gates.json: Label Gate must expose exactly one required check",
+    )
+
     waivers = payload.get("waivers", [])
     require(isinstance(waivers, list), "quality-gates.json: waivers must be an array")
     require(len(waivers) == 1, "quality-gates.json: only the bypass-actors-unverified waiver is allowed")
@@ -378,11 +386,6 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
         isinstance(bypass_waivers[0].get("reason"), str) and bypass_waivers[0]["reason"],
         "quality-gates.json: bypass-actors-unverified waiver must include a reason",
     )
-    external_required_checks = sorted(required_checks - declared_job_names)
-    require(
-        len(external_required_checks) == 1,
-        "quality-gates.json: expected_pr_workflows must leave exactly one externally published required check",
-    )
     return ContractModel(
         required_checks=required_checks,
         status_check_integrations=normalized_integrations,
@@ -391,7 +394,7 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
         review_exempt_permissions=review_exempt_permissions,
         review_allowed_permissions=review_allowed_permissions,
         expected_workflows=expected_workflows,
-        label_check_name=external_required_checks[0],
+        label_check_name=label_required_checks[0],
     )
 
 
@@ -447,7 +450,6 @@ def validate_ci(path: Path, contract: ContractModel) -> None:
     require_fail_closed(check_scripts, "ci.yml.jobs.lint.steps['Check quality-gates scripts']")
     check_scripts_run = str(check_scripts.get("run", ""))
     require(".github/scripts/check_live_quality_gates.py" in check_scripts_run, "ci.yml.jobs.lint: script check step drifted")
-    require(".github/scripts/run_trusted_metadata_check.py" in check_scripts_run, "ci.yml.jobs.lint: trusted metadata publisher compile step drifted")
     trusted_step = step_config(lint_job, "Resolve trusted quality-gates sources", "ci.yml.jobs.lint")
     require_no_if(trusted_step, "ci.yml.jobs.lint.steps['Resolve trusted quality-gates sources']")
     require_fail_closed(trusted_step, "ci.yml.jobs.lint.steps['Resolve trusted quality-gates sources']")
@@ -455,10 +457,9 @@ def validate_ci(path: Path, contract: ContractModel) -> None:
     require("base_branch=" in trusted_run, "ci.yml.jobs.lint: trusted-source base_branch resolution drifted")
     require("git fetch --no-tags --depth=1 origin" in trusted_run, "ci.yml.jobs.lint: trusted-source fetch drifted")
     require("git show \"${source_ref}:${path}\"" in trusted_run, "ci.yml.jobs.lint: trusted-source materialization drifted")
-    require("bootstrap-current-branch" in trusted_run, "ci.yml.jobs.lint: bootstrap fallback drifted")
     require(
-        "using current branch for bootstrap rollout only" in trusted_run,
-        "ci.yml.jobs.lint: bootstrap rollout warning drifted",
+        "bootstrap-current-branch" not in trusted_run and "using current branch for bootstrap rollout only" not in trusted_run,
+        "ci.yml.jobs.lint: bootstrap fallback must stay disabled",
     )
     require(
         'elif [ "${{ github.event_name }}" = "merge_group" ]; then' in trusted_run,
@@ -473,7 +474,7 @@ def validate_ci(path: Path, contract: ContractModel) -> None:
         "ci.yml.jobs.lint: merge_group trusted source kind drifted",
     )
     require(
-        "required for merge_group" in trusted_run,
+        "trusted quality-gates sources required for" in trusted_run,
         "ci.yml.jobs.lint: merge_group trusted-source fail-closed guard drifted",
     )
     require("trusted_root/.github/scripts/check_quality_gates_contract.py" in trusted_run, "ci.yml.jobs.lint: trusted-source outputs drifted")
@@ -503,9 +504,7 @@ def validate_ci(path: Path, contract: ContractModel) -> None:
     require_fail_closed(self_tests, "ci.yml.jobs.lint.steps['Quality gates self-tests']")
     run = str(self_tests.get("run", ""))
     require(
-        "test-quality-gates-contract.sh" in run
-        and "test-run-trusted-metadata-check.sh" in run
-        and "test-live-quality-gates.sh" in run,
+        "test-quality-gates-contract.sh" in run and "test-live-quality-gates.sh" in run,
         "ci.yml.jobs.lint: self-tests step drifted",
     )
 
@@ -519,9 +518,7 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
     on_section = require_mapping(mapping_get(workflow, "on"), "label-gate.yml.on")
     require("merge_group" not in on_section, "label-gate.yml: merge_group must stay disabled")
     require("workflow_dispatch" not in on_section, "label-gate.yml: workflow_dispatch must stay disabled")
-    pull_request_config = event_config(workflow, "pull_request", "label-gate.yml")
-    assert_event_branches(pull_request_config, {"main"}, "label-gate.yml.on.pull_request")
-    assert_event_types(pull_request_config, LABEL_GATE_PULL_REQUEST_TYPES, "label-gate.yml.on.pull_request")
+    require("pull_request" not in on_section, "label-gate.yml: pull_request must stay disabled")
     pull_request_target_config = event_config(workflow, "pull_request_target", "label-gate.yml")
     assert_event_branches(pull_request_target_config, {"main"}, "label-gate.yml.on.pull_request_target")
     assert_event_types(pull_request_target_config, LABEL_GATE_PULL_REQUEST_TYPES, "label-gate.yml.on.pull_request_target")
@@ -530,118 +527,34 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
     require(permissions.get("contents") == "read", "label-gate.yml.permissions.contents must stay read")
     require(permissions.get("pull-requests") == "read", "label-gate.yml.permissions.pull-requests must stay read")
     require(permissions.get("issues") == "read", "label-gate.yml.permissions.issues must stay read")
-    require(permissions.get("checks") == "write", "label-gate.yml.permissions.checks must stay write")
+    require("checks" not in permissions, "label-gate.yml.permissions.checks must stay unset")
     concurrency = require_mapping(workflow.get("concurrency"), "label-gate.yml.concurrency")
     require(
-        concurrency.get("group") == "label-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}",
-        "label-gate.yml.concurrency.group must isolate pull_request and pull_request_target runs",
+        concurrency.get("group") == "label-gate-${{ github.event.pull_request.number || github.run_id }}",
+        "label-gate.yml.concurrency.group drifted",
     )
     require(concurrency.get("cancel-in-progress") is True, "label-gate.yml.concurrency.cancel-in-progress must stay true")
 
-    bootstrap_job = named_job_config(workflow, "bootstrap-label-gate", expected_jobs, "label-gate.yml")
+    job = named_job_config(workflow, "validate-pr-labels", expected_jobs, "label-gate.yml")
+    require(job.get("name") == contract.label_check_name, "label-gate.yml: required label check name drifted")
     require_exact_if(
-        bootstrap_job,
-        "${{ github.event_name == 'pull_request' }}",
-        "label-gate.yml.jobs.bootstrap-label-gate",
+        job,
+        "${{ github.event.pull_request.base.ref == 'main' }}",
+        "label-gate.yml.jobs.validate-pr-labels",
     )
-    require_fail_closed(bootstrap_job, "label-gate.yml.jobs.bootstrap-label-gate")
-    bootstrap_checkout = checkout_step(
-        bootstrap_job, "Checkout bootstrap candidate", "label-gate.yml.jobs.bootstrap-label-gate"
-    )
-    require(bootstrap_checkout.get("fetch-depth") == 0, "label-gate.yml: bootstrap checkout must fetch full history")
+    require_fail_closed(job, "label-gate.yml.jobs.validate-pr-labels")
+    trusted_checkout = checkout_step(job, "Checkout trusted base", "label-gate.yml.jobs.validate-pr-labels")
     require(
-        bootstrap_checkout.get("persist-credentials") is False,
-        "label-gate.yml: bootstrap checkout must disable persisted credentials",
+        trusted_checkout.get("ref") == "${{ github.event.pull_request.base.ref }}",
+        "label-gate.yml: trusted base checkout ref drifted",
     )
-    bootstrap_detect = step_config(
-        bootstrap_job,
-        "Detect bootstrap rollout requirement",
-        "label-gate.yml.jobs.bootstrap-label-gate",
-    )
-    require_no_if(
-        bootstrap_detect,
-        "label-gate.yml.jobs.bootstrap-label-gate.steps['Detect bootstrap rollout requirement']",
-    )
-    require_fail_closed(
-        bootstrap_detect,
-        "label-gate.yml.jobs.bootstrap-label-gate.steps['Detect bootstrap rollout requirement']",
-    )
-    bootstrap_detect_run = str(bootstrap_detect.get("run", ""))
-    require("git fetch --no-tags --depth=1 origin" in bootstrap_detect_run, "label-gate.yml: bootstrap fetch drifted")
-    require(
-        "run_trusted_metadata_check.py" in bootstrap_detect_run,
-        "label-gate.yml: bootstrap rollout detection must gate on trusted metadata publisher availability",
-    )
-    require(
-        "using current branch for bootstrap rollout only" in bootstrap_detect_run,
-        "label-gate.yml: bootstrap rollout warning drifted",
-    )
-    bootstrap_publish = step_config(
-        bootstrap_job,
-        "Publish bootstrap Validate PR labels check",
-        "label-gate.yml.jobs.bootstrap-label-gate",
-    )
-    require_exact_if(
-        bootstrap_publish,
-        "${{ steps.bootstrap.outputs.enabled == 'true' }}",
-        "label-gate.yml.jobs.bootstrap-label-gate.steps['Publish bootstrap Validate PR labels check']",
-    )
-    require_fail_closed(
-        bootstrap_publish,
-        "label-gate.yml.jobs.bootstrap-label-gate.steps['Publish bootstrap Validate PR labels check']",
-    )
-    bootstrap_env = require_mapping(
-        bootstrap_publish.get("env"),
-        "label-gate.yml.jobs.bootstrap-label-gate.steps['Publish bootstrap Validate PR labels check'].env",
-    )
-    require(
-        bootstrap_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}",
-        "label-gate.yml: bootstrap label publisher must pass GITHUB_TOKEN via env",
-    )
-    bootstrap_command = require_command(
-        bootstrap_publish,
-        ["python3"],
-        "label-gate.yml.jobs.bootstrap-label-gate.steps['Publish bootstrap Validate PR labels check']",
-        "label-gate.yml: bootstrap label publisher must invoke trusted metadata publisher",
-    )
-    require(
-        bootstrap_command[1] == ".github/scripts/run_trusted_metadata_check.py",
-        "label-gate.yml: bootstrap label publisher must use the current-branch trusted metadata publisher",
-    )
-    bootstrap_options = command_option_map(
-        bootstrap_command[2:],
-        "label-gate.yml: bootstrap label publisher",
-    )
-    require(bootstrap_options.get("--gate") == "label", "label-gate.yml: bootstrap label publisher must stay in label mode")
-    require(
-        bootstrap_options.get("--check-name") == contract.label_check_name,
-        "label-gate.yml: bootstrap label publisher must preserve the required check name",
-    )
-    require(
-        bootstrap_options.get("--candidate-root") == "$PWD" and bootstrap_options.get("--trusted-root") == "$PWD",
-        "label-gate.yml: bootstrap label publisher must evaluate the current checkout",
-    )
-
-    trusted_job = named_job_config(workflow, "trusted-label-gate", expected_jobs, "label-gate.yml")
-    require_exact_if(
-        trusted_job,
-        "${{ github.event_name == 'pull_request_target' }}",
-        "label-gate.yml.jobs.trusted-label-gate",
-    )
-    require_fail_closed(trusted_job, "label-gate.yml.jobs.trusted-label-gate")
-    trusted_checkout = checkout_step(
-        trusted_job, "Checkout trusted base", "label-gate.yml.jobs.trusted-label-gate"
-    )
-    require(trusted_checkout.get("ref") == "${{ github.event.pull_request.base.ref }}", "label-gate.yml: trusted base checkout ref drifted")
     require(trusted_checkout.get("fetch-depth") == 1, "label-gate.yml: trusted base checkout must stay shallow")
     require(trusted_checkout.get("path") == "trusted", "label-gate.yml: trusted base checkout path drifted")
     require(
         trusted_checkout.get("persist-credentials") is False,
         "label-gate.yml: trusted base checkout must disable persisted credentials",
     )
-    candidate_checkout = checkout_step(
-        trusted_job, "Checkout candidate pull request", "label-gate.yml.jobs.trusted-label-gate"
-    )
+    candidate_checkout = checkout_step(job, "Checkout candidate pull request", "label-gate.yml.jobs.validate-pr-labels")
     require(
         candidate_checkout.get("repository") == "${{ github.event.pull_request.head.repo.full_name }}",
         "label-gate.yml: candidate checkout repository drifted",
@@ -656,50 +569,56 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
         candidate_checkout.get("persist-credentials") is False,
         "label-gate.yml: candidate checkout must disable persisted credentials",
     )
-    trusted_publish = step_config(
-        trusted_job,
-        "Publish trusted Validate PR labels check",
-        "label-gate.yml.jobs.trusted-label-gate",
-    )
-    require_no_if(
-        trusted_publish,
-        "label-gate.yml.jobs.trusted-label-gate.steps['Publish trusted Validate PR labels check']",
-    )
-    require_fail_closed(
-        trusted_publish,
-        "label-gate.yml.jobs.trusted-label-gate.steps['Publish trusted Validate PR labels check']",
-    )
-    trusted_env = require_mapping(
-        trusted_publish.get("env"),
-        "label-gate.yml.jobs.trusted-label-gate.steps['Publish trusted Validate PR labels check'].env",
-    )
-    require(
-        trusted_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}",
-        "label-gate.yml: trusted label publisher must pass GITHUB_TOKEN via env",
-    )
-    trusted_command = require_command(
-        trusted_publish,
+    contract_step = step_config(job, "Validate trusted label-gate contract", "label-gate.yml.jobs.validate-pr-labels")
+    require_no_if(contract_step, "label-gate.yml.jobs.validate-pr-labels.steps['Validate trusted label-gate contract']")
+    require_fail_closed(contract_step, "label-gate.yml.jobs.validate-pr-labels.steps['Validate trusted label-gate contract']")
+    contract_command = require_command(
+        contract_step,
         ["python3"],
-        "label-gate.yml.jobs.trusted-label-gate.steps['Publish trusted Validate PR labels check']",
-        "label-gate.yml: trusted label publisher must invoke trusted metadata publisher",
+        "label-gate.yml.jobs.validate-pr-labels.steps['Validate trusted label-gate contract']",
+        "label-gate.yml: trusted label gate must invoke the trusted contract checker",
     )
     require(
-        trusted_command[1] == "trusted/.github/scripts/run_trusted_metadata_check.py",
-        "label-gate.yml: trusted label publisher must run from the trusted checkout",
+        contract_command[1] == "trusted/.github/scripts/check_quality_gates_contract.py",
+        "label-gate.yml: trusted label gate must run the trusted contract checker",
     )
-    trusted_options = command_option_map(
-        trusted_command[2:],
-        "label-gate.yml: trusted label publisher",
-    )
-    require(trusted_options.get("--gate") == "label", "label-gate.yml: trusted label publisher must stay in label mode")
-    require(
-        trusted_options.get("--check-name") == contract.label_check_name,
-        "label-gate.yml: trusted label publisher must preserve the required check name",
+    contract_options = command_option_map(
+        contract_command[2:],
+        "label-gate.yml: trusted label gate contract step",
     )
     require(
-        trusted_options.get("--candidate-root") == "$PWD/candidate"
-        and trusted_options.get("--trusted-root") == "$PWD/trusted",
-        "label-gate.yml: trusted label publisher must split trusted and candidate roots",
+        contract_options.get("--repo-root") == "$PWD/candidate",
+        "label-gate.yml: trusted label gate must validate the candidate checkout",
+    )
+    require(
+        contract_options.get("--declaration") == "$PWD/candidate/.github/quality-gates.json",
+        "label-gate.yml: trusted label gate declaration source drifted",
+    )
+    require(
+        contract_options.get("--metadata-script") == "$PWD/trusted/.github/scripts/metadata_gate.py",
+        "label-gate.yml: trusted label gate metadata script source drifted",
+    )
+
+    label_step = step_config(job, "Evaluate PR labels", "label-gate.yml.jobs.validate-pr-labels")
+    require_no_if(label_step, "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels']")
+    require_fail_closed(label_step, "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels']")
+    label_env = require_mapping(
+        label_step.get("env"),
+        "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels'].env",
+    )
+    require(
+        label_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}",
+        "label-gate.yml: Evaluate PR labels must pass GITHUB_TOKEN via env",
+    )
+    label_command = require_command(
+        label_step,
+        ["python3"],
+        "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels']",
+        "label-gate.yml: Evaluate PR labels must invoke the trusted metadata gate",
+    )
+    require(
+        label_command[1] == "trusted/.github/scripts/metadata_gate.py" and label_command[2:] == ["label"],
+        "label-gate.yml: Evaluate PR labels must execute the trusted metadata gate in label mode",
     )
 
 
@@ -745,8 +664,10 @@ def validate_review_policy(path: Path, contract: ContractModel) -> None:
     )
     trusted_run = str(trusted_step.get("run", ""))
     require("git fetch --no-tags --depth=1 origin" in trusted_run, "review-policy.yml: trusted-source fetch drifted")
-    require("bootstrap-current-branch" in trusted_run, "review-policy.yml: bootstrap fallback drifted")
-    require("using current branch for bootstrap rollout only" in trusted_run, "review-policy.yml: bootstrap warning drifted")
+    require(
+        "bootstrap-current-branch" not in trusted_run and "using current branch for bootstrap rollout only" not in trusted_run,
+        "review-policy.yml: bootstrap fallback must stay disabled",
+    )
     require("metadata_script=$trusted_root/.github/scripts/metadata_gate.py" in trusted_run, "review-policy.yml: metadata trusted-source output drifted")
 
     step = step_config(job, "Evaluate review policy", "review-policy.yml.jobs.review-policy")
