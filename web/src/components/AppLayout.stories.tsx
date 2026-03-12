@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './AppLayout'
 import { I18nProvider } from '../i18n'
 import { ThemeProvider } from '../theme'
+import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
 
 class MockEventSource implements EventTarget {
   static CONNECTING = 0
@@ -171,15 +172,17 @@ const meta = {
                       />
                     }
                   />
-                  <Route
-                    path="account-pool/upstream-accounts"
-                    element={
-                      <MockPage
-                        title="Account Pool module active"
-                        description="This story shows the whole site shell while the account-pool module is the active top-level tab."
-                      />
-                    }
-                  />
+                  <Route path="account-pool" element={<AccountPoolLayout />}>
+                    <Route
+                      path="upstream-accounts"
+                      element={
+                        <MockPage
+                          title="Account Pool module active"
+                          description="This story shows the whole site shell while the account-pool module is the active top-level tab."
+                        />
+                      }
+                    />
+                  </Route>
                   <Route
                     path="settings"
                     element={
