@@ -270,7 +270,19 @@ def validate_rules(
     require_pull_request = bool(branch_policy.get("require_pull_request", False))
     disallow_branch_deletions = bool(branch_policy.get("disallow_branch_deletions", False))
     disallow_force_pushes = bool(branch_policy.get("disallow_force_pushes", False))
+    allow_merge_commits = branch_policy.get("allow_merge_commits", True)
+    if not isinstance(allow_merge_commits, bool):
+        raise ValidationError("policy.branch_protection.allow_merge_commits must be a boolean")
     require_merge_queue = bool(branch_policy.get("require_merge_queue", False))
+    declared_required_reviewers = branch_policy.get("required_reviewers", [])
+    if declared_required_reviewers is None:
+        declared_required_reviewers = []
+    if not isinstance(declared_required_reviewers, list):
+        raise ValidationError("policy.branch_protection.required_reviewers must be a JSON array")
+    if declared_required_reviewers:
+        raise ValidationError(
+            "policy.branch_protection.required_reviewers only supports an empty array in this repository"
+        )
     status_check_policy = branch_policy.get("required_status_checks", {})
     if status_check_policy is None:
         status_check_policy = {}
@@ -318,6 +330,8 @@ def validate_rules(
         errors.append(f"{branch}: missing merge_queue rule")
     if not require_merge_queue and "merge_queue" in grouped:
         errors.append(f"{branch}: unexpected merge_queue rule")
+    if allow_merge_commits and "required_linear_history" in grouped:
+        errors.append(f"{branch}: merge commits must remain allowed")
 
     if branch_policy.get("disallow_direct_pushes") and "pull_request" not in grouped:
         errors.append(f"{branch}: missing pull_request rule required to block direct pushes")
@@ -333,6 +347,7 @@ def validate_rules(
             last_push_approval = False
             thread_resolution = False
             merge_method_block = False
+            required_reviewers_present = False
             for rule in pull_request_rules:
                 parameters = rule.get("parameters") or {}
                 if not isinstance(parameters, dict):
@@ -349,6 +364,13 @@ def validate_rules(
                 allowed_merge_methods = parameters.get("allowed_merge_methods")
                 if isinstance(allowed_merge_methods, list) and allowed_merge_methods:
                     merge_method_block = merge_method_block or ("merge" not in allowed_merge_methods)
+                required_reviewers = parameters.get("required_reviewers")
+                if required_reviewers is None:
+                    continue
+                if not isinstance(required_reviewers, list):
+                    errors.append(f"{branch}: pull_request.required_reviewers must be an array when present")
+                    continue
+                required_reviewers_present = required_reviewers_present or bool(required_reviewers)
             if max_approvals != expected_native_approvals:
                 errors.append(
                     f"{branch}: required_approving_review_count={max_approvals} expected={expected_native_approvals}"
@@ -361,7 +383,9 @@ def validate_rules(
                 errors.append(f"{branch}: require_last_push_approval must stay disabled")
             if thread_resolution:
                 errors.append(f"{branch}: required_review_thread_resolution must stay disabled")
-            if merge_method_block:
+            if declared_required_reviewers == [] and required_reviewers_present:
+                errors.append(f"{branch}: required_reviewers must stay empty")
+            if allow_merge_commits and merge_method_block:
                 errors.append(f"{branch}: merge commits must remain allowed")
 
     if enforcement_mode not in {"github-native", "required-check"}:

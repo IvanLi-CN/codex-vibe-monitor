@@ -193,7 +193,9 @@ def validate_quality_gates(payload: dict[str, Any]) -> None:
     require(branch_policy.get("disallow_direct_pushes") is True, "quality-gates.json: disallow_direct_pushes must be true")
     require(branch_policy.get("disallow_branch_deletions") is True, "quality-gates.json: disallow_branch_deletions must be true")
     require(branch_policy.get("disallow_force_pushes") is True, "quality-gates.json: disallow_force_pushes must be true")
+    require(branch_policy.get("allow_merge_commits") is True, "quality-gates.json: allow_merge_commits must be true")
     require(branch_policy.get("require_merge_queue") is False, "quality-gates.json: require_merge_queue must be false")
+    require(branch_policy.get("required_reviewers") == [], "quality-gates.json: required_reviewers must stay empty")
 
     status_check_policy = require_mapping(
         branch_policy.get("required_status_checks"),

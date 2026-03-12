@@ -11,7 +11,9 @@
       "disallow_direct_pushes": true,
       "disallow_branch_deletions": true,
       "disallow_force_pushes": true,
+      "allow_merge_commits": true,
       "require_merge_queue": false,
+      "required_reviewers": [],
       "required_status_checks": {
         "strict": true,
         "integrations": {

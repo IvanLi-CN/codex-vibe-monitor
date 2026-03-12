@@ -121,6 +121,68 @@ fi
 grep -q "bypass actor verification unavailable without explicit waiver" "$fixtures_dir/.bypass-waiver.log"
 rm -f "$fixtures_dir/.bypass-waiver.log" "$bypass_decl"
 
+linear_history_rules="$fixtures_dir/.rules-main-linear-history.json"
+python3 - <<'PY' "$fixtures_dir/rules-main-ok.json" "$linear_history_rules"
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+payload = json.loads(source.read_text())
+payload.append({"type": "required_linear_history", "parameters": {}})
+target.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+
+if python3 "$script" \
+  --mode require \
+  --repo IvanLi-CN/codex-vibe-monitor \
+  --declaration "$declaration" \
+  --rules-file "$linear_history_rules" \
+  --branch main >/dev/null 2>"$fixtures_dir/.linear-history.log"; then
+  echo "expected required linear history drift to fail" >&2
+  exit 1
+fi
+
+grep -q "merge commits must remain allowed" "$fixtures_dir/.linear-history.log"
+rm -f "$fixtures_dir/.linear-history.log" "$linear_history_rules"
+
+required_reviewers_rules="$fixtures_dir/.rules-main-required-reviewers.json"
+python3 - <<'PY' "$fixtures_dir/rules-main-ok.json" "$required_reviewers_rules"
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+payload = json.loads(source.read_text())
+for rule in payload:
+    if rule.get("type") != "pull_request":
+        continue
+    params = rule.setdefault("parameters", {})
+    params["required_reviewers"] = [
+        {
+            "reviewer_id": 123456,
+            "reviewer_type": "Team",
+        }
+    ]
+    break
+target.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+
+if python3 "$script" \
+  --mode require \
+  --repo IvanLi-CN/codex-vibe-monitor \
+  --declaration "$declaration" \
+  --rules-file "$required_reviewers_rules" \
+  --branch main >/dev/null 2>"$fixtures_dir/.required-reviewers.log"; then
+  echo "expected required reviewers drift to fail" >&2
+  exit 1
+fi
+
+grep -q "required_reviewers must stay empty" "$fixtures_dir/.required-reviewers.log"
+rm -f "$fixtures_dir/.required-reviewers.log" "$required_reviewers_rules"
+
 python3 - <<'PY' "$script"
 import importlib.util
 import json
