@@ -288,13 +288,15 @@ def list_approvals(client: GitHubClient, owner: str, pull_number: int, author: s
     reviews = client.paginate(f"/repos/{client.owner}/{client.repo}/pulls/{pull_number}/reviews")
     reviews.sort(key=lambda review: str(review.get("submitted_at") or ""))
     latest_by_user: dict[str, dict[str, Any]] = {}
+    decision_states = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
     for review in reviews:
         user = review.get("user") or {}
         reviewer = user.get("login") if isinstance(user, dict) else None
         state = review.get("state")
         if not isinstance(reviewer, str) or not reviewer or state == "PENDING":
             continue
-        latest_by_user[reviewer] = review
+        if state in decision_states:
+            latest_by_user[reviewer] = review
 
     approvals: list[str] = []
     for reviewer, review in sorted(latest_by_user.items()):

@@ -35,6 +35,7 @@ class FakeClient:
             60: "bob",
             61: "maintainer",
             62: "IvanLi-CN",
+            63: "bob",
         }
         self.permissions = {
             "bob": "write",
@@ -71,6 +72,18 @@ class FakeClient:
                 {
                     "user": {"login": "reviewer"},
                     "state": "DISMISSED",
+                    "submitted_at": "2026-03-12T00:05:00Z",
+                },
+            ],
+            63: [
+                {
+                    "user": {"login": "reviewer"},
+                    "state": "APPROVED",
+                    "submitted_at": "2026-03-12T00:00:00Z",
+                },
+                {
+                    "user": {"login": "reviewer"},
+                    "state": "COMMENTED",
                     "submitted_at": "2026-03-12T00:05:00Z",
                 },
             ],
@@ -166,6 +179,14 @@ for pull_number in (61, 62):
     )
     assert exit_code == 0, f"expected review gate exemption for PR #{pull_number}, got {exit_code}"
     assert "approval not required" in summary
+
+exit_code, summary = run_with_summary(
+    module.run_review_gate,
+    make_context("review", "pull_request_review", 63),
+    client,
+)
+assert exit_code == 0, f"expected approval to survive a later comment, got {exit_code}"
+assert "Approval satisfied by @reviewer (write)." in summary
 
 print("test-inline-metadata-workflows: all checks passed")
 PY
