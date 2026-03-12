@@ -88,6 +88,29 @@ describe('getReasoningEffortTone', () => {
 })
 
 describe('InvocationTable', () => {
+  it('renders resolved failure rows as failed even when the raw status still says running', () => {
+    const html = renderTable([
+      {
+        id: 24,
+        invokeId: 'invocation-resolved-failure-running',
+        occurredAt: '2026-03-07T03:13:50Z',
+        createdAt: '2026-03-07T03:13:50Z',
+        source: 'proxy',
+        proxyDisplayName: 'legacy-edge',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        failureClass: 'service_failure',
+        errorMessage: '[upstream_response_failed] server_error',
+        totalTokens: 1024,
+        cost: 0.0021,
+      },
+    ])
+
+    expect(html).toContain('失败')
+    expect(html).not.toContain('运行中')
+  })
+
   it('renders reasoning effort and reasoning-token output breakdown in the summary rows', () => {
     const records: ApiInvocation[] = [
       {

@@ -18,6 +18,7 @@ const navItems = [
   { to: '/dashboard', labelKey: 'app.nav.dashboard' },
   { to: '/stats', labelKey: 'app.nav.stats' },
   { to: '/live', labelKey: 'app.nav.live' },
+  { to: '/records', labelKey: 'app.nav.records' },
   { to: '/settings', labelKey: 'app.nav.settings' },
 ] as const
 
