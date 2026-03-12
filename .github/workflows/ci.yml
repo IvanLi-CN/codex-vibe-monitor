@@ -107,16 +107,44 @@ jobs:
           )
           source_ref="HEAD"
           source_kind="current-branch"
+          base_branch=""
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-            source_ref="origin/${{ github.base_ref }}"
+            base_branch="${{ github.base_ref }}"
+          elif [ "${{ github.event_name }}" = "merge_group" ]; then
+            queue_prefix="refs/heads/gh-readonly-queue/"
+            if [[ "${GITHUB_REF}" != "${queue_prefix}"* ]]; then
+              echo "::error::merge_group ref ${GITHUB_REF} must use the gh-readonly-queue/<base_branch>/... format."
+              exit 1
+            fi
+            queue_ref="${GITHUB_REF#${queue_prefix}}"
+            if [[ "${queue_ref}" != */pr-* ]]; then
+              echo "::error::Unable to derive the merge_group base branch from ${GITHUB_REF}."
+              exit 1
+            fi
+            base_branch="${queue_ref%%/pr-*}"
+            if [ -z "${base_branch}" ]; then
+              echo "::error::Unable to derive the merge_group base branch from ${GITHUB_REF}."
+              exit 1
+            fi
+          fi
+
+          if [ -n "${base_branch}" ]; then
+            git fetch --no-tags --depth=1 origin "${base_branch}"
+            source_ref="origin/${base_branch}"
             source_kind="base-branch"
+            if [ "${{ github.event_name }}" = "merge_group" ]; then
+              source_kind="merge-group-base-branch"
+            fi
             for path in "${paths[@]}"; do
               if ! git cat-file -e "${source_ref}:${path}" 2>/dev/null; then
-                source_ref="HEAD"
-                source_kind="bootstrap-current-branch"
-                echo "::warning::Base branch does not yet contain trusted quality-gates sources; using current branch for bootstrap rollout only."
-                break
+                if [ "${{ github.event_name }}" = "pull_request" ]; then
+                  source_ref="HEAD"
+                  source_kind="bootstrap-current-branch"
+                  echo "::warning::Base branch does not yet contain trusted quality-gates sources; using current branch for bootstrap rollout only."
+                  break
+                fi
+                echo "::error::Base branch ${base_branch} does not contain the trusted quality-gates sources required for merge_group."
+                exit 1
               fi
             done
           fi

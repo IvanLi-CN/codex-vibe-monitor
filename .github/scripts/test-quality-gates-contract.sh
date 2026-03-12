@@ -45,6 +45,29 @@ fi
 
 grep -q "trusted label publisher must invoke trusted metadata publisher" "$tmp_dir/label-gate-bait.log"
 
+label_concurrency_repo="$tmp_dir/label-concurrency-repo"
+cp -R "$repo_root/." "$label_concurrency_repo"
+python3 - <<'PY' "$label_concurrency_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/label-gate.yml"
+text = path.read_text()
+needle = "  group: label-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}\n"
+replacement = "  group: label-gate-${{ github.event.pull_request.number || github.run_id }}\n"
+if needle not in text:
+    raise SystemExit("failed to rewrite label-gate concurrency group")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$label_concurrency_repo" >/dev/null 2>"$tmp_dir/label-concurrency.log"; then
+  echo "expected label-gate concurrency fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "concurrency.group must isolate pull_request and pull_request_target runs" "$tmp_dir/label-concurrency.log"
+
 review_repo="$tmp_dir/review-repo"
 cp -R "$repo_root/." "$review_repo"
 python3 - <<'PY' "$review_repo"
@@ -143,6 +166,44 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
 fi
 
 grep -q "Quality-gates live rules check'].if must stay unset" "$tmp_dir/ci-if.log"
+
+ci_merge_group_repo="$tmp_dir/ci-merge-group-repo"
+cp -R "$repo_root/." "$ci_merge_group_repo"
+python3 - <<'PY' "$ci_merge_group_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci.yml"
+text = path.read_text()
+needle = """          elif [ \"${{ github.event_name }}\" = \"merge_group\" ]; then
+            queue_prefix=\"refs/heads/gh-readonly-queue/\"
+            if [[ \"${GITHUB_REF}\" != \"${queue_prefix}\"* ]]; then
+              echo \"::error::merge_group ref ${GITHUB_REF} must use the gh-readonly-queue/<base_branch>/... format.\"
+              exit 1
+            fi
+            queue_ref=\"${GITHUB_REF#${queue_prefix}}\"
+            if [[ \"${queue_ref}\" != */pr-* ]]; then
+              echo \"::error::Unable to derive the merge_group base branch from ${GITHUB_REF}.\"
+              exit 1
+            fi
+            base_branch=\"${queue_ref%%/pr-*}\"
+            if [ -z \"${base_branch}\" ]; then
+              echo \"::error::Unable to derive the merge_group base branch from ${GITHUB_REF}.\"
+              exit 1
+            fi
+"""
+if needle not in text:
+    raise SystemExit("failed to rewrite ci merge_group branch resolution")
+path.write_text(text.replace(needle, "", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$ci_merge_group_repo" >/dev/null 2>"$tmp_dir/ci-merge-group.log"; then
+  echo "expected ci merge_group trusted-source fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "merge_group trusted-source branch handling drifted" "$tmp_dir/ci-merge-group.log"
 
 metadata_repo="$tmp_dir/metadata-repo"
 cp -R "$repo_root/." "$metadata_repo"

@@ -423,12 +423,29 @@ def validate_ci(path: Path) -> None:
     require_no_if(trusted_step, "ci.yml.jobs.lint.steps['Resolve trusted quality-gates sources']")
     require_fail_closed(trusted_step, "ci.yml.jobs.lint.steps['Resolve trusted quality-gates sources']")
     trusted_run = str(trusted_step.get("run", ""))
+    require("base_branch=" in trusted_run, "ci.yml.jobs.lint: trusted-source base_branch resolution drifted")
     require("git fetch --no-tags --depth=1 origin" in trusted_run, "ci.yml.jobs.lint: trusted-source fetch drifted")
     require("git show \"${source_ref}:${path}\"" in trusted_run, "ci.yml.jobs.lint: trusted-source materialization drifted")
     require("bootstrap-current-branch" in trusted_run, "ci.yml.jobs.lint: bootstrap fallback drifted")
     require(
         "using current branch for bootstrap rollout only" in trusted_run,
         "ci.yml.jobs.lint: bootstrap rollout warning drifted",
+    )
+    require(
+        'elif [ "${{ github.event_name }}" = "merge_group" ]; then' in trusted_run,
+        "ci.yml.jobs.lint: merge_group trusted-source branch handling drifted",
+    )
+    require(
+        'queue_prefix="refs/heads/gh-readonly-queue/"' in trusted_run,
+        "ci.yml.jobs.lint: merge_group queue ref parsing drifted",
+    )
+    require(
+        'source_kind="merge-group-base-branch"' in trusted_run,
+        "ci.yml.jobs.lint: merge_group trusted source kind drifted",
+    )
+    require(
+        "required for merge_group" in trusted_run,
+        "ci.yml.jobs.lint: merge_group trusted-source fail-closed guard drifted",
     )
     require("trusted_root/.github/scripts/check_quality_gates_contract.py" in trusted_run, "ci.yml.jobs.lint: trusted-source outputs drifted")
     contract_step = step_config(lint_job, "Quality-gates contract check", "ci.yml.jobs.lint")
@@ -482,6 +499,12 @@ def validate_label_gate(path: Path) -> None:
     require(permissions.get("pull-requests") == "read", "label-gate.yml.permissions.pull-requests must stay read")
     require(permissions.get("issues") == "read", "label-gate.yml.permissions.issues must stay read")
     require(permissions.get("checks") == "write", "label-gate.yml.permissions.checks must stay write")
+    concurrency = require_mapping(workflow.get("concurrency"), "label-gate.yml.concurrency")
+    require(
+        concurrency.get("group") == "label-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}",
+        "label-gate.yml.concurrency.group must isolate pull_request and pull_request_target runs",
+    )
+    require(concurrency.get("cancel-in-progress") is True, "label-gate.yml.concurrency.cancel-in-progress must stay true")
 
     bootstrap_job = job_config(workflow, "bootstrap-label-gate", "Bootstrap label gate", "label-gate.yml")
     require_exact_if(

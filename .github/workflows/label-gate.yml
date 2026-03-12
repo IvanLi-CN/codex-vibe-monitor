@@ -9,7 +9,7 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, edited]
 
 concurrency:
-  group: label-gate-${{ github.event.pull_request.number || github.run_id }}
+  group: label-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
