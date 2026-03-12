@@ -21,6 +21,26 @@ function StorySurface({ children }: { children: React.ReactNode }) {
 const SNAPSHOT_ID = 8844
 const FAST_POLL_MS = 30
 
+function alignStoryRecordsToNow(records: ApiInvocation[]) {
+  if (records.length === 0) return []
+
+  const latestOccurredAt = Math.max(...records.map((record) => Date.parse(record.occurredAt)))
+  const anchor = new Date()
+  anchor.setSeconds(0, 0)
+
+  return records.map((record) => {
+    const occurredDeltaMs = latestOccurredAt - Date.parse(record.occurredAt)
+    const createdDeltaMs = latestOccurredAt - Date.parse(record.createdAt)
+    return {
+      ...record,
+      occurredAt: new Date(anchor.getTime() - occurredDeltaMs).toISOString(),
+      createdAt: new Date(anchor.getTime() - createdDeltaMs).toISOString(),
+    }
+  })
+}
+
+const STORYBOOK_RECENT_INVOCATION_RECORDS = alignStoryRecordsToNow(STORYBOOK_INVOCATION_RECORDS)
+
 function normalizeText(value: string | null) {
   const normalized = value?.trim() ?? ''
   return normalized.toLowerCase()
@@ -167,11 +187,26 @@ function jsonResponse(payload: unknown) {
 interface StorybookRecordsPageMockProps {
   children: ReactNode
   newRecordsCount?: number
+  records?: ApiInvocation[]
+  refreshDelayMs?: number
 }
 
-function StorybookRecordsPageMock({ children, newRecordsCount = 17 }: StorybookRecordsPageMockProps) {
+function StorybookRecordsPageMock({
+  children,
+  newRecordsCount = 17,
+  records = STORYBOOK_RECENT_INVOCATION_RECORDS,
+  refreshDelayMs = 0,
+}: StorybookRecordsPageMockProps) {
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const originalSetIntervalRef = useRef<typeof window.setInterval | null>(null)
+  const invocationSearchCountRef = useRef(0)
+
+  const maybeDelayRefresh = async () => {
+    if (refreshDelayMs <= 0) return
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, refreshDelayMs)
+    })
+  }
 
   if (typeof window !== 'undefined' && !originalFetchRef.current) {
     originalFetchRef.current = window.fetch.bind(window)
@@ -191,10 +226,14 @@ function StorybookRecordsPageMock({ children, newRecordsCount = 17 }: StorybookR
       const params = url.searchParams
       const sortBy = (params.get('sortBy') as InvocationSortBy | null) ?? 'occurredAt'
       const sortOrder = (params.get('sortOrder') as InvocationSortOrder | null) ?? 'desc'
-      const filtered = filterRecords(STORYBOOK_INVOCATION_RECORDS, params)
+      const filtered = filterRecords(records, params)
       const sorted = sortRecords(filtered, sortBy, sortOrder)
 
       if (path === '/api/invocations') {
+        invocationSearchCountRef.current += 1
+        if (invocationSearchCountRef.current > 1) {
+          await maybeDelayRefresh()
+        }
         const { page, pageSize, paged } = paginateRecords(sorted, {
           page: params.get('page') ? Number(params.get('page')) : 1,
           pageSize: params.get('pageSize') ? Number(params.get('pageSize')) : 20,
@@ -211,6 +250,9 @@ function StorybookRecordsPageMock({ children, newRecordsCount = 17 }: StorybookR
       }
 
       if (path === '/api/invocations/summary') {
+        if (invocationSearchCountRef.current > 1) {
+          await maybeDelayRefresh()
+        }
         const summary = summarizeInvocationRecords(sorted)
         return jsonResponse(
           createStoryInvocationRecordsSummary({
@@ -260,6 +302,8 @@ function StorybookRecordsPageMock({ children, newRecordsCount = 17 }: StorybookR
 
 type RecordsStoryParameters = {
   newRecordsCount?: number
+  records?: ApiInvocation[]
+  refreshDelayMs?: number
 }
 
 const meta = {
@@ -270,10 +314,10 @@ const meta = {
   },
   decorators: [
     (Story, context) => {
-      const { newRecordsCount } = context.parameters as RecordsStoryParameters
+      const { newRecordsCount, records, refreshDelayMs } = context.parameters as RecordsStoryParameters
       return (
         <I18nProvider>
-          <StorybookRecordsPageMock newRecordsCount={newRecordsCount}>
+          <StorybookRecordsPageMock newRecordsCount={newRecordsCount} records={records} refreshDelayMs={refreshDelayMs}>
             <StorySurface>
               <Story />
             </StorySurface>
@@ -293,4 +337,36 @@ export const Default: Story = {
     newRecordsCount: 17,
   },
   render: () => <RecordsPage />,
+}
+
+export const NoNewData: Story = {
+  parameters: {
+    newRecordsCount: 0,
+  },
+  render: () => <RecordsPage />,
+}
+
+export const EmptyResults: Story = {
+  parameters: {
+    newRecordsCount: 0,
+    records: [],
+  },
+  render: () => <RecordsPage />,
+}
+
+export const RefreshingNewData: Story = {
+  parameters: {
+    newRecordsCount: 17,
+    refreshDelayMs: 1600,
+  },
+  render: () => <RecordsPage />,
+  play: async ({ canvasElement }) => {
+    const doc = canvasElement.ownerDocument
+    window.setTimeout(() => {
+      const button = doc.querySelector('[data-testid="records-new-data-button"]')
+      if (button instanceof HTMLButtonElement) {
+        button.click()
+      }
+    }, 300)
+  },
 }

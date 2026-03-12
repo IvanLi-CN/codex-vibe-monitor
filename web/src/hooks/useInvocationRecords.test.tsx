@@ -177,6 +177,9 @@ function Probe() {
       <button data-testid="search" type="button" onClick={() => void state.search()}>
         search
       </button>
+      <button data-testid="refresh-applied" type="button" onClick={() => void state.search({ source: 'applied', preserveSummary: true })}>
+        refreshApplied
+      </button>
     </div>
   )
 }
@@ -389,6 +392,89 @@ describe('useInvocationRecords', () => {
     expect(text('new-count')).toBe('0')
   })
 
+  it('refreshes using the applied filters and keeps the previous summary visible until the new summary resolves', async () => {
+    vi.useFakeTimers()
+    let initialListCalls = 0
+    let resolveRefreshSummary: ((value: InvocationRecordsSummaryResponse) => void) | null = null
+
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      initialListCalls += 1
+
+      if (initialListCalls === 1) {
+        return createListResponse({ snapshotId: 42 })
+      }
+
+      expect(query.model).toBeUndefined()
+      expect(query.snapshotId).toBeUndefined()
+      return createListResponse({
+        snapshotId: 84,
+        records: [
+          {
+            id: 9,
+            invokeId: 'invoke-refresh',
+            occurredAt: '2026-03-10T01:00:00Z',
+            createdAt: '2026-03-10T01:00:00Z',
+            model: 'baseline-refreshed',
+            status: 'success',
+          },
+        ],
+      })
+    })
+
+    apiMocks.fetchInvocationRecordsSummary
+      .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 42, newRecordsCount: 3 }))
+      .mockImplementationOnce(
+        async () =>
+          new Promise<InvocationRecordsSummaryResponse>((resolve) => {
+            resolveRefreshSummary = resolve
+          }),
+      )
+
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(createNewCountResponse({ snapshotId: 42, newRecordsCount: 3 }))
+
+    render(<Probe />)
+    await flushAsync()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
+    })
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('42')
+    expect(text('summary-snapshot')).toBe('42')
+    expect(text('new-count')).toBe('3')
+
+    click('draft-model')
+    click('refresh-applied')
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('84')
+    expect(text('model')).toBe('baseline-refreshed')
+    expect(text('summary-snapshot')).toBe('42')
+    expect(text('new-count')).toBe('3')
+    expect(text('summary-loading')).toBe('yes')
+
+    const refreshListQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0]
+    expect(refreshListQuery?.model).toBeUndefined()
+    expect(refreshListQuery?.snapshotId).toBeUndefined()
+
+    if (!resolveRefreshSummary) {
+      throw new Error('refresh summary resolver missing')
+    }
+
+    act(() => {
+      resolveRefreshSummary?.(createSummaryResponse({ snapshotId: 84, newRecordsCount: 0, totalCount: 1 }))
+    })
+    await flushAsync()
+
+    const refreshSummaryQuery = apiMocks.fetchInvocationRecordsSummary.mock.calls.at(-1)?.[0]
+    expect(refreshSummaryQuery?.model).toBeUndefined()
+    expect(refreshSummaryQuery?.snapshotId).toBe(84)
+    expect(text('summary-snapshot')).toBe('84')
+    expect(text('new-count')).toBe('0')
+    expect(text('summary-loading')).toBe('no')
+  })
+
   it('ignores stale overlapping new-count polls for the same snapshot', async () => {
     vi.useFakeTimers()
 
@@ -416,11 +502,15 @@ describe('useInvocationRecords', () => {
     expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(2)
     expect(pollResolvers).toHaveLength(2)
 
-    pollResolvers[1](createNewCountResponse({ snapshotId: 42, newRecordsCount: 9 }))
+    act(() => {
+      pollResolvers[1](createNewCountResponse({ snapshotId: 42, newRecordsCount: 9 }))
+    })
     await flushAsync()
     expect(text('new-count')).toBe('9')
 
-    pollResolvers[0](createNewCountResponse({ snapshotId: 42, newRecordsCount: 3 }))
+    act(() => {
+      pollResolvers[0](createNewCountResponse({ snapshotId: 42, newRecordsCount: 3 }))
+    })
     await flushAsync()
     expect(text('new-count')).toBe('9')
   })
@@ -565,6 +655,59 @@ describe('useInvocationRecords', () => {
     expect(text('summary-error')).toBe('')
     expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledTimes(1)
     expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the preserved summary alive for lightweight polling when a refreshed summary fails', async () => {
+    vi.useFakeTimers()
+
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      if (query.snapshotId === undefined) {
+        return createListResponse({
+          snapshotId: 84,
+          total: 1,
+          records: [
+            {
+              id: 84,
+              invokeId: 'invoke-refresh',
+              occurredAt: '2026-03-10T02:00:00Z',
+              createdAt: '2026-03-10T02:00:00Z',
+              model: 'baseline-refreshed',
+              status: 'success',
+            },
+          ],
+        })
+      }
+
+      return createListResponse({ snapshotId: 42 })
+    })
+    apiMocks.fetchInvocationRecordsSummary
+      .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }))
+      .mockRejectedValueOnce(new Error('summary failed'))
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(createNewCountResponse({ snapshotId: 84, newRecordsCount: 9 }))
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('summary-snapshot')).toBe('42')
+    expect(text('new-count')).toBe('0')
+
+    click('refresh-applied')
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('84')
+    expect(text('model')).toBe('baseline-refreshed')
+    expect(text('summary-snapshot')).toBe('42')
+    expect(text('new-count')).toBe('0')
+    expect(text('summary-error')).toContain('summary failed')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
+    })
+    await flushAsync()
+
+    expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1)
+    expect(text('summary-snapshot')).toBe('42')
+    expect(text('new-count')).toBe('9')
   })
 
   it('keeps the previous page size when a page-size request fails before search', async () => {

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { RecordsNewDataButton } from '../components/RecordsNewDataButton'
 import { Button } from '../components/ui/button'
 import { FilterableCombobox } from '../components/ui/filterable-combobox'
 import { InvocationRecordsSummaryCards } from '../components/InvocationRecordsSummaryCards'
 import { InvocationRecordsTable } from '../components/InvocationRecordsTable'
-import { InfoTooltip } from '../components/ui/info-tooltip'
 import { useInvocationRecords } from '../hooks/useInvocationRecords'
 import { useTranslation } from '../i18n'
 import {
@@ -22,6 +22,7 @@ const inputClassName =
   'h-9 w-full rounded-md border border-base-300/80 bg-base-100 px-3 text-sm text-base-content shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-60'
 
 const SUGGESTION_DEBOUNCE_MS = 250
+const NEW_DATA_REFRESH_MIN_LOADING_MS = 600
 
 function getVisiblePages(currentPage: number, totalPages: number) {
   if (totalPages <= 1) return [1]
@@ -63,6 +64,9 @@ export default function RecordsPage() {
   const [suggestions, setSuggestions] = useState<InvocationSuggestionsResponse | null>(null)
   const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false)
   const [activeSuggestionField, setActiveSuggestionField] = useState<InvocationSuggestionField | null>(null)
+  const [isNewDataRefreshPending, setIsNewDataRefreshPending] = useState(false)
+  const [cachedNewDataCount, setCachedNewDataCount] = useState(0)
+  const newDataRefreshSeqRef = useRef(0)
   const suggestionQuery = useMemo(
     () => buildInvocationSuggestionsQuery(draft, appliedSnapshotId, activeSuggestionField ?? undefined),
     [activeSuggestionField, appliedSnapshotId, draft],
@@ -142,7 +146,12 @@ export default function RecordsPage() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1)
   const visiblePages = getVisiblePages(page, totalPages)
   const isCustomRange = draft.rangePreset === 'custom'
-  const newRecordsCount = summary?.newRecordsCount ?? 0
+  const visibleSummary = summary && summary.snapshotId === records?.snapshotId ? summary : null
+  const newRecordsCount = visibleSummary?.newRecordsCount ?? 0
+  const isNewDataLoading = isNewDataRefreshPending
+  const displayNewDataCount = newRecordsCount > 0 ? newRecordsCount : cachedNewDataCount
+  const shouldShowNewDataButton =
+    (!isSearching || isNewDataRefreshPending) && (newRecordsCount > 0 || (isNewDataLoading && displayNewDataCount > 0))
   const tableLoading = isRecordsLoading
   const listControlsDisabled = isSearching || isRecordsLoading
   const hasOpenSuggestion = activeSuggestionField !== null
@@ -167,8 +176,40 @@ export default function RecordsPage() {
     }
   }
 
+  useEffect(() => {
+    if (newRecordsCount > 0) {
+      setCachedNewDataCount(newRecordsCount)
+      return
+    }
+
+    if (!isNewDataLoading) {
+      setCachedNewDataCount(0)
+    }
+  }, [isNewDataLoading, newRecordsCount])
+
   const handleSearch = () => {
+    newDataRefreshSeqRef.current += 1
+    setIsNewDataRefreshPending(false)
     void search()
+  }
+
+  const handleRefreshNewData = () => {
+    if (isNewDataLoading) return
+    const refreshSeq = newDataRefreshSeqRef.current + 1
+    newDataRefreshSeqRef.current = refreshSeq
+    setIsNewDataRefreshPending(true)
+    const minLoadingDelay = new Promise<void>((resolve) => {
+      window.setTimeout(resolve, NEW_DATA_REFRESH_MIN_LOADING_MS)
+    })
+
+    void Promise.all([
+      search({ source: 'applied', preserveSummary: true }),
+      minLoadingDelay,
+    ]).finally(() => {
+      if (newDataRefreshSeqRef.current === refreshSeq) {
+        setIsNewDataRefreshPending(false)
+      }
+    })
   }
 
   const handleSuggestionOpenChange = (field: InvocationSuggestionField) => (open: boolean) => {
@@ -411,14 +452,12 @@ export default function RecordsPage() {
               <p className="section-description">{t('records.summary.description')}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              {newRecordsCount > 0 ? (
-                <div className="inline-flex items-center gap-1.5 rounded-full border border-warning/35 bg-warning/10 px-3 py-1 text-xs font-semibold text-warning">
-                  <span>{t('records.summary.notice.newData', { count: newRecordsCount })}</span>
-                  <InfoTooltip
-                    label={t('records.summary.notice.helpAria')}
-                    content={t('records.summary.notice.tooltip')}
-                  />
-                </div>
+              {shouldShowNewDataButton ? (
+                <RecordsNewDataButton
+                  count={displayNewDataCount}
+                  isLoading={isNewDataLoading}
+                  onRefresh={handleRefreshNewData}
+                />
               ) : null}
               <div className="segment-group" role="tablist" aria-label={t('records.focus.label')}>
                 {focusOptions.map((option) => (
@@ -441,7 +480,7 @@ export default function RecordsPage() {
 
           <InvocationRecordsSummaryCards
             focus={focus}
-            summary={summary}
+            summary={visibleSummary}
             isLoading={isSummaryLoading}
             error={summaryError}
           />
