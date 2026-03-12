@@ -32,6 +32,7 @@ pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS: u64 = 10 * 60
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS: u64 = 5 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS: u64 = 15 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: u64 = 30;
+const DEFAULT_MANUAL_OAUTH_CALLBACK_PORT: u16 = 1455;
 
 const UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX: &str = "oauth_codex";
 const UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX: &str = "api_key_codex";
@@ -45,8 +46,9 @@ const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
 const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
 const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
 const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
-const DEFAULT_OAUTH_SCOPE: &str = "openid profile email offline_access";
-const OAUTH_AUDIENCE: &str = "https://api.openai.com/v1";
+const DEFAULT_OAUTH_SCOPE: &str =
+    "openid profile email offline_access api.connectors.read api.connectors.invoke";
+const OAUTH_ORIGINATOR: &str = "Codex Desktop";
 const DEFAULT_USAGE_LIMIT_ID: &str = "codex";
 const DEFAULT_API_KEY_LIMIT_UNIT: &str = "requests";
 const USAGE_PATH_STYLE_CHATGPT: &str = "/wham/usage";
@@ -2456,21 +2458,20 @@ fn build_oauth_authorize_url(
         .append_pair("client_id", client_id)
         .append_pair("redirect_uri", redirect_uri)
         .append_pair("scope", DEFAULT_OAUTH_SCOPE)
-        .append_pair("state", state_token)
         .append_pair("code_challenge", code_challenge)
         .append_pair("code_challenge_method", "S256")
-        .append_pair("audience", OAUTH_AUDIENCE)
+        .append_pair("id_token_add_organizations", "true")
         .append_pair("codex_cli_simplified_flow", "true")
-        .append_pair("prompt", "login");
+        .append_pair("state", state_token)
+        .append_pair("originator", OAUTH_ORIGINATOR);
     Ok(url.to_string())
 }
 
 fn build_manual_callback_redirect_uri() -> Result<String> {
-    let port = 32000 + (OsRng.next_u32() % 20000) as u16;
     let mut url =
         Url::parse("http://localhost").context("failed to build localhost callback URL")?;
-    let _ = url.set_port(Some(port));
-    url.set_path("/oauth/callback");
+    let _ = url.set_port(Some(DEFAULT_MANUAL_OAUTH_CALLBACK_PORT));
+    url.set_path("/auth/callback");
     Ok(url.to_string())
 }
 
@@ -2940,14 +2941,14 @@ mod tests {
     fn build_manual_callback_redirect_uri_targets_localhost() {
         let redirect = build_manual_callback_redirect_uri().expect("redirect uri");
         assert!(redirect.starts_with("http://localhost:"));
-        assert!(redirect.ends_with("/oauth/callback"));
+        assert!(redirect.ends_with("/auth/callback"));
     }
 
     #[test]
     fn parse_manual_oauth_callback_accepts_expected_redirect() {
         let query = parse_manual_oauth_callback(
-            "http://localhost:37891/oauth/callback?code=test-code&state=test-state",
-            "http://localhost:37891/oauth/callback",
+            "http://localhost:37891/auth/callback?code=test-code&state=test-state",
+            "http://localhost:37891/auth/callback",
         )
         .expect("callback query");
         assert_eq!(query.code.as_deref(), Some("test-code"));
