@@ -34,7 +34,7 @@ function MockModuleContent() {
 }
 
 const meta = {
-  title: 'Modules/Account Pool/Layout/App Layout',
+  title: 'Modules/Account Pool/Layout/Module Layout',
   component: AccountPoolLayout,
   tags: ['autodocs'],
   decorators: [
