@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
 import { Spinner } from '../../components/ui/spinner'
+import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import type { LoginSessionStatusResponse } from '../../lib/api'
 import { cn } from '../../lib/utils'
@@ -42,6 +43,7 @@ export default function UpstreamAccountCreatePage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const {
+    items,
     writesEnabled,
     isLoading,
     error,
@@ -66,6 +68,14 @@ export default function UpstreamAccountCreatePage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [popupWindow, setPopupWindow] = useState<Window | null>(null)
+
+  const groupSuggestions = Array.from(
+    new Set(
+      items
+        .map((item) => item.groupName?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ).sort((left, right) => left.localeCompare(right))
 
   useEffect(() => {
     const currentSession = session
@@ -259,10 +269,12 @@ export default function UpstreamAccountCreatePage() {
                   </label>
                   <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
-                    <Input
+                    <UpstreamAccountGroupCombobox
                       name="oauthGroupName"
                       value={oauthGroupName}
-                      onChange={(event) => setOauthGroupName(event.target.value)}
+                      suggestions={groupSuggestions}
+                      placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                      onValueChange={setOauthGroupName}
                     />
                   </label>
                   <label className="field">
@@ -300,10 +312,12 @@ export default function UpstreamAccountCreatePage() {
                   </label>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
-                    <Input
+                    <UpstreamAccountGroupCombobox
                       name="apiKeyGroupName"
                       value={apiKeyGroupName}
-                      onChange={(event) => setApiKeyGroupName(event.target.value)}
+                      suggestions={groupSuggestions}
+                      placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                      onValueChange={setApiKeyGroupName}
                     />
                   </label>
                   <label className="field md:col-span-2">

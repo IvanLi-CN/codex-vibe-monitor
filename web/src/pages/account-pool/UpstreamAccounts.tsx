@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { Input } from '../../components/ui/input'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
+import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountUsageCard } from '../../components/UpstreamAccountUsageCard'
 import { UpstreamAccountsTable } from '../../components/UpstreamAccountsTable'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
@@ -212,7 +213,7 @@ export default function UpstreamAccountsPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
-  const [activeGroupFilter, setActiveGroupFilter] = useState('__all__')
+  const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const popupRef = useRef<Window | null>(null)
 
   useEffect(() => {
@@ -310,21 +311,27 @@ export default function UpstreamAccountsPage() {
     }
   }, [items])
 
+  const groupFilterSuggestions = useMemo(() => {
+    const suggestions = [t('accountPool.upstreamAccounts.groupFilter.all'), ...availableGroups.names]
+    if (availableGroups.hasUngrouped) {
+      suggestions.push(t('accountPool.upstreamAccounts.groupFilter.ungrouped'))
+    }
+    return suggestions
+  }, [availableGroups, t])
+
   const filteredItems = useMemo(() => {
-    if (activeGroupFilter === '__all__') return items
-    if (activeGroupFilter === '__ungrouped__') {
+    const normalizedQuery = groupFilterQuery.trim().toLocaleLowerCase()
+    const allLabel = t('accountPool.upstreamAccounts.groupFilter.all').toLocaleLowerCase()
+    const ungroupedLabel = t('accountPool.upstreamAccounts.groupFilter.ungrouped').toLocaleLowerCase()
+
+    if (!normalizedQuery || normalizedQuery === allLabel) return items
+    if (normalizedQuery === ungroupedLabel) {
       return items.filter((item) => !item.groupName?.trim())
     }
-    return items.filter((item) => item.groupName?.trim() === activeGroupFilter)
-  }, [activeGroupFilter, items])
-
-  useEffect(() => {
-    const visible = activeGroupFilter === '__all__'
-      || activeGroupFilter === '__ungrouped__' && availableGroups.hasUngrouped
-      || availableGroups.names.includes(activeGroupFilter)
-    if (visible) return
-    setActiveGroupFilter('__all__')
-  }, [activeGroupFilter, availableGroups])
+    return items.filter((item) =>
+      item.groupName?.trim().toLocaleLowerCase().includes(normalizedQuery),
+    )
+  }, [groupFilterQuery, items, t])
 
   useEffect(() => {
     if (filteredItems.length === 0) return
@@ -333,6 +340,7 @@ export default function UpstreamAccountsPage() {
   }, [filteredItems, selectAccount, selectedId])
 
   const selected = detail ?? selectedSummary
+  const selectedVisible = filteredItems.some((item) => item.id === selectedId)
   const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
   const accountKindLabel = (kind: string) =>
     kind === 'oauth_codex'
@@ -539,8 +547,17 @@ export default function UpstreamAccountsPage() {
                 <h2 className="section-title">{t('accountPool.upstreamAccounts.listTitle')}</h2>
                 <p className="section-description">{t('accountPool.upstreamAccounts.listDescription')}</p>
               </div>
-              <div className="flex items-center gap-2">
-                {selected && !isDetailDrawerOpen ? (
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="field min-w-[15rem]">
+                  <span className="field-label">{t('accountPool.upstreamAccounts.groupFilterLabel')}</span>
+                  <UpstreamAccountGroupCombobox
+                    value={groupFilterQuery}
+                    suggestions={groupFilterSuggestions}
+                    placeholder={t('accountPool.upstreamAccounts.groupFilterPlaceholder')}
+                    onValueChange={setGroupFilterQuery}
+                  />
+                </label>
+                {selected && selectedVisible && !isDetailDrawerOpen ? (
                   <Button type="button" variant="outline" onClick={() => setIsDetailDrawerOpen(true)}>
                     <Icon icon="mdi:account-details-outline" className="mr-2 h-4 w-4" aria-hidden />
                     {t('accountPool.upstreamAccounts.actions.openDetails')}
@@ -548,43 +565,6 @@ export default function UpstreamAccountsPage() {
                 ) : null}
                 {isLoading ? <Spinner className="text-primary" /> : null}
               </div>
-            </div>
-            <div className="segment-group self-start" role="tablist" aria-label={t('accountPool.upstreamAccounts.groupFilterLabel')}>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeGroupFilter === '__all__'}
-                className="segment-button"
-                data-active={activeGroupFilter === '__all__'}
-                onClick={() => setActiveGroupFilter('__all__')}
-              >
-                {t('accountPool.upstreamAccounts.groupFilter.all')}
-              </button>
-              {availableGroups.names.map((groupName) => (
-                <button
-                  key={groupName}
-                  type="button"
-                  role="tab"
-                  aria-selected={activeGroupFilter === groupName}
-                  className="segment-button"
-                  data-active={activeGroupFilter === groupName}
-                  onClick={() => setActiveGroupFilter(groupName)}
-                >
-                  {groupName}
-                </button>
-              ))}
-              {availableGroups.hasUngrouped ? (
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeGroupFilter === '__ungrouped__'}
-                  className="segment-button"
-                  data-active={activeGroupFilter === '__ungrouped__'}
-                  onClick={() => setActiveGroupFilter('__ungrouped__')}
-                >
-                  {t('accountPool.upstreamAccounts.groupFilter.ungrouped')}
-                </button>
-              ) : null}
             </div>
             <UpstreamAccountsTable
               items={filteredItems}
@@ -695,10 +675,12 @@ export default function UpstreamAccountsPage() {
                   </label>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
-                    <Input
+                    <UpstreamAccountGroupCombobox
                       name="detailGroupName"
                       value={draft.groupName}
-                      onChange={(event) => setDraft((current) => ({ ...current, groupName: event.target.value }))}
+                      suggestions={availableGroups.names}
+                      placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                      onValueChange={(value) => setDraft((current) => ({ ...current, groupName: value }))}
                     />
                   </label>
                   <label className="field md:col-span-2">
