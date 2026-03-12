@@ -353,7 +353,7 @@ describe('RecordsPage suggestions', () => {
 describe('RecordsPage new data action', () => {
   it('renders the new data button and switches to the refresh call-to-action on focus', async () => {
     mockInvocationRecords({
-      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+      summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 9 },
     })
 
     render(<RecordsPage />)
@@ -404,7 +404,7 @@ describe('RecordsPage new data action', () => {
     )
 
     mockInvocationRecords({
-      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+      summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 9 },
       search,
     })
 
@@ -457,7 +457,7 @@ describe('RecordsPage new data action', () => {
     const search = vi.fn(() => Promise.resolve())
 
     mockInvocationRecords({
-      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+      summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 9 },
       search,
     })
 
@@ -567,6 +567,19 @@ describe('RecordsPage new data action', () => {
 
     expect(host?.textContent).toContain('…')
     expect(host?.textContent).not.toContain('999')
+  })
+
+  it('hides the new-data CTA after a refreshed list lands if the preserved summary is stale', () => {
+    mockInvocationRecords({
+      records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
+      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+      summaryError: 'summary failed',
+      isSummaryLoading: false,
+    })
+
+    render(<RecordsPage />)
+
+    expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull()
   })
 
   it('hides the new-data CTA during a normal search even if the old summary still reports pending records', () => {
