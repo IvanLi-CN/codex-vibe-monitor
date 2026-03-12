@@ -7,6 +7,12 @@ on:
   pull_request:
     branches:
       - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - edited
   workflow_dispatch:
 
 concurrency:
@@ -80,7 +86,15 @@ jobs:
             .github/scripts/check_live_quality_gates.py \
             .github/scripts/check_quality_gates_contract.py
 
-      - name: Quality-gates bootstrap self-tests
+      - name: Quality-gates bootstrap contract check
+        run: |
+          python3 .github/scripts/check_quality_gates_contract.py \
+            --repo-root "$PWD" \
+            --declaration ".github/quality-gates.json" \
+            --metadata-script ".github/scripts/metadata_gate.py" \
+            --profile bootstrap
+
+      - name: Quality-gates self-tests
         run: |
           bash .github/scripts/test-quality-gates-contract.sh
           bash .github/scripts/test-live-quality-gates.sh

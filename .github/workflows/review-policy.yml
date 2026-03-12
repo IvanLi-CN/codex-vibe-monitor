@@ -2,6 +2,8 @@ name: Review Policy
 
 on:
   pull_request:
+    branches:
+      - main
     types:
       - opened
       - reopened
@@ -9,6 +11,7 @@ on:
       - ready_for_review
       - labeled
       - unlabeled
+      - edited
   pull_request_review:
     types:
       - submitted

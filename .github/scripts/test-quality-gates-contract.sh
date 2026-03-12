@@ -7,6 +7,12 @@ fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
+python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+  --repo-root "$repo_root" \
+  --declaration "$repo_root/.github/quality-gates.json" \
+  --metadata-script "$repo_root/.github/scripts/metadata_gate.py" \
+  --profile bootstrap
+
 baseline_repo="$tmp_dir/baseline-repo"
 cp -R "$repo_root/." "$baseline_repo"
 cp "$fixtures_root/quality-gates.json" "$baseline_repo/.github/quality-gates.json"
@@ -14,7 +20,7 @@ cp "$fixtures_root/ci.yml" "$baseline_repo/.github/workflows/ci.yml"
 cp "$fixtures_root/label-gate.yml" "$baseline_repo/.github/workflows/label-gate.yml"
 cp "$fixtures_root/review-policy.yml" "$baseline_repo/.github/workflows/review-policy.yml"
 
-python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo"
+python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 
 label_repo="$tmp_dir/label-repo"
@@ -91,6 +97,55 @@ workflow_path.write_text(workflow_text)
 PY
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$dynamic_contract_repo" >/dev/null
+
+coverage_repo="$tmp_dir/coverage-repo"
+cp -R "$baseline_repo/." "$coverage_repo"
+python3 - <<'PY' "$coverage_repo"
+from pathlib import Path
+import json
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/quality-gates.json"
+payload = json.loads(path.read_text())
+payload["required_checks"] = [item for item in payload["required_checks"] if item != "Build Artifacts"]
+payload["policy"]["branch_protection"]["required_status_checks"]["integrations"].pop("Build Artifacts", None)
+for workflow in payload["expected_pr_workflows"]:
+    if workflow.get("workflow") == "CI Pipeline":
+        workflow["jobs"] = [item for item in workflow["jobs"] if item != "Build Artifacts"]
+path.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$coverage_repo" --profile final >/dev/null 2>"$tmp_dir/coverage.log"; then
+  echo "expected CI job coverage fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "unexpected=\\['Build Artifacts'\\]" "$tmp_dir/coverage.log"
+
+bootstrap_coverage_repo="$tmp_dir/bootstrap-coverage-repo"
+cp -R "$repo_root/." "$bootstrap_coverage_repo"
+python3 - <<'PY' "$bootstrap_coverage_repo"
+from pathlib import Path
+import json
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/quality-gates.json"
+payload = json.loads(path.read_text())
+payload["informational_checks"] = [item for item in payload["informational_checks"] if item != "Records Overlay E2E"]
+for workflow in payload["expected_pr_workflows"]:
+    if workflow.get("workflow") == "CI Pipeline":
+        workflow["jobs"] = [item for item in workflow["jobs"] if item != "Records Overlay E2E"]
+path.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$bootstrap_coverage_repo" --profile bootstrap >/dev/null 2>"$tmp_dir/bootstrap-coverage.log"; then
+  echo "expected bootstrap CI job coverage fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "unexpected=\\['Records Overlay E2E'\\]" "$tmp_dir/bootstrap-coverage.log"
 
 review_repo="$tmp_dir/review-repo"
 cp -R "$baseline_repo/." "$review_repo"
@@ -200,8 +255,14 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/ci.yml"
 text = path.read_text()
-needle = '--declaration ".github/quality-gates.json"'
-replacement = '--declaration "${{ steps.trusted-quality-gates.outputs.declaration }}"'
+needle = """          python3 "${{ steps.trusted-quality-gates.outputs.live_script }}" \\
+            --repo "${{ github.repository }}" \\
+            --declaration "${{ steps.trusted-quality-gates.outputs.declaration }}"
+"""
+replacement = """          python3 "${{ steps.trusted-quality-gates.outputs.live_script }}" \\
+            --repo "${{ github.repository }}" \\
+            --declaration ".github/quality-gates.json"
+"""
 if needle not in text:
     raise SystemExit("failed to rewrite ci live declaration source")
 path.write_text(text.replace(needle, replacement, 1))
@@ -212,7 +273,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "live rules step must use the trusted checker against the candidate declaration" "$tmp_dir/ci-live-contract.log"
+grep -q "live rules step must use the trusted checker against the trusted declaration" "$tmp_dir/ci-live-contract.log"
 
 ci_merge_group_repo="$tmp_dir/ci-merge-group-repo"
 cp -R "$baseline_repo/." "$ci_merge_group_repo"

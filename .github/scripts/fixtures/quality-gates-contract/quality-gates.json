@@ -52,17 +52,14 @@
     "Review Policy Gate"
   ],
   "informational_checks": [
+    "Front-end Tests",
+    "Records Overlay E2E",
     "Release Meta (intent + version + tags)",
     "Build + Smoke + Push Candidate (linux/amd64)",
-    "Build + Smoke + Push Candidate (linux/arm64)"
+    "Build + Smoke + Push Candidate (linux/arm64)",
+    "Release Publish (manifest + tag + GitHub Release)"
   ],
-  "waivers": [
-    {
-      "kind": "bypass-actors-unverified",
-      "branch": "main",
-      "reason": "GitHub branch-rules API omits bypass actors; verify bypass actors manually during live ruleset configuration."
-    }
-  ],
+  "waivers": [],
   "expected_pr_workflows": [
     {
       "workflow": "Label Gate",
@@ -74,11 +71,14 @@
       "workflow": "CI Pipeline",
       "jobs": [
         "Lint & Format Check",
+        "Front-end Tests",
+        "Records Overlay E2E",
         "Backend Tests",
         "Build Artifacts",
         "Release Meta (intent + version + tags)",
         "Build + Smoke + Push Candidate (linux/amd64)",
-        "Build + Smoke + Push Candidate (linux/arm64)"
+        "Build + Smoke + Push Candidate (linux/arm64)",
+        "Release Publish (manifest + tag + GitHub Release)"
       ]
     },
     {

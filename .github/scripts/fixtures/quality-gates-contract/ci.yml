@@ -176,7 +176,7 @@ jobs:
         run: |
           python3 "${{ steps.trusted-quality-gates.outputs.live_script }}" \
             --repo "${{ github.repository }}" \
-            --declaration ".github/quality-gates.json"
+            --declaration "${{ steps.trusted-quality-gates.outputs.declaration }}"
 
       - name: Quality gates self-tests
         run: |

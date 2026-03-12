@@ -67,8 +67,8 @@ fi
 grep -q "Review Policy Gate: expected one of" "$fixtures_dir/.legacy-source.log"
 rm -f "$fixtures_dir/.legacy-source.log"
 
-bypass_decl="$fixtures_dir/.quality-gates-no-bypass-waiver.json"
-python3 - <<'PY' "$declaration" "$bypass_decl"
+bypass_rules="$fixtures_dir/.rules-main-bypass-actors.json"
+python3 - <<'PY' "$fixtures_dir/rules-main-ok.json" "$bypass_rules"
 import json
 import sys
 from pathlib import Path
@@ -76,10 +76,12 @@ from pathlib import Path
 source = Path(sys.argv[1])
 target = Path(sys.argv[2])
 payload = json.loads(source.read_text())
-payload["waivers"] = [
-    waiver
-    for waiver in payload["waivers"]
-    if waiver.get("kind") != "bypass-actors-unverified"
+payload[0]["bypass_actors"] = [
+    {
+        "actor_id": 1,
+        "actor_type": "RepositoryRole",
+        "bypass_mode": "always"
+    }
 ]
 target.write_text(json.dumps(payload, indent=2) + "\n")
 PY
@@ -87,15 +89,40 @@ PY
 if python3 "$script" \
   --mode require \
   --repo IvanLi-CN/codex-vibe-monitor \
-  --declaration "$bypass_decl" \
-  --rules-file "$fixtures_dir/rules-main-ok.json" \
+  --declaration "$declaration" \
+  --rules-file "$bypass_rules" \
   --branch main >/dev/null 2>"$fixtures_dir/.bypass-waiver.log"; then
-  echo "expected bypass actor blind spot to fail without explicit waiver" >&2
+  echo "expected bypass actors fixture to fail" >&2
   exit 1
 fi
 
-grep -q "bypass actor verification unavailable without explicit waiver" "$fixtures_dir/.bypass-waiver.log"
-rm -f "$fixtures_dir/.bypass-waiver.log" "$bypass_decl"
+grep -q "bypass actors must stay empty" "$fixtures_dir/.bypass-waiver.log"
+rm -f "$fixtures_dir/.bypass-waiver.log" "$bypass_rules"
+
+legacy_rules="$fixtures_dir/.rules-main-legacy-flat.json"
+python3 - <<'PY' "$fixtures_dir/rules-main-ok.json" "$legacy_rules"
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+payload = json.loads(source.read_text())
+target.write_text(json.dumps(payload[0]["rules"], indent=2) + "\n")
+PY
+
+if python3 "$script" \
+  --mode require \
+  --repo IvanLi-CN/codex-vibe-monitor \
+  --declaration "$declaration" \
+  --rules-file "$legacy_rules" \
+  --branch main >/dev/null 2>"$fixtures_dir/.legacy-bypass.log"; then
+  echo "expected legacy flat rules fixture to require explicit waiver" >&2
+  exit 1
+fi
+
+grep -q "bypass actor verification unavailable without explicit waiver" "$fixtures_dir/.legacy-bypass.log"
+rm -f "$fixtures_dir/.legacy-bypass.log" "$legacy_rules"
 
 linear_history_rules="$fixtures_dir/.rules-main-linear-history.json"
 python3 - <<'PY' "$fixtures_dir/rules-main-ok.json" "$linear_history_rules"
@@ -106,7 +133,7 @@ from pathlib import Path
 source = Path(sys.argv[1])
 target = Path(sys.argv[2])
 payload = json.loads(source.read_text())
-payload.append({"type": "required_linear_history", "parameters": {}})
+payload[0]["rules"].append({"type": "required_linear_history", "parameters": {}})
 target.write_text(json.dumps(payload, indent=2) + "\n")
 PY
 
@@ -132,7 +159,7 @@ from pathlib import Path
 source = Path(sys.argv[1])
 target = Path(sys.argv[2])
 payload = json.loads(source.read_text())
-for rule in payload:
+for rule in payload[0]["rules"]:
     if rule.get("type") != "pull_request":
         continue
     params = rule.setdefault("parameters", {})

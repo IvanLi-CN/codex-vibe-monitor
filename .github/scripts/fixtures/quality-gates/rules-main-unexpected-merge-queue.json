@@ -1,61 +1,80 @@
 [
   {
-    "type": "deletion",
-    "parameters": {}
-  },
-  {
-    "type": "non_fast_forward",
-    "parameters": {}
-  },
-  {
-    "type": "required_signatures",
-    "parameters": {}
-  },
-  {
-    "type": "pull_request",
-    "parameters": {
-      "required_approving_review_count": 0,
-      "dismiss_stale_reviews_on_push": false,
-      "require_code_owner_review": false,
-      "require_last_push_approval": false,
-      "required_review_thread_resolution": false,
-      "allowed_merge_methods": [
-        "merge",
-        "squash",
-        "rebase"
-      ]
-    }
-  },
-  {
-    "type": "required_status_checks",
-    "parameters": {
-      "strict_required_status_checks_policy": true,
-      "required_status_checks": [
-        {
-          "context": "Validate PR labels",
-          "integration_id": 15368
-        },
-        {
-          "context": "Lint & Format Check",
-          "integration_id": 15368
-        },
-        {
-          "context": "Backend Tests",
-          "integration_id": 15368
-        },
-        {
-          "context": "Build Artifacts",
-          "integration_id": 15368
-        },
-        {
-          "context": "Review Policy Gate",
-          "integration_id": 15368
+    "id": 1004,
+    "name": "protect-main-required-checks",
+    "target": "branch",
+    "source_type": "Repository",
+    "source": "IvanLi-CN/codex-vibe-monitor",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "include": [
+          "~DEFAULT_BRANCH"
+        ],
+        "exclude": []
+      }
+    },
+    "bypass_actors": [],
+    "rules": [
+      {
+        "type": "deletion",
+        "parameters": {}
+      },
+      {
+        "type": "non_fast_forward",
+        "parameters": {}
+      },
+      {
+        "type": "required_signatures",
+        "parameters": {}
+      },
+      {
+        "type": "pull_request",
+        "parameters": {
+          "required_approving_review_count": 0,
+          "dismiss_stale_reviews_on_push": false,
+          "require_code_owner_review": false,
+          "require_last_push_approval": false,
+          "required_review_thread_resolution": false,
+          "allowed_merge_methods": [
+            "merge",
+            "squash",
+            "rebase"
+          ]
         }
-      ]
-    }
-  },
-  {
-    "type": "merge_queue",
-    "parameters": {}
+      },
+      {
+        "type": "required_status_checks",
+        "parameters": {
+          "strict_required_status_checks_policy": true,
+          "required_status_checks": [
+            {
+              "context": "Validate PR labels",
+              "integration_id": 15368
+            },
+            {
+              "context": "Lint & Format Check",
+              "integration_id": 15368
+            },
+            {
+              "context": "Backend Tests",
+              "integration_id": 15368
+            },
+            {
+              "context": "Build Artifacts",
+              "integration_id": 15368
+            },
+            {
+              "context": "Review Policy Gate",
+              "integration_id": 15368
+            }
+          ]
+        }
+      },
+      {
+        "type": "merge_queue",
+        "parameters": {}
+      }
+    ]
   }
 ]
