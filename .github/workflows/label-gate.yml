@@ -4,80 +4,87 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, edited]
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, edited]
 
 concurrency:
   group: label-gate-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
+  checks: write
   contents: read
   pull-requests: read
   issues: read
 
 jobs:
-  label-gate:
-    name: Validate PR labels
+  bootstrap-label-gate:
+    name: Bootstrap label gate
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
+      - name: Checkout bootstrap candidate
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Resolve trusted quality-gates sources
-        id: trusted-quality-gates
+      - name: Detect bootstrap rollout requirement
+        id: bootstrap
         shell: bash
         run: |
           set -euo pipefail
-          trusted_root="$RUNNER_TEMP/trusted-quality-gates"
-          mkdir -p "$trusted_root/.github/scripts"
-          paths=(
-            ".github/quality-gates.json"
-            ".github/scripts/check_quality_gates_contract.py"
-            ".github/scripts/metadata_gate.py"
-          )
-          source_ref="HEAD"
-          source_kind="current-branch"
           git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref }}"
-          source_ref="origin/${{ github.event.pull_request.base.ref }}"
-          source_kind="base-branch"
-          for path in "${paths[@]}"; do
-            if ! git cat-file -e "${source_ref}:${path}" 2>/dev/null; then
-              source_ref="HEAD"
-              source_kind="bootstrap-current-branch"
-              echo "::warning::Base branch does not yet contain trusted quality-gates sources; using current branch for bootstrap rollout only."
-              break
-            fi
-          done
+          if git cat-file -e "origin/${{ github.event.pull_request.base.ref }}:.github/scripts/run_trusted_metadata_check.py" 2>/dev/null; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-          for path in "${paths[@]}"; do
-            mkdir -p "$trusted_root/$(dirname "$path")"
-            if [ "$source_ref" = "HEAD" ]; then
-              cp "$path" "$trusted_root/$path"
-            else
-              git show "${source_ref}:${path}" > "$trusted_root/$path"
-            fi
-          done
+          echo "::warning::Base branch does not yet contain trusted label-gate publishing; using current branch for bootstrap rollout only."
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
-          {
-            echo "source_kind=$source_kind"
-            echo "source_ref=$source_ref"
-            echo "trusted_root=$trusted_root"
-            echo "declaration=$trusted_root/.github/quality-gates.json"
-            echo "contract_script=$trusted_root/.github/scripts/check_quality_gates_contract.py"
-            echo "metadata_script=$trusted_root/.github/scripts/metadata_gate.py"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Validate workflow contract
-        run: |
-          python3 "${{ steps.trusted-quality-gates.outputs.contract_script }}" \
-            --repo-root "$PWD" \
-            --declaration .github/quality-gates.json \
-            --metadata-script "${{ steps.trusted-quality-gates.outputs.metadata_script }}"
-
-      - name: Validate release intent labels
+      - name: Publish bootstrap Validate PR labels check
+        if: ${{ steps.bootstrap.outputs.enabled == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 "${{ steps.trusted-quality-gates.outputs.metadata_script }}" label
+          python3 .github/scripts/run_trusted_metadata_check.py \
+            --gate label \
+            --check-name "Validate PR labels" \
+            --candidate-root "$PWD" \
+            --trusted-root "$PWD"
+
+  trusted-label-gate:
+    name: Publish trusted label gate
+    if: ${{ github.event_name == 'pull_request_target' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 1
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout candidate pull request
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          path: candidate
+          persist-credentials: false
+
+      - name: Publish trusted Validate PR labels check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 trusted/.github/scripts/run_trusted_metadata_check.py \
+            --gate label \
+            --check-name "Validate PR labels" \
+            --candidate-root "$PWD/candidate" \
+            --trusted-root "$PWD/trusted"

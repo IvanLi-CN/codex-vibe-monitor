@@ -17,16 +17,21 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/label-gate.yml"
 text = path.read_text()
-needle = """      - name: Validate workflow contract
+needle = """      - name: Publish trusted Validate PR labels check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 "${{ steps.trusted-quality-gates.outputs.contract_script }}" \\
-            --repo-root "$PWD" \\
-            --declaration .github/quality-gates.json \\
-            --metadata-script "${{ steps.trusted-quality-gates.outputs.metadata_script }}"
+          python3 trusted/.github/scripts/run_trusted_metadata_check.py \\
+            --gate label \\
+            --check-name "Validate PR labels" \\
+            --candidate-root "$PWD/candidate" \\
+            --trusted-root "$PWD/trusted"
 """
-replacement = """      - name: Validate workflow contract
+replacement = """      - name: Publish trusted Validate PR labels check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo \"python3 ${{ steps.trusted-quality-gates.outputs.contract_script }} --repo-root $PWD --declaration .github/quality-gates.json --metadata-script ${{ steps.trusted-quality-gates.outputs.metadata_script }}\"
+          echo "python3 trusted/.github/scripts/run_trusted_metadata_check.py --gate label --check-name Validate PR labels --candidate-root $PWD/candidate --trusted-root $PWD/trusted"
 """
 if needle not in text:
     raise SystemExit("failed to rewrite label-gate workflow")
@@ -38,7 +43,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "must invoke trusted contract checker" "$tmp_dir/label-gate-bait.log"
+grep -q "trusted label publisher must invoke trusted metadata publisher" "$tmp_dir/label-gate-bait.log"
 
 review_repo="$tmp_dir/review-repo"
 cp -R "$repo_root/." "$review_repo"
@@ -72,5 +77,24 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
 fi
 
 grep -q "must invoke trusted metadata gate" "$tmp_dir/review-policy-bait.log"
+
+unsafe_yaml_repo="$tmp_dir/unsafe-yaml-repo"
+cp -R "$repo_root/." "$unsafe_yaml_repo"
+python3 - <<'PY' "$unsafe_yaml_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/review-policy.yml"
+text = path.read_text()
+path.write_text(text.replace("name: Review Policy", "name: !ruby/object:Kernel {}", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$unsafe_yaml_repo" >/dev/null 2>"$tmp_dir/unsafe-yaml.log"; then
+  echo "expected unsafe YAML fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "unable to parse YAML via ruby" "$tmp_dir/unsafe-yaml.log"
 
 echo "test-quality-gates-contract: all checks passed"

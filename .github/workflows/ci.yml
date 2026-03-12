@@ -88,6 +88,7 @@ jobs:
         run: |
           python3 -m py_compile \
             .github/scripts/metadata_gate.py \
+            .github/scripts/run_trusted_metadata_check.py \
             .github/scripts/check_live_quality_gates.py \
             .github/scripts/check_quality_gates_contract.py
 
@@ -158,6 +159,7 @@ jobs:
       - name: Quality gates self-tests
         run: |
           bash .github/scripts/test-quality-gates-contract.sh
+          bash .github/scripts/test-run-trusted-metadata-check.sh
           bash .github/scripts/test-live-quality-gates.sh
 
       - name: Front-end lint

@@ -67,7 +67,8 @@
     {
       "workflow": "Label Gate",
       "jobs": [
-        "Validate PR labels"
+        "Bootstrap label gate",
+        "Publish trusted label gate"
       ]
     },
     {
