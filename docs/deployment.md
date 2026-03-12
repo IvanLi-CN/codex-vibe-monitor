@@ -88,7 +88,6 @@ labels:
 - `DATABASE_PATH`：SQLite 主库路径；升级旧版本前请先同步新的公开 env 命名，legacy `XY_*` 公共键会在启动期直接被拒绝。
 - `PROXY_RAW_DIR`：原始请求/响应落盘目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，避免跟随容器工作目录漂移。
 - `PROXY_RAW_MAX_BYTES`：单次请求/响应原文采集上限；默认 `0=unlimited`（支持显式配置正整数上限）。
-- `PROXY_RAW_RETENTION_DAYS`：原文留存天数（到期清理原文字段/文件，不影响结构化统计）。
 - `PROXY_ENFORCE_STREAM_INCLUDE_USAGE`：是否在 `chat.completions` 流式请求中强制注入 `stream_options.include_usage=true`。
 - `PROXY_USAGE_BACKFILL_ON_STARTUP`：兼容保留的历史补数开关说明；当前版本的历史补数已经改为后台有界执行，不再阻塞 readiness。
 - `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：非 compact 代理路径的上游等待超时，默认 `60` 秒。
@@ -99,7 +98,7 @@ labels:
 - `RETENTION_INTERVAL_SECS`：常驻 maintenance 执行间隔；默认按小时调度。
 - `RETENTION_BATCH_ROWS`：单批处理上限；用于降低 SQLite 长事务与锁表风险。
 - `ARCHIVE_DIR`：离线 archive 根目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，建议挂载到持久化卷并纳入备份。
-- `INVOCATION_SUCCESS_FULL_DAYS` / `INVOCATION_MAX_DAYS`：调用明细 30/90 天冷热分层窗口。
+- `INVOCATION_SUCCESS_FULL_DAYS` / `INVOCATION_MAX_DAYS`：调用明细冷热分层窗口；raw file 删除跟随这两档 retention，不再有独立的 raw retention env。
 - `FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS` / `STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS`：代理尝试与统计快照的在线保留窗口。
 - `QUOTA_SNAPSHOT_FULL_DAYS`：配额快照全量在线保留窗口；超窗后压缩为“每天最后一条”。
 
@@ -113,7 +112,7 @@ labels:
 - `GET /api/quota/latest`：读取数据库里最近一条历史 quota snapshot；本服务不再从外部 XYAI 上游抓取新 quota。
 - `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries` 默认合并数据库中的历史 `xy`、当前 `proxy`，以及启用时的 `crs` 来源。
 - `GET /api/stats/perf` 返回代理链路阶段耗时聚合统计。
-- `/api/invocations` 会额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记当前在线记录是否仍保留完整原始细节。
+- `/api/invocations` 会额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记当前在线记录是否仍保留完整原始细节；`rawExpiresAt` 已移除，不再作为公开响应字段。
 - `GET /api/stats` 与 `GET /api/stats/summary?window=all` 会合并在线明细与 `invocation_rollup_daily`，确保 archive/purge 后 totals 保持一致。
 - 现有排障接口只查询在线 retention window，不回读离线 archive 文件。
 
