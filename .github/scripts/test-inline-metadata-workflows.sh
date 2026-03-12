@@ -116,7 +116,7 @@ async function testLabelGatePullRequestEvent() {
   );
 }
 
-async function testReviewPolicyManualPullNumber() {
+async function testReviewPolicyReviewEvent() {
   const permissions = {
     bob: 'write',
     reviewer: 'write',
@@ -160,8 +160,12 @@ async function testReviewPolicyManualPullNumber() {
     },
   };
   const context = {
-    eventName: 'workflow_dispatch',
-    payload: {},
+    eventName: 'pull_request_review',
+    payload: {
+      pull_request: {
+        number: 57,
+      },
+    },
     repo: {
       owner: 'IvanLi-CN',
       repo: 'codex-vibe-monitor',
@@ -170,21 +174,19 @@ async function testReviewPolicyManualPullNumber() {
   const result = await runWorkflowScript(reviewPath, {
     context,
     github,
-    env: {
-      MANUAL_PULL_NUMBER: '57',
-    },
+    env: {},
   });
   assert(!result.thrown, `review-policy threw unexpectedly: ${result.thrown && result.thrown.message}`);
   assert(!result.failure, `review-policy failed unexpectedly: ${result.failure}`);
   assert(
     result.logs.some((entry) => entry.includes('review gate validated 1 pull request(s)')),
-    'review-policy did not validate the manual pull_number path',
+    'review-policy did not validate the pull_request_review payload',
   );
 }
 
 Promise.resolve()
   .then(testLabelGatePullRequestEvent)
-  .then(testReviewPolicyManualPullNumber)
+  .then(testReviewPolicyReviewEvent)
   .catch((error) => {
     console.error(error.message || error);
     process.exit(1);

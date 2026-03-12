@@ -4,15 +4,9 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, edited]
-  workflow_dispatch:
-    inputs:
-      pull_number:
-        description: Pull request number to evaluate
-        required: false
-        type: number
 
 concurrency:
-  group: label-gate-${{ github.event.pull_request.number || github.event.inputs.pull_number || github.run_id }}
+  group: label-gate-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -28,8 +22,6 @@ jobs:
     steps:
       - name: Validate release intent labels
         uses: actions/github-script@v8
-        env:
-          MANUAL_PULL_NUMBER: ${{ github.event.inputs.pull_number || '' }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -46,11 +38,6 @@ jobs:
               const payloadPullNumber = context.payload.pull_request?.number;
               if (Number.isInteger(payloadPullNumber) && payloadPullNumber > 0) {
                 return [payloadPullNumber];
-              }
-
-              const manualPullNumber = Number(process.env.MANUAL_PULL_NUMBER || 0);
-              if (Number.isInteger(manualPullNumber) && manualPullNumber > 0) {
-                return [manualPullNumber];
               }
 
               throw new Error('Missing valid pull request number for label gate evaluation');

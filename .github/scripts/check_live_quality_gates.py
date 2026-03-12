@@ -100,12 +100,11 @@ def split_repo(repo: str) -> tuple[str, str]:
 
 
 def fetch_branch_rules(api_root: str, owner: str, repo: str, branch: str) -> Any:
-    path = "/repos/{owner}/{repo}/rules/branches/{branch}?per_page=100".format(
+    base_path = "/repos/{owner}/{repo}/rules/branches/{branch}".format(
         owner=urllib.parse.quote(owner, safe=""),
         repo=urllib.parse.quote(repo, safe=""),
         branch=urllib.parse.quote(branch, safe=""),
     )
-    url = api_root.rstrip("/") + path
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "codex-vibe-monitor-quality-gates-live-check/1.0",
@@ -114,15 +113,34 @@ def fetch_branch_rules(api_root: str, owner: str, repo: str, branch: str) -> Any
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise ValidationError(f"GitHub API request failed ({exc.code}): {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise ValidationError(f"GitHub API request failed: {exc.reason}") from exc
+    rules: list[Any] = []
+    page = 1
+    while True:
+        query = urllib.parse.urlencode({"per_page": 100, "page": page})
+        url = api_root.rstrip("/") + base_path + "?" + query
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.load(response)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise ValidationError(f"GitHub API request failed ({exc.code}): {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise ValidationError(f"GitHub API request failed: {exc.reason}") from exc
+
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            page_rules = payload["data"]
+        elif isinstance(payload, list):
+            page_rules = payload
+        else:
+            raise ValidationError("Unsupported GitHub branch rules payload type")
+
+        rules.extend(page_rules)
+        if len(page_rules) < 100:
+            break
+        page += 1
+
+    return rules
 
 
 def extract_rules(payload: Any) -> list[dict[str, Any]]:
