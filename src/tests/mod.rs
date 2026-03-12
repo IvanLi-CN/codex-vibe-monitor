@@ -1950,6 +1950,20 @@ fn search_raw_script_matches_plain_and_gzip_files() {
         "gzip raw file should match, got: {stdout}"
     );
 
+    let miss_output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .arg("--root")
+    .arg(&root)
+    .arg("absent-token")
+    .output()
+    .expect("run search-raw miss case");
+    assert_eq!(
+        miss_output.status.code(),
+        Some(1),
+        "search-raw should return 1 when no file matches"
+    );
+
     cleanup_temp_test_dir(&temp_dir);
 }
 
@@ -14649,6 +14663,81 @@ async fn retention_dry_run_estimates_cold_raw_compression_without_mutating_files
         row.get::<Option<String>, _>("request_raw_path").as_deref(),
         Some(request_raw.to_string_lossy().as_ref())
     );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_cold_compression_scans_batches_in_occurred_at_order() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-order").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+    config.retention_batch_rows = 1;
+
+    let newest = config.proxy_raw_dir.join("order-newest.bin");
+    let middle = config.proxy_raw_dir.join("order-middle.bin");
+    let oldest = config.proxy_raw_dir.join("order-oldest.bin");
+    fs::write(&newest, b"newest").expect("write newest raw");
+    fs::write(&middle, b"middle").expect("write middle raw");
+    fs::write(&oldest, b"oldest").expect("write oldest raw");
+
+    insert_retention_invocation(
+        &pool,
+        "order-newest",
+        &shanghai_local_days_ago(2, 23, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&newest),
+        None,
+        Some(10),
+        Some(0.01),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "order-middle",
+        &shanghai_local_days_ago(3, 12, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&middle),
+        None,
+        Some(10),
+        Some(0.01),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "order-oldest",
+        &shanghai_local_days_ago(4, 8, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&oldest),
+        None,
+        Some(10),
+        Some(0.01),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run ordered cold compression");
+    assert_eq!(summary.raw_files_compression_candidates, 3);
+    assert_eq!(summary.raw_files_compressed, 3);
+
+    let compressed_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations WHERE request_raw_path LIKE '%.bin.gz'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count compressed ordered rows");
+    assert_eq!(compressed_count, 3);
 
     cleanup_temp_test_dir(&temp_dir);
 }

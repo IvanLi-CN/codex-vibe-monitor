@@ -139,6 +139,7 @@
 - 2026-03-13: 创建 spec，锁定 `gzip + 24h 热明文 + 单文件 gzip + docker exec search-raw` 作为本轮唯一方案。
 - 2026-03-13: 已完成后端冷压缩、透明解压、retention 统计与搜索脚本实现，等待文档与验证收口。
 - 2026-03-13: 已完成 README / deployment / spec 索引同步，`cargo fmt --check`、`cargo check`、`cargo test` 全部通过；本地 Docker daemon 不可用，镜像 smoke 待有 daemon 环境时补跑。
+- 2026-03-13: 根据 PR 阶段 review 修复 cold-compress 分页游标与 `search-raw` gzip 无命中退出码，并补齐对应回归测试。
 
 ## 参考
 

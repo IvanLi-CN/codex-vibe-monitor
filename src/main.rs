@@ -1918,6 +1918,7 @@ struct InvocationArchiveCandidate {
 #[derive(Debug, FromRow, Clone)]
 struct InvocationRawCompressionCandidate {
     id: i64,
+    occurred_at: String,
     request_raw_path: Option<String>,
     response_raw_path: Option<String>,
 }
@@ -2304,24 +2305,30 @@ async fn compress_cold_proxy_raw_payloads(
 
     let cutoff = shanghai_local_cutoff_for_age_secs_string(config.proxy_raw_hot_secs);
     let mut summary = RawCompressionPassSummary::default();
+    let mut last_seen_occurred_at: Option<String> = None;
     let mut last_seen_id = 0_i64;
 
     loop {
         let candidates = sqlx::query_as::<_, InvocationRawCompressionCandidate>(
             r#"
-            SELECT id, request_raw_path, response_raw_path
+            SELECT id, occurred_at, request_raw_path, response_raw_path
             FROM codex_invocations
             WHERE occurred_at < ?1
-              AND id > ?2
               AND (
                 (request_raw_path IS NOT NULL AND request_raw_path NOT LIKE '%.gz')
                 OR (response_raw_path IS NOT NULL AND response_raw_path NOT LIKE '%.gz')
               )
+              AND (
+                ?2 IS NULL
+                OR occurred_at > ?2
+                OR (occurred_at = ?2 AND id > ?3)
+              )
             ORDER BY occurred_at ASC, id ASC
-            LIMIT ?3
+            LIMIT ?4
             "#,
         )
         .bind(&cutoff)
+        .bind(last_seen_occurred_at.as_deref())
         .bind(last_seen_id)
         .bind(config.retention_batch_rows as i64)
         .fetch_all(pool)
@@ -2332,6 +2339,7 @@ async fn compress_cold_proxy_raw_payloads(
         }
 
         for candidate in candidates {
+            last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
             let request_outcome = maybe_compress_proxy_raw_path(
                 pool,

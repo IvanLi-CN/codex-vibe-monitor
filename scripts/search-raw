@@ -54,8 +54,9 @@ grep_mode="-F"
 [ "$mode" = "regex" ] && grep_mode="-E"
 
 file_list="$(mktemp "${TMPDIR:-/tmp}/search-raw.files.XXXXXX")"
+match_file="$(mktemp "${TMPDIR:-/tmp}/search-raw.matches.XXXXXX")"
 cleanup() {
-  rm -f "$file_list"
+  rm -f "$file_list" "$match_file"
 }
 trap cleanup EXIT INT TERM HUP
 
@@ -71,10 +72,9 @@ while IFS= read -r path; do
       fi
       ;;
     *.bin.gz)
-      if gzip -cd -- "$path" \
-        | grep -n ${grep_mode} -- "$needle" \
-        | awk -v path="$path" '{ print path ":" $0 }'
-      then
+      : > "$match_file"
+      if gzip -cd -- "$path" | grep -n ${grep_mode} -- "$needle" > "$match_file"; then
+        awk -v path="$path" '{ print path ":" $0 }' "$match_file"
         matched=0
       fi
       ;;
