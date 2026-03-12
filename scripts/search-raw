@@ -75,22 +75,38 @@ grep_mode="-F"
 [ "$mode" = "regex" ] && grep_mode="-E"
 
 file_list="$(mktemp "${TMPDIR:-/tmp}/search-raw.files.XXXXXX")"
+file_list_unsorted="$(mktemp "${TMPDIR:-/tmp}/search-raw.files.unsorted.XXXXXX")"
+find_error_file="$(mktemp "${TMPDIR:-/tmp}/search-raw.find-stderr.XXXXXX")"
 gzip_status_file="$(mktemp "${TMPDIR:-/tmp}/search-raw.gzip-status.XXXXXX")"
 match_file="$(mktemp "${TMPDIR:-/tmp}/search-raw.matches.XXXXXX")"
 cleanup() {
-  rm -f "$file_list" "$gzip_status_file" "$match_file"
+  rm -f "$file_list" "$file_list_unsorted" "$find_error_file" "$gzip_status_file" "$match_file"
 }
 trap cleanup EXIT INT TERM HUP
 
-find "$root" -type f \( -name '*.bin' -o -name '*.bin.gz' \) -print | sort > "$file_list"
+if ! find "$root" -type f \( -name '*.bin' -o -name '*.bin.gz' \) -print > "$file_list_unsorted" 2> "$find_error_file"
+then
+  cat "$find_error_file" >&2
+  echo "search-raw: failed to enumerate raw files under $root" >&2
+  exit 2
+fi
+sort "$file_list_unsorted" > "$file_list"
 
 matched=1
 while IFS= read -r path; do
   [ -n "$path" ] || continue
   case "$path" in
     *.bin)
-      if grep -nH ${grep_mode} -- "$needle" "$path"; then
+      : > "$match_file"
+      if grep -nH ${grep_mode} -- "$needle" "$path" > "$match_file"; then
+        cat "$match_file"
         matched=0
+      else
+        grep_status=$?
+        if [ "$grep_status" -gt 1 ]; then
+          echo "search-raw: grep failed for $path" >&2
+          exit 2
+        fi
       fi
       ;;
     *.bin.gz)

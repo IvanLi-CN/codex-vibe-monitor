@@ -2426,90 +2426,114 @@ async fn compress_cold_proxy_raw_payloads(
         for candidate in candidates {
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
-            let candidate_result = async {
-                let request_outcome = maybe_compress_proxy_raw_path(
-                    pool,
-                    candidate.id,
-                    "request_raw_path",
-                    candidate.request_raw_path.as_deref(),
-                    config.proxy_raw_compression,
-                    raw_path_fallback_root,
-                    dry_run,
-                )
-                .await?;
-                let response_outcome = maybe_compress_proxy_raw_path(
-                    pool,
-                    candidate.id,
-                    "response_raw_path",
-                    candidate.response_raw_path.as_deref(),
-                    config.proxy_raw_compression,
-                    raw_path_fallback_root,
-                    dry_run,
-                )
-                .await?;
-
-                if !dry_run {
-                    let request_path_changed =
-                        request_outcome.new_db_path != candidate.request_raw_path;
-                    let response_path_changed =
-                        response_outcome.new_db_path != candidate.response_raw_path;
-                    if request_path_changed || response_path_changed {
-                        let mut tx = pool.begin().await?;
-                        sqlx::query(
-                            r#"
-                            UPDATE codex_invocations
-                            SET request_raw_path = ?1,
-                                response_raw_path = ?2
-                            WHERE id = ?3
-                            "#,
-                        )
-                        .bind(request_outcome.new_db_path.as_deref())
-                        .bind(response_outcome.new_db_path.as_deref())
-                        .bind(candidate.id)
-                        .execute(tx.as_mut())
-                        .await?;
-                        tx.commit().await?;
-                    }
-
-                    if request_outcome.compressed {
-                        delete_exact_proxy_raw_path(
-                            request_outcome.old_exact_path.as_deref(),
-                            raw_path_fallback_root,
-                        )?;
-                    }
-                    if response_outcome.compressed {
-                        delete_exact_proxy_raw_path(
-                            response_outcome.old_exact_path.as_deref(),
-                            raw_path_fallback_root,
-                        )?;
-                    }
-                }
-
-                Ok::<_, anyhow::Error>((request_outcome, response_outcome))
-            }
-            .await;
-
-            match candidate_result {
-                Ok((request_outcome, response_outcome)) => {
-                    for outcome in [&request_outcome, &response_outcome] {
-                        if outcome.candidate_counted {
-                            summary.files_considered += 1;
-                        }
-                        if outcome.compressed {
-                            summary.files_compressed += 1;
-                        }
-                        summary.bytes_before += outcome.bytes_before;
-                        summary.bytes_after += outcome.bytes_after;
-                        summary.estimated_bytes_after += outcome.estimated_bytes_after;
-                    }
-                }
+            let request_outcome = match maybe_compress_proxy_raw_path(
+                pool,
+                candidate.id,
+                "request_raw_path",
+                candidate.request_raw_path.as_deref(),
+                config.proxy_raw_compression,
+                raw_path_fallback_root,
+                dry_run,
+            )
+            .await
+            {
+                Ok(outcome) => Some(outcome),
                 Err(err) => {
                     warn!(
                         invocation_id = candidate.id,
+                        field = "request_raw_path",
                         error = %err,
-                        "failed to cold-compress raw payloads for invocation; continuing retention"
+                        "failed to cold-compress raw payload file; continuing retention"
                     );
+                    None
                 }
+            };
+            let response_outcome = match maybe_compress_proxy_raw_path(
+                pool,
+                candidate.id,
+                "response_raw_path",
+                candidate.response_raw_path.as_deref(),
+                config.proxy_raw_compression,
+                raw_path_fallback_root,
+                dry_run,
+            )
+            .await
+            {
+                Ok(outcome) => Some(outcome),
+                Err(err) => {
+                    warn!(
+                        invocation_id = candidate.id,
+                        field = "response_raw_path",
+                        error = %err,
+                        "failed to cold-compress raw payload file; continuing retention"
+                    );
+                    None
+                }
+            };
+
+            let request_db_path = request_outcome
+                .as_ref()
+                .and_then(|outcome| outcome.new_db_path.clone())
+                .or_else(|| candidate.request_raw_path.clone());
+            let response_db_path = response_outcome
+                .as_ref()
+                .and_then(|outcome| outcome.new_db_path.clone())
+                .or_else(|| candidate.response_raw_path.clone());
+
+            if !dry_run {
+                let request_path_changed = request_db_path != candidate.request_raw_path;
+                let response_path_changed = response_db_path != candidate.response_raw_path;
+                if request_path_changed || response_path_changed {
+                    let mut tx = pool.begin().await?;
+                    sqlx::query(
+                        r#"
+                        UPDATE codex_invocations
+                        SET request_raw_path = ?1,
+                            response_raw_path = ?2
+                        WHERE id = ?3
+                        "#,
+                    )
+                    .bind(request_db_path.as_deref())
+                    .bind(response_db_path.as_deref())
+                    .bind(candidate.id)
+                    .execute(tx.as_mut())
+                    .await?;
+                    tx.commit().await?;
+                }
+
+                if let Some(outcome) = request_outcome
+                    .as_ref()
+                    .filter(|outcome| outcome.compressed)
+                {
+                    delete_exact_proxy_raw_path(
+                        outcome.old_exact_path.as_deref(),
+                        raw_path_fallback_root,
+                    )?;
+                }
+                if let Some(outcome) = response_outcome
+                    .as_ref()
+                    .filter(|outcome| outcome.compressed)
+                {
+                    delete_exact_proxy_raw_path(
+                        outcome.old_exact_path.as_deref(),
+                        raw_path_fallback_root,
+                    )?;
+                }
+            }
+
+            for outcome in [request_outcome.as_ref(), response_outcome.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                if outcome.candidate_counted {
+                    summary.files_considered += 1;
+                }
+                if outcome.compressed {
+                    summary.files_compressed += 1;
+                }
+                summary.bytes_before += outcome.bytes_before;
+                summary.bytes_after += outcome.bytes_after;
+                summary.estimated_bytes_after += outcome.estimated_bytes_after;
             }
         }
     }

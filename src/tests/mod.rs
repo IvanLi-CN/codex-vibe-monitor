@@ -2089,6 +2089,101 @@ fn search_raw_script_reports_corrupt_gzip_as_error() {
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn search_raw_script_reports_plain_file_read_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = make_temp_test_dir("search-raw-script-plain-permission-denied");
+    let root = temp_dir.join("proxy_raw_payloads");
+    fs::create_dir_all(&root).expect("create raw root");
+    let plain_path = root.join("plain.bin");
+    fs::write(&plain_path, b"permission-token\n").expect("write plain raw");
+
+    let mut permissions = fs::metadata(&plain_path)
+        .expect("read plain raw metadata")
+        .permissions();
+    permissions.set_mode(0o000);
+    fs::set_permissions(&plain_path, permissions).expect("chmod plain raw");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .arg("--root")
+    .arg(&root)
+    .arg("permission-token")
+    .output()
+    .expect("run search-raw with unreadable plain file");
+
+    let mut repaired_permissions = fs::metadata(&plain_path)
+        .expect("read plain raw metadata after run")
+        .permissions();
+    repaired_permissions.set_mode(0o644);
+    fs::set_permissions(&plain_path, repaired_permissions).expect("restore plain raw permissions");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "plain grep errors should be treated as hard errors"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("search-raw stderr");
+    assert!(
+        stderr.contains("grep failed"),
+        "plain grep failure should be explained, got: {stderr}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn search_raw_script_reports_find_enumeration_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = make_temp_test_dir("search-raw-script-find-permission-denied");
+    let root = temp_dir.join("proxy_raw_payloads");
+    let readable_dir = root.join("readable");
+    let blocked_dir = root.join("blocked");
+    fs::create_dir_all(&readable_dir).expect("create readable raw dir");
+    fs::create_dir_all(&blocked_dir).expect("create blocked raw dir");
+    fs::write(readable_dir.join("plain.bin"), b"permission-token\n").expect("write readable raw");
+
+    let mut permissions = fs::metadata(&blocked_dir)
+        .expect("read blocked dir metadata")
+        .permissions();
+    permissions.set_mode(0o000);
+    fs::set_permissions(&blocked_dir, permissions).expect("chmod blocked dir");
+
+    let output = std::process::Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/search-raw"),
+    )
+    .arg("--root")
+    .arg(&root)
+    .arg("permission-token")
+    .output()
+    .expect("run search-raw with unreadable directory");
+
+    let mut repaired_permissions = fs::metadata(&blocked_dir)
+        .expect("read blocked dir metadata after run")
+        .permissions();
+    repaired_permissions.set_mode(0o755);
+    fs::set_permissions(&blocked_dir, repaired_permissions)
+        .expect("restore blocked dir permissions");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "find enumeration errors should be treated as hard errors"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("search-raw stderr");
+    assert!(
+        stderr.contains("failed to enumerate raw files"),
+        "find failures should be explained, got: {stderr}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
 fn sqlite_url_for_path(path: &Path) -> String {
     format!("sqlite://{}", path.to_string_lossy())
 }
@@ -14896,6 +14991,94 @@ async fn retention_continues_when_one_cold_compression_file_fails() {
     assert!(!PathBuf::from(format!("{}.gz", broken_raw.display())).exists());
     assert!(!good_raw.exists(), "good file should be replaced by gzip");
     assert!(PathBuf::from(format!("{}.gz", good_raw.display())).exists());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retention_compresses_other_file_when_same_invocation_request_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-same-row-continue-on-error").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let broken_request = config.proxy_raw_dir.join("same-row-broken-request.bin");
+    let good_response = config.proxy_raw_dir.join("same-row-good-response.bin");
+    fs::write(&broken_request, b"{\"type\":\"broken-request\"}").expect("write broken request raw");
+    fs::write(&good_response, b"{\"type\":\"good-response\"}").expect("write good response raw");
+
+    let mut broken_permissions = fs::metadata(&broken_request)
+        .expect("read broken request metadata")
+        .permissions();
+    broken_permissions.set_mode(0o000);
+    fs::set_permissions(&broken_request, broken_permissions).expect("chmod broken request raw");
+
+    let occurred_at = shanghai_local_days_ago(2, 8, 30, 0);
+    insert_retention_invocation(
+        &pool,
+        "cold-compress-same-row-partial",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":false}",
+        Some(&broken_request),
+        Some(&good_response),
+        Some(30),
+        Some(0.06),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention with same-row cold-compression failure");
+
+    let mut repaired_permissions = fs::metadata(&broken_request)
+        .expect("read broken request metadata after run")
+        .permissions();
+    repaired_permissions.set_mode(0o644);
+    fs::set_permissions(&broken_request, repaired_permissions)
+        .expect("restore broken request permissions");
+
+    assert_eq!(summary.raw_files_compression_candidates, 1);
+    assert_eq!(summary.raw_files_compressed, 1);
+    assert!(
+        broken_request.exists(),
+        "broken request should be left in place"
+    );
+    assert!(!PathBuf::from(format!("{}.gz", broken_request.display())).exists());
+    assert!(
+        !good_response.exists(),
+        "good response should be replaced by gzip"
+    );
+    let compressed_response = PathBuf::from(format!("{}.gz", good_response.display()));
+    assert!(
+        compressed_response.exists(),
+        "good response should be compressed"
+    );
+
+    let row = sqlx::query(
+        "SELECT request_raw_path, response_raw_path FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("cold-compress-same-row-partial")
+    .fetch_one(&pool)
+    .await
+    .expect("load same-row partial cold compression row");
+    assert_eq!(
+        row.try_get::<Option<String>, _>("request_raw_path")
+            .expect("decode request path")
+            .as_deref(),
+        Some(broken_request.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("response_raw_path")
+            .expect("decode response path")
+            .as_deref(),
+        Some(compressed_response.to_string_lossy().as_ref())
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }
