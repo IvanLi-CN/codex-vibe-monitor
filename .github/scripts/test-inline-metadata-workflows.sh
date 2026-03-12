@@ -116,6 +116,43 @@ async function testLabelGatePullRequestEvent() {
   );
 }
 
+async function testLabelGateFailureCases() {
+  const github = {
+    rest: {
+      issues: {
+        get: async ({ issue_number }) => ({
+          data: {
+            labels: issue_number === 58
+              ? [{ name: 'type:patch' }, { name: 'type:minor' }, { name: 'channel:stable' }]
+              : [{ name: 'type:patch' }],
+          },
+        }),
+      },
+    },
+  };
+
+  for (const pullNumber of [58, 59]) {
+    const result = await runWorkflowScript(labelPath, {
+      context: {
+        eventName: 'pull_request',
+        payload: {
+          pull_request: {
+            number: pullNumber,
+          },
+        },
+        repo: {
+          owner: 'IvanLi-CN',
+          repo: 'codex-vibe-monitor',
+        },
+      },
+      github,
+      env: {},
+    });
+    assert(!result.thrown, `label-gate failure case threw unexpectedly: ${result.thrown && result.thrown.message}`);
+    assert(result.failure, `label-gate should fail for PR #${pullNumber}`);
+  }
+}
+
 async function testReviewPolicyReviewEvent() {
   const permissions = {
     bob: 'write',
@@ -184,9 +221,95 @@ async function testReviewPolicyReviewEvent() {
   );
 }
 
+async function testReviewPolicyFailureCases() {
+  const permissions = {
+    bob: 'write',
+    reviewer: 'write',
+  };
+  const reviewMatrix = {
+    58: [],
+    59: [
+      {
+        user: { login: 'reviewer' },
+        state: 'APPROVED',
+        submitted_at: '2026-03-12T00:00:00Z',
+      },
+      {
+        user: { login: 'reviewer' },
+        state: 'CHANGES_REQUESTED',
+        submitted_at: '2026-03-12T00:05:00Z',
+      },
+    ],
+    60: [
+      {
+        user: { login: 'reviewer' },
+        state: 'APPROVED',
+        submitted_at: '2026-03-12T00:00:00Z',
+      },
+      {
+        user: { login: 'reviewer' },
+        state: 'DISMISSED',
+        submitted_at: '2026-03-12T00:05:00Z',
+      },
+    ],
+  };
+  const github = {
+    paginate: async (route, params) => {
+      if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews') {
+        return reviewMatrix[params.pull_number] || [];
+      }
+      throw new Error(`unexpected paginate route: ${route} ${JSON.stringify(params || {})}`);
+    },
+    request: async (route, params) => {
+      if (route !== 'GET /repos/{owner}/{repo}/collaborators/{username}/permission') {
+        throw new Error(`unexpected request route: ${route}`);
+      }
+      return {
+        data: {
+          permission: permissions[String(params.username)] || 'none',
+        },
+      };
+    },
+    rest: {
+      pulls: {
+        get: async () => ({
+          data: {
+            user: {
+              login: 'bob',
+            },
+          },
+        }),
+      },
+    },
+  };
+
+  for (const pullNumber of [58, 59, 60]) {
+    const result = await runWorkflowScript(reviewPath, {
+      context: {
+        eventName: 'pull_request_review',
+        payload: {
+          pull_request: {
+            number: pullNumber,
+          },
+        },
+        repo: {
+          owner: 'IvanLi-CN',
+          repo: 'codex-vibe-monitor',
+        },
+      },
+      github,
+      env: {},
+    });
+    assert(!result.thrown, `review-policy failure case threw unexpectedly: ${result.thrown && result.thrown.message}`);
+    assert(result.failure, `review-policy should fail for PR #${pullNumber}`);
+  }
+}
+
 Promise.resolve()
   .then(testLabelGatePullRequestEvent)
+  .then(testLabelGateFailureCases)
   .then(testReviewPolicyReviewEvent)
+  .then(testReviewPolicyFailureCases)
   .catch((error) => {
     console.error(error.message || error);
     process.exit(1);

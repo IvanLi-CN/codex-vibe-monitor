@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import re
@@ -20,6 +21,26 @@ REQUIRED_CHECKS = {
     "Build Artifacts",
     "Review Policy Gate",
 }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Validate the codex-vibe-monitor quality-gates contract.")
+    parser.add_argument(
+        "--repo-root",
+        default=str(Path(__file__).resolve().parents[2]),
+        help="Repository root containing .github/workflows and the candidate quality-gates files.",
+    )
+    parser.add_argument(
+        "--declaration",
+        default="",
+        help="Optional trusted quality-gates declaration path. Defaults to <repo-root>/.github/quality-gates.json.",
+    )
+    parser.add_argument(
+        "--metadata-script",
+        default="",
+        help="Optional trusted metadata_gate.py path. Defaults to <repo-root>/.github/scripts/metadata_gate.py.",
+    )
+    return parser.parse_args()
 
 
 def load_module(path: Path):
@@ -192,13 +213,18 @@ def validate_merge_group_helpers(module: Any) -> None:
 
 
 def main() -> int:
-    repo_root = Path(__file__).resolve().parents[2]
+    args = parse_args()
+    repo_root = Path(args.repo_root).resolve()
     scripts_dir = repo_root / ".github" / "scripts"
+    declaration_path = Path(args.declaration).resolve() if args.declaration else repo_root / ".github" / "quality-gates.json"
+    metadata_script_path = (
+        Path(args.metadata_script).resolve() if args.metadata_script else scripts_dir / "metadata_gate.py"
+    )
 
     try:
-        declaration = json.loads((repo_root / ".github" / "quality-gates.json").read_text())
-        module = load_module(scripts_dir / "metadata_gate.py")
-        validate_quality_gates(repo_root / ".github" / "quality-gates.json")
+        declaration = json.loads(declaration_path.read_text())
+        module = load_module(metadata_script_path)
+        validate_quality_gates(declaration_path)
         validate_ci(repo_root / ".github" / "workflows" / "ci.yml")
         validate_label_gate(repo_root / ".github" / "workflows" / "label-gate.yml")
         validate_review_policy(repo_root / ".github" / "workflows" / "review-policy.yml", declaration)
