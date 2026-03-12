@@ -14725,6 +14725,49 @@ async fn retention_compresses_cold_raw_payloads_and_updates_paths() {
 }
 
 #[tokio::test]
+async fn retention_cold_compression_repair_keeps_relative_db_paths() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-relative-repair").await;
+    config.proxy_raw_dir = PathBuf::from("proxy_raw_payloads");
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let relative_raw = PathBuf::from("proxy_raw_payloads/relative-repair.bin");
+    let compressed_raw = temp_dir.join(format!("{}.gz", relative_raw.display()));
+    if let Some(parent) = compressed_raw.parent() {
+        fs::create_dir_all(parent).expect("create compressed raw parent");
+    }
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(b"{\"type\":\"relative-repair\"}")
+        .expect("write compressed payload");
+    fs::write(
+        &compressed_raw,
+        encoder.finish().expect("finish compressed payload"),
+    )
+    .expect("write compressed raw file");
+
+    let outcome = maybe_compress_proxy_raw_path(
+        &pool,
+        1,
+        "request_raw_path",
+        Some(relative_raw.to_str().expect("utf-8 relative path")),
+        RawCompressionCodec::Gzip,
+        config.database_path.parent(),
+        false,
+    )
+    .await
+    .expect("repair relative raw path");
+
+    assert_eq!(
+        outcome.new_db_path.as_deref(),
+        Some("proxy_raw_payloads/relative-repair.bin.gz")
+    );
+    assert!(!outcome.compressed);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_dry_run_estimates_cold_raw_compression_without_mutating_files() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("retention-cold-compress-dry-run").await;

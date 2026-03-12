@@ -2440,9 +2440,9 @@ async fn maybe_compress_proxy_raw_path(
     let Some(source_path) = locate_existing_proxy_raw_path(raw_path, raw_path_fallback_root) else {
         let existing_compressed =
             locate_existing_proxy_raw_compressed_path(raw_path, raw_path_fallback_root);
-        if let Some(compressed_path) = existing_compressed {
+        if existing_compressed.is_some() {
             return Ok(RawCompressionFileOutcome {
-                new_db_path: Some(compressed_path.to_string_lossy().to_string()),
+                new_db_path: Some(raw_payload_compressed_db_path(raw_path)),
                 ..RawCompressionFileOutcome::default()
             });
         }
