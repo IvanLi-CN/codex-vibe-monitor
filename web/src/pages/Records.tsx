@@ -146,9 +146,10 @@ export default function RecordsPage() {
   const visiblePages = getVisiblePages(page, totalPages)
   const isCustomRange = draft.rangePreset === 'custom'
   const newRecordsCount = summary?.newRecordsCount ?? 0
-  const isNewDataLoading = isNewDataRefreshPending || isSearching
+  const isNewDataLoading = isNewDataRefreshPending
   const displayNewDataCount = newRecordsCount > 0 ? newRecordsCount : cachedNewDataCount
-  const shouldShowNewDataButton = newRecordsCount > 0 || (isNewDataLoading && displayNewDataCount > 0)
+  const shouldShowNewDataButton =
+    (!isSearching || isNewDataRefreshPending) && (newRecordsCount > 0 || (isNewDataLoading && displayNewDataCount > 0))
   const visibleSummary = summary && summary.snapshotId === records?.snapshotId ? summary : null
   const tableLoading = isRecordsLoading
   const listControlsDisabled = isSearching || isRecordsLoading

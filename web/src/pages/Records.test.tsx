@@ -569,6 +569,17 @@ describe('RecordsPage new data action', () => {
     expect(host?.textContent).not.toContain('999')
   })
 
+  it('hides the new-data CTA during a normal search even if the old summary still reports pending records', () => {
+    mockInvocationRecords({
+      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+      isSearching: true,
+    })
+
+    render(<RecordsPage />)
+
+    expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull()
+  })
+
   it('hides the new data button when there is no pending new data', () => {
     mockInvocationRecords({
       summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 0 },
