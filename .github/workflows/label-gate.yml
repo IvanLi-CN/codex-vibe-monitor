@@ -2,10 +2,26 @@ name: Label Gate
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, edited]
+  merge_group:
+    types:
+      - checks_requested
+  workflow_dispatch:
+    inputs:
+      pull_number:
+        description: Pull request number to evaluate
+        required: false
+        type: number
+
+concurrency:
+  group: label-gate-${{ github.event.pull_request.number || github.event.inputs.pull_number || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
+  contents: read
   pull-requests: read
+  issues: read
 
 jobs:
   label-gate:
@@ -14,57 +30,169 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Validate release intent labels
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
+        env:
+          MANUAL_PULL_NUMBER: ${{ github.event.inputs.pull_number || '' }}
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const pullNumber = context.payload.pull_request?.number
-            if (!pullNumber) {
-              core.setFailed('Missing pull request number in event payload')
-              return
-            }
-
-            const { data: pullRequest } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pullNumber,
-            })
-
-            const labels = (pullRequest.labels || [])
-              .map(l => l?.name)
-              .filter(Boolean)
-
-            const typeLabels = labels.filter(l => l.startsWith('type:'))
-            const channelLabels = labels.filter(l => l.startsWith('channel:'))
-
-            const allowedTypes = new Set([
+            const allowedTypeLabels = new Set([
               'type:patch',
               'type:minor',
               'type:major',
               'type:docs',
               'type:skip',
-            ])
-            const allowedChannels = new Set(['channel:stable', 'channel:rc'])
+            ]);
+            const allowedChannelLabels = new Set(['channel:stable', 'channel:rc']);
 
-            const problems = []
+            const normalizeRef = (ref) => String(ref || '').replace(/^refs\/heads\//, '');
 
-            if (typeLabels.length !== 1) {
-              problems.push(
-                `Expected exactly 1 type:* label, got ${typeLabels.length}: ${typeLabels.join(', ') || '(none)'}`
-              )
-            } else if (!allowedTypes.has(typeLabels[0])) {
-              problems.push(`Unknown type label: ${typeLabels[0]}`)
+            const parsePullNumbersFromText = (text) => {
+              const numbers = new Set();
+              const pattern = /(?:^|\/)pr-(\d+)(?:-|$)/g;
+              for (const match of String(text || '').matchAll(pattern)) {
+                numbers.add(Number(match[1]));
+              }
+              return [...numbers].filter((value) => Number.isInteger(value) && value > 0).sort((a, b) => a - b);
+            };
+
+            const filterAssociatedOpenPullNumbers = (associatedPulls, baseRef) => {
+              const normalizedBaseRef = normalizeRef(baseRef);
+              const numbers = new Set();
+              for (const pull of associatedPulls) {
+                const number = pull?.number;
+                if (!Number.isInteger(number) || number <= 0) {
+                  continue;
+                }
+                if (pull?.state && pull.state !== 'open') {
+                  continue;
+                }
+                const pullBaseRef = normalizeRef(pull?.base?.ref || '');
+                if (normalizedBaseRef && pullBaseRef && pullBaseRef !== normalizedBaseRef) {
+                  continue;
+                }
+                numbers.add(number);
+              }
+              return [...numbers].sort((a, b) => a - b);
+            };
+
+            const resolvePullNumbers = async () => {
+              if (context.eventName === 'merge_group') {
+                const headRef = context.payload.merge_group?.head_ref || '';
+                const baseRef = context.payload.merge_group?.base_ref || '';
+                const headSha = context.payload.merge_group?.head_sha || process.env.GITHUB_SHA || '';
+                if (!headSha) {
+                  throw new Error('merge_group payload is missing head_sha');
+                }
+                const associatedPulls = await github.paginate(
+                  'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    commit_sha: headSha,
+                    per_page: 100,
+                  },
+                );
+                const anchors = parsePullNumbersFromText(normalizeRef(headRef));
+                if (anchors.length === 0) {
+                  throw new Error('Merge queue member set could not be proven from GitHub-disclosed data');
+                }
+                const associatedNumbers = filterAssociatedOpenPullNumbers(associatedPulls, baseRef);
+                if (associatedNumbers.length === 0) {
+                  throw new Error('Merge queue member set could not be proven from GitHub-disclosed data');
+                }
+                const associatedSet = new Set(associatedNumbers);
+                const missing = anchors.filter((value) => !associatedSet.has(value));
+                if (missing.length > 0) {
+                  throw new Error(`Merge queue entry pull request mismatch: ${missing.join(', ')}`);
+                }
+                return associatedNumbers;
+              }
+
+              const payloadPullNumber = context.payload.pull_request?.number;
+              if (Number.isInteger(payloadPullNumber) && payloadPullNumber > 0) {
+                return [payloadPullNumber];
+              }
+
+              const manualPullNumber = Number(process.env.MANUAL_PULL_NUMBER || 0);
+              if (Number.isInteger(manualPullNumber) && manualPullNumber > 0) {
+                return [manualPullNumber];
+              }
+
+              throw new Error('Missing valid pull request number for label gate evaluation');
+            };
+
+            const describeLabels = (labels) => {
+              if (labels.length === 0) {
+                return '(none)';
+              }
+              return [...new Set(labels)].sort().join(', ');
+            };
+
+            const evaluateLabels = (labels) => {
+              const typeLabels = [...new Set(labels.filter((label) => label.startsWith('type:')))].sort();
+              const channelLabels = [...new Set(labels.filter((label) => label.startsWith('channel:')))].sort();
+              const unknownTypeLabels = typeLabels.filter((label) => !allowedTypeLabels.has(label));
+              const unknownChannelLabels = channelLabels.filter((label) => !allowedChannelLabels.has(label));
+              const selectedTypeLabels = typeLabels.filter((label) => allowedTypeLabels.has(label));
+              const selectedChannelLabels = channelLabels.filter((label) => allowedChannelLabels.has(label));
+              const problems = [];
+              if (unknownTypeLabels.length > 0) {
+                problems.push(`Unknown type label(s): ${unknownTypeLabels.join(', ')}`);
+              }
+              if (unknownChannelLabels.length > 0) {
+                problems.push(`Unknown channel label(s): ${unknownChannelLabels.join(', ')}`);
+              }
+              if (selectedTypeLabels.length !== 1) {
+                problems.push(`Expected exactly 1 type:* label, got ${selectedTypeLabels.length}`);
+              }
+              if (selectedChannelLabels.length !== 1) {
+                problems.push(`Expected exactly 1 channel:* label, got ${selectedChannelLabels.length}`);
+              }
+              if (problems.length > 0) {
+                return {
+                  passed: false,
+                  description: `${problems.join('; ')} | labels=${describeLabels(labels)}`,
+                };
+              }
+              return {
+                passed: true,
+                description: `Labels OK: ${selectedTypeLabels[0]} + ${selectedChannelLabels[0]}`,
+              };
+            };
+
+            const pullNumbers = await resolvePullNumbers();
+            const results = [];
+
+            for (const pullNumber of pullNumbers) {
+              const { data: issue } = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullNumber,
+              });
+              const labels = (issue.labels || [])
+                .map((label) => (typeof label === 'string' ? label : label?.name))
+                .filter((label) => typeof label === 'string' && label.length > 0)
+                .sort();
+              const evaluation = evaluateLabels(labels);
+              results.push({
+                pullNumber,
+                labels,
+                passed: evaluation.passed,
+                description: evaluation.description,
+              });
             }
 
-            if (channelLabels.length !== 1) {
-              problems.push(
-                `Expected exactly 1 channel:* label, got ${channelLabels.length}: ${channelLabels.join(', ') || '(none)'}`
-              )
-            } else if (!allowedChannels.has(channelLabels[0])) {
-              problems.push(`Unknown channel label: ${channelLabels[0]}`)
+            const summary = core.summary.addHeading('PR label gate', 2).addRaw('- Scope: ' + context.eventName + '\n\n');
+            for (const result of results) {
+              summary.addRaw('- PR #' + result.pullNumber + ': ' + (result.passed ? 'pass' : 'fail') + ' - ' + result.description + '\n');
+            }
+            await summary.write();
+
+            const failed = results.filter((result) => !result.passed);
+            if (failed.length > 0) {
+              core.setFailed(failed.map((result) => `PR #${result.pullNumber}: ${result.description}`).join(' | '));
+              return;
             }
 
-            if (problems.length > 0) {
-              core.setFailed(problems.join('\n'))
-            } else {
-              core.notice(`Label gate passed: ${typeLabels[0]} + ${channelLabels[0]}`)
-            }
+            core.info(`label gate validated ${results.length} pull request(s)`);

@@ -8,7 +8,8 @@
         "main"
       ],
       "require_pull_request": true,
-      "disallow_direct_pushes": true
+      "disallow_direct_pushes": true,
+      "require_merge_queue": false
     },
     "review_policy": {
       "mode": "conditional-required",

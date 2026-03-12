@@ -1,0 +1,30 @@
+[
+  {
+    "number": 42,
+    "state": "open",
+    "base": {
+      "ref": "main"
+    }
+  },
+  {
+    "number": 57,
+    "state": "open",
+    "base": {
+      "ref": "main"
+    }
+  },
+  {
+    "number": 61,
+    "state": "closed",
+    "base": {
+      "ref": "main"
+    }
+  },
+  {
+    "number": 78,
+    "state": "open",
+    "base": {
+      "ref": "release"
+    }
+  }
+]

@@ -7,6 +7,15 @@ on:
   pull_request:
     branches:
       - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - edited
+  merge_group:
+    types:
+      - checks_requested
   workflow_dispatch:
 
 concurrency:
@@ -72,6 +81,22 @@ jobs:
 
       - name: Bun-first guard
         run: bun run check:bun-first
+
+      - name: Check quality-gates scripts
+        run: |
+          python3 -m py_compile \
+            .github/scripts/metadata_gate.py \
+            .github/scripts/check_live_quality_gates.py \
+            .github/scripts/check_quality_gates_contract.py
+
+      - name: Quality gates contract tests
+        run: bash .github/scripts/test-quality-gates-contract.sh
+
+      - name: Quality gates live rules check
+        env:
+          QUALITY_GATES_LIVE_RULES_MODE: require
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/check_live_quality_gates.py --repo "${{ github.repository }}"
 
       - name: Front-end lint
         working-directory: web
@@ -191,7 +216,7 @@ jobs:
   build:
     name: Build Artifacts
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name != 'push'
     needs: [lint, frontend-tests, records-overlay-e2e, unit-tests]
     timeout-minutes: 45
     steps:
