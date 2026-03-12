@@ -56,57 +56,14 @@ jobs:
               return [...numbers].filter((value) => Number.isInteger(value) && value > 0).sort((a, b) => a - b);
             };
 
-            const filterAssociatedOpenPullNumbers = (associatedPulls, baseRef) => {
-              const normalizedBaseRef = normalizeRef(baseRef);
-              const numbers = new Set();
-              for (const pull of associatedPulls) {
-                const number = pull?.number;
-                if (!Number.isInteger(number) || number <= 0) {
-                  continue;
-                }
-                if (pull?.state && pull.state !== 'open') {
-                  continue;
-                }
-                const pullBaseRef = normalizeRef(pull?.base?.ref || '');
-                if (normalizedBaseRef && pullBaseRef && pullBaseRef !== normalizedBaseRef) {
-                  continue;
-                }
-                numbers.add(number);
-              }
-              return [...numbers].sort((a, b) => a - b);
-            };
-
             const resolvePullNumbers = async () => {
               if (context.eventName === 'merge_group') {
-                const headRef = context.payload.merge_group?.head_ref || '';
-                const baseRef = context.payload.merge_group?.base_ref || '';
-                const headSha = context.payload.merge_group?.head_sha || process.env.GITHUB_SHA || '';
-                if (!headSha) {
-                  throw new Error('merge_group payload is missing head_sha');
-                }
-                const associatedPulls = await github.paginate(
-                  'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
-                  {
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    commit_sha: headSha,
-                    per_page: 100,
-                  },
-                );
-                const anchors = parsePullNumbersFromText(normalizeRef(headRef));
+                const mergeGroupRef = context.ref || process.env.GITHUB_REF || context.payload.merge_group?.head_ref || '';
+                const anchors = parsePullNumbersFromText(normalizeRef(mergeGroupRef));
                 if (anchors.length === 0) {
                   throw new Error('Merge queue member set could not be proven from GitHub-disclosed data');
                 }
-                const associatedNumbers = filterAssociatedOpenPullNumbers(associatedPulls, baseRef);
-                if (associatedNumbers.length === 0) {
-                  throw new Error('Merge queue member set could not be proven from GitHub-disclosed data');
-                }
-                const associatedSet = new Set(associatedNumbers);
-                const missing = anchors.filter((value) => !associatedSet.has(value));
-                if (missing.length > 0) {
-                  throw new Error(`Merge queue entry pull request mismatch: ${missing.join(', ')}`);
-                }
-                return associatedNumbers;
+                return anchors;
               }
 
               const payloadPullNumber = context.payload.pull_request?.number;

@@ -50,6 +50,7 @@ class GateContext:
     event_name: str
     event_payload: dict[str, Any]
     manual_pull_number: int | None
+    merge_group_ref: str
     merge_group_head_ref: str
     merge_group_base_ref: str
     merge_group_head_sha: str
@@ -106,6 +107,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     parser.add_argument("--event-path", default=os.environ.get("GITHUB_EVENT_PATH", ""))
     parser.add_argument("--pull-number", type=int, default=None)
+    parser.add_argument("--merge-group-ref", default=os.environ.get("GITHUB_REF", ""))
     parser.add_argument("--merge-group-head-ref", default=os.environ.get("MERGE_GROUP_HEAD_REF", ""))
     parser.add_argument("--merge-group-base-ref", default=os.environ.get("MERGE_GROUP_BASE_REF", ""))
     parser.add_argument(
@@ -161,42 +163,14 @@ def parse_pull_numbers_from_text(text: str) -> list[int]:
     return sorted(value for value in values if value > 0)
 
 
-def filter_associated_open_pull_numbers(
-    associated_pulls: list[dict[str, Any]],
-    base_ref: str,
-) -> list[int]:
-    normalized_base_ref = normalize_ref(base_ref)
-    numbers: set[int] = set()
-    for pull in associated_pulls:
-        number = pull.get("number")
-        if not isinstance(number, int) or number <= 0:
-            continue
-        if pull.get("state") not in {None, "open"}:
-            continue
-        pull_base = pull.get("base") or {}
-        pull_base_ref = normalize_ref(str(pull_base.get("ref", "")))
-        if normalized_base_ref and pull_base_ref and pull_base_ref != normalized_base_ref:
-            continue
-        numbers.add(number)
-    return sorted(numbers)
-
-
-def resolve_merge_group_pull_numbers_from_data(
-    head_ref: str,
-    base_ref: str,
-    associated_pulls: list[dict[str, Any]],
-) -> list[int]:
-    anchors = parse_pull_numbers_from_text(normalize_ref(head_ref))
+def resolve_merge_group_pull_numbers_from_ref(merge_group_ref: str) -> list[int]:
+    # GitHub documents the merge group ref, not a stable API that maps the
+    # synthetic merge-group commit back to pull requests. Validate only the PR
+    # anchors GitHub discloses in the ref and fail closed otherwise.
+    anchors = parse_pull_numbers_from_text(normalize_ref(merge_group_ref))
     if not anchors:
         raise GateError("Merge queue member set could not be proven from GitHub-disclosed data")
-    associated_numbers = filter_associated_open_pull_numbers(associated_pulls, base_ref)
-    if not associated_numbers:
-        raise GateError("Merge queue member set could not be proven from GitHub-disclosed data")
-    associated_set = set(associated_numbers)
-    missing = [number for number in anchors if number not in associated_set]
-    if missing:
-        raise GateError(f"Merge queue entry pull request mismatch: {', '.join(str(number) for number in missing)}")
-    return associated_numbers
+    return anchors
 
 
 def build_context(args: argparse.Namespace) -> GateContext:
@@ -216,6 +190,7 @@ def build_context(args: argparse.Namespace) -> GateContext:
         event_name=args.event_name,
         event_payload=payload,
         manual_pull_number=manual_pull_number,
+        merge_group_ref=args.merge_group_ref,
         merge_group_head_ref=args.merge_group_head_ref,
         merge_group_base_ref=args.merge_group_base_ref,
         merge_group_head_sha=args.merge_group_head_sha,
@@ -233,15 +208,12 @@ def get_payload_value(payload: dict[str, Any], *path: str) -> Any:
 
 def resolve_pull_numbers(context: GateContext, client: GitHubClient) -> list[int]:
     if context.event_name == "merge_group":
-        head_ref = context.merge_group_head_ref or str(get_payload_value(context.event_payload, "merge_group", "head_ref") or "")
-        base_ref = context.merge_group_base_ref or str(get_payload_value(context.event_payload, "merge_group", "base_ref") or "")
-        head_sha = context.merge_group_head_sha or str(get_payload_value(context.event_payload, "merge_group", "head_sha") or "")
-        if not head_sha:
-            raise GateError("merge_group payload is missing head_sha")
-        associated = client.paginate(
-            f"/repos/{client.owner}/{client.repo}/commits/{urllib.parse.quote(head_sha, safe='')}/pulls"
+        merge_group_ref = (
+            context.merge_group_ref
+            or context.merge_group_head_ref
+            or str(get_payload_value(context.event_payload, "merge_group", "head_ref") or "")
         )
-        return resolve_merge_group_pull_numbers_from_data(head_ref, base_ref, associated)
+        return resolve_merge_group_pull_numbers_from_ref(merge_group_ref)
 
     payload_pull_number = get_payload_value(context.event_payload, "pull_request", "number")
     if isinstance(payload_pull_number, int) and payload_pull_number > 0:

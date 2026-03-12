@@ -87,12 +87,13 @@ def validate_label_gate(path: Path) -> None:
     require_text(text, "edited", "label-gate.yml")
     require_text(text, "contents: read", "label-gate.yml")
     require_text(text, "actions/github-script@v8", "label-gate.yml")
-    require_text(text, "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls", "label-gate.yml")
+    require_text(text, "context.ref || process.env.GITHUB_REF", "label-gate.yml")
     require_text(text, "issues.get", "label-gate.yml")
     require_text(text, "channel:stable", "label-gate.yml")
     forbid_text(text, "actions/checkout", "label-gate.yml")
     forbid_text(text, "metadata_gate.py", "label-gate.yml")
     forbid_text(text, "createCommitStatus", "label-gate.yml")
+    forbid_text(text, "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls", "label-gate.yml")
 
 
 def validate_review_policy(path: Path) -> None:
@@ -104,54 +105,33 @@ def validate_review_policy(path: Path) -> None:
     require_text(text, "edited", "review-policy.yml")
     require_text(text, "contents: read", "review-policy.yml")
     require_text(text, "actions/github-script@v8", "review-policy.yml")
-    require_text(text, "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls", "review-policy.yml")
+    require_text(text, "context.ref || process.env.GITHUB_REF", "review-policy.yml")
     require_text(text, "GET /repos/{owner}/{repo}/collaborators/{username}/permission", "review-policy.yml")
     require_text(text, "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", "review-policy.yml")
     forbid_text(text, "actions/checkout", "review-policy.yml")
     forbid_text(text, "metadata_gate.py", "review-policy.yml")
     forbid_text(text, "createCommitStatus", "review-policy.yml")
     forbid_text(text, "statuses: write", "review-policy.yml")
+    forbid_text(text, "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls", "review-policy.yml")
 
 
 def validate_merge_group_helpers(module: Any, fixtures_dir: Path) -> None:
-    associated_payload = json.loads((fixtures_dir / "merge-group-associated-open.json").read_text())
-    resolved = module.resolve_merge_group_pull_numbers_from_data(
-        "gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc",
-        "refs/heads/main",
-        associated_payload,
+    resolved = module.resolve_merge_group_pull_numbers_from_ref(
+        "gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc"
     )
-    require(resolved == [42, 57], f"metadata_gate: unexpected associated merge queue set {resolved}")
+    require(resolved == [42, 57], f"metadata_gate: unexpected merge queue anchor set {resolved}")
 
     anchors = module.parse_pull_numbers_from_text("gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc")
     require(anchors == [42, 57], f"metadata_gate: anchor parsing drifted: {anchors}")
 
-    documented_single_anchor = module.resolve_merge_group_pull_numbers_from_data(
-        "gh-readonly-queue/main/pr-57-ffeeddcc",
-        "refs/heads/main",
-        associated_payload,
-    )
+    documented_single_anchor = module.resolve_merge_group_pull_numbers_from_ref("gh-readonly-queue/main/pr-57-ffeeddcc")
     require(
-        documented_single_anchor == [42, 57],
+        documented_single_anchor == [57],
         f"metadata_gate: single-anchor merge queue set drifted: {documented_single_anchor}",
     )
 
     try:
-        module.resolve_merge_group_pull_numbers_from_data(
-            "gh-readonly-queue/main/pr-999-deadbeef",
-            "refs/heads/main",
-            associated_payload,
-        )
-    except module.GateError as exc:
-        require("mismatch" in str(exc), f"metadata_gate: unexpected mismatch error {exc}")
-    else:
-        raise ContractError("metadata_gate: missing merge queue mismatch failure")
-
-    try:
-        module.resolve_merge_group_pull_numbers_from_data(
-            "refs/heads/main",
-            "refs/heads/main",
-            associated_payload,
-        )
+        module.resolve_merge_group_pull_numbers_from_ref("refs/heads/main")
     except module.GateError as exc:
         require("could not be proven" in str(exc), f"metadata_gate: unexpected proof error {exc}")
     else:

@@ -26,12 +26,11 @@ RUBY
 extract_script "$repo_root/.github/workflows/label-gate.yml" "label-gate" "$tmp_dir/label-gate.js"
 extract_script "$repo_root/.github/workflows/review-policy.yml" "review-policy" "$tmp_dir/review-policy.js"
 
-node - <<'NODE' "$tmp_dir/label-gate.js" "$tmp_dir/review-policy.js" "$repo_root/.github/scripts/fixtures/quality-gates/merge-group-associated-open.json"
+node - <<'NODE' "$tmp_dir/label-gate.js" "$tmp_dir/review-policy.js"
 const fs = require('fs');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
-const [labelPath, reviewPath, fixturePath] = process.argv.slice(2);
-const associatedPulls = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+const [labelPath, reviewPath] = process.argv.slice(2);
 
 async function runWorkflowScript(scriptPath, { context, github, env }) {
   const script = fs.readFileSync(scriptPath, 'utf8');
@@ -76,14 +75,8 @@ function assert(condition, message) {
   }
 }
 
-async function testLabelGateSingleAnchor() {
+async function testLabelGateMergeGroupAnchors() {
   const github = {
-    paginate: async (route) => {
-      if (route === 'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls') {
-        return associatedPulls;
-      }
-      throw new Error(`unexpected paginate route: ${route}`);
-    },
     rest: {
       issues: {
         get: async ({ issue_number }) => ({
@@ -98,11 +91,10 @@ async function testLabelGateSingleAnchor() {
   };
   const context = {
     eventName: 'merge_group',
+    ref: 'refs/heads/gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc',
     payload: {
       merge_group: {
-        head_ref: 'refs/heads/gh-readonly-queue/main/pr-57-ffeeddcc',
         base_ref: 'refs/heads/main',
-        head_sha: 'merge-group-sha',
       },
     },
     repo: {
@@ -114,7 +106,7 @@ async function testLabelGateSingleAnchor() {
     context,
     github,
     env: {
-      GITHUB_SHA: 'merge-group-sha',
+      GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc',
       MANUAL_PULL_NUMBER: '',
     },
   });
@@ -122,11 +114,11 @@ async function testLabelGateSingleAnchor() {
   assert(!result.failure, `label-gate failed unexpectedly: ${result.failure}`);
   assert(
     result.logs.some((entry) => entry.includes('label gate validated 2 pull request(s)')),
-    'label-gate did not validate the full associated merge group',
+    'label-gate did not validate all merge-group ref anchors',
   );
 }
 
-async function testReviewPolicySingleAnchor() {
+async function testReviewPolicyMergeGroupAnchors() {
   const permissions = {
     alice: 'write',
     bob: 'write',
@@ -138,9 +130,6 @@ async function testReviewPolicySingleAnchor() {
   };
   const github = {
     paginate: async (route, params) => {
-      if (route === 'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls') {
-        return associatedPulls;
-      }
       if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews') {
         return [
           {
@@ -176,11 +165,10 @@ async function testReviewPolicySingleAnchor() {
   };
   const context = {
     eventName: 'merge_group',
+    ref: 'refs/heads/gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc',
     payload: {
       merge_group: {
-        head_ref: 'refs/heads/gh-readonly-queue/main/pr-57-ffeeddcc',
         base_ref: 'refs/heads/main',
-        head_sha: 'merge-group-sha',
       },
     },
     repo: {
@@ -192,7 +180,7 @@ async function testReviewPolicySingleAnchor() {
     context,
     github,
     env: {
-      GITHUB_SHA: 'merge-group-sha',
+      GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-42-a1b2c3d4/pr-57-ffeeddcc',
       MANUAL_PULL_NUMBER: '',
     },
   });
@@ -200,13 +188,51 @@ async function testReviewPolicySingleAnchor() {
   assert(!result.failure, `review-policy failed unexpectedly: ${result.failure}`);
   assert(
     result.logs.some((entry) => entry.includes('review gate validated 2 pull request(s)')),
-    'review-policy did not validate the full associated merge group',
+    'review-policy did not validate all merge-group ref anchors',
+  );
+}
+
+async function testMergeGroupWithoutAnchorsFailsClosed() {
+  const context = {
+    eventName: 'merge_group',
+    ref: 'refs/heads/gh-readonly-queue/main/group-opaque',
+    payload: {
+      merge_group: {
+        base_ref: 'refs/heads/main',
+      },
+    },
+    repo: {
+      owner: 'IvanLi-CN',
+      repo: 'codex-vibe-monitor',
+    },
+  };
+  const result = await runWorkflowScript(labelPath, {
+    context,
+    github: {
+      rest: {
+        issues: {
+          get: async () => {
+            throw new Error('label lookup should not run without merge-group anchors');
+          },
+        },
+      },
+    },
+    env: {
+      GITHUB_REF: 'refs/heads/gh-readonly-queue/main/group-opaque',
+      MANUAL_PULL_NUMBER: '',
+    },
+  });
+  assert(result.thrown, 'label-gate should fail closed when merge-group anchors are missing');
+  assert(
+    String(result.thrown && result.thrown.message).includes('could not be proven'),
+    `label-gate returned unexpected anchor failure: ${result.thrown && result.thrown.message}`,
   );
 }
 
 Promise.resolve()
-  .then(testLabelGateSingleAnchor)
-  .then(testReviewPolicySingleAnchor)
+  .then(testLabelGateMergeGroupAnchors)
+  .then(testReviewPolicyMergeGroupAnchors)
+  .then(testMergeGroupWithoutAnchorsFailsClosed)
   .catch((error) => {
     console.error(error.message || error);
     process.exit(1);
