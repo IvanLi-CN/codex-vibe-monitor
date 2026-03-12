@@ -1760,7 +1760,6 @@ fn test_config() -> AppConfig {
         proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
         proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
         proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
-        proxy_raw_retention: Duration::from_secs(DEFAULT_PROXY_RAW_RETENTION_DAYS * 86_400),
         proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
         xray_binary: DEFAULT_XRAY_BINARY.to_string(),
         xray_runtime_dir: PathBuf::from("target/xray-forward-tests"),
@@ -1971,10 +1970,9 @@ async fn insert_retention_invocation(
             request_raw_path,
             request_raw_size,
             response_raw_path,
-            response_raw_size,
-            raw_expires_at
+            response_raw_size
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
         "#,
     )
     .bind(invoke_id)
@@ -2000,7 +1998,6 @@ async fn insert_retention_invocation(
             .and_then(|path| fs::metadata(path).ok())
             .map(|meta| meta.len() as i64),
     )
-    .bind(Some("2099-01-01 00:00:00"))
     .execute(pool)
     .await
     .expect("insert retention invocation");
@@ -2432,7 +2429,6 @@ fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCapture
         raw_response: "{}".to_string(),
         req_raw: RawPayloadMeta::default(),
         resp_raw: RawPayloadMeta::default(),
-        raw_expires_at: None,
         timings: test_stage_timings(),
     }
 }
@@ -9210,6 +9206,58 @@ async fn list_invocations_projects_payload_context_fields() {
 }
 
 #[tokio::test]
+async fn list_invocations_response_omits_raw_expires_at_field() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("proxy-no-raw-expires")
+    .bind("2026-02-25 10:02:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert proxy invocation");
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            limit: Some(10),
+            model: None,
+            status: None,
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list invocations should succeed");
+
+    let record = response
+        .records
+        .into_iter()
+        .find(|item| item.invoke_id == "proxy-no-raw-expires")
+        .expect("inserted invocation should be present");
+    let json = serde_json::to_value(&record).expect("serialize invocation record");
+    assert!(
+        json.get("rawExpiresAt").is_none(),
+        "rawExpiresAt should not be exposed by the API anymore"
+    );
+}
+
+#[tokio::test]
 async fn list_invocations_tolerates_malformed_payload_json() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -13310,7 +13358,7 @@ async fn invocation_rollup_daily_range_respects_proxy_only_scope() {
 }
 
 #[tokio::test]
-async fn ensure_schema_adds_retention_columns_and_tables() {
+async fn ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_retention_tables() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("in-memory sqlite");
@@ -13323,6 +13371,7 @@ async fn ensure_schema_adds_retention_columns_and_tables() {
             source TEXT NOT NULL DEFAULT 'xy',
             payload TEXT,
             raw_response TEXT NOT NULL,
+            raw_expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(invoke_id, occurred_at)
         )
@@ -13331,6 +13380,28 @@ async fn ensure_schema_adds_retention_columns_and_tables() {
     .execute(&pool)
     .await
     .expect("create legacy invocation schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            payload,
+            raw_response,
+            raw_expires_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("legacy-row")
+    .bind("2026-03-09 10:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("{\"endpoint\":\"/v1/responses\"}")
+    .bind("{\"ok\":true}")
+    .bind("2099-01-01 00:00:00")
+    .execute(&pool)
+    .await
+    .expect("insert legacy invocation row");
 
     ensure_schema(&pool).await.expect("ensure schema migration");
 
@@ -13341,9 +13412,30 @@ async fn ensure_schema_adds_retention_columns_and_tables() {
         .into_iter()
         .map(|row| row.get::<String, _>("name"))
         .collect();
+    assert!(!columns.contains("raw_expires_at"));
     assert!(columns.contains("detail_level"));
     assert!(columns.contains("detail_pruned_at"));
     assert!(columns.contains("detail_prune_reason"));
+
+    let row = sqlx::query(
+        r#"
+        SELECT invoke_id, source, payload, raw_response, detail_level
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("legacy-row")
+    .fetch_one(&pool)
+    .await
+    .expect("load migrated invocation row");
+    assert_eq!(row.get::<String, _>("invoke_id"), "legacy-row");
+    assert_eq!(row.get::<String, _>("source"), SOURCE_PROXY);
+    assert_eq!(
+        row.get::<Option<String>, _>("payload").as_deref(),
+        Some("{\"endpoint\":\"/v1/responses\"}")
+    );
+    assert_eq!(row.get::<String, _>("raw_response"), "{\"ok\":true}");
+    assert_eq!(row.get::<String, _>("detail_level"), DETAIL_LEVEL_FULL);
 
     let tables: HashSet<String> = sqlx::query_scalar(
         r#"
@@ -13873,6 +13965,17 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
         .await
         .expect("open prune archive sqlite");
+    let archive_columns: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
+        .fetch_all(&archive_pool)
+        .await
+        .expect("inspect prune archive schema")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert!(
+        !archive_columns.contains("raw_expires_at"),
+        "new archive batches should not carry raw_expires_at anymore"
+    );
     let archived = sqlx::query(
         r#"
         SELECT payload, raw_response, detail_level, detail_pruned_at, detail_prune_reason
@@ -14014,6 +14117,110 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
     assert!(file_path.exists());
     assert!(batch.get::<i64, _>("row_count") >= 2);
     assert_eq!(batch.get::<String, _>("status"), ARCHIVE_STATUS_COMPLETED);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("retention-legacy-archive").await;
+    let occurred_at = shanghai_local_days_ago(91, 9, 0, 0);
+    let month_key = occurred_at[..7].to_string();
+    let final_archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve legacy archive path");
+    fs::create_dir_all(
+        final_archive_path
+            .parent()
+            .expect("legacy archive path should have parent"),
+    )
+    .expect("create legacy archive dir");
+
+    let legacy_archive_db_path = temp_dir.join("legacy-archive.sqlite");
+    fs::File::create(&legacy_archive_db_path).expect("create legacy archive sqlite file");
+    let legacy_archive_pool = SqlitePool::connect(&sqlite_url_for_path(&legacy_archive_db_path))
+        .await
+        .expect("open legacy archive sqlite");
+    let legacy_create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&legacy_create_sql)
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("create legacy archive schema baseline");
+    sqlx::query("ALTER TABLE codex_invocations ADD COLUMN raw_expires_at TEXT")
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("add legacy raw_expires_at column");
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("checkpoint legacy archive sqlite before compression");
+    legacy_archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&legacy_archive_db_path, &final_archive_path)
+        .expect("compress legacy archive batch");
+
+    insert_retention_invocation(
+        &pool,
+        "archive-into-legacy-batch",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"error\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    let live_row_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind("archive-into-legacy-batch")
+    .bind(&occurred_at)
+    .fetch_one(&pool)
+    .await
+    .expect("load live invocation row id");
+    let archive_outcome = archive_rows_into_month_batch(
+        &pool,
+        &config,
+        archive_table_spec("codex_invocations"),
+        &month_key,
+        &[live_row_id],
+    )
+    .await
+    .expect("append into legacy archive batch");
+    assert!(
+        archive_outcome.row_count >= 1,
+        "legacy archive batch should accept appended rows with legacy schema (row_count={})",
+        archive_outcome.row_count
+    );
+
+    let inflated_legacy_path = temp_dir.join("legacy-archive-inflated.sqlite");
+    inflate_gzip_sqlite_file(&final_archive_path, &inflated_legacy_path)
+        .expect("inflate retained legacy archive batch");
+    let archived_pool = SqlitePool::connect(&sqlite_url_for_path(&inflated_legacy_path))
+        .await
+        .expect("open retained legacy archive batch");
+    let archived_ids: HashSet<String> =
+        sqlx::query_scalar("SELECT invoke_id FROM codex_invocations")
+            .fetch_all(&archived_pool)
+            .await
+            .expect("load legacy archive invoke ids")
+            .into_iter()
+            .collect();
+    assert!(archived_ids.contains("archive-into-legacy-batch"));
+    let archive_columns: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
+        .fetch_all(&archived_pool)
+        .await
+        .expect("inspect retained legacy archive schema")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert!(
+        archive_columns.contains("raw_expires_at"),
+        "historical archive files should keep their legacy schema"
+    );
+    archived_pool.close().await;
 
     cleanup_temp_test_dir(&temp_dir);
 }
