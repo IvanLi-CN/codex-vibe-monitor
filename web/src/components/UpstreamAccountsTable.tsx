@@ -148,20 +148,15 @@ export function UpstreamAccountsTable({
                   )}
                 >
                   <td className="px-4 py-4">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="max-w-[18rem] truncate text-base font-semibold text-base-content">
-                          {item.displayName}
+                    <div className="flex items-center gap-2">
+                      <span className="max-w-[18rem] truncate text-base font-semibold text-base-content">
+                        {item.displayName}
+                      </span>
+                      {!item.enabled ? (
+                        <span className="rounded-full bg-base-300/70 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
+                          Off
                         </span>
-                        {!item.enabled ? (
-                          <span className="rounded-full bg-base-300/70 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
-                            Off
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="max-w-[22rem] truncate text-sm text-base-content/60">
-                        {item.email ?? item.maskedApiKey ?? '—'}
-                      </div>
+                      ) : null}
                     </div>
                   </td>
                   <td className="px-4 py-4">
