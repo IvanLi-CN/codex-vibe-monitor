@@ -384,6 +384,31 @@ fi
 
 grep -q "REVIEW_REQUIRED_APPROVALS drifted from quality-gates.json" "$tmp_dir/metadata-policy.log"
 
+implicit_metadata_repo="$tmp_dir/implicit-metadata-repo"
+cp -R "$baseline_repo/." "$implicit_metadata_repo"
+python3 - <<'PY' "$implicit_metadata_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/scripts/metadata_gate.py"
+text = path.read_text()
+needle = "REVIEW_REQUIRED_APPROVALS = 1"
+replacement = "REVIEW_REQUIRED_APPROVALS = 999"
+if needle not in text:
+    raise SystemExit("failed to rewrite implicit metadata approval constant")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+  --repo-root "$implicit_metadata_repo" \
+  --profile final >/dev/null 2>"$tmp_dir/implicit-metadata-policy.log"; then
+  echo "expected implicit metadata policy drift fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "REVIEW_REQUIRED_APPROVALS drifted from quality-gates.json" "$tmp_dir/implicit-metadata-policy.log"
+
 unsafe_yaml_repo="$tmp_dir/unsafe-yaml-repo"
 cp -R "$baseline_repo/." "$unsafe_yaml_repo"
 python3 - <<'PY' "$unsafe_yaml_repo"

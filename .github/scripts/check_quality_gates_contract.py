@@ -938,7 +938,11 @@ def main() -> int:
         repo_root = temp_repo_root
     scripts_dir = repo_root / ".github" / "scripts"
     declaration_path = Path(args.declaration).resolve() if args.declaration else repo_root / ".github" / "quality-gates.json"
-    metadata_script_path = Path(args.metadata_script).resolve() if args.metadata_script else script_repo_root / ".github" / "scripts" / "metadata_gate.py"
+    metadata_script_path = (
+        Path(args.metadata_script).resolve()
+        if args.metadata_script
+        else repo_root / ".github" / "scripts" / "metadata_gate.py"
+    )
 
     try:
         declaration = json.loads(declaration_path.read_text())
