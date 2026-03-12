@@ -59,7 +59,7 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
          cost_estimated, price_version, \
          request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, \
          response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, \
-         raw_expires_at, detail_level, detail_pruned_at, detail_prune_reason, \
+         detail_level, detail_pruned_at, detail_prune_reason, \
          t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
          t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, \
          created_at \
@@ -3047,8 +3047,6 @@ pub(crate) struct ApiInvocation {
     pub(crate) response_raw_truncated: Option<i64>,
     #[sqlx(default)]
     pub(crate) response_raw_truncated_reason: Option<String>,
-    #[sqlx(default)]
-    pub(crate) raw_expires_at: Option<String>,
     pub(crate) detail_level: String,
     #[sqlx(default)]
     #[serde(serialize_with = "serialize_opt_local_or_utc_to_utc_iso")]
@@ -3463,7 +3461,6 @@ pub(crate) struct ProxyCaptureRecord {
     pub(crate) raw_response: String,
     pub(crate) req_raw: RawPayloadMeta,
     pub(crate) resp_raw: RawPayloadMeta,
-    pub(crate) raw_expires_at: Option<String>,
     pub(crate) timings: StageTimings,
 }
 

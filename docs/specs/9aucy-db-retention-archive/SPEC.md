@@ -47,12 +47,13 @@
 
 ### `codex_invocations`
 
-- 成功记录超过 30 个上海自然日后，先把该月完整记录写入离线 archive，再让主库仅保留结构化统计字段；原始 payload、raw response、request/response raw file 引用与 `raw_expires_at` 清空，并写入：
+- 成功记录超过 30 个上海自然日后，先把该月完整记录写入离线 archive，再让主库仅保留结构化统计字段；原始 payload、raw response、request/response raw file 引用清空，并写入：
   - `detail_level='structured_only'`
   - `detail_pruned_at=<maintenance timestamp>`
   - `detail_prune_reason='success_over_30d'`
 - 任意记录超过 90 个上海自然日时，先归档到 `archives/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`，校验 `row_count` 与 `sha256` 成功后写入 `archive_batches`，再从主库删除。
 - 离线归档前必须先将待删调用折叠进 `invocation_rollup_daily`，确保长期 totals 不缩水。
+- 运行时不再维护 `raw_expires_at`；历史 archive `sqlite.gz` 中若仍带该列，不作为新版本的在线契约，也不执行离线回写重做。
 
 ### `forward_proxy_attempts` / `stats_source_snapshots`
 
@@ -78,6 +79,7 @@
   - `detailLevel`: `full | structured_only`
   - `detailPrunedAt?: string`
   - `detailPruneReason?: string`
+- `/api/invocations` 不再返回 `rawExpiresAt`；这是一次显式 breaking change，调用方应改用 `detailLevel` / `detailPrunedAt` 理解在线细节保留状态。
 - `InvocationTable` 仅在展开详情中显示 `Full` / `Structured only` 徽标；若记录已精简，还要在详情中显示精简时间，并提示“离线 archive 保留归档行，超窗 raw file 不保证继续可用”。列表摘要不展示 detail level。orphan sweep 只清理超过宽限期的未引用文件，避免误删进行中的请求落盘文件。
 - 旧记录缺少新字段时按 `detailLevel=full` 兼容渲染。
 
@@ -100,6 +102,7 @@
   - `XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS`
   - `XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS`
   - `XY_QUOTA_SNAPSHOT_FULL_DAYS`
+- `PROXY_RAW_RETENTION_DAYS` 不再作为公开运行配置；raw file 生命周期由 invocation retention 窗口间接驱动。
 - 新增 CLI：
   - `--retention-run-once`
   - `--retention-dry-run`
@@ -110,6 +113,7 @@
 - `archive_batches` 至少记录：`dataset`、`month_key`、`file_path`、`sha256`、`row_count`、`created_at`、`status`。
 - 维护任务按 `XY_RETENTION_BATCH_ROWS` 分批执行，避免一次长事务锁住整个 SQLite。
 - 被精简或归档的记录，其关联 raw 文件要立即删除；另外执行 orphan sweep，按文件名反查主库引用并清理无引用文件。缺失文件视为可接受且必须幂等。
+- live DB 与新创建 archive DB 均不再包含 `raw_expires_at`；历史 archive 文件保持只读兼容，不在本轮做离线 schema 重写。
 - 常驻任务只执行 `PRAGMA wal_checkpoint(PASSIVE)` 与 `PRAGMA optimize`；`VACUUM` 不放进周期任务，由 101 首次 backlog cleanup 完成后的维护窗口人工执行一次。
 
 ## Task Orchestration
