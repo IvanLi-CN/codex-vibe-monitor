@@ -879,6 +879,14 @@ def validate_bootstrap_review_policy(path: Path, contract: ContractModel) -> Non
     require("github.rest.repos.createCommitStatus" in script, "review-policy.yml: bootstrap review gate must publish the commit status directly")
     require("github.rest.repos.getCollaboratorPermissionLevel" in script, "review-policy.yml: collaborator permission lookup drifted")
     require("github.paginate(github.rest.pulls.listReviews" in script, "review-policy.yml: review enumeration drifted")
+    require(
+        "const decisionStates = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'])" in script,
+        "review-policy.yml: bootstrap review gate must ignore non-decision reviews",
+    )
+    require(
+        "if (!decisionStates.has(review.state))" in script,
+        "review-policy.yml: bootstrap review gate must retain the latest decision review only",
+    )
 
 
 def validate_merge_group_helpers(module: Any) -> None:

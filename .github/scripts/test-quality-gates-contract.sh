@@ -180,6 +180,36 @@ fi
 
 grep -q "must invoke trusted metadata gate" "$tmp_dir/review-policy-bait.log"
 
+review_comment_repo="$tmp_dir/review-comment-repo"
+cp -R "$repo_root/." "$review_comment_repo"
+python3 - <<'PY' "$review_comment_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/review-policy.yml"
+text = path.read_text()
+needle = "              const decisionStates = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'])\n"
+replacement = ""
+if needle not in text:
+    raise SystemExit("failed to rewrite bootstrap review decision states")
+text = text.replace(needle, replacement, 1)
+needle = """                if (!decisionStates.has(review.state)) {
+                  continue
+                }
+"""
+if needle not in text:
+    raise SystemExit("failed to rewrite bootstrap review decision filter")
+path.write_text(text.replace(needle, "", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$review_comment_repo" --profile bootstrap >/dev/null 2>"$tmp_dir/review-comment.log"; then
+  echo "expected bootstrap review comment drift fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "bootstrap review gate must ignore non-decision reviews" "$tmp_dir/review-comment.log"
+
 review_if_repo="$tmp_dir/review-if-repo"
 cp -R "$baseline_repo/." "$review_if_repo"
 python3 - <<'PY' "$review_if_repo"

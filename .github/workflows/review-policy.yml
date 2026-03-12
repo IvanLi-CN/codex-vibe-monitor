@@ -123,9 +123,13 @@ jobs:
               })
 
               const latestByUser = new Map()
+              const decisionStates = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'])
               for (const review of reviews) {
                 const reviewer = review.user?.login
                 if (!reviewer || review.state === 'PENDING') {
+                  continue
+                }
+                if (!decisionStates.has(review.state)) {
                   continue
                 }
                 latestByUser.set(reviewer, review)
