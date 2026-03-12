@@ -395,7 +395,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
 }
 
 const meta = {
-  title: 'Account Pool/UpstreamAccountsPage',
+  title: 'Pages/Account Pool/Upstream Accounts',
   component: UpstreamAccountsPage,
   tags: ['autodocs'],
   parameters: {
