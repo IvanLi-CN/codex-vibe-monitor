@@ -78,6 +78,97 @@ fi
 
 grep -q "must invoke trusted metadata gate" "$tmp_dir/review-policy-bait.log"
 
+review_if_repo="$tmp_dir/review-if-repo"
+cp -R "$repo_root/." "$review_if_repo"
+python3 - <<'PY' "$review_if_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/review-policy.yml"
+text = path.read_text()
+needle = """      - name: Evaluate review policy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+"""
+replacement = """      - name: Evaluate review policy
+        if: ${{ false }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+"""
+if needle not in text:
+    raise SystemExit("failed to inject review-policy if guard")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$review_if_repo" >/dev/null 2>"$tmp_dir/review-policy-if.log"; then
+  echo "expected review-policy if:false fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "Evaluate review policy'].if must stay unset" "$tmp_dir/review-policy-if.log"
+
+ci_if_repo="$tmp_dir/ci-if-repo"
+cp -R "$repo_root/." "$ci_if_repo"
+python3 - <<'PY' "$ci_if_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci.yml"
+text = path.read_text()
+needle = """      - name: Quality-gates live rules check
+        env:
+          QUALITY_GATES_LIVE_RULES_MODE: require
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+"""
+replacement = """      - name: Quality-gates live rules check
+        if: ${{ false }}
+        env:
+          QUALITY_GATES_LIVE_RULES_MODE: require
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+"""
+if needle not in text:
+    raise SystemExit("failed to inject ci if guard")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$ci_if_repo" >/dev/null 2>"$tmp_dir/ci-if.log"; then
+  echo "expected ci if:false fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "Quality-gates live rules check'].if must stay unset" "$tmp_dir/ci-if.log"
+
+metadata_repo="$tmp_dir/metadata-repo"
+cp -R "$repo_root/." "$metadata_repo"
+python3 - <<'PY' "$metadata_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/scripts/metadata_gate.py"
+text = path.read_text()
+needle = "REVIEW_REQUIRED_APPROVALS = 1"
+replacement = "REVIEW_REQUIRED_APPROVALS = 0"
+if needle not in text:
+    raise SystemExit("failed to rewrite metadata approval constant")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+  --repo-root "$metadata_repo" \
+  --metadata-script "$metadata_repo/.github/scripts/metadata_gate.py" >/dev/null 2>"$tmp_dir/metadata-policy.log"; then
+  echo "expected metadata policy drift fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "REVIEW_REQUIRED_APPROVALS drifted from quality-gates.json" "$tmp_dir/metadata-policy.log"
+
 unsafe_yaml_repo="$tmp_dir/unsafe-yaml-repo"
 cp -R "$repo_root/." "$unsafe_yaml_repo"
 python3 - <<'PY' "$unsafe_yaml_repo"

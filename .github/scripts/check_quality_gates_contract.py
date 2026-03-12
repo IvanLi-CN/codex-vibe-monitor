@@ -124,6 +124,15 @@ def require_mapping(value: Any, where: str) -> dict[str, Any]:
     return value
 
 
+def require_string_collection(value: Any, where: str) -> set[str]:
+    require(isinstance(value, (list, tuple, set, frozenset)), f"{where} must be a string collection")
+    normalized: set[str] = set()
+    for index, item in enumerate(value):
+        require(isinstance(item, str) and item, f"{where}[{index}] must be a non-empty string")
+        normalized.add(item)
+    return normalized
+
+
 def event_config(workflow: dict[str, Any], event_name: str, where: str) -> dict[str, Any]:
     on_section = require_mapping(mapping_get(workflow, "on"), f"{where}.on")
     config = mapping_get(on_section, event_name)
@@ -234,6 +243,21 @@ def checkout_step(job: dict[str, Any], step_name: str, where: str) -> dict[str, 
     return require_mapping(step.get("with"), f"{where}.steps[{step_name!r}].with")
 
 
+def require_no_if(mapping: dict[str, Any], where: str) -> None:
+    require("if" not in mapping, f"{where}.if must stay unset")
+
+
+def require_exact_if(mapping: dict[str, Any], expected: str, where: str) -> None:
+    require(mapping.get("if") == expected, f"{where}.if must stay {expected!r}")
+
+
+def require_fail_closed(mapping: dict[str, Any], where: str) -> None:
+    require(
+        mapping.get("continue-on-error") in (None, False),
+        f"{where}.continue-on-error must not ignore failures",
+    )
+
+
 def validate_quality_gates(payload: dict[str, Any]) -> None:
     policy = require_mapping(payload.get("policy"), "quality-gates.json.policy")
     branch_policy = require_mapping(policy.get("branch_protection"), "quality-gates.json.policy.branch_protection")
@@ -335,6 +359,39 @@ def validate_quality_gates(payload: dict[str, Any]) -> None:
     )
 
 
+def validate_metadata_policy(module: Any, payload: dict[str, Any]) -> None:
+    review_policy = require_mapping(
+        require_mapping(payload.get("policy"), "quality-gates.json.policy").get("review_policy"),
+        "quality-gates.json.policy.review_policy",
+    )
+    require(
+        getattr(module, "REVIEW_REQUIRED_APPROVALS", None) == review_policy.get("required_approvals"),
+        "metadata_gate.REVIEW_REQUIRED_APPROVALS drifted from quality-gates.json",
+    )
+    require(
+        require_string_collection(
+            getattr(module, "REVIEW_EXEMPT_PERMISSIONS", None),
+            "metadata_gate.REVIEW_EXEMPT_PERMISSIONS",
+        )
+        == require_string_set(
+            review_policy.get("exempt_author_permissions"),
+            "quality-gates.json.policy.review_policy.exempt_author_permissions",
+        ),
+        "metadata_gate.REVIEW_EXEMPT_PERMISSIONS drifted from quality-gates.json",
+    )
+    require(
+        require_string_collection(
+            getattr(module, "REVIEW_ALLOWED_PERMISSIONS", None),
+            "metadata_gate.REVIEW_ALLOWED_PERMISSIONS",
+        )
+        == require_string_set(
+            review_policy.get("allowed_reviewer_permissions"),
+            "quality-gates.json.policy.review_policy.allowed_reviewer_permissions",
+        ),
+        "metadata_gate.REVIEW_ALLOWED_PERMISSIONS drifted from quality-gates.json",
+    )
+
+
 def validate_ci(path: Path) -> None:
     workflow = load_yaml(path)
     require(workflow.get("name") == "CI Pipeline", "ci.yml: workflow name must stay 'CI Pipeline'")
@@ -351,14 +408,20 @@ def validate_ci(path: Path) -> None:
     require("statuses" not in permissions, "ci.yml.permissions.statuses must stay unset")
 
     lint_job = job_config(workflow, "lint", "Lint & Format Check", "ci.yml")
+    require_no_if(lint_job, "ci.yml.jobs.lint")
+    require_fail_closed(lint_job, "ci.yml.jobs.lint")
     checkout = uses_step_config(lint_job, "Checkout", "actions/checkout@v4", "ci.yml.jobs.lint")
     checkout_with = require_mapping(checkout.get("with"), "ci.yml.jobs.lint.steps['Checkout'].with")
     require(checkout_with.get("fetch-depth") == 0, "ci.yml.jobs.lint Checkout must fetch full history for trusted source resolution")
     check_scripts = step_config(lint_job, "Check quality-gates scripts", "ci.yml.jobs.lint")
+    require_no_if(check_scripts, "ci.yml.jobs.lint.steps['Check quality-gates scripts']")
+    require_fail_closed(check_scripts, "ci.yml.jobs.lint.steps['Check quality-gates scripts']")
     check_scripts_run = str(check_scripts.get("run", ""))
     require(".github/scripts/check_live_quality_gates.py" in check_scripts_run, "ci.yml.jobs.lint: script check step drifted")
     require(".github/scripts/run_trusted_metadata_check.py" in check_scripts_run, "ci.yml.jobs.lint: trusted metadata publisher compile step drifted")
     trusted_step = step_config(lint_job, "Resolve trusted quality-gates sources", "ci.yml.jobs.lint")
+    require_no_if(trusted_step, "ci.yml.jobs.lint.steps['Resolve trusted quality-gates sources']")
+    require_fail_closed(trusted_step, "ci.yml.jobs.lint.steps['Resolve trusted quality-gates sources']")
     trusted_run = str(trusted_step.get("run", ""))
     require("git fetch --no-tags --depth=1 origin" in trusted_run, "ci.yml.jobs.lint: trusted-source fetch drifted")
     require("git show \"${source_ref}:${path}\"" in trusted_run, "ci.yml.jobs.lint: trusted-source materialization drifted")
@@ -369,6 +432,8 @@ def validate_ci(path: Path) -> None:
     )
     require("trusted_root/.github/scripts/check_quality_gates_contract.py" in trusted_run, "ci.yml.jobs.lint: trusted-source outputs drifted")
     contract_step = step_config(lint_job, "Quality-gates contract check", "ci.yml.jobs.lint")
+    require_no_if(contract_step, "ci.yml.jobs.lint.steps['Quality-gates contract check']")
+    require_fail_closed(contract_step, "ci.yml.jobs.lint.steps['Quality-gates contract check']")
     contract_run = str(contract_step.get("run", ""))
     require(
         'steps.trusted-quality-gates.outputs.contract_script' in contract_run
@@ -377,6 +442,8 @@ def validate_ci(path: Path) -> None:
         "ci.yml.jobs.lint: contract check must use trusted quality-gates sources",
     )
     live_step = step_config(lint_job, "Quality-gates live rules check", "ci.yml.jobs.lint")
+    require_no_if(live_step, "ci.yml.jobs.lint.steps['Quality-gates live rules check']")
+    require_fail_closed(live_step, "ci.yml.jobs.lint.steps['Quality-gates live rules check']")
     live_env = require_mapping(live_step.get("env"), "ci.yml.jobs.lint.steps['Quality-gates live rules check'].env")
     require(live_env.get("QUALITY_GATES_LIVE_RULES_MODE") == "require", "ci.yml.jobs.lint: live rules mode must stay require")
     live_run = str(live_step.get("run", ""))
@@ -386,6 +453,8 @@ def validate_ci(path: Path) -> None:
         "ci.yml.jobs.lint: live rules step must use trusted quality-gates sources",
     )
     self_tests = step_config(lint_job, "Quality gates self-tests", "ci.yml.jobs.lint")
+    require_no_if(self_tests, "ci.yml.jobs.lint.steps['Quality gates self-tests']")
+    require_fail_closed(self_tests, "ci.yml.jobs.lint.steps['Quality gates self-tests']")
     run = str(self_tests.get("run", ""))
     require(
         "test-quality-gates-contract.sh" in run
@@ -415,10 +484,12 @@ def validate_label_gate(path: Path) -> None:
     require(permissions.get("checks") == "write", "label-gate.yml.permissions.checks must stay write")
 
     bootstrap_job = job_config(workflow, "bootstrap-label-gate", "Bootstrap label gate", "label-gate.yml")
-    require(
-        bootstrap_job.get("if") == "${{ github.event_name == 'pull_request' }}",
-        "label-gate.yml.jobs.bootstrap-label-gate.if must stay pinned to pull_request bootstrap mode",
+    require_exact_if(
+        bootstrap_job,
+        "${{ github.event_name == 'pull_request' }}",
+        "label-gate.yml.jobs.bootstrap-label-gate",
     )
+    require_fail_closed(bootstrap_job, "label-gate.yml.jobs.bootstrap-label-gate")
     bootstrap_checkout = checkout_step(
         bootstrap_job, "Checkout bootstrap candidate", "label-gate.yml.jobs.bootstrap-label-gate"
     )
@@ -431,6 +502,14 @@ def validate_label_gate(path: Path) -> None:
         bootstrap_job,
         "Detect bootstrap rollout requirement",
         "label-gate.yml.jobs.bootstrap-label-gate",
+    )
+    require_no_if(
+        bootstrap_detect,
+        "label-gate.yml.jobs.bootstrap-label-gate.steps['Detect bootstrap rollout requirement']",
+    )
+    require_fail_closed(
+        bootstrap_detect,
+        "label-gate.yml.jobs.bootstrap-label-gate.steps['Detect bootstrap rollout requirement']",
     )
     bootstrap_detect_run = str(bootstrap_detect.get("run", ""))
     require("git fetch --no-tags --depth=1 origin" in bootstrap_detect_run, "label-gate.yml: bootstrap fetch drifted")
@@ -446,6 +525,15 @@ def validate_label_gate(path: Path) -> None:
         bootstrap_job,
         "Publish bootstrap Validate PR labels check",
         "label-gate.yml.jobs.bootstrap-label-gate",
+    )
+    require_exact_if(
+        bootstrap_publish,
+        "${{ steps.bootstrap.outputs.enabled == 'true' }}",
+        "label-gate.yml.jobs.bootstrap-label-gate.steps['Publish bootstrap Validate PR labels check']",
+    )
+    require_fail_closed(
+        bootstrap_publish,
+        "label-gate.yml.jobs.bootstrap-label-gate.steps['Publish bootstrap Validate PR labels check']",
     )
     bootstrap_env = require_mapping(
         bootstrap_publish.get("env"),
@@ -480,10 +568,12 @@ def validate_label_gate(path: Path) -> None:
     )
 
     trusted_job = job_config(workflow, "trusted-label-gate", "Publish trusted label gate", "label-gate.yml")
-    require(
-        trusted_job.get("if") == "${{ github.event_name == 'pull_request_target' }}",
-        "label-gate.yml.jobs.trusted-label-gate.if must stay pinned to pull_request_target",
+    require_exact_if(
+        trusted_job,
+        "${{ github.event_name == 'pull_request_target' }}",
+        "label-gate.yml.jobs.trusted-label-gate",
     )
+    require_fail_closed(trusted_job, "label-gate.yml.jobs.trusted-label-gate")
     trusted_checkout = checkout_step(
         trusted_job, "Checkout trusted base", "label-gate.yml.jobs.trusted-label-gate"
     )
@@ -515,6 +605,14 @@ def validate_label_gate(path: Path) -> None:
         trusted_job,
         "Publish trusted Validate PR labels check",
         "label-gate.yml.jobs.trusted-label-gate",
+    )
+    require_no_if(
+        trusted_publish,
+        "label-gate.yml.jobs.trusted-label-gate.steps['Publish trusted Validate PR labels check']",
+    )
+    require_fail_closed(
+        trusted_publish,
+        "label-gate.yml.jobs.trusted-label-gate.steps['Publish trusted Validate PR labels check']",
     )
     trusted_env = require_mapping(
         trusted_publish.get("env"),
@@ -569,11 +667,24 @@ def validate_review_policy(path: Path) -> None:
     require("statuses" not in permissions, "review-policy.yml.permissions.statuses must stay unset")
 
     job = job_config(workflow, "review-policy", "Review Policy Gate", "review-policy.yml")
-    require(job.get("if") == "${{ github.event.pull_request.base.ref == 'main' }}", "review-policy.yml.jobs.review-policy.if must stay pinned to the main base branch")
+    require_exact_if(
+        job,
+        "${{ github.event.pull_request.base.ref == 'main' }}",
+        "review-policy.yml.jobs.review-policy",
+    )
+    require_fail_closed(job, "review-policy.yml.jobs.review-policy")
     checkout = checkout_step(job, "Checkout", "review-policy.yml.jobs.review-policy")
     require(checkout.get("fetch-depth") == 0, "review-policy.yml: Checkout must fetch full history")
 
     trusted_step = step_config(job, "Resolve trusted quality-gates sources", "review-policy.yml.jobs.review-policy")
+    require_no_if(
+        trusted_step,
+        "review-policy.yml.jobs.review-policy.steps['Resolve trusted quality-gates sources']",
+    )
+    require_fail_closed(
+        trusted_step,
+        "review-policy.yml.jobs.review-policy.steps['Resolve trusted quality-gates sources']",
+    )
     trusted_run = str(trusted_step.get("run", ""))
     require("git fetch --no-tags --depth=1 origin" in trusted_run, "review-policy.yml: trusted-source fetch drifted")
     require("bootstrap-current-branch" in trusted_run, "review-policy.yml: bootstrap fallback drifted")
@@ -581,6 +692,8 @@ def validate_review_policy(path: Path) -> None:
     require("metadata_script=$trusted_root/.github/scripts/metadata_gate.py" in trusted_run, "review-policy.yml: metadata trusted-source output drifted")
 
     step = step_config(job, "Evaluate review policy", "review-policy.yml.jobs.review-policy")
+    require_no_if(step, "review-policy.yml.jobs.review-policy.steps['Evaluate review policy']")
+    require_fail_closed(step, "review-policy.yml.jobs.review-policy.steps['Evaluate review policy']")
     env = require_mapping(step.get("env"), "review-policy.yml.jobs.review-policy.steps['Evaluate review policy'].env")
     require(env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "review-policy.yml: review gate must pass GITHUB_TOKEN via env")
     metadata_command = require_command(
@@ -631,6 +744,7 @@ def main() -> int:
         require(isinstance(declaration, dict), "quality-gates.json must decode to an object")
         module = load_module(metadata_script_path)
         validate_quality_gates(declaration)
+        validate_metadata_policy(module, declaration)
         validate_ci(repo_root / ".github" / "workflows" / "ci.yml")
         validate_label_gate(repo_root / ".github" / "workflows" / "label-gate.yml")
         validate_review_policy(repo_root / ".github" / "workflows" / "review-policy.yml")
