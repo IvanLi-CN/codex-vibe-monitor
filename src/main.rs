@@ -111,6 +111,8 @@ const STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION: &str = "failure_classificati
 const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
 const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
+const DEFAULT_PROXY_RAW_COMPRESSION: RawCompressionCodec = RawCompressionCodec::Gzip;
+const DEFAULT_PROXY_RAW_HOT_SECS: u64 = 24 * 60 * 60;
 const ENV_DATABASE_PATH: &str = "DATABASE_PATH";
 const LEGACY_ENV_DATABASE_PATH: &str = "XY_DATABASE_PATH";
 const ENV_POLL_INTERVAL_SECS: &str = "POLL_INTERVAL_SECS";
@@ -158,6 +160,8 @@ const ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: &str = "STATS_SOURCE_SNAPSHOTS_
 const LEGACY_ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: &str =
     "XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS";
 const ENV_QUOTA_SNAPSHOT_FULL_DAYS: &str = "QUOTA_SNAPSHOT_FULL_DAYS";
+const ENV_PROXY_RAW_COMPRESSION: &str = "PROXY_RAW_COMPRESSION";
+const ENV_PROXY_RAW_HOT_SECS: &str = "PROXY_RAW_HOT_SECS";
 const LEGACY_ENV_QUOTA_SNAPSHOT_FULL_DAYS: &str = "XY_QUOTA_SNAPSHOT_FULL_DAYS";
 const DETAIL_LEVEL_FULL: &str = "full";
 const DETAIL_LEVEL_STRUCTURED_ONLY: &str = "structured_only";
@@ -359,6 +363,25 @@ impl FromStr for ForwardProxyAlgo {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RawCompressionCodec {
+    None,
+    Gzip,
+}
+
+impl FromStr for RawCompressionCodec {
+    type Err = anyhow::Error;
+
+    fn from_str(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "gzip" => Ok(Self::Gzip),
+            _ => bail!("invalid {ENV_PROXY_RAW_COMPRESSION} value: {raw}"),
+        }
+    }
+}
+
 fn resolve_forward_proxy_algo_config(
     primary_raw: Option<&str>,
     legacy_raw: Option<&str>,
@@ -371,6 +394,13 @@ fn resolve_forward_proxy_algo_config(
     match primary_raw {
         Some(primary) => ForwardProxyAlgo::from_str(primary),
         None => Ok(DEFAULT_FORWARD_PROXY_ALGO),
+    }
+}
+
+fn resolve_raw_compression_codec_config(raw: Option<&str>) -> Result<RawCompressionCodec> {
+    match raw {
+        Some(value) => RawCompressionCodec::from_str(value),
+        None => Ok(DEFAULT_PROXY_RAW_COMPRESSION),
     }
 }
 
@@ -1811,6 +1841,11 @@ fn spawn_forward_proxy_maintenance(
 #[derive(Debug, Default)]
 struct RetentionRunSummary {
     dry_run: bool,
+    raw_files_compression_candidates: usize,
+    raw_files_compressed: usize,
+    raw_bytes_before: u64,
+    raw_bytes_after: u64,
+    raw_bytes_after_estimated: u64,
     invocation_details_pruned: usize,
     invocation_rows_archived: usize,
     forward_proxy_attempt_rows_archived: usize,
@@ -1823,7 +1858,9 @@ struct RetentionRunSummary {
 
 impl RetentionRunSummary {
     fn touched_anything(&self) -> bool {
-        self.invocation_details_pruned > 0
+        self.raw_files_compression_candidates > 0
+            || self.raw_files_compressed > 0
+            || self.invocation_details_pruned > 0
             || self.invocation_rows_archived > 0
             || self.forward_proxy_attempt_rows_archived > 0
             || self.stats_source_snapshot_rows_archived > 0
@@ -1876,6 +1913,63 @@ struct InvocationArchiveCandidate {
     cost: Option<f64>,
     request_raw_path: Option<String>,
     response_raw_path: Option<String>,
+}
+
+#[derive(Debug, FromRow, Clone)]
+struct InvocationRawCompressionCandidate {
+    id: i64,
+    request_raw_path: Option<String>,
+    response_raw_path: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct RawCompressionPassSummary {
+    files_considered: usize,
+    files_compressed: usize,
+    bytes_before: u64,
+    bytes_after: u64,
+    estimated_bytes_after: u64,
+}
+
+#[derive(Debug, Default)]
+struct RawCompressionFileOutcome {
+    candidate_counted: bool,
+    compressed: bool,
+    bytes_before: u64,
+    bytes_after: u64,
+    estimated_bytes_after: u64,
+    new_db_path: Option<String>,
+    old_exact_path: Option<PathBuf>,
+}
+
+struct CountingWriter<W> {
+    inner: W,
+    bytes_written: u64,
+}
+
+impl<W> CountingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            bytes_written: 0,
+        }
+    }
+
+    fn bytes_written(&self) -> u64 {
+        self.bytes_written
+    }
+}
+
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.bytes_written += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 #[derive(Debug, FromRow, Clone)]
@@ -2100,6 +2194,18 @@ async fn run_data_retention_maintenance(
         return Ok(summary);
     }
 
+    let raw_compression =
+        compress_cold_proxy_raw_payloads(pool, config, raw_path_fallback_root, dry_run).await?;
+    summary.raw_files_compression_candidates += raw_compression.files_considered;
+    summary.raw_files_compressed += raw_compression.files_compressed;
+    summary.raw_bytes_before += raw_compression.bytes_before;
+    summary.raw_bytes_after += raw_compression.bytes_after;
+    summary.raw_bytes_after_estimated += raw_compression.estimated_bytes_after;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let pruned =
         prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await?;
     summary.invocation_details_pruned += pruned.0;
@@ -2184,6 +2290,337 @@ async fn run_data_retention_maintenance(
         "data retention maintenance finished"
     );
     Ok(summary)
+}
+
+async fn compress_cold_proxy_raw_payloads(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+) -> Result<RawCompressionPassSummary> {
+    if config.proxy_raw_compression == RawCompressionCodec::None {
+        return Ok(RawCompressionPassSummary::default());
+    }
+
+    let cutoff = shanghai_local_cutoff_for_age_secs_string(config.proxy_raw_hot_secs);
+    let mut summary = RawCompressionPassSummary::default();
+    let mut last_seen_id = 0_i64;
+
+    loop {
+        let candidates = sqlx::query_as::<_, InvocationRawCompressionCandidate>(
+            r#"
+            SELECT id, request_raw_path, response_raw_path
+            FROM codex_invocations
+            WHERE occurred_at < ?1
+              AND id > ?2
+              AND (
+                (request_raw_path IS NOT NULL AND request_raw_path NOT LIKE '%.gz')
+                OR (response_raw_path IS NOT NULL AND response_raw_path NOT LIKE '%.gz')
+              )
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?3
+            "#,
+        )
+        .bind(&cutoff)
+        .bind(last_seen_id)
+        .bind(config.retention_batch_rows as i64)
+        .fetch_all(pool)
+        .await?;
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        for candidate in candidates {
+            last_seen_id = candidate.id;
+            let request_outcome = maybe_compress_proxy_raw_path(
+                pool,
+                candidate.id,
+                "request_raw_path",
+                candidate.request_raw_path.as_deref(),
+                config.proxy_raw_compression,
+                raw_path_fallback_root,
+                dry_run,
+            )
+            .await?;
+            let response_outcome = maybe_compress_proxy_raw_path(
+                pool,
+                candidate.id,
+                "response_raw_path",
+                candidate.response_raw_path.as_deref(),
+                config.proxy_raw_compression,
+                raw_path_fallback_root,
+                dry_run,
+            )
+            .await?;
+
+            for outcome in [&request_outcome, &response_outcome] {
+                if outcome.candidate_counted {
+                    summary.files_considered += 1;
+                }
+                if outcome.compressed {
+                    summary.files_compressed += 1;
+                }
+                summary.bytes_before += outcome.bytes_before;
+                summary.bytes_after += outcome.bytes_after;
+                summary.estimated_bytes_after += outcome.estimated_bytes_after;
+            }
+
+            if dry_run {
+                continue;
+            }
+
+            let request_path_changed = request_outcome.new_db_path != candidate.request_raw_path;
+            let response_path_changed = response_outcome.new_db_path != candidate.response_raw_path;
+            if !request_path_changed && !response_path_changed {
+                continue;
+            }
+
+            let mut tx = pool.begin().await?;
+            sqlx::query(
+                r#"
+                UPDATE codex_invocations
+                SET request_raw_path = ?1,
+                    response_raw_path = ?2
+                WHERE id = ?3
+                "#,
+            )
+            .bind(request_outcome.new_db_path.as_deref())
+            .bind(response_outcome.new_db_path.as_deref())
+            .bind(candidate.id)
+            .execute(tx.as_mut())
+            .await?;
+            tx.commit().await?;
+
+            if request_outcome.compressed {
+                delete_exact_proxy_raw_path(
+                    request_outcome.old_exact_path.as_deref(),
+                    raw_path_fallback_root,
+                )?;
+            }
+            if response_outcome.compressed {
+                delete_exact_proxy_raw_path(
+                    response_outcome.old_exact_path.as_deref(),
+                    raw_path_fallback_root,
+                )?;
+            }
+        }
+    }
+
+    Ok(summary)
+}
+
+async fn maybe_compress_proxy_raw_path(
+    _pool: &Pool<Sqlite>,
+    invocation_id: i64,
+    field_name: &str,
+    raw_path: Option<&str>,
+    codec: RawCompressionCodec,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+) -> Result<RawCompressionFileOutcome> {
+    let Some(raw_path) = raw_path else {
+        return Ok(RawCompressionFileOutcome::default());
+    };
+    if codec == RawCompressionCodec::None || raw_path.ends_with(".gz") {
+        return Ok(RawCompressionFileOutcome {
+            new_db_path: Some(raw_path.to_string()),
+            ..RawCompressionFileOutcome::default()
+        });
+    }
+
+    let Some(source_path) = locate_existing_proxy_raw_path(raw_path, raw_path_fallback_root) else {
+        let existing_compressed =
+            locate_existing_proxy_raw_compressed_path(raw_path, raw_path_fallback_root);
+        if let Some(compressed_path) = existing_compressed {
+            return Ok(RawCompressionFileOutcome {
+                new_db_path: Some(compressed_path.to_string_lossy().to_string()),
+                ..RawCompressionFileOutcome::default()
+            });
+        }
+        warn!(
+            invocation_id,
+            field = field_name,
+            raw_path,
+            "skipping raw cold compression because source raw file is missing"
+        );
+        return Ok(RawCompressionFileOutcome {
+            new_db_path: Some(raw_path.to_string()),
+            ..RawCompressionFileOutcome::default()
+        });
+    };
+
+    let source_meta = fs::metadata(&source_path).with_context(|| {
+        format!(
+            "failed to inspect raw payload before cold compression: {}",
+            source_path.display()
+        )
+    })?;
+    if !source_meta.is_file() {
+        return Ok(RawCompressionFileOutcome {
+            new_db_path: Some(raw_path.to_string()),
+            ..RawCompressionFileOutcome::default()
+        });
+    }
+
+    let target_db_path = raw_payload_compressed_db_path(raw_path);
+    let target_path = raw_payload_compressed_file_path(&source_path);
+    let bytes_before = source_meta.len();
+    if dry_run {
+        let estimated_bytes_after = estimate_gzip_file_size(&source_path)?;
+        return Ok(RawCompressionFileOutcome {
+            candidate_counted: true,
+            bytes_before,
+            estimated_bytes_after,
+            new_db_path: Some(target_db_path),
+            old_exact_path: Some(source_path),
+            ..RawCompressionFileOutcome::default()
+        });
+    }
+
+    let bytes_after = compress_file_to_gzip(&source_path, &target_path)?;
+    Ok(RawCompressionFileOutcome {
+        candidate_counted: true,
+        compressed: true,
+        bytes_before,
+        bytes_after,
+        new_db_path: Some(target_db_path),
+        old_exact_path: Some(source_path),
+        ..RawCompressionFileOutcome::default()
+    })
+}
+
+fn compress_file_to_gzip(source: &Path, destination: &Path) -> Result<u64> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create raw compression directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let temp_destination = PathBuf::from(format!("{}.tmp", destination.display()));
+    if temp_destination.exists() {
+        let _ = fs::remove_file(&temp_destination);
+    }
+
+    let result = (|| -> Result<u64> {
+        let input = fs::File::open(source)
+            .with_context(|| format!("failed to open raw payload {}", source.display()))?;
+        let output = fs::File::create(&temp_destination).with_context(|| {
+            format!(
+                "failed to create compressed raw payload {}",
+                temp_destination.display()
+            )
+        })?;
+        let mut reader = io::BufReader::new(input);
+        let counting_writer = CountingWriter::new(io::BufWriter::new(output));
+        let mut encoder = GzEncoder::new(counting_writer, Compression::default());
+        io::copy(&mut reader, &mut encoder).with_context(|| {
+            format!(
+                "failed to compress raw payload {} into {}",
+                source.display(),
+                temp_destination.display()
+            )
+        })?;
+        let mut counting_writer = encoder.finish().with_context(|| {
+            format!(
+                "failed to finish raw payload compression {}",
+                temp_destination.display()
+            )
+        })?;
+        counting_writer.flush()?;
+        let bytes_after = counting_writer.bytes_written();
+        let mut output = counting_writer.inner;
+        output.flush()?;
+        fs::rename(&temp_destination, destination).with_context(|| {
+            format!(
+                "failed to move compressed raw payload into place: {} -> {}",
+                temp_destination.display(),
+                destination.display()
+            )
+        })?;
+        Ok(bytes_after)
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_destination);
+    }
+    result
+}
+
+fn estimate_gzip_file_size(source: &Path) -> Result<u64> {
+    let input = fs::File::open(source)
+        .with_context(|| format!("failed to open raw payload {}", source.display()))?;
+    let mut reader = io::BufReader::new(input);
+    let counting_writer = CountingWriter::new(io::sink());
+    let mut encoder = GzEncoder::new(counting_writer, Compression::default());
+    io::copy(&mut reader, &mut encoder).with_context(|| {
+        format!(
+            "failed to estimate gzip size for raw payload {}",
+            source.display()
+        )
+    })?;
+    let counting_writer = encoder.finish().with_context(|| {
+        format!(
+            "failed to finish gzip size estimate for raw payload {}",
+            source.display()
+        )
+    })?;
+    Ok(counting_writer.bytes_written())
+}
+
+fn raw_payload_compressed_db_path(raw_path: &str) -> String {
+    if raw_path.ends_with(".gz") {
+        raw_path.to_string()
+    } else {
+        format!("{raw_path}.gz")
+    }
+}
+
+fn raw_payload_compressed_file_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.gz", path.display()))
+}
+
+fn locate_existing_proxy_raw_path(path: &str, fallback_root: Option<&Path>) -> Option<PathBuf> {
+    resolved_raw_path_candidates(path, fallback_root)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+}
+
+fn locate_existing_proxy_raw_compressed_path(
+    path: &str,
+    fallback_root: Option<&Path>,
+) -> Option<PathBuf> {
+    resolved_raw_path_candidates(&raw_payload_compressed_db_path(path), fallback_root)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+}
+
+fn delete_exact_proxy_raw_path(
+    raw_path: Option<&Path>,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<()> {
+    let Some(raw_path) = raw_path else {
+        return Ok(());
+    };
+    let raw_path = raw_path.to_string_lossy();
+    for candidate in resolved_raw_path_candidates(&raw_path, raw_path_fallback_root) {
+        match fs::remove_file(&candidate) {
+            Ok(_) => return Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                warn!(
+                    path = %candidate.display(),
+                    error = %err,
+                    "failed to remove replaced raw payload after cold compression"
+                );
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn prune_old_invocation_details(
@@ -2979,6 +3416,28 @@ fn resolved_raw_path_candidates(path: &str, fallback_root: Option<&Path>) -> Vec
     candidates
 }
 
+fn resolved_raw_path_read_candidates(path: &str, fallback_root: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = resolved_raw_path_candidates(path, fallback_root);
+    if let Some(alternate_path) = raw_payload_alternate_db_path(path) {
+        for candidate in resolved_raw_path_candidates(&alternate_path, fallback_root) {
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates
+}
+
+fn raw_payload_alternate_db_path(path: &str) -> Option<String> {
+    if path.ends_with(".bin.gz") {
+        Some(path.trim_end_matches(".gz").to_string())
+    } else if path.ends_with(".bin") {
+        Some(format!("{path}.gz"))
+    } else {
+        None
+    }
+}
+
 fn normalize_path_for_compare(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -2995,10 +3454,9 @@ fn count_existing_proxy_raw_paths(
 ) -> usize {
     let mut seen = HashSet::new();
     for raw_path in raw_paths.iter().flatten() {
-        for candidate in resolved_raw_path_candidates(raw_path, raw_path_fallback_root) {
+        for candidate in resolved_raw_path_read_candidates(raw_path, raw_path_fallback_root) {
             if candidate.exists() {
                 seen.insert(candidate);
-                break;
             }
         }
     }
@@ -3012,19 +3470,17 @@ fn delete_proxy_raw_paths(
     let mut removed = 0usize;
     let mut seen = HashSet::new();
     for raw_path in raw_paths.iter().flatten() {
-        for candidate in resolved_raw_path_candidates(raw_path, raw_path_fallback_root) {
+        for candidate in resolved_raw_path_read_candidates(raw_path, raw_path_fallback_root) {
             if !seen.insert(candidate.clone()) {
                 continue;
             }
             match fs::remove_file(&candidate) {
                 Ok(_) => {
                     removed += 1;
-                    break;
                 }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
                 Err(err) => {
                     warn!(path = %candidate.display(), error = %err, "failed to remove raw payload file");
-                    break;
                 }
             }
         }
@@ -3041,6 +3497,13 @@ fn shanghai_local_cutoff_string(days: u64) -> String {
         shanghai_retention_cutoff(days)
             .with_timezone(&Shanghai)
             .naive_local(),
+    )
+}
+
+fn shanghai_local_cutoff_for_age_secs_string(age_secs: u64) -> String {
+    format_naive(
+        Utc::now().with_timezone(&Shanghai).naive_local()
+            - ChronoDuration::seconds(age_secs as i64),
     )
 }
 
@@ -8236,26 +8699,47 @@ async fn persist_proxy_capture_record(
 }
 
 fn read_proxy_raw_bytes(path: &str, fallback_root: Option<&Path>) -> io::Result<Vec<u8>> {
-    let primary_path = Path::new(path);
-    match fs::read(primary_path) {
-        Ok(content) => Ok(content),
-        Err(primary_err) => {
-            if primary_path.is_absolute() {
-                return Err(primary_err);
+    let mut last_error = None;
+    for candidate in resolved_raw_path_read_candidates(path, fallback_root) {
+        match fs::read(&candidate) {
+            Ok(content) => return decode_proxy_raw_file_bytes(&candidate, content),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                last_error = Some(err);
             }
-
-            if let Some(root) = fallback_root {
-                let fallback_path = root.join(primary_path);
-                if fallback_path != primary_path
-                    && let Ok(content) = fs::read(&fallback_path)
-                {
-                    return Ok(content);
-                }
-            }
-
-            Err(primary_err)
+            Err(err) => return Err(err),
         }
     }
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("raw payload file not found for path {path}"),
+        )
+    }))
+}
+
+fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Result<Vec<u8>> {
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
+        || raw_payload_bytes_look_gzip(&bytes)
+    {
+        let mut decoder = GzDecoder::new(bytes.as_slice());
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to decompress raw payload {}: {err}", path.display()),
+            )
+        })?;
+        Ok(decoded)
+    } else {
+        Ok(bytes)
+    }
+}
+
+fn raw_payload_bytes_look_gzip(bytes: &[u8]) -> bool {
+    bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b
 }
 
 async fn current_proxy_usage_backfill_snapshot_max_id(pool: &Pool<Sqlite>) -> Result<i64> {
@@ -11423,6 +11907,8 @@ struct AppConfig {
     proxy_usage_backfill_on_startup: bool,
     proxy_raw_max_bytes: Option<usize>,
     proxy_raw_dir: PathBuf,
+    proxy_raw_compression: RawCompressionCodec,
+    proxy_raw_hot_secs: u64,
     xray_binary: String,
     xray_runtime_dir: PathBuf,
     forward_proxy_algo: ForwardProxyAlgo,
@@ -11540,6 +12026,11 @@ impl AppConfig {
             .ok()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_PROXY_RAW_DIR));
+        let proxy_raw_compression = resolve_raw_compression_codec_config(
+            env::var(ENV_PROXY_RAW_COMPRESSION).ok().as_deref(),
+        )?;
+        let proxy_raw_hot_secs =
+            parse_u64_env_var(ENV_PROXY_RAW_HOT_SECS, DEFAULT_PROXY_RAW_HOT_SECS)?;
         let xray_binary =
             env::var(ENV_XRAY_BINARY).unwrap_or_else(|_| DEFAULT_XRAY_BINARY.to_string());
         let xray_runtime_dir = env::var(ENV_XRAY_RUNTIME_DIR)
@@ -11683,6 +12174,8 @@ impl AppConfig {
             proxy_usage_backfill_on_startup,
             proxy_raw_max_bytes,
             proxy_raw_dir,
+            proxy_raw_compression,
+            proxy_raw_hot_secs,
             xray_binary,
             xray_runtime_dir,
             forward_proxy_algo,

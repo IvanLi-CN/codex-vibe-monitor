@@ -63,7 +63,7 @@ ARG APP_EFFECTIVE_VERSION
 ARG FRONTEND_EFFECTIVE_VERSION
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl libsqlite3-0 \
+    && apt-get install -y --no-install-recommends ca-certificates curl gzip libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv/app
@@ -71,7 +71,10 @@ WORKDIR /srv/app
 COPY --from=rust-builder /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
+COPY scripts/search-raw /usr/local/bin/search-raw
 COPY --from=web-builder /app/web/dist ./web
+
+RUN chmod 0755 /usr/local/bin/search-raw
 
 ENV DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
     HTTP_BIND=0.0.0.0:8080 \

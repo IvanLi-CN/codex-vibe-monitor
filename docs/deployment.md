@@ -88,6 +88,8 @@ labels:
 - `DATABASE_PATH`：SQLite 主库路径；升级旧版本前请先同步新的公开 env 命名，legacy `XY_*` 公共键会在启动期直接被拒绝。
 - `PROXY_RAW_DIR`：原始请求/响应落盘目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，避免跟随容器工作目录漂移。
 - `PROXY_RAW_MAX_BYTES`：单次请求/响应原文采集上限；默认 `0=unlimited`（支持显式配置正整数上限）。
+- `PROXY_RAW_COMPRESSION`：raw 冷压缩 codec；默认 `gzip`，可设为 `none` 关闭冷压缩。
+- `PROXY_RAW_HOT_SECS`：热明文保留窗口；默认 `86400`，超过窗口的 raw 文件会在 retention 中转为 `*.bin.gz`。
 - `PROXY_ENFORCE_STREAM_INCLUDE_USAGE`：是否在 `chat.completions` 流式请求中强制注入 `stream_options.include_usage=true`。
 - `PROXY_USAGE_BACKFILL_ON_STARTUP`：兼容保留的历史补数开关说明；当前版本的历史补数已经改为后台有界执行，不再阻塞 readiness。
 - `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：非 compact 代理路径的上游等待超时，默认 `60` 秒。
@@ -166,8 +168,10 @@ labels:
 
 - 首次 backlog cleanup 先执行 `cargo run -- --retention-run-once --retention-dry-run`，确认预计归档行数、目标 archive 路径与磁盘变化。
 - 正式清理使用 `cargo run -- --retention-run-once`；执行顺序必须保持 `导出成功 -> archive_batches manifest 成功 -> 删除源数据`。
+- retention 在 prune/archive 前会先执行 raw cold-compress：最近 24h 默认保留明文 `*.bin`，更老 raw 文件转成 `*.bin.gz`，数据库 raw path 同步更新，但 `request_raw_size` / `response_raw_size` 仍表示原始 payload 字节。
 - archive 文件按上海自然月切分；若 `ARCHIVE_DIR` 为相对路径，则实际目录形如 `<DATABASE_PATH 同级目录>/<ARCHIVE_DIR 的值>/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`（例如 `archives/...`）。
 - `codex_invocations` 成功记录超过 30 个上海自然日后，会先把完整行写入离线 archive，再在主库内精简为 `structured_only`；任意调用超过 90 天后清理主库明细。
 - `forward_proxy_attempts`、`stats_source_snapshots` 只保留近 30 天在线明细；`codex_quota_snapshots` 近 30 天逐条保留，更老日期压缩为每天最后一条。
 - 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，而不是在线 UI。orphan sweep 只会清理超过宽限期的未引用文件，以避免误删进行中的请求落盘文件。
+- 运维在宿主机上统一通过容器内脚本搜索 raw：`docker exec ai-codex-vibe-monitor search-raw '<needle>'`。该命令同时搜索明文 `*.bin` 和 gzip `*.bin.gz`；若需要正则，改用 `docker exec ai-codex-vibe-monitor search-raw --regex '<pattern>'`。
 - 常驻 maintenance 只做 `wal_checkpoint(PASSIVE)` 与 `PRAGMA optimize`；首次真实 cleanup 完成后，再在维护窗口人工执行一次 `VACUUM`。
