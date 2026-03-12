@@ -314,6 +314,7 @@ def validate_quality_gates(payload: dict[str, Any]) -> None:
 
     waivers = payload.get("waivers", [])
     require(isinstance(waivers, list), "quality-gates.json: waivers must be an array")
+    require(len(waivers) == 1, "quality-gates.json: only the bypass-actors-unverified waiver is allowed")
     bypass_waivers = [
         waiver
         for waiver in waivers

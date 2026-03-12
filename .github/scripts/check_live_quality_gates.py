@@ -187,16 +187,13 @@ def normalize_required_status_checks(
     return sorted(contexts), integrations, strict_values
 
 
-def branch_waivers(
-    declaration: dict[str, Any], branch: str
-) -> tuple[dict[str, set[int | None]], str | None]:
+def branch_waivers(declaration: dict[str, Any], branch: str) -> str | None:
     raw_waivers = declaration.get("waivers", [])
     if raw_waivers is None:
         raw_waivers = []
     if not isinstance(raw_waivers, list):
         raise ValidationError("waivers must be a JSON array")
 
-    source_compat: dict[str, set[int | None]] = {}
     bypass_reason: str | None = None
     for index, waiver in enumerate(raw_waivers):
         if not isinstance(waiver, dict):
@@ -212,32 +209,14 @@ def branch_waivers(
             raise ValidationError(f"waivers[{index}].reason must be a non-empty string")
         if waiver_branch != branch:
             continue
-        if kind == "required-status-check-source-compat":
-            context = waiver.get("context")
-            raw_integrations = waiver.get("allowed_integration_ids")
-            if not isinstance(context, str) or not context:
-                raise ValidationError(
-                    f"waivers[{index}].context must be a non-empty string for required-status-check-source-compat"
-                )
-            if not isinstance(raw_integrations, list) or not raw_integrations:
-                raise ValidationError(
-                    f"waivers[{index}].allowed_integration_ids must be a non-empty array for required-status-check-source-compat"
-                )
-            normalized: set[int | None] = set()
-            for value in raw_integrations:
-                if value is None:
-                    normalized.add(None)
-                elif isinstance(value, int):
-                    normalized.add(value)
-                else:
-                    raise ValidationError(
-                        f"waivers[{index}].allowed_integration_ids entries must be integers or null"
-                    )
-            source_compat[context] = normalized
-        elif kind == "bypass-actors-unverified":
+        if kind == "bypass-actors-unverified":
             bypass_reason = reason
+            continue
+        raise ValidationError(
+            f"waivers[{index}].kind={kind!r} is unsupported; only bypass-actors-unverified is allowed"
+        )
 
-    return source_compat, bypass_reason
+    return bypass_reason
 
 
 def validate_rules(
@@ -305,7 +284,7 @@ def validate_rules(
                 "policy.branch_protection.required_status_checks.integrations values must be integers"
             )
         normalized_expected_integrations[context] = integration
-    source_compat_waivers, bypass_reason = branch_waivers(declaration, branch)
+    bypass_reason = branch_waivers(declaration, branch)
     enforcement_mode = str(review_enforcement.get("mode", ""))
     expected_native_approvals = int(review_policy.get("required_approvals", 0)) if enforcement_mode == "github-native" else 0
 
@@ -432,21 +411,13 @@ def validate_rules(
             if context not in live_integrations:
                 continue
             actual_integrations = live_integrations[context]
-            allowed_integrations = {expected_integration}
-            compat_integrations = source_compat_waivers.get(context, set())
-            if compat_integrations:
-                allowed_integrations |= compat_integrations
             if not actual_integrations:
                 integration_errors.append(f"{context}: missing integration source")
                 continue
-            if actual_integrations.issubset(allowed_integrations):
-                if actual_integrations != {expected_integration} and compat_integrations:
-                    notes.append(
-                        f"{branch}: {context} is using compatibility status sources {sorted(actual_integrations, key=lambda item: (-1 if item is None else item))}"
-                    )
+            if actual_integrations == {expected_integration}:
                 continue
             integration_errors.append(
-                f"{context}: expected one of {sorted(allowed_integrations, key=lambda item: (-1 if item is None else item))} actual={sorted(actual_integrations, key=lambda item: (-1 if item is None else item))}"
+                f"{context}: expected one of {[expected_integration]} actual={sorted(actual_integrations, key=lambda item: (-1 if item is None else item))}"
             )
         if integration_errors:
             errors.append(
