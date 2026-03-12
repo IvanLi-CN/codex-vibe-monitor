@@ -166,64 +166,85 @@ async function mockRecordsPageApis(page: Page) {
   })
 }
 
-test.describe('Records filter overlay', () => {
-  test('keeps the prompt cache key dropdown above the summary panel', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 960 })
-    await mockRecordsPageApis(page)
-    await page.goto('/#/records')
+type OverlayViewport = {
+  label: string
+  width: number
+  height: number
+  overlapMarginRem: number
+  minimumOverlapPx: number
+}
 
-    const filtersPanel = page.getByTestId('records-filters-panel')
-    const summaryPanel = page.getByTestId('records-summary-panel')
-    const promptCacheKeyInput = page.locator('#records-filter-prompt-cache-key')
+const OVERLAY_VIEWPORTS: OverlayViewport[] = [
+  { label: 'desktop', width: 1440, height: 960, overlapMarginRem: 7, minimumOverlapPx: 12 },
+  // 1279px stays below Tailwind's xl breakpoint, so Records collapses from 4 columns to 2.
+  { label: 'narrow-desktop', width: 1279, height: 1500, overlapMarginRem: 18, minimumOverlapPx: 12 },
+]
 
-    await expect(filtersPanel).toBeVisible()
-    await expect(summaryPanel).toBeVisible()
-    await expect(promptCacheKeyInput).toBeVisible()
+async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: OverlayViewport) {
+  await page.setViewportSize({ width: viewport.width, height: viewport.height })
+  await mockRecordsPageApis(page)
+  await page.goto('/#/records')
 
-    // Force an overlap scenario so the regression stays stable across copy/layout tweaks.
-    await page.addStyleTag({
-      content: `
-        [data-testid="records-summary-panel"] {
-          margin-top: -7rem !important;
-        }
-      `,
-    })
+  const filtersPanel = page.getByTestId('records-filters-panel')
+  const summaryPanel = page.getByTestId('records-summary-panel')
+  const promptCacheKeyInput = page.locator('#records-filter-prompt-cache-key')
 
-    await promptCacheKeyInput.click()
+  await expect(filtersPanel).toBeVisible()
+  await expect(summaryPanel).toBeVisible()
+  await expect(promptCacheKeyInput).toBeVisible()
+  await promptCacheKeyInput.scrollIntoViewIfNeeded()
 
-    const listbox = filtersPanel.locator('[role="listbox"]')
-    await expect(listbox).toBeVisible()
-    await expect(filtersPanel).toHaveAttribute('data-suggestions-open', 'true')
-
-    const overlayState = await page.evaluate(() => {
-      const panel = document.querySelector('[data-testid="records-filters-panel"]') as HTMLElement | null
-      const summary = document.querySelector('[data-testid="records-summary-panel"]') as HTMLElement | null
-      const listboxNode = panel?.querySelector('[role="listbox"]') as HTMLElement | null
-      if (!panel || !summary || !listboxNode) {
-        return null
+  // Force an overlap scenario so the regression stays stable across layout breakpoints.
+  await page.addStyleTag({
+    content: `
+      [data-testid="records-summary-panel"] {
+        margin-top: -${viewport.overlapMarginRem}rem !important;
       }
-
-      const panelStyles = window.getComputedStyle(panel)
-      const listRect = listboxNode.getBoundingClientRect()
-      const summaryRect = summary.getBoundingClientRect()
-      const overlapY = Math.min(listRect.bottom, summaryRect.bottom) - Math.max(listRect.top, summaryRect.top)
-      const probeX = Math.min(listRect.right - 12, Math.max(listRect.left + 12, listRect.left + listRect.width * 0.25))
-      const probeY = summaryRect.top + Math.max(12, Math.min(overlapY / 2, 40))
-      const topNode = document.elementFromPoint(probeX, probeY) as HTMLElement | null
-
-      return {
-        panelZIndex: panelStyles.zIndex,
-        listBottom: listRect.bottom,
-        summaryTop: summaryRect.top,
-        overlapY,
-        topNodeInsideListbox: !!topNode && listboxNode.contains(topNode),
-      }
-    })
-
-    expect(overlayState).not.toBeNull()
-    expect(overlayState?.panelZIndex).toBe('10')
-    expect(overlayState?.listBottom).toBeGreaterThan(overlayState?.summaryTop ?? 0)
-    expect(overlayState?.overlapY).toBeGreaterThan(12)
-    expect(overlayState?.topNodeInsideListbox).toBe(true)
+    `,
   })
+
+  await promptCacheKeyInput.click()
+
+  const listbox = filtersPanel.locator('[role="listbox"]')
+  await expect(listbox).toBeVisible()
+  await expect(filtersPanel).toHaveAttribute('data-suggestions-open', 'true')
+
+  const overlayState = await page.evaluate(() => {
+    const panel = document.querySelector('[data-testid="records-filters-panel"]') as HTMLElement | null
+    const summary = document.querySelector('[data-testid="records-summary-panel"]') as HTMLElement | null
+    const listboxNode = panel?.querySelector('[role="listbox"]') as HTMLElement | null
+    if (!panel || !summary || !listboxNode) {
+      return null
+    }
+
+    const panelStyles = window.getComputedStyle(panel)
+    const listRect = listboxNode.getBoundingClientRect()
+    const summaryRect = summary.getBoundingClientRect()
+    const overlapY = Math.min(listRect.bottom, summaryRect.bottom) - Math.max(listRect.top, summaryRect.top)
+    const probeX = Math.min(listRect.right - 12, Math.max(listRect.left + 12, listRect.left + listRect.width * 0.25))
+    const probeY = summaryRect.top + Math.max(12, Math.min(overlapY / 2, 40))
+    const topNode = document.elementFromPoint(probeX, probeY) as HTMLElement | null
+
+    return {
+      panelZIndex: panelStyles.zIndex,
+      listBottom: listRect.bottom,
+      summaryTop: summaryRect.top,
+      overlapY,
+      topNodeInsideListbox: !!topNode && listboxNode.contains(topNode),
+    }
+  })
+
+  expect(overlayState).not.toBeNull()
+  expect(overlayState?.panelZIndex).toBe('10')
+  expect(overlayState?.listBottom).toBeGreaterThan(overlayState?.summaryTop ?? 0)
+  expect(overlayState?.overlapY).toBeGreaterThan(viewport.minimumOverlapPx)
+  expect(overlayState?.topNodeInsideListbox).toBe(true)
+}
+
+test.describe('Records filter overlay', () => {
+  for (const viewport of OVERLAY_VIEWPORTS) {
+    test(`keeps the prompt cache key dropdown above the summary panel at ${viewport.label}`, async ({ page }) => {
+      await expectPromptCacheDropdownAboveSummary(page, viewport)
+    })
+  }
 })
