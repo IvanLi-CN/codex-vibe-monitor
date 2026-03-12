@@ -84,30 +84,29 @@ jobs:
 
       - name: Prepare trusted quality-gates baseline
         run: |
-          trusted_ref="origin/main"
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            trusted_ref="origin/${{ github.event.pull_request.base.ref }}"
-          fi
-          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            trusted_ref="HEAD"
-          else
-            git fetch --no-tags --depth=1 origin "${trusted_ref#origin/}"
-          fi
-
           trusted_dir="$RUNNER_TEMP/quality-gates-trusted"
           mkdir -p "$trusted_dir"
-          for path in \
-            .github/scripts/metadata_gate.py \
-            .github/scripts/check_live_quality_gates.py \
-            .github/scripts/check_quality_gates_contract.py \
-            .github/quality-gates.json
-          do
-            git show "$trusted_ref:$path" > "$trusted_dir/$(basename "$path")"
-          done
+
+          verify_trusted_asset() {
+            local path="$1"
+            local expected_sha="$2"
+            local actual_sha
+            actual_sha="$(sha256sum "$path" | awk '{print $1}')"
+            if [ "$actual_sha" != "$expected_sha" ]; then
+              echo "trusted quality-gates asset drifted: $path" >&2
+              echo "expected=$expected_sha actual=$actual_sha" >&2
+              exit 1
+            fi
+            cp "$path" "$trusted_dir/$(basename "$path")"
+          }
+
+          verify_trusted_asset .github/scripts/metadata_gate.py 0ddf7bef5b9dd4420eb2d0b297ea7a15efec59232f8d696f5d7323a2cb9b5337
+          verify_trusted_asset .github/scripts/check_live_quality_gates.py 039b0cbebd0914b35f0eaf14f9c681cbbc87a5e72a1f00496ae95d5d1b44401f
+          verify_trusted_asset .github/scripts/check_quality_gates_contract.py 68b9f45aa6d0ec9060c3d5934e6184bf6a6fbe03647f751d41c64d8d2e8932f0
+          verify_trusted_asset .github/quality-gates.json 44e72ad2a7ed6dbb468e32d9c7f1dfa3b3a23546925e9c74466cd1f97c3a6ec3
 
           {
             echo "QUALITY_GATES_TRUSTED_DIR=$trusted_dir"
-            echo "QUALITY_GATES_TRUSTED_REF=$trusted_ref"
           } >> "$GITHUB_ENV"
 
       - name: Check trusted quality-gates scripts
