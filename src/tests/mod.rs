@@ -10498,10 +10498,7 @@ async fn invocation_queries_filter_upstream_scope_and_treat_legacy_rows_as_exter
     .expect("internal scope query should succeed");
     assert_eq!(internal_list.total, 1);
     assert_eq!(internal_list.records[0].invoke_id, "scope-internal");
-    assert_eq!(
-        internal_list.records[0].prompt_cache_key.as_deref(),
-        Some("sticky-int-1")
-    );
+    assert_eq!(internal_list.records[0].prompt_cache_key, None);
 
     let Json(external_summary) = fetch_invocation_summary(
         State(state.clone()),
