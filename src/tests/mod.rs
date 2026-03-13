@@ -8668,6 +8668,84 @@ async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_sing
 }
 
 #[tokio::test]
+async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure() {
+    #[derive(sqlx::FromRow)]
+    struct RouteStateRow {
+        status: String,
+        last_error: Option<String>,
+        consecutive_route_failures: i64,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    record_pool_route_success(&state.pool, account_id, Some("sticky-cap-logical"))
+        .await
+        .expect("seed sticky route");
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+        "stickyKey": "sticky-cap-logical"
+    }))
+    .expect("serialize request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=response_failed"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let route_state = sqlx::query_as::<_, RouteStateRow>(
+        r#"
+        SELECT status, last_error, consecutive_route_failures
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load route state");
+    assert_eq!(route_state.status, "active");
+    assert_eq!(route_state.consecutive_route_failures, 1);
+    assert!(
+        route_state
+            .last_error
+            .as_deref()
+            .is_some_and(|value| value.contains("upstream_response_failed"))
+    );
+    assert!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-cap-logical")
+            .await
+            .is_none(),
+        "logical stream failure should detach the sticky binding",
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -8741,6 +8819,73 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
 
     server_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn build_account_sticky_keys_response_keeps_attached_keys_without_recent_activity() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_sticky_routes (sticky_key, account_id, created_at, updated_at, last_seen_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("sticky-stale")
+    .bind(account_id)
+    .bind("2026-03-10 00:00:00")
+    .bind("2026-03-10 00:00:00")
+    .bind("2026-03-10 00:00:00")
+    .execute(&state.pool)
+    .await
+    .expect("insert sticky route");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("sticky-stale-invoke")
+    .bind("2026-03-10 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(123_i64)
+    .bind(0.42_f64)
+    .bind(
+        json!({
+            "stickyKey": "sticky-stale",
+            "upstreamAccountId": account_id,
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert stale sticky invocation");
+
+    let response = build_account_sticky_keys_response(&state.pool, account_id, 20)
+        .await
+        .expect("build sticky response");
+    let json = serde_json::to_value(&response).expect("serialize sticky response");
+    let conversations = json["conversations"]
+        .as_array()
+        .expect("sticky conversations array");
+    assert_eq!(conversations.len(), 1);
+    let conversation = &conversations[0];
+    assert_eq!(conversation["stickyKey"].as_str(), Some("sticky-stale"));
+    assert_eq!(conversation["requestCount"].as_i64(), Some(1));
+    assert_eq!(conversation["totalTokens"].as_i64(), Some(123));
+    assert_eq!(
+        conversation["last24hRequests"].as_array().map(Vec::len),
+        Some(0)
+    );
 }
 
 #[tokio::test]

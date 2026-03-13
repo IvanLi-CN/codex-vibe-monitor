@@ -3283,9 +3283,8 @@ pub(crate) async fn build_account_sticky_keys_response(
     let range_end = Utc::now();
     let range_start = range_end - ChronoDuration::hours(24);
     let range_start_bound = db_occurred_at_lower_bound(range_start);
-    let aggregates =
-        query_account_sticky_key_aggregates(pool, account_id, &range_start_bound, limit).await?;
-    if aggregates.is_empty() {
+    let routes = load_account_sticky_routes(pool, account_id).await?;
+    if routes.is_empty() {
         return Ok(AccountStickyKeysResponse {
             range_start: format_utc_iso(range_start),
             range_end: format_utc_iso(range_end),
@@ -3293,14 +3292,19 @@ pub(crate) async fn build_account_sticky_keys_response(
         });
     }
 
-    let selected_keys = aggregates
+    let attached_keys = routes
         .iter()
         .map(|row| row.sticky_key.clone())
         .collect::<Vec<_>>();
+    let aggregates = query_account_sticky_key_aggregates(pool, account_id, &attached_keys).await?;
     let events =
-        query_account_sticky_key_events(pool, account_id, &range_start_bound, &selected_keys)
+        query_account_sticky_key_events(pool, account_id, &range_start_bound, &attached_keys)
             .await?;
 
+    let mut aggregate_map = aggregates
+        .into_iter()
+        .map(|row| (row.sticky_key.clone(), row))
+        .collect::<HashMap<_, _>>();
     let mut grouped_events: HashMap<String, Vec<AccountStickyKeyRequestPoint>> = HashMap::new();
     for row in events {
         let status = if row.status.trim().is_empty() {
@@ -3324,56 +3328,85 @@ pub(crate) async fn build_account_sticky_keys_response(
         });
     }
 
+    let mut conversations = routes
+        .into_iter()
+        .map(|route| {
+            let aggregate = aggregate_map.remove(&route.sticky_key);
+            let last24h_requests = grouped_events.remove(&route.sticky_key).unwrap_or_default();
+            AccountStickyKeyConversation {
+                sticky_key: route.sticky_key.clone(),
+                request_count: aggregate.as_ref().map(|row| row.request_count).unwrap_or(0),
+                total_tokens: aggregate.as_ref().map(|row| row.total_tokens).unwrap_or(0),
+                total_cost: aggregate.as_ref().map(|row| row.total_cost).unwrap_or(0.0),
+                created_at: aggregate
+                    .as_ref()
+                    .map(|row| row.created_at.clone())
+                    .unwrap_or_else(|| route.created_at.clone()),
+                last_activity_at: aggregate
+                    .as_ref()
+                    .map(|row| row.last_activity_at.clone())
+                    .unwrap_or_else(|| route.last_seen_at.clone()),
+                last24h_requests,
+            }
+        })
+        .collect::<Vec<_>>();
+    conversations.sort_by(|left, right| {
+        let left_last_24h = left
+            .last24h_requests
+            .last()
+            .map(|point| point.occurred_at.as_str())
+            .unwrap_or("");
+        let right_last_24h = right
+            .last24h_requests
+            .last()
+            .map(|point| point.occurred_at.as_str())
+            .unwrap_or("");
+        right_last_24h
+            .cmp(left_last_24h)
+            .then_with(|| right.last_activity_at.cmp(&left.last_activity_at))
+            .then_with(|| right.created_at.cmp(&left.created_at))
+            .then_with(|| left.sticky_key.cmp(&right.sticky_key))
+    });
+    conversations.truncate(limit.max(0) as usize);
+
     Ok(AccountStickyKeysResponse {
         range_start: format_utc_iso(range_start),
         range_end: format_utc_iso(range_end),
-        conversations: aggregates
-            .into_iter()
-            .map(|row| AccountStickyKeyConversation {
-                sticky_key: row.sticky_key.clone(),
-                request_count: row.request_count,
-                total_tokens: row.total_tokens,
-                total_cost: row.total_cost,
-                created_at: row.created_at,
-                last_activity_at: row.last_activity_at,
-                last24h_requests: grouped_events.remove(&row.sticky_key).unwrap_or_default(),
-            })
-            .collect(),
+        conversations,
     })
+}
+
+async fn load_account_sticky_routes(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<Vec<PoolStickyRouteRow>> {
+    sqlx::query_as::<_, PoolStickyRouteRow>(
+        r#"
+        SELECT sticky_key, account_id, created_at, updated_at, last_seen_at
+        FROM pool_sticky_routes
+        WHERE account_id = ?1
+        ORDER BY updated_at DESC, last_seen_at DESC, sticky_key ASC
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
 }
 
 async fn query_account_sticky_key_aggregates(
     pool: &Pool<Sqlite>,
     account_id: i64,
-    range_start_bound: &str,
-    limit: i64,
+    selected_keys: &[String],
 ) -> Result<Vec<StickyKeyAggregateRow>> {
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
     const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
     const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 
-    let mut query = QueryBuilder::<Sqlite>::new("WITH active AS (SELECT ");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
     query
-        .push(KEY_EXPR)
-        .push(
-            " AS sticky_key, MIN(occurred_at) AS first_seen_24h \
-             FROM codex_invocations \
-             WHERE occurred_at >= ",
-        )
-        .push_bind(range_start_bound)
-        .push(" AND ")
-        .push(ACCOUNT_EXPR)
-        .push(" = ")
-        .push_bind(account_id)
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(
-            " <> '' \
-             GROUP BY sticky_key \
-         ), aggregates AS ( \
-            SELECT ",
-        )
         .push(KEY_EXPR)
         .push(
             " AS sticky_key, \
@@ -3390,16 +3423,14 @@ async fn query_account_sticky_key_aggregates(
         .push_bind(account_id)
         .push(" AND ")
         .push(KEY_EXPR)
-        .push(
-            " IN (SELECT sticky_key FROM active) \
-             GROUP BY sticky_key \
-         ) \
-         SELECT sticky_key, request_count, total_tokens, total_cost, created_at, last_activity_at \
-         FROM aggregates \
-         ORDER BY created_at DESC \
-         LIMIT ",
-        )
-        .push_bind(limit);
+        .push(" IN (");
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(") GROUP BY sticky_key");
 
     query
         .build_query_as::<StickyKeyAggregateRow>()

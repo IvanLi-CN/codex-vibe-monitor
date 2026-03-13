@@ -1279,10 +1279,16 @@ export async function updatePoolRoutingSettings(
   return normalized
 }
 
-export async function fetchUpstreamStickyConversations(accountId: number, limit: number): Promise<UpstreamStickyConversationsResponse> {
+export async function fetchUpstreamStickyConversations(
+  accountId: number,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<UpstreamStickyConversationsResponse> {
   const search = new URLSearchParams()
   search.set('limit', String(limit))
-  const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}/sticky-keys?${search.toString()}`)
+  const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}/sticky-keys?${search.toString()}`, {
+    signal,
+  })
   return normalizeUpstreamStickyConversationsResponse(response)
 }
 

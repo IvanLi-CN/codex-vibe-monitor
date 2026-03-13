@@ -4679,11 +4679,16 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_failure_class_occurred_at")?;
 
+    sqlx::query("DROP INDEX IF EXISTS idx_codex_invocations_prompt_cache_key_occurred_at")
+        .execute(pool)
+        .await
+        .context("failed to drop stale idx_codex_invocations_prompt_cache_key_occurred_at")?;
+
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_occurred_at
         ON codex_invocations (
-            (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END),
+            (CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END),
             occurred_at
         )
         "#,
@@ -4801,12 +4806,19 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_requester_ip_filter_occurred_at")?;
 
+    sqlx::query("DROP INDEX IF EXISTS idx_codex_invocations_prompt_cache_key_filter_occurred_at")
+        .execute(pool)
+        .await
+        .context(
+            "failed to drop stale idx_codex_invocations_prompt_cache_key_filter_occurred_at",
+        )?;
+
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_filter_occurred_at
         ON codex_invocations (
             (LOWER(TRIM(COALESCE(
-                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END,
+                CASE WHEN json_valid(payload) THEN COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END,
                 ''
             )))),
             occurred_at
@@ -7952,7 +7964,19 @@ async fn proxy_openai_v1_capture_target(
             }
         } else {
             if let Some(account) = pool_account_for_task.as_ref() {
-                let route_result = if had_stream_error {
+                let pool_route_success = proxy_capture_response_status_is_success(
+                    upstream_status,
+                    had_stream_error,
+                    had_logical_stream_failure,
+                );
+                let route_result = if pool_route_success {
+                    record_pool_route_success(
+                        &state_for_task.pool,
+                        account.account_id,
+                        prompt_cache_key_for_task.as_deref(),
+                    )
+                    .await
+                } else if had_stream_error {
                     let route_message = error_message
                         .as_deref()
                         .unwrap_or("upstream stream error")
@@ -7965,10 +7989,17 @@ async fn proxy_openai_v1_capture_target(
                     )
                     .await
                 } else {
-                    record_pool_route_success(
+                    let route_message = error_message
+                        .as_deref()
+                        .unwrap_or("upstream request failed")
+                        .to_string();
+                    record_pool_route_http_failure(
                         &state_for_task.pool,
                         account.account_id,
+                        &account.kind,
                         prompt_cache_key_for_task.as_deref(),
+                        upstream_status,
+                        &route_message,
                     )
                     .await
                 };
