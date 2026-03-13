@@ -250,16 +250,16 @@ function RoutingSettingsDialog({
           if (busy) event.preventDefault()
         }}
       >
-        <div className="flex items-start justify-between gap-4 border-b border-base-300/70 px-5 py-4">
-          <DialogHeader className="min-w-0">
+        <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
+          <DialogHeader className="min-w-0 max-w-[28rem]">
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
           <DialogCloseIcon aria-label={closeLabel} disabled={busy} />
         </div>
-        <div className="space-y-4 px-5 py-5">
+        <div className="space-y-4 px-6 py-6">
           <label className="field">
-            <span className="field-label">{apiKeyLabel}</span>
+            <span className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">{apiKeyLabel}</span>
             <Input
               ref={inputRef}
               name="poolRoutingSecret"
@@ -273,12 +273,12 @@ function RoutingSettingsDialog({
               spellCheck={false}
               data-1p-ignore="true"
               data-lpignore="true"
-              className="font-mono"
+              className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono placeholder:text-base-content/58"
             />
           </label>
         </div>
-        <DialogFooter className="border-t border-base-300/70 px-5 py-4">
-          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+        <DialogFooter className="border-t border-base-300/80 px-6 py-5">
+          <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </Button>
           <Button type="button" onClick={onSave} disabled={busy || !writesEnabled}>

@@ -18,7 +18,7 @@ const DialogOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      'fixed inset-0 z-[80] bg-neutral/55 backdrop-blur-sm',
+      'dialog-overlay fixed inset-0 z-[80]',
       'data-[state=open]:animate-in data-[state=closed]:animate-out',
       'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
       className,
@@ -37,8 +37,8 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        'fixed left-1/2 top-1/2 z-[81] w-[min(32rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2',
-        'rounded-[1.75rem] border border-base-300/80 bg-base-100/96 shadow-2xl outline-none',
+        'dialog-surface fixed left-1/2 top-1/2 z-[81] w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2',
+        'rounded-[1.75rem] border outline-none',
         'data-[state=open]:animate-in data-[state=closed]:animate-out',
         'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
@@ -66,7 +66,7 @@ const DialogTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
-    className={cn('text-lg font-semibold text-base-content', className)}
+    className={cn('text-xl font-semibold tracking-tight text-base-content', className)}
     {...props}
   />
 ))
@@ -78,7 +78,7 @@ const DialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}
-    className={cn('text-sm text-base-content/70', className)}
+    className={cn('text-sm leading-7 text-base-content/82', className)}
     {...props}
   />
 ))
@@ -88,8 +88,8 @@ function DialogCloseIcon({ className, ...props }: React.ComponentPropsWithoutRef
   return (
     <DialogClose
       className={cn(
-        'inline-flex h-10 w-10 items-center justify-center rounded-full text-base-content/65 transition-colors',
-        'hover:bg-base-200/70 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+        'inline-flex h-10 w-10 items-center justify-center rounded-full text-base-content/78 transition-colors',
+        'hover:bg-base-200 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
         'disabled:pointer-events-none disabled:opacity-50',
         className,
       )}
