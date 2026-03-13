@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中
+- Status: 已完成
 - Created: 2026-03-13
 - Last: 2026-03-13
 
@@ -104,7 +104,7 @@
 - [x] M3: 将 Storybook 默认 a11y 模式从 `todo` 升级到 `error`。
 - [x] M4: 修复首轮真实 a11y 失败（Records / Settings / Spinner / Combobox）。
 - [x] M5: 新增 `Storybook Accessibility` CI job，并同步 quality-gates 声明。
-- [ ] M6: 完成全量验证、提交、推送、PR、checks、review-loop 收敛。
+- [x] M6: 完成全量验证、提交、推送、PR、checks、review-loop 收敛。
 
 ## 进度备注
 
@@ -113,6 +113,7 @@
 - `SettingsPage` 已把卡片主标题收敛为 `h2`，并为 pricing table 输入补充 `aria-label`；forward proxy 列表标题收敛为 `h3`。
 - `Spinner` 在携带 `aria-label` / `aria-labelledby` 时自动回填 `role="status"`，避免 `aria-prohibited-attr`。
 - `UpstreamAccountGroupCombobox` 在无外部 `aria-label` 时会回退到当前值 / placeholder / 默认名称，避免 button-name 缺失。
+- 已完成本地验证、推送与 PR 收敛：PR `#123` 已创建，`Storybook Accessibility` 与既有 checks 均为 green，当前无额外 review comments 阻塞。
 
 ## 临时例外策略（Scoped Exceptions）
 
