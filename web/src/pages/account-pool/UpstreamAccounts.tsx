@@ -631,23 +631,6 @@ export default function UpstreamAccountsPage() {
               </div>
             </CardContent>
           </Card>
-
-          <Card className="border-base-300/80 bg-base-100/72">
-            <CardHeader>
-              <CardTitle>{t('accountPool.upstreamAccounts.limitLegendTitle')}</CardTitle>
-              <CardDescription>{t('accountPool.upstreamAccounts.limitLegendDescription')}</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm text-base-content/65">
-              <div className="rounded-2xl border border-base-300/80 bg-base-100/75 p-3">
-                <p className="font-semibold text-base-content">{t('accountPool.upstreamAccounts.primaryWindowLabel')}</p>
-                <p className="mt-1">{t('accountPool.upstreamAccounts.primaryWindowDescription')}</p>
-              </div>
-              <div className="rounded-2xl border border-base-300/80 bg-base-100/75 p-3">
-                <p className="font-semibold text-base-content">{t('accountPool.upstreamAccounts.secondaryWindowLabel')}</p>
-                <p className="mt-1">{t('accountPool.upstreamAccounts.secondaryWindowDescription')}</p>
-              </div>
-            </CardContent>
-          </Card>
         </div>
       </section>
 
