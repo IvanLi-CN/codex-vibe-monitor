@@ -662,6 +662,21 @@ export const DetailDrawer: Story = {
   },
 }
 
+export const RoutingDialog: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const editButton = await canvas.findByRole('button', {
+      name: /编辑号池密钥|edit pool key/i,
+    })
+    await userEvent.click(editButton)
+    await expect(
+      documentScope.getByRole('dialog', { name: /编辑号池路由密钥|update pool routing key/i }),
+    ).toBeInTheDocument()
+  },
+}
+
 export const CreateAccount: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
 }

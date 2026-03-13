@@ -193,6 +193,126 @@ function AccountDetailDrawer({
   )
 }
 
+function RoutingSettingsDialog({
+  open,
+  title,
+  description,
+  closeLabel,
+  apiKeyLabel,
+  apiKeyPlaceholder,
+  cancelLabel,
+  saveLabel,
+  apiKey,
+  busy,
+  writesEnabled,
+  onApiKeyChange,
+  onClose,
+  onSave,
+}: {
+  open: boolean
+  title: string
+  description: string
+  closeLabel: string
+  apiKeyLabel: string
+  apiKeyPlaceholder: string
+  cancelLabel: string
+  saveLabel: string
+  apiKey: string
+  busy: boolean
+  writesEnabled: boolean
+  onApiKeyChange: (value: string) => void
+  onClose: () => void
+  onSave: () => void
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return undefined
+
+    const previousOverflow = document.body.style.overflow
+    const closeButton = closeButtonRef.current
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !busy) onClose()
+    }
+
+    document.body.style.overflow = 'hidden'
+    document.addEventListener('keydown', handleKeyDown)
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0)
+
+    return () => {
+      window.clearTimeout(focusTimer)
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', handleKeyDown)
+      closeButton?.blur()
+    }
+  }, [busy, onClose, open])
+
+  if (!open || typeof document === 'undefined') return null
+
+  return createPortal(
+    <div className="fixed inset-0 z-[80]">
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 bg-neutral/55 backdrop-blur-sm"
+        onClick={busy ? undefined : onClose}
+      />
+      <div className="absolute inset-0 flex items-center justify-center p-4">
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pool-routing-dialog-title"
+          className="w-full max-w-lg rounded-[1.75rem] border border-base-300/80 bg-base-100/96 shadow-2xl"
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-base-300/70 px-5 py-4">
+            <div className="space-y-1">
+              <h2 id="pool-routing-dialog-title" className="text-lg font-semibold text-base-content">
+                {title}
+              </h2>
+              <p className="text-sm text-base-content/70">{description}</p>
+            </div>
+            <Button
+              ref={closeButtonRef}
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={onClose}
+              disabled={busy}
+            >
+              <Icon icon="mdi:close" className="h-5 w-5" aria-hidden />
+              <span className="sr-only">{closeLabel}</span>
+            </Button>
+          </div>
+          <div className="space-y-4 px-5 py-5">
+            <label className="field">
+              <span className="field-label">{apiKeyLabel}</span>
+              <Input
+                ref={inputRef}
+                name="poolRoutingApiKey"
+                type="password"
+                value={apiKey}
+                onChange={(event) => onApiKeyChange(event.target.value)}
+                placeholder={apiKeyPlaceholder}
+                autoComplete="off"
+              />
+            </label>
+          </div>
+          <div className="flex justify-end gap-3 border-t border-base-300/70 px-5 py-4">
+            <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+              {cancelLabel}
+            </Button>
+            <Button type="button" onClick={onSave} disabled={busy || !writesEnabled}>
+              {busy ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:key-chain-variant" className="mr-2 h-4 w-4" aria-hidden />}
+              {saveLabel}
+            </Button>
+          </div>
+        </section>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 export default function UpstreamAccountsPage() {
   const { t } = useTranslation()
   const location = useLocation()
@@ -220,6 +340,7 @@ export default function UpstreamAccountsPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
+  const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
 
@@ -236,6 +357,12 @@ export default function UpstreamAccountsPage() {
   useEffect(() => {
     setRoutingDraft(buildRoutingDraft(routing?.maskedApiKey))
   }, [routing?.maskedApiKey])
+
+  useEffect(() => {
+    if (!writesEnabled) {
+      setIsRoutingDialogOpen(false)
+    }
+  }, [writesEnabled])
 
   useEffect(() => {
     const state = location.state as UpstreamAccountsLocationState | null
@@ -386,6 +513,7 @@ export default function UpstreamAccountsPage() {
     try {
       await saveRouting({ apiKey: routingDraft.apiKey.trim() })
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
+      setIsRoutingDialogOpen(false)
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -482,26 +610,24 @@ export default function UpstreamAccountsPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="rounded-2xl border border-base-300/80 bg-base-100/75 p-3 text-sm text-base-content/75">
-                <p className="metric-label">{t('accountPool.upstreamAccounts.routing.currentKey')}</p>
-                <p className="mt-2 break-all font-mono text-sm text-base-content">
-                  {routing?.apiKeyConfigured ? routing?.maskedApiKey ?? t('accountPool.upstreamAccounts.routing.configured') : t('accountPool.upstreamAccounts.routing.notConfigured')}
-                </p>
-              </div>
-              <label className="field">
-                <span className="field-label">{t('accountPool.upstreamAccounts.routing.apiKeyLabel')}</span>
-                <Input
-                  name="poolRoutingApiKey"
-                  type="password"
-                  value={routingDraft.apiKey}
-                  onChange={(event) => setRoutingDraft((current) => ({ ...current, apiKey: event.target.value }))}
-                  placeholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
-                />
-              </label>
-              <div className="flex justify-end">
-                <Button type="button" onClick={() => void handleSaveRouting()} disabled={busyAction === 'routing' || !writesEnabled}>
-                  {busyAction === 'routing' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:key-chain-variant" className="mr-2 h-4 w-4" aria-hidden />}
-                  {t('accountPool.upstreamAccounts.routing.save')}
-                </Button>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="metric-label">{t('accountPool.upstreamAccounts.routing.currentKey')}</p>
+                    <p className="mt-2 break-all font-mono text-sm text-base-content">
+                      {routing?.apiKeyConfigured ? routing?.maskedApiKey ?? t('accountPool.upstreamAccounts.routing.configured') : t('accountPool.upstreamAccounts.routing.notConfigured')}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setIsRoutingDialogOpen(true)}
+                    disabled={!writesEnabled}
+                  >
+                    <Icon icon="mdi:pencil-outline" className="h-4 w-4" aria-hidden />
+                    <span className="sr-only">{t('accountPool.upstreamAccounts.routing.edit')}</span>
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -576,6 +702,26 @@ export default function UpstreamAccountsPage() {
           </div>
         </div>
       </section>
+
+      <RoutingSettingsDialog
+        open={isRoutingDialogOpen}
+        title={t('accountPool.upstreamAccounts.routing.dialogTitle')}
+        description={t('accountPool.upstreamAccounts.routing.dialogDescription')}
+        closeLabel={t('accountPool.upstreamAccounts.actions.cancel')}
+        apiKeyLabel={t('accountPool.upstreamAccounts.routing.apiKeyLabel')}
+        apiKeyPlaceholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
+        cancelLabel={t('accountPool.upstreamAccounts.actions.cancel')}
+        saveLabel={t('accountPool.upstreamAccounts.routing.save')}
+        apiKey={routingDraft.apiKey}
+        busy={busyAction === 'routing'}
+        writesEnabled={writesEnabled}
+        onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}
+        onClose={() => {
+          setRoutingDraft(buildRoutingDraft(routing?.maskedApiKey))
+          setIsRoutingDialogOpen(false)
+        }}
+        onSave={() => void handleSaveRouting()}
+      />
 
       <AccountDetailDrawer
         open={Boolean(selected && isDetailDrawerOpen)}
