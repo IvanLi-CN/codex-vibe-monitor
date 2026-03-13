@@ -399,7 +399,7 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div data-theme="light" className="bg-base-200 px-6 py-6 text-base-content">
+        <div className="bg-base-200 px-6 py-6 text-base-content">
           <div className="mx-auto w-full max-w-6xl p-6">
             <section className="card bg-base-100 shadow-sm">
               <div className="card-body gap-4">

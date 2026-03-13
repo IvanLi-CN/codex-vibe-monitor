@@ -9,11 +9,14 @@ import {
   fetchUpstreamAccounts,
   reloginUpstreamAccount,
   syncUpstreamAccount,
+  updatePoolRoutingSettings,
   updateUpstreamAccount,
   type CreateApiKeyAccountPayload,
   type CompleteOauthLoginSessionPayload,
   type CreateOauthLoginSessionPayload,
   type LoginSessionStatusResponse,
+  type PoolRoutingSettings,
+  type UpdatePoolRoutingSettingsPayload,
   type UpdateUpstreamAccountPayload,
   type UpstreamAccountDetail,
   type UpstreamAccountSummary,
@@ -22,6 +25,7 @@ import {
 export function useUpstreamAccounts() {
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
   const [writesEnabled, setWritesEnabled] = useState(true)
+  const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [detail, setDetail] = useState<UpstreamAccountDetail | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -35,6 +39,7 @@ export function useUpstreamAccounts() {
         const response = await fetchUpstreamAccounts()
         setItems(response.items)
         setWritesEnabled(response.writesEnabled)
+        setRouting(response.routing ?? null)
         setError(null)
         setSelectedId((current) => {
           const nextId = preferredId ?? current
@@ -153,6 +158,13 @@ export function useUpstreamAccounts() {
     [loadList],
   )
 
+  const saveRouting = useCallback(async (payload: UpdatePoolRoutingSettingsPayload) => {
+    const response = await updatePoolRoutingSettings(payload)
+    setRouting(response)
+    setError(null)
+    return response
+  }, [])
+
   const runSync = useCallback(
     async (accountId: number) => {
       const response = await syncUpstreamAccount(accountId)
@@ -180,6 +192,7 @@ export function useUpstreamAccounts() {
   return {
     items,
     writesEnabled,
+    routing,
     selectedId,
     selectedSummary,
     detail,
@@ -195,6 +208,7 @@ export function useUpstreamAccounts() {
     completeOauthLogin,
     createApiKeyAccount,
     saveAccount,
+    saveRouting,
     runSync,
     removeAccount,
   }

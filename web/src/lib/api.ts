@@ -60,6 +60,7 @@ export interface ApiInvocation {
   endpoint?: string
   requesterIp?: string
   promptCacheKey?: string
+  upstreamScope?: string
   requestedServiceTier?: string
   serviceTier?: string
   proxyWeightDelta?: number
@@ -114,6 +115,7 @@ export type InvocationSortBy = 'occurredAt' | 'totalTokens' | 'cost' | 'tTotalMs
 export type InvocationSortOrder = 'asc' | 'desc'
 export type InvocationRangePreset = 'today' | '1d' | '7d' | '30d' | 'custom'
 export type InvocationSuggestionField = 'model' | 'proxy' | 'endpoint' | 'failureKind' | 'promptCacheKey' | 'requesterIp'
+export type InvocationUpstreamScope = 'all' | 'external' | 'internal'
 
 export interface InvocationRecordsQuery {
   page?: number
@@ -132,6 +134,7 @@ export interface InvocationRecordsQuery {
   failureKind?: string
   promptCacheKey?: string
   requesterIp?: string
+  upstreamScope?: InvocationUpstreamScope
   keyword?: string
   minTotalTokens?: number
   maxTotalTokens?: number
@@ -336,6 +339,7 @@ function appendInvocationRecordsQuery(search: URLSearchParams, query: Invocation
   if (query.failureClass) search.set('failureClass', query.failureClass)
   if (query.failureKind) search.set('failureKind', query.failureKind)
   if (query.promptCacheKey) search.set('promptCacheKey', query.promptCacheKey)
+  if (query.upstreamScope && query.upstreamScope !== 'all') search.set('upstreamScope', query.upstreamScope)
   if (query.requesterIp) search.set('requesterIp', query.requesterIp)
   if (query.keyword) search.set('keyword', query.keyword)
   if (query.minTotalTokens != null) search.set('minTotalTokens', String(query.minTotalTokens))
@@ -485,13 +489,17 @@ export interface ForwardProxyLiveStatsResponse {
   nodes: ForwardProxyLiveNode[]
 }
 
-export interface PromptCacheConversationRequestPoint {
+export interface ConversationRequestPoint {
   occurredAt: string
   status: string
   isSuccess: boolean
   requestTokens: number
   cumulativeTokens: number
 }
+
+export type PromptCacheConversationRequestPoint = ConversationRequestPoint
+
+export type StickyKeyConversationRequestPoint = ConversationRequestPoint
 
 export interface PromptCacheConversation {
   promptCacheKey: string
@@ -507,6 +515,22 @@ export interface PromptCacheConversationsResponse {
   rangeStart: string
   rangeEnd: string
   conversations: PromptCacheConversation[]
+}
+
+export interface StickyKeyConversation {
+  stickyKey: string
+  requestCount: number
+  totalTokens: number
+  totalCost: number
+  createdAt: string
+  lastActivityAt: string
+  last24hRequests: StickyKeyConversationRequestPoint[]
+}
+
+export interface UpstreamStickyConversationsResponse {
+  rangeStart: string
+  rangeEnd: string
+  conversations: StickyKeyConversation[]
 }
 
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
@@ -747,16 +771,7 @@ function normalizeForwardProxyLiveStatsResponse(raw: unknown): ForwardProxyLiveS
 }
 
 function normalizePromptCacheConversationRequestPoint(raw: unknown): PromptCacheConversationRequestPoint | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const occurredAt = typeof payload.occurredAt === 'string' ? payload.occurredAt : ''
-  if (!occurredAt) return null
-  return {
-    occurredAt,
-    status: typeof payload.status === 'string' ? payload.status : 'unknown',
-    isSuccess: payload.isSuccess === true,
-    requestTokens: normalizeFiniteNumber(payload.requestTokens) ?? 0,
-    cumulativeTokens: normalizeFiniteNumber(payload.cumulativeTokens) ?? 0,
-  }
+  return normalizeConversationRequestPoint(raw)
 }
 
 function normalizePromptCacheConversation(raw: unknown): PromptCacheConversation | null {
@@ -774,6 +789,58 @@ function normalizePromptCacheConversation(raw: unknown): PromptCacheConversation
     last24hRequests: requestsRaw
       .map(normalizePromptCacheConversationRequestPoint)
       .filter((item): item is PromptCacheConversationRequestPoint => item != null),
+  }
+}
+
+function normalizeConversationRequestPoint(raw: unknown): ConversationRequestPoint | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const occurredAt = typeof payload.occurredAt === 'string' ? payload.occurredAt : ''
+  if (!occurredAt) return null
+  return {
+    occurredAt,
+    status: typeof payload.status === 'string' ? payload.status : 'unknown',
+    isSuccess: payload.isSuccess === true,
+    requestTokens: normalizeFiniteNumber(payload.requestTokens) ?? 0,
+    cumulativeTokens: normalizeFiniteNumber(payload.cumulativeTokens) ?? 0,
+  }
+}
+
+function normalizeStickyKeyConversation(raw: unknown): StickyKeyConversation | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const stickyKey = typeof payload.stickyKey === 'string' ? payload.stickyKey.trim() : ''
+  if (!stickyKey) return null
+  const requestsRaw = Array.isArray(payload.last24hRequests) ? payload.last24hRequests : []
+  return {
+    stickyKey,
+    requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
+    totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
+    totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
+    createdAt: typeof payload.createdAt === 'string' ? payload.createdAt : '',
+    lastActivityAt: typeof payload.lastActivityAt === 'string' ? payload.lastActivityAt : '',
+    last24hRequests: requestsRaw
+      .map(normalizeConversationRequestPoint)
+      .filter((item): item is StickyKeyConversationRequestPoint => item != null),
+  }
+}
+
+function normalizeUpstreamStickyConversationsResponse(raw: unknown): UpstreamStickyConversationsResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const conversationsRaw = Array.isArray(payload.conversations) ? payload.conversations : []
+  return {
+    rangeStart: typeof payload.rangeStart === 'string' ? payload.rangeStart : '',
+    rangeEnd: typeof payload.rangeEnd === 'string' ? payload.rangeEnd : '',
+    conversations: conversationsRaw
+      .map(normalizeStickyKeyConversation)
+      .filter((item): item is StickyKeyConversation => item != null),
+  }
+}
+
+function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  if (typeof payload.apiKeyConfigured !== 'boolean') return null
+  return {
+    apiKeyConfigured: payload.apiKeyConfigured,
+    maskedApiKey: typeof payload.maskedApiKey === 'string' ? payload.maskedApiKey : null,
   }
 }
 
@@ -867,9 +934,19 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   history: UpstreamAccountHistoryPoint[]
 }
 
+export interface PoolRoutingSettings {
+  apiKeyConfigured: boolean
+  maskedApiKey?: string | null
+}
+
+export interface UpdatePoolRoutingSettingsPayload {
+  apiKey?: string
+}
+
 export interface UpstreamAccountListResponse {
   writesEnabled: boolean
   items: UpstreamAccountSummary[]
+  routing?: PoolRoutingSettings | null
 }
 
 export interface LoginSessionStatusResponse {
@@ -1018,6 +1095,7 @@ function normalizeUpstreamAccountListResponse(raw: unknown): UpstreamAccountList
   return {
     writesEnabled: payload.writesEnabled !== false,
     items: itemsRaw.map(normalizeUpstreamAccountSummary).filter((item): item is UpstreamAccountSummary => item != null),
+    routing: normalizePoolRoutingSettings(payload.routing),
   }
 }
 
@@ -1185,6 +1263,33 @@ export async function fetchQuotaSnapshot() {
 export async function fetchUpstreamAccounts(): Promise<UpstreamAccountListResponse> {
   const response = await fetchJson<unknown>('/api/pool/upstream-accounts')
   return normalizeUpstreamAccountListResponse(response)
+}
+
+export async function updatePoolRoutingSettings(
+  payload: UpdatePoolRoutingSettingsPayload,
+): Promise<PoolRoutingSettings> {
+  const response = await fetchJson<unknown>('/api/pool/routing-settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+  const normalized = normalizePoolRoutingSettings(response)
+  if (!normalized) {
+    throw new Error('Request failed: invalid pool routing settings payload')
+  }
+  return normalized
+}
+
+export async function fetchUpstreamStickyConversations(
+  accountId: number,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<UpstreamStickyConversationsResponse> {
+  const search = new URLSearchParams()
+  search.set('limit', String(limit))
+  const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}/sticky-keys?${search.toString()}`, {
+    signal,
+  })
+  return normalizeUpstreamStickyConversationsResponse(response)
 }
 
 export async function fetchUpstreamAccountDetail(accountId: number): Promise<UpstreamAccountDetail> {

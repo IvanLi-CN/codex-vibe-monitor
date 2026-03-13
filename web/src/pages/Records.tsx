@@ -14,6 +14,7 @@ import {
   type InvocationSortOrder,
   type InvocationSuggestionField,
   type InvocationSuggestionsResponse,
+  type InvocationUpstreamScope,
 } from '../lib/api'
 import { buildInvocationSuggestionsQuery, createDefaultCustomRange, RECORDS_PAGE_SIZE_OPTIONS } from '../lib/invocationRecords'
 import { cn } from '../lib/utils'
@@ -126,6 +127,15 @@ export default function RecordsPage() {
       { value: '7d' as InvocationRangePreset, label: t('records.filters.rangePreset.last7Days') },
       { value: '30d' as InvocationRangePreset, label: t('records.filters.rangePreset.last30Days') },
       { value: 'custom' as InvocationRangePreset, label: t('records.filters.rangePreset.custom') },
+    ],
+    [t],
+  )
+
+  const upstreamScopeOptions = useMemo(
+    () => [
+      { value: 'all' as InvocationUpstreamScope, label: t('records.filters.upstreamScope.all') },
+      { value: 'external' as InvocationUpstreamScope, label: t('records.filters.upstreamScope.external') },
+      { value: 'internal' as InvocationUpstreamScope, label: t('records.filters.upstreamScope.internal') },
     ],
     [t],
   )
@@ -364,6 +374,22 @@ export default function RecordsPage() {
                   <option value="service_failure">{t('records.filters.failureClass.service')}</option>
                   <option value="client_failure">{t('records.filters.failureClass.client')}</option>
                   <option value="client_abort">{t('records.filters.failureClass.abort')}</option>
+                </select>
+              </label>
+
+              <label className="field">
+                <span className="field-label">{t('records.filters.upstreamScope')}</span>
+                <select
+                  name="upstreamScope"
+                  className="field-select"
+                  value={draft.upstreamScope}
+                  onChange={(event) => updateDraft('upstreamScope', event.target.value as InvocationUpstreamScope)}
+                >
+                  {upstreamScopeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </label>
 
