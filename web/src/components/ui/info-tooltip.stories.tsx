@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { InfoTooltip } from './info-tooltip'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../../storybook/a11y'
 
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
@@ -12,6 +13,7 @@ function StorySurface({ children }: { children: React.ReactNode }) {
 const meta = {
   title: 'UI/InfoTooltip',
   component: InfoTooltip,
+  parameters: STORYBOOK_COLOR_CONTRAST_TODO,
   decorators: [
     (Story) => (
       <StorySurface>

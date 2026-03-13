@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { I18nProvider } from '../i18n'
 import type { PromptCacheConversationsResponse } from '../lib/api'
 import { PromptCacheConversationTable } from './PromptCacheConversationTable'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 const stats: PromptCacheConversationsResponse = {
   rangeStart: '2026-03-02T00:00:00.000Z',
@@ -168,6 +169,7 @@ const meta = {
   title: 'Monitoring/PromptCacheConversationTable',
   component: PromptCacheConversationTable,
   parameters: {
+    ...STORYBOOK_COLOR_CONTRAST_TODO,
     layout: 'fullscreen',
   },
   decorators: [

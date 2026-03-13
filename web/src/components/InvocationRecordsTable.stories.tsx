@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { I18nProvider } from '../i18n'
 import { InvocationRecordsTable } from './InvocationRecordsTable'
 import { STORYBOOK_INVOCATION_RECORDS } from './invocationRecordsStoryFixtures'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
@@ -15,6 +16,7 @@ const meta = {
   title: 'Records/InvocationRecordsTable',
   component: InvocationRecordsTable,
   parameters: {
+    ...STORYBOOK_COLOR_CONTRAST_TODO,
     layout: 'fullscreen',
   },
   decorators: [

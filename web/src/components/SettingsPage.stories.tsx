@@ -12,6 +12,7 @@ import type {
   ProxySettings,
   SettingsPayload,
 } from '../lib/api'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 const PRESET_MODELS = ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5.1-codex-mini', 'gpt-5.2']
 const STORYBOOK_SETTINGS_STORAGE_PREFIX = 'storybook.settings-page.mock'
@@ -425,6 +426,7 @@ const meta = {
   title: 'Settings/SettingsPage',
   component: SettingsPage,
   parameters: {
+    ...STORYBOOK_COLOR_CONTRAST_TODO,
     layout: 'fullscreen',
   },
   decorators: [

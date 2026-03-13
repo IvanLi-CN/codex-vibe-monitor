@@ -9,6 +9,7 @@ import {
   STORYBOOK_INVOCATION_RECORDS,
   summarizeInvocationRecords,
 } from './invocationRecordsStoryFixtures'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
@@ -310,6 +311,7 @@ const meta = {
   title: 'Records/RecordsPage',
   component: RecordsPage,
   parameters: {
+    ...STORYBOOK_COLOR_CONTRAST_TODO,
     layout: 'fullscreen',
   },
   decorators: [

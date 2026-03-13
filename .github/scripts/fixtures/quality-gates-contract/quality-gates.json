@@ -54,6 +54,7 @@
   ],
   "informational_checks": [
     "Front-end Tests",
+    "Storybook Accessibility",
     "Records Overlay E2E",
     "Release Meta (intent + version + tags)",
     "Build + Smoke + Push Candidate (linux/amd64)",
@@ -73,6 +74,7 @@
       "jobs": [
         "Lint & Format Check",
         "Front-end Tests",
+        "Storybook Accessibility",
         "Records Overlay E2E",
         "Backend Tests",
         "Build Artifacts",

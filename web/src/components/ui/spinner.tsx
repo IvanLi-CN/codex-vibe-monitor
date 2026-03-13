@@ -19,8 +19,9 @@ export interface SpinnerProps
   extends React.HTMLAttributes<HTMLSpanElement>,
     VariantProps<typeof spinnerVariants> {}
 
-function Spinner({ className, size, ...props }: SpinnerProps) {
-  return <span className={cn(spinnerVariants({ size }), className)} {...props} />
+function Spinner({ className, size, role, ...props }: SpinnerProps) {
+  const resolvedRole = role ?? (props['aria-label'] || props['aria-labelledby'] ? 'status' : undefined)
+  return <span className={cn(spinnerVariants({ size }), className)} role={resolvedRole} {...props} />
 }
 
 export { Spinner }

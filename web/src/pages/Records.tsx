@@ -466,7 +466,6 @@ export default function RecordsPage() {
                     type="button"
                     role="tab"
                     aria-selected={focus === option.value}
-                    aria-pressed={focus === option.value}
                     onClick={() => setFocus(option.value)}
                     className={cn('segment-button px-3', focus === option.value && 'font-semibold')}
                     data-active={focus === option.value}

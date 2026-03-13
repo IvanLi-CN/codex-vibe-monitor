@@ -86,7 +86,7 @@ export function UpstreamAccountGroupCombobox({
             variant="outline"
             role="combobox"
             aria-expanded={open}
-            aria-label={ariaLabel}
+            aria-label={ariaLabel || trimmedValue || placeholder || 'Upstream account group'}
             className={cn(
               'h-10 w-full justify-between rounded-lg bg-base-100 px-3 text-left font-normal hover:bg-base-100',
               'border-base-300 text-base-content shadow-sm',

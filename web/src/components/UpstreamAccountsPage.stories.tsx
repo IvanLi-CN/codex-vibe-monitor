@@ -15,6 +15,7 @@ import type {
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 type StoryStore = {
   writesEnabled: boolean
@@ -445,6 +446,7 @@ const meta = {
   component: UpstreamAccountsPage,
   tags: ['autodocs'],
   parameters: {
+    ...STORYBOOK_COLOR_CONTRAST_TODO,
     layout: 'fullscreen',
   },
   decorators: [
@@ -487,9 +489,9 @@ export const CreateAccountOauthReady: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await userEvent.type(canvas.getByLabelText(/display name/i), 'Codex Pro - Manual')
-    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
-    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeInTheDocument()
-    await expect(canvas.getByLabelText(/callback url/i)).toBeInTheDocument()
+    await userEvent.type(canvas.getByLabelText(/display name|显示名称/i), 'Codex Pro - Manual')
+    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url|生成 oauth 地址/i }))
+    await expect(canvas.getByRole('button', { name: /copy oauth url|复制 oauth 地址/i })).toBeInTheDocument()
+    await expect(canvas.getByLabelText(/callback url|回调链接/i)).toBeInTheDocument()
   },
 }

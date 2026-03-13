@@ -4,7 +4,7 @@ import { Icon } from '@iconify/react'
 import { Badge } from '../components/ui/badge'
 import { Alert } from '../components/ui/alert'
 import { Button } from '../components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader } from '../components/ui/card'
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { useSettings } from '../hooks/useSettings'
@@ -85,6 +85,7 @@ const FORWARD_PROXY_BATCH_VALIDATION_ROUNDS = 12
 const pricingTableHeaderCellClass =
   'px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/65'
 const pricingTableBodyCellClass = 'align-middle px-4 py-3'
+const cardSectionTitleClassName = 'text-lg font-semibold leading-none tracking-tight'
 const PROXY_UPSTREAM_429_RETRY_VALUES = [0, 1, 2, 3, 4, 5] as const
 
 function normalizeDraftEntry(entry: PricingDraftEntry): PricingDraftEntry {
@@ -320,6 +321,11 @@ function sortBatchResults(items: Iterable<ForwardProxyBatchValidationItem>): For
 function formatSuccessRate(value?: number): string {
   if (value == null || Number.isNaN(value)) return '—'
   return `${(value * 100).toFixed(1)}%`
+}
+
+function pricingRowFieldAriaLabel(columnLabel: string, model: string, index: number): string {
+  const rowLabel = model.trim() || `Model ${index + 1}`
+  return `${columnLabel}: ${rowLabel}`
 }
 
 function formatLatency(value?: number): string {
@@ -1330,7 +1336,7 @@ export default function SettingsPage() {
       <div className="grid items-start gap-6 lg:grid-cols-2">
         <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
           <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
-            <CardTitle>{t('settings.proxy.title')}</CardTitle>
+            <h2 className={cardSectionTitleClassName}>{t('settings.proxy.title')}</h2>
             <CardDescription>{t('settings.proxy.description')}</CardDescription>
           </CardHeader>
 
@@ -1463,7 +1469,7 @@ export default function SettingsPage() {
         <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
           <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
             <div className="space-y-1.5">
-              <CardTitle>{t('settings.pricing.title')}</CardTitle>
+              <h2 className={cardSectionTitleClassName}>{t('settings.pricing.title')}</h2>
               <div className="space-y-1">
                 <CardDescription>{t('settings.pricing.description')}</CardDescription>
                 <p className="text-xs text-base-content/65">{t('settings.pricing.compactNote')}</p>
@@ -1517,6 +1523,7 @@ export default function SettingsPage() {
                         <Input
                           type="text"
                           className="h-9 px-3"
+                          aria-label={pricingRowFieldAriaLabel(t('settings.pricing.columns.model'), entry.model, index)}
                           value={entry.model}
                           onChange={(event) => handlePricingFieldChange(index, 'model', event.target.value)}
                           onBlur={() => triggerPricingSave(true)}
@@ -1527,6 +1534,7 @@ export default function SettingsPage() {
                           type="number"
                           step="any"
                           className="h-9 px-3"
+                          aria-label={pricingRowFieldAriaLabel(t('settings.pricing.columns.input'), entry.model, index)}
                           value={entry.inputPer1m}
                           onChange={(event) => handlePricingFieldChange(index, 'inputPer1m', event.target.value)}
                           onBlur={() => triggerPricingSave(true)}
@@ -1537,6 +1545,7 @@ export default function SettingsPage() {
                           type="number"
                           step="any"
                           className="h-9 px-3"
+                          aria-label={pricingRowFieldAriaLabel(t('settings.pricing.columns.output'), entry.model, index)}
                           value={entry.outputPer1m}
                           onChange={(event) => handlePricingFieldChange(index, 'outputPer1m', event.target.value)}
                           onBlur={() => triggerPricingSave(true)}
@@ -1547,6 +1556,7 @@ export default function SettingsPage() {
                           type="number"
                           step="any"
                           className="h-9 px-3"
+                          aria-label={pricingRowFieldAriaLabel(t('settings.pricing.columns.cacheInput'), entry.model, index)}
                           value={entry.cacheInputPer1m}
                           onChange={(event) => handlePricingFieldChange(index, 'cacheInputPer1m', event.target.value)}
                           onBlur={() => triggerPricingSave(true)}
@@ -1557,6 +1567,7 @@ export default function SettingsPage() {
                           type="number"
                           step="any"
                           className="h-9 px-3"
+                          aria-label={pricingRowFieldAriaLabel(t('settings.pricing.columns.reasoning'), entry.model, index)}
                           value={entry.reasoningPer1m}
                           onChange={(event) => handlePricingFieldChange(index, 'reasoningPer1m', event.target.value)}
                           onBlur={() => triggerPricingSave(true)}
@@ -1596,7 +1607,7 @@ export default function SettingsPage() {
 
       <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
         <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
-          <CardTitle>{t('settings.forwardProxy.title')}</CardTitle>
+          <h2 className={cardSectionTitleClassName}>{t('settings.forwardProxy.title')}</h2>
           <CardDescription>{t('settings.forwardProxy.description')}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5 pt-4">
@@ -1647,7 +1658,7 @@ export default function SettingsPage() {
           <div className="grid gap-3 lg:grid-cols-2">
             <section className="rounded-xl border border-base-300/80 bg-base-100/72 p-3">
               <header className="mb-2 flex items-center justify-between gap-2">
-                <h4 className="text-sm font-medium text-base-content/85">{t('settings.forwardProxy.proxyUrls')}</h4>
+                <h3 className="text-sm font-medium text-base-content/85">{t('settings.forwardProxy.proxyUrls')}</h3>
                 <span className="text-xs text-base-content/65">{forwardProxyUrls.length}</span>
               </header>
               {forwardProxyUrls.length === 0 ? (
@@ -1688,7 +1699,7 @@ export default function SettingsPage() {
 
             <section className="rounded-xl border border-base-300/80 bg-base-100/72 p-3">
               <header className="mb-2 flex items-center justify-between gap-2">
-                <h4 className="text-sm font-medium text-base-content/85">{t('settings.forwardProxy.subscriptionUrls')}</h4>
+                <h3 className="text-sm font-medium text-base-content/85">{t('settings.forwardProxy.subscriptionUrls')}</h3>
                 <span className="text-xs text-base-content/65">{forwardProxySubscriptionUrls.length}</span>
               </header>
               {forwardProxySubscriptionUrls.length === 0 ? (

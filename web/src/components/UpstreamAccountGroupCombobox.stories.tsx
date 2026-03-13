@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { UpstreamAccountGroupCombobox } from './UpstreamAccountGroupCombobox'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 function ComboboxHarness({
   value: initialValue,
@@ -31,6 +32,7 @@ const meta = {
   component: UpstreamAccountGroupCombobox,
   tags: ['autodocs'],
   parameters: {
+    ...STORYBOOK_COLOR_CONTRAST_TODO,
     layout: 'fullscreen',
   },
   args: {

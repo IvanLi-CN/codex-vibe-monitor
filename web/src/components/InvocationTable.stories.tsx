@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { I18nProvider } from '../i18n'
 import { InvocationTable } from './InvocationTable'
 import type { ApiInvocation } from '../lib/api'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 const baseOccurredAt = '2026-02-25T10:15:30Z'
 const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
@@ -362,6 +363,7 @@ const meta = {
   component: InvocationTable,
   tags: ['autodocs'],
   parameters: {
+    ...STORYBOOK_COLOR_CONTRAST_TODO,
     layout: 'fullscreen',
     docs: {
       description: {
