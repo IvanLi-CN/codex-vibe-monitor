@@ -6838,19 +6838,19 @@ async fn proxy_openai_v1_inner(
                 format!("failed to resolve pool routing settings: {err}"),
             )
         })?;
-    if pool_route_active {
-        return proxy_openai_v1_via_pool(
-            state,
-            proxy_request_id,
-            method,
-            target_url,
-            headers,
-            body,
-        )
-        .await;
-    }
 
     if method == Method::GET && is_models_list_path(original_uri.path()) {
+        if pool_route_active {
+            return proxy_openai_v1_via_pool(
+                state,
+                proxy_request_id,
+                method,
+                target_url,
+                headers,
+                body,
+            )
+            .await;
+        }
         let settings = state.proxy_model_settings.read().await.clone();
         if settings.hijack_enabled {
             let mut payload = build_preset_models_payload(&settings.enabled_preset_models);
@@ -6914,6 +6914,18 @@ async fn proxy_openai_v1_inner(
             target,
             target_url,
             peer_ip,
+        )
+        .await;
+    }
+
+    if pool_route_active {
+        return proxy_openai_v1_via_pool(
+            state,
+            proxy_request_id,
+            method,
+            target_url,
+            headers,
+            body,
         )
         .await;
     }
