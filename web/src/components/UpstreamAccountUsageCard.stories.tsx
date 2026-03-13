@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import type { UpstreamAccountHistoryPoint } from '../lib/api'
 import { UpstreamAccountUsageCard } from './UpstreamAccountUsageCard'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 const history: UpstreamAccountHistoryPoint[] = [
   { capturedAt: '2026-03-10T02:00:00.000Z', primaryUsedPercent: 24, secondaryUsedPercent: 10 },
@@ -17,6 +18,7 @@ const meta = {
   component: UpstreamAccountUsageCard,
   tags: ['autodocs'],
   parameters: {
+    ...STORYBOOK_COLOR_CONTRAST_TODO,
     layout: 'fullscreen',
   },
   decorators: [

@@ -50,7 +50,7 @@ export function RecordsNewDataButton({
         'group h-auto rounded-full border px-3 py-1 text-xs font-semibold shadow-sm disabled:opacity-100',
         isInteractive
           ? 'border-primary/35 bg-primary/15 text-primary hover:bg-primary/20'
-          : 'border-warning/35 bg-warning/10 text-warning hover:bg-warning/15',
+          : 'border-warning/35 bg-warning/10 text-warning-content hover:bg-warning/15',
       )}
       onClick={onRefresh}
       onMouseEnter={() => setIsHovered(true)}
@@ -83,7 +83,7 @@ export function RecordsNewDataButton({
       <span
         className={cn(
           'ml-1.5 inline-flex h-4 w-4 items-center justify-center rounded-full',
-          isInteractive ? 'text-primary' : 'text-warning',
+          isInteractive ? 'text-primary' : 'text-warning-content',
         )}
         aria-hidden
       >

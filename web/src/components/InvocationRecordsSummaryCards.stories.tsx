@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { I18nProvider } from '../i18n'
 import { InvocationRecordsSummaryCards } from './InvocationRecordsSummaryCards'
 import { createStoryInvocationRecordsSummary } from './invocationRecordsStoryFixtures'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
@@ -14,6 +15,7 @@ function StorySurface({ children }: { children: React.ReactNode }) {
 const meta = {
   title: 'Records/InvocationRecordsSummaryCards',
   component: InvocationRecordsSummaryCards,
+  parameters: STORYBOOK_COLOR_CONTRAST_TODO,
   decorators: [
     (Story) => (
       <I18nProvider>

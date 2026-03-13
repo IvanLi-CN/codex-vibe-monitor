@@ -14,8 +14,8 @@ body,
   --color-base-100: 98.7% 0.006 255;
   --color-base-200: 95.2% 0.01 255;
   --color-base-300: 90.1% 0.015 257;
-  --color-base-content: 27.2% 0.02 260;
-  --color-primary: 57.5% 0.195 258;
+  --color-base-content: 21.5% 0.022 260;
+  --color-primary: 46.5% 0.185 258;
   --color-primary-content: 97.4% 0.011 258;
   --color-secondary: 61.5% 0.118 188;
   --color-secondary-content: 96.2% 0.014 188;
@@ -23,13 +23,13 @@ body,
   --color-accent-content: 24.6% 0.052 58;
   --color-neutral: 30.8% 0.02 258;
   --color-neutral-content: 94.8% 0.006 258;
-  --color-info: 69.5% 0.152 236;
+  --color-info: 53.5% 0.145 236;
   --color-info-content: 97% 0.014 236;
-  --color-success: 70.2% 0.167 154;
+  --color-success: 46.5% 0.132 154;
   --color-success-content: 24.6% 0.046 154;
-  --color-warning: 80.4% 0.167 82;
+  --color-warning: 55.5% 0.135 76;
   --color-warning-content: 29.8% 0.061 58;
-  --color-error: 66.2% 0.218 26;
+  --color-error: 50.5% 0.185 26;
   --color-error-content: 96.4% 0.013 26;
   --radius-selector: 1.9rem;
   --radius-field: 0.75rem;

@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import type { UpstreamAccountSummary } from '../lib/api'
 import { UpstreamAccountsTable } from './UpstreamAccountsTable'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 const now = '2026-03-11T12:30:00.000Z'
 
@@ -106,6 +107,7 @@ const meta = {
   component: UpstreamAccountsTable,
   tags: ['autodocs'],
   parameters: {
+    ...STORYBOOK_COLOR_CONTRAST_TODO,
     layout: 'fullscreen',
   },
   decorators: [

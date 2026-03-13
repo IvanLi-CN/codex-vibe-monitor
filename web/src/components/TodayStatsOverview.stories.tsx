@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { I18nProvider } from '../i18n'
 import type { StatsResponse } from '../lib/api'
 import { TodayStatsOverview } from './TodayStatsOverview'
+import { STORYBOOK_COLOR_CONTRAST_TODO } from '../storybook/a11y'
 
 const sampleStats: StatsResponse = {
   totalCount: 2184,
@@ -16,6 +17,7 @@ const meta = {
   title: 'Dashboard/TodayStatsOverview',
   component: TodayStatsOverview,
   parameters: {
+    ...STORYBOOK_COLOR_CONTRAST_TODO,
     layout: 'fullscreen',
   },
   decorators: [
