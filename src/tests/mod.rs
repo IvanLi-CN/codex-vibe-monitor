@@ -6426,6 +6426,56 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_models_bypass_hijack_for_pool_route_requests() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        *settings = ProxyModelSettings {
+            hijack_enabled: true,
+            merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
+            enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+        };
+    }
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/models".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get(PROXY_MODEL_MERGE_STATUS_HEADER)
+            .is_none()
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read models body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode models payload");
+    assert_eq!(
+        extract_model_ids(&payload),
+        vec!["upstream-model-a".to_string(), "gpt-5.2-codex".to_string()]
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_retrying_models_upstream(1, Some("0")).await;
@@ -8668,6 +8718,45 @@ async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_sing
 }
 
 #[tokio::test]
+async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
+    let (upstream_base, _attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-500"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some("pool upstream responded with 500")
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure() {
     #[derive(sqlx::FromRow)]
     struct RouteStateRow {
@@ -8886,6 +8975,85 @@ async fn build_account_sticky_keys_response_keeps_attached_keys_without_recent_a
         conversation["last24hRequests"].as_array().map(Vec::len),
         Some(0)
     );
+}
+
+#[tokio::test]
+async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, payload) in [
+        (
+            "sticky-only",
+            json!({
+                "stickyKey": "sticky-only",
+                "upstreamScope": "internal",
+                "routeMode": "pool"
+            }),
+        ),
+        (
+            "prompt-cache",
+            json!({
+                "promptCacheKey": "pck-real",
+                "upstreamScope": "external"
+            }),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            (Utc::now() - ChronoDuration::minutes(5))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10_i64)
+        .bind(0.01_f64)
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert prompt cache test invocation");
+    }
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery { limit: Some(20) }),
+    )
+    .await
+    .expect("prompt cache conversations should succeed");
+    let keys = response
+        .conversations
+        .iter()
+        .map(|item| item.prompt_cache_key.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(keys, vec!["pck-real".to_string()]);
+
+    let Json(list_response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            limit: Some(20),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list invocations should succeed");
+    let sticky_record = list_response
+        .records
+        .into_iter()
+        .find(|record| record.invoke_id == "sticky-only")
+        .expect("sticky-only record should exist");
+    assert!(sticky_record.prompt_cache_key.is_none());
 }
 
 #[tokio::test]
@@ -9192,7 +9360,8 @@ fn prepare_target_request_body_extracts_sticky_key_aliases_from_metadata() {
         DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
     );
 
-    assert_eq!(info.prompt_cache_key.as_deref(), Some("sticky-from-body"));
+    assert_eq!(info.sticky_key.as_deref(), Some("sticky-from-body"));
+    assert_eq!(info.prompt_cache_key, None);
 }
 
 #[test]
@@ -9498,7 +9667,7 @@ fn extract_prompt_cache_key_from_headers_reads_whitelist_keys() {
 }
 
 #[test]
-fn extract_prompt_cache_key_from_headers_prefers_sticky_aliases() {
+fn extract_sticky_key_from_headers_accepts_sticky_and_prompt_cache_aliases() {
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("x-prompt-cache-key"),
@@ -9510,8 +9679,12 @@ fn extract_prompt_cache_key_from_headers_prefers_sticky_aliases() {
     );
 
     assert_eq!(
-        extract_prompt_cache_key_from_headers(&headers).as_deref(),
+        extract_sticky_key_from_headers(&headers).as_deref(),
         Some("sticky-from-header")
+    );
+    assert_eq!(
+        extract_prompt_cache_key_from_headers(&headers).as_deref(),
+        Some("pck-from-header")
     );
 }
 

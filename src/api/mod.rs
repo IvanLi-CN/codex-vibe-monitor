@@ -8,7 +8,7 @@ const INVOCATION_ENDPOINT_SQL: &str =
 const INVOCATION_FAILURE_KIND_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind)";
 const INVOCATION_REQUESTER_IP_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
-const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
+const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
 const INVOCATION_UPSTREAM_SCOPE_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamScope') AS TEXT) END, 'external')";
 const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
 
@@ -1551,7 +1551,7 @@ pub(crate) async fn query_prompt_cache_conversation_aggregates(
     source_scope: InvocationSourceScope,
     limit: i64,
 ) -> Result<Vec<PromptCacheConversationAggregateRow>> {
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
 
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH active AS (\
@@ -1627,7 +1627,7 @@ pub(crate) async fn query_prompt_cache_conversation_events(
         return Ok(Vec::new());
     }
 
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
 
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT occurred_at, COALESCE(status, 'unknown') AS status, \
@@ -3429,6 +3429,7 @@ pub(crate) struct RawPayloadMeta {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RequestCaptureInfo {
     pub(crate) model: Option<String>,
+    pub(crate) sticky_key: Option<String>,
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) reasoning_effort: Option<String>,

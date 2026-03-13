@@ -4688,7 +4688,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         r#"
         CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_occurred_at
         ON codex_invocations (
-            (CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END),
+            (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END),
             occurred_at
         )
         "#,
@@ -4818,7 +4818,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_filter_occurred_at
         ON codex_invocations (
             (LOWER(TRIM(COALESCE(
-                CASE WHEN json_valid(payload) THEN COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END,
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END,
                 ''
             )))),
             occurred_at
@@ -6221,6 +6221,7 @@ async fn send_pool_request_with_failover(
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let request_connection_scoped = connection_scoped_header_names(headers);
     let mut excluded_ids = Vec::new();
+    let mut last_error: Option<PoolUpstreamError> = None;
 
     'account_loop: loop {
         let account =
@@ -6228,13 +6229,13 @@ async fn send_pool_request_with_failover(
             {
                 Ok(Some(account)) => account,
                 Ok(None) => {
-                    return Err(PoolUpstreamError {
+                    return Err(last_error.unwrap_or(PoolUpstreamError {
                         account: None,
                         status: StatusCode::BAD_GATEWAY,
                         message: "no healthy pool account is available".to_string(),
                         failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
                         connect_latency_ms: 0.0,
-                    });
+                    }));
                 }
                 Err(err) => {
                     return Err(PoolUpstreamError {
@@ -6306,14 +6307,15 @@ async fn send_pool_request_with_failover(
                     {
                         warn!(account_id = account.account_id, error = %route_err, "failed to record pool transport failure");
                     }
+                    last_error = Some(PoolUpstreamError {
+                        account: Some(account.clone()),
+                        status: StatusCode::BAD_GATEWAY,
+                        message: message.clone(),
+                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                        connect_latency_ms: elapsed_ms(connect_started),
+                    });
                     if excluded_ids.len() >= 64 {
-                        return Err(PoolUpstreamError {
-                            account: Some(account),
-                            status: StatusCode::BAD_GATEWAY,
-                            message,
-                            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                            connect_latency_ms: elapsed_ms(connect_started),
-                        });
+                        return Err(last_error.expect("pool transport failure should be recorded"));
                     }
                     continue 'account_loop;
                 }
@@ -6347,14 +6349,15 @@ async fn send_pool_request_with_failover(
                     {
                         warn!(account_id = account.account_id, error = %route_err, "failed to record pool handshake timeout");
                     }
+                    last_error = Some(PoolUpstreamError {
+                        account: Some(account.clone()),
+                        status: StatusCode::BAD_GATEWAY,
+                        message: message.clone(),
+                        failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                        connect_latency_ms: elapsed_ms(connect_started),
+                    });
                     if excluded_ids.len() >= 64 {
-                        return Err(PoolUpstreamError {
-                            account: Some(account),
-                            status: StatusCode::BAD_GATEWAY,
-                            message,
-                            failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                            connect_latency_ms: elapsed_ms(connect_started),
-                        });
+                        return Err(last_error.expect("pool handshake failure should be recorded"));
                     }
                     continue 'account_loop;
                 }
@@ -6402,20 +6405,22 @@ async fn send_pool_request_with_failover(
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool upstream http failure");
                 }
+                let failure_kind = if status == StatusCode::TOO_MANY_REQUESTS {
+                    FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                } else if status.is_server_error() {
+                    FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+                } else {
+                    PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+                };
+                last_error = Some(PoolUpstreamError {
+                    account: Some(account.clone()),
+                    status,
+                    message: message.clone(),
+                    failure_kind,
+                    connect_latency_ms,
+                });
                 if excluded_ids.len() >= 64 {
-                    return Err(PoolUpstreamError {
-                        account: Some(account),
-                        status: StatusCode::BAD_GATEWAY,
-                        message,
-                        failure_kind: if status == StatusCode::TOO_MANY_REQUESTS {
-                            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
-                        } else if status.is_server_error() {
-                            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
-                        } else {
-                            PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-                        },
-                        connect_latency_ms,
-                    });
+                    return Err(last_error.expect("pool http failure should be recorded"));
                 }
                 continue 'account_loop;
             }
@@ -6451,14 +6456,17 @@ async fn send_pool_request_with_failover(
                     {
                         warn!(account_id = account.account_id, error = %route_err, "failed to record pool first chunk failure");
                     }
+                    last_error = Some(PoolUpstreamError {
+                        account: Some(account.clone()),
+                        status: StatusCode::BAD_GATEWAY,
+                        message: message.clone(),
+                        failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                        connect_latency_ms,
+                    });
                     if excluded_ids.len() >= 64 {
-                        return Err(PoolUpstreamError {
-                            account: Some(account),
-                            status: StatusCode::BAD_GATEWAY,
-                            message,
-                            failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                            connect_latency_ms,
-                        });
+                        return Err(
+                            last_error.expect("pool first chunk failure should be recorded")
+                        );
                     }
                     continue 'account_loop;
                 }
@@ -6517,8 +6525,8 @@ async fn proxy_openai_v1_via_pool(
     let body_bytes = Bytes::from(request_body_bytes);
     let body_sticky_key = serde_json::from_slice::<Value>(&body_bytes)
         .ok()
-        .and_then(|value| extract_prompt_cache_key_from_request_body(&value));
-    let sticky_key = body_sticky_key.or_else(|| extract_prompt_cache_key_from_headers(&headers));
+        .and_then(|value| extract_sticky_key_from_request_body(&value));
+    let sticky_key = body_sticky_key.or_else(|| extract_sticky_key_from_headers(&headers));
     let handshake_timeout = state.config.proxy_upstream_handshake_timeout(None);
     let upstream = send_pool_request_with_failover(
         state.clone(),
@@ -6822,6 +6830,26 @@ async fn proxy_openai_v1_inner(
             },
         )?;
 
+    let pool_route_active = request_matches_pool_route(state.as_ref(), &headers)
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to resolve pool routing settings: {err}"),
+            )
+        })?;
+    if pool_route_active {
+        return proxy_openai_v1_via_pool(
+            state,
+            proxy_request_id,
+            method,
+            target_url,
+            headers,
+            body,
+        )
+        .await;
+    }
+
     if method == Method::GET && is_models_list_path(original_uri.path()) {
         let settings = state.proxy_model_settings.read().await.clone();
         if settings.hijack_enabled {
@@ -6901,26 +6929,6 @@ async fn proxy_openai_v1_inner(
             StatusCode::PAYLOAD_TOO_LARGE,
             format!("request body exceeds {body_limit} bytes"),
         ));
-    }
-
-    let pool_route_active = request_matches_pool_route(state.as_ref(), &headers)
-        .await
-        .map_err(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to resolve pool routing settings: {err}"),
-            )
-        })?;
-    if pool_route_active {
-        return proxy_openai_v1_via_pool(
-            state,
-            proxy_request_id,
-            method,
-            target_url,
-            headers,
-            body,
-        )
-        .await;
     }
 
     let handshake_timeout = state.config.proxy_upstream_handshake_timeout(None);
@@ -7319,6 +7327,7 @@ async fn proxy_openai_v1_capture_target(
     );
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let requester_ip = extract_requester_ip(&headers, peer_ip);
+    let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let pool_route_active = request_matches_pool_route(state.as_ref(), &headers)
         .await
@@ -7399,6 +7408,7 @@ async fn proxy_openai_v1_capture_target(
                     } else {
                         INVOCATION_ROUTE_MODE_FORWARD_PROXY
                     },
+                    header_sticky_key.as_deref(),
                     header_prompt_cache_key.as_deref(),
                     None,
                     None,
@@ -7446,6 +7456,10 @@ async fn proxy_openai_v1_capture_target(
         .prompt_cache_key
         .clone()
         .or_else(|| header_prompt_cache_key.clone());
+    let sticky_key = request_info
+        .sticky_key
+        .clone()
+        .or_else(|| header_sticky_key.clone());
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let req_raw = store_raw_payload_file(&state.config, &invoke_id, "request", &upstream_body);
     let upstream_body_bytes = Bytes::from(upstream_body);
@@ -7474,7 +7488,7 @@ async fn proxy_openai_v1_capture_target(
             &upstream_headers,
             Some(upstream_body_bytes),
             handshake_timeout,
-            prompt_cache_key.as_deref(),
+            sticky_key.as_deref(),
         )
         .await
         {
@@ -7527,6 +7541,7 @@ async fn proxy_openai_v1_capture_target(
                         requester_ip.as_deref(),
                         INVOCATION_UPSTREAM_SCOPE_INTERNAL,
                         INVOCATION_ROUTE_MODE_POOL,
+                        sticky_key.as_deref(),
                         prompt_cache_key.as_deref(),
                         err.account.as_ref().map(|account| account.account_id),
                         err.account
@@ -7633,6 +7648,7 @@ async fn proxy_openai_v1_capture_target(
                         requester_ip.as_deref(),
                         INVOCATION_UPSTREAM_SCOPE_EXTERNAL,
                         INVOCATION_ROUTE_MODE_FORWARD_PROXY,
+                        sticky_key.as_deref(),
                         prompt_cache_key.as_deref(),
                         None,
                         None,
@@ -7731,6 +7747,7 @@ async fn proxy_openai_v1_capture_target(
                     } else {
                         INVOCATION_ROUTE_MODE_FORWARD_PROXY
                     },
+                    sticky_key.as_deref(),
                     prompt_cache_key.as_deref(),
                     pool_account.as_ref().map(|account| account.account_id),
                     pool_account
@@ -7799,6 +7816,7 @@ async fn proxy_openai_v1_capture_target(
     let occurred_at_for_task = occurred_at.clone();
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let requester_ip_for_task = requester_ip.clone();
+    let sticky_key_for_task = sticky_key.clone();
     let prompt_cache_key_for_task = prompt_cache_key.clone();
     let selected_proxy_for_task = selected_proxy.clone();
     let pool_account_for_task = pool_account.clone();
@@ -7973,7 +7991,7 @@ async fn proxy_openai_v1_capture_target(
                     record_pool_route_success(
                         &state_for_task.pool,
                         account.account_id,
-                        prompt_cache_key_for_task.as_deref(),
+                        sticky_key_for_task.as_deref(),
                     )
                     .await
                 } else if had_stream_error {
@@ -7984,7 +8002,7 @@ async fn proxy_openai_v1_capture_target(
                     record_pool_route_transport_failure(
                         &state_for_task.pool,
                         account.account_id,
-                        prompt_cache_key_for_task.as_deref(),
+                        sticky_key_for_task.as_deref(),
                         &route_message,
                     )
                     .await
@@ -7997,7 +8015,7 @@ async fn proxy_openai_v1_capture_target(
                         &state_for_task.pool,
                         account.account_id,
                         &account.kind,
-                        prompt_cache_key_for_task.as_deref(),
+                        sticky_key_for_task.as_deref(),
                         upstream_status,
                         &route_message,
                     )
@@ -8043,6 +8061,7 @@ async fn proxy_openai_v1_capture_target(
             } else {
                 INVOCATION_ROUTE_MODE_FORWARD_PROXY
             },
+            sticky_key_for_task.as_deref(),
             prompt_cache_key_for_task.as_deref(),
             pool_account_for_task
                 .as_ref()
@@ -8207,6 +8226,7 @@ fn prepare_target_request_body(
 ) -> (Vec<u8>, RequestCaptureInfo, bool) {
     let mut info = RequestCaptureInfo {
         model: None,
+        sticky_key: None,
         prompt_cache_key: None,
         requested_service_tier: None,
         reasoning_effort: None,
@@ -8230,6 +8250,7 @@ fn prepare_target_request_body(
         .get("model")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    info.sticky_key = extract_sticky_key_from_request_body(&value);
     info.prompt_cache_key = extract_prompt_cache_key_from_request_body(&value);
     info.reasoning_effort = extract_reasoning_effort_from_request_body(target, &value);
     info.is_stream = value
@@ -8289,8 +8310,8 @@ fn proxy_upstream_handshake_timeout_for_capture_target(
     }
 }
 
-fn extract_prompt_cache_key_from_request_body(value: &Value) -> Option<String> {
-    const PROMPT_CACHE_KEY_POINTERS: &[&str] = &[
+fn extract_sticky_key_from_request_body(value: &Value) -> Option<String> {
+    const STICKY_KEY_POINTERS: &[&str] = &[
         "/metadata/sticky_key",
         "/metadata/stickyKey",
         "/metadata/prompt_cache_key",
@@ -8301,7 +8322,24 @@ fn extract_prompt_cache_key_from_request_body(value: &Value) -> Option<String> {
         "/promptCacheKey",
     ];
 
-    for pointer in PROMPT_CACHE_KEY_POINTERS {
+    for pointer in STICKY_KEY_POINTERS {
+        if let Some(sticky_key) = value.pointer(pointer).and_then(|v| v.as_str()) {
+            let normalized = sticky_key.trim();
+            if !normalized.is_empty() {
+                return Some(normalized.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_prompt_cache_key_from_request_body(value: &Value) -> Option<String> {
+    for pointer in [
+        "/metadata/prompt_cache_key",
+        "/metadata/promptCacheKey",
+        "/prompt_cache_key",
+        "/promptCacheKey",
+    ] {
         if let Some(prompt_cache_key) = value.pointer(pointer).and_then(|v| v.as_str()) {
             let normalized = prompt_cache_key.trim();
             if !normalized.is_empty() {
@@ -8817,6 +8855,7 @@ fn build_proxy_payload_summary(
     upstream_scope: &str,
     route_mode: &str,
     sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<&str>,
     service_tier: Option<&str>,
@@ -8842,7 +8881,7 @@ fn build_proxy_payload_summary(
         "upstreamScope": upstream_scope,
         "routeMode": route_mode,
         "stickyKey": sticky_key,
-        "promptCacheKey": sticky_key,
+        "promptCacheKey": prompt_cache_key,
         "upstreamAccountId": upstream_account_id,
         "upstreamAccountName": upstream_account_name,
         "serviceTier": service_tier,
@@ -11745,10 +11784,31 @@ fn extract_requester_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>) -> Option<
     peer_ip.map(|ip| ip.to_string())
 }
 
-fn extract_prompt_cache_key_from_headers(headers: &HeaderMap) -> Option<String> {
+fn extract_sticky_key_from_headers(headers: &HeaderMap) -> Option<String> {
     for header_name in [
         "x-sticky-key",
         "sticky-key",
+        "x-prompt-cache-key",
+        "prompt-cache-key",
+        "x-openai-prompt-cache-key",
+    ] {
+        if let Some(raw_value) = header_value_as_str(headers, header_name) {
+            let candidate = raw_value
+                .split(',')
+                .next()
+                .map(str::trim)
+                .unwrap_or(raw_value.trim())
+                .trim_matches('"');
+            if !candidate.is_empty() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_prompt_cache_key_from_headers(headers: &HeaderMap) -> Option<String> {
+    for header_name in [
         "x-prompt-cache-key",
         "prompt-cache-key",
         "x-openai-prompt-cache-key",
