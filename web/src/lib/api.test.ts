@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  fetchInvocationRecords,
   fetchForwardProxyLiveStats,
   fetchSettings,
   fetchSummary,
+  fetchUpstreamAccounts,
+  fetchUpstreamStickyConversations,
   updateProxySettings,
+  updatePoolRoutingSettings,
   validateForwardProxyCandidate,
 } from './api'
 
@@ -339,5 +343,121 @@ describe('proxy settings normalization', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(response.fastModeRewriteMode).toBe('force_priority')
     expect(response.upstream429MaxRetries).toBe(4)
+  })
+})
+
+describe('account pool frontend API helpers', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('adds upstreamScope to invocation records query parameters', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      expect(url).toContain('/api/invocations?')
+      expect(url).toContain('upstreamScope=internal')
+      return new Response(
+        JSON.stringify({
+          snapshotId: 1,
+          total: 0,
+          page: 1,
+          pageSize: 20,
+          records: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock as typeof fetch)
+
+    await fetchInvocationRecords({ upstreamScope: 'internal' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('normalizes routing settings from the upstream account list payload', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            routing: {
+              apiKeyConfigured: true,
+              maskedApiKey: 'pool-live••••••c0de',
+            },
+            items: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }) as typeof fetch,
+    )
+
+    const response = await fetchUpstreamAccounts()
+
+    expect(response.routing).toEqual({
+      apiKeyConfigured: true,
+      maskedApiKey: 'pool-live••••••c0de',
+    })
+  })
+
+  it('saves pool routing settings through the dedicated endpoint', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(_input)).toContain('/api/pool/routing-settings')
+      expect(init?.method).toBe('PUT')
+      expect(JSON.parse(String(init?.body))).toEqual({ apiKey: 'pool-secret' })
+      return new Response(
+        JSON.stringify({
+          apiKeyConfigured: true,
+          maskedApiKey: 'pool-live••••••cret',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock as typeof fetch)
+
+    const response = await updatePoolRoutingSettings({ apiKey: 'pool-secret' })
+
+    expect(response.apiKeyConfigured).toBe(true)
+    expect(response.maskedApiKey).toBe('pool-live••••••cret')
+  })
+
+  it('normalizes sticky key conversations for one upstream account', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            rangeStart: '2026-03-10T00:00:00Z',
+            rangeEnd: '2026-03-11T00:00:00Z',
+            conversations: [
+              {
+                stickyKey: 'sticky-001',
+                requestCount: 2,
+                totalTokens: 30,
+                totalCost: 0.12,
+                createdAt: '2026-03-10T01:00:00Z',
+                lastActivityAt: '2026-03-10T02:00:00Z',
+                last24hRequests: [
+                  {
+                    occurredAt: '2026-03-10T02:00:00Z',
+                    status: 'success',
+                    isSuccess: true,
+                    requestTokens: 30,
+                    cumulativeTokens: 30,
+                  },
+                ],
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }) as typeof fetch,
+    )
+
+    const response = await fetchUpstreamStickyConversations(101, 20)
+
+    expect(response.conversations).toHaveLength(1)
+    expect(response.conversations[0]?.stickyKey).toBe('sticky-001')
+    expect(response.conversations[0]?.last24hRequests[0]?.cumulativeTokens).toBe(30)
   })
 })

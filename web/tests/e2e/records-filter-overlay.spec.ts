@@ -175,7 +175,7 @@ type OverlayViewport = {
 }
 
 const OVERLAY_VIEWPORTS: OverlayViewport[] = [
-  { label: 'desktop', width: 1440, height: 960, overlapMarginRem: 7, minimumOverlapPx: 12 },
+  { label: 'desktop', width: 1440, height: 960, overlapMarginRem: 11, minimumOverlapPx: 12 },
   // 1279px stays below Tailwind's xl breakpoint, so Records collapses from 4 columns to 2.
   { label: 'narrow-desktop', width: 1279, height: 1500, overlapMarginRem: 18, minimumOverlapPx: 12 },
 ]
@@ -194,7 +194,13 @@ async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: Overl
   await expect(promptCacheKeyInput).toBeVisible()
   await promptCacheKeyInput.scrollIntoViewIfNeeded()
 
-  // Force an overlap scenario so the regression stays stable across layout breakpoints.
+  await promptCacheKeyInput.click()
+
+  const listbox = filtersPanel.locator('[role="listbox"]')
+  await expect(listbox).toBeVisible()
+  await expect(filtersPanel).toHaveAttribute('data-suggestions-open', 'true')
+
+  // Force an overlap scenario after the listbox opens so layout shifts do not block the click target itself.
   await page.addStyleTag({
     content: `
       [data-testid="records-summary-panel"] {
@@ -202,12 +208,7 @@ async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: Overl
       }
     `,
   })
-
-  await promptCacheKeyInput.click()
-
-  const listbox = filtersPanel.locator('[role="listbox"]')
-  await expect(listbox).toBeVisible()
-  await expect(filtersPanel).toHaveAttribute('data-suggestions-open', 'true')
+  await page.waitForTimeout(100)
 
   const overlayState = await page.evaluate(() => {
     const panel = document.querySelector('[data-testid="records-filters-panel"]') as HTMLElement | null
@@ -220,9 +221,11 @@ async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: Overl
     const panelStyles = window.getComputedStyle(panel)
     const listRect = listboxNode.getBoundingClientRect()
     const summaryRect = summary.getBoundingClientRect()
-    const overlapY = Math.min(listRect.bottom, summaryRect.bottom) - Math.max(listRect.top, summaryRect.top)
+    const overlapTop = Math.max(listRect.top, summaryRect.top)
+    const overlapBottom = Math.min(listRect.bottom, summaryRect.bottom)
+    const overlapY = overlapBottom - overlapTop
     const probeX = Math.min(listRect.right - 12, Math.max(listRect.left + 12, listRect.left + listRect.width * 0.25))
-    const probeY = summaryRect.top + Math.max(12, Math.min(overlapY / 2, 40))
+    const probeY = overlapTop + Math.max(12, Math.min(overlapY / 2, 40))
     const topNode = document.elementFromPoint(probeX, probeY) as HTMLElement | null
 
     return {

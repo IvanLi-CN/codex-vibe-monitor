@@ -9,7 +9,7 @@ const inputClassName =
 
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
-    <div data-theme="light" className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+    <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
       <div className="mx-auto w-full max-w-md">{children}</div>
     </div>
   )

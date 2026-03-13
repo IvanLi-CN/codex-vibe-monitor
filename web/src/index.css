@@ -47,7 +47,14 @@ body,
   --app-surface-bg: rgba(248, 250, 252, 0.82);
   --app-surface-border: rgba(148, 163, 184, 0.34);
   --app-surface-shadow: 0 18px 40px rgba(15, 23, 42, 0.09);
+
+  --dialog-overlay-bg: rgba(15, 23, 42, 0.16);
+  --dialog-overlay-blur: 2px;
+  --dialog-surface-bg: rgba(250, 252, 255, 0.995);
+  --dialog-surface-border: rgba(148, 163, 184, 0.46);
+  --dialog-surface-shadow: 0 32px 90px rgba(15, 23, 42, 0.16);
 }
+
 
 [data-theme='vibe-dark'] {
   color-scheme: dark;
@@ -87,7 +94,14 @@ body,
   --app-surface-bg: rgba(16, 25, 41, 0.8);
   --app-surface-border: rgba(148, 163, 184, 0.38);
   --app-surface-shadow: 0 20px 54px rgba(2, 6, 23, 0.55);
+
+  --dialog-overlay-bg: rgba(2, 6, 23, 0.58);
+  --dialog-overlay-blur: 6px;
+  --dialog-surface-bg: rgba(13, 21, 36, 0.985);
+  --dialog-surface-border: rgba(148, 163, 184, 0.36);
+  --dialog-surface-shadow: 0 36px 110px rgba(2, 6, 23, 0.62);
 }
+
 
 body {
   @apply bg-base-200 text-base-content antialiased;
@@ -155,6 +169,18 @@ body {
 @layer components {
   .app-link {
     @apply text-primary underline decoration-primary/60 underline-offset-4 transition-colors hover:text-primary/85;
+  }
+
+
+  .dialog-overlay {
+    background: var(--dialog-overlay-bg);
+    backdrop-filter: blur(var(--dialog-overlay-blur));
+  }
+
+  .dialog-surface {
+    background: var(--dialog-surface-bg);
+    border-color: var(--dialog-surface-border);
+    box-shadow: var(--dialog-surface-shadow);
   }
 
   .surface-panel {

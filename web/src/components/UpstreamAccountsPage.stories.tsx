@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { userEvent, within, expect } from 'storybook/test'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
+import { useTheme } from '../theme/context'
 import type {
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
@@ -18,6 +19,10 @@ import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 
 type StoryStore = {
   writesEnabled: boolean
+  routing: {
+    apiKeyConfigured: boolean
+    maskedApiKey?: string | null
+  }
   accounts: UpstreamAccountSummary[]
   details: Record<number, UpstreamAccountDetail>
   nextId: number
@@ -171,6 +176,10 @@ function createStore(): StoryStore {
   const apiKey = createApiKeyAccount(102)
   return {
     writesEnabled: true,
+    routing: {
+      apiKeyConfigured: true,
+      maskedApiKey: 'pool-live••••••c0de',
+    },
     accounts: [toSummary(oauth), toSummary(apiKey)],
     details: {
       [oauth.id]: oauth,
@@ -186,6 +195,157 @@ function maskApiKey(value: string) {
   if (!trimmed) return 'sk-empty••••'
   const suffix = trimmed.slice(-4)
   return `sk-live••••••${suffix}`
+}
+
+function buildStickyRequestPoints(
+  points: Array<{ occurredAt: string; requestTokens: number; status?: string; isSuccess?: boolean }>,
+) {
+  let cumulativeTokens = 0
+  return points.map((point) => {
+    cumulativeTokens += point.requestTokens
+    return {
+      occurredAt: point.occurredAt,
+      status: point.status ?? 'success',
+      isSuccess: point.isSuccess ?? true,
+      requestTokens: point.requestTokens,
+      cumulativeTokens,
+    }
+  })
+}
+
+function buildStickyConversations(accountId: number) {
+  const stickyKeys =
+    accountId === 101
+      ? [
+          {
+            stickyKey: '019ce3a1-6787-7910-b0fd-c246d6f6a901',
+            requestCount: 10,
+            totalTokens: 455_170,
+            totalCost: 0.3507,
+            createdAt: '2026-03-13T04:01:20.000Z',
+            lastActivityAt: '2026-03-13T04:03:02.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T10:15:00.000Z', requestTokens: 102_440 },
+              { occurredAt: '2026-03-12T18:20:00.000Z', requestTokens: 154_380 },
+              { occurredAt: '2026-03-13T04:03:02.000Z', requestTokens: 198_350 },
+            ]),
+          },
+          {
+            stickyKey: '019ce3a0-cf52-7740-bec5-611a0c6af442',
+            requestCount: 12,
+            totalTokens: 629_175,
+            totalCost: 0.4101,
+            createdAt: '2026-03-13T03:59:52.000Z',
+            lastActivityAt: '2026-03-13T04:06:08.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T12:10:00.000Z', requestTokens: 140_000 },
+              { occurredAt: '2026-03-12T20:45:00.000Z', requestTokens: 212_875 },
+              { occurredAt: '2026-03-13T04:06:08.000Z', requestTokens: 276_300 },
+            ]),
+          },
+          {
+            stickyKey: '019ce3a0-10a2-7c40-ba26-6f3358f44c77',
+            requestCount: 5,
+            totalTokens: 398_199,
+            totalCost: 0.7543,
+            createdAt: '2026-03-13T03:57:28.000Z',
+            lastActivityAt: '2026-03-13T04:00:52.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T09:00:00.000Z', requestTokens: 120_000 },
+              { occurredAt: '2026-03-12T21:40:00.000Z', requestTokens: 131_400 },
+              { occurredAt: '2026-03-13T04:00:52.000Z', requestTokens: 146_799 },
+            ]),
+          },
+          {
+            stickyKey: '019ce39e-4ab3-7452-9cc3-3c51ad9088c1',
+            requestCount: 23,
+            totalTokens: 1_302_244,
+            totalCost: 0.7238,
+            createdAt: '2026-03-13T03:55:36.000Z',
+            lastActivityAt: '2026-03-13T04:01:05.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T08:25:00.000Z', requestTokens: 330_000 },
+              { occurredAt: '2026-03-12T17:15:00.000Z', requestTokens: 445_120 },
+              { occurredAt: '2026-03-13T01:48:00.000Z', requestTokens: 268_624 },
+              { occurredAt: '2026-03-13T04:01:05.000Z', requestTokens: 258_500 },
+            ]),
+          },
+          {
+            stickyKey: '019ce39a-6cfa-7b90-8e96-6de7e6076b02',
+            requestCount: 20,
+            totalTokens: 1_289_447,
+            totalCost: 0.7022,
+            createdAt: '2026-03-13T03:51:19.000Z',
+            lastActivityAt: '2026-03-13T03:54:08.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T07:52:00.000Z', requestTokens: 281_000 },
+              { occurredAt: '2026-03-12T13:04:00.000Z', requestTokens: 309_447 },
+              { occurredAt: '2026-03-12T23:15:00.000Z', requestTokens: 334_000 },
+              { occurredAt: '2026-03-13T03:54:08.000Z', requestTokens: 365_000, status: 'failed', isSuccess: false },
+            ]),
+          },
+          {
+            stickyKey: '019ce397-7b0c-7240-9096-0b0e2a97d57a',
+            requestCount: 35,
+            totalTokens: 3_241_662,
+            totalCost: 1.4563,
+            createdAt: '2026-03-13T03:48:11.000Z',
+            lastActivityAt: '2026-03-13T03:56:06.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T06:18:00.000Z', requestTokens: 640_000 },
+              { occurredAt: '2026-03-12T11:42:00.000Z', requestTokens: 722_516 },
+              { occurredAt: '2026-03-12T19:36:00.000Z', requestTokens: 841_900 },
+              { occurredAt: '2026-03-13T03:56:06.000Z', requestTokens: 1_037_246 },
+            ]),
+          },
+          {
+            stickyKey: '019ce395-2299-7641-a0d6-c2ac4b6d9184',
+            requestCount: 23,
+            totalTokens: 1_455_961,
+            totalCost: 1.0577,
+            createdAt: '2026-03-13T03:45:33.000Z',
+            lastActivityAt: '2026-03-13T03:53:28.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T05:10:00.000Z', requestTokens: 340_000 },
+              { occurredAt: '2026-03-12T15:10:00.000Z', requestTokens: 462_400 },
+              { occurredAt: '2026-03-12T22:00:00.000Z', requestTokens: 299_561 },
+              { occurredAt: '2026-03-13T03:53:28.000Z', requestTokens: 354_000 },
+            ]),
+          },
+        ]
+      : [
+          {
+            stickyKey: '019ce3f1-7aa2-74b2-a762-145ec7cfe001',
+            requestCount: 8,
+            totalTokens: 122_440,
+            totalCost: 0.1184,
+            createdAt: '2026-03-13T02:44:00.000Z',
+            lastActivityAt: '2026-03-13T03:14:00.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T18:00:00.000Z', requestTokens: 28_440 },
+              { occurredAt: '2026-03-13T01:00:00.000Z', requestTokens: 44_000 },
+              { occurredAt: '2026-03-13T03:14:00.000Z', requestTokens: 50_000 },
+            ]),
+          },
+          {
+            stickyKey: '019ce3f1-7aa2-74b2-a762-145ec7cfe002',
+            requestCount: 11,
+            totalTokens: 164_920,
+            totalCost: 0.1542,
+            createdAt: '2026-03-13T02:21:00.000Z',
+            lastActivityAt: '2026-03-13T03:09:00.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T16:45:00.000Z', requestTokens: 38_120 },
+              { occurredAt: '2026-03-13T00:32:00.000Z', requestTokens: 52_400 },
+              { occurredAt: '2026-03-13T03:09:00.000Z', requestTokens: 74_400 },
+            ]),
+          },
+        ]
+  return {
+    rangeStart: '2026-03-12T04:00:00.000Z',
+    rangeEnd: '2026-03-13T04:10:00.000Z',
+    conversations: stickyKeys,
+  }
 }
 
 function jsonResponse(payload: unknown, status = 200) {
@@ -241,9 +401,20 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       if (path === '/api/pool/upstream-accounts' && method === 'GET') {
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
+          routing: clone(store.routing),
           items: store.accounts.map((item) => clone(item)),
         }
         return jsonResponse(payload)
+      }
+
+      if (path === '/api/pool/routing-settings' && method === 'PUT') {
+        const body = parseBody<{ apiKey?: string }>(init?.body, {})
+        const trimmed = body.apiKey?.trim() ?? ''
+        store.routing = {
+          apiKeyConfigured: trimmed.length > 0,
+          maskedApiKey: trimmed ? maskApiKey(trimmed) : null,
+        }
+        return jsonResponse(clone(store.routing))
       }
 
       if (path === '/api/pool/upstream-accounts/oauth/login-sessions' && method === 'POST') {
@@ -373,6 +544,12 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         return jsonResponse(clone(detail))
       }
 
+      const stickyMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/sticky-keys$/)
+      if (stickyMatch && method === 'GET') {
+        const accountId = Number(stickyMatch[1])
+        return jsonResponse(buildStickyConversations(accountId))
+      }
+
       if (detailMatch && method === 'PATCH') {
         const accountId = Number(detailMatch[1])
         const detail = store.details[accountId]
@@ -426,8 +603,17 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
 }
 
 function AccountPoolStoryRouter({ initialEntry }: { initialEntry: string }) {
+  const { themeMode } = useTheme()
+  const isDark = themeMode === 'dark'
   return (
-    <div data-theme="light" className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+    <div
+      className="min-h-screen bg-base-200 px-6 py-6 text-base-content"
+      style={{
+        backgroundImage: isDark
+          ? 'radial-gradient(circle at 10% -10%, rgba(56,189,248,0.18), transparent 36%), radial-gradient(circle at 88% 0%, rgba(45,212,191,0.16), transparent 34%), linear-gradient(180deg, #081428 0%, #10213a 62%)'
+          : 'radial-gradient(circle at 10% -10%, rgba(14,165,233,0.10), transparent 34%), radial-gradient(circle at 88% 0%, rgba(16,185,129,0.10), transparent 30%), linear-gradient(180deg, #f7fbff 0%, #e8f1fb 58%, #e1ecf8 100%)',
+      }}
+    >
       <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/account-pool" element={<AccountPoolLayout />}>
@@ -476,6 +662,21 @@ export const DetailDrawer: Story = {
     })
     await userEvent.click(openButton)
     await expect(documentScope.getByRole('dialog', { name: /Codex Pro - Tokyo/i })).toBeInTheDocument()
+  },
+}
+
+export const RoutingDialog: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const editButton = await canvas.findByRole('button', {
+      name: /编辑号池密钥|edit pool key/i,
+    })
+    await userEvent.click(editButton)
+    await expect(
+      documentScope.getByRole('dialog', { name: /编辑号池路由密钥|update pool routing key/i }),
+    ).toBeInTheDocument()
   },
 }
 

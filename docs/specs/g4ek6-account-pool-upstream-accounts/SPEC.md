@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-11
-- Last: 2026-03-11
+- Last: 2026-03-13
 
 ## 背景 / 问题陈述
 
@@ -139,10 +139,10 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   story_id_or_title: Account Pool / Pages / Upstream Accounts / Operational
   state: default
-  evidence_note: 验证上游账号列表页的表格布局、分组筛选，以及 5 小时 / 7 天窗口的使用率与下次重置时间。
+  evidence_note: 验证号池首页的账号统计、路由设置卡片、分组筛选与 5 小时 / 7 天窗口列表展示。
   image:
   ![Account pool operational page](./assets/account-pool-operational.png)
 
@@ -150,23 +150,34 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   story_id_or_title: Account Pool / Pages / Upstream Accounts / Detail Drawer
   state: drawer-open
-  evidence_note: 验证账号详情抽屉中的身份信息、登录健康度，以及 5 小时 / 7 天窗口详情卡片。
+  evidence_note: 验证账号详情抽屉中的身份信息、配额卡片，以及新增的 Sticky Key 对话表格。
   image:
-  ![Account pool detail drawer](./assets/account-pool-detail-drawer.png)
+  ![Account pool detail drawer with sticky conversations](./assets/account-pool-detail-drawer.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / Create Account
-  state: oauth-link-generated
-  evidence_note: 验证手动 OAuth 账号新增页的 tab 结构、复制授权链接动作，以及回调链接回填入口。
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Routing Dialog
+  state: dialog-open
+  evidence_note: 验证号池入口 key 的编辑弹窗，包括标题层级、输入字段、关闭动作与主次按钮关系。
   image:
-  ![Account pool manual OAuth create page](./assets/account-pool-create-oauth-ready.png)
+  ![Account pool routing dialog](./assets/account-pool-routing-dialog.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Records / RecordsPage / Default
+  state: filtered-list-default
+  evidence_note: 验证记录页新增的上游筛选位于筛选区，并与统计卡片和记录表同页联动展示。
+  image:
+  ![Records page upstream filter](./assets/records-upstream-filter.png)
 
 ## 风险 / 假设
 
@@ -178,3 +189,4 @@
 
 - 2026-03-11: 创建 spec，冻结账号管理第一阶段的范围、接口、状态机与验收口径。
 - 2026-03-11: 完成后端账号管理 / OAuth 会话 / 前端号池页面实现，并通过 Rust + Web 自动化验证与本地浏览器 smoke。
+- 2026-03-13: 刷新 Storybook 视觉证据，补充路由设置弹窗、Sticky Key 对话与记录页上游筛选展示。

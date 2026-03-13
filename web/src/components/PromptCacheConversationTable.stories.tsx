@@ -173,7 +173,7 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div data-theme="light" className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
+        <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
           <main className="mx-auto w-full max-w-[1200px] space-y-4">
             <h2 className="text-xl font-semibold">Prompt Cache 对话统计（Storybook Mock）</h2>
             <Story />

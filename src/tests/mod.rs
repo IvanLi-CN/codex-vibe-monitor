@@ -5,17 +5,17 @@ use axum::{
     body::{Body, Bytes, to_bytes},
     extract::{Query, State},
     http::{HeaderValue, Method, StatusCode, Uri, header as http_header},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{any, get, post},
 };
 use chrono::Timelike;
 use flate2::{Compression, write::GzEncoder};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::error::{DatabaseError, ErrorKind};
 use sqlx::{Connection, SqliteConnection, SqlitePool};
 use std::{
     borrow::Cow,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     ffi::OsString,
     fs,
@@ -2684,6 +2684,44 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
         )),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
+}
+
+async fn seed_pool_routing_api_key(state: &Arc<AppState>, api_key: &str) {
+    ensure_upstream_accounts_schema(&state.pool)
+        .await
+        .expect("ensure upstream account schema");
+    let payload: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "apiKey": api_key,
+    }))
+    .expect("deserialize pool routing settings request");
+    let _ = update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
+        .await
+        .expect("save pool routing api key");
+}
+
+async fn insert_test_pool_api_key_account(
+    state: &Arc<AppState>,
+    display_name: &str,
+    api_key: &str,
+) -> i64 {
+    ensure_upstream_accounts_schema(&state.pool)
+        .await
+        .expect("ensure upstream account schema");
+    let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
+        "displayName": display_name,
+        "apiKey": api_key,
+    }))
+    .expect("deserialize api key account request");
+    let Json(detail) =
+        create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
+            .await
+            .expect("insert test pool upstream account");
+    let _ = detail;
+    sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
+        .bind(display_name)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load inserted test pool upstream account id")
 }
 
 fn test_stage_timings() -> StageTimings {
@@ -6388,6 +6426,56 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_models_bypass_hijack_for_pool_route_requests() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        *settings = ProxyModelSettings {
+            hijack_enabled: true,
+            merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
+            enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+        };
+    }
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/models".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get(PROXY_MODEL_MERGE_STATUS_HEADER)
+            .is_none()
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read models body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode models payload");
+    assert_eq!(
+        extract_model_ids(&payload),
+        vec!["upstream-model-a".to_string(), "gpt-5.2-codex".to_string()]
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_retrying_models_upstream(1, Some("0")).await;
@@ -8106,6 +8194,646 @@ async fn proxy_openai_v1_e2e_http_roundtrip() {
     upstream_handle.abort();
 }
 
+#[derive(Clone)]
+struct PoolRetryUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    fail_before_success: Arc<HashMap<String, usize>>,
+}
+
+#[derive(Clone)]
+struct PoolFirstChunkRetryUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    fail_before_success: Arc<HashMap<String, usize>>,
+}
+
+async fn pool_retry_upstream(
+    State(state): State<PoolRetryUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state.attempts.lock().expect("lock pool retry attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    if attempt
+        <= state
+            .fail_before_success
+            .get(&authorization)
+            .copied()
+            .unwrap_or(0)
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "ok": false,
+                "authorization": authorization,
+                "attempt": attempt,
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn pool_first_chunk_retry_upstream(
+    State(state): State<PoolFirstChunkRetryUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool first chunk retry attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    if attempt
+        <= state
+            .fail_before_success
+            .get(&authorization)
+            .copied()
+            .unwrap_or(0)
+    {
+        let stream = futures_util::stream::once(async {
+            Err::<Bytes, io::Error>(io::Error::other("first-chunk-boom"))
+        });
+        return Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from_stream(stream))
+            .expect("build first chunk error response");
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_pool_retry_upstream(
+    fail_before_success: &[(&str, usize)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let fail_before_success = Arc::new(
+        fail_before_success
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route("/v1/responses", post(pool_retry_upstream))
+        .with_state(PoolRetryUpstreamState {
+            attempts: attempts.clone(),
+            fail_before_success,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool retry upstream");
+    let addr = listener.local_addr().expect("pool retry upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_first_chunk_retry_upstream(
+    fail_before_success: &[(&str, usize)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let fail_before_success = Arc::new(
+        fail_before_success
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route("/v1/responses", post(pool_first_chunk_retry_upstream))
+        .with_state(PoolFirstChunkRetryUpstreamState {
+            attempts: attempts.clone(),
+            fail_before_success,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool first chunk retry upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool first chunk retry upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool first chunk retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn load_test_sticky_route_account_id(pool: &SqlitePool, sticky_key: &str) -> Option<i64> {
+    sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
+        .bind(sticky_key)
+        .fetch_optional(pool)
+        .await
+        .expect("load test sticky route")
+}
+
+async fn wait_for_test_sticky_route_account_id(pool: &SqlitePool, sticky_key: &str) -> Option<i64> {
+    for _ in 0..10 {
+        if let Some(account_id) = load_test_sticky_route_account_id(pool, sticky_key).await {
+            return Some(account_id);
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    None
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_defers_sticky_binding_until_success() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let account = resolve_pool_account_for_request(state.as_ref(), Some("sticky-001"), &[])
+        .await
+        .expect("resolve pool account")
+        .expect("pool account should resolve");
+    assert_eq!(account.account_id, account_id);
+    assert!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-001")
+            .await
+            .is_none(),
+        "sticky binding should not move before request success"
+    );
+
+    record_pool_route_success(&state.pool, account.account_id, Some("sticky-001"))
+        .await
+        .expect("record route success");
+
+    assert_eq!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-001").await,
+        Some(account_id)
+    );
+}
+
+#[tokio::test]
+async fn pool_route_retries_same_account_before_switching() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 2)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+    assert_eq!(payload["attempt"], 3);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+    drop(attempts);
+
+    let route_account_id = wait_for_test_sticky_route_account_id(&state.pool, "sticky-001")
+        .await
+        .expect("sticky route should be rebound after success");
+    assert_eq!(route_account_id, primary_id);
+    assert_ne!(route_account_id, secondary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_switches_accounts_after_same_account_retries_are_exhausted() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 8)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-002"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    drop(attempts);
+
+    let primary_status: String =
+        sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(primary_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load primary status");
+    assert_eq!(primary_status, "active");
+    assert_eq!(
+        wait_for_test_sticky_route_account_id(&state.pool, "sticky-002").await,
+        Some(secondary_id)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_retries_first_chunk_failure_before_switching() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_first_chunk_retry_upstream(&[("Bearer upstream-primary", 2)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-003"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+    assert_eq!(payload["attempt"], 3);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+    drop(attempts);
+
+    let route_account_id = wait_for_test_sticky_route_account_id(&state.pool, "sticky-003")
+        .await
+        .expect("sticky route should remain on the recovered account");
+    assert_eq!(route_account_id, primary_id);
+    assert_ne!(route_account_id, secondary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_switches_accounts_after_first_chunk_failures_are_exhausted() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_first_chunk_retry_upstream(&[("Bearer upstream-primary", 8)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-004"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    drop(attempts);
+
+    let primary_status: String =
+        sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(primary_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load primary status");
+    assert_eq!(primary_status, "active");
+    assert_eq!(
+        wait_for_test_sticky_route_account_id(&state.pool, "sticky-004").await,
+        Some(secondary_id)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_single_invocation() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedRow {
+        status: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_first_chunk_retry_upstream(&[("Bearer upstream-primary", 2)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let request_payload = json!({
+        "model": "gpt-5.2-codex",
+        "stream": false,
+        "input": "hello",
+        "stickyKey": "sticky-cap-001",
+    });
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            serde_json::to_vec(&request_payload).expect("serialize capture retry request body"),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode capture retry payload");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+    assert_eq!(payload["attempt"], 3);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+    drop(attempts);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    assert_eq!(count_codex_invocations(&state.pool).await, 1);
+    assert_eq!(count_request_forward_proxy_attempts(&state.pool).await, 0);
+
+    let row = sqlx::query_as::<_, PersistedRow>(
+        r#"
+        SELECT status, payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .expect("query capture record")
+    .expect("capture record should be persisted");
+    assert_eq!(row.status.as_deref(), Some("success"));
+
+    let payload_json: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("capture payload should be present"),
+    )
+    .expect("decode capture payload");
+    assert_eq!(payload_json["upstreamScope"].as_str(), Some("internal"));
+    assert_eq!(payload_json["routeMode"].as_str(), Some("pool"));
+    assert_eq!(payload_json["stickyKey"].as_str(), Some("sticky-cap-001"));
+    assert_eq!(payload_json["upstreamAccountId"].as_i64(), Some(primary_id));
+    assert_eq!(
+        payload_json["upstreamAccountName"].as_str(),
+        Some("Primary")
+    );
+    assert_eq!(
+        wait_for_test_sticky_route_account_id(&state.pool, "sticky-cap-001").await,
+        Some(primary_id)
+    );
+    assert_ne!(primary_id, secondary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
+    let (upstream_base, _attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-500"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some("pool upstream responded with 500")
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure() {
+    #[derive(sqlx::FromRow)]
+    struct RouteStateRow {
+        status: String,
+        last_error: Option<String>,
+        consecutive_route_failures: i64,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    record_pool_route_success(&state.pool, account_id, Some("sticky-cap-logical"))
+        .await
+        .expect("seed sticky route");
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+        "stickyKey": "sticky-cap-logical"
+    }))
+    .expect("serialize request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=response_failed"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let route_state = sqlx::query_as::<_, RouteStateRow>(
+        r#"
+        SELECT status, last_error, consecutive_route_failures
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load route state");
+    assert_eq!(route_state.status, "active");
+    assert_eq!(route_state.consecutive_route_failures, 1);
+    assert!(
+        route_state
+            .last_error
+            .as_deref()
+            .is_some_and(|value| value.contains("upstream_response_failed"))
+    );
+    assert!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-cap-logical")
+            .await
+            .is_none(),
+        "logical stream failure should detach the sticky binding",
+    );
+
+    upstream_handle.abort();
+}
+
 #[tokio::test]
 async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
@@ -8180,6 +8908,152 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
 
     server_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn build_account_sticky_keys_response_keeps_attached_keys_without_recent_activity() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_sticky_routes (sticky_key, account_id, created_at, updated_at, last_seen_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("sticky-stale")
+    .bind(account_id)
+    .bind("2026-03-10 00:00:00")
+    .bind("2026-03-10 00:00:00")
+    .bind("2026-03-10 00:00:00")
+    .execute(&state.pool)
+    .await
+    .expect("insert sticky route");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("sticky-stale-invoke")
+    .bind("2026-03-10 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(123_i64)
+    .bind(0.42_f64)
+    .bind(
+        json!({
+            "stickyKey": "sticky-stale",
+            "upstreamAccountId": account_id,
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert stale sticky invocation");
+
+    let response = build_account_sticky_keys_response(&state.pool, account_id, 20)
+        .await
+        .expect("build sticky response");
+    let json = serde_json::to_value(&response).expect("serialize sticky response");
+    let conversations = json["conversations"]
+        .as_array()
+        .expect("sticky conversations array");
+    assert_eq!(conversations.len(), 1);
+    let conversation = &conversations[0];
+    assert_eq!(conversation["stickyKey"].as_str(), Some("sticky-stale"));
+    assert_eq!(conversation["requestCount"].as_i64(), Some(1));
+    assert_eq!(conversation["totalTokens"].as_i64(), Some(123));
+    assert_eq!(
+        conversation["last24hRequests"].as_array().map(Vec::len),
+        Some(0)
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, payload) in [
+        (
+            "sticky-only",
+            json!({
+                "stickyKey": "sticky-only",
+                "upstreamScope": "internal",
+                "routeMode": "pool"
+            }),
+        ),
+        (
+            "prompt-cache",
+            json!({
+                "promptCacheKey": "pck-real",
+                "upstreamScope": "external"
+            }),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            (Utc::now() - ChronoDuration::minutes(5))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10_i64)
+        .bind(0.01_f64)
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert prompt cache test invocation");
+    }
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery { limit: Some(20) }),
+    )
+    .await
+    .expect("prompt cache conversations should succeed");
+    let keys = response
+        .conversations
+        .iter()
+        .map(|item| item.prompt_cache_key.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(keys, vec!["pck-real".to_string()]);
+
+    let Json(list_response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            limit: Some(20),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list invocations should succeed");
+    let sticky_record = list_response
+        .records
+        .into_iter()
+        .find(|record| record.invoke_id == "sticky-only")
+        .expect("sticky-only record should exist");
+    assert!(sticky_record.prompt_cache_key.is_none());
 }
 
 #[tokio::test]
@@ -8466,6 +9340,28 @@ fn prepare_target_request_body_extracts_prompt_cache_key_from_metadata() {
     );
 
     assert_eq!(info.prompt_cache_key.as_deref(), Some("pck-from-body"));
+}
+
+#[test]
+fn prepare_target_request_body_extracts_sticky_key_aliases_from_metadata() {
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "stream": true,
+        "metadata": {
+            "sticky_key": "sticky-from-body"
+        }
+    }))
+    .expect("serialize request body");
+
+    let (_rewritten, info, _did_rewrite) = prepare_target_request_body(
+        ProxyCaptureTarget::Responses,
+        body,
+        true,
+        DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
+    );
+
+    assert_eq!(info.sticky_key.as_deref(), Some("sticky-from-body"));
+    assert_eq!(info.prompt_cache_key, None);
 }
 
 #[test]
@@ -8763,6 +9659,28 @@ fn extract_prompt_cache_key_from_headers_reads_whitelist_keys() {
     headers.insert(
         HeaderName::from_static("x-prompt-cache-key"),
         HeaderValue::from_static("pck-from-header"),
+    );
+    assert_eq!(
+        extract_prompt_cache_key_from_headers(&headers).as_deref(),
+        Some("pck-from-header")
+    );
+}
+
+#[test]
+fn extract_sticky_key_from_headers_accepts_sticky_and_prompt_cache_aliases() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("x-prompt-cache-key"),
+        HeaderValue::from_static("pck-from-header"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-sticky-key"),
+        HeaderValue::from_static("sticky-from-header"),
+    );
+
+    assert_eq!(
+        extract_sticky_key_from_headers(&headers).as_deref(),
+        Some("sticky-from-header")
     );
     assert_eq!(
         extract_prompt_cache_key_from_headers(&headers).as_deref(),
@@ -9503,6 +10421,115 @@ async fn list_invocations_projects_payload_context_fields() {
     assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
     assert_eq!(record.proxy_weight_delta, Some(-0.68));
     assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[tokio::test]
+async fn invocation_queries_filter_upstream_scope_and_treat_legacy_rows_as_external() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, model, payload) in [
+        (
+            "scope-internal",
+            "model-internal",
+            Some(json!({
+                "upstreamScope": "internal",
+                "routeMode": "pool",
+                "stickyKey": "sticky-int-1",
+                "upstreamAccountId": 7,
+                "upstreamAccountName": "pool-account-a"
+            })),
+        ),
+        (
+            "scope-external",
+            "model-external",
+            Some(json!({
+                "upstreamScope": "external",
+                "routeMode": "forward_proxy",
+                "proxyDisplayName": "proxy-a"
+            })),
+        ),
+        (
+            "scope-legacy",
+            "model-legacy",
+            Some(json!({
+                "proxyDisplayName": "proxy-b"
+            })),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                model,
+                payload,
+                status,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-11 10:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(model)
+        .bind(payload.map(|value| value.to_string()))
+        .bind("success")
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    let Json(internal_list) = list_invocations(
+        State(state.clone()),
+        Query(ListQuery {
+            upstream_scope: Some("internal".to_string()),
+            page: Some(1),
+            page_size: Some(20),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("internal scope query should succeed");
+    assert_eq!(internal_list.total, 1);
+    assert_eq!(internal_list.records[0].invoke_id, "scope-internal");
+    assert_eq!(internal_list.records[0].prompt_cache_key, None);
+
+    let Json(external_summary) = fetch_invocation_summary(
+        State(state.clone()),
+        Query(ListQuery {
+            upstream_scope: Some("external".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("external scope summary should succeed");
+    assert_eq!(external_summary.total_count, 2);
+    assert_eq!(external_summary.success_count, 2);
+
+    let Json(internal_suggestions) = fetch_invocation_suggestions(
+        State(state),
+        Query(ListQuery {
+            upstream_scope: Some("internal".to_string()),
+            suggest_field: Some("model".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("internal scope suggestions should succeed");
+
+    let values = internal_suggestions
+        .model
+        .items
+        .iter()
+        .map(|item| item.value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(values, vec!["model-internal"]);
 }
 
 #[tokio::test]

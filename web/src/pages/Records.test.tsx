@@ -602,4 +602,30 @@ describe('RecordsPage new data action', () => {
 
     expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull()
   })
+
+  it('updates the upstream scope draft filter from the new selector', () => {
+    const updateDraft = vi.fn()
+    mockInvocationRecords({
+      draft: {
+        ...createDefaultInvocationRecordsDraft(),
+        ...createDefaultCustomRange(),
+        upstreamScope: 'all',
+      },
+      updateDraft,
+    })
+
+    render(<RecordsPage />)
+
+    const select = host?.querySelector('select[name="upstreamScope"]')
+    if (!(select instanceof HTMLSelectElement)) {
+      throw new Error('missing upstream scope select')
+    }
+
+    act(() => {
+      select.value = 'internal'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(updateDraft).toHaveBeenCalledWith('upstreamScope', 'internal')
+  })
 })

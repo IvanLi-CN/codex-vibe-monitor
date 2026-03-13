@@ -21,7 +21,7 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div data-theme="light" className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+        <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
           <div className="mx-auto w-full max-w-4xl">
             <Story />
           </div>
