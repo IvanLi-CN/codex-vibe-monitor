@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@iconify/react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../../components/ui/alert'
@@ -6,8 +6,9 @@ import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { Spinner } from '../../components/ui/spinner'
+import { Tooltip } from '../../components/ui/tooltip'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import type { LoginSessionStatusResponse } from '../../lib/api'
@@ -23,6 +24,7 @@ type BatchOauthRow = {
   displayName: string
   groupName: string
   note: string
+  noteExpanded: boolean
   callbackUrl: string
   session: LoginSessionStatusResponse | null
   sessionHint: string | null
@@ -66,12 +68,13 @@ function parseCreateMode(search: string): CreateTab {
   return 'oauth'
 }
 
-function createBatchOauthRow(id: string): BatchOauthRow {
+function createBatchOauthRow(id: string, groupName = ''): BatchOauthRow {
   return {
     id,
     displayName: '',
-    groupName: '',
+    groupName,
     note: '',
+    noteExpanded: false,
     callbackUrl: '',
     session: null,
     sessionHint: null,
@@ -97,6 +100,15 @@ function batchRowStatusDetail(row: BatchOauthRow) {
   if (row.session?.error) return row.session.error
   if (row.session?.expiresAt) return formatDateTime(row.session.expiresAt)
   return null
+}
+
+function buildActionTooltip(title: string, description: string) {
+  return (
+    <div className="space-y-1">
+      <p className="font-semibold text-base-content">{title}</p>
+      <p className="leading-5 text-base-content/70">{description}</p>
+    </div>
+  )
 }
 
 export default function UpstreamAccountCreatePage() {
@@ -138,9 +150,14 @@ export default function UpstreamAccountCreatePage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [manualCopyOpen, setManualCopyOpen] = useState(false)
-  const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(() => [createBatchOauthRow('row-1')])
-  const batchRowIdRef = useRef(2)
+  const [batchManualCopyRowId, setBatchManualCopyRowId] = useState<string | null>(null)
+  const [batchDefaultGroupName, setBatchDefaultGroupName] = useState('')
+  const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(() =>
+    Array.from({ length: 5 }, (_, index) => createBatchOauthRow(`row-${index + 1}`)),
+  )
+  const batchRowIdRef = useRef(6)
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
+  const batchManualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
 
   const groupSuggestions = Array.from(
     new Set(
@@ -173,9 +190,17 @@ export default function UpstreamAccountCreatePage() {
     return () => window.cancelAnimationFrame(frame)
   }, [manualCopyOpen])
 
+  useEffect(() => {
+    if (!batchManualCopyRowId) return
+    const frame = window.requestAnimationFrame(() => {
+      selectAllReadonlyText(batchManualCopyFieldRef.current)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [batchManualCopyRowId])
+
   const appendBatchRow = () => {
     const nextId = `row-${batchRowIdRef.current++}`
-    setBatchRows((current) => [...current, createBatchOauthRow(nextId)])
+    setBatchRows((current) => [...current, createBatchOauthRow(nextId, batchDefaultGroupName.trim())])
   }
 
   const updateBatchRow = (rowId: string, updater: (row: BatchOauthRow) => BatchOauthRow) => {
@@ -185,8 +210,16 @@ export default function UpstreamAccountCreatePage() {
   const removeBatchRow = (rowId: string) => {
     setBatchRows((current) => {
       const remaining = current.filter((row) => row.id !== rowId)
-      return remaining.length > 0 ? remaining : [createBatchOauthRow(`row-${batchRowIdRef.current++}`)]
+      return remaining.length > 0 ? remaining : [createBatchOauthRow(`row-${batchRowIdRef.current++}`, batchDefaultGroupName.trim())]
     })
+    setBatchManualCopyRowId((current) => (current === rowId ? null : current))
+  }
+
+  const toggleBatchNoteExpanded = (rowId: string) => {
+    updateBatchRow(rowId, (row) => ({
+      ...row,
+      noteExpanded: !row.noteExpanded,
+    }))
   }
 
   const handleBatchMetadataChange = (
@@ -216,6 +249,22 @@ export default function UpstreamAccountCreatePage() {
         ...nextRow,
         actionError: field === 'callbackUrl' ? null : row.actionError,
       }
+    })
+  }
+
+
+  const handleBatchDefaultGroupChange = (value: string) => {
+    setBatchDefaultGroupName((previousDefault) => {
+      const previousTrimmed = previousDefault.trim()
+      const nextTrimmed = value.trim()
+      setBatchRows((current) =>
+        current.map((row) => {
+          if (row.busyAction || row.session?.status === 'completed') return row
+          const inheritsDefault = !row.groupName.trim() || row.groupName === previousTrimmed
+          return inheritsDefault ? { ...row, groupName: nextTrimmed } : row
+        }),
+      )
+      return value
     })
   }
 
@@ -312,6 +361,7 @@ export default function UpstreamAccountCreatePage() {
         groupName: row.groupName.trim() || undefined,
         note: row.note.trim() || undefined,
       })
+      setBatchManualCopyRowId((current) => (current === rowId ? null : current))
       updateBatchRow(rowId, (current) => ({
         ...current,
         busyAction: null,
@@ -343,6 +393,8 @@ export default function UpstreamAccountCreatePage() {
     const result = await copyText(row.session.authUrl, {
       preferExecCommand: true,
     })
+
+    setBatchManualCopyRowId(result.ok ? null : rowId)
 
     updateBatchRow(rowId, (current) => ({
       ...current,
@@ -438,6 +490,17 @@ export default function UpstreamAccountCreatePage() {
   }
 
   const oauthSessionActive = session?.status === 'pending'
+  const batchCounts = batchRows.reduce(
+    (accumulator, row) => {
+      const status = batchRowStatus(row)
+      accumulator.total += 1
+      if (status === 'completed') accumulator.completed += 1
+      else if (status === 'pending') accumulator.pending += 1
+      else accumulator.draft += 1
+      return accumulator
+    },
+    { total: 0, draft: 0, pending: 0, completed: 0 },
+  )
 
   return (
     <div className="grid gap-6">
@@ -521,21 +584,62 @@ export default function UpstreamAccountCreatePage() {
           ) : null}
 
           <Card className="border-base-300/80 bg-base-100/72">
-            <CardHeader>
-              <CardTitle>
-                {activeTab === 'oauth'
-                  ? t('accountPool.upstreamAccounts.oauth.createTitle')
-                  : activeTab === 'batchOauth'
-                    ? t('accountPool.upstreamAccounts.batchOauth.createTitle')
-                    : t('accountPool.upstreamAccounts.apiKey.createTitle')}
-              </CardTitle>
-              <CardDescription>
-                {activeTab === 'oauth'
-                  ? t('accountPool.upstreamAccounts.oauth.createDescription')
-                  : activeTab === 'batchOauth'
-                    ? t('accountPool.upstreamAccounts.batchOauth.createDescription')
-                    : t('accountPool.upstreamAccounts.apiKey.createDescription')}
-              </CardDescription>
+            <CardHeader className={cn(activeTab === 'batchOauth' && 'gap-3')}>
+              {activeTab === 'batchOauth' ? (
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <CardTitle className="shrink-0">
+                      {t('accountPool.upstreamAccounts.batchOauth.createTitle')}
+                    </CardTitle>
+                    <Tooltip
+                      content={buildActionTooltip(
+                        t('accountPool.upstreamAccounts.batchOauth.createTitle'),
+                        t('accountPool.upstreamAccounts.batchOauth.createDescription'),
+                      )}
+                    >
+                      <button
+                        type="button"
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-base-300/70 bg-base-100/72 text-base-content/55 transition hover:border-base-300 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                        aria-label={t('accountPool.upstreamAccounts.batchOauth.createDescription')}
+                      >
+                        <Icon icon="mdi:information-outline" className="h-4 w-4" aria-hidden />
+                      </button>
+                    </Tooltip>
+                  </div>
+                  <div className="flex w-full flex-wrap items-center justify-end gap-2 lg:w-auto lg:flex-nowrap lg:self-start">
+                    <UpstreamAccountGroupCombobox
+                      name="batchOauthDefaultGroupName"
+                      value={batchDefaultGroupName}
+                      suggestions={groupSuggestions}
+                      placeholder={t('accountPool.upstreamAccounts.batchOauth.defaultGroupPlaceholder')}
+                      searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                      emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                      createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                      onValueChange={handleBatchDefaultGroupChange}
+                      ariaLabel={t('accountPool.upstreamAccounts.batchOauth.defaultGroupLabel')}
+                      className="min-w-0 sm:w-[24rem]"
+                      triggerClassName="h-10 min-w-0 whitespace-nowrap rounded-lg"
+                    />
+                    <Button type="button" variant="secondary" onClick={appendBatchRow} disabled={!writesEnabled} className="h-10 shrink-0 rounded-lg">
+                      <Icon icon="mdi:playlist-plus" className="mr-2 h-4 w-4" aria-hidden />
+                      {t('accountPool.upstreamAccounts.batchOauth.actions.addRow')}
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <CardTitle>
+                    {activeTab === 'oauth'
+                      ? t('accountPool.upstreamAccounts.oauth.createTitle')
+                      : t('accountPool.upstreamAccounts.apiKey.createTitle')}
+                  </CardTitle>
+                  <CardDescription>
+                    {activeTab === 'oauth'
+                      ? t('accountPool.upstreamAccounts.oauth.createDescription')
+                      : t('accountPool.upstreamAccounts.apiKey.createDescription')}
+                  </CardDescription>
+                </>
+              )}
             </CardHeader>
             <CardContent className={cn('grid gap-4', activeTab === 'apiKey' && 'md:grid-cols-2')}>
               {activeTab === 'oauth' ? (
@@ -589,7 +693,7 @@ export default function UpstreamAccountCreatePage() {
                           disabled={busyAction === 'oauth-generate' || !writesEnabled}
                         >
                           {busyAction === 'oauth-generate' ? (
-                            <Spinner size="sm" className="mr-2" />
+                            <Icon icon="mdi:loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
                           ) : (
                             <Icon icon="mdi:link-variant-plus" className="mr-2 h-4 w-4" aria-hidden />
                           )}
@@ -662,7 +766,7 @@ export default function UpstreamAccountCreatePage() {
                       disabled={!oauthSessionActive || !oauthCallbackUrl.trim() || busyAction === 'oauth-complete' || !writesEnabled}
                     >
                       {busyAction === 'oauth-complete' ? (
-                        <Spinner size="sm" className="mr-2" />
+                        <Icon icon="mdi:loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
                       ) : (
                         <Icon icon="mdi:check-decagram-outline" className="mr-2 h-4 w-4" aria-hidden />
                       )}
@@ -672,43 +776,51 @@ export default function UpstreamAccountCreatePage() {
                 </>
               ) : activeTab === 'batchOauth' ? (
                 <>
-                  <div className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/40 p-4 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="space-y-1">
-                      <h3 className="text-sm font-semibold text-base-content">
-                        {t('accountPool.upstreamAccounts.batchOauth.tableTitle')}
-                      </h3>
-                      <p className="text-sm text-base-content/70">
-                        {t('accountPool.upstreamAccounts.batchOauth.tableDescription')}
-                      </p>
+                  <div className="space-y-3">
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-2xl border border-base-300/80 bg-base-100/78 px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/50">
+                          {t('accountPool.upstreamAccounts.batchOauth.summary.total')}
+                        </p>
+                        <p className="mt-1 text-xl font-semibold text-base-content">{batchCounts.total}</p>
+                      </div>
+                      <div className="rounded-2xl border border-base-300/80 bg-base-100/78 px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/50">
+                          {t('accountPool.upstreamAccounts.batchOauth.summary.draft')}
+                        </p>
+                        <p className="mt-1 text-xl font-semibold text-base-content">{batchCounts.draft}</p>
+                      </div>
+                      <div className="rounded-2xl border border-base-300/80 bg-base-100/78 px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/50">
+                          {t('accountPool.upstreamAccounts.batchOauth.summary.pending')}
+                        </p>
+                        <p className="mt-1 text-xl font-semibold text-base-content">{batchCounts.pending}</p>
+                      </div>
+                      <div className="rounded-2xl border border-base-300/80 bg-base-100/78 px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/50">
+                          {t('accountPool.upstreamAccounts.batchOauth.summary.completed')}
+                        </p>
+                        <p className="mt-1 text-xl font-semibold text-base-content">{batchCounts.completed}</p>
+                      </div>
                     </div>
-                    <Button type="button" variant="secondary" onClick={appendBatchRow} disabled={!writesEnabled}>
-                      <Icon icon="mdi:playlist-plus" className="mr-2 h-4 w-4" aria-hidden />
-                      {t('accountPool.upstreamAccounts.batchOauth.actions.addRow')}
-                    </Button>
-                  </div>
 
-                  <div className="overflow-hidden rounded-[1.35rem] border border-base-300/80 bg-base-100/72">
-                    <div className="overflow-x-auto">
-                      <table className="min-w-[1180px] w-full border-collapse text-sm">
-                        <thead>
-                          <tr className="border-b border-base-300/80 bg-base-100/86 text-left">
-                            <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                    <div className="overflow-hidden rounded-[1.35rem] border border-base-300/80 bg-base-100/92 shadow-sm shadow-base-300/20">
+                      <table className="w-full table-fixed text-sm">
+                        <colgroup>
+                          <col className="w-14" />
+                          <col className="w-[44%]" />
+                          <col className="w-[56%]" />
+                        </colgroup>
+                        <thead className="bg-base-100/86">
+                          <tr className="border-b border-base-300/80">
+                            <th className="px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
                               #
                             </th>
-                            <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                              {t('accountPool.upstreamAccounts.fields.displayName')}
+                            <th className="px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                              {t('accountPool.upstreamAccounts.batchOauth.tableAccountColumn')}
                             </th>
-                            <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                              {t('accountPool.upstreamAccounts.fields.groupName')}
-                            </th>
-                            <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                              {t('accountPool.upstreamAccounts.fields.note')}
-                            </th>
-                            <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                              {t('accountPool.upstreamAccounts.batchOauth.statusHeader')}
-                            </th>
-                            <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                              {t('accountPool.upstreamAccounts.batchOauth.actionsHeader')}
+                            <th className="px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+                              {t('accountPool.upstreamAccounts.batchOauth.tableFlowColumn')}
                             </th>
                           </tr>
                         </thead>
@@ -722,146 +834,227 @@ export default function UpstreamAccountCreatePage() {
                             const rowLocked = isBusy || isCompleted
                             const authUrl = row.session?.authUrl ?? ''
                             return (
-                              <Fragment key={row.id}>
-                                <tr key={`${row.id}-meta`} data-testid={`batch-oauth-row-${row.id}`} className="align-top border-b border-base-300/60 bg-base-100/92">
-                                  <td rowSpan={2} className="whitespace-nowrap px-4 py-4 align-top font-semibold text-base-content/72">
+                              <tr
+                                key={row.id}
+                                data-testid={`batch-oauth-row-${row.id}`}
+                                className="align-top border-b border-base-300/70 last:border-b-0"
+                              >
+                                <td className="px-3 py-4">
+                                  <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-full border border-base-300/80 px-2 text-sm font-semibold text-base-content/72">
                                     {index + 1}
-                                  </td>
-                                  <td className="px-4 py-4 align-top">
-                                    <label className="block min-w-[15rem] whitespace-nowrap">
-                                      <span className="sr-only">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                                  </span>
+                                </td>
+                                <td className="px-3 py-4">
+                                  <div className="grid gap-3">
+                                    <label className="field min-w-0 gap-2 whitespace-nowrap">
+                                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
                                       <Input
                                         name={`batchOauthDisplayName-${row.id}`}
                                         value={row.displayName}
                                         disabled={rowLocked}
+                                        className="min-w-0"
                                         onChange={(event) => handleBatchMetadataChange(row.id, 'displayName', event.target.value)}
                                       />
                                     </label>
-                                  </td>
-                                  <td className="px-4 py-4 align-top">
-                                    <UpstreamAccountGroupCombobox
-                                      name={`batchOauthGroupName-${row.id}`}
-                                      value={row.groupName}
-                                      suggestions={groupSuggestions}
-                                      placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
-                                      searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
-                                      emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
-                                      createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                                      onValueChange={(value) => handleBatchMetadataChange(row.id, 'groupName', value)}
-                                      disabled={rowLocked}
-                                      className="min-w-[13rem] whitespace-nowrap"
-                                      triggerClassName="whitespace-nowrap"
-                                    />
-                                  </td>
-                                  <td className="px-4 py-4 align-top">
-                                    <label className="block min-w-[16rem] whitespace-nowrap">
-                                      <span className="sr-only">{t('accountPool.upstreamAccounts.fields.note')}</span>
-                                      <Input
-                                        name={`batchOauthNote-${row.id}`}
-                                        value={row.note}
+                                    <label className="field min-w-0 gap-2 whitespace-nowrap">
+                                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
+                                      <UpstreamAccountGroupCombobox
+                                        name={`batchOauthGroupName-${row.id}`}
+                                        value={row.groupName}
+                                        suggestions={groupSuggestions}
+                                        placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                                        searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                                        emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                                        createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                                        onValueChange={(value) => handleBatchMetadataChange(row.id, 'groupName', value)}
                                         disabled={rowLocked}
-                                        onChange={(event) => handleBatchMetadataChange(row.id, 'note', event.target.value)}
+                                        className="min-w-0"
+                                        triggerClassName="min-w-0 whitespace-nowrap"
                                       />
                                     </label>
-                                  </td>
-                                  <td className="px-4 py-4 align-top">
-                                    <div className="min-w-[16rem] space-y-2">
-                                      <Badge variant={batchStatusVariant(status)}>
-                                        {t(`accountPool.upstreamAccounts.batchOauth.status.${status}`)}
-                                      </Badge>
-                                      <p className="text-xs leading-5 text-base-content/65">{statusDetail ?? t('accountPool.upstreamAccounts.batchOauth.statusDetail.draft')}</p>
-                                    </div>
-                                  </td>
-                                  <td className="px-4 py-4 align-top">
-                                    <div className="flex min-w-[17rem] flex-wrap gap-2 whitespace-nowrap">
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="secondary"
-                                        className="whitespace-nowrap"
-                                        onClick={() => void handleBatchGenerateOauthUrl(row.id)}
-                                        disabled={isBusy || isCompleted || !writesEnabled}
-                                      >
-                                        {row.busyAction === 'generate' ? (
-                                          <Spinner size="sm" className="mr-2" />
-                                        ) : (
-                                          <Icon icon="mdi:link-variant-plus" className="mr-2 h-4 w-4" aria-hidden />
-                                        )}
-                                        {isPending
-                                          ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
-                                          : t('accountPool.upstreamAccounts.actions.generateOauthUrl')}
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="secondary"
-                                        className="whitespace-nowrap"
-                                        onClick={() => void handleBatchCopyOauthUrl(row.id)}
-                                        disabled={!authUrl || isBusy}
-                                      >
-                                        <Icon icon="mdi:content-copy" className="mr-2 h-4 w-4" aria-hidden />
-                                        {t('accountPool.upstreamAccounts.actions.copyOauthUrl')}
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="ghost"
-                                        className="whitespace-nowrap"
-                                        onClick={() => removeBatchRow(row.id)}
-                                        disabled={isBusy || isCompleted}
-                                      >
-                                        <Icon icon="mdi:delete-outline" className="mr-2 h-4 w-4" aria-hidden />
-                                        {t('accountPool.upstreamAccounts.batchOauth.actions.removeRow')}
-                                      </Button>
-                                    </div>
-                                  </td>
-                                </tr>
-                                <tr key={`${row.id}-oauth`} className="border-b border-base-300/80 align-top last:border-b-0">
-                                  <td colSpan={2} className="px-4 py-4 align-top">
-                                    <label className="field gap-2 whitespace-nowrap">
-                                      <span className="field-label">{t('accountPool.upstreamAccounts.batchOauth.authUrlLabel')}</span>
-                                      <Input
-                                        readOnly
-                                        value={authUrl}
-                                        placeholder={t('accountPool.upstreamAccounts.batchOauth.authUrlPlaceholder')}
-                                        className="font-mono text-xs"
-                                        onClick={(event) => selectAllReadonlyText(event.currentTarget)}
-                                        onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
-                                      />
-                                    </label>
-                                  </td>
-                                  <td colSpan={2} className="px-4 py-4 align-top">
-                                    <label className="field gap-2 whitespace-nowrap">
+                                    {row.noteExpanded ? (
+                                      <label className="field min-w-0 gap-2 whitespace-nowrap">
+                                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
+                                        <Input
+                                          name={`batchOauthNote-${row.id}`}
+                                          value={row.note}
+                                          disabled={rowLocked}
+                                        className="min-w-0"
+                                          onChange={(event) => handleBatchMetadataChange(row.id, 'note', event.target.value)}
+                                        />
+                                      </label>
+                                    ) : null}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-4">
+                                  <div className="grid gap-3">
+                                    <label className="field min-w-0 gap-2 whitespace-nowrap">
                                       <span className="field-label">{t('accountPool.upstreamAccounts.oauth.callbackUrlLabel')}</span>
                                       <Input
                                         name={`batchOauthCallbackUrl-${row.id}`}
                                         value={row.callbackUrl}
                                         disabled={rowLocked}
                                         placeholder={t('accountPool.upstreamAccounts.oauth.callbackUrlPlaceholder')}
+                                        className="min-w-0"
                                         onChange={(event) => handleBatchMetadataChange(row.id, 'callbackUrl', event.target.value)}
                                       />
                                     </label>
-                                  </td>
-                                  <td className="px-4 py-4 align-top">
-                                    <div className="flex min-w-[17rem] items-center justify-end gap-2 whitespace-nowrap">
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        className="whitespace-nowrap"
-                                        onClick={() => void handleBatchCompleteOauth(row.id)}
-                                        disabled={!writesEnabled || isBusy || isCompleted || !isPending || !row.callbackUrl.trim()}
-                                      >
-                                        {row.busyAction === 'complete' ? (
-                                          <Spinner size="sm" className="mr-2" />
-                                        ) : (
-                                          <Icon icon="mdi:check-decagram-outline" className="mr-2 h-4 w-4" aria-hidden />
-                                        )}
-                                        {t('accountPool.upstreamAccounts.actions.completeOauth')}
-                                      </Button>
+                                    <div className="flex items-center gap-3">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <Tooltip
+                                          content={buildActionTooltip(
+                                            isPending
+                                              ? t('accountPool.upstreamAccounts.batchOauth.tooltip.regenerateTitle')
+                                              : t('accountPool.upstreamAccounts.batchOauth.tooltip.generateTitle'),
+                                            isPending
+                                              ? t('accountPool.upstreamAccounts.batchOauth.tooltip.regenerateBody')
+                                              : t('accountPool.upstreamAccounts.batchOauth.tooltip.generateBody'),
+                                          )}
+                                        >
+                                          <Button
+                                            type="button"
+                                            size="icon"
+                                            variant={isPending ? 'destructive' : 'default'}
+                                            className="h-9 w-9 shrink-0 rounded-full"
+                                            aria-label={isPending
+                                              ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
+                                              : t('accountPool.upstreamAccounts.actions.generateOauthUrl')}
+                                            onClick={() => void handleBatchGenerateOauthUrl(row.id)}
+                                            disabled={isBusy || isCompleted || !writesEnabled}
+                                          >
+                                            {row.busyAction === 'generate' ? (
+                                              <Spinner size="sm" />
+                                            ) : (
+                                              <Icon icon={isPending ? 'mdi:refresh' : 'mdi:link-variant-plus'} className="h-4 w-4" aria-hidden />
+                                            )}
+                                          </Button>
+                                        </Tooltip>
+                                        <Tooltip
+                                          content={buildActionTooltip(
+                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.copyTitle'),
+                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.copyBody'),
+                                          )}
+                                        >
+                                          <Popover
+                                            open={batchManualCopyRowId === row.id}
+                                            onOpenChange={(nextOpen) => {
+                                              setBatchManualCopyRowId(nextOpen ? row.id : null)
+                                            }}
+                                          >
+                                            <PopoverAnchor asChild>
+                                              <Button
+                                                type="button"
+                                                size="icon"
+                                                variant={authUrl ? 'default' : 'secondary'}
+                                                className="h-9 w-9 shrink-0 rounded-full"
+                                                aria-label={t('accountPool.upstreamAccounts.actions.copyOauthUrl')}
+                                                onClick={() => void handleBatchCopyOauthUrl(row.id)}
+                                                disabled={!authUrl || isBusy}
+                                              >
+                                                <Icon icon="mdi:content-copy" className="h-4 w-4" aria-hidden />
+                                              </Button>
+                                            </PopoverAnchor>
+                                            <PopoverContent
+                                              align="start"
+                                              sideOffset={10}
+                                              className="w-[min(32rem,calc(100vw-2rem))] rounded-2xl border-base-300 bg-base-100 p-4 shadow-xl"
+                                            >
+                                              <div className="space-y-3">
+                                                <div className="space-y-1">
+                                                  <p className="text-sm font-semibold text-base-content">
+                                                    {t('accountPool.upstreamAccounts.oauth.manualCopyTitle')}
+                                                  </p>
+                                                  <p className="text-sm text-base-content/65">
+                                                    {t('accountPool.upstreamAccounts.oauth.manualCopyDescription')}
+                                                  </p>
+                                                </div>
+                                                <textarea
+                                                  ref={batchManualCopyRowId === row.id ? batchManualCopyFieldRef : undefined}
+                                                  readOnly
+                                                  value={authUrl}
+                                                  className="min-h-28 w-full rounded-xl border border-base-300 bg-base-100 px-3 py-2 font-mono text-xs text-base-content shadow-sm focus-visible:outline-none"
+                                                  onClick={(event) => selectAllReadonlyText(event.currentTarget)}
+                                                  onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
+                                                />
+                                              </div>
+                                            </PopoverContent>
+                                          </Popover>
+                                        </Tooltip>
+                                        <Tooltip
+                                          content={buildActionTooltip(
+                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.noteTitle'),
+                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.noteBody'),
+                                          )}
+                                        >
+                                          <Button
+                                            type="button"
+                                            size="icon"
+                                            variant={row.noteExpanded || row.note.trim() ? 'secondary' : 'ghost'}
+                                            className="h-9 w-9 shrink-0 rounded-full"
+                                            aria-label={row.noteExpanded
+                                              ? t('accountPool.upstreamAccounts.batchOauth.actions.collapseNote')
+                                              : t('accountPool.upstreamAccounts.batchOauth.actions.expandNote')}
+                                            onClick={() => toggleBatchNoteExpanded(row.id)}
+                                          >
+                                            <Icon
+                                              icon={row.noteExpanded ? 'mdi:chevron-up' : 'mdi:note-text-outline'}
+                                              className="h-4 w-4"
+                                              aria-hidden
+                                            />
+                                          </Button>
+                                        </Tooltip>
+                                        <Tooltip
+                                          content={buildActionTooltip(
+                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle'),
+                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.completeBody'),
+                                          )}
+                                        >
+                                          <Button
+                                            type="button"
+                                            size="icon"
+                                            className="h-9 w-9 shrink-0 rounded-full"
+                                            aria-label={t('accountPool.upstreamAccounts.actions.completeOauth')}
+                                            onClick={() => void handleBatchCompleteOauth(row.id)}
+                                            disabled={!writesEnabled || isBusy || isCompleted || !isPending || !row.callbackUrl.trim()}
+                                          >
+                                            {row.busyAction === 'complete' ? (
+                                              <Spinner size="sm" />
+                                            ) : (
+                                              <Icon icon="mdi:check-bold" className="h-4 w-4" aria-hidden />
+                                            )}
+                                          </Button>
+                                        </Tooltip>
+                                      </div>
+                                      <div className="ml-auto flex shrink-0 items-center gap-2">
+                                        <Badge variant={batchStatusVariant(status)}>
+                                          {t(`accountPool.upstreamAccounts.batchOauth.status.${status}`)}
+                                        </Badge>
+                                        <Tooltip
+                                          content={buildActionTooltip(
+                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.removeTitle'),
+                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.removeBody'),
+                                          )}
+                                        >
+                                          <Button
+                                            type="button"
+                                            size="icon"
+                                            variant="destructive"
+                                            className="h-9 w-9 shrink-0 rounded-full"
+                                            aria-label={t('accountPool.upstreamAccounts.batchOauth.actions.removeRow')}
+                                            onClick={() => removeBatchRow(row.id)}
+                                            disabled={isBusy || isCompleted}
+                                          >
+                                            <Icon icon="mdi:delete-outline" className="h-4 w-4" aria-hidden />
+                                          </Button>
+                                        </Tooltip>
+                                      </div>
                                     </div>
-                                  </td>
-                                </tr>
-                              </Fragment>
+                                    <p className="text-xs leading-5 text-base-content/65">
+                                      {statusDetail ?? t('accountPool.upstreamAccounts.batchOauth.statusDetail.draft')}
+                                    </p>
+                                  </div>
+                                </td>
+                              </tr>
                             )
                           })}
                         </tbody>
@@ -871,11 +1064,6 @@ export default function UpstreamAccountCreatePage() {
 
                   <p className="text-sm text-base-content/65">{t('accountPool.upstreamAccounts.batchOauth.footerHint')}</p>
 
-                  <div className="flex flex-wrap justify-end gap-2">
-                    <Button asChild type="button" variant="ghost">
-                      <Link to="/account-pool/upstream-accounts">{t('accountPool.upstreamAccounts.actions.cancel')}</Link>
-                    </Button>
-                  </div>
                 </>
               ) : (
                 <>
@@ -947,7 +1135,7 @@ export default function UpstreamAccountCreatePage() {
                     </Button>
                     <Button type="button" onClick={() => void handleCreateApiKey()} disabled={busyAction === 'apiKey' || !writesEnabled}>
                       {busyAction === 'apiKey' ? (
-                        <Spinner size="sm" className="mr-2" />
+                        <Icon icon="mdi:loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
                       ) : (
                         <Icon icon="mdi:content-save-plus-outline" className="mr-2 h-4 w-4" aria-hidden />
                       )}

@@ -385,31 +385,17 @@ export default function UpstreamAccountsPage() {
                   {t('accountPool.upstreamAccounts.actions.refresh')}
                 </Button>
                 {writesEnabled ? (
-                  <>
-                    <Button asChild>
-                      <Link to="/account-pool/upstream-accounts/new?mode=batchOauth">
-                        <Icon icon="mdi:table-plus" className="mr-2 h-4 w-4" aria-hidden />
-                        {t('accountPool.upstreamAccounts.actions.addBatchOauth')}
-                      </Link>
-                    </Button>
-                    <Button asChild variant="secondary">
-                      <Link to="/account-pool/upstream-accounts/new">
-                        <Icon icon="mdi:plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
-                        {t('accountPool.upstreamAccounts.actions.addAccount')}
-                      </Link>
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button type="button" disabled>
-                      <Icon icon="mdi:table-plus" className="mr-2 h-4 w-4" aria-hidden />
-                      {t('accountPool.upstreamAccounts.actions.addBatchOauth')}
-                    </Button>
-                    <Button type="button" variant="secondary" disabled>
+                  <Button asChild>
+                    <Link to="/account-pool/upstream-accounts/new">
                       <Icon icon="mdi:plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
                       {t('accountPool.upstreamAccounts.actions.addAccount')}
-                    </Button>
-                  </>
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button type="button" disabled>
+                    <Icon icon="mdi:plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
+                    {t('accountPool.upstreamAccounts.actions.addAccount')}
+                  </Button>
                 )}
               </div>
             </div>

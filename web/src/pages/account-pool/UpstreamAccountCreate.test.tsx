@@ -27,6 +27,26 @@ let host: HTMLDivElement | null = null
 let root: Root | null = null
 
 beforeAll(() => {
+  class ResizeObserverMock {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  Object.defineProperty(globalThis, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: ResizeObserverMock,
+  })
+  Object.defineProperty(window, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: ResizeObserverMock,
+  })
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    writable: true,
+    value: vi.fn(),
+  })
   Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
     configurable: true,
     writable: true,
@@ -103,7 +123,9 @@ function setInputValue(selector: string, value: string) {
 
 function clickButton(matcher: RegExp) {
   const button = Array.from(host?.querySelectorAll('button') ?? []).find(
-    (candidate) => candidate instanceof HTMLButtonElement && matcher.test(candidate.textContent ?? ''),
+    (candidate) =>
+      candidate instanceof HTMLButtonElement
+      && matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || candidate.title || ''),
   )
   if (!(button instanceof HTMLButtonElement)) {
     throw new Error(`missing button: ${matcher}`)
@@ -114,9 +136,58 @@ function clickButton(matcher: RegExp) {
   return button
 }
 
+function findButton(matcher: RegExp) {
+  return Array.from(host?.querySelectorAll('button') ?? []).find(
+    (candidate) =>
+      candidate instanceof HTMLButtonElement
+      && matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || candidate.title || ''),
+  ) as HTMLButtonElement | undefined
+}
+
 function getBatchRows() {
   return host?.querySelectorAll('[data-testid^="batch-oauth-row-"]') ?? []
 }
+
+
+function setComboboxValue(nameSelector: string, value: string) {
+  const hiddenInput = host?.querySelector(nameSelector)
+  if (!(hiddenInput instanceof HTMLInputElement)) {
+    throw new Error(`missing combobox input: ${nameSelector}`)
+  }
+  const wrapper = hiddenInput.parentElement
+  const trigger = wrapper?.querySelector('button[role="combobox"]')
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error(`missing combobox trigger: ${nameSelector}`)
+  }
+  act(() => {
+    trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+
+  const searchInput = document.body.querySelector('[cmdk-input]')
+  if (!(searchInput instanceof HTMLInputElement)) {
+    throw new Error(`missing command input: ${nameSelector}`)
+  }
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+  if (!setter) {
+    throw new Error(`missing native setter for combobox: ${nameSelector}`)
+  }
+  act(() => {
+    setter.call(searchInput, value)
+    searchInput.dispatchEvent(new Event('input', { bubbles: true }))
+    searchInput.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+
+  const option = Array.from(document.body.querySelectorAll('[cmdk-item]')).find((candidate) =>
+    (candidate.textContent || '').includes(value),
+  )
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`missing combobox option: ${value}`)
+  }
+  act(() => {
+    option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
 
 function mockUpstreamAccounts(overrides: Partial<ReturnType<typeof hookMocks.useUpstreamAccounts>> = {}) {
   hookMocks.useUpstreamAccounts.mockReturnValue({
@@ -159,12 +230,12 @@ function mockUpstreamAccounts(overrides: Partial<ReturnType<typeof hookMocks.use
 }
 
 describe('UpstreamAccountCreatePage batch oauth', () => {
-  it('opens batch oauth mode from the query string with one empty row', () => {
+  it('opens batch oauth mode from the query string with five empty rows', () => {
     mockUpstreamAccounts()
     render('/account-pool/upstream-accounts/new?mode=batchOauth')
 
     expect(Array.from(host?.querySelectorAll('[role="tab"]') ?? []).some((tab) => /Batch OAuth/.test(tab.textContent ?? ''))).toBe(true)
-    expect(getBatchRows()).toHaveLength(1)
+    expect(getBatchRows()).toHaveLength(5)
     expect(host?.textContent).toContain('Batch Codex OAuth onboarding')
   })
 
@@ -192,6 +263,24 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect((displayNameInput as HTMLInputElement).value).toBe('Existing OAuth')
   })
 
+  it('applies the header default group to existing blank rows and new rows', async () => {
+    mockUpstreamAccounts()
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'prod')
+    await flushAsync()
+
+    const groupInputs = Array.from(host?.querySelectorAll('input[name^="batchOauthGroupName-"]') ?? []) as HTMLInputElement[]
+    expect(groupInputs[0]?.value).toBe('prod')
+    expect(groupInputs[4]?.value).toBe('prod')
+
+    clickButton(/Add row/i)
+    await flushAsync()
+
+    const updatedGroupInputs = Array.from(host?.querySelectorAll('input[name^="batchOauthGroupName-"]') ?? []) as HTMLInputElement[]
+    expect(updatedGroupInputs[5]?.value).toBe('prod')
+  })
+
   it('clears a pending row session when metadata changes', async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: 'login-1',
@@ -215,11 +304,12 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
       groupName: undefined,
       note: undefined,
     })
-    expect(host?.querySelector('input[value^="https://auth.openai.com/authorize"]')).toBeTruthy()
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
 
+    clickButton(/Expand note/i)
     setInputValue('input[name^="batchOauthNote-"]', 'Needs a new login')
 
-    expect(host?.querySelector('input[value^="https://auth.openai.com/authorize"]')).toBeFalsy()
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true)
     expect(host?.textContent).toContain('Metadata changed. Generate a fresh OAuth URL for this row before completing login.')
   })
 
@@ -249,7 +339,7 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     render('/account-pool/upstream-accounts/new?mode=batchOauth')
 
     clickButton(/Add row/i)
-    expect(getBatchRows()).toHaveLength(2)
+    expect(getBatchRows()).toHaveLength(6)
 
     const displayNames = host?.querySelectorAll('input[name^="batchOauthDisplayName-"]') ?? []
     const inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
@@ -264,12 +354,18 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     })
     await flushAsync()
 
-    let generateButtons = Array.from(host?.querySelectorAll('button') ?? []).filter((button) => /Generate OAuth URL/.test(button.textContent ?? ''))
+    let generateButtons = Array.from(host?.querySelectorAll('button') ?? []).filter((button) =>
+      /Generate OAuth URL/.test(button.textContent || button.getAttribute('aria-label') || button.getAttribute('title') || ''),
+    )
     act(() => {
       generateButtons[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await flushAsync()
-    generateButtons = Array.from(host?.querySelectorAll('button') ?? []).filter((button) => /Generate OAuth URL|Regenerate OAuth URL/.test(button.textContent ?? ''))
+    generateButtons = Array.from(host?.querySelectorAll('button') ?? []).filter((button) =>
+      /Generate OAuth URL|Regenerate OAuth URL/.test(
+        button.textContent || button.getAttribute('aria-label') || button.getAttribute('title') || '',
+      ),
+    )
     act(() => {
       generateButtons[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
@@ -283,7 +379,9 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     })
     await flushAsync()
 
-    const completeButtons = Array.from(host?.querySelectorAll('button') ?? []).filter((button) => /Complete OAuth login/.test(button.textContent ?? ''))
+    const completeButtons = Array.from(host?.querySelectorAll('button') ?? []).filter((button) =>
+      /Complete OAuth login/.test(button.textContent || button.getAttribute('aria-label') || button.getAttribute('title') || ''),
+    )
     act(() => {
       completeButtons[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
@@ -293,7 +391,7 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
       callbackUrl: 'http://localhost:1455/oauth/callback?code=row-one',
     })
     expect(host?.textContent).toContain('Row One is ready. Continue with the remaining rows when you are done here.')
-    expect(getBatchRows()).toHaveLength(2)
+    expect(getBatchRows()).toHaveLength(6)
     expect(navigateMock).not.toHaveBeenCalled()
   })
 })

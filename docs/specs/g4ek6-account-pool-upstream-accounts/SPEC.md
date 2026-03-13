@@ -172,6 +172,28 @@
   image:
   ![Account pool manual OAuth create page](./assets/account-pool-create-oauth-ready.png)
 
+- source_type: local_browser
+  target_program: codex-vibe-monitor local web app
+  capture_scope: browser-viewport
+  sensitive_exclusion: browser page only
+  submission_gate: approved
+  story_id_or_title: 上游账号列表页（真实运行界面）
+  state: current-local
+  evidence_note: 展示当前上游账号列表页的顶部操作区、统计卡片与列表容器布局，确认新增入口已收敛为单个按钮。
+  image:
+  ![Upstream accounts list page](./assets/upstream-accounts-list.png)
+
+- source_type: local_browser
+  target_program: codex-vibe-monitor local web app
+  capture_scope: browser-viewport
+  sensitive_exclusion: browser page only
+  submission_gate: approved
+  story_id_or_title: 批量 OAuth 创建页（真实运行界面）
+  state: current-local
+  evidence_note: 展示批量 OAuth 创建页的真实交互态：顶部默认分组控件、表格化批量录入、已生成 OAuth 链接以及回填 callback 的示例行。
+  image:
+  ![Batch OAuth create page](./assets/upstream-accounts-batch-oauth.png)
+
 ## 风险 / 假设
 
 - 风险：OpenAI/Codex usage 接口只返回百分比窗口，不提供绝对请求/额度值，因此 OAuth 页面文字展示需围绕“窗口配额百分比 + reset time”展开。
