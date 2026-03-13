@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { userEvent, within, expect } from 'storybook/test'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
+import { useTheme } from '../theme/context'
 import type {
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
@@ -602,13 +603,15 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
 }
 
 function AccountPoolStoryRouter({ initialEntry }: { initialEntry: string }) {
+  const { themeMode } = useTheme()
+  const isDark = themeMode === 'dark'
   return (
     <div
-      data-theme="vibe-dark"
       className="min-h-screen bg-base-200 px-6 py-6 text-base-content"
       style={{
-        backgroundImage:
-          'radial-gradient(circle at 10% -10%, rgba(56,189,248,0.18), transparent 36%), radial-gradient(circle at 88% 0%, rgba(45,212,191,0.16), transparent 34%), linear-gradient(180deg, #081428 0%, #10213a 62%)',
+        backgroundImage: isDark
+          ? 'radial-gradient(circle at 10% -10%, rgba(56,189,248,0.18), transparent 36%), radial-gradient(circle at 88% 0%, rgba(45,212,191,0.16), transparent 34%), linear-gradient(180deg, #081428 0%, #10213a 62%)'
+          : 'radial-gradient(circle at 10% -10%, rgba(14,165,233,0.10), transparent 34%), radial-gradient(circle at 88% 0%, rgba(16,185,129,0.10), transparent 30%), linear-gradient(180deg, #f7fbff 0%, #e8f1fb 58%, #e1ecf8 100%)',
       }}
     >
       <MemoryRouter initialEntries={[initialEntry]}>

@@ -436,7 +436,7 @@ const meta = {
             initialSettings={mockSettings}
             storageKey={`${STORYBOOK_SETTINGS_STORAGE_PREFIX}.${context.id}`}
           >
-            <div data-theme="light" className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+            <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
               <Story />
             </div>
           </StorybookSettingsMock>
