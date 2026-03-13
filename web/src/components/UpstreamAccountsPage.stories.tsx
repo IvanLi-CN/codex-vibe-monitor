@@ -196,68 +196,154 @@ function maskApiKey(value: string) {
   return `sk-live••••••${suffix}`
 }
 
+function buildStickyRequestPoints(
+  points: Array<{ occurredAt: string; requestTokens: number; status?: string; isSuccess?: boolean }>,
+) {
+  let cumulativeTokens = 0
+  return points.map((point) => {
+    cumulativeTokens += point.requestTokens
+    return {
+      occurredAt: point.occurredAt,
+      status: point.status ?? 'success',
+      isSuccess: point.isSuccess ?? true,
+      requestTokens: point.requestTokens,
+      cumulativeTokens,
+    }
+  })
+}
+
 function buildStickyConversations(accountId: number) {
-  const seedPrefix = accountId === 101 ? 'stky-prod' : 'stky-stage'
+  const stickyKeys =
+    accountId === 101
+      ? [
+          {
+            stickyKey: '019ce3a1-6787-7910-b0fd-c246d6f6a901',
+            requestCount: 10,
+            totalTokens: 455_170,
+            totalCost: 0.3507,
+            createdAt: '2026-03-13T04:01:20.000Z',
+            lastActivityAt: '2026-03-13T04:03:02.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T10:15:00.000Z', requestTokens: 102_440 },
+              { occurredAt: '2026-03-12T18:20:00.000Z', requestTokens: 154_380 },
+              { occurredAt: '2026-03-13T04:03:02.000Z', requestTokens: 198_350 },
+            ]),
+          },
+          {
+            stickyKey: '019ce3a0-cf52-7740-bec5-611a0c6af442',
+            requestCount: 12,
+            totalTokens: 629_175,
+            totalCost: 0.4101,
+            createdAt: '2026-03-13T03:59:52.000Z',
+            lastActivityAt: '2026-03-13T04:06:08.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T12:10:00.000Z', requestTokens: 140_000 },
+              { occurredAt: '2026-03-12T20:45:00.000Z', requestTokens: 212_875 },
+              { occurredAt: '2026-03-13T04:06:08.000Z', requestTokens: 276_300 },
+            ]),
+          },
+          {
+            stickyKey: '019ce3a0-10a2-7c40-ba26-6f3358f44c77',
+            requestCount: 5,
+            totalTokens: 398_199,
+            totalCost: 0.7543,
+            createdAt: '2026-03-13T03:57:28.000Z',
+            lastActivityAt: '2026-03-13T04:00:52.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T09:00:00.000Z', requestTokens: 120_000 },
+              { occurredAt: '2026-03-12T21:40:00.000Z', requestTokens: 131_400 },
+              { occurredAt: '2026-03-13T04:00:52.000Z', requestTokens: 146_799 },
+            ]),
+          },
+          {
+            stickyKey: '019ce39e-4ab3-7452-9cc3-3c51ad9088c1',
+            requestCount: 23,
+            totalTokens: 1_302_244,
+            totalCost: 0.7238,
+            createdAt: '2026-03-13T03:55:36.000Z',
+            lastActivityAt: '2026-03-13T04:01:05.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T08:25:00.000Z', requestTokens: 330_000 },
+              { occurredAt: '2026-03-12T17:15:00.000Z', requestTokens: 445_120 },
+              { occurredAt: '2026-03-13T01:48:00.000Z', requestTokens: 268_624 },
+              { occurredAt: '2026-03-13T04:01:05.000Z', requestTokens: 258_500 },
+            ]),
+          },
+          {
+            stickyKey: '019ce39a-6cfa-7b90-8e96-6de7e6076b02',
+            requestCount: 20,
+            totalTokens: 1_289_447,
+            totalCost: 0.7022,
+            createdAt: '2026-03-13T03:51:19.000Z',
+            lastActivityAt: '2026-03-13T03:54:08.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T07:52:00.000Z', requestTokens: 281_000 },
+              { occurredAt: '2026-03-12T13:04:00.000Z', requestTokens: 309_447 },
+              { occurredAt: '2026-03-12T23:15:00.000Z', requestTokens: 334_000 },
+              { occurredAt: '2026-03-13T03:54:08.000Z', requestTokens: 365_000, status: 'failed', isSuccess: false },
+            ]),
+          },
+          {
+            stickyKey: '019ce397-7b0c-7240-9096-0b0e2a97d57a',
+            requestCount: 35,
+            totalTokens: 3_241_662,
+            totalCost: 1.4563,
+            createdAt: '2026-03-13T03:48:11.000Z',
+            lastActivityAt: '2026-03-13T03:56:06.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T06:18:00.000Z', requestTokens: 640_000 },
+              { occurredAt: '2026-03-12T11:42:00.000Z', requestTokens: 722_516 },
+              { occurredAt: '2026-03-12T19:36:00.000Z', requestTokens: 841_900 },
+              { occurredAt: '2026-03-13T03:56:06.000Z', requestTokens: 1_037_246 },
+            ]),
+          },
+          {
+            stickyKey: '019ce395-2299-7641-a0d6-c2ac4b6d9184',
+            requestCount: 23,
+            totalTokens: 1_455_961,
+            totalCost: 1.0577,
+            createdAt: '2026-03-13T03:45:33.000Z',
+            lastActivityAt: '2026-03-13T03:53:28.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T05:10:00.000Z', requestTokens: 340_000 },
+              { occurredAt: '2026-03-12T15:10:00.000Z', requestTokens: 462_400 },
+              { occurredAt: '2026-03-12T22:00:00.000Z', requestTokens: 299_561 },
+              { occurredAt: '2026-03-13T03:53:28.000Z', requestTokens: 354_000 },
+            ]),
+          },
+        ]
+      : [
+          {
+            stickyKey: '019ce3f1-7aa2-74b2-a762-145ec7cfe001',
+            requestCount: 8,
+            totalTokens: 122_440,
+            totalCost: 0.1184,
+            createdAt: '2026-03-13T02:44:00.000Z',
+            lastActivityAt: '2026-03-13T03:14:00.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T18:00:00.000Z', requestTokens: 28_440 },
+              { occurredAt: '2026-03-13T01:00:00.000Z', requestTokens: 44_000 },
+              { occurredAt: '2026-03-13T03:14:00.000Z', requestTokens: 50_000 },
+            ]),
+          },
+          {
+            stickyKey: '019ce3f1-7aa2-74b2-a762-145ec7cfe002',
+            requestCount: 11,
+            totalTokens: 164_920,
+            totalCost: 0.1542,
+            createdAt: '2026-03-13T02:21:00.000Z',
+            lastActivityAt: '2026-03-13T03:09:00.000Z',
+            last24hRequests: buildStickyRequestPoints([
+              { occurredAt: '2026-03-12T16:45:00.000Z', requestTokens: 38_120 },
+              { occurredAt: '2026-03-13T00:32:00.000Z', requestTokens: 52_400 },
+              { occurredAt: '2026-03-13T03:09:00.000Z', requestTokens: 74_400 },
+            ]),
+          },
+        ]
   return {
-    rangeStart: '2026-03-10T12:30:00.000Z',
-    rangeEnd: '2026-03-11T12:30:00.000Z',
-    conversations: [
-      {
-        stickyKey: `${seedPrefix}-001`,
-        requestCount: 18,
-        totalTokens: 428_210,
-        totalCost: 0.2871,
-        createdAt: '2026-03-10T13:10:00.000Z',
-        lastActivityAt: '2026-03-11T11:58:00.000Z',
-        last24hRequests: [
-          {
-            occurredAt: '2026-03-10T16:00:00.000Z',
-            status: 'success',
-            isSuccess: true,
-            requestTokens: 12_000,
-            cumulativeTokens: 12_000,
-          },
-          {
-            occurredAt: '2026-03-11T03:00:00.000Z',
-            status: 'success',
-            isSuccess: true,
-            requestTokens: 42_000,
-            cumulativeTokens: 54_000,
-          },
-          {
-            occurredAt: '2026-03-11T10:00:00.000Z',
-            status: 'failed',
-            isSuccess: false,
-            requestTokens: 11_500,
-            cumulativeTokens: 65_500,
-          },
-        ],
-      },
-      {
-        stickyKey: `${seedPrefix}-002`,
-        requestCount: 7,
-        totalTokens: 132_800,
-        totalCost: 0.0912,
-        createdAt: '2026-03-10T19:45:00.000Z',
-        lastActivityAt: '2026-03-11T09:15:00.000Z',
-        last24hRequests: [
-          {
-            occurredAt: '2026-03-10T21:00:00.000Z',
-            status: 'success',
-            isSuccess: true,
-            requestTokens: 18_000,
-            cumulativeTokens: 18_000,
-          },
-          {
-            occurredAt: '2026-03-11T09:15:00.000Z',
-            status: 'success',
-            isSuccess: true,
-            requestTokens: 25_000,
-            cumulativeTokens: 43_000,
-          },
-        ],
-      },
-    ],
+    rangeStart: '2026-03-12T04:00:00.000Z',
+    rangeEnd: '2026-03-13T04:10:00.000Z',
+    conversations: stickyKeys,
   }
 }
 
@@ -517,7 +603,14 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
 
 function AccountPoolStoryRouter({ initialEntry }: { initialEntry: string }) {
   return (
-    <div data-theme="light" className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+    <div
+      data-theme="vibe-dark"
+      className="min-h-screen bg-base-200 px-6 py-6 text-base-content"
+      style={{
+        backgroundImage:
+          'radial-gradient(circle at 10% -10%, rgba(56,189,248,0.18), transparent 36%), radial-gradient(circle at 88% 0%, rgba(45,212,191,0.16), transparent 34%), linear-gradient(180deg, #081428 0%, #10213a 62%)',
+      }}
+    >
       <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/account-pool" element={<AccountPoolLayout />}>

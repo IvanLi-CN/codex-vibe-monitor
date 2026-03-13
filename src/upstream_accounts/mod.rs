@@ -2111,6 +2111,7 @@ async fn load_upstream_account_row(
             chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
+            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
             local_primary_limit, local_secondary_limit, local_limit_unit,
             created_at, updated_at
         FROM pool_upstream_accounts
@@ -3163,7 +3164,7 @@ pub(crate) async fn resolve_pool_account_for_request(
     {
         tried.insert(route.account_id);
         if let Some(account) = prepare_pool_account(state, &row).await? {
-            record_account_selected(&state.pool, row.id, Some(sticky_key)).await?;
+            record_account_selected(&state.pool, row.id).await?;
             return Ok(Some(account));
         }
     }
@@ -3178,7 +3179,7 @@ pub(crate) async fn resolve_pool_account_for_request(
             continue;
         }
         if let Some(account) = prepare_pool_account(state, &row).await? {
-            record_account_selected(&state.pool, row.id, sticky_key).await?;
+            record_account_selected(&state.pool, row.id).await?;
             return Ok(Some(account));
         }
     }
@@ -3626,11 +3627,7 @@ fn compare_routing_candidates(
         .then_with(|| lhs.id.cmp(&rhs.id))
 }
 
-async fn record_account_selected(
-    pool: &Pool<Sqlite>,
-    account_id: i64,
-    sticky_key: Option<&str>,
-) -> Result<()> {
+async fn record_account_selected(pool: &Pool<Sqlite>, account_id: i64) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -3644,9 +3641,6 @@ async fn record_account_selected(
     .bind(&now_iso)
     .execute(pool)
     .await?;
-    if let Some(sticky_key) = sticky_key {
-        upsert_sticky_route(pool, sticky_key, account_id, &now_iso).await?;
-    }
     Ok(())
 }
 
