@@ -97,15 +97,17 @@ export function copyTextWithExecCommand(value: string, doc?: Document, nav?: Nav
   textarea.style.whiteSpace = 'pre'
 
   doc.body.appendChild(textarea)
+  let restoreExecCommandTarget: (() => void) | void = undefined
 
   try {
-    selectExecCommandTarget(textarea, doc, nav)
+    restoreExecCommandTarget = selectExecCommandTarget(textarea, doc, nav)
     const copied = doc.execCommand('copy')
     if (!copied) {
       throw new Error('document.execCommand("copy") returned false')
     }
     return true
   } finally {
+    restoreExecCommandTarget?.()
     doc.body.removeChild(textarea)
     if (selection) {
       selection.removeAllRanges()
@@ -124,7 +126,7 @@ export function selectAllReadonlyText(target: SelectAllTextTarget | null | undef
   target.setSelectionRange?.(0, target.value.length)
 }
 
-function selectExecCommandTarget(target: HTMLTextAreaElement, doc: Document, nav?: Navigator): void {
+function selectExecCommandTarget(target: HTMLTextAreaElement, doc: Document, nav?: Navigator): (() => void) | void {
   if (requiresIOSSelectionHack(nav)) {
     const selection = doc.getSelection?.() ?? null
     const range = doc.createRange()
@@ -138,9 +140,10 @@ function selectExecCommandTarget(target: HTMLTextAreaElement, doc: Document, nav
     selection?.removeAllRanges()
     selection?.addRange(range)
     target.setSelectionRange(0, target.value.length)
-    target.contentEditable = originalContentEditable
-    target.readOnly = originalReadOnly
-    return
+    return () => {
+      target.contentEditable = originalContentEditable
+      target.readOnly = originalReadOnly
+    }
   }
 
   selectAllReadonlyText(target)
