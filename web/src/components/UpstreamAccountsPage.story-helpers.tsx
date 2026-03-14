@@ -14,6 +14,7 @@ import type {
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
+import { duplicateReasons } from './UpstreamAccountsPage.story-data'
 
 type StoryStore = {
   writesEnabled: boolean
@@ -47,7 +48,6 @@ export type StoryInitialEntry =
     }
 
 const now = '2026-03-11T12:30:00.000Z'
-export const duplicateReasons = ['sharedChatgptAccountId', 'sharedChatgptUserId'] as const
 
 function buildWindow(percent: number, durationMins: number, usedText: string, limitText: string, resetsAt: string) {
   return {
@@ -258,18 +258,6 @@ function createStore(): StoryStore {
     },
     nextId: duplicateOauth ? 104 : 103,
     sessions: {},
-  }
-}
-
-export function createPendingSession(loginId: string): LoginSessionStatusResponse {
-  return {
-    loginId,
-    status: 'pending',
-    authUrl: `https://auth.openai.com/authorize?login_id=${loginId}`,
-    redirectUri: 'http://localhost:1455/auth/callback',
-    expiresAt: '2026-03-11T13:30:00.000Z',
-    accountId: null,
-    error: null,
   }
 }
 

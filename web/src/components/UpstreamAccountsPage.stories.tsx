@@ -5,8 +5,8 @@ import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 import {
   AccountPoolStoryRouter,
   StorybookUpstreamAccountsMock,
-  duplicateReasons,
 } from './UpstreamAccountsPage.story-helpers'
+import { duplicateReasons } from './UpstreamAccountsPage.story-data'
 
 const meta = {
   title: 'Account Pool/Pages/Upstream Accounts',

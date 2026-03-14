@@ -5,8 +5,8 @@ import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCrea
 import {
   AccountPoolStoryRouter,
   StorybookUpstreamAccountsMock,
-  createPendingSession,
 } from './UpstreamAccountsPage.story-helpers'
+import { createPendingSession } from './UpstreamAccountsPage.story-data'
 
 function createCompletedSession(loginId: string, accountId: number) {
   return {
