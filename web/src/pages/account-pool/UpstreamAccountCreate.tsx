@@ -205,6 +205,25 @@ function findDisplayNameConflict(
   )
 }
 
+function invalidatePendingSingleOauthSession(
+  currentSession: LoginSessionStatusResponse | null,
+  setSession: (value: LoginSessionStatusResponse | null) => void,
+  setSessionHint: (value: string | null) => void,
+  setOauthCallbackUrl: (value: string) => void,
+  setManualCopyOpen: (value: boolean) => void,
+  setActionError: (value: string | null) => void,
+  setOauthDuplicateWarning: (value: DuplicateWarningState | null) => void,
+  regenerateRequiredLabel: string,
+) {
+  if (!currentSession || currentSession.status === 'completed') return
+  setSession(null)
+  setSessionHint(regenerateRequiredLabel)
+  setOauthCallbackUrl('')
+  setManualCopyOpen(false)
+  setActionError(null)
+  setOauthDuplicateWarning(null)
+}
+
 function applyBatchMotherDraftRules(rows: BatchOauthRow[], changedRowId: string) {
   const changedRow = rows.find((row) => row.id === changedRowId)
   if (!changedRow?.isMother) return rows
@@ -850,12 +869,29 @@ export default function UpstreamAccountCreatePage() {
     navigate(`${location.pathname}${search}`, { replace: true })
   }
 
+  const invalidateOauthSession = useCallback(() => {
+    invalidatePendingSingleOauthSession(
+      session,
+      setSession,
+      setSessionHint,
+      setOauthCallbackUrl,
+      setManualCopyOpen,
+      setActionError,
+      setOauthDuplicateWarning,
+      t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
+    )
+  }, [session, t])
+
   const notifyMotherChange = (updated: UpstreamAccountSummary) => {
     const nextItems = applyMotherUpdateToItems(items, updated)
     notifyMotherSwitches(items, nextItems)
   }
 
   const handleGenerateOauthUrl = async () => {
+    if (oauthDisplayNameConflict) {
+      setActionError(null)
+      return
+    }
     setActionError(null)
     setSessionHint(null)
     setOauthDuplicateWarning(null)
@@ -1172,6 +1208,11 @@ export default function UpstreamAccountCreatePage() {
                 <p className="text-sm opacity-90">{sessionHint ?? session.error ?? formatDateTime(session.expiresAt)}</p>
               </div>
             </Alert>
+          ) : sessionHint ? (
+            <Alert variant="warning">
+              <Icon icon="mdi:refresh-circle" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <div className="text-sm">{sessionHint}</div>
+            </Alert>
           ) : null}
 
           {!isRelinking ? (
@@ -1278,7 +1319,10 @@ export default function UpstreamAccountCreatePage() {
                         name="oauthDisplayName"
                         value={oauthDisplayName}
                         aria-invalid={oauthDisplayNameConflict != null}
-                        onChange={(event) => setOauthDisplayName(event.target.value)}
+                        onChange={(event) => {
+                          setOauthDisplayName(event.target.value)
+                          invalidateOauthSession()
+                        }}
                       />
                       {oauthDisplayNameConflict ? (
                         <FloatingFieldError
@@ -1298,7 +1342,10 @@ export default function UpstreamAccountCreatePage() {
                         searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
                         emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
                         createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                        onValueChange={setOauthGroupName}
+                        onValueChange={(value) => {
+                          setOauthGroupName(value)
+                          invalidateOauthSession()
+                        }}
                         className="min-w-0 flex-1"
                       />
                       <Button
@@ -1320,7 +1367,10 @@ export default function UpstreamAccountCreatePage() {
                     disabled={!writesEnabled}
                     label={t('accountPool.upstreamAccounts.mother.toggleLabel')}
                     description={t('accountPool.upstreamAccounts.mother.toggleDescription')}
-                    onToggle={() => setOauthIsMother((current) => !current)}
+                    onToggle={() => {
+                      setOauthIsMother((current) => !current)
+                      invalidateOauthSession()
+                    }}
                   />
                   <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
@@ -1328,7 +1378,10 @@ export default function UpstreamAccountCreatePage() {
                       className="min-h-28 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
                       name="oauthNote"
                       value={oauthNote}
-                      onChange={(event) => setOauthNote(event.target.value)}
+                      onChange={(event) => {
+                        setOauthNote(event.target.value)
+                        invalidateOauthSession()
+                      }}
                     />
                   </label>
 
@@ -1347,7 +1400,11 @@ export default function UpstreamAccountCreatePage() {
                           type="button"
                           variant="secondary"
                           onClick={() => void handleGenerateOauthUrl()}
-                          disabled={busyAction === 'oauth-generate' || !writesEnabled}
+                          disabled={
+                            busyAction === 'oauth-generate' ||
+                            !writesEnabled ||
+                            oauthDisplayNameConflict != null
+                          }
                         >
                           {busyAction === 'oauth-generate' ? (
                             <Icon icon="mdi:loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />

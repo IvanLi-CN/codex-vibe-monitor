@@ -523,20 +523,52 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
 
 describe("UpstreamAccountCreatePage display name validation", () => {
   it("blocks completing single oauth when the display name already exists", async () => {
-    mockUpstreamAccounts();
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
     render();
 
     setInputValue('input[name="oauthDisplayName"]', " existing oauth ");
     await flushAsync();
-    clickButton(/Generate OAuth URL/i);
-    await flushAsync();
-    setInputValue(
-      'textarea[name="oauthCallbackUrl"]',
-      "http://localhost:1455/oauth/callback?code=test",
-    );
-    await flushAsync();
 
     expect(host?.textContent).toContain("Display name must be unique.");
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(true);
+    expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
+    expect(beginOauthLogin).not.toHaveBeenCalled();
+  });
+
+  it("invalidates a pending single oauth session when metadata changes", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Renamed");
+    await flushAsync();
+
+    expect(host?.textContent).toContain("Generate a fresh OAuth URL");
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
     expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
   });
 

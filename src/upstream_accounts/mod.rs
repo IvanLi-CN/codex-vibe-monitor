@@ -1007,6 +1007,9 @@ pub(crate) async fn create_oauth_login_session(
     let display_name = normalize_optional_text(payload.display_name).or(preserved_display_name);
     let group_name = normalize_optional_text(payload.group_name).or(preserved_group_name);
     let note = normalize_optional_text(payload.note).or(preserved_note);
+    if let Some(display_name) = display_name.as_deref() {
+        ensure_display_name_available(&state.pool, display_name, payload.account_id).await?;
+    }
 
     let redirect_uri = build_manual_callback_redirect_uri().map_err(internal_error_tuple)?;
     let login_id = random_hex(16)?;
