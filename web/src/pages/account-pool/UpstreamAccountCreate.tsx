@@ -1056,6 +1056,7 @@ export default function UpstreamAccountCreatePage() {
   const handleBatchGenerateOauthUrl = async (rowId: string) => {
     const row = batchRows.find((item) => item.id === rowId)
     if (!row) return
+    if (row.needsRefresh) return
 
     updateBatchRow(rowId, (current) => ({
       ...current,
@@ -1868,7 +1869,7 @@ export default function UpstreamAccountCreatePage() {
                                               ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
                                               : t('accountPool.upstreamAccounts.actions.generateOauthUrl')}
                                             onClick={() => void handleBatchGenerateOauthUrl(row.id)}
-                                            disabled={isBusy || isCompleted || !writesEnabled}
+                                            disabled={isBusy || isCompleted || isRecoveredNeedsRefresh || !writesEnabled}
                                           >
                                             {row.busyAction === 'generate' ? (
                                               <Spinner size="sm" />

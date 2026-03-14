@@ -966,6 +966,18 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       "Row One is ready. Continue with the remaining rows when you are done here.",
     );
     expect(document.body.textContent).toContain("Needs refresh");
+    const generateButtons = Array.from(
+      host?.querySelectorAll("button") ?? [],
+    ).filter((button) =>
+      /Generate OAuth URL|Regenerate OAuth URL/.test(
+        button.textContent ||
+          button.getAttribute("aria-label") ||
+          button.getAttribute("title") ||
+          "",
+      ),
+    );
+    expect(generateButtons[0]).toBeInstanceOf(HTMLButtonElement);
+    expect((generateButtons[0] as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("shows duplicate warnings inline after completing a batch oauth row", async () => {
