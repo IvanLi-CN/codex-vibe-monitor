@@ -572,10 +572,10 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
 
     expect(document.body.textContent).toContain(
-      "Fresh OAuth was saved, but the upstream identity looks duplicated.",
+      "Possible upstream duplicate",
     );
     expect(document.body.textContent).toContain(
-      "Matched reasons: shared ChatGPT account id. Related account ids: 5.",
+      "Matched: shared ChatGPT account id. Related account ids: 5.",
     );
     expect(navigateMock).not.toHaveBeenCalled();
   });
@@ -614,10 +614,10 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
 
     expect(document.body.textContent).toContain(
-      "Row One was saved, but the upstream identity looks duplicated.",
+      "Possible upstream duplicate",
     );
     expect(document.body.textContent).toContain(
-      "Matched reasons: shared ChatGPT user id. Related account ids: 5.",
+      "Matched: shared ChatGPT user id. Related account ids: 5.",
     );
   });
 });

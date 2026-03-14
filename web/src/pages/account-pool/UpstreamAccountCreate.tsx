@@ -117,20 +117,22 @@ function parseAccountId(search: string): number | null {
 
 function DuplicateWarningPopover({
   duplicateWarning,
-  warningTitle,
-  warningBody,
+  summaryTitle,
+  summaryBody,
   openDetailsLabel,
+  side = "top",
 }: {
   duplicateWarning: DuplicateWarningState;
-  warningTitle: string;
-  warningBody: string;
+  summaryTitle: string;
+  summaryBody: string;
   openDetailsLabel: string;
+  side?: "top" | "right" | "bottom" | "left";
 }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
     setOpen(true);
-  }, [duplicateWarning.accountId, warningTitle, warningBody]);
+  }, [duplicateWarning.accountId, summaryTitle, summaryBody]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -139,30 +141,30 @@ function DuplicateWarningPopover({
           type="button"
           size="icon"
           variant="ghost"
-          className="h-9 w-9 shrink-0 rounded-full border border-warning/35 bg-warning/12 text-warning hover:bg-warning/18 hover:text-warning"
-          aria-label={warningTitle}
+          className="h-9 w-9 shrink-0 rounded-full border border-warning/40 bg-base-100 text-warning shadow-sm hover:border-warning/55 hover:bg-warning/10 hover:text-warning"
+          aria-label={summaryTitle}
         >
           <Icon icon="mdi:alert-circle" className="h-4 w-4" aria-hidden />
         </Button>
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        side="top"
-        sideOffset={10}
+        side={side}
+        sideOffset={12}
         onOpenAutoFocus={(event) => event.preventDefault()}
-        className="w-80 border-warning/30 bg-base-100/98 p-0 shadow-xl"
+        className="w-64 rounded-2xl border-warning/45 bg-base-100 p-0 shadow-2xl"
       >
-        <div className="space-y-3 p-4">
+        <div className="space-y-3 p-3.5">
           <div className="flex items-start gap-3">
             <div className="mt-0.5 rounded-full bg-warning/12 p-1 text-warning">
               <Icon icon="mdi:alert-circle-outline" className="h-4 w-4" aria-hidden />
             </div>
             <div className="min-w-0 space-y-1">
-              <p className="text-sm font-semibold text-warning">
-                {warningTitle}
+              <p className="text-sm font-semibold leading-5 text-warning">
+                {summaryTitle}
               </p>
-              <p className="text-xs leading-5 text-base-content/75">
-                {warningBody}
+              <p className="text-xs leading-5 text-base-content/72">
+                {summaryBody}
               </p>
             </div>
           </div>
@@ -1332,14 +1334,11 @@ export default function UpstreamAccountCreatePage() {
                     {oauthDuplicateWarning ? (
                       <DuplicateWarningPopover
                         duplicateWarning={oauthDuplicateWarning}
-                        warningTitle={t(
-                          "accountPool.upstreamAccounts.duplicate.warningTitle",
-                          {
-                            name: oauthDuplicateWarning.displayName,
-                          },
+                        summaryTitle={t(
+                          "accountPool.upstreamAccounts.duplicate.compactTitle",
                         )}
-                        warningBody={t(
-                          "accountPool.upstreamAccounts.duplicate.warningBody",
+                        summaryBody={t(
+                          "accountPool.upstreamAccounts.duplicate.compactBody",
                           {
                             reasons: formatDuplicateReasons(
                               oauthDuplicateWarning,
@@ -1351,6 +1350,7 @@ export default function UpstreamAccountCreatePage() {
                         openDetailsLabel={t(
                           "accountPool.upstreamAccounts.actions.openDetails",
                         )}
+                        side="top"
                       />
                     ) : null}
                   </div>
@@ -1806,15 +1806,11 @@ export default function UpstreamAccountCreatePage() {
                                             duplicateWarning={
                                               row.duplicateWarning
                                             }
-                                            warningTitle={t(
-                                              "accountPool.upstreamAccounts.duplicate.warningTitle",
-                                              {
-                                                name: row.duplicateWarning
-                                                  .displayName,
-                                              },
+                                            summaryTitle={t(
+                                              "accountPool.upstreamAccounts.duplicate.compactTitle",
                                             )}
-                                            warningBody={t(
-                                              "accountPool.upstreamAccounts.duplicate.warningBody",
+                                            summaryBody={t(
+                                              "accountPool.upstreamAccounts.duplicate.compactBody",
                                               {
                                                 reasons:
                                                   formatDuplicateReasons(
@@ -1829,6 +1825,7 @@ export default function UpstreamAccountCreatePage() {
                                             openDetailsLabel={t(
                                               "accountPool.upstreamAccounts.actions.openDetails",
                                             )}
+                                            side="left"
                                           />
                                         ) : null}
                                       </div>
