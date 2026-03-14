@@ -7,7 +7,7 @@ const labels = {
   remove: 'Unlink tag',
   deleteAndRemove: 'Delete and unlink',
   edit: 'Edit routing rule',
-  hoverHint: 'Hover to reveal the action button, then click it to open the menu. Touch users can long-press.',
+  hoverHint: 'Hover to reveal the in-tag action button, then click it to open the menu. Touch users can long-press.',
 }
 
 function StorySurface({ children }: { children: React.ReactNode }) {
@@ -60,7 +60,7 @@ const meta = {
     docs: {
       description: {
         component:
-          '上游账号 tag 的固有交互芯片：桌面端悬浮后显示三点按钮，点击三点再打开上下文菜单；移动端保留长按打开菜单。',
+          '上游账号 tag 的固有交互芯片：桌面端悬浮后在标签内部右侧显示三点按钮，点击三点再打开上下文菜单；移动端保留长按打开菜单。',
       },
     },
   },

@@ -44,7 +44,7 @@ const labels = {
   remove: 'Unlink tag',
   deleteAndRemove: 'Delete and unlink',
   edit: 'Edit routing rule',
-  hoverHint: 'Hover or long-press to open the menu.',
+  hoverHint: 'Hover to reveal the in-tag action button, then click it to open the menu. Touch users can long-press.',
   createTitle: 'Create tag',
   editTitle: 'Edit tag',
   dialogDescription: 'Configure the routing policy bound to this tag.',
@@ -161,7 +161,7 @@ const meta = {
     docs: {
       description: {
         component:
-          '上游账号详情与创建页共用的 tag 选择字段。已选 tag 统一通过独立的上下文菜单芯片承载悬浮/长按交互。',
+          '上游账号详情与创建页共用的 tag 选择字段。已选 tag 统一通过独立的上下文菜单芯片承载交互：悬浮后在标签内部右侧显示三点按钮，点击打开菜单；移动端可长按打开菜单。',
       },
     },
   },
