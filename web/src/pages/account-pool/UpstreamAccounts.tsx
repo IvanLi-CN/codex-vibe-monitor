@@ -27,6 +27,7 @@ import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotific
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyConversations'
 import type { UpstreamAccountDetail, UpstreamAccountSummary } from '../../lib/api'
+import { generatePoolRoutingKey } from '../../lib/poolRouting'
 import { applyMotherUpdateToItems } from '../../lib/upstreamMother'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
@@ -213,6 +214,7 @@ function RoutingSettingsDialog({
   description,
   closeLabel,
   apiKeyLabel,
+  generateLabel,
   apiKeyPlaceholder,
   cancelLabel,
   saveLabel,
@@ -220,6 +222,7 @@ function RoutingSettingsDialog({
   busy,
   writesEnabled,
   onApiKeyChange,
+  onGenerate,
   onClose,
   onSave,
 }: {
@@ -228,6 +231,7 @@ function RoutingSettingsDialog({
   description: string
   closeLabel: string
   apiKeyLabel: string
+  generateLabel: string
   apiKeyPlaceholder: string
   cancelLabel: string
   saveLabel: string
@@ -235,10 +239,12 @@ function RoutingSettingsDialog({
   busy: boolean
   writesEnabled: boolean
   onApiKeyChange: (value: string) => void
+  onGenerate: () => void
   onClose: () => void
   onSave: () => void
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const inputId = 'pool-routing-secret-input'
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
@@ -263,9 +269,18 @@ function RoutingSettingsDialog({
           <DialogCloseIcon aria-label={closeLabel} disabled={busy} />
         </div>
         <div className="space-y-4 px-6 py-6">
-          <label className="field">
-            <span className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">{apiKeyLabel}</span>
+          <div className="field">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+              <label htmlFor={inputId} className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                {apiKeyLabel}
+              </label>
+              <Button type="button" variant="outline" size="sm" onClick={onGenerate} disabled={busy || !writesEnabled}>
+                <Icon icon="mdi:auto-fix" className="mr-2 h-4 w-4" aria-hidden />
+                {generateLabel}
+              </Button>
+            </div>
             <Input
+              id={inputId}
               ref={inputRef}
               name="poolRoutingSecret"
               type="text"
@@ -280,7 +295,7 @@ function RoutingSettingsDialog({
               data-lpignore="true"
               className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono placeholder:text-base-content/58"
             />
-          </label>
+          </div>
         </div>
         <DialogFooter className="border-t border-base-300/80 px-6 py-5">
           <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
@@ -684,6 +699,7 @@ export default function UpstreamAccountsPage() {
         description={t('accountPool.upstreamAccounts.routing.dialogDescription')}
         closeLabel={t('accountPool.upstreamAccounts.routing.close')}
         apiKeyLabel={t('accountPool.upstreamAccounts.routing.apiKeyLabel')}
+        generateLabel={t('accountPool.upstreamAccounts.routing.generate')}
         apiKeyPlaceholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
         cancelLabel={t('accountPool.upstreamAccounts.actions.cancel')}
         saveLabel={t('accountPool.upstreamAccounts.routing.save')}
@@ -691,6 +707,7 @@ export default function UpstreamAccountsPage() {
         busy={busyAction === 'routing'}
         writesEnabled={writesEnabled}
         onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}
+        onGenerate={() => setRoutingDraft((current) => ({ ...current, apiKey: generatePoolRoutingKey() }))}
         onClose={() => {
           setRoutingDraft(buildRoutingDraft(routing?.maskedApiKey))
           setIsRoutingDialogOpen(false)

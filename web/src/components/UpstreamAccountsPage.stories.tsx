@@ -707,9 +707,18 @@ export const RoutingDialog: Story = {
       name: /编辑号池密钥|edit pool key/i,
     })
     await userEvent.click(editButton)
-    await expect(
-      documentScope.getByRole('dialog', { name: /编辑号池路由密钥|update pool routing key/i }),
-    ).toBeInTheDocument()
+    const dialog = documentScope.getByRole('dialog', { name: /编辑号池路由密钥|update pool routing key/i })
+    await expect(dialog).toBeInTheDocument()
+    const generateButton = within(dialog).getByRole('button', { name: /生成密钥|generate key/i })
+    await expect(generateButton).toBeInTheDocument()
+    await userEvent.click(generateButton)
+    const input = within(dialog).getByPlaceholderText(/粘贴新的号池 API Key|paste a new pool api key/i) as HTMLInputElement
+    await expect(input.value).toMatch(/^cvm-[0-9a-f]{32}$/)
+    await userEvent.click(within(dialog).getByRole('button', { name: /取消|cancel/i }))
+    await userEvent.click(await canvas.findByRole('button', { name: /编辑号池密钥|edit pool key/i }))
+    const reopenedDialog = documentScope.getByRole('dialog', { name: /编辑号池路由密钥|update pool routing key/i })
+    const reopenedInput = within(reopenedDialog).getByPlaceholderText(/粘贴新的号池 API Key|paste a new pool api key/i) as HTMLInputElement
+    await expect(reopenedInput.value).toBe('')
   },
 }
 

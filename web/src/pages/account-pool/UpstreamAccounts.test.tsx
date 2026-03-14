@@ -11,6 +11,9 @@ const hookMocks = vi.hoisted(() => ({
   useUpstreamAccounts: vi.fn(),
   useUpstreamStickyConversations: vi.fn(),
 }))
+const apiMocks = vi.hoisted(() => ({
+  updateUpstreamAccount: vi.fn().mockResolvedValue({}),
+}))
 
 vi.mock('../../hooks/useUpstreamAccounts', () => ({
   useUpstreamAccounts: hookMocks.useUpstreamAccounts,
@@ -19,6 +22,14 @@ vi.mock('../../hooks/useUpstreamAccounts', () => ({
 vi.mock('../../hooks/useUpstreamStickyConversations', () => ({
   useUpstreamStickyConversations: hookMocks.useUpstreamStickyConversations,
 }))
+
+vi.mock('../../lib/api', async () => {
+  const actual = await vi.importActual<typeof import('../../lib/api')>('../../lib/api')
+  return {
+    ...actual,
+    updateUpstreamAccount: apiMocks.updateUpstreamAccount,
+  }
+})
 
 let host: HTMLDivElement | null = null
 let root: Root | null = null
@@ -47,6 +58,7 @@ afterEach(() => {
   host = null
   root = null
   vi.clearAllMocks()
+  apiMocks.updateUpstreamAccount.mockResolvedValue({})
 })
 
 function render() {
@@ -181,5 +193,111 @@ describe('UpstreamAccountsPage mother account editing', () => {
       }),
     )
     expect(document.body.textContent).toContain('Mother account updated')
+  })
+
+  it('keeps undo available when a mother account moves across groups', async () => {
+    const saveAccount = vi.fn().mockResolvedValue({
+      id: 5,
+      kind: 'oauth_codex',
+      provider: 'codex',
+      displayName: 'Existing OAuth',
+      groupName: 'ops',
+      isMother: true,
+      status: 'active',
+      enabled: true,
+      history: [],
+      note: null,
+    })
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: 'oauth_codex',
+          provider: 'codex',
+          displayName: 'Existing OAuth',
+          groupName: 'prod',
+          isMother: true,
+          status: 'active',
+          enabled: true,
+        },
+        {
+          id: 6,
+          kind: 'oauth_codex',
+          provider: 'codex',
+          displayName: 'Ops Mother',
+          groupName: 'ops',
+          isMother: true,
+          status: 'active',
+          enabled: true,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Existing OAuth',
+        groupName: 'prod',
+        isMother: true,
+        status: 'active',
+        enabled: true,
+      },
+      detail: {
+        id: 5,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Existing OAuth',
+        groupName: 'prod',
+        isMother: true,
+        status: 'active',
+        enabled: true,
+        history: [],
+        note: null,
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      saveAccount,
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: 'pool-live••••' },
+      saveRouting: vi.fn(),
+    })
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: '', rangeEnd: '' },
+      isLoading: false,
+      error: null,
+    })
+
+    render()
+
+    clickByText(/Open details/i)
+    clickByText(/Use as mother account/i)
+    clickByText(/Save changes/i)
+    await flushAsync()
+
+    expect(document.body.textContent).toContain('Mother account updated')
+    clickByText(/Undo/i)
+    await flushAsync()
+
+    expect(apiMocks.updateUpstreamAccount).toHaveBeenNthCalledWith(
+      1,
+      5,
+      expect.objectContaining({
+        groupName: 'prod',
+        isMother: true,
+      }),
+    )
+    expect(apiMocks.updateUpstreamAccount).toHaveBeenNthCalledWith(
+      2,
+      6,
+      expect.objectContaining({
+        isMother: true,
+      }),
+    )
   })
 })
