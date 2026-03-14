@@ -1,23 +1,23 @@
-name: CI Pipeline
+name: Release
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  workflow_run:
+    workflows:
+      - CI Main
     types:
-      - opened
-      - reopened
-      - synchronize
-      - ready_for_review
-      - edited
+      - completed
+    branches:
+      - main
   workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Commit SHA on main to release or backfill
+        required: true
+        type: string
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: release-main
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -30,232 +30,15 @@ env:
   PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
-  lint:
-    name: Lint & Format Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: 1.91.0
-          components: rustfmt
-
-      - name: Cache cargo directories
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Cargo fmt check
-        run: cargo fmt --all -- --check
-
-      - name: Cargo check
-        run: cargo check --locked --all-targets --all-features
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install repo tooling
-        run: bun install --frozen-lockfile
-
-      - name: Install front-end dependencies
-        working-directory: web
-        run: bun install --frozen-lockfile
-
-      - name: Bun-first guard
-        run: bun run check:bun-first
-
-      - name: Check quality-gates scripts
-        run: |
-          python3 -m py_compile \
-            .github/scripts/metadata_gate.py \
-            .github/scripts/check_live_quality_gates.py \
-            .github/scripts/check_quality_gates_contract.py
-
-      - name: Quality-gates bootstrap contract check
-        run: |
-          python3 .github/scripts/check_quality_gates_contract.py \
-            --repo-root "$PWD" \
-            --declaration ".github/quality-gates.json" \
-            --metadata-script ".github/scripts/metadata_gate.py" \
-            --profile bootstrap
-
-      - name: Quality-gates self-tests
-        run: |
-          bash .github/scripts/test-quality-gates-contract.sh
-          bash .github/scripts/test-live-quality-gates.sh
-
-      - name: Front-end lint
-        working-directory: web
-        run: bun run lint
-
-  frontend-tests:
-    name: Front-end Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install front-end dependencies
-        working-directory: web
-        run: bun install --frozen-lockfile
-
-      - name: Run front-end Vitest suite
-        working-directory: web
-        run: bun run test
-
-  records-overlay-e2e:
-    name: Records Overlay E2E
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install front-end dependencies
-        working-directory: web
-        run: bun install --frozen-lockfile
-
-      - name: Install Playwright Chromium
-        working-directory: web
-        run: bunx playwright install --with-deps chromium
-
-      - name: Start Vite dev server
-        working-directory: web
-        run: |
-          bun run dev -- --host 127.0.0.1 --port 60080 > /tmp/codex-vibe-monitor-vite.log 2>&1 &
-          echo $! > /tmp/codex-vibe-monitor-vite.pid
-
-      - name: Wait for Vite readiness
-        run: |
-          for _ in {1..60}; do
-            if curl -fsS http://127.0.0.1:60080/ >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Vite dev server failed to start within 60 seconds."
-          cat /tmp/codex-vibe-monitor-vite.log || true
-          exit 1
-
-      - name: Run records overlay Playwright regression
-        working-directory: web
-        run: bun run test:e2e -- records-filter-overlay.spec.ts
-
-      - name: Upload Playwright diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: records-overlay-playwright-report
-          path: |
-            web/playwright-report
-            web/test-results
-          if-no-files-found: ignore
-
-      - name: Stop Vite dev server
-        if: always()
-        run: |
-          if [ -f /tmp/codex-vibe-monitor-vite.pid ]; then
-            kill "$(cat /tmp/codex-vibe-monitor-vite.pid)" || true
-          fi
-
-  unit-tests:
-    name: Backend Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: 1.91.0
-
-      - name: Cache cargo directories
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Run cargo test
-        run: cargo test --locked --all-features
-
-  build:
-    name: Build Artifacts
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    timeout-minutes: 45
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build smoke image (linux/amd64, load)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          load: true
-          platforms: ${{ env.PLATFORM_AMD64 }}
-          tags: codex-vibe-monitor:pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          build-args: |
-            APP_EFFECTIVE_VERSION=pr-${{ github.run_id }}-${{ github.run_attempt }}
-          cache-from: type=gha,scope=pr-smoke-amd64
-          cache-to: type=gha,mode=max,scope=pr-smoke-amd64
-
-      - name: Smoke test image (linux/amd64)
-        shell: bash
-        env:
-          SMOKE_TAG: codex-vibe-monitor:pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-pr-${{ github.run_id }}-${{ github.run_attempt }}
-          SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
-        run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
-
   release-meta:
     name: Release Meta (intent + version + tags)
     runs-on: ubuntu-latest
-    needs: [lint, frontend-tests, records-overlay-e2e, unit-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     permissions:
       contents: read
       pull-requests: read
     outputs:
+      target_sha: ${{ steps.target.outputs.target_sha }}
       release_enabled: ${{ steps.intent.outputs.release_enabled }}
       release_bump: ${{ steps.intent.outputs.release_bump }}
       release_channel: ${{ steps.intent.outputs.release_channel }}
@@ -273,13 +56,44 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve target commit
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            target_sha="${{ inputs.commit_sha }}"
+          else
+            target_sha="${{ github.event.workflow_run.head_sha }}"
+          fi
+
+          if [[ ! "${target_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid commit_sha: ${target_sha}" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          if ! git cat-file -e "${target_sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "${target_sha}"
+          fi
+          git cat-file -e "${target_sha}^{commit}"
+
+          if ! git merge-base --is-ancestor "${target_sha}" origin/main; then
+            echo "Commit ${target_sha} is not contained in origin/main" >&2
+            exit 1
+          fi
+
+          echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
+
       - name: Resolve release intent (PR labels)
         id: intent
         uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
         with:
           script: |
             const { owner, repo } = context.repo
-            const sha = context.sha
+            const sha = process.env.TARGET_SHA
             const allowedTypes = new Set([
               'type:patch',
               'type:minor',
@@ -288,6 +102,11 @@ jobs:
               'type:skip',
             ])
             const allowedChannels = new Set(['channel:stable', 'channel:rc'])
+
+            if (!sha) {
+              core.setFailed('Missing TARGET_SHA')
+              return
+            }
 
             const prsResp = await github.rest.repos.listPullRequestsAssociatedWithCommit({
               owner,
@@ -345,8 +164,8 @@ jobs:
             }
 
             core.setOutput('release_enabled', 'true')
-            core.setOutput('release_bump', typeLabel.split(':', 2)[1]) // patch|minor|major
-            core.setOutput('release_channel', channelLabel.split(':', 2)[1]) // stable|rc
+            core.setOutput('release_bump', typeLabel.split(':', 2)[1])
+            core.setOutput('release_channel', channelLabel.split(':', 2)[1])
 
       - name: Compute lowercase image name
         if: steps.intent.outputs.release_enabled == 'true'
@@ -357,6 +176,15 @@ jobs:
           lower="${GITHUB_REPOSITORY,,}"
           echo "IMAGE_NAME_LOWER=${lower}" >> "$GITHUB_ENV"
           echo "image_name_lower=${lower}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout target commit
+        if: steps.intent.outputs.release_enabled == 'true'
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          git checkout --detach "$TARGET_SHA"
 
       - name: Compute effective version
         if: steps.intent.outputs.release_enabled == 'true'
@@ -384,7 +212,6 @@ jobs:
           set -euo pipefail
           image="${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}"
           if [[ "${RELEASE_CHANNEL}" == "stable" ]]; then
-            # Keep version tag first to avoid "latest updated but version missing" partial state.
             echo "tags_csv=${image}:v${APP_EFFECTIVE_VERSION},${image}:latest" >> "$GITHUB_OUTPUT"
           else
             echo "tags_csv=${image}:v${APP_EFFECTIVE_VERSION}" >> "$GITHUB_OUTPUT"
@@ -416,6 +243,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-meta.outputs.target_sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -475,6 +304,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-meta.outputs.target_sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -536,6 +367,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.release-meta.outputs.target_sha }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -594,8 +426,7 @@ jobs:
             echo "[verify] ${tag}"
             for attempt in 1 2 3 4 5; do
               if raw_json="$(docker buildx imagetools inspect "${tag}" --raw 2>"/tmp/imagetools-${attempt}.err")"; then
-                if RAW_JSON="${raw_json}" python3 -c "import json, os, sys; tag = sys.argv[1]; manifest = json.loads(os.environ['RAW_JSON']); required = {p.strip() for p in os.environ.get('REQUIRED_PLATFORMS', '').split(',') if p.strip()}; platforms = {f\"{p.get('os')}/{p.get('architecture')}\" for p in [(item.get('platform') or {}) for item in manifest.get('manifests', [])] if p.get('os') and p.get('architecture')}; missing = sorted(required - platforms); missing and (_ for _ in ()).throw(SystemExit(f'missing required platforms for {tag}: {\", \".join(missing)} (detected: {sorted(platforms)})')); print(f'[verify] {tag}: detected {sorted(platforms)}')" "${tag}"
-                then
+                if RAW_JSON="${raw_json}" python3 ./.github/scripts/verify_manifest_platforms.py "${tag}"; then
                   break
                 fi
               fi
@@ -619,13 +450,14 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.release-meta.outputs.release_tag }}
           APP_EFFECTIVE_VERSION: ${{ needs.release-meta.outputs.app_effective_version }}
+          TARGET_SHA: ${{ needs.release-meta.outputs.target_sha }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           tag="${RELEASE_TAG}"
-          sha="${GITHUB_SHA}"
+          sha="${TARGET_SHA}"
 
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
             existing="$(git rev-list -n 1 "${tag}")"
@@ -635,7 +467,7 @@ jobs:
             fi
             echo "Tag ${tag} already exists and points to ${sha}."
           else
-            git tag -a "${tag}" -m "release ${APP_EFFECTIVE_VERSION}"
+            git tag -a "${tag}" "${sha}" -m "release ${APP_EFFECTIVE_VERSION}"
           fi
 
           git push origin "${tag}"
@@ -643,6 +475,7 @@ jobs:
       - name: Create GitHub Release
         uses: actions/github-script@v7
         env:
+          TARGET_SHA: ${{ needs.release-meta.outputs.target_sha }}
           RELEASE_TAG: ${{ needs.release-meta.outputs.release_tag }}
           RELEASE_PRERELEASE: ${{ needs.release-meta.outputs.release_prerelease }}
           RELEASE_PR_NUMBER: ${{ needs.release-meta.outputs.pr_number }}
@@ -658,6 +491,7 @@ jobs:
             const prTitle = process.env.RELEASE_PR_TITLE
             const bump = process.env.RELEASE_BUMP
             const channel = process.env.RELEASE_CHANNEL
+            const targetSha = process.env.TARGET_SHA
 
             if (!tag) {
               core.setFailed('Missing RELEASE_TAG')
@@ -680,7 +514,7 @@ jobs:
               prNumber ? `PR: #${prNumber} ${prTitle || ''}`.trim() : 'PR: (unknown)',
               `Channel: ${channel || '(unknown)'}`,
               `Bump: ${bump || '(unknown)'}`,
-              `Commit: ${context.sha}`,
+              `Commit: ${targetSha || '(unknown)'}`,
             ]
 
             await github.rest.repos.createRelease({

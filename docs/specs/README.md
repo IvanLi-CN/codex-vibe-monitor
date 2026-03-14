@@ -7,6 +7,7 @@
 ## Index
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                                                          |
+| f6f6e | GH Actions 防取消发布链路全面对齐                                              | 部分完成（3/4） | `f6f6e-gh-actions-release-anti-cancel/SPEC.md`           | 2026-03-14 | strict anti-cancel / split workflows / final quality-gates / local contract tests green        |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
 | thyxm | 上游账号分组共享备注                                                          | 已实现          | `thyxm-upstream-account-group-notes/SPEC.md`             | 2026-03-14 | 增量 spec / shared group notes / local validation + browser smoke complete                     |
 | 9r45m | PR CI 关键路径提速                                                            | 已完成          | `9r45m-ci-pr-critical-path-optimization/SPEC.md`         | 2026-03-13 | fast-track / PR CI critical path / quality-gates preserved                                     |

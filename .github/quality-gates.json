@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "implementation_profile": "bootstrap",
+  "implementation_profile": "final",
   "policy": {
     "baseline_policy": "explicit-waiver-required",
     "require_signed_commits": true,
@@ -54,11 +54,7 @@
   ],
   "informational_checks": [
     "Front-end Tests",
-    "Records Overlay E2E",
-    "Release Meta (intent + version + tags)",
-    "Build + Smoke + Push Candidate (linux/amd64)",
-    "Build + Smoke + Push Candidate (linux/arm64)",
-    "Release Publish (manifest + tag + GitHub Release)"
+    "Records Overlay E2E"
   ],
   "waivers": [],
   "expected_pr_workflows": [
@@ -69,23 +65,41 @@
       ]
     },
     {
-      "workflow": "CI Pipeline",
+      "workflow": "CI PR",
       "jobs": [
         "Lint & Format Check",
         "Front-end Tests",
         "Records Overlay E2E",
         "Backend Tests",
-        "Build Artifacts",
-        "Release Meta (intent + version + tags)",
-        "Build + Smoke + Push Candidate (linux/amd64)",
-        "Build + Smoke + Push Candidate (linux/arm64)",
-        "Release Publish (manifest + tag + GitHub Release)"
+        "Build Artifacts"
       ]
     },
     {
       "workflow": "Review Policy",
       "jobs": [
         "Review Policy Gate"
+      ]
+    }
+  ],
+  "expected_main_workflows": [
+    {
+      "workflow": "CI Main",
+      "jobs": [
+        "Lint & Format Check",
+        "Front-end Tests",
+        "Records Overlay E2E",
+        "Backend Tests"
+      ]
+    }
+  ],
+  "expected_release_workflows": [
+    {
+      "workflow": "Release",
+      "jobs": [
+        "Release Meta (intent + version + tags)",
+        "Build + Smoke + Push Candidate (linux/amd64)",
+        "Build + Smoke + Push Candidate (linux/arm64)",
+        "Release Publish (manifest + tag + GitHub Release)"
       ]
     }
   ]
