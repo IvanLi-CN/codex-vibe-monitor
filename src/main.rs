@@ -7730,10 +7730,14 @@ async fn proxy_openai_v1_capture_target(
     };
 
     let upstream_status = upstream_response.status();
+    let location_base_url = location_rewrite_upstream_base(
+        pool_account.as_ref(),
+        &state.config.openai_upstream_base_url,
+    );
     let rewritten_location = match normalize_proxy_location_header(
         upstream_status,
         upstream_response.headers(),
-        &state.config.openai_upstream_base_url,
+        location_base_url,
     ) {
         Ok(location) => location,
         Err(err) => {
@@ -11456,6 +11460,15 @@ fn request_may_have_body(method: &Method, headers: &HeaderMap) -> bool {
         return content_length > 0;
     }
     !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+fn location_rewrite_upstream_base<'a>(
+    pool_account: Option<&'a PoolResolvedAccount>,
+    global_upstream_base_url: &'a Url,
+) -> &'a Url {
+    pool_account
+        .map(|account| &account.upstream_base_url)
+        .unwrap_or(global_upstream_base_url)
 }
 
 fn normalize_proxy_location_header(

@@ -415,4 +415,102 @@ describe('UpstreamAccountsPage mother account editing', () => {
       }),
     )
   })
+
+  it('clears api key upstreamBaseUrl from the detail drawer with null payload', async () => {
+    const saveAccount = vi.fn().mockResolvedValue({
+      id: 8,
+      kind: 'api_key_codex',
+      provider: 'codex',
+      displayName: 'Gateway Key',
+      groupName: 'prod',
+      isMother: false,
+      status: 'active',
+      enabled: true,
+      history: [],
+      note: null,
+      upstreamBaseUrl: null,
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: 'requests',
+      },
+    })
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: 'api_key_codex',
+          provider: 'codex',
+          displayName: 'Gateway Key',
+          groupName: 'prod',
+          isMother: false,
+          status: 'active',
+          enabled: true,
+          maskedApiKey: 'sk-gate••••',
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Gateway Key',
+        groupName: 'prod',
+        isMother: false,
+        status: 'active',
+        enabled: true,
+        maskedApiKey: 'sk-gate••••',
+      },
+      detail: {
+        id: 8,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Gateway Key',
+        groupName: 'prod',
+        isMother: false,
+        status: 'active',
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: 'https://proxy.example.com/gateway',
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: 'requests',
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      saveAccount,
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: 'pool-live••••' },
+      saveRouting: vi.fn(),
+      groups: [],
+    })
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: '', rangeEnd: '' },
+      isLoading: false,
+      error: null,
+    })
+
+    render()
+
+    clickByText(/Open details/i)
+    setInputValue('input[name="detailUpstreamBaseUrl"]', '')
+    clickByText(/Save changes/i)
+    await flushAsync()
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      8,
+      expect.objectContaining({
+        upstreamBaseUrl: null,
+      }),
+    )
+  })
 })
