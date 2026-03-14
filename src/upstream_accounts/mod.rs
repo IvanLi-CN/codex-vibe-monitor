@@ -1007,9 +1007,6 @@ pub(crate) async fn create_oauth_login_session(
     let display_name = normalize_optional_text(payload.display_name).or(preserved_display_name);
     let group_name = normalize_optional_text(payload.group_name).or(preserved_group_name);
     let note = normalize_optional_text(payload.note).or(preserved_note);
-    if let Some(display_name) = display_name.as_deref() {
-        ensure_display_name_available(&state.pool, display_name, payload.account_id).await?;
-    }
 
     let redirect_uri = build_manual_callback_redirect_uri().map_err(internal_error_tuple)?;
     let login_id = random_hex(16)?;
@@ -1044,6 +1041,16 @@ pub(crate) async fn create_oauth_login_session(
     };
     let stored_group_note = if store_group_note { group_note } else { None };
 
+    let _guard = state.upstream_accounts.sync_lock.lock().await;
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    if let Some(display_name) = display_name.as_deref() {
+        ensure_display_name_available(&mut *tx, display_name, payload.account_id).await?;
+    }
+
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
@@ -1067,9 +1074,10 @@ pub(crate) async fn create_oauth_login_session(
     .bind(&auth_url)
     .bind(&expires_at_iso)
     .bind(&now_iso)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
 
     Ok(Json(LoginSessionStatusResponse {
         login_id,
@@ -1658,7 +1666,11 @@ async fn complete_oauth_login_session_with_query(
         .unwrap_or(default_display_name);
     let account_id = {
         let _guard = state.upstream_accounts.sync_lock.lock().await;
-        let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
+        let mut tx = state
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(internal_error_tuple)?;
         let session = load_login_session_by_login_id_with_executor(&mut *tx, &session.login_id)
             .await
             .map_err(internal_error_tuple)?
@@ -1669,7 +1681,17 @@ async fn complete_oauth_login_session_with_query(
                 "This login session has already been consumed.".to_string(),
             ));
         }
-        ensure_display_name_available(&mut *tx, &display_name, session.account_id).await?;
+        if let Err((status, message)) =
+            ensure_display_name_available(&mut *tx, &display_name, session.account_id).await
+        {
+            if status == StatusCode::CONFLICT {
+                fail_login_session_with_executor(&mut *tx, &session.login_id, &message)
+                    .await
+                    .map_err(internal_error_tuple)?;
+                tx.commit().await.map_err(internal_error_tuple)?;
+            }
+            return Err((status, message));
+        }
         let account_id = upsert_oauth_account(
             &mut tx,
             OauthAccountUpsert {
@@ -2915,8 +2937,8 @@ async fn complete_login_session_with_executor(
     Ok(())
 }
 
-async fn fail_login_session(
-    pool: &Pool<Sqlite>,
+async fn fail_login_session_with_executor(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
     login_id: &str,
     error_message: &str,
 ) -> Result<()> {
@@ -2935,9 +2957,17 @@ async fn fail_login_session(
     .bind(LOGIN_SESSION_STATUS_FAILED)
     .bind(error_message)
     .bind(&now_iso)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
+}
+
+async fn fail_login_session(
+    pool: &Pool<Sqlite>,
+    login_id: &str,
+    error_message: &str,
+) -> Result<()> {
+    fail_login_session_with_executor(pool, login_id, error_message).await
 }
 
 async fn mark_login_session_expired(pool: &Pool<Sqlite>, login_id: &str) -> Result<()> {
