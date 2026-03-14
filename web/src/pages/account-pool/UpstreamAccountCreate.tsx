@@ -46,6 +46,35 @@ type BatchOauthRow = {
   busyAction: BatchOauthBusyAction;
 };
 
+type CreatePageDraft = {
+  oauth?: {
+    displayName?: string;
+    groupName?: string;
+    note?: string;
+    callbackUrl?: string;
+    session?: LoginSessionStatusResponse | null;
+    sessionHint?: string | null;
+    actionError?: string | null;
+  };
+  batchOauth?: {
+    defaultGroupName?: string;
+    rows?: Array<Partial<BatchOauthRow> & { id?: string }>;
+  };
+  apiKey?: {
+    displayName?: string;
+    groupName?: string;
+    note?: string;
+    apiKeyValue?: string;
+    primaryLimit?: string;
+    secondaryLimit?: string;
+    limitUnit?: string;
+  };
+};
+
+type CreatePageLocationState = {
+  draft?: CreatePageDraft;
+} | null;
+
 function normalizeNumberInput(value: string): number | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
@@ -117,6 +146,40 @@ function createBatchOauthRow(id: string, groupName = ""): BatchOauthRow {
   };
 }
 
+function hydrateBatchOauthRow(
+  seed: Partial<BatchOauthRow> & { id?: string },
+  fallbackId: string,
+  defaultGroupName = "",
+): BatchOauthRow {
+  const id = seed.id ?? fallbackId;
+  const groupName = seed.groupName ?? defaultGroupName;
+  const note = seed.note ?? "";
+  return {
+    ...createBatchOauthRow(id, groupName),
+    ...seed,
+    id,
+    displayName: seed.displayName ?? "",
+    groupName,
+    note,
+    noteExpanded: seed.noteExpanded ?? Boolean(note.trim()),
+    callbackUrl: seed.callbackUrl ?? "",
+    session: seed.session ?? null,
+    sessionHint: seed.sessionHint ?? null,
+    actionError: seed.actionError ?? null,
+    busyAction: seed.busyAction ?? null,
+  };
+}
+
+function getNextBatchRowIndex(rows: BatchOauthRow[]) {
+  return (
+    rows.reduce((maxValue, row) => {
+      const match = /^row-(\d+)$/.exec(row.id);
+      if (!match) return maxValue;
+      return Math.max(maxValue, Number(match[1]));
+    }, 0) + 1
+  );
+}
+
 function batchStatusVariant(
   status: string,
 ): "success" | "warning" | "error" | "secondary" {
@@ -161,6 +224,8 @@ export default function UpstreamAccountCreatePage() {
     completeOauthLogin,
     createApiKeyAccount,
   } = useUpstreamAccounts();
+  const locationState = (location.state as CreatePageLocationState) ?? null;
+  const draft = locationState?.draft ?? null;
 
   const relinkAccountId = useMemo(
     () => parseAccountId(location.search),
@@ -174,38 +239,73 @@ export default function UpstreamAccountCreatePage() {
     [items, relinkAccountId],
   );
   const isRelinking = relinkAccountId != null;
+  const initialBatchRows = useMemo(() => {
+    const defaultGroupName = draft?.batchOauth?.defaultGroupName ?? "";
+    if (!draft?.batchOauth?.rows?.length) {
+      return Array.from({ length: 5 }, (_, index) =>
+        createBatchOauthRow(`row-${index + 1}`, defaultGroupName),
+      );
+    }
+    return draft.batchOauth.rows.map((row, index) =>
+      hydrateBatchOauthRow(row, `row-${index + 1}`, defaultGroupName),
+    );
+  }, [draft]);
 
   const [activeTab, setActiveTab] = useState<CreateTab>(() =>
     isRelinking ? "oauth" : parseCreateMode(location.search),
   );
-  const [oauthDisplayName, setOauthDisplayName] = useState("");
-  const [oauthGroupName, setOauthGroupName] = useState("");
-  const [oauthNote, setOauthNote] = useState("");
-  const [oauthCallbackUrl, setOauthCallbackUrl] = useState("");
-  const [apiKeyDisplayName, setApiKeyDisplayName] = useState("");
-  const [apiKeyGroupName, setApiKeyGroupName] = useState("");
-  const [apiKeyNote, setApiKeyNote] = useState("");
-  const [apiKeyValue, setApiKeyValue] = useState("");
-  const [apiKeyPrimaryLimit, setApiKeyPrimaryLimit] = useState("");
-  const [apiKeySecondaryLimit, setApiKeySecondaryLimit] = useState("");
-  const [apiKeyLimitUnit, setApiKeyLimitUnit] = useState("requests");
-  const [session, setSession] = useState<LoginSessionStatusResponse | null>(
-    null,
+  const [oauthDisplayName, setOauthDisplayName] = useState(
+    () => draft?.oauth?.displayName ?? "",
   );
-  const [sessionHint, setSessionHint] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [oauthGroupName, setOauthGroupName] = useState(
+    () => draft?.oauth?.groupName ?? "",
+  );
+  const [oauthNote, setOauthNote] = useState(() => draft?.oauth?.note ?? "");
+  const [oauthCallbackUrl, setOauthCallbackUrl] = useState(
+    () => draft?.oauth?.callbackUrl ?? "",
+  );
+  const [apiKeyDisplayName, setApiKeyDisplayName] = useState(
+    () => draft?.apiKey?.displayName ?? "",
+  );
+  const [apiKeyGroupName, setApiKeyGroupName] = useState(
+    () => draft?.apiKey?.groupName ?? "",
+  );
+  const [apiKeyNote, setApiKeyNote] = useState(
+    () => draft?.apiKey?.note ?? "",
+  );
+  const [apiKeyValue, setApiKeyValue] = useState(
+    () => draft?.apiKey?.apiKeyValue ?? "",
+  );
+  const [apiKeyPrimaryLimit, setApiKeyPrimaryLimit] = useState(
+    () => draft?.apiKey?.primaryLimit ?? "",
+  );
+  const [apiKeySecondaryLimit, setApiKeySecondaryLimit] = useState(
+    () => draft?.apiKey?.secondaryLimit ?? "",
+  );
+  const [apiKeyLimitUnit, setApiKeyLimitUnit] = useState(
+    () => draft?.apiKey?.limitUnit ?? "requests",
+  );
+  const [session, setSession] = useState<LoginSessionStatusResponse | null>(
+    () => draft?.oauth?.session ?? null,
+  );
+  const [sessionHint, setSessionHint] = useState<string | null>(
+    () => draft?.oauth?.sessionHint ?? null,
+  );
+  const [actionError, setActionError] = useState<string | null>(
+    () => draft?.oauth?.actionError ?? null,
+  );
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [manualCopyOpen, setManualCopyOpen] = useState(false);
   const [batchManualCopyRowId, setBatchManualCopyRowId] = useState<
     string | null
   >(null);
-  const [batchDefaultGroupName, setBatchDefaultGroupName] = useState("");
-  const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(() =>
-    Array.from({ length: 5 }, (_, index) =>
-      createBatchOauthRow(`row-${index + 1}`),
-    ),
+  const [batchDefaultGroupName, setBatchDefaultGroupName] = useState(
+    () => draft?.batchOauth?.defaultGroupName ?? "",
   );
-  const batchRowIdRef = useRef(6);
+  const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(
+    () => initialBatchRows,
+  );
+  const batchRowIdRef = useRef(getNextBatchRowIndex(initialBatchRows));
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null);
   const batchManualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null);
 

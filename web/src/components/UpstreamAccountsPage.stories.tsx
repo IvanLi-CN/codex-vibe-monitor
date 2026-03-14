@@ -37,6 +37,14 @@ type StoryStore = {
   >
 }
 
+type StoryInitialEntry =
+  | string
+  | {
+      pathname: string
+      search?: string
+      state?: unknown
+    }
+
 const now = '2026-03-11T12:30:00.000Z'
 
 function buildWindow(percent: number, durationMins: number, usedText: string, limitText: string, resetsAt: string) {
@@ -187,6 +195,18 @@ function createStore(): StoryStore {
     },
     nextId: 103,
     sessions: {},
+  }
+}
+
+function createPendingSession(loginId: string): LoginSessionStatusResponse {
+  return {
+    loginId,
+    status: 'pending',
+    authUrl: `https://auth.openai.com/authorize?login_id=${loginId}`,
+    redirectUri: 'http://localhost:1455/auth/callback',
+    expiresAt: '2026-03-11T13:30:00.000Z',
+    accountId: null,
+    error: null,
   }
 }
 
@@ -602,7 +622,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-function AccountPoolStoryRouter({ initialEntry }: { initialEntry: string }) {
+function AccountPoolStoryRouter({ initialEntry }: { initialEntry: StoryInitialEntry }) {
   const { themeMode } = useTheme()
   const isDark = themeMode === 'dark'
   return (
@@ -703,6 +723,90 @@ export const CreateAccountBatchOauthReady: Story = {
     await expect(canvas.getByDisplayValue(/https:\/\/auth\.openai\.com\/authorize/i)).toBeInTheDocument()
     await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeInTheDocument()
   },
+}
+
+export const CreateAccountOauthNameConflict: Story = {
+  name: 'Create Account OAuth Name Conflict',
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        state: {
+          draft: {
+            oauth: {
+              displayName: ' codex pro - tokyo ',
+              groupName: 'production',
+              note: 'Conflicts with an existing OAuth account name.',
+              callbackUrl: 'http://localhost:43210/oauth/callback?code=oauth-duplicate&state=storybook',
+              session: createPendingSession('story-oauth-duplicate'),
+              sessionHint: 'Pending OAuth session ready for duplicate-name review.',
+            },
+          },
+        },
+      }}
+    />
+  ),
+}
+
+export const CreateAccountBatchOauthNameConflict: Story = {
+  name: 'Create Account Batch OAuth Name Conflict',
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              defaultGroupName: 'production',
+              rows: [
+                {
+                  id: 'row-1',
+                  displayName: ' Codex Pro - Tokyo ',
+                  groupName: 'production',
+                  note: 'Conflicts with an existing account in the pool.',
+                  callbackUrl: 'http://localhost:43210/oauth/callback?code=batch-duplicate&state=storybook',
+                  session: createPendingSession('story-batch-duplicate'),
+                  sessionHint: 'Pending OAuth session ready for duplicate-name review.',
+                },
+                {
+                  id: 'row-2',
+                  displayName: 'Codex Pro - Osaka',
+                  groupName: 'production',
+                  note: 'Healthy comparison row.',
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+}
+
+export const CreateAccountApiKeyNameConflict: Story = {
+  name: 'Create Account API Key Name Conflict',
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=apiKey',
+        state: {
+          draft: {
+            apiKey: {
+              displayName: ' team key - staging ',
+              groupName: 'staging',
+              note: 'Conflicts with an existing API Key account name.',
+              apiKeyValue: 'sk-storybookduplicate1234',
+              primaryLimit: '120',
+              secondaryLimit: '500',
+              limitUnit: 'requests',
+            },
+          },
+        },
+      }}
+    />
+  ),
 }
 
 export const CreateAccountNameConflict: Story = {
