@@ -917,6 +917,56 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(document.body.textContent).not.toContain("network failed");
   });
 
+  it("keeps a recovered batch row in caution state when final detail fetch fails", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "completed",
+      authUrl: null,
+      redirectUri: null,
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: 41,
+      error: null,
+    });
+    apiMocks.fetchUpstreamAccountDetail.mockRejectedValueOnce(
+      new Error("detail fetch failed"),
+    );
+    const completeOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("network failed"));
+    mockUpstreamAccounts({ beginOauthLogin, completeOauthLogin, getLoginSession });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'input[name^="batchOauthCallbackUrl-"]',
+      "http://localhost:1455/oauth/callback?code=row-one",
+    );
+    await flushAsync();
+    clickButton(/Complete OAuth login/i);
+    await flushAsync();
+
+    expect(getLoginSession).toHaveBeenCalledWith("login-1");
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledWith(41);
+    expect(document.body.textContent).toContain(
+      "OAuth completed on the server. Refresh the roster to load the final account details.",
+    );
+    expect(document.body.textContent).not.toContain(
+      "Row One is ready. Continue with the remaining rows when you are done here.",
+    );
+  });
+
   it("shows duplicate warnings inline after completing a batch oauth row", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",

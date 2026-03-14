@@ -200,6 +200,8 @@ const baseTranslations = {
     'accountPool.upstreamAccounts.batchOauth.regenerateRequired': 'Metadata changed. Generate a fresh OAuth URL for this row before completing login.',
     'accountPool.upstreamAccounts.batchOauth.copyInlineFallback': 'Copy failed. Select the Auth URL field and copy it manually.',
     'accountPool.upstreamAccounts.batchOauth.completed': '{{name}} is ready. Continue with the remaining rows when you are done here.',
+    'accountPool.upstreamAccounts.batchOauth.completedNeedsRefresh':
+      'OAuth completed on the server. Refresh the roster to load the final account details.',
     'accountPool.upstreamAccounts.apiKey.createTitle': 'Codex API key account',
     'accountPool.upstreamAccounts.apiKey.createDescription': 'Store a masked API key plus local placeholder limits for the 5-hour and 7-day windows.',
     'accountPool.upstreamAccounts.apiKey.localPlaceholder': 'Local placeholder usage',
@@ -997,6 +999,7 @@ const baseTranslations = {
     'accountPool.upstreamAccounts.batchOauth.regenerateRequired': '元数据已变更，请先为这一行重新生成 OAuth 地址再完成登录。',
     'accountPool.upstreamAccounts.batchOauth.copyInlineFallback': '复制失败，请直接选中授权地址字段手动复制。',
     'accountPool.upstreamAccounts.batchOauth.completed': '{{name}} 已就绪，你可以继续处理剩余行。',
+    'accountPool.upstreamAccounts.batchOauth.completedNeedsRefresh': '服务端已完成 OAuth，请刷新账号列表以加载最终账号详情。',
     'accountPool.upstreamAccounts.apiKey.createTitle': 'Codex API Key 账号',
     'accountPool.upstreamAccounts.apiKey.createDescription': '保存脱敏后的 API Key，并为 5 小时 / 7 天窗口录入本地占位限额。',
     'accountPool.upstreamAccounts.apiKey.localPlaceholder': '本地占位统计',

@@ -1214,11 +1214,9 @@ export default function UpstreamAccountCreatePage() {
                 error: null,
               },
               callbackUrl: '',
-              sessionHint: t('accountPool.upstreamAccounts.batchOauth.completed', {
-                name: current.displayName || `#${latestSession.accountId}`,
-              }),
-              duplicateWarning: null,
-              actionError: null,
+              sessionHint: null,
+              duplicateWarning: current.duplicateWarning,
+              actionError: t('accountPool.upstreamAccounts.batchOauth.completedNeedsRefresh'),
             }
           })
         }
