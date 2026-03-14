@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
     os.chdir(repo)
 
     try:
-        module.load_pr_for_commit = lambda api_root, repository, token, target_sha: {
+        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: {
             "number": 101,
             "title": f"Release {target_sha[:7]}",
             "merged_at": "2026-03-14T00:00:00Z",
@@ -92,7 +92,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.2,ghcr.io/ivanli-cn/codex-vibe-monitor:latest"
         )
 
-        module.load_pr_for_commit = lambda api_root, repository, token, target_sha: {
+        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: {
             "number": 102,
             "title": f"RC {target_sha[:7]}",
             "merged_at": "2026-03-14T00:00:00Z",
@@ -159,11 +159,46 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
         race_sha1: {"number": 201, "title": "Stable one", "merged_at": "2026-03-14T00:00:00Z"},
         race_sha2: {"number": 202, "title": "Stable two", "merged_at": "2026-03-14T00:00:00Z"},
     }
-    module.load_pr_for_commit = lambda api_root, repository, token, target_sha: prs[target_sha]
+    module.load_pr_for_commit = (
+        lambda api_root, repository, token, target_sha, **kwargs: prs.get(target_sha)
+        if kwargs.get("allow_zero")
+        else prs[target_sha]
+    )
     module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
 
     snapshot_a_path = worker_a / "snapshot-a.json"
     snapshot_b_path = worker_b / "snapshot-b.json"
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(worker_b)
+        exit_code = module.ensure_snapshot(
+            argparse.Namespace(
+                target_sha=race_sha2,
+                github_repository="IvanLi-CN/codex-vibe-monitor",
+                github_token="token",
+                notes_ref=module.DEFAULT_NOTES_REF,
+                registry="ghcr.io",
+                api_root="https://api.github.com",
+                output=str(snapshot_b_path),
+                max_attempts=3,
+            )
+        )
+        assert exit_code == 0
+        module.fetch_notes_ref(module.DEFAULT_NOTES_REF)
+        snap_a = module.read_snapshot(module.DEFAULT_NOTES_REF, race_sha1)
+        snap_b = module.read_snapshot(module.DEFAULT_NOTES_REF, race_sha2)
+        assert snap_a is not None
+        assert snap_a["next_stable_version"] == "0.1.1"
+        assert snap_b is not None
+        assert snap_b["next_stable_version"] == "0.1.2"
+    finally:
+        os.chdir(old_cwd)
+
+    run("push", "origin", f":{module.DEFAULT_NOTES_REF}", cwd=seed)
+    for clone in (worker_a, worker_b):
+        subprocess.run(["git", "update-ref", "-d", module.DEFAULT_NOTES_REF], cwd=clone, check=False)
+
     real_git = module.git
     injected = {"done": False}
 
@@ -188,7 +223,6 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
             injected["done"] = True
         return real_git(*args, **kwargs)
 
-    old_cwd = Path.cwd()
     try:
         module.git = git_with_race
         os.chdir(worker_b)
@@ -209,6 +243,9 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
         snap_b = module.read_snapshot(module.DEFAULT_NOTES_REF, race_sha2)
         assert snap_b is not None
         assert snap_b["next_stable_version"] == "0.1.2"
+        snap_a = module.read_snapshot(module.DEFAULT_NOTES_REF, race_sha1)
+        assert snap_a is not None
+        assert snap_a["next_stable_version"] == "0.1.1"
         assert json.loads(snapshot_b_path.read_text())["next_stable_version"] == "0.1.2"
         assert injected["done"] is True
     finally:

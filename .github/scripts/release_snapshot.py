@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -228,11 +229,20 @@ def github_paginate(api_root: str, token: str, path: str) -> list[dict[str, Any]
         page += 1
 
 
-def load_pr_for_commit(api_root: str, repository: str, token: str, target_sha: str) -> dict[str, Any]:
+def load_pr_for_commit(
+    api_root: str,
+    repository: str,
+    token: str,
+    target_sha: str,
+    *,
+    allow_zero: bool = False,
+) -> dict[str, Any] | None:
     owner, repo = repository.split("/", 1)
     payload = github_request_json(api_root, token, f"/repos/{owner}/{repo}/commits/{target_sha}/pulls")
     if not isinstance(payload, list):
         raise SnapshotError("GitHub API returned an unexpected payload for commit-associated PRs")
+    if len(payload) == 0 and allow_zero:
+        return None
     if len(payload) != 1:
         raise SnapshotError(f"Expected exactly 1 PR associated with commit {target_sha}, got {len(payload)}")
     pr_summary = payload[0]
@@ -375,8 +385,20 @@ def publication_tags(snapshot: dict[str, Any], *, notes_ref: str, main_ref: str)
     return ",".join(tags)
 
 
-def build_snapshot(*, target_sha: str, repository: str, token: str, notes_ref: str, registry: str, api_root: str) -> dict[str, Any]:
-    pr = load_pr_for_commit(api_root, repository, token, target_sha)
+def build_snapshot(
+    *,
+    target_sha: str,
+    repository: str,
+    token: str,
+    notes_ref: str,
+    registry: str,
+    api_root: str,
+    pr: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if pr is None:
+        pr = load_pr_for_commit(api_root, repository, token, target_sha)
+    if pr is None:
+        raise SnapshotError(f"Commit {target_sha} is not associated with a merged pull request")
     release_labels = labels_at_merge_time(api_root, repository, token, pr)
     type_label, channel_label = parse_release_labels(release_labels)
     release_bump = type_label.split(":", 1)[1]
@@ -436,6 +458,11 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def first_parent_commits(target_sha: str) -> list[str]:
+    commits = git_output("rev-list", "--first-parent", "--reverse", target_sha)
+    return [commit for commit in commits.splitlines() if commit]
+
+
 def export_snapshot(snapshot: dict[str, Any], github_output: str) -> None:
     lines = []
     for key in (
@@ -483,19 +510,48 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
             write_json(output_path, existing)
             return 0
 
-        snapshot = build_snapshot(
-            target_sha=target_sha,
-            repository=args.github_repository,
-            token=args.github_token,
-            notes_ref=args.notes_ref,
-            registry=args.registry,
-            api_root=args.api_root,
-        )
-        write_json(output_path, snapshot)
+        target_snapshot: dict[str, Any] | None = None
+        with tempfile.TemporaryDirectory(prefix="release-snapshot-notes-") as tmp:
+            temp_note = Path(tmp) / "snapshot.json"
+            for commit in first_parent_commits(target_sha):
+                snapshot = read_snapshot(args.notes_ref, commit)
+                if snapshot is not None:
+                    if commit == target_sha:
+                        target_snapshot = snapshot
+                        break
+                    continue
+
+                pr = load_pr_for_commit(
+                    args.api_root,
+                    args.github_repository,
+                    args.github_token,
+                    commit,
+                    allow_zero=(commit != target_sha),
+                )
+                if pr is None:
+                    continue
+
+                snapshot = build_snapshot(
+                    target_sha=commit,
+                    repository=args.github_repository,
+                    token=args.github_token,
+                    notes_ref=args.notes_ref,
+                    registry=args.registry,
+                    api_root=args.api_root,
+                    pr=pr,
+                )
+                write_json(temp_note, snapshot)
+                git("notes", f"--ref={args.notes_ref}", "add", "-f", "-F", str(temp_note), commit)
+                if commit == target_sha:
+                    target_snapshot = snapshot
+
+        if target_snapshot is None:
+            raise SnapshotError(f"Failed to materialize release snapshot for {target_sha}")
+
+        write_json(output_path, target_snapshot)
 
         # The notes ref acts like a CAS register: if another allocator wins first,
         # our stale push is rejected and we recompute against the newer remote tip.
-        git("notes", f"--ref={args.notes_ref}", "add", "-f", "-F", str(output_path), target_sha)
         push = git("push", "origin", args.notes_ref, check=False)
         if push.returncode == 0:
             return 0
