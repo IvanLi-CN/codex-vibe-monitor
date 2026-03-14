@@ -35,6 +35,13 @@ import { useTranslation } from "../../i18n";
 type CreateTab = "oauth" | "batchOauth" | "apiKey";
 type BatchOauthBusyAction = "generate" | "complete" | null;
 
+type DuplicateWarningState = {
+  accountId: number;
+  displayName: string;
+  peerAccountIds: number[];
+  reasons: string[];
+};
+
 type BatchOauthRow = {
   id: string;
   displayName: string;
@@ -44,12 +51,7 @@ type BatchOauthRow = {
   callbackUrl: string;
   session: LoginSessionStatusResponse | null;
   sessionHint: string | null;
-  duplicateWarning: {
-    accountId: number;
-    displayName: string;
-    peerAccountIds: number[];
-    reasons: string[];
-  } | null;
+  duplicateWarning: DuplicateWarningState | null;
   actionError: string | null;
   busyAction: BatchOauthBusyAction;
 };
@@ -62,12 +64,7 @@ type CreatePageDraft = {
     callbackUrl?: string;
     session?: LoginSessionStatusResponse | null;
     sessionHint?: string | null;
-    duplicateWarning?: {
-      accountId: number;
-      displayName: string;
-      peerAccountIds: number[];
-      reasons: string[];
-    } | null;
+    duplicateWarning?: DuplicateWarningState | null;
     actionError?: string | null;
   };
   batchOauth?: {
@@ -116,6 +113,82 @@ function parseAccountId(search: string): number | null {
   if (!value) return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function DuplicateWarningPopover({
+  duplicateWarning,
+  warningTitle,
+  warningBody,
+  openDetailsLabel,
+}: {
+  duplicateWarning: DuplicateWarningState;
+  warningTitle: string;
+  warningBody: string;
+  openDetailsLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    setOpen(true);
+  }, [duplicateWarning.accountId, warningTitle, warningBody]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="h-9 w-9 shrink-0 rounded-full border border-warning/35 bg-warning/12 text-warning hover:bg-warning/18 hover:text-warning"
+          aria-label={warningTitle}
+        >
+          <Icon icon="mdi:alert-circle" className="h-4 w-4" aria-hidden />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side="top"
+        sideOffset={10}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        className="w-80 border-warning/30 bg-base-100/98 p-0 shadow-xl"
+      >
+        <div className="space-y-3 p-4">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-full bg-warning/12 p-1 text-warning">
+              <Icon icon="mdi:alert-circle-outline" className="h-4 w-4" aria-hidden />
+            </div>
+            <div className="min-w-0 space-y-1">
+              <p className="text-sm font-semibold text-warning">
+                {warningTitle}
+              </p>
+              <p className="text-xs leading-5 text-base-content/75">
+                {warningBody}
+              </p>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button
+              asChild
+              size="sm"
+              variant="secondary"
+              className="border-warning/35 bg-warning/12 text-warning hover:bg-warning/18"
+            >
+              <Link
+                to="/account-pool/upstream-accounts"
+                state={{
+                  selectedAccountId: duplicateWarning.accountId,
+                  openDetail: true,
+                  duplicateWarning,
+                }}
+              >
+                {openDetailsLabel}
+              </Link>
+            </Button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 function parseCreateMode(search: string): CreateTab {
@@ -1093,74 +1166,6 @@ export default function UpstreamAccountCreatePage() {
                       </Alert>
                     ) : null}
 
-                    {oauthDuplicateWarning ? (
-                      <Alert variant="warning" className="mb-4">
-                        <Icon
-                          icon="mdi:alert-outline"
-                          className="mt-0.5 h-4 w-4 shrink-0"
-                          aria-hidden
-                        />
-                        <div className="space-y-2">
-                          <div>
-                            <p className="font-medium">
-                              {t(
-                                "accountPool.upstreamAccounts.duplicate.warningTitle",
-                                {
-                                  name: oauthDuplicateWarning.displayName,
-                                },
-                              )}
-                            </p>
-                            <p className="mt-1 text-sm text-warning/90">
-                              {t(
-                                "accountPool.upstreamAccounts.duplicate.warningBody",
-                                {
-                                  reasons: formatDuplicateReasons(
-                                    oauthDuplicateWarning,
-                                  ),
-                                  peers:
-                                    oauthDuplicateWarning.peerAccountIds.join(
-                                      ", ",
-                                    ),
-                                },
-                              )}
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              asChild
-                              size="sm"
-                              variant="secondary"
-                              className="border-warning/35 bg-warning/12 text-warning hover:bg-warning/18"
-                            >
-                              <Link
-                                to="/account-pool/upstream-accounts"
-                                state={{
-                                  selectedAccountId:
-                                    oauthDuplicateWarning.accountId,
-                                  openDetail: true,
-                                  duplicateWarning: oauthDuplicateWarning,
-                                }}
-                              >
-                                {t(
-                                  "accountPool.upstreamAccounts.actions.openDetails",
-                                )}
-                              </Link>
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => setOauthDuplicateWarning(null)}
-                            >
-                              {t(
-                                "accountPool.upstreamAccounts.actions.dismissDuplicateWarning",
-                              )}
-                            </Button>
-                          </div>
-                        </div>
-                      </Alert>
-                    ) : null}
-
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                       <div className="space-y-1">
                         <h3 className="text-sm font-semibold text-base-content">
@@ -1324,6 +1329,30 @@ export default function UpstreamAccountCreatePage() {
                       )}
                       {t("accountPool.upstreamAccounts.actions.completeOauth")}
                     </Button>
+                    {oauthDuplicateWarning ? (
+                      <DuplicateWarningPopover
+                        duplicateWarning={oauthDuplicateWarning}
+                        warningTitle={t(
+                          "accountPool.upstreamAccounts.duplicate.warningTitle",
+                          {
+                            name: oauthDuplicateWarning.displayName,
+                          },
+                        )}
+                        warningBody={t(
+                          "accountPool.upstreamAccounts.duplicate.warningBody",
+                          {
+                            reasons: formatDuplicateReasons(
+                              oauthDuplicateWarning,
+                            ),
+                            peers:
+                              oauthDuplicateWarning.peerAccountIds.join(", "),
+                          },
+                        )}
+                        openDetailsLabel={t(
+                          "accountPool.upstreamAccounts.actions.openDetails",
+                        )}
+                      />
+                    ) : null}
                   </div>
                 </>
               ) : activeTab === "batchOauth" ? (
@@ -1772,6 +1801,36 @@ export default function UpstreamAccountCreatePage() {
                                             )}
                                           </Button>
                                         </Tooltip>
+                                        {row.duplicateWarning ? (
+                                          <DuplicateWarningPopover
+                                            duplicateWarning={
+                                              row.duplicateWarning
+                                            }
+                                            warningTitle={t(
+                                              "accountPool.upstreamAccounts.duplicate.warningTitle",
+                                              {
+                                                name: row.duplicateWarning
+                                                  .displayName,
+                                              },
+                                            )}
+                                            warningBody={t(
+                                              "accountPool.upstreamAccounts.duplicate.warningBody",
+                                              {
+                                                reasons:
+                                                  formatDuplicateReasons(
+                                                    row.duplicateWarning,
+                                                  ),
+                                                peers:
+                                                  row.duplicateWarning.peerAccountIds.join(
+                                                    ", ",
+                                                  ),
+                                              },
+                                            )}
+                                            openDetailsLabel={t(
+                                              "accountPool.upstreamAccounts.actions.openDetails",
+                                            )}
+                                          />
+                                        ) : null}
                                       </div>
                                       <div className="ml-auto flex shrink-0 items-center gap-2">
                                         <Badge
@@ -1819,32 +1878,6 @@ export default function UpstreamAccountCreatePage() {
                                           "accountPool.upstreamAccounts.batchOauth.statusDetail.draft",
                                         )}
                                     </p>
-                                    {row.duplicateWarning ? (
-                                      <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
-                                        <p className="font-medium">
-                                          {t(
-                                            "accountPool.upstreamAccounts.duplicate.warningTitle",
-                                            {
-                                              name: row.duplicateWarning.displayName,
-                                            },
-                                          )}
-                                        </p>
-                                        <p className="mt-1 leading-5 text-warning/90">
-                                          {t(
-                                            "accountPool.upstreamAccounts.duplicate.warningBody",
-                                            {
-                                              reasons: formatDuplicateReasons(
-                                                row.duplicateWarning,
-                                              ),
-                                              peers:
-                                                row.duplicateWarning.peerAccountIds.join(
-                                                  ", ",
-                                                ),
-                                            },
-                                          )}
-                                        </p>
-                                      </div>
-                                    ) : null}
                                   </div>
                                 </td>
                               </tr>
