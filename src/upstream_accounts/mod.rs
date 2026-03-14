@@ -986,6 +986,17 @@ pub(crate) async fn create_oauth_login_session(
     let note = normalize_optional_text(payload.note.clone());
     let group_note = normalize_optional_text(payload.group_note.clone());
     validate_group_note_target(group_name.as_deref(), payload.group_note.is_some())?;
+    if payload.group_note.is_some()
+        && let Some(group_name) = group_name.as_deref()
+        && group_has_accounts(&state.pool, group_name)
+            .await
+            .map_err(internal_error_tuple)?
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "groupNote can only be used for a new group; use PUT /api/pool/upstream-account-groups/:groupName for existing groups".to_string(),
+        ));
+    }
     let store_group_note = if payload.group_note.is_some() {
         should_persist_group_note_for_new_group(&state.pool, group_name.as_deref())
             .await
@@ -1127,6 +1138,17 @@ pub(crate) async fn create_api_key_account(
     let has_group_note = payload.group_note.is_some();
     let group_note = normalize_optional_text(payload.group_note);
     validate_group_note_target(group_name.as_deref(), has_group_note)?;
+    if has_group_note
+        && let Some(group_name) = group_name.as_deref()
+        && group_has_accounts(&state.pool, group_name)
+            .await
+            .map_err(internal_error_tuple)?
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "groupNote can only be used for a new group; use PUT /api/pool/upstream-account-groups/:groupName for existing groups".to_string(),
+        ));
+    }
     let target_group_name = group_name.clone();
     let should_persist_group_note = if has_group_note {
         should_persist_group_note_for_new_group(&state.pool, target_group_name.as_deref())
@@ -1144,6 +1166,7 @@ pub(crate) async fn create_api_key_account(
     )
     .map_err(internal_error_tuple)?;
 
+    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
     let inserted_id = sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO pool_upstream_accounts (
@@ -1171,18 +1194,19 @@ pub(crate) async fn create_api_key_account(
     .bind(payload.local_secondary_limit)
     .bind(limit_unit)
     .bind(&now_iso)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(internal_error_tuple)?;
 
     save_group_note_after_account_write(
-        &state.pool,
+        tx.as_mut(),
         target_group_name.as_deref(),
         group_note,
         should_persist_group_note,
     )
     .await
     .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
 
     let detail = sync_upstream_account_by_id(state.as_ref(), inserted_id, false)
         .await
@@ -1250,6 +1274,17 @@ pub(crate) async fn update_upstream_account(
         validate_local_limits(row.local_primary_limit, row.local_secondary_limit)?;
     }
     validate_group_note_target(row.group_name.as_deref(), requested_group_note.is_some())?;
+    if requested_group_note.is_some()
+        && let Some(group_name) = row.group_name.as_deref()
+        && group_has_accounts(&state.pool, group_name)
+            .await
+            .map_err(internal_error_tuple)?
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "groupNote can only be used for a new group; use PUT /api/pool/upstream-account-groups/:groupName for existing groups".to_string(),
+        ));
+    }
     let should_persist_group_note = if requested_group_note.is_some() {
         should_persist_group_note_for_new_group(&state.pool, row.group_name.as_deref())
             .await
@@ -1259,6 +1294,7 @@ pub(crate) async fn update_upstream_account(
     };
 
     let now_iso = format_utc_iso(Utc::now());
+    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -1286,13 +1322,13 @@ pub(crate) async fn update_upstream_account(
     .bind(row.local_secondary_limit)
     .bind(&row.local_limit_unit)
     .bind(&now_iso)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(internal_error_tuple)?;
 
     if let Some(group_note) = requested_group_note {
         save_group_note_after_account_write(
-            &state.pool,
+            tx.as_mut(),
             row.group_name.as_deref(),
             group_note,
             should_persist_group_note,
@@ -1301,10 +1337,11 @@ pub(crate) async fn update_upstream_account(
         .map_err(internal_error_tuple)?;
     }
     if previous_group_name != row.group_name {
-        cleanup_orphaned_group_note(&state.pool, previous_group_name.as_deref())
+        cleanup_orphaned_group_note(tx.as_mut(), previous_group_name.as_deref())
             .await
             .map_err(internal_error_tuple)?;
     }
+    tx.commit().await.map_err(internal_error_tuple)?;
 
     let detail = load_upstream_account_detail(&state.pool, id)
         .await
@@ -1329,19 +1366,20 @@ pub(crate) async fn delete_upstream_account(
         .await
         .map_err(internal_error_tuple)?
         .map(|row| row.group_name);
+    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_upstream_account_limit_samples WHERE account_id = ?1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_oauth_login_sessions WHERE account_id = ?1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(internal_error_tuple)?;
     let affected = sqlx::query("DELETE FROM pool_upstream_accounts WHERE id = ?1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(internal_error_tuple)?
         .rows_affected();
@@ -1349,11 +1387,12 @@ pub(crate) async fn delete_upstream_account(
         return Err((StatusCode::NOT_FOUND, "account not found".to_string()));
     }
     cleanup_orphaned_group_note(
-        &state.pool,
+        tx.as_mut(),
         group_name.as_ref().and_then(|value| value.as_deref()),
     )
     .await
     .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2104,7 +2143,8 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
     };
 
     if let Some(existing_id) = resolved_account_id {
-        let previous_group_name = load_upstream_account_row(pool, existing_id)
+        let mut tx = pool.begin().await?;
+        let previous_group_name = load_upstream_account_row_conn(tx.as_mut(), existing_id)
             .await?
             .and_then(|row| row.group_name);
         sqlx::query(
@@ -2144,20 +2184,22 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         .bind(encrypted_credentials)
         .bind(token_expires_at)
         .bind(&now_iso)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
         save_group_note_after_account_write(
-            pool,
+            tx.as_mut(),
             target_group_name.as_deref(),
             group_note,
             should_persist_group_note,
         )
         .await?;
         if previous_group_name != target_group_name {
-            cleanup_orphaned_group_note(pool, previous_group_name.as_deref()).await?;
+            cleanup_orphaned_group_note(tx.as_mut(), previous_group_name.as_deref()).await?;
         }
+        tx.commit().await?;
         Ok(existing_id)
     } else {
+        let mut tx = pool.begin().await?;
         let inserted_account_id: i64 = sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO pool_upstream_accounts (
@@ -2190,15 +2232,16 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         .bind(encrypted_credentials)
         .bind(token_expires_at)
         .bind(&now_iso)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
         save_group_note_after_account_write(
-            pool,
+            tx.as_mut(),
             target_group_name.as_deref(),
             group_note,
             should_persist_group_note,
         )
         .await?;
+        tx.commit().await?;
         Ok(inserted_account_id)
     }
 }
@@ -2305,6 +2348,14 @@ async fn load_upstream_account_row(
     pool: &Pool<Sqlite>,
     id: i64,
 ) -> Result<Option<UpstreamAccountRow>> {
+    let mut conn = pool.acquire().await?;
+    load_upstream_account_row_conn(&mut conn, id).await
+}
+
+async fn load_upstream_account_row_conn(
+    conn: &mut SqliteConnection,
+    id: i64,
+) -> Result<Option<UpstreamAccountRow>> {
     sqlx::query_as::<_, UpstreamAccountRow>(
         r#"
         SELECT
@@ -2321,7 +2372,7 @@ async fn load_upstream_account_row(
         "#,
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(conn)
     .await
     .map_err(Into::into)
 }
@@ -2433,6 +2484,11 @@ fn build_summary_from_row(
 }
 
 async fn group_has_accounts(pool: &Pool<Sqlite>, group_name: &str) -> Result<bool> {
+    let mut conn = pool.acquire().await?;
+    group_has_accounts_conn(&mut conn, group_name).await
+}
+
+async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) -> Result<bool> {
     let count = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
@@ -2441,7 +2497,7 @@ async fn group_has_accounts(pool: &Pool<Sqlite>, group_name: &str) -> Result<boo
         "#,
     )
     .bind(group_name)
-    .fetch_one(pool)
+    .fetch_one(conn)
     .await?;
     Ok(count > 0)
 }
@@ -2461,6 +2517,15 @@ async fn save_group_note_record(
     group_name: &str,
     note: Option<String>,
 ) -> Result<()> {
+    let mut conn = pool.acquire().await?;
+    save_group_note_record_conn(&mut conn, group_name, note).await
+}
+
+async fn save_group_note_record_conn(
+    conn: &mut SqliteConnection,
+    group_name: &str,
+    note: Option<String>,
+) -> Result<()> {
     if let Some(note) = note {
         let now_iso = format_utc_iso(Utc::now());
         sqlx::query(
@@ -2475,7 +2540,7 @@ async fn save_group_note_record(
         .bind(group_name)
         .bind(note)
         .bind(now_iso)
-        .execute(pool)
+        .execute(conn)
         .await?;
     } else {
         sqlx::query(
@@ -2485,14 +2550,14 @@ async fn save_group_note_record(
             "#,
         )
         .bind(group_name)
-        .execute(pool)
+        .execute(conn)
         .await?;
     }
     Ok(())
 }
 
 async fn save_group_note_after_account_write(
-    pool: &Pool<Sqlite>,
+    conn: &mut SqliteConnection,
     group_name: Option<&str>,
     note: Option<String>,
     should_persist: bool,
@@ -2503,17 +2568,20 @@ async fn save_group_note_after_account_write(
     let Some(group_name) = group_name else {
         return Ok(());
     };
-    if !group_has_accounts(pool, group_name).await? {
+    if !group_has_accounts_conn(conn, group_name).await? {
         return Ok(());
     }
-    save_group_note_record(pool, group_name, note).await
+    save_group_note_record_conn(conn, group_name, note).await
 }
 
-async fn cleanup_orphaned_group_note(pool: &Pool<Sqlite>, group_name: Option<&str>) -> Result<()> {
+async fn cleanup_orphaned_group_note(
+    conn: &mut SqliteConnection,
+    group_name: Option<&str>,
+) -> Result<()> {
     let Some(group_name) = group_name else {
         return Ok(());
     };
-    if group_has_accounts(pool, group_name).await? {
+    if group_has_accounts_conn(conn, group_name).await? {
         return Ok(());
     }
     sqlx::query(
@@ -2523,7 +2591,7 @@ async fn cleanup_orphaned_group_note(pool: &Pool<Sqlite>, group_name: Option<&st
         "#,
     )
     .bind(group_name)
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(())
 }
@@ -4311,8 +4379,9 @@ mod tests {
     async fn load_upstream_account_groups_reads_notes_for_existing_groups() {
         let pool = group_note_test_pool().await;
         insert_test_account(&pool, "Prod One", Some("prod")).await;
+        let mut conn = pool.acquire().await.expect("acquire pool connection");
         save_group_note_after_account_write(
-            &pool,
+            &mut conn,
             Some("prod"),
             Some("Shared prod note".to_string()),
             true,
@@ -4333,8 +4402,9 @@ mod tests {
     async fn cleanup_orphaned_group_note_removes_note_after_last_account_is_deleted() {
         let pool = group_note_test_pool().await;
         let account_id = insert_test_account(&pool, "Prod One", Some("prod")).await;
+        let mut conn = pool.acquire().await.expect("acquire pool connection");
         save_group_note_after_account_write(
-            &pool,
+            &mut conn,
             Some("prod"),
             Some("Shared prod note".to_string()),
             true,
@@ -4347,7 +4417,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("delete test account");
-        cleanup_orphaned_group_note(&pool, Some("prod"))
+        cleanup_orphaned_group_note(&mut conn, Some("prod"))
             .await
             .expect("cleanup orphaned group note");
 
@@ -4406,9 +4476,10 @@ mod tests {
         save_group_note_record(&pool, "prod", Some("Fresh shared note".to_string()))
             .await
             .expect("seed group note");
+        let mut conn = pool.acquire().await.expect("acquire pool connection");
 
         save_group_note_after_account_write(
-            &pool,
+            &mut conn,
             Some("prod"),
             Some("Stale shared note".to_string()),
             false,
