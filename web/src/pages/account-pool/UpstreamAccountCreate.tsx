@@ -25,6 +25,7 @@ import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGr
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import type {
   LoginSessionStatusResponse,
+  UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
 import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
@@ -43,6 +44,12 @@ type BatchOauthRow = {
   callbackUrl: string;
   session: LoginSessionStatusResponse | null;
   sessionHint: string | null;
+  duplicateWarning: {
+    accountId: number;
+    displayName: string;
+    peerAccountIds: number[];
+    reasons: string[];
+  } | null;
   actionError: string | null;
   busyAction: BatchOauthBusyAction;
 };
@@ -55,6 +62,12 @@ type CreatePageDraft = {
     callbackUrl?: string;
     session?: LoginSessionStatusResponse | null;
     sessionHint?: string | null;
+    duplicateWarning?: {
+      accountId: number;
+      displayName: string;
+      peerAccountIds: number[];
+      reasons: string[];
+    } | null;
     actionError?: string | null;
   };
   batchOauth?: {
@@ -142,6 +155,7 @@ function createBatchOauthRow(id: string, groupName = ""): BatchOauthRow {
     callbackUrl: "",
     session: null,
     sessionHint: null,
+    duplicateWarning: null,
     actionError: null,
     busyAction: null,
   };
@@ -166,6 +180,7 @@ function hydrateBatchOauthRow(
     callbackUrl: seed.callbackUrl ?? "",
     session: seed.session ?? null,
     sessionHint: seed.sessionHint ?? null,
+    duplicateWarning: seed.duplicateWarning ?? null,
     actionError: seed.actionError ?? null,
     busyAction: seed.busyAction ?? null,
   };
@@ -292,6 +307,12 @@ export default function UpstreamAccountCreatePage() {
   const [sessionHint, setSessionHint] = useState<string | null>(
     () => draft?.oauth?.sessionHint ?? null,
   );
+  const [oauthDuplicateWarning, setOauthDuplicateWarning] = useState<{
+    accountId: number;
+    displayName: string;
+    peerAccountIds: number[];
+    reasons: string[];
+  } | null>(() => draft?.oauth?.duplicateWarning ?? null);
   const [actionError, setActionError] = useState<string | null>(
     () => draft?.oauth?.actionError ?? null,
   );
@@ -318,9 +339,18 @@ export default function UpstreamAccountCreatePage() {
     ),
   ).sort((left, right) => left.localeCompare(right));
 
+  const oauthConflictExcludeId =
+    relinkAccountId ??
+    (session?.status === "completed" ? (session.accountId ?? null) : null);
+
   const oauthDisplayNameConflict = useMemo(
-    () => findDisplayNameConflict(items, oauthDisplayName, relinkAccountId),
-    [items, oauthDisplayName, relinkAccountId],
+    () =>
+      findDisplayNameConflict(
+        items,
+        oauthDisplayName,
+        oauthConflictExcludeId,
+      ),
+    [items, oauthConflictExcludeId, oauthDisplayName],
   );
   const apiKeyDisplayNameConflict = useMemo(
     () => findDisplayNameConflict(items, apiKeyDisplayName),
@@ -338,7 +368,11 @@ export default function UpstreamAccountCreatePage() {
   }, [batchRows]);
 
   const batchDisplayNameError = (row: BatchOauthRow) => {
-    const existingConflict = findDisplayNameConflict(items, row.displayName);
+    const existingConflict = findDisplayNameConflict(
+      items,
+      row.displayName,
+      row.session?.accountId ?? null,
+    );
     if (existingConflict) {
       return t("accountPool.upstreamAccounts.validation.displayNameDuplicate");
     }
@@ -347,6 +381,25 @@ export default function UpstreamAccountCreatePage() {
       return t("accountPool.upstreamAccounts.validation.displayNameDuplicate");
     }
     return null;
+  };
+
+  const formatDuplicateReasons = (
+    duplicateInfo?: UpstreamAccountDuplicateInfo | null,
+  ) => {
+    const reasons = duplicateInfo?.reasons ?? [];
+    return reasons
+      .map((reason) =>
+        reason === "sharedChatgptAccountId"
+          ? t(
+              "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId",
+            )
+          : reason === "sharedChatgptUserId"
+            ? t(
+                "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId",
+              )
+            : reason,
+      )
+      .join(" / ");
   };
 
   useEffect(() => {
@@ -481,6 +534,7 @@ export default function UpstreamAccountCreatePage() {
   const handleGenerateOauthUrl = async () => {
     setActionError(null);
     setSessionHint(null);
+    setOauthDuplicateWarning(null);
     setBusyAction("oauth-generate");
     try {
       const response = await beginOauthLogin({
@@ -535,20 +589,22 @@ export default function UpstreamAccountCreatePage() {
         authUrl: null,
         redirectUri: null,
       });
-      navigate("/account-pool/upstream-accounts", {
-        state: {
-          selectedAccountId: detail.id,
-          openDetail: true,
-          duplicateWarning: detail.duplicateInfo
-            ? {
-                accountId: detail.id,
-                displayName: detail.displayName,
-                peerAccountIds: detail.duplicateInfo.peerAccountIds,
-                reasons: detail.duplicateInfo.reasons,
-              }
-            : null,
-        },
-      });
+      if (detail.duplicateInfo) {
+        setOauthDuplicateWarning({
+          accountId: detail.id,
+          displayName: detail.displayName,
+          peerAccountIds: detail.duplicateInfo.peerAccountIds,
+          reasons: detail.duplicateInfo.reasons,
+        });
+      } else {
+        navigate("/account-pool/upstream-accounts", {
+          state: {
+            selectedAccountId: detail.id,
+            openDetail: true,
+            duplicateWarning: null,
+          },
+        });
+      }
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -652,6 +708,14 @@ export default function UpstreamAccountCreatePage() {
           sessionHint: t("accountPool.upstreamAccounts.batchOauth.completed", {
             name: detail.displayName || current.displayName || `#${detail.id}`,
           }),
+          duplicateWarning: detail.duplicateInfo
+            ? {
+                accountId: detail.id,
+                displayName: detail.displayName,
+                peerAccountIds: detail.duplicateInfo.peerAccountIds,
+                reasons: detail.duplicateInfo.reasons,
+              }
+            : null,
           actionError: null,
         };
       });
@@ -678,6 +742,11 @@ export default function UpstreamAccountCreatePage() {
           latestSession?.status === "expired"
             ? (latestSession.error ?? current.sessionHint)
             : current.sessionHint,
+        duplicateWarning:
+          latestSession?.status === "failed" ||
+          latestSession?.status === "expired"
+            ? null
+            : current.duplicateWarning,
         actionError: message,
       }));
     }
@@ -823,6 +892,58 @@ export default function UpstreamAccountCreatePage() {
                     session.error ??
                     formatDateTime(session.expiresAt)}
                 </p>
+              </div>
+            </Alert>
+          ) : null}
+
+          {oauthDuplicateWarning ? (
+            <Alert variant="warning">
+              <Icon
+                icon="mdi:alert-outline"
+                className="mt-0.5 h-4 w-4 shrink-0"
+                aria-hidden
+              />
+              <div className="space-y-2">
+                <div>
+                  <p className="font-medium">
+                    {t("accountPool.upstreamAccounts.duplicate.warningTitle", {
+                      name: oauthDuplicateWarning.displayName,
+                    })}
+                  </p>
+                  <p className="mt-1 text-sm text-warning/90">
+                    {t("accountPool.upstreamAccounts.duplicate.warningBody", {
+                      reasons: formatDuplicateReasons(oauthDuplicateWarning),
+                      peers: oauthDuplicateWarning.peerAccountIds.join(", "),
+                    })}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    asChild
+                    size="sm"
+                    variant="secondary"
+                    className="border-warning/35 bg-warning/12 text-warning hover:bg-warning/18"
+                  >
+                    <Link
+                      to="/account-pool/upstream-accounts"
+                      state={{
+                        selectedAccountId: oauthDuplicateWarning.accountId,
+                        openDetail: true,
+                        duplicateWarning: oauthDuplicateWarning,
+                      }}
+                    >
+                      {t("accountPool.upstreamAccounts.actions.openDetails")}
+                    </Link>
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setOauthDuplicateWarning(null)}
+                  >
+                    {t("accountPool.upstreamAccounts.actions.dismissDuplicateWarning")}
+                  </Button>
+                </div>
               </div>
             </Alert>
           ) : null}
@@ -1681,6 +1802,32 @@ export default function UpstreamAccountCreatePage() {
                                           "accountPool.upstreamAccounts.batchOauth.statusDetail.draft",
                                         )}
                                     </p>
+                                    {row.duplicateWarning ? (
+                                      <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
+                                        <p className="font-medium">
+                                          {t(
+                                            "accountPool.upstreamAccounts.duplicate.warningTitle",
+                                            {
+                                              name: row.duplicateWarning.displayName,
+                                            },
+                                          )}
+                                        </p>
+                                        <p className="mt-1 leading-5 text-warning/90">
+                                          {t(
+                                            "accountPool.upstreamAccounts.duplicate.warningBody",
+                                            {
+                                              reasons: formatDuplicateReasons(
+                                                row.duplicateWarning,
+                                              ),
+                                              peers:
+                                                row.duplicateWarning.peerAccountIds.join(
+                                                  ", ",
+                                                ),
+                                            },
+                                          )}
+                                        </p>
+                                      </div>
+                                    ) : null}
                                   </div>
                                 </td>
                               </tr>

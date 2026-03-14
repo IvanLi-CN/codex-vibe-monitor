@@ -78,6 +78,43 @@ export const OauthNameConflict: Story = {
   ),
 }
 
+export const OauthDuplicateWarning: Story = {
+  name: 'OAuth Duplicate Warning',
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        state: {
+          draft: {
+            oauth: {
+              displayName: 'Codex Pro - Tokyo',
+              groupName: 'production',
+              note: 'Freshly linked account that shares the same upstream identity.',
+              callbackUrl: 'http://localhost:43210/oauth/callback?code=oauth-duplicate&state=storybook',
+              session: {
+                loginId: 'story-oauth-duplicate-done',
+                status: 'completed',
+                authUrl: null,
+                redirectUri: null,
+                expiresAt: '2026-03-11T13:30:00.000Z',
+                accountId: 101,
+                error: null,
+              },
+              sessionHint: 'OAuth callback completed',
+              duplicateWarning: {
+                accountId: 101,
+                displayName: 'Codex Pro - Tokyo',
+                peerAccountIds: [103],
+                reasons: ['sharedChatgptAccountId', 'sharedChatgptUserId'],
+              },
+            },
+          },
+        },
+      }}
+    />
+  ),
+}
+
 export const BatchOauthNameConflict: Story = {
   name: 'Batch OAuth Name Conflict',
   render: () => (
@@ -98,6 +135,56 @@ export const BatchOauthNameConflict: Story = {
                   callbackUrl: 'http://localhost:43210/oauth/callback?code=batch-duplicate&state=storybook',
                   session: createPendingSession('story-batch-duplicate'),
                   sessionHint: 'Pending OAuth session ready for duplicate-name review.',
+                },
+                {
+                  id: 'row-2',
+                  displayName: 'Codex Pro - Osaka',
+                  groupName: 'production',
+                  note: 'Healthy comparison row.',
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+}
+
+export const BatchOauthDuplicateWarning: Story = {
+  name: 'Batch OAuth Duplicate Warning',
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              defaultGroupName: 'production',
+              rows: [
+                {
+                  id: 'row-1',
+                  displayName: 'Codex Pro - Tokyo',
+                  groupName: 'production',
+                  note: 'Completed row with duplicate upstream identity.',
+                  callbackUrl: 'http://localhost:43210/oauth/callback?code=batch-duplicate&state=storybook',
+                  session: {
+                    loginId: 'story-batch-duplicate-done',
+                    status: 'completed',
+                    authUrl: null,
+                    redirectUri: null,
+                    expiresAt: '2026-03-11T13:30:00.000Z',
+                    accountId: 101,
+                    error: null,
+                  },
+                  sessionHint: 'Codex Pro - Tokyo is ready. Continue with the remaining rows when you are done here.',
+                  duplicateWarning: {
+                    accountId: 101,
+                    displayName: 'Codex Pro - Tokyo',
+                    peerAccountIds: [103],
+                    reasons: ['sharedChatgptAccountId', 'sharedChatgptUserId'],
+                  },
                 },
                 {
                   id: 'row-2',

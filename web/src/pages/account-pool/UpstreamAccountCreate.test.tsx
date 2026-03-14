@@ -547,7 +547,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(findButton(/Create API key account/i)?.disabled).toBe(true);
   });
 
-  it("forwards duplicate warnings to the list page after single oauth completes", async () => {
+  it("shows duplicate warnings on the create page after single oauth completes", async () => {
     const completeOauthLogin = vi.fn().mockResolvedValue({
       id: 41,
       displayName: "Fresh OAuth",
@@ -571,20 +571,53 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     clickButton(/Complete OAuth login/i);
     await flushAsync();
 
-    expect(navigateMock).toHaveBeenCalledWith(
-      "/account-pool/upstream-accounts",
-      {
-        state: {
-          selectedAccountId: 41,
-          openDetail: true,
-          duplicateWarning: {
-            accountId: 41,
-            displayName: "Fresh OAuth",
-            peerAccountIds: [5],
-            reasons: ["sharedChatgptAccountId"],
-          },
-        },
+    expect(host?.textContent).toContain(
+      "Fresh OAuth was saved, but the upstream identity looks duplicated.",
+    );
+    expect(host?.textContent).toContain(
+      "Matched reasons: shared ChatGPT account id. Related account ids: 5.",
+    );
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("shows duplicate warnings inline after completing a batch oauth row", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      displayName: "Row One",
+      duplicateInfo: {
+        peerAccountIds: [5],
+        reasons: ["sharedChatgptUserId"],
       },
+    });
+    mockUpstreamAccounts({ beginOauthLogin, completeOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'input[name^="batchOauthCallbackUrl-"]',
+      "http://localhost:1455/oauth/callback?code=row-one",
+    );
+    await flushAsync();
+    clickButton(/Complete OAuth login/i);
+    await flushAsync();
+
+    expect(host?.textContent).toContain(
+      "Row One was saved, but the upstream identity looks duplicated.",
+    );
+    expect(host?.textContent).toContain(
+      "Matched reasons: shared ChatGPT user id. Related account ids: 5.",
     );
   });
 });
