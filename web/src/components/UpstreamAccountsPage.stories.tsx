@@ -46,6 +46,7 @@ type StoryInitialEntry =
     }
 
 const now = '2026-03-11T12:30:00.000Z'
+const duplicateReasons = ['sharedChatgptAccountId', 'sharedChatgptUserId'] as const
 
 function buildWindow(percent: number, durationMins: number, usedText: string, limitText: string, resetsAt: string) {
   return {
@@ -176,24 +177,59 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     secondaryWindow: detail.secondaryWindow,
     credits: detail.credits,
     localLimits: detail.localLimits,
+    duplicateInfo: detail.duplicateInfo,
   }
 }
 
+function currentStoryId() {
+  if (typeof window === 'undefined') return null
+  const params = new URLSearchParams(window.location.search)
+  return params.get('id')
+}
+
 function createStore(): StoryStore {
-  const oauth = createOauthAccount(101)
+  const storyId = currentStoryId()
+  const duplicateStory =
+    storyId === 'account-pool-pages-upstream-accounts--duplicate-oauth-warning' ||
+    storyId === 'account-pool-pages-upstream-accounts--duplicate-oauth-detail'
+
+  const oauth = createOauthAccount(101, duplicateStory
+    ? {
+        duplicateInfo: {
+          peerAccountIds: [103],
+          reasons: [...duplicateReasons],
+        },
+        note: 'Primary team account sharing the same upstream identity.',
+      }
+    : undefined)
   const apiKey = createApiKeyAccount(102)
+  const duplicateOauth = duplicateStory
+    ? createOauthAccount(103, {
+        displayName: 'Codex Pro - Seoul',
+        email: 'seoul@example.com',
+        chatgptAccountId: 'org_tokyo',
+        chatgptUserId: 'user_tokyo',
+        groupName: 'production',
+        duplicateInfo: {
+          peerAccountIds: [101],
+          reasons: [...duplicateReasons],
+        },
+        note: 'Sibling OAuth account kept for duplicate identity review.',
+      })
+    : null
   return {
     writesEnabled: true,
     routing: {
       apiKeyConfigured: true,
       maskedApiKey: 'pool-live••••••c0de',
     },
-    accounts: [toSummary(oauth), toSummary(apiKey)],
+    accounts: [toSummary(oauth), ...(duplicateOauth ? [toSummary(duplicateOauth)] : []), toSummary(apiKey)],
     details: {
       [oauth.id]: oauth,
+      ...(duplicateOauth ? { [duplicateOauth.id]: duplicateOauth } : {}),
       [apiKey.id]: apiKey,
     },
-    nextId: 103,
+    nextId: duplicateOauth ? 104 : 103,
     sessions: {},
   }
 }
@@ -698,6 +734,41 @@ export const RoutingDialog: Story = {
       documentScope.getByRole('dialog', { name: /编辑号池路由密钥|update pool routing key/i }),
     ).toBeInTheDocument()
   },
+}
+
+export const DuplicateOauthWarning: Story = {
+  name: 'Duplicate OAuth Warning',
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts',
+        state: {
+          selectedAccountId: 101,
+          duplicateWarning: {
+            accountId: 101,
+            displayName: 'Codex Pro - Tokyo',
+            peerAccountIds: [103],
+            reasons: [...duplicateReasons],
+          },
+        },
+      }}
+    />
+  ),
+}
+
+export const DuplicateOauthDetail: Story = {
+  name: 'Duplicate OAuth Detail',
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts',
+        state: {
+          selectedAccountId: 101,
+          openDetail: true,
+        },
+      }}
+    />
+  ),
 }
 
 export const CreateAccount: Story = {
