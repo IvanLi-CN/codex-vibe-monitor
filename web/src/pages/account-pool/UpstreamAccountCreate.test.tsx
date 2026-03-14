@@ -965,6 +965,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(document.body.textContent).not.toContain(
       "Row One is ready. Continue with the remaining rows when you are done here.",
     );
+    expect(document.body.textContent).toContain("Needs refresh");
   });
 
   it("shows duplicate warnings inline after completing a batch oauth row", async () => {

@@ -76,6 +76,7 @@ type BatchOauthRow = {
   session: LoginSessionStatusResponse | null
   sessionHint: string | null
   duplicateWarning: DuplicateWarningState | null
+  needsRefresh: boolean
   actionError: string | null
   busyAction: BatchOauthBusyAction
 }
@@ -163,6 +164,7 @@ function createBatchOauthRow(id: string, groupName = ''): BatchOauthRow {
     session: null,
     sessionHint: null,
     duplicateWarning: null,
+    needsRefresh: false,
     actionError: null,
     busyAction: null,
   }
@@ -180,6 +182,7 @@ function hydrateBatchOauthRow(
     groupName: seed.groupName ?? fallbackGroupName,
     isMother: seed.isMother === true,
     duplicateWarning: seed.duplicateWarning ?? null,
+    needsRefresh: seed.needsRefresh === true,
   }
 }
 
@@ -256,12 +259,14 @@ function enforceBatchMotherDraftUniqueness(rows: BatchOauthRow[]) {
 
 function batchStatusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
   if (status === 'completed') return 'success'
+  if (status === 'completedNeedsRefresh') return 'warning'
   if (status === 'pending') return 'warning'
   if (status === 'failed' || status === 'expired') return 'error'
   return 'secondary'
 }
 
 function batchRowStatus(row: BatchOauthRow) {
+  if (row.needsRefresh) return 'completedNeedsRefresh'
   return row.session?.status ?? 'draft'
 }
 
@@ -1076,6 +1081,7 @@ export default function UpstreamAccountCreatePage() {
         sessionHint: t('accountPool.upstreamAccounts.oauth.generated', {
           expiresAt: formatDateTime(response.expiresAt),
         }),
+        needsRefresh: false,
         actionError: null,
       }))
     } catch (err) {
@@ -1151,6 +1157,7 @@ export default function UpstreamAccountCreatePage() {
                 reasons: detail.duplicateInfo.reasons,
               }
             : null,
+          needsRefresh: false,
           actionError: null,
           isMother: detail.isMother,
         }
@@ -1194,6 +1201,7 @@ export default function UpstreamAccountCreatePage() {
                     reasons: detail.duplicateInfo.reasons,
                   }
                 : null,
+              needsRefresh: false,
               actionError: null,
               isMother: detail.isMother,
             }
@@ -1216,6 +1224,7 @@ export default function UpstreamAccountCreatePage() {
               callbackUrl: '',
               sessionHint: null,
               duplicateWarning: current.duplicateWarning,
+              needsRefresh: true,
               actionError: t('accountPool.upstreamAccounts.batchOauth.completedNeedsRefresh'),
             }
           })
@@ -1237,6 +1246,7 @@ export default function UpstreamAccountCreatePage() {
           latestSession?.status === 'failed' || latestSession?.status === 'expired'
             ? null
             : current.duplicateWarning,
+        needsRefresh: false,
         actionError: message,
       }))
     }
@@ -1278,7 +1288,7 @@ export default function UpstreamAccountCreatePage() {
       const status = batchRowStatus(row)
       accumulator.total += 1
       if (status === 'completed') accumulator.completed += 1
-      else if (status === 'pending') accumulator.pending += 1
+      else if (status === 'pending' || status === 'completedNeedsRefresh') accumulator.pending += 1
       else accumulator.draft += 1
       return accumulator
     },
@@ -1746,9 +1756,10 @@ export default function UpstreamAccountCreatePage() {
                             const statusDetail = batchRowStatusDetail(row)
                             const duplicateNameError = batchDisplayNameError(row)
                             const isCompleted = status === 'completed'
+                            const isRecoveredNeedsRefresh = status === 'completedNeedsRefresh'
                             const isPending = status === 'pending'
                             const isBusy = row.busyAction != null
-                            const rowLocked = isBusy || isCompleted
+                            const rowLocked = isBusy || isCompleted || isRecoveredNeedsRefresh
                             const authUrl = row.session?.authUrl ?? ''
                             return (
                               <tr
