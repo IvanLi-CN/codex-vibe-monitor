@@ -243,6 +243,7 @@ pub(crate) struct UpstreamAccountDetail {
     #[serde(flatten)]
     summary: UpstreamAccountSummary,
     note: Option<String>,
+    upstream_base_url: Option<String>,
     chatgpt_user_id: Option<String>,
     last_refreshed_at: Option<String>,
     history: Vec<UpstreamAccountHistoryPoint>,
@@ -368,6 +369,7 @@ pub(crate) struct CreateApiKeyAccountRequest {
     group_name: Option<String>,
     note: Option<String>,
     group_note: Option<String>,
+    upstream_base_url: Option<String>,
     api_key: String,
     is_mother: Option<bool>,
     local_primary_limit: Option<f64>,
@@ -384,6 +386,7 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     group_name: Option<String>,
     note: Option<String>,
     group_note: Option<String>,
+    upstream_base_url: Option<String>,
     enabled: Option<bool>,
     is_mother: Option<bool>,
     api_key: Option<String>,
@@ -570,6 +573,7 @@ struct UpstreamAccountRow {
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
+    upstream_base_url: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -725,6 +729,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             local_primary_limit REAL,
             local_secondary_limit REAL,
             local_limit_unit TEXT,
+            upstream_base_url TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -749,6 +754,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_integer_column_with_default(pool, "pool_upstream_accounts", "is_mother", "0")
         .await
         .context("failed to ensure pool_upstream_accounts.is_mother")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "upstream_base_url")
+        .await
+        .context("failed to ensure pool_upstream_accounts.upstream_base_url")?;
 
     if let Err(err) = sqlx::query(
         r#"
@@ -1529,6 +1537,7 @@ pub(crate) async fn create_api_key_account(
     let target_group_name = group_name.clone();
     let is_mother = payload.is_mother.unwrap_or(false);
     let limit_unit = normalize_limit_unit(payload.local_limit_unit);
+    let upstream_base_url = normalize_optional_upstream_base_url(payload.upstream_base_url)?;
     let masked_api_key = mask_api_key(&api_key);
     let now_iso = format_utc_iso(Utc::now());
     let encrypted_credentials = encrypt_credentials(
@@ -1550,12 +1559,12 @@ pub(crate) async fn create_api_key_account(
             kind, provider, display_name, group_name, is_mother, note, status, enabled, email, chatgpt_account_id,
             chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
             last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
-            local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
+            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url, created_at, updated_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, NULL, NULL,
             NULL, NULL, ?8, ?9, NULL,
             NULL, NULL, NULL, NULL, NULL,
-            ?10, ?11, ?12, ?13, ?13
+            ?10, ?11, ?12, ?13, ?14, ?14
         ) RETURNING id
         "#,
     )
@@ -1571,6 +1580,7 @@ pub(crate) async fn create_api_key_account(
     .bind(payload.local_primary_limit)
     .bind(payload.local_secondary_limit)
     .bind(limit_unit)
+    .bind(upstream_base_url)
     .bind(&now_iso)
     .fetch_one(&mut *tx)
     .await
@@ -1638,6 +1648,9 @@ pub(crate) async fn update_upstream_account(
     if let Some(note) = payload.note {
         row.note = normalize_optional_text(Some(note));
     }
+    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX && payload.upstream_base_url.is_some() {
+        row.upstream_base_url = normalize_optional_upstream_base_url(payload.upstream_base_url)?;
+    }
     if let Some(enabled) = payload.enabled {
         row.enabled = if enabled { 1 } else { 0 };
     }
@@ -1689,7 +1702,8 @@ pub(crate) async fn update_upstream_account(
             local_primary_limit = ?9,
             local_secondary_limit = ?10,
             local_limit_unit = ?11,
-            updated_at = ?12
+            upstream_base_url = ?12,
+            updated_at = ?13
         WHERE id = ?1
         "#,
     )
@@ -1704,6 +1718,7 @@ pub(crate) async fn update_upstream_account(
     .bind(row.local_primary_limit)
     .bind(row.local_secondary_limit)
     .bind(&row.local_limit_unit)
+    .bind(&row.upstream_base_url)
     .bind(&now_iso)
     .execute(tx.as_mut())
     .await
@@ -3232,7 +3247,7 @@ async fn load_upstream_account_summaries(
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit,
+            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
             created_at, updated_at
         FROM pool_upstream_accounts
         ORDER BY updated_at DESC, id DESC
@@ -3305,6 +3320,7 @@ async fn load_upstream_account_detail(
             duplicate_info_map.get(&row.id).cloned(),
         ),
         note: row.note,
+        upstream_base_url: row.upstream_base_url,
         chatgpt_user_id: row.chatgpt_user_id,
         last_refreshed_at: row.last_refreshed_at,
         history,
@@ -3331,7 +3347,7 @@ async fn load_upstream_account_row_conn(
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit,
+            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
             created_at, updated_at
         FROM pool_upstream_accounts
         WHERE id = ?1
@@ -4423,6 +4439,36 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn normalize_optional_upstream_base_url(
+    value: Option<String>,
+) -> Result<Option<String>, (StatusCode, String)> {
+    let Some(raw) = normalize_optional_text(value) else {
+        return Ok(None);
+    };
+    let parsed = Url::parse(&raw).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "upstreamBaseUrl must be a valid absolute URL".to_string(),
+        )
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || parsed.cannot_be_a_base()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "upstreamBaseUrl must be a valid absolute URL".to_string(),
+        ));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "upstreamBaseUrl must not include query or fragment".to_string(),
+        ));
+    }
+    Ok(Some(parsed.to_string()))
+}
+
 fn normalize_required_secret(raw: &str, field_name: &str) -> Result<String, (StatusCode, String)> {
     let value = raw.trim();
     if value.is_empty() {
@@ -4666,6 +4712,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) display_name: String,
     pub(crate) kind: String,
     pub(crate) authorization: String,
+    pub(crate) upstream_base_url: Url,
 }
 
 #[derive(Debug, Clone)]
@@ -5088,6 +5135,13 @@ async fn prepare_pool_account(
     let Some(encrypted_credentials) = row.encrypted_credentials.as_deref() else {
         return Ok(None);
     };
+    let upstream_base_url = row
+        .upstream_base_url
+        .as_deref()
+        .map(Url::parse)
+        .transpose()
+        .context("account upstreamBaseUrl is invalid")?
+        .unwrap_or_else(|| state.config.openai_upstream_base_url.clone());
     let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
     match credentials {
         StoredCredentials::ApiKey(value) => Ok(Some(PoolResolvedAccount {
@@ -5095,6 +5149,7 @@ async fn prepare_pool_account(
             display_name: row.display_name.clone(),
             kind: row.kind.clone(),
             authorization: format!("Bearer {}", value.api_key),
+            upstream_base_url,
         })),
         StoredCredentials::Oauth(mut value) => {
             let expires_at = row.token_expires_at.as_deref().and_then(parse_rfc3339_utc);
@@ -5164,6 +5219,7 @@ async fn prepare_pool_account(
                 display_name: row.display_name.clone(),
                 kind: row.kind.clone(),
                 authorization: format!("Bearer {}", value.access_token),
+                upstream_base_url,
             }))
         }
     }

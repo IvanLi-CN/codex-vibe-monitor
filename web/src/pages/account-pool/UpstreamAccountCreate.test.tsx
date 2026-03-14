@@ -1021,3 +1021,39 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     );
   });
 });
+
+describe("UpstreamAccountCreatePage api key", () => {
+  it("submits upstreamBaseUrl for API key accounts", async () => {
+    const createApiKeyAccount = vi.fn().mockResolvedValue({
+      id: 42,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: null,
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+    });
+    mockUpstreamAccounts({ createApiKeyAccount });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    setInputValue(
+      'input[name="apiKeyUpstreamBaseUrl"]',
+      "https://proxy.example.com/gateway",
+    );
+
+    clickButton(/Create API Key account/i);
+    await flushAsync();
+
+    expect(createApiKeyAccount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayName: "Gateway Key",
+        apiKey: "sk-gateway",
+        upstreamBaseUrl: "https://proxy.example.com/gateway",
+      }),
+    );
+  });
+});

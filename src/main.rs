@@ -6222,7 +6222,7 @@ fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
 async fn send_pool_request_with_failover(
     state: Arc<AppState>,
     method: Method,
-    target_url: Url,
+    original_uri: &Uri,
     headers: &HeaderMap,
     body: Option<Bytes>,
     handshake_timeout: Duration,
@@ -6267,6 +6267,18 @@ async fn send_pool_request_with_failover(
             };
 
         excluded_ids.push(account.account_id);
+        let target_url = match build_proxy_upstream_url(&account.upstream_base_url, original_uri) {
+            Ok(url) => url,
+            Err(err) => {
+                return Err(PoolUpstreamError {
+                    account: Some(account),
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!("failed to build pool upstream url: {err}"),
+                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                    connect_latency_ms: 0.0,
+                });
+            }
+        };
         let client = match state.http_clients.client_for_parallelism(false) {
             Ok(client) => client,
             Err(err) => {
@@ -6525,8 +6537,8 @@ async fn request_matches_pool_route(state: &AppState, headers: &HeaderMap) -> Re
 async fn proxy_openai_v1_via_pool(
     state: Arc<AppState>,
     proxy_request_id: u64,
+    original_uri: &Uri,
     method: Method,
-    target_url: Url,
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, (StatusCode, String)> {
@@ -6549,7 +6561,7 @@ async fn proxy_openai_v1_via_pool(
     let upstream = send_pool_request_with_failover(
         state.clone(),
         method,
-        target_url,
+        original_uri,
         &headers,
         Some(body_bytes),
         handshake_timeout,
@@ -6565,7 +6577,7 @@ async fn proxy_openai_v1_via_pool(
     let rewritten_location = normalize_proxy_location_header(
         upstream_response.status(),
         upstream_response.headers(),
-        &state.config.openai_upstream_base_url,
+        &account.upstream_base_url,
     )
     .map_err(|err| {
         (
@@ -6862,8 +6874,8 @@ async fn proxy_openai_v1_inner(
             return proxy_openai_v1_via_pool(
                 state,
                 proxy_request_id,
+                &original_uri,
                 method,
-                target_url,
                 headers,
                 body,
             )
@@ -6927,6 +6939,7 @@ async fn proxy_openai_v1_inner(
         return proxy_openai_v1_capture_target(
             state,
             proxy_request_id,
+            &original_uri,
             headers,
             body,
             target,
@@ -6940,8 +6953,8 @@ async fn proxy_openai_v1_inner(
         return proxy_openai_v1_via_pool(
             state,
             proxy_request_id,
+            &original_uri,
             method,
-            target_url,
             headers,
             body,
         )
@@ -7342,6 +7355,7 @@ fn capture_target_for_request(path: &str, method: &Method) -> Option<ProxyCaptur
 async fn proxy_openai_v1_capture_target(
     state: Arc<AppState>,
     proxy_request_id: u64,
+    original_uri: &Uri,
     headers: HeaderMap,
     body: Body,
     capture_target: ProxyCaptureTarget,
@@ -7514,7 +7528,7 @@ async fn proxy_openai_v1_capture_target(
         match send_pool_request_with_failover(
             state.clone(),
             Method::POST,
-            target_url,
+            &original_uri,
             &upstream_headers,
             Some(upstream_body_bytes),
             handshake_timeout,

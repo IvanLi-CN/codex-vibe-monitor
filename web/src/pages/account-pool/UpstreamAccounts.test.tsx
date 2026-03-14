@@ -300,3 +300,112 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect((saveButton as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe("UpstreamAccountsPage api key details", () => {
+  it("saves api key upstreamBaseUrl from the detail drawer", async () => {
+    const saveAccount = vi.fn().mockResolvedValue({
+      id: 8,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+      note: null,
+      upstreamBaseUrl: "https://proxy.example.com/gateway",
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: "requests",
+      },
+    });
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex",
+          provider: "codex",
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: "https://proxy.example.com/gateway",
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: "requests",
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Open details/i);
+    setInputValue(
+      'input[name="detailUpstreamBaseUrl"]',
+      "https://proxy.example.com/gateway/v2",
+    );
+    clickButton(/Save changes/i);
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      8,
+      expect.objectContaining({
+        upstreamBaseUrl: "https://proxy.example.com/gateway/v2",
+      }),
+    );
+  });
+});
