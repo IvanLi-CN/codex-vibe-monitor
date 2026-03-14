@@ -33,7 +33,7 @@
 
 - 新增独立分组备注表，按标准化后的 `group_name` 存储共享备注与时间戳；只有存在至少一个账号引用该分组时才允许保留记录。
 - `GET /api/pool/upstream-accounts` 响应新增 `groups[]`，每项至少包含 `groupName` 与 `note`。
-- `POST /api/pool/upstream-accounts/oauth/login-sessions`、`POST /api/pool/upstream-accounts/api-keys`、`PATCH /api/pool/upstream-accounts/:id` 新增可选 `groupNote`，仅用于“当前还不存在实际账号的新分组草稿”随首次落库一起持久化；已存在分组必须使用专门的组备注保存接口。
+- `POST /api/pool/upstream-accounts/oauth/login-sessions`、`POST /api/pool/upstream-accounts/api-keys`、`PATCH /api/pool/upstream-accounts/:id` 新增可选 `groupNote`，仅用于“当前还不存在实际账号的新分组草稿”随首次落库一起持久化；若提交瞬间分组其实已经存在，后端必须忽略该草稿但继续完成账号操作；已存在分组的显式备注编辑必须使用专门的组备注保存接口。
 - 新增 `PUT /api/pool/upstream-account-groups/:groupName`，仅用于已存在分组的即时备注保存；若分组当前没有账号引用则返回明确错误。
 
 ### 生命周期
@@ -43,7 +43,7 @@
   - 若请求携带 `groupNote` 且组 B 仍是一个尚未落库的新分组，则把备注应用到目标组 B；
   - 若组 A 变成无账号引用，则清理组 A 的孤儿备注记录。
 - 删除账号后，若其所属分组已无其他账号引用，则同步清理对应组备注。
-- 新分组仅在前端保持页面级草稿；只有首个账号真正进入该分组后，后端才持久化该备注；若 OAuth 会话创建后该分组先被其他账号占用，则旧草稿不得覆盖现有共享备注。
+- 新分组仅在前端保持页面级草稿；只有首个账号真正进入该分组后，后端才持久化该备注；若 OAuth 会话创建后该分组先被其他账号占用，则旧草稿不得覆盖现有共享备注，且账号创建 / 更新 / OAuth 完成流程本身不能因为该陈旧草稿而失败。
 
 ### 前端交互
 

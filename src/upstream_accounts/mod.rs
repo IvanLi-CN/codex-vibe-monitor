@@ -1179,6 +1179,7 @@ pub(crate) async fn create_api_key_account(
         target_group_name.as_deref(),
         group_note,
         has_group_note,
+        false,
     )
     .await
     .map_err(internal_error_tuple)?;
@@ -1289,6 +1290,7 @@ pub(crate) async fn update_upstream_account(
             row.group_name.as_deref(),
             group_note,
             true,
+            previous_group_name == row.group_name,
         )
         .await
         .map_err(internal_error_tuple)?;
@@ -2147,6 +2149,7 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
             target_group_name.as_deref(),
             group_note,
             group_note_was_requested,
+            previous_group_name == target_group_name,
         )
         .await?;
         if previous_group_name != target_group_name {
@@ -2195,6 +2198,7 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
             target_group_name.as_deref(),
             group_note,
             group_note_was_requested,
+            false,
         )
         .await?;
         tx.commit().await?;
@@ -2512,6 +2516,7 @@ async fn save_group_note_after_account_write(
     group_name: Option<&str>,
     note: Option<String>,
     note_was_requested: bool,
+    target_group_already_had_current_account: bool,
 ) -> Result<()> {
     if !note_was_requested {
         return Ok(());
@@ -2519,6 +2524,9 @@ async fn save_group_note_after_account_write(
     let Some(group_name) = group_name else {
         return Ok(());
     };
+    if target_group_already_had_current_account {
+        return Ok(());
+    }
     if group_account_count_conn(conn, group_name).await? != 1 {
         return Ok(());
     }
@@ -4336,6 +4344,7 @@ mod tests {
             Some("prod"),
             Some("Shared prod note".to_string()),
             true,
+            false,
         )
         .await
         .expect("save group note");
@@ -4359,6 +4368,7 @@ mod tests {
             Some("prod"),
             Some("Shared prod note".to_string()),
             true,
+            false,
         )
         .await
         .expect("save group note");
@@ -4434,6 +4444,7 @@ mod tests {
             Some("prod"),
             Some("Stale shared note".to_string()),
             false,
+            false,
         )
         .await
         .expect("skip stale group note overwrite");
@@ -4460,9 +4471,35 @@ mod tests {
             Some("prod"),
             Some("Stale shared note".to_string()),
             true,
+            false,
         )
         .await
         .expect("skip stale shared note overwrite");
+
+        assert_eq!(
+            load_test_group_note(&pool, "prod").await.as_deref(),
+            Some("Fresh shared note")
+        );
+    }
+
+    #[tokio::test]
+    async fn save_group_note_after_account_write_skips_existing_unique_group_for_account_updates() {
+        let pool = group_note_test_pool().await;
+        insert_test_account(&pool, "Prod One", Some("prod")).await;
+        save_group_note_record(&pool, "prod", Some("Fresh shared note".to_string()))
+            .await
+            .expect("seed group note");
+        let mut conn = pool.acquire().await.expect("acquire pool connection");
+
+        save_group_note_after_account_write(
+            &mut conn,
+            Some("prod"),
+            Some("Overwritten shared note".to_string()),
+            true,
+            true,
+        )
+        .await
+        .expect("skip existing unique group update");
 
         assert_eq!(
             load_test_group_note(&pool, "prod").await.as_deref(),

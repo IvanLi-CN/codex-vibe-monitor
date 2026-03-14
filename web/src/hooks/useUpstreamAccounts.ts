@@ -174,13 +174,10 @@ export function useUpstreamAccounts() {
     async (groupName: string, payload: UpdateUpstreamAccountGroupPayload) => {
       const response = await updateUpstreamAccountGroup(groupName, payload)
       await loadList(selectedId)
-      if (selectedId != null) {
-        await loadDetail(selectedId)
-      }
       setError(null)
       return response
     },
-    [loadDetail, loadList, selectedId],
+    [loadList, selectedId],
   )
 
   const runSync = useCallback(
