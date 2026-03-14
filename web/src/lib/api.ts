@@ -904,6 +904,49 @@ export interface UpstreamAccountHistoryPoint {
   creditsBalance?: string | null
 }
 
+export interface TagRoutingRule {
+  guardEnabled: boolean
+  lookbackHours?: number | null
+  maxConversations?: number | null
+  allowCutOut: boolean
+  allowCutIn: boolean
+}
+
+export interface EffectiveConversationGuard {
+  tagId: number
+  tagName: string
+  lookbackHours: number
+  maxConversations: number
+}
+
+export interface EffectiveRoutingRule extends TagRoutingRule {
+  sourceTagIds: number[]
+  sourceTagNames: string[]
+  guardRules: EffectiveConversationGuard[]
+}
+
+export interface AccountTagSummary {
+  id: number
+  name: string
+  routingRule: TagRoutingRule
+}
+
+export interface TagSummary {
+  id: number
+  name: string
+  routingRule: TagRoutingRule
+  accountCount: number
+  groupCount: number
+  updatedAt: string
+}
+
+export type TagDetail = TagSummary
+
+export interface TagListResponse {
+  writesEnabled: boolean
+  items: TagSummary[]
+}
+
 export interface UpstreamAccountSummary {
   id: number
   kind: 'oauth_codex' | 'api_key_codex' | string
@@ -926,6 +969,8 @@ export interface UpstreamAccountSummary {
   secondaryWindow?: RateWindowSnapshot | null
   credits?: CreditsSnapshot | null
   localLimits?: LocalLimitSnapshot | null
+  tags: AccountTagSummary[]
+  effectiveRoutingRule: EffectiveRoutingRule
 }
 
 export interface UpstreamAccountDetail extends UpstreamAccountSummary {
@@ -972,6 +1017,7 @@ export interface CreateOauthLoginSessionPayload {
   note?: string
   groupNote?: string
   accountId?: number
+  tagIds?: number[]
   isMother?: boolean
 }
 
@@ -989,6 +1035,7 @@ export interface CreateApiKeyAccountPayload {
   localPrimaryLimit?: number
   localSecondaryLimit?: number
   localLimitUnit?: string
+  tagIds?: number[]
 }
 
 export interface UpdateUpstreamAccountPayload {
@@ -1002,6 +1049,21 @@ export interface UpdateUpstreamAccountPayload {
   localPrimaryLimit?: number | null
   localSecondaryLimit?: number | null
   localLimitUnit?: string | null
+  tagIds?: number[]
+}
+
+export interface CreateTagPayload extends TagRoutingRule {
+  name: string
+}
+
+export type UpdateTagPayload = Partial<CreateTagPayload>
+
+export interface FetchTagsQuery {
+  search?: string
+  hasAccounts?: boolean
+  guardEnabled?: boolean
+  allowCutIn?: boolean
+  allowCutOut?: boolean
 }
 
 export interface UpdateUpstreamAccountGroupPayload {
@@ -1044,6 +1106,76 @@ function normalizeLocalLimitSnapshot(raw: unknown): LocalLimitSnapshot | null {
   }
 }
 
+function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  return {
+    guardEnabled: payload.guardEnabled === true,
+    lookbackHours: normalizeFiniteNumber(payload.lookbackHours) ?? null,
+    maxConversations: normalizeFiniteNumber(payload.maxConversations) ?? null,
+    allowCutOut: payload.allowCutOut !== false,
+    allowCutIn: payload.allowCutIn !== false,
+  }
+}
+
+function normalizeEffectiveConversationGuard(raw: unknown): EffectiveConversationGuard | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const tagId = normalizeFiniteNumber(payload.tagId)
+  const tagName = typeof payload.tagName === 'string' ? payload.tagName : ''
+  const lookbackHours = normalizeFiniteNumber(payload.lookbackHours)
+  const maxConversations = normalizeFiniteNumber(payload.maxConversations)
+  if (tagId == null || !tagName || lookbackHours == null || maxConversations == null) return null
+  return { tagId, tagName, lookbackHours, maxConversations }
+}
+
+function normalizeAccountTagSummary(raw: unknown): AccountTagSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const id = normalizeFiniteNumber(payload.id)
+  const name = typeof payload.name === 'string' ? payload.name : ''
+  if (id == null || !name) return null
+  return {
+    id,
+    name,
+    routingRule: normalizeTagRoutingRule(payload.routingRule),
+  }
+}
+
+function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const sourceTagIds = Array.isArray(payload.sourceTagIds)
+    ? payload.sourceTagIds.map(normalizeFiniteNumber).filter((value): value is number => value != null)
+    : []
+  const sourceTagNames = Array.isArray(payload.sourceTagNames)
+    ? payload.sourceTagNames.filter((value): value is string => typeof value === 'string')
+    : []
+  const guardRules = Array.isArray(payload.guardRules)
+    ? payload.guardRules.map(normalizeEffectiveConversationGuard).filter((value): value is EffectiveConversationGuard => value != null)
+    : []
+  return {
+    ...normalizeTagRoutingRule(payload),
+    sourceTagIds,
+    sourceTagNames,
+    guardRules,
+  }
+}
+
+function normalizeTagSummary(raw: unknown): TagSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const id = normalizeFiniteNumber(payload.id)
+  const name = typeof payload.name === 'string' ? payload.name : ''
+  const accountCount = normalizeFiniteNumber(payload.accountCount)
+  const groupCount = normalizeFiniteNumber(payload.groupCount)
+  const updatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt : ''
+  if (id == null || !name || accountCount == null || groupCount == null || !updatedAt) return null
+  return {
+    id,
+    name,
+    routingRule: normalizeTagRoutingRule(payload.routingRule),
+    accountCount,
+    groupCount,
+    updatedAt,
+  }
+}
+
 function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary | null {
   const payload = (raw ?? {}) as Record<string, unknown>
   const id = normalizeFiniteNumber(payload.id)
@@ -1074,6 +1206,10 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
     secondaryWindow: normalizeRateWindowSnapshot(payload.secondaryWindow),
     credits: normalizeCreditsSnapshot(payload.credits),
     localLimits: normalizeLocalLimitSnapshot(payload.localLimits),
+    tags: Array.isArray(payload.tags)
+      ? payload.tags.map(normalizeAccountTagSummary).filter((item): item is AccountTagSummary => item != null)
+      : [],
+    effectiveRoutingRule: normalizeEffectiveRoutingRule(payload.effectiveRoutingRule),
   }
 }
 
@@ -1128,6 +1264,15 @@ function normalizeUpstreamAccountListResponse(raw: unknown): UpstreamAccountList
       .map(normalizeUpstreamAccountGroupSummary)
       .filter((item): item is UpstreamAccountGroupSummary => item != null),
     routing: normalizePoolRoutingSettings(payload.routing),
+  }
+}
+
+function normalizeTagListResponse(raw: unknown): TagListResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const itemsRaw = Array.isArray(payload.items) ? payload.items : []
+  return {
+    writesEnabled: payload.writesEnabled !== false,
+    items: itemsRaw.map(normalizeTagSummary).filter((item): item is TagSummary => item != null),
   }
 }
 
@@ -1295,6 +1440,41 @@ export async function fetchQuotaSnapshot() {
 export async function fetchUpstreamAccounts(): Promise<UpstreamAccountListResponse> {
   const response = await fetchJson<unknown>('/api/pool/upstream-accounts')
   return normalizeUpstreamAccountListResponse(response)
+}
+
+export async function fetchTags(query?: FetchTagsQuery): Promise<TagListResponse> {
+  const search = new URLSearchParams()
+  if (query?.search) search.set('search', query.search)
+  if (query?.hasAccounts != null) search.set('hasAccounts', String(query.hasAccounts))
+  if (query?.guardEnabled != null) search.set('guardEnabled', String(query.guardEnabled))
+  if (query?.allowCutIn != null) search.set('allowCutIn', String(query.allowCutIn))
+  if (query?.allowCutOut != null) search.set('allowCutOut', String(query.allowCutOut))
+  const response = await fetchJson<unknown>(search.size ? `/api/pool/tags?${search.toString()}` : '/api/pool/tags')
+  return normalizeTagListResponse(response)
+}
+
+export async function createTag(payload: CreateTagPayload): Promise<TagDetail> {
+  const response = await fetchJson<unknown>('/api/pool/tags', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  const normalized = normalizeTagSummary(response)
+  if (!normalized) throw new Error('Request failed: invalid tag payload')
+  return normalized
+}
+
+export async function updateTag(tagId: number, payload: UpdateTagPayload): Promise<TagDetail> {
+  const response = await fetchJson<unknown>(`/api/pool/tags/${tagId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+  const normalized = normalizeTagSummary(response)
+  if (!normalized) throw new Error('Request failed: invalid tag payload')
+  return normalized
+}
+
+export async function deleteTag(tagId: number): Promise<void> {
+  await fetchJson(`/api/pool/tags/${tagId}`, { method: 'DELETE' })
 }
 
 export async function updatePoolRoutingSettings(

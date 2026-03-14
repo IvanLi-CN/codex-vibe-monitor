@@ -6,8 +6,10 @@ import { SystemNotificationProvider } from './ui/system-notifications'
 import { I18nProvider } from '../i18n'
 import { useTheme } from '../theme/context'
 import type {
+  AccountTagSummary,
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
+  EffectiveRoutingRule,
   LoginSessionStatusResponse,
   UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
@@ -43,6 +45,17 @@ type StoryStore = {
 }
 
 const now = '2026-03-11T12:30:00.000Z'
+const defaultTags: AccountTagSummary[] = []
+const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
+  guardEnabled: false,
+  lookbackHours: null,
+  maxConversations: null,
+  allowCutOut: true,
+  allowCutIn: true,
+  sourceTagIds: [],
+  sourceTagNames: [],
+  guardRules: [],
+}
 
 function buildWindow(percent: number, durationMins: number, usedText: string, limitText: string, resetsAt: string) {
   return {
@@ -142,6 +155,8 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
       unlimited: false,
       balance: '11.80',
     },
+    tags: defaultTags,
+    effectiveRoutingRule: defaultEffectiveRoutingRule,
     localLimits: {
       primaryLimit: null,
       secondaryLimit: null,
@@ -185,6 +200,8 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
       unlimited: false,
       balance: null,
     },
+    tags: defaultTags,
+    effectiveRoutingRule: defaultEffectiveRoutingRule,
     localLimits: {
       primaryLimit,
       secondaryLimit,
@@ -224,6 +241,8 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     secondaryWindow: detail.secondaryWindow,
     credits: detail.credits,
     localLimits: detail.localLimits,
+    tags: detail.tags,
+    effectiveRoutingRule: detail.effectiveRoutingRule,
   }
 }
 

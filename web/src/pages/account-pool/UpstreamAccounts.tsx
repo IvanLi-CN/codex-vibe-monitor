@@ -19,11 +19,14 @@ import { Input } from '../../components/ui/input'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
+import { AccountTagField } from '../../components/AccountTagField'
+import { EffectiveRoutingRuleCard } from '../../components/EffectiveRoutingRuleCard'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
 import { UpstreamAccountUsageCard } from '../../components/UpstreamAccountUsageCard'
 import { StickyKeyConversationTable } from '../../components/StickyKeyConversationTable'
 import { UpstreamAccountsTable } from '../../components/UpstreamAccountsTable'
+import { usePoolTags } from '../../hooks/usePoolTags'
 import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotifications'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyConversations'
@@ -44,6 +47,7 @@ type AccountDraft = {
   groupName: string
   isMother: boolean
   note: string
+  tagIds: number[]
   localPrimaryLimit: string
   localSecondaryLimit: string
   localLimitUnit: string
@@ -93,6 +97,7 @@ function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
     groupName: detail?.groupName ?? '',
     isMother: detail?.isMother ?? false,
     note: detail?.note ?? '',
+    tagIds: detail?.tags?.map((tag) => tag.id) ?? [],
     localPrimaryLimit:
       detail?.localLimits?.primaryLimit == null ? '' : String(detail.localLimits.primaryLimit),
     localSecondaryLimit:
@@ -348,6 +353,7 @@ export default function UpstreamAccountsPage() {
     saveRouting,
     saveGroupNote,
   } = useUpstreamAccounts()
+  const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags()
   const notifyMotherSwitches = useMotherSwitchNotifications()
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
@@ -356,6 +362,7 @@ export default function UpstreamAccountsPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
+  const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
   const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
@@ -406,6 +413,18 @@ export default function UpstreamAccountsPage() {
     setIsDetailDrawerOpen(Boolean(state.openDetail))
     navigate(location.pathname, { replace: true, state: null })
   }, [location.pathname, location.state, navigate, selectAccount])
+
+  const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
+    const detail = await createTag(payload)
+    setPageCreatedTagIds((current) => (current.includes(detail.id) ? current : [...current, detail.id]))
+    return detail
+  }
+
+  const handleDeleteTag = async (tagId: number) => {
+    await deleteTag(tagId)
+    setPageCreatedTagIds((current) => current.filter((value) => value !== tagId))
+    setDraft((current) => ({ ...current, tagIds: current.tagIds.filter((value) => value !== tagId) }))
+  }
 
   const metrics = useMemo(() => {
     const oauthCount = items.filter((item) => item.kind === 'oauth_codex').length
@@ -545,6 +564,31 @@ export default function UpstreamAccountsPage() {
     kind === 'oauth_codex'
       ? t('accountPool.upstreamAccounts.kind.oauth')
       : t('accountPool.upstreamAccounts.kind.apiKey')
+  const tagFieldLabels = {
+    label: t('accountPool.tags.field.label'),
+    add: t('accountPool.tags.field.add'),
+    empty: t('accountPool.tags.field.empty'),
+    searchPlaceholder: t('accountPool.tags.field.searchPlaceholder'),
+    createInline: (value: string) => t('accountPool.tags.field.createInline', { value: value || t('accountPool.tags.field.newTag') }),
+    selectedFromCurrentPage: t('accountPool.tags.field.currentPage'),
+    remove: t('accountPool.tags.field.remove'),
+    deleteAndRemove: t('accountPool.tags.field.deleteAndRemove'),
+    edit: t('accountPool.tags.field.edit'),
+    createTitle: t('accountPool.tags.dialog.createTitle'),
+    editTitle: t('accountPool.tags.dialog.editTitle'),
+    dialogDescription: t('accountPool.tags.dialog.description'),
+    name: t('accountPool.tags.dialog.name'),
+    namePlaceholder: t('accountPool.tags.dialog.namePlaceholder'),
+    guardEnabled: t('accountPool.tags.dialog.guardEnabled'),
+    lookbackHours: t('accountPool.tags.dialog.lookbackHours'),
+    maxConversations: t('accountPool.tags.dialog.maxConversations'),
+    allowCutOut: t('accountPool.tags.dialog.allowCutOut'),
+    allowCutIn: t('accountPool.tags.dialog.allowCutIn'),
+    cancel: t('accountPool.tags.dialog.cancel'),
+    save: t('accountPool.tags.dialog.save'),
+    createAction: t('accountPool.tags.dialog.createAction'),
+    validation: t('accountPool.tags.dialog.validation'),
+  }
   const handleSelectAccount = (accountId: number) => {
     setIsDetailDrawerOpen(true)
     selectAccount(accountId)
@@ -571,6 +615,7 @@ export default function UpstreamAccountsPage() {
         groupName: draft.groupName.trim(),
         isMother: draft.isMother,
         note: draft.note.trim() || undefined,
+        tagIds: draft.tagIds,
         groupNote: resolvePendingGroupNoteForName(draft.groupName) || undefined,
         apiKey: source.kind === 'api_key_codex' && draft.apiKey.trim() ? draft.apiKey.trim() : undefined,
         localPrimaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localPrimaryLimit) : undefined,
@@ -951,6 +996,19 @@ export default function UpstreamAccountsPage() {
                         onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))}
                       />
                     </label>
+                    <div className="md:col-span-2">
+                      <AccountTagField
+                        tags={tagItems}
+                        selectedTagIds={draft.tagIds}
+                        writesEnabled={writesEnabled}
+                        pageCreatedTagIds={pageCreatedTagIds}
+                        labels={tagFieldLabels}
+                        onChange={(tagIds) => setDraft((current) => ({ ...current, tagIds }))}
+                        onCreateTag={handleCreateTag}
+                        onUpdateTag={updateTag}
+                        onDeleteTag={handleDeleteTag}
+                      />
+                    </div>
                     {detail.kind === 'api_key_codex' ? (
                       <>
                         <label className="field">
@@ -1019,6 +1077,24 @@ export default function UpstreamAccountsPage() {
                   />
                 </div>
 
+                <EffectiveRoutingRuleCard
+                  rule={detail.effectiveRoutingRule}
+                  labels={{
+                    title: t('accountPool.upstreamAccounts.effectiveRule.title'),
+                    description: t('accountPool.upstreamAccounts.effectiveRule.description'),
+                    noTags: t('accountPool.upstreamAccounts.effectiveRule.noTags'),
+                    guardEnabled: t('accountPool.upstreamAccounts.effectiveRule.guardEnabled'),
+                    guardDisabled: t('accountPool.upstreamAccounts.effectiveRule.guardDisabled'),
+                    allowCutOut: t('accountPool.upstreamAccounts.effectiveRule.allowCutOut'),
+                    denyCutOut: t('accountPool.upstreamAccounts.effectiveRule.denyCutOut'),
+                    allowCutIn: t('accountPool.upstreamAccounts.effectiveRule.allowCutIn'),
+                    denyCutIn: t('accountPool.upstreamAccounts.effectiveRule.denyCutIn'),
+                    sourceTags: t('accountPool.upstreamAccounts.effectiveRule.sourceTags'),
+                    guardRule: (hours, count) => t('accountPool.upstreamAccounts.effectiveRule.guardRule', { hours, count }),
+                    allGuardsApply: t('accountPool.upstreamAccounts.effectiveRule.allGuardsApply'),
+                  }}
+                />
+
                 <Card className="border-base-300/80 bg-base-100/72">
                   <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
@@ -1028,6 +1104,7 @@ export default function UpstreamAccountsPage() {
                     <label className="field w-36">
                       <span className="field-label">{t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}</span>
                       <select
+                        name="stickyConversationLimit"
                         className="field-select field-select-sm"
                         value={stickyConversationLimit}
                         onChange={(event) => setStickyConversationLimit(Number(event.target.value))}
