@@ -399,13 +399,30 @@ export default function UpstreamAccountCreatePage() {
     setBatchDefaultGroupName((previousDefault) => {
       const previousTrimmed = previousDefault.trim()
       const nextTrimmed = value.trim()
+      const affectedRowIds = new Set<string>()
       setBatchRows((current) =>
         current.map((row) => {
           if (row.busyAction || row.session?.status === 'completed') return row
           const inheritsDefault = !row.groupName.trim() || row.groupName === previousTrimmed
-          return inheritsDefault ? { ...row, groupName: nextTrimmed } : row
+          if (!inheritsDefault) return row
+          const nextRow = { ...row, groupName: nextTrimmed }
+          if (row.session && row.session.status !== 'completed') {
+            affectedRowIds.add(row.id)
+            return {
+              ...nextRow,
+              callbackUrl: '',
+              session: null,
+              sessionHint: t('accountPool.upstreamAccounts.batchOauth.regenerateRequired'),
+              actionError: null,
+              busyAction: null,
+            }
+          }
+          return nextRow
         }),
       )
+      if (affectedRowIds.size > 0) {
+        setBatchManualCopyRowId((current) => (current && affectedRowIds.has(current) ? null : current))
+      }
       return value
     })
   }

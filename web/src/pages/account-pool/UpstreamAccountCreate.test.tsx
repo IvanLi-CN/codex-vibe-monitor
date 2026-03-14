@@ -288,6 +288,33 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(updatedGroupInputs[5]?.value).toBe('prod')
   })
 
+  it('clears pending row sessions when the default group rewrites inherited rows', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'group-a')
+    await flushAsync()
+
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'group-b')
+    await flushAsync()
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true)
+    expect(host?.textContent).toContain('Metadata changed. Generate a fresh OAuth URL for this row before completing login.')
+  })
+
   it('clears a pending row session when metadata changes', async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: 'login-1',

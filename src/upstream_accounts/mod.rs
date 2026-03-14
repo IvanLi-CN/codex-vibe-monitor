@@ -852,16 +852,17 @@ pub(crate) async fn update_upstream_account_group(
     })?;
     let note = normalize_optional_text(payload.note);
 
-    if !group_has_accounts(&state.pool, &group_name)
+    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
+    if !group_has_accounts_conn(tx.as_mut(), &group_name)
         .await
         .map_err(internal_error_tuple)?
     {
         return Err((StatusCode::NOT_FOUND, "group not found".to_string()));
     }
-
-    save_group_note_record(&state.pool, &group_name, note.clone())
+    save_group_note_record_conn(tx.as_mut(), &group_name, note.clone())
         .await
         .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
 
     Ok(Json(UpstreamAccountGroupSummary { group_name, note }))
 }
@@ -2487,6 +2488,7 @@ async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) 
     Ok(group_account_count_conn(conn, group_name).await? > 0)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 async fn save_group_note_record(
     pool: &Pool<Sqlite>,
     group_name: &str,
