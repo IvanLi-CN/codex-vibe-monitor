@@ -11,8 +11,10 @@ import { Spinner } from '../../components/ui/spinner'
 import { Tooltip } from '../../components/ui/tooltip'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
+import { MotherAccountToggle } from '../../components/MotherAccountToggle'
+import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotifications'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
-import type { LoginSessionStatusResponse } from '../../lib/api'
+import type { LoginSessionStatusResponse, UpstreamAccountSummary } from '../../lib/api'
 import { copyText, selectAllReadonlyText } from '../../lib/clipboard'
 import {
   buildGroupNameSuggestions,
@@ -20,6 +22,7 @@ import {
   normalizeGroupName,
   resolveGroupNote,
 } from '../../lib/upstreamAccountGroups'
+import { applyMotherUpdateToItems, normalizeMotherGroupKey } from '../../lib/upstreamMother'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
@@ -36,6 +39,7 @@ type BatchOauthRow = {
   id: string
   displayName: string
   groupName: string
+  isMother: boolean
   note: string
   noteExpanded: boolean
   callbackUrl: string
@@ -86,6 +90,7 @@ function createBatchOauthRow(id: string, groupName = ''): BatchOauthRow {
     id,
     displayName: '',
     groupName,
+    isMother: false,
     note: '',
     noteExpanded: false,
     callbackUrl: '',
@@ -94,6 +99,30 @@ function createBatchOauthRow(id: string, groupName = ''): BatchOauthRow {
     actionError: null,
     busyAction: null,
   }
+}
+
+function applyBatchMotherDraftRules(rows: BatchOauthRow[], changedRowId: string) {
+  const changedRow = rows.find((row) => row.id === changedRowId)
+  if (!changedRow?.isMother) return rows
+  const groupKey = normalizeMotherGroupKey(changedRow.groupName)
+  return rows.map((row) =>
+    row.id !== changedRowId && row.isMother && normalizeMotherGroupKey(row.groupName) === groupKey
+      ? { ...row, isMother: false }
+      : row,
+  )
+}
+
+function enforceBatchMotherDraftUniqueness(rows: BatchOauthRow[]) {
+  const winners = new Map<string, string>()
+  for (const row of rows) {
+    if (!row.isMother) continue
+    winners.set(normalizeMotherGroupKey(row.groupName), row.id)
+  }
+  return rows.map((row) =>
+    row.isMother && winners.get(normalizeMotherGroupKey(row.groupName)) !== row.id
+      ? { ...row, isMother: false }
+      : row,
+  )
 }
 
 function batchStatusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
@@ -130,7 +159,7 @@ export default function UpstreamAccountCreatePage() {
   const location = useLocation()
   const {
     items,
-    groups,
+    groups = [],
     writesEnabled,
     isLoading,
     error,
@@ -140,6 +169,7 @@ export default function UpstreamAccountCreatePage() {
     createApiKeyAccount,
     saveGroupNote,
   } = useUpstreamAccounts()
+  const notifyMotherSwitches = useMotherSwitchNotifications()
 
   const relinkAccountId = useMemo(() => parseAccountId(location.search), [location.search])
   const relinkSummary = useMemo(
@@ -151,10 +181,12 @@ export default function UpstreamAccountCreatePage() {
   const [activeTab, setActiveTab] = useState<CreateTab>(() => (isRelinking ? 'oauth' : parseCreateMode(location.search)))
   const [oauthDisplayName, setOauthDisplayName] = useState('')
   const [oauthGroupName, setOauthGroupName] = useState('')
+  const [oauthIsMother, setOauthIsMother] = useState(false)
   const [oauthNote, setOauthNote] = useState('')
   const [oauthCallbackUrl, setOauthCallbackUrl] = useState('')
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState('')
   const [apiKeyGroupName, setApiKeyGroupName] = useState('')
+  const [apiKeyIsMother, setApiKeyIsMother] = useState(false)
   const [apiKeyNote, setApiKeyNote] = useState('')
   const [apiKeyValue, setApiKeyValue] = useState('')
   const [apiKeyPrimaryLimit, setApiKeyPrimaryLimit] = useState('')
@@ -201,6 +233,7 @@ export default function UpstreamAccountCreatePage() {
     setActiveTab('oauth')
     setOauthDisplayName((current) => current || relinkSummary.displayName)
     setOauthGroupName((current) => current || relinkSummary.groupName || '')
+    setOauthIsMother((current) => current || relinkSummary.isMother)
   }, [isRelinking, relinkSummary])
 
   useEffect(() => {
@@ -305,7 +338,14 @@ export default function UpstreamAccountCreatePage() {
   }
 
   const updateBatchRow = (rowId: string, updater: (row: BatchOauthRow) => BatchOauthRow) => {
-    setBatchRows((current) => current.map((row) => (row.id === rowId ? updater(row) : row)))
+    setBatchRows((current) =>
+      enforceBatchMotherDraftUniqueness(
+        applyBatchMotherDraftRules(
+          current.map((row) => (row.id === rowId ? updater(row) : row)),
+          rowId,
+        ),
+      ),
+    )
   }
 
   const invalidatePendingOauthSessionsForDraftGroup = useCallback(
@@ -404,24 +444,26 @@ export default function UpstreamAccountCreatePage() {
       const nextTrimmed = value.trim()
       const affectedRowIds = new Set<string>()
       setBatchRows((current) =>
-        current.map((row) => {
-          if (row.busyAction || row.session?.status === 'completed') return row
-          const inheritsDefault = !row.groupName.trim() || row.groupName === previousTrimmed
-          if (!inheritsDefault) return row
-          const nextRow = { ...row, groupName: nextTrimmed }
-          if (row.session && row.session.status !== 'completed') {
+        enforceBatchMotherDraftUniqueness(
+          current.map((row) => {
+            if (row.busyAction || row.session?.status === 'completed') return row
+            const inheritsDefault = !row.groupName.trim() || row.groupName === previousTrimmed
+            if (!inheritsDefault) return row
+            if (!row.session) {
+              return { ...row, groupName: nextTrimmed }
+            }
             affectedRowIds.add(row.id)
             return {
-              ...nextRow,
+              ...row,
+              groupName: nextTrimmed,
               callbackUrl: '',
               session: null,
               sessionHint: t('accountPool.upstreamAccounts.batchOauth.regenerateRequired'),
               actionError: null,
               busyAction: null,
             }
-          }
-          return nextRow
-        }),
+          }),
+        ),
       )
       if (affectedRowIds.size > 0) {
         setBatchManualCopyRowId((current) => (current && affectedRowIds.has(current) ? null : current))
@@ -437,6 +479,11 @@ export default function UpstreamAccountCreatePage() {
     navigate(`${location.pathname}${search}`, { replace: true })
   }
 
+  const notifyMotherChange = (updated: UpstreamAccountSummary) => {
+    const nextItems = applyMotherUpdateToItems(items, updated)
+    notifyMotherSwitches(items, nextItems)
+  }
+
   const handleGenerateOauthUrl = async () => {
     setActionError(null)
     setSessionHint(null)
@@ -448,6 +495,7 @@ export default function UpstreamAccountCreatePage() {
         note: oauthNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName) || undefined,
         accountId: relinkAccountId ?? undefined,
+        isMother: oauthIsMother,
       })
       setSession(response)
       setManualCopyOpen(false)
@@ -488,6 +536,7 @@ export default function UpstreamAccountCreatePage() {
       const detail = await completeOauthLogin(session.loginId, {
         callbackUrl: oauthCallbackUrl.trim(),
       })
+      notifyMotherChange(detail)
       setSession({
         ...session,
         status: 'completed',
@@ -524,6 +573,7 @@ export default function UpstreamAccountCreatePage() {
         groupName: row.groupName.trim() || undefined,
         note: row.note.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
+        isMother: row.isMother,
       })
       setBatchManualCopyRowId((current) => (current === rowId ? null : current))
       updateBatchRow(rowId, (current) => ({
@@ -583,6 +633,7 @@ export default function UpstreamAccountCreatePage() {
       const detail = await completeOauthLogin(row.session.loginId, {
         callbackUrl: row.callbackUrl.trim(),
       })
+      notifyMotherChange(detail)
       updateBatchRow(rowId, (current) => {
         const baseSession = (current.session ?? row.session) as LoginSessionStatusResponse
         return {
@@ -601,6 +652,7 @@ export default function UpstreamAccountCreatePage() {
             name: detail.displayName || current.displayName || `#${detail.id}`,
           }),
           actionError: null,
+          isMother: detail.isMother,
         }
       })
     } catch (err) {
@@ -637,10 +689,12 @@ export default function UpstreamAccountCreatePage() {
         note: apiKeyNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
         apiKey: apiKeyValue.trim(),
+        isMother: apiKeyIsMother,
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
         localSecondaryLimit: normalizeNumberInput(apiKeySecondaryLimit),
         localLimitUnit: apiKeyLimitUnit.trim() || 'requests',
       })
+      notifyMotherChange(response)
       navigate('/account-pool/upstream-accounts', {
         state: {
           selectedAccountId: response.id,
@@ -859,6 +913,13 @@ export default function UpstreamAccountCreatePage() {
                       </Button>
                     </div>
                   </label>
+                  <MotherAccountToggle
+                    checked={oauthIsMother}
+                    disabled={!writesEnabled}
+                    label={t('accountPool.upstreamAccounts.mother.toggleLabel')}
+                    description={t('accountPool.upstreamAccounts.mother.toggleDescription')}
+                    onToggle={() => setOauthIsMother((current) => !current)}
+                  />
                   <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
                     <textarea
@@ -1232,6 +1293,26 @@ export default function UpstreamAccountCreatePage() {
                                             )}
                                           </Button>
                                         </Tooltip>
+                                        <Tooltip
+                                          content={buildActionTooltip(
+                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.motherTitle'),
+                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.motherBody'),
+                                          )}
+                                        >
+                                          <MotherAccountToggle
+                                            checked={row.isMother}
+                                            disabled={rowLocked || !writesEnabled}
+                                            iconOnly
+                                            label={t('accountPool.upstreamAccounts.mother.badge')}
+                                            ariaLabel={t('accountPool.upstreamAccounts.batchOauth.actions.toggleMother')}
+                                            onToggle={() =>
+                                              updateBatchRow(row.id, (current) => ({
+                                                ...current,
+                                                isMother: !current.isMother,
+                                              }))
+                                            }
+                                          />
+                                        </Tooltip>
                                       </div>
                                       <div className="ml-auto flex shrink-0 items-center gap-2">
                                         <Badge variant={batchStatusVariant(status)}>
@@ -1311,6 +1392,15 @@ export default function UpstreamAccountCreatePage() {
                       </Button>
                     </div>
                   </label>
+                  <div className="md:col-span-2">
+                    <MotherAccountToggle
+                      checked={apiKeyIsMother}
+                      disabled={!writesEnabled}
+                      label={t('accountPool.upstreamAccounts.mother.toggleLabel')}
+                      description={t('accountPool.upstreamAccounts.mother.toggleDescription')}
+                      onToggle={() => setApiKeyIsMother((current) => !current)}
+                    />
+                  </div>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.apiKey')}</span>
                     <Input

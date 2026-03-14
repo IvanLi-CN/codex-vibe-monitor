@@ -3,12 +3,16 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { SystemNotificationProvider } from '../../components/ui/system-notifications'
 import { I18nProvider } from '../../i18n'
 import UpstreamAccountCreatePage from './UpstreamAccountCreate'
 
 const navigateMock = vi.hoisted(() => vi.fn())
 const hookMocks = vi.hoisted(() => ({
   useUpstreamAccounts: vi.fn(),
+}))
+const apiMocks = vi.hoisted(() => ({
+  updateUpstreamAccount: vi.fn().mockResolvedValue({}),
 }))
 
 vi.mock('react-router-dom', async () => {
@@ -22,6 +26,14 @@ vi.mock('react-router-dom', async () => {
 vi.mock('../../hooks/useUpstreamAccounts', () => ({
   useUpstreamAccounts: hookMocks.useUpstreamAccounts,
 }))
+
+vi.mock('../../lib/api', async () => {
+  const actual = await vi.importActual<typeof import('../../lib/api')>('../../lib/api')
+  return {
+    ...actual,
+    updateUpstreamAccount: apiMocks.updateUpstreamAccount,
+  }
+})
 
 let host: HTMLDivElement | null = null
 let root: Root | null = null
@@ -76,6 +88,7 @@ afterEach(() => {
   host = null
   root = null
   navigateMock.mockReset()
+  apiMocks.updateUpstreamAccount.mockReset()
   vi.clearAllMocks()
 })
 
@@ -86,11 +99,13 @@ function render(initialEntry = '/account-pool/upstream-accounts/new') {
   act(() => {
     root?.render(
       <I18nProvider>
-        <MemoryRouter initialEntries={[initialEntry]}>
-          <Routes>
-            <Route path="/account-pool/upstream-accounts/new" element={<UpstreamAccountCreatePage />} />
-          </Routes>
-        </MemoryRouter>
+        <SystemNotificationProvider>
+          <MemoryRouter initialEntries={[initialEntry]}>
+            <Routes>
+              <Route path="/account-pool/upstream-accounts/new" element={<UpstreamAccountCreatePage />} />
+            </Routes>
+          </MemoryRouter>
+        </SystemNotificationProvider>
       </I18nProvider>,
     )
   })
@@ -152,6 +167,15 @@ function findButtons(matcher: RegExp) {
   ) as HTMLButtonElement[]
 }
 
+function clickElement(element: Element | null | undefined) {
+  if (!(element instanceof HTMLElement)) {
+    throw new Error('missing clickable element')
+  }
+  act(() => {
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
 function getBatchRows() {
   return host?.querySelectorAll('[data-testid^="batch-oauth-row-"]') ?? []
 }
@@ -206,6 +230,7 @@ function mockUpstreamAccounts(overrides: Partial<ReturnType<typeof hookMocks.use
         provider: 'codex',
         displayName: 'Existing OAuth',
         groupName: 'prod',
+        isMother: true,
         status: 'active',
         enabled: true,
       },
@@ -237,7 +262,17 @@ function mockUpstreamAccounts(overrides: Partial<ReturnType<typeof hookMocks.use
       accountId: null,
       error: null,
     }),
-    completeOauthLogin: vi.fn().mockResolvedValue({ id: 41, displayName: 'Row One' }),
+    completeOauthLogin: vi.fn().mockResolvedValue({
+      id: 41,
+      kind: 'oauth_codex',
+      provider: 'codex',
+      displayName: 'Row One',
+      groupName: 'prod',
+      isMother: true,
+      status: 'active',
+      enabled: true,
+      history: [],
+    }),
     createApiKeyAccount: vi.fn(),
     saveGroupNote: vi.fn(),
     ...overrides,
@@ -353,11 +388,38 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
       groupName: undefined,
       groupNote: undefined,
       note: undefined,
+      isMother: false,
     })
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
 
     clickButton(/Expand note/i)
     setInputValue('input[name^="batchOauthNote-"]', 'Needs a new login')
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true)
+    expect(host?.textContent).toContain('Metadata changed. Generate a fresh OAuth URL for this row before completing login.')
+  })
+
+  it('invalidates inherited pending sessions when the header default group changes', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'prod')
+    await flushAsync()
+    setInputValue('input[name^="batchOauthDisplayName-"]', 'Row One')
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'ops')
+    await flushAsync()
 
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true)
     expect(host?.textContent).toContain('Metadata changed. Generate a fresh OAuth URL for this row before completing login.')
@@ -384,7 +446,17 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
         accountId: null,
         error: null,
       })
-    const completeOauthLogin = vi.fn().mockResolvedValue({ id: 41, displayName: 'Row One' })
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      kind: 'oauth_codex',
+      provider: 'codex',
+      displayName: 'Row One',
+      groupName: null,
+      isMother: false,
+      status: 'active',
+      enabled: true,
+      history: [],
+    })
     mockUpstreamAccounts({ beginOauthLogin, completeOauthLogin })
     render('/account-pool/upstream-accounts/new?mode=batchOauth')
 
@@ -469,6 +541,7 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
       groupName: 'prod',
       groupNote: undefined,
       note: undefined,
+      isMother: false,
     })
   })
 
@@ -502,6 +575,7 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
       groupName: 'new-team',
       groupNote: 'Draft shared group note',
       note: undefined,
+      isMother: false,
     })
   })
 
@@ -533,6 +607,72 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
 
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true)
     expect(host?.textContent).toContain('Metadata changed. Generate a fresh OAuth URL for this row before completing login.')
+  })
+
+  it('keeps the mother crown unique within the same draft group', async () => {
+    mockUpstreamAccounts()
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'prod')
+    await flushAsync()
+
+    const rows = Array.from(getBatchRows())
+    const firstToggle = rows[0]?.querySelector('button[aria-label="Toggle mother account"]')
+    const secondToggle = rows[1]?.querySelector('button[aria-label="Toggle mother account"]')
+
+    clickElement(firstToggle)
+    expect(firstToggle?.getAttribute('aria-pressed')).toBe('true')
+
+    clickElement(secondToggle)
+    expect(firstToggle?.getAttribute('aria-pressed')).toBe('false')
+    expect(secondToggle?.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('shows an undo notification after a mother switch and replays the previous owner on undo', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      kind: 'oauth_codex',
+      provider: 'codex',
+      displayName: 'Row One',
+      groupName: 'prod',
+      isMother: true,
+      status: 'active',
+      enabled: true,
+      history: [],
+    })
+    mockUpstreamAccounts({ beginOauthLogin, completeOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setInputValue('input[name^="batchOauthDisplayName-"]', 'Row One')
+    setComboboxValue('input[name^="batchOauthGroupName-"]', 'prod')
+    await flushAsync()
+
+    const firstRow = Array.from(getBatchRows())[0]
+    clickElement(firstRow?.querySelector('button[aria-label="Toggle mother account"]'))
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+
+    setInputValue('input[name^="batchOauthCallbackUrl-"]', 'http://localhost:1455/oauth/callback?code=row-one')
+    clickButton(/Complete OAuth login/i)
+    await flushAsync()
+
+    expect(document.body.textContent).toContain('Mother account updated')
+    const undoButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
+      /^Undo$/i.test(button.textContent || ''),
+    )
+    clickElement(undoButton)
+    await flushAsync()
+
+    expect(apiMocks.updateUpstreamAccount).toHaveBeenCalledWith(5, { isMother: true })
   })
 })
 

@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
+import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
@@ -23,6 +24,7 @@ import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccount
 import { UpstreamAccountUsageCard } from '../../components/UpstreamAccountUsageCard'
 import { StickyKeyConversationTable } from '../../components/StickyKeyConversationTable'
 import { UpstreamAccountsTable } from '../../components/UpstreamAccountsTable'
+import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotifications'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyConversations'
 import type { UpstreamAccountDetail, UpstreamAccountSummary } from '../../lib/api'
@@ -32,12 +34,15 @@ import {
   normalizeGroupName,
   resolveGroupNote,
 } from '../../lib/upstreamAccountGroups'
+import { generatePoolRoutingKey } from '../../lib/poolRouting'
+import { applyMotherUpdateToItems } from '../../lib/upstreamMother'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
 type AccountDraft = {
   displayName: string
   groupName: string
+  isMother: boolean
   note: string
   localPrimaryLimit: string
   localSecondaryLimit: string
@@ -86,6 +91,7 @@ function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
   return {
     displayName: detail?.displayName ?? '',
     groupName: detail?.groupName ?? '',
+    isMother: detail?.isMother ?? false,
     note: detail?.note ?? '',
     localPrimaryLimit:
       detail?.localLimits?.primaryLimit == null ? '' : String(detail.localLimits.primaryLimit),
@@ -222,6 +228,7 @@ function RoutingSettingsDialog({
   description,
   closeLabel,
   apiKeyLabel,
+  generateLabel,
   apiKeyPlaceholder,
   cancelLabel,
   saveLabel,
@@ -229,6 +236,7 @@ function RoutingSettingsDialog({
   busy,
   writesEnabled,
   onApiKeyChange,
+  onGenerate,
   onClose,
   onSave,
 }: {
@@ -237,6 +245,7 @@ function RoutingSettingsDialog({
   description: string
   closeLabel: string
   apiKeyLabel: string
+  generateLabel: string
   apiKeyPlaceholder: string
   cancelLabel: string
   saveLabel: string
@@ -244,10 +253,12 @@ function RoutingSettingsDialog({
   busy: boolean
   writesEnabled: boolean
   onApiKeyChange: (value: string) => void
+  onGenerate: () => void
   onClose: () => void
   onSave: () => void
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const inputId = 'pool-routing-secret-input'
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
@@ -272,9 +283,18 @@ function RoutingSettingsDialog({
           <DialogCloseIcon aria-label={closeLabel} disabled={busy} />
         </div>
         <div className="space-y-4 px-6 py-6">
-          <label className="field">
-            <span className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">{apiKeyLabel}</span>
+          <div className="field">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+              <label htmlFor={inputId} className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                {apiKeyLabel}
+              </label>
+              <Button type="button" variant="outline" size="sm" onClick={onGenerate} disabled={busy || !writesEnabled}>
+                <Icon icon="mdi:auto-fix" className="mr-2 h-4 w-4" aria-hidden />
+                {generateLabel}
+              </Button>
+            </div>
             <Input
+              id={inputId}
               ref={inputRef}
               name="poolRoutingSecret"
               type="text"
@@ -289,7 +309,7 @@ function RoutingSettingsDialog({
               data-lpignore="true"
               className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono placeholder:text-base-content/58"
             />
-          </label>
+          </div>
         </div>
         <DialogFooter className="border-t border-base-300/80 px-6 py-5">
           <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
@@ -311,7 +331,7 @@ export default function UpstreamAccountsPage() {
   const navigate = useNavigate()
   const {
     items,
-    groups,
+    groups = [],
     writesEnabled,
     selectedId,
     selectedSummary,
@@ -328,6 +348,7 @@ export default function UpstreamAccountsPage() {
     saveRouting,
     saveGroupNote,
   } = useUpstreamAccounts()
+  const notifyMotherSwitches = useMotherSwitchNotifications()
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
@@ -536,13 +557,19 @@ export default function UpstreamAccountsPage() {
     navigate(`/account-pool/upstream-accounts/new?accountId=${accountId}`)
   }
 
+  const notifyMotherChange = (updated: UpstreamAccountSummary) => {
+    const nextItems = applyMotherUpdateToItems(items, updated)
+    notifyMotherSwitches(items, nextItems)
+  }
+
   const handleSave = async (source: UpstreamAccountDetail) => {
     setActionError(null)
     setBusyAction('save')
     try {
-      await saveAccount(source.id, {
+      const response = await saveAccount(source.id, {
         displayName: draft.displayName.trim() || undefined,
         groupName: draft.groupName.trim(),
+        isMother: draft.isMother,
         note: draft.note.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(draft.groupName) || undefined,
         apiKey: source.kind === 'api_key_codex' && draft.apiKey.trim() ? draft.apiKey.trim() : undefined,
@@ -550,6 +577,7 @@ export default function UpstreamAccountsPage() {
         localSecondaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localSecondaryLimit) : undefined,
         localLimitUnit: source.kind === 'api_key_codex' ? draft.localLimitUnit.trim() || undefined : undefined,
       })
+      notifyMotherChange(response)
       setDraft((current) => ({ ...current, apiKey: '' }))
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
@@ -755,6 +783,7 @@ export default function UpstreamAccountsPage() {
                 nextReset: t('accountPool.upstreamAccounts.table.nextReset'),
                 oauth: t('accountPool.upstreamAccounts.kind.oauth'),
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
+                mother: t('accountPool.upstreamAccounts.mother.badge'),
                 status: accountStatusLabel,
               }}
             />
@@ -768,6 +797,7 @@ export default function UpstreamAccountsPage() {
         description={t('accountPool.upstreamAccounts.routing.dialogDescription')}
         closeLabel={t('accountPool.upstreamAccounts.routing.close')}
         apiKeyLabel={t('accountPool.upstreamAccounts.routing.apiKeyLabel')}
+        generateLabel={t('accountPool.upstreamAccounts.routing.generate')}
         apiKeyPlaceholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
         cancelLabel={t('accountPool.upstreamAccounts.actions.cancel')}
         saveLabel={t('accountPool.upstreamAccounts.routing.save')}
@@ -775,6 +805,7 @@ export default function UpstreamAccountsPage() {
         busy={busyAction === 'routing'}
         writesEnabled={writesEnabled}
         onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}
+        onGenerate={() => setRoutingDraft((current) => ({ ...current, apiKey: generatePoolRoutingKey() }))}
         onClose={() => {
           setRoutingDraft(buildRoutingDraft(routing?.maskedApiKey))
           setIsRoutingDialogOpen(false)
@@ -814,7 +845,10 @@ export default function UpstreamAccountsPage() {
                   ) : null}
                 </div>
                 <div className="section-heading">
-                  <h3 className="section-title">{selected.displayName}</h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="section-title">{selected.displayName}</h3>
+                    {selected.isMother ? <MotherAccountBadge label={t('accountPool.upstreamAccounts.mother.badge')} /> : null}
+                  </div>
                   <p className="section-description">
                     {selected.email ?? selected.maskedApiKey ?? t('accountPool.upstreamAccounts.identityUnavailable')}
                   </p>
@@ -851,6 +885,10 @@ export default function UpstreamAccountsPage() {
               <div className="grid gap-5">
                 <div className="metric-grid">
                   <DetailField label={t('accountPool.upstreamAccounts.fields.groupName')} value={detail.groupName ?? ''} />
+                  <DetailField
+                    label={t('accountPool.upstreamAccounts.mother.fieldLabel')}
+                    value={detail.isMother ? t('accountPool.upstreamAccounts.mother.badge') : t('accountPool.upstreamAccounts.mother.notMother')}
+                  />
                   <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={detail.email ?? ''} />
                   <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={detail.chatgptAccountId ?? detail.maskedApiKey ?? ''} />
                   <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={detail.chatgptUserId ?? ''} />
@@ -895,6 +933,15 @@ export default function UpstreamAccountsPage() {
                       </Button>
                     </div>
                   </label>
+                  <div className="md:col-span-2">
+                    <MotherAccountToggle
+                      checked={draft.isMother}
+                      disabled={!writesEnabled}
+                      label={t('accountPool.upstreamAccounts.mother.toggleLabel')}
+                      description={t('accountPool.upstreamAccounts.mother.toggleDescription')}
+                      onToggle={() => setDraft((current) => ({ ...current, isMother: !current.isMother }))}
+                    />
+                  </div>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
                       <textarea

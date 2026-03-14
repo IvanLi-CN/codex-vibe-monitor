@@ -51,7 +51,7 @@ function DialogHarness({ note: initialNote, ...args }: DialogHarnessProps) {
 
 const meta = {
   title: 'Account Pool/Components/Upstream Account Group Note Dialog',
-  component: UpstreamAccountGroupNoteDialog,
+  component: DialogHarness,
   tags: ['autodocs'],
   parameters: {
     layout: 'fullscreen',
@@ -64,7 +64,7 @@ const meta = {
     busy: false,
     error: null,
   },
-} satisfies Meta<typeof UpstreamAccountGroupNoteDialog>
+} satisfies Meta<typeof DialogHarness>
 
 export default meta
 

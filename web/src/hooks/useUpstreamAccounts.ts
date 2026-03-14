@@ -25,6 +25,7 @@ import {
   type UpstreamAccountSummary,
 } from '../lib/api'
 import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
+import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
 
 export function useUpstreamAccounts() {
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
@@ -102,6 +103,16 @@ export function useUpstreamAccounts() {
     await loadDetail(selectedId)
   }, [loadDetail, loadList, selectedId])
 
+  useEffect(() => {
+    const handleChanged = () => {
+      void refresh()
+    }
+    window.addEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged)
+    return () => {
+      window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged)
+    }
+  }, [refresh])
+
   const selectAccount = useCallback((accountId: number) => {
     setSelectedId(accountId)
   }, [])
@@ -137,6 +148,7 @@ export function useUpstreamAccounts() {
       setDetail(response)
       setSelectedId(response.id)
       setError(null)
+      emitUpstreamAccountsChanged()
       return response
     },
     [loadList],
@@ -149,6 +161,7 @@ export function useUpstreamAccounts() {
       await loadDetail(response.id)
       setSelectedId(response.id)
       setError(null)
+      emitUpstreamAccountsChanged()
       return response
     },
     [loadDetail, loadList],
@@ -161,6 +174,7 @@ export function useUpstreamAccounts() {
       setDetail(response)
       setSelectedId(accountId)
       setError(null)
+      emitUpstreamAccountsChanged()
       return response
     },
     [loadList],
@@ -178,6 +192,7 @@ export function useUpstreamAccounts() {
       const response = await updateUpstreamAccountGroup(groupName, payload)
       setGroups((current) => upsertGroupSummary(current, response))
       await loadList(selectedId)
+      emitUpstreamAccountsChanged()
       return response
     },
     [loadList, selectedId],
@@ -190,6 +205,7 @@ export function useUpstreamAccounts() {
       setDetail(response)
       setSelectedId(accountId)
       setError(null)
+      emitUpstreamAccountsChanged()
       return response
     },
     [loadList],
@@ -203,6 +219,7 @@ export function useUpstreamAccounts() {
       await loadList(fallbackId)
       await loadDetail(fallbackId)
       setError(null)
+      emitUpstreamAccountsChanged()
     },
     [items, loadDetail, loadList],
   )

@@ -20,6 +20,7 @@
 - 新增顶级模块 `号池`，默认子页为 `上游账号`，提供账号列表、详情、状态、操作与 `5 小时 / 7 天` 图形化容量展示。
 - 支持两类账号：`oauth_codex` 与 `api_key_codex`；其中 OAuth 使用 Codex CLI 风格的一次性登录会话与 PKCE callback 流程。
 - OAuth 新建页必须同时支持 `单账号 OAuth`、`批量 OAuth` 与 `API Key` 三种同页模式；批量模式复用现有单账号 OAuth 接口，不新增后端批量 API。
+- 账号元数据必须支持 `isMother`（母号）标记；同一分组最多一个母号，未分组账号视为同一个桶。
 - 新增服务端持久化、加密存储、定时刷新与配额同步，确保 OAuth 账号在应用重启后仍可恢复并尽量不掉登录状态。
 - 为后续账号路由阶段准备稳定的数据面：账号状态机、身份信息、最新快照与近 7 天历史样本。
 
@@ -56,8 +57,11 @@
 - 服务端必须定期刷新即将过期的 OAuth token，并定期从 Codex / ChatGPT usage 接口采集 `5 小时(primary)` 与 `7 天(secondary)` 窗口，落库为最新快照与历史样本。
 - `5 小时` 与 `7 天` 必须在列表和详情中同时以图形化 + 文字展示：列表展示最新进度，详情展示进度条/图 + 趋势图 + 重置时间 + 状态说明。
 - API Key 账号必须支持新增、编辑、启停、删除；其 `5 小时` 与 `7 天` 限额来自本地配置，默认 `used=0`，并在 UI 中显式标注“本地占位统计”。
+- 号池路由密钥弹窗必须提供“生成密钥”次级动作：前端本地生成 `cvm-` 前缀的高熵 key 并填入输入框，只有用户点击保存后才真正替换当前生效 key。
 - 批量 OAuth 模式必须以表格呈现，允许“一个逻辑账号占两行视觉布局”，但每个字段控件都必须保持单行输入，不得在单元格内自动换行；每行 OAuth 生成/完成状态独立，失败不得阻塞其他行。
+- 批量 OAuth 行操作区必须在“完成 OAuth 登录”与状态 badge 之间提供母号皇冠按钮，使用 Iconify `mdi:crown` / `mdi:crown-outline`。
 - 账号状态至少支持 `active`、`syncing`、`needs_reauth`、`error` 与 `disabled`；授权失效只能转 `needs_reauth`，不得静默删除账号或清空最后一次成功快照。
+- 任何导致组内母号归属变化的写操作，都必须触发系统级通知，并提供 10 秒可撤销窗口；同组后续切换应覆盖旧撤销上下文。
 
 ### SHOULD
 
@@ -71,6 +75,7 @@
 
 - 用户点击 `新增 OAuth 账号` 后，前端创建登录会话、打开授权页并轮询登录状态；callback 成功后列表自动刷新并选中新账号。
 - 用户点击 `Batch OAuth` 后，前端在同页表格中维护多行 OAuth 草稿；每行独立生成登录会话、复制授权链接并回填 callback，已完成行必须留在当前页，方便继续处理剩余账号。
+- 用户把账号设为母号后，服务端以该分组为边界自动撤销旧母号；前端收到成功响应后立即弹出系统级通知，并允许撤销到操作前的母号归属。
 - 服务端在 callback 成功后立即保存账号，并尝试执行一次 usage 同步；同步失败不回滚账号创建，而是把账号标为 `error` 并保留最后错误。
 - 服务启动时会扫描所有启用中的 OAuth 账号：对即将过期的账号先 refresh，对到达同步周期的账号拉取 usage 快照并写入样本。
 - 用户点击 `重新登录` 会创建绑定到现有账号的登录会话；callback 成功后覆盖旧 token，但账号主键、历史样本和本地备注保持不变。
@@ -101,18 +106,20 @@
 - Given 用户位于 `dashboard / live / settings` 任意页面，When 点击导航中的 `号池`，Then 页面进入 `号池 -> 上游账号` 且不影响现有四个模块。
 - Given 前端创建 OAuth 登录会话，When 打开 `authUrl` 并完成授权，Then callback 会把账号落库，轮询接口变为 `completed`，列表中出现该账号。
 - Given 用户进入 `Batch OAuth` 模式，When 在多行里分别生成授权链接、粘贴 callback 并完成其中一行，Then 该行显示 `completed` 且页面保持在批量表格，其他行仍可继续生成或完成。
+- Given 同组已有母号，When 用户把另一账号设为母号，Then 系统自动切换母号归属、弹出系统级通知，并在通知中提供撤销按钮恢复到切换前状态。
 - Given OAuth 登录会话过期、state 错误或重复消费，When callback 被访问，Then 会话标记为 `failed/expired` 且不会创建或覆盖账号。
 - Given 已持久化 OAuth 账号且 access token 到期，When 后台维护任务或手动同步运行，Then 系统会自动 refresh 并继续同步 usage，无需用户重新登录。
 - Given refresh token 已失效，When 后台维护任务运行，Then 账号进入 `needs_reauth`，但账号记录、历史样本和最后成功同步时间仍然保留。
 - Given API Key 账号录入了本地 `5 小时 / 7 天` 限额，When 打开列表或详情，Then 两个窗口都能显示本地限额与 `0` 使用量，并明确标记为占位统计。
 - Given OAuth 账号已有 usage 样本，When 打开详情页，Then `5 小时` 与 `7 天` 卡片都能展示最新百分比、重置时间和最近 7 天趋势线。
+- Given 用户打开号池路由密钥弹窗，When 点击“生成密钥”后关闭且未保存，Then 新生成的 key 只停留在当前草稿中，再次打开弹窗时输入框恢复为已保存状态。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Testing
 
-- Rust tests：schema 创建 / 迁移、加密 round-trip、OAuth 登录会话生命周期、callback state/TTL/single-use 校验、refresh 分类、usage payload 归一化。
-- Web tests：账号列表与详情渲染、OAuth 轮询流程、API Key 表单、空态/错误态、导航路由。
+- Rust tests：schema 创建 / 迁移、加密 round-trip、OAuth 登录会话生命周期、callback state/TTL/single-use 校验、refresh 分类、usage payload 归一化、母号唯一性与 session 落库。
+- Web tests：账号列表与详情渲染、OAuth 轮询流程、API Key 表单、母号皇冠互斥、系统通知撤销、空态/错误态、导航路由。
 - Browser smoke：本地打开 `号池 -> 上游账号`，验证新增 OAuth/API Key、同步与详情图表渲染。
 
 ### Quality checks
@@ -168,7 +175,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool / Pages / Upstream Accounts / Routing Dialog
   state: dialog-open
-  evidence_note: 验证号池入口 key 的编辑弹窗，包括标题层级、输入字段、关闭动作与主次按钮关系。
+  evidence_note: 验证号池入口 key 的编辑弹窗，包括标题层级、生成密钥按钮、输入字段、关闭回滚与主次按钮关系。
   image:
   ![Account pool routing dialog](./assets/account-pool-routing-dialog.png)
 
