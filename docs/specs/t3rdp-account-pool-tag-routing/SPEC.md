@@ -110,3 +110,38 @@
 - 假设：`allowCutIn` 只影响“已有 sticky 会话迁入当前账号”，不影响首次分配新会话。
 - 假设：会话上限守卫按 `pool_sticky_routes.last_seen_at` 的滚动窗口 distinct sticky key 计数实现，无需额外会话统计表。
 - 风险：多 tag 会话守卫属于“全部满足”语义，单个 `lookbackHours/maxConversations` 无法完整表达全部规则，因此详情页与 API 需要额外返回逐条守卫明细。
+
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Components/Account Tag Context Chip/Interaction Grid
+  state: default-action-menu
+  evidence_note: 验证 tag 交互芯片的默认态、悬浮后三点按钮可见态，以及上下文菜单展开态已被并排收敛到同一组 Storybook 证据里。
+  image:
+  ![Tag context chip interaction grid](./assets/tag-context-chip-docs-grid.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Pages/Tags/Default
+  state: list-and-filters
+  evidence_note: 验证号池首页已增加标签入口，标签列表页能够展示筛选器、规则摘要、账号数量与分组数量。
+  image:
+  ![Tags page default](./assets/tags-page-default.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Components/Effective Routing Rule Card/Strict Merged Rule
+  state: strict-merged-rule
+  evidence_note: 验证账号详情页能够直接展示多 tag 合并后的最终生效规则，并标出来源 tag 与逐条守卫约束。
+  image:
+  ![Effective routing rule card strict merged rule](./assets/effective-routing-rule-card-strict.png)
