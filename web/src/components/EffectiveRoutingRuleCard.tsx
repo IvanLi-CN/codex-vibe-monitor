@@ -40,13 +40,13 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-2">
-          <Badge variant={resolvedRule.guardEnabled ? 'warning' : 'secondary'}>
+          <Badge variant={resolvedRule.guardEnabled ? 'default' : 'secondary'}>
             {resolvedRule.guardEnabled ? labels.guardEnabled : labels.guardDisabled}
           </Badge>
-          <Badge variant={resolvedRule.allowCutOut ? 'success' : 'error'}>
+          <Badge variant="info">
             {resolvedRule.allowCutOut ? labels.allowCutOut : labels.denyCutOut}
           </Badge>
-          <Badge variant={resolvedRule.allowCutIn ? 'success' : 'error'}>
+          <Badge variant="accent">
             {resolvedRule.allowCutIn ? labels.allowCutIn : labels.denyCutIn}
           </Badge>
         </div>
@@ -73,7 +73,7 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
           ) : (
             <div className="mt-3 flex flex-wrap gap-2">
               {resolvedRule.guardRules.map((guard) => (
-                <Badge key={`${guard.tagId}-${guard.lookbackHours}-${guard.maxConversations}`} variant="warning">
+                <Badge key={`${guard.tagId}-${guard.lookbackHours}-${guard.maxConversations}`} variant="default">
                   {guard.tagName}: {labels.guardRule(guard.lookbackHours, guard.maxConversations)}
                 </Badge>
               ))}

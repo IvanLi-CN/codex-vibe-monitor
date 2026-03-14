@@ -1,22 +1,43 @@
 import { useMemo, useState } from 'react'
 import { Icon } from '@iconify/react'
 import { Alert } from '../../components/ui/alert'
+import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Spinner } from '../../components/ui/spinner'
-import { Switch } from '../../components/ui/switch'
 import { TagRuleDialog } from '../../components/TagRuleDialog'
 import { usePoolTags } from '../../hooks/usePoolTags'
 import type { CreateTagPayload, TagSummary, UpdateTagPayload } from '../../lib/api'
 import { useTranslation } from '../../i18n'
 
+type TernaryFilter = 'all' | 'true' | 'false'
+
+function toBooleanQuery(value: TernaryFilter) {
+  if (value === 'all') return undefined
+  return value === 'true'
+}
+
+function RuleBadge({
+  label,
+  variant,
+}: {
+  label: string
+  variant: 'default' | 'info' | 'accent'
+}) {
+  return (
+    <Badge variant={variant} className="px-2.5 py-1 text-[11px] font-semibold">
+      {label}
+    </Badge>
+  )
+}
+
 export default function TagsPage() {
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
-  const [hasAccountsOnly, setHasAccountsOnly] = useState(false)
-  const [guardEnabledOnly, setGuardEnabledOnly] = useState(false)
-  const [cutOutBlockedOnly, setCutOutBlockedOnly] = useState(false)
-  const [cutInBlockedOnly, setCutInBlockedOnly] = useState(false)
+  const [hasAccountsFilter, setHasAccountsFilter] = useState<TernaryFilter>('all')
+  const [guardEnabledFilter, setGuardEnabledFilter] = useState<TernaryFilter>('all')
+  const [cutOutFilter, setCutOutFilter] = useState<TernaryFilter>('all')
+  const [cutInFilter, setCutInFilter] = useState<TernaryFilter>('all')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogMode, setDialogMode] = useState<'create' | 'edit'>('create')
   const [activeTag, setActiveTag] = useState<TagSummary | null>(null)
@@ -26,12 +47,12 @@ export default function TagsPage() {
   const query = useMemo(
     () => ({
       search,
-      hasAccounts: hasAccountsOnly ? true : undefined,
-      guardEnabled: guardEnabledOnly ? true : undefined,
-      allowCutOut: cutOutBlockedOnly ? false : undefined,
-      allowCutIn: cutInBlockedOnly ? false : undefined,
+      hasAccounts: toBooleanQuery(hasAccountsFilter),
+      guardEnabled: toBooleanQuery(guardEnabledFilter),
+      allowCutOut: cutOutFilter === 'all' ? undefined : cutOutFilter === 'true',
+      allowCutIn: cutInFilter === 'all' ? undefined : cutInFilter === 'true',
     }),
-    [cutInBlockedOnly, cutOutBlockedOnly, guardEnabledOnly, hasAccountsOnly, search],
+    [cutInFilter, cutOutFilter, guardEnabledFilter, hasAccountsFilter, search],
   )
 
   const { items, writesEnabled, isLoading, error, updateQuery, createTag, updateTag, deleteTag } = usePoolTags(query)
@@ -94,7 +115,7 @@ export default function TagsPage() {
             </Alert>
           ) : null}
 
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_repeat(4,minmax(10rem,1fr))]">
+          <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-[minmax(0,1.05fr)_repeat(4,minmax(12rem,1fr))]">
             <label className="field">
               <span className="field-label">{t('accountPool.tags.filters.search')}</span>
               <Input
@@ -108,30 +129,74 @@ export default function TagsPage() {
                 }}
               />
             </label>
-            <div className="rounded-[1.2rem] border border-base-300/70 bg-base-100/70 px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm text-base-content/70">{t('accountPool.tags.filters.hasAccounts')}</span>
-                <Switch checked={hasAccountsOnly} onCheckedChange={(checked) => { setHasAccountsOnly(checked); updateQuery({ ...query, hasAccounts: checked ? true : undefined }) }} />
-              </div>
-            </div>
-            <div className="rounded-[1.2rem] border border-base-300/70 bg-base-100/70 px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm text-base-content/70">{t('accountPool.tags.filters.guardEnabled')}</span>
-                <Switch checked={guardEnabledOnly} onCheckedChange={(checked) => { setGuardEnabledOnly(checked); updateQuery({ ...query, guardEnabled: checked ? true : undefined }) }} />
-              </div>
-            </div>
-            <div className="rounded-[1.2rem] border border-base-300/70 bg-base-100/70 px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm text-base-content/70">{t('accountPool.tags.filters.cutOutBlocked')}</span>
-                <Switch checked={cutOutBlockedOnly} onCheckedChange={(checked) => { setCutOutBlockedOnly(checked); updateQuery({ ...query, allowCutOut: checked ? false : undefined }) }} />
-              </div>
-            </div>
-            <div className="rounded-[1.2rem] border border-base-300/70 bg-base-100/70 px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm text-base-content/70">{t('accountPool.tags.filters.cutInBlocked')}</span>
-                <Switch checked={cutInBlockedOnly} onCheckedChange={(checked) => { setCutInBlockedOnly(checked); updateQuery({ ...query, allowCutIn: checked ? false : undefined }) }} />
-              </div>
-            </div>
+            <label className="field">
+              <span className="field-label">{t('accountPool.tags.filters.hasAccounts')}</span>
+              <select
+                name="tagHasAccountsFilter"
+                className="field-select"
+                value={hasAccountsFilter}
+                onChange={(event) => {
+                  const value = event.target.value as TernaryFilter
+                  setHasAccountsFilter(value)
+                  updateQuery({ ...query, hasAccounts: toBooleanQuery(value) })
+                }}
+              >
+                <option value="all">{t('accountPool.tags.filters.option.all')}</option>
+                <option value="true">{t('accountPool.tags.filters.option.linked')}</option>
+                <option value="false">{t('accountPool.tags.filters.option.unlinked')}</option>
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">{t('accountPool.tags.filters.guardEnabled')}</span>
+              <select
+                name="tagGuardFilter"
+                className="field-select"
+                value={guardEnabledFilter}
+                onChange={(event) => {
+                  const value = event.target.value as TernaryFilter
+                  setGuardEnabledFilter(value)
+                  updateQuery({ ...query, guardEnabled: toBooleanQuery(value) })
+                }}
+              >
+                <option value="all">{t('accountPool.tags.filters.option.all')}</option>
+                <option value="true">{t('accountPool.tags.filters.option.guardOn')}</option>
+                <option value="false">{t('accountPool.tags.filters.option.guardOff')}</option>
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">{t('accountPool.tags.filters.cutOutBlocked')}</span>
+              <select
+                name="tagCutOutFilter"
+                className="field-select"
+                value={cutOutFilter}
+                onChange={(event) => {
+                  const value = event.target.value as TernaryFilter
+                  setCutOutFilter(value)
+                  updateQuery({ ...query, allowCutOut: value === 'all' ? undefined : value === 'true' })
+                }}
+              >
+                <option value="all">{t('accountPool.tags.filters.option.all')}</option>
+                <option value="true">{t('accountPool.tags.filters.option.allowed')}</option>
+                <option value="false">{t('accountPool.tags.filters.option.blocked')}</option>
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">{t('accountPool.tags.filters.cutInBlocked')}</span>
+              <select
+                name="tagCutInFilter"
+                className="field-select"
+                value={cutInFilter}
+                onChange={(event) => {
+                  const value = event.target.value as TernaryFilter
+                  setCutInFilter(value)
+                  updateQuery({ ...query, allowCutIn: value === 'all' ? undefined : value === 'true' })
+                }}
+              >
+                <option value="all">{t('accountPool.tags.filters.option.all')}</option>
+                <option value="true">{t('accountPool.tags.filters.option.allowed')}</option>
+                <option value="false">{t('accountPool.tags.filters.option.blocked')}</option>
+              </select>
+            </label>
           </div>
         </div>
       </section>
@@ -165,9 +230,27 @@ export default function TagsPage() {
                       <td className="px-4 py-4 font-semibold text-base-content">{tag.name}</td>
                       <td className="px-4 py-4 text-sm text-base-content/70">
                         <div className="flex flex-wrap gap-2">
-                          <span>{tag.routingRule.guardEnabled ? t('accountPool.tags.rule.guard', { hours: tag.routingRule.lookbackHours ?? 0, count: tag.routingRule.maxConversations ?? 0 }) : t('accountPool.tags.rule.guardOff')}</span>
-                          <span>{tag.routingRule.allowCutOut ? t('accountPool.tags.rule.cutOutOn') : t('accountPool.tags.rule.cutOutOff')}</span>
-                          <span>{tag.routingRule.allowCutIn ? t('accountPool.tags.rule.cutInOn') : t('accountPool.tags.rule.cutInOff')}</span>
+                          {tag.routingRule.guardEnabled ? (
+                            <RuleBadge
+                              variant="default"
+                              label={t('accountPool.tags.rule.guard', {
+                                hours: tag.routingRule.lookbackHours ?? 0,
+                                count: tag.routingRule.maxConversations ?? 0,
+                              })}
+                            />
+                          ) : null}
+                          {!tag.routingRule.allowCutOut ? (
+                            <RuleBadge
+                              variant="info"
+                              label={t('accountPool.tags.rule.cutOutOff')}
+                            />
+                          ) : null}
+                          {!tag.routingRule.allowCutIn ? (
+                            <RuleBadge
+                              variant="accent"
+                              label={t('accountPool.tags.rule.cutInOff')}
+                            />
+                          ) : null}
                         </div>
                       </td>
                       <td className="px-4 py-4 text-sm text-base-content/70">{tag.accountCount}</td>

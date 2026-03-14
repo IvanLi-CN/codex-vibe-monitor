@@ -50,6 +50,33 @@ function ChipHarness({
   )
 }
 
+function InteractionGridHarness() {
+  return (
+    <StorySurface>
+      <div className="grid gap-4 md:grid-cols-3">
+        {[
+          { title: 'Default', props: {} },
+          { title: 'Action Visible', props: { defaultShowActionButton: true } },
+          { title: 'Menu Open', props: { defaultShowActionButton: true, defaultOpen: true } },
+        ].map((item) => (
+          <div key={item.title} className="rounded-[1.2rem] border border-base-300/70 bg-base-100/82 p-4">
+            <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-base-content/55">
+              {item.title}
+            </div>
+            <AccountTagContextChip
+              name="vip-routing"
+              labels={labels}
+              onRemove={() => undefined}
+              onEdit={() => undefined}
+              {...item.props}
+            />
+          </div>
+        ))}
+      </div>
+    </StorySurface>
+  )
+}
+
 const meta = {
   title: 'Account Pool/Components/Account Tag Context Chip',
   component: AccountTagContextChip,
@@ -90,4 +117,8 @@ export const ActionButtonVisible: Story = {
 
 export const MenuVisible: Story = {
   render: () => <ChipHarness defaultOpen defaultShowActionButton />,
+}
+
+export const InteractionGrid: Story = {
+  render: () => <InteractionGridHarness />,
 }
