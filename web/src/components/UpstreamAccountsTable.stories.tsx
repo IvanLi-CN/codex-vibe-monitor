@@ -140,6 +140,22 @@ export const NeedsAttentionSelected: Story = {
   },
 }
 
+export const DuplicateIdentity: Story = {
+  args: {
+    items: [
+      {
+        ...items[0],
+        duplicateInfo: {
+          peerAccountIds: [27, 35],
+          reasons: ['sharedChatgptAccountId', 'sharedChatgptUserId'],
+        },
+      },
+      items[1],
+    ],
+    selectedId: 11,
+  },
+}
+
 export const Empty: Story = {
   args: {
     items: [],

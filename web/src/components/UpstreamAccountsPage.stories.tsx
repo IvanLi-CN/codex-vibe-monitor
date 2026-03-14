@@ -704,3 +704,14 @@ export const CreateAccountBatchOauthReady: Story = {
     await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeInTheDocument()
   },
 }
+
+export const CreateAccountNameConflict: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.clear(canvas.getByLabelText(/display name/i))
+    await userEvent.type(canvas.getByLabelText(/display name/i), ' codex pro - tokyo ')
+    await expect(canvas.getByText(/display name must be unique/i)).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeDisabled()
+  },
+}
