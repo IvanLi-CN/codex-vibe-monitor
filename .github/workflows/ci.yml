@@ -76,6 +76,9 @@ jobs:
         working-directory: web
         run: bun install --frozen-lockfile
 
+      - name: Worktree bootstrap smoke
+        run: bash scripts/test-worktree-bootstrap.sh
+
       - name: Bun-first guard
         run: bun run check:bun-first
 
