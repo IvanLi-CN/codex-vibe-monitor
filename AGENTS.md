@@ -54,7 +54,9 @@ Use non-blocking runtime management for long-lived services, but do not require 
 
 ## CI / CD (Release via PR labels)
 
-- Releases only happen on `push` to `main` (after PR merge). PR builds never publish artifacts.
+- PR checks run in `.github/workflows/ci-pr.yml`; old PR runs are preemptible so stale commits do not keep consuming runners.
+- Mainline verification runs in `.github/workflows/ci-main.yml`; each merged commit gets its own non-preemptive `main` run, so newer pushes do not cancel or replace older pending `CI Main` work.
+- Releases run in `.github/workflows/release.yml` after the first successful `CI Main` attempt on `main`, and can be manually backfilled with `workflow_dispatch(commit_sha)` when GitHub concurrency replaces an older pending release run; manual backfill is limited to commits that already passed `CI Main`.
 - Every PR must set exactly **one** release type label and exactly **one** release channel label
   (enforced by `.github/workflows/label-gate.yml`).
 - Release type (`type:*`):
@@ -63,6 +65,7 @@ Use non-blocking runtime management for long-lived services, but do not require 
 - Release channel (`channel:*`):
   - `channel:stable` - stable release (`vX.Y.Z`, also updates the Docker image `latest` tag).
   - `channel:rc` - pre-release (`vX.Y.Z-rc.<sha7>`, does not update `latest`).
+- GitHub concurrency is not strict FIFO; if a merged commit's pending release is replaced by a newer pending run, use the manual release backfill entry instead of assuming every pending run will execute automatically.
 - For more details, see `README.md` and `.github/scripts/compute-version.sh`.
 
 ## Security & Configuration Tips
