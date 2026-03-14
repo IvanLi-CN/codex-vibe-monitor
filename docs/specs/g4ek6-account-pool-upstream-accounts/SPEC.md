@@ -19,6 +19,7 @@
 
 - 新增顶级模块 `号池`，默认子页为 `上游账号`，提供账号列表、详情、状态、操作与 `5 小时 / 7 天` 图形化容量展示。
 - 支持两类账号：`oauth_codex` 与 `api_key_codex`；其中 OAuth 使用 Codex CLI 风格的一次性登录会话与 PKCE callback 流程。
+- OAuth 新建页必须同时支持 `单账号 OAuth`、`批量 OAuth` 与 `API Key` 三种同页模式；批量模式复用现有单账号 OAuth 接口，不新增后端批量 API。
 - 新增服务端持久化、加密存储、定时刷新与配额同步，确保 OAuth 账号在应用重启后仍可恢复并尽量不掉登录状态。
 - 为后续账号路由阶段准备稳定的数据面：账号状态机、身份信息、最新快照与近 7 天历史样本。
 
@@ -56,6 +57,7 @@
 - `5 小时` 与 `7 天` 必须在列表和详情中同时以图形化 + 文字展示：列表展示最新进度，详情展示进度条/图 + 趋势图 + 重置时间 + 状态说明。
 - API Key 账号必须支持新增、编辑、启停、删除；其 `5 小时` 与 `7 天` 限额来自本地配置，默认 `used=0`，并在 UI 中显式标注“本地占位统计”。
 - 号池路由密钥弹窗必须提供“生成密钥”次级动作：前端本地生成 `cvm-` 前缀的高熵 key 并填入输入框，只有用户点击保存后才真正替换当前生效 key。
+- 批量 OAuth 模式必须以表格呈现，允许“一个逻辑账号占两行视觉布局”，但每个字段控件都必须保持单行输入，不得在单元格内自动换行；每行 OAuth 生成/完成状态独立，失败不得阻塞其他行。
 - 账号状态至少支持 `active`、`syncing`、`needs_reauth`、`error` 与 `disabled`；授权失效只能转 `needs_reauth`，不得静默删除账号或清空最后一次成功快照。
 
 ### SHOULD
@@ -69,6 +71,7 @@
 ### Core flows
 
 - 用户点击 `新增 OAuth 账号` 后，前端创建登录会话、打开授权页并轮询登录状态；callback 成功后列表自动刷新并选中新账号。
+- 用户点击 `Batch OAuth` 后，前端在同页表格中维护多行 OAuth 草稿；每行独立生成登录会话、复制授权链接并回填 callback，已完成行必须留在当前页，方便继续处理剩余账号。
 - 服务端在 callback 成功后立即保存账号，并尝试执行一次 usage 同步；同步失败不回滚账号创建，而是把账号标为 `error` 并保留最后错误。
 - 服务启动时会扫描所有启用中的 OAuth 账号：对即将过期的账号先 refresh，对到达同步周期的账号拉取 usage 快照并写入样本。
 - 用户点击 `重新登录` 会创建绑定到现有账号的登录会话；callback 成功后覆盖旧 token，但账号主键、历史样本和本地备注保持不变。
@@ -98,6 +101,7 @@
 
 - Given 用户位于 `dashboard / live / settings` 任意页面，When 点击导航中的 `号池`，Then 页面进入 `号池 -> 上游账号` 且不影响现有四个模块。
 - Given 前端创建 OAuth 登录会话，When 打开 `authUrl` 并完成授权，Then callback 会把账号落库，轮询接口变为 `completed`，列表中出现该账号。
+- Given 用户进入 `Batch OAuth` 模式，When 在多行里分别生成授权链接、粘贴 callback 并完成其中一行，Then 该行显示 `completed` 且页面保持在批量表格，其他行仍可继续生成或完成。
 - Given OAuth 登录会话过期、state 错误或重复消费，When callback 被访问，Then 会话标记为 `failed/expired` 且不会创建或覆盖账号。
 - Given 已持久化 OAuth 账号且 access token 到期，When 后台维护任务或手动同步运行，Then 系统会自动 refresh 并继续同步 usage，无需用户重新登录。
 - Given refresh token 已失效，When 后台维护任务运行，Then 账号进入 `needs_reauth`，但账号记录、历史样本和最后成功同步时间仍然保留。
@@ -181,6 +185,28 @@
   image:
   ![Records page upstream filter](./assets/records-upstream-filter.png)
 
+- source_type: local_browser
+  target_program: codex-vibe-monitor local web app
+  capture_scope: browser-viewport
+  sensitive_exclusion: browser page only
+  submission_gate: approved
+  story_id_or_title: 上游账号列表页（真实运行界面）
+  state: current-local
+  evidence_note: 展示当前上游账号列表页的顶部操作区、统计卡片与列表容器布局，确认新增入口已收敛为单个按钮。
+  image:
+  ![Upstream accounts list page](./assets/upstream-accounts-list.png)
+
+- source_type: local_browser
+  target_program: codex-vibe-monitor local web app
+  capture_scope: browser-viewport
+  sensitive_exclusion: browser page only
+  submission_gate: approved
+  story_id_or_title: 批量 OAuth 创建页（真实运行界面）
+  state: current-local
+  evidence_note: 展示批量 OAuth 创建页的真实交互态：顶部默认分组控件、表格化批量录入、已生成 OAuth 链接以及回填 callback 的示例行。
+  image:
+  ![Batch OAuth create page](./assets/upstream-accounts-batch-oauth.png)
+
 ## 风险 / 假设
 
 - 风险：OpenAI/Codex usage 接口只返回百分比窗口，不提供绝对请求/额度值，因此 OAuth 页面文字展示需围绕“窗口配额百分比 + reset time”展开。
@@ -191,4 +217,5 @@
 
 - 2026-03-11: 创建 spec，冻结账号管理第一阶段的范围、接口、状态机与验收口径。
 - 2026-03-11: 完成后端账号管理 / OAuth 会话 / 前端号池页面实现，并通过 Rust + Web 自动化验证与本地浏览器 smoke。
+- 2026-03-13: 扩展上游账号创建页为单账号 OAuth / 批量 OAuth / API Key 同页模式，并将批量 OAuth 表格纳入现有手动 OAuth 流程。
 - 2026-03-13: 刷新 Storybook 视觉证据，补充路由设置弹窗、Sticky Key 对话与记录页上游筛选展示。

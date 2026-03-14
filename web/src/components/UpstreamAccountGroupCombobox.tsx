@@ -17,6 +17,7 @@ interface UpstreamAccountGroupComboboxProps {
   value: string
   onValueChange: (value: string) => void
   suggestions: string[]
+  disabled?: boolean
   name?: string
   placeholder?: string
   searchPlaceholder?: string
@@ -42,6 +43,7 @@ export function UpstreamAccountGroupCombobox({
   value,
   onValueChange,
   suggestions,
+  disabled = false,
   name,
   placeholder,
   searchPlaceholder,
@@ -72,8 +74,12 @@ export function UpstreamAccountGroupCombobox({
     <div className={className}>
       <input type="hidden" name={name} value={value} />
       <Popover
-        open={open}
+        open={disabled ? false : open}
         onOpenChange={(nextOpen) => {
+          if (disabled) {
+            setOpen(false)
+            return
+          }
           setOpen(nextOpen)
           if (!nextOpen) {
             setQuery('')
@@ -87,6 +93,7 @@ export function UpstreamAccountGroupCombobox({
             role="combobox"
             aria-expanded={open}
             aria-label={ariaLabel}
+            disabled={disabled}
             className={cn(
               'h-10 w-full justify-between rounded-lg bg-base-100 px-3 text-left font-normal hover:bg-base-100',
               'border-base-300 text-base-content shadow-sm',

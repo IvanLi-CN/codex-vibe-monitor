@@ -703,3 +703,13 @@ export const CreateAccountOauthReady: Story = {
     await expect(canvas.getByLabelText(/callback url/i)).toBeInTheDocument()
   },
 }
+
+export const CreateAccountBatchOauthReady: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
+    await expect(canvas.getByDisplayValue(/https:\/\/auth\.openai\.com\/authorize/i)).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeInTheDocument()
+  },
+}
