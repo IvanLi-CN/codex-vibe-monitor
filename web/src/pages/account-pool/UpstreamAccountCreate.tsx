@@ -154,10 +154,10 @@ function DuplicateWarningPopover({
           type="button"
           size="icon"
           variant="ghost"
-          className="h-9 w-9 shrink-0 rounded-full border border-warning/40 bg-base-100 text-warning shadow-sm hover:border-warning/55 hover:bg-warning/10 hover:text-warning"
+          className="h-6 w-6 shrink-0 rounded-none border-0 bg-transparent p-0 text-warning shadow-none hover:bg-transparent hover:text-warning/90"
           aria-label={summaryTitle}
         >
-          <Icon icon="mdi:alert-circle" className="h-4 w-4" aria-hidden />
+          <Icon icon="mdi:alert-outline" className="h-5 w-5" aria-hidden />
         </Button>
       </PopoverTrigger>
       <PopoverContent
@@ -170,7 +170,7 @@ function DuplicateWarningPopover({
         <div className="space-y-3 p-3">
           <div className="flex items-start gap-3">
             <div className="mt-0.5 rounded-full bg-warning/12 p-1 text-warning">
-              <Icon icon="mdi:alert-circle-outline" className="h-4 w-4" aria-hidden />
+              <Icon icon="mdi:alert-outline" className="h-4 w-4" aria-hidden />
             </div>
             <div className="min-w-0 space-y-1">
               <p className="text-sm font-semibold leading-5 text-warning">
@@ -1101,7 +1101,7 @@ export default function UpstreamAccountCreatePage() {
           {error || actionError ? (
             <Alert variant="error">
               <Icon
-                icon="mdi:alert-circle-outline"
+                icon="mdi:alert-outline"
                 className="mt-0.5 h-4 w-4 shrink-0"
                 aria-hidden
               />
