@@ -8,6 +8,7 @@ import StatsPage from './pages/Stats'
 import AccountPoolLayout from './pages/account-pool/AccountPoolLayout'
 import UpstreamAccountsPage from './pages/account-pool/UpstreamAccounts'
 import UpstreamAccountCreatePage from './pages/account-pool/UpstreamAccountCreate'
+import TagsPage from './pages/account-pool/Tags'
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
           <Route index element={<Navigate to="/account-pool/upstream-accounts" replace />} />
           <Route path="upstream-accounts" element={<UpstreamAccountsPage />} />
           <Route path="upstream-accounts/new" element={<UpstreamAccountCreatePage />} />
+          <Route path="tags" element={<TagsPage />} />
         </Route>
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

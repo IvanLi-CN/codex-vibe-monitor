@@ -3901,6 +3901,11 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             "/api/pool/routing-settings",
             get(get_pool_routing_settings).put(update_pool_routing_settings),
         )
+        .route("/api/pool/tags", get(list_tags).post(create_tag))
+        .route(
+            "/api/pool/tags/:id",
+            get(get_tag).patch(update_tag).delete(delete_tag),
+        )
         .route("/api/pool/upstream-accounts", get(list_upstream_accounts))
         .route(
             "/api/pool/upstream-accounts/:id/sticky-keys",
@@ -6227,8 +6232,8 @@ async fn send_pool_request_with_failover(
         let account =
             match resolve_pool_account_for_request(state.as_ref(), sticky_key, &excluded_ids).await
             {
-                Ok(Some(account)) => account,
-                Ok(None) => {
+                Ok(PoolAccountResolution::Resolved(account)) => account,
+                Ok(PoolAccountResolution::NoCandidate) => {
                     return Err(last_error.unwrap_or(PoolUpstreamError {
                         account: None,
                         status: StatusCode::BAD_GATEWAY,
@@ -6236,6 +6241,15 @@ async fn send_pool_request_with_failover(
                         failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
                         connect_latency_ms: 0.0,
                     }));
+                }
+                Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                    return Err(PoolUpstreamError {
+                        account: None,
+                        status: StatusCode::BAD_GATEWAY,
+                        message,
+                        failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+                        connect_latency_ms: 0.0,
+                    });
                 }
                 Err(err) => {
                     return Err(PoolUpstreamError {

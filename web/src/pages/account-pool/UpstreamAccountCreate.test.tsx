@@ -303,6 +303,7 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
       displayName: 'Row One',
       groupName: undefined,
       note: undefined,
+      tagIds: [],
     })
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
 

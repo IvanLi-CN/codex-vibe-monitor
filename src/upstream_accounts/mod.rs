@@ -122,6 +122,71 @@ pub(crate) struct UpstreamAccountListResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct AccountTagSummary {
+    id: i64,
+    name: String,
+    routing_rule: TagRoutingRule,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EffectiveConversationGuard {
+    tag_id: i64,
+    tag_name: String,
+    lookback_hours: i64,
+    max_conversations: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EffectiveRoutingRule {
+    guard_enabled: bool,
+    lookback_hours: Option<i64>,
+    max_conversations: Option<i64>,
+    allow_cut_out: bool,
+    allow_cut_in: bool,
+    source_tag_ids: Vec<i64>,
+    source_tag_names: Vec<String>,
+    guard_rules: Vec<EffectiveConversationGuard>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TagRoutingRule {
+    guard_enabled: bool,
+    lookback_hours: Option<i64>,
+    max_conversations: Option<i64>,
+    allow_cut_out: bool,
+    allow_cut_in: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TagSummary {
+    id: i64,
+    name: String,
+    routing_rule: TagRoutingRule,
+    account_count: i64,
+    group_count: i64,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TagDetail {
+    #[serde(flatten)]
+    summary: TagSummary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TagListResponse {
+    writes_enabled: bool,
+    items: Vec<TagSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountSummary {
     id: i64,
     kind: String,
@@ -143,6 +208,8 @@ pub(crate) struct UpstreamAccountSummary {
     secondary_window: Option<RateWindowSnapshot>,
     credits: Option<CreditsSnapshot>,
     local_limits: Option<LocalLimitSnapshot>,
+    tags: Vec<AccountTagSummary>,
+    effective_routing_rule: EffectiveRoutingRule,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -257,6 +324,8 @@ pub(crate) struct CreateOauthLoginSessionRequest {
     group_name: Option<String>,
     note: Option<String>,
     account_id: Option<i64>,
+    #[serde(default)]
+    tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,6 +344,8 @@ pub(crate) struct CreateApiKeyAccountRequest {
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
+    #[serde(default)]
+    tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,6 +359,39 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
+    tag_ids: Option<Vec<i64>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateTagRequest {
+    name: String,
+    guard_enabled: bool,
+    lookback_hours: Option<i64>,
+    max_conversations: Option<i64>,
+    allow_cut_out: bool,
+    allow_cut_in: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateTagRequest {
+    name: Option<String>,
+    guard_enabled: Option<bool>,
+    lookback_hours: Option<i64>,
+    max_conversations: Option<i64>,
+    allow_cut_out: Option<bool>,
+    allow_cut_in: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ListTagsQuery {
+    search: Option<String>,
+    has_accounts: Option<bool>,
+    guard_enabled: Option<bool>,
+    allow_cut_in: Option<bool>,
+    allow_cut_out: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -456,6 +560,42 @@ struct AccountRoutingCandidateRow {
     last_selected_at: Option<String>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct TagRow {
+    name: String,
+    guard_enabled: i64,
+    lookback_hours: Option<i64>,
+    max_conversations: Option<i64>,
+    allow_cut_out: i64,
+    allow_cut_in: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct AccountTagRow {
+    account_id: i64,
+    tag_id: i64,
+    name: String,
+    guard_enabled: i64,
+    lookback_hours: Option<i64>,
+    max_conversations: Option<i64>,
+    allow_cut_out: i64,
+    allow_cut_in: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct TagListRow {
+    id: i64,
+    name: String,
+    guard_enabled: i64,
+    lookback_hours: Option<i64>,
+    max_conversations: Option<i64>,
+    allow_cut_out: i64,
+    allow_cut_in: i64,
+    updated_at: String,
+    account_count: i64,
+    group_count: i64,
+}
+
 #[derive(Debug, FromRow)]
 struct StickyKeyAggregateRow {
     sticky_key: String,
@@ -500,6 +640,7 @@ struct OauthLoginSessionRow {
     display_name: Option<String>,
     group_name: Option<String>,
     note: Option<String>,
+    tag_ids_json: Option<String>,
     state: String,
     pkce_verifier: String,
     redirect_uri: String,
@@ -607,6 +748,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             display_name TEXT,
             group_name TEXT,
             note TEXT,
+            tag_ids_json TEXT,
             state TEXT NOT NULL UNIQUE,
             pkce_verifier TEXT NOT NULL,
             redirect_uri TEXT NOT NULL,
@@ -627,6 +769,53 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_name")
         .await
         .context("failed to ensure pool_oauth_login_sessions.group_name")?;
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "tag_ids_json")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.tag_ids_json")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            guard_enabled INTEGER NOT NULL DEFAULT 0,
+            lookback_hours INTEGER,
+            max_conversations INTEGER,
+            allow_cut_out INTEGER NOT NULL DEFAULT 1,
+            allow_cut_in INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_tags table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_account_tags (
+            account_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (account_id, tag_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_account_tags table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_tags_tag_id
+        ON pool_upstream_account_tags (tag_id, updated_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_upstream_account_tags_tag_id")?;
 
     sqlx::query(
         r#"
@@ -790,6 +979,106 @@ pub(crate) async fn list_upstream_accounts(
     }))
 }
 
+pub(crate) async fn list_tags(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListTagsQuery>,
+) -> Result<Json<TagListResponse>, (StatusCode, String)> {
+    let items = load_tag_summaries(&state.pool, &params)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(Json(TagListResponse {
+        writes_enabled: state.upstream_accounts.writes_enabled(),
+        items,
+    }))
+}
+
+pub(crate) async fn create_tag(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateTagRequest>,
+) -> Result<Json<TagDetail>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    let name = normalize_tag_name(&payload.name)?;
+    let rule = normalize_tag_rule(
+        payload.guard_enabled,
+        payload.lookback_hours,
+        payload.max_conversations,
+        payload.allow_cut_out,
+        payload.allow_cut_in,
+    )?;
+    let detail = insert_tag(&state.pool, &name, &rule)
+        .await
+        .map_err(map_tag_write_error)?;
+    Ok(Json(detail))
+}
+
+pub(crate) async fn get_tag(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<TagDetail>, (StatusCode, String)> {
+    let detail = load_tag_detail(&state.pool, id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "tag not found".to_string()))?;
+    Ok(Json(detail))
+}
+
+pub(crate) async fn update_tag(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+    Json(payload): Json<UpdateTagRequest>,
+) -> Result<Json<TagDetail>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    let existing = load_tag_row(&state.pool, id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "tag not found".to_string()))?;
+    let name = match payload.name {
+        Some(value) => normalize_tag_name(&value)?,
+        None => existing.name.clone(),
+    };
+    let rule = normalize_tag_rule(
+        payload.guard_enabled.unwrap_or(existing.guard_enabled != 0),
+        payload.lookback_hours.or(existing.lookback_hours),
+        payload.max_conversations.or(existing.max_conversations),
+        payload.allow_cut_out.unwrap_or(existing.allow_cut_out != 0),
+        payload.allow_cut_in.unwrap_or(existing.allow_cut_in != 0),
+    )?;
+    let detail = persist_tag_update(&state.pool, id, &name, &rule)
+        .await
+        .map_err(map_tag_write_error)?;
+    Ok(Json(detail))
+}
+
+pub(crate) async fn delete_tag(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    delete_tag_by_id(&state.pool, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn get_upstream_account(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<i64>,
@@ -871,6 +1160,8 @@ pub(crate) async fn create_oauth_login_session(
         ));
     }
     state.upstream_accounts.require_crypto_key()?;
+    let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
+    let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
 
     if let Some(account_id) = payload.account_id {
         let Some(existing) = load_upstream_account_row(&state.pool, account_id)
@@ -909,9 +1200,9 @@ pub(crate) async fn create_oauth_login_session(
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
-            login_id, account_id, display_name, group_name, note, state, pkce_verifier, redirect_uri,
+            login_id, account_id, display_name, group_name, note, tag_ids_json, state, pkce_verifier, redirect_uri,
             status, auth_url, error_message, expires_at, consumed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, NULL, ?12, ?12)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12, NULL, ?13, ?13)
         "#,
     )
     .bind(&login_id)
@@ -919,6 +1210,7 @@ pub(crate) async fn create_oauth_login_session(
     .bind(normalize_optional_text(payload.display_name))
     .bind(normalize_optional_text(payload.group_name))
     .bind(normalize_optional_text(payload.note))
+    .bind(tag_ids_json)
     .bind(&state_token)
     .bind(&pkce_verifier)
     .bind(&redirect_uri)
@@ -1007,11 +1299,20 @@ pub(crate) async fn relogin_upstream_account(
     headers: HeaderMap,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<LoginSessionStatusResponse>, (StatusCode, String)> {
+    let tag_ids = load_account_tag_map(&state.pool, &[id])
+        .await
+        .map_err(internal_error_tuple)?
+        .remove(&id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|tag| tag.id)
+        .collect();
     let payload = CreateOauthLoginSessionRequest {
         display_name: None,
         group_name: None,
         note: None,
         account_id: Some(id),
+        tag_ids,
     };
     create_oauth_login_session(State(state), headers, Json(payload)).await
 }
@@ -1031,6 +1332,7 @@ pub(crate) async fn create_api_key_account(
     let display_name = normalize_required_display_name(&payload.display_name)?;
     validate_local_limits(payload.local_primary_limit, payload.local_secondary_limit)?;
     let api_key = normalize_required_secret(&payload.api_key, "apiKey")?;
+    let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
     let group_name = normalize_optional_text(payload.group_name);
     let note = normalize_optional_text(payload.note);
     let limit_unit = normalize_limit_unit(payload.local_limit_unit);
@@ -1073,6 +1375,9 @@ pub(crate) async fn create_api_key_account(
     .await
     .map_err(internal_error_tuple)?;
 
+    sync_account_tag_links(&state.pool, inserted_id, &tag_ids)
+        .await
+        .map_err(internal_error_tuple)?;
     let detail = sync_upstream_account_by_id(state.as_ref(), inserted_id, false)
         .await
         .map_err(internal_error_tuple)?;
@@ -1096,6 +1401,10 @@ pub(crate) async fn update_upstream_account(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let tag_ids = match payload.tag_ids.as_ref() {
+        Some(values) => Some(validate_tag_ids(&state.pool, values).await?),
+        None => None,
+    };
 
     if let Some(display_name) = payload.display_name {
         row.display_name = normalize_required_display_name(&display_name)?;
@@ -1165,6 +1474,11 @@ pub(crate) async fn update_upstream_account(
     .execute(&state.pool)
     .await
     .map_err(internal_error_tuple)?;
+    if let Some(tag_ids) = tag_ids {
+        sync_account_tag_links(&state.pool, id, &tag_ids)
+            .await
+            .map_err(internal_error_tuple)?;
+    }
 
     let detail = load_upstream_account_detail(&state.pool, id)
         .await
@@ -1186,6 +1500,11 @@ pub(crate) async fn delete_upstream_account(
     }
     state.upstream_accounts.require_crypto_key()?;
     sqlx::query("DELETE FROM pool_upstream_account_limit_samples WHERE account_id = ?1")
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+    sqlx::query("DELETE FROM pool_upstream_account_tags WHERE account_id = ?1")
         .bind(id)
         .execute(&state.pool)
         .await
@@ -1412,6 +1731,7 @@ async fn complete_oauth_login_session_with_query(
             display_name: &display_name,
             group_name: session.group_name.clone(),
             note: session.note.clone(),
+            tag_ids: parse_tag_ids_json(session.tag_ids_json.as_deref()),
             claims: &claims,
             encrypted_credentials: credentials,
             token_expires_at: &token_expires_at,
@@ -1911,6 +2231,7 @@ struct OauthAccountUpsert<'a> {
     display_name: &'a str,
     group_name: Option<String>,
     note: Option<String>,
+    tag_ids: Vec<i64>,
     claims: &'a ChatgptJwtClaims,
     encrypted_credentials: String,
     token_expires_at: &'a str,
@@ -1922,6 +2243,7 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         display_name,
         group_name,
         note,
+        tag_ids,
         claims,
         encrypted_credentials,
         token_expires_at,
@@ -1987,6 +2309,7 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         .bind(&now_iso)
         .execute(pool)
         .await?;
+        sync_account_tag_links(pool, existing_id, &tag_ids).await?;
         Ok(existing_id)
     } else {
         let inserted_account_id: i64 = sqlx::query_scalar::<_, i64>(
@@ -2023,8 +2346,377 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         .bind(&now_iso)
         .fetch_one(pool)
         .await?;
+        sync_account_tag_links(pool, inserted_account_id, &tag_ids).await?;
         Ok(inserted_account_id)
     }
+}
+
+async fn load_account_tag_map(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<HashMap<i64, Vec<AccountTagSummary>>> {
+    if account_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            link.account_id,
+            tag.id AS tag_id,
+            tag.name,
+            tag.guard_enabled,
+            tag.lookback_hours,
+            tag.max_conversations,
+            tag.allow_cut_out,
+            tag.allow_cut_in
+        FROM pool_upstream_account_tags link
+        INNER JOIN pool_tags tag ON tag.id = link.tag_id
+        WHERE link.account_id IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    let rows = query
+        .push(") ORDER BY tag.name COLLATE NOCASE ASC, tag.id ASC")
+        .build_query_as::<AccountTagRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut grouped: HashMap<i64, Vec<AccountTagSummary>> = HashMap::new();
+    for row in rows {
+        grouped
+            .entry(row.account_id)
+            .or_default()
+            .push(account_tag_summary_from_row(&row));
+    }
+    Ok(grouped)
+}
+
+async fn load_tags_by_ids(pool: &Pool<Sqlite>, tag_ids: &[i64]) -> Result<Vec<TagRow>> {
+    if tag_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            name,
+            guard_enabled,
+            lookback_hours,
+            max_conversations,
+            allow_cut_out,
+            allow_cut_in
+        FROM pool_tags
+        WHERE id IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for tag_id in tag_ids {
+            separated.push_bind(tag_id);
+        }
+    }
+    query
+        .push(") ORDER BY name COLLATE NOCASE ASC, id ASC")
+        .build_query_as::<TagRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn load_tag_row(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagRow>> {
+    sqlx::query_as::<_, TagRow>(
+        r#"
+        SELECT
+            name,
+            guard_enabled,
+            lookback_hours,
+            max_conversations,
+            allow_cut_out,
+            allow_cut_in
+        FROM pool_tags
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(tag_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn load_tag_detail(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagDetail>> {
+    let items = load_tag_summaries(
+        pool,
+        &ListTagsQuery {
+            search: None,
+            has_accounts: None,
+            guard_enabled: None,
+            allow_cut_in: None,
+            allow_cut_out: None,
+        },
+    )
+    .await?;
+    Ok(items
+        .into_iter()
+        .find(|item| item.id == tag_id)
+        .map(|summary| TagDetail { summary }))
+}
+
+async fn load_tag_summaries(
+    pool: &Pool<Sqlite>,
+    params: &ListTagsQuery,
+) -> Result<Vec<TagSummary>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            tag.id,
+            tag.name,
+            tag.guard_enabled,
+            tag.lookback_hours,
+            tag.max_conversations,
+            tag.allow_cut_out,
+            tag.allow_cut_in,
+            tag.updated_at,
+            COUNT(DISTINCT link.account_id) AS account_count,
+            COUNT(DISTINCT NULLIF(TRIM(account.group_name), '')) AS group_count
+        FROM pool_tags tag
+        LEFT JOIN pool_upstream_account_tags link ON link.tag_id = tag.id
+        LEFT JOIN pool_upstream_accounts account ON account.id = link.account_id
+        WHERE 1 = 1
+        "#,
+    );
+    if let Some(search) = params
+        .search
+        .as_ref()
+        .and_then(|value| normalize_optional_text(Some(value.clone())))
+    {
+        query
+            .push(" AND tag.name LIKE ")
+            .push_bind(format!("%{search}%"));
+    }
+    if let Some(guard_enabled) = params.guard_enabled {
+        query
+            .push(" AND tag.guard_enabled = ")
+            .push_bind(if guard_enabled { 1 } else { 0 });
+    }
+    if let Some(allow_cut_in) = params.allow_cut_in {
+        query
+            .push(" AND tag.allow_cut_in = ")
+            .push_bind(if allow_cut_in { 1 } else { 0 });
+    }
+    if let Some(allow_cut_out) = params.allow_cut_out {
+        query
+            .push(" AND tag.allow_cut_out = ")
+            .push_bind(if allow_cut_out { 1 } else { 0 });
+    }
+    query.push(
+        " GROUP BY tag.id, tag.name, tag.guard_enabled, tag.lookback_hours, tag.max_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.updated_at",
+    );
+    if let Some(has_accounts) = params.has_accounts {
+        query.push(if has_accounts {
+            " HAVING COUNT(DISTINCT link.account_id) > 0"
+        } else {
+            " HAVING COUNT(DISTINCT link.account_id) = 0"
+        });
+    }
+    let rows = query
+        .push(" ORDER BY tag.updated_at DESC, tag.id DESC")
+        .build_query_as::<TagListRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| tag_summary_from_row(&row))
+        .collect())
+}
+
+async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> Result<TagDetail> {
+    let now_iso = format_utc_iso(Utc::now());
+    let inserted_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO pool_tags (
+            name, guard_enabled, lookback_hours, max_conversations, allow_cut_out, allow_cut_in, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+        RETURNING id
+        "#,
+    )
+    .bind(name)
+    .bind(if rule.guard_enabled { 1 } else { 0 })
+    .bind(rule.lookback_hours)
+    .bind(rule.max_conversations)
+    .bind(if rule.allow_cut_out { 1 } else { 0 })
+    .bind(if rule.allow_cut_in { 1 } else { 0 })
+    .bind(&now_iso)
+    .fetch_one(pool)
+    .await?;
+    load_tag_detail(pool, inserted_id)
+        .await?
+        .ok_or_else(|| anyhow!("tag not found after insert"))
+}
+
+async fn persist_tag_update(
+    pool: &Pool<Sqlite>,
+    tag_id: i64,
+    name: &str,
+    rule: &TagRoutingRule,
+) -> Result<TagDetail> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_tags
+        SET name = ?2,
+            guard_enabled = ?3,
+            lookback_hours = ?4,
+            max_conversations = ?5,
+            allow_cut_out = ?6,
+            allow_cut_in = ?7,
+            updated_at = ?8
+        WHERE id = ?1
+        "#,
+    )
+    .bind(tag_id)
+    .bind(name)
+    .bind(if rule.guard_enabled { 1 } else { 0 })
+    .bind(rule.lookback_hours)
+    .bind(rule.max_conversations)
+    .bind(if rule.allow_cut_out { 1 } else { 0 })
+    .bind(if rule.allow_cut_in { 1 } else { 0 })
+    .bind(&now_iso)
+    .execute(pool)
+    .await?;
+    load_tag_detail(pool, tag_id)
+        .await?
+        .ok_or_else(|| anyhow!("tag not found after update"))
+}
+
+async fn delete_tag_by_id(pool: &Pool<Sqlite>, tag_id: i64) -> Result<(), (StatusCode, String)> {
+    let linked_account_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pool_upstream_account_tags WHERE tag_id = ?1",
+    )
+    .bind(tag_id)
+    .fetch_one(pool)
+    .await
+    .map_err(internal_error_tuple)?;
+    let linked_session_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_oauth_login_sessions
+        WHERE tag_ids_json IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM json_each(pool_oauth_login_sessions.tag_ids_json)
+              WHERE CAST(json_each.value AS INTEGER) = ?1
+          )
+        "#,
+    )
+    .bind(tag_id)
+    .fetch_one(pool)
+    .await
+    .map_err(internal_error_tuple)?;
+    if linked_account_count > 0 || linked_session_count > 0 {
+        return Err((
+            StatusCode::CONFLICT,
+            "tag is still associated with accounts or pending OAuth sessions".to_string(),
+        ));
+    }
+    let affected = sqlx::query("DELETE FROM pool_tags WHERE id = ?1")
+        .bind(tag_id)
+        .execute(pool)
+        .await
+        .map_err(internal_error_tuple)?
+        .rows_affected();
+    if affected == 0 {
+        return Err((StatusCode::NOT_FOUND, "tag not found".to_string()));
+    }
+    Ok(())
+}
+
+fn map_tag_write_error(err: anyhow::Error) -> (StatusCode, String) {
+    let message = err.to_string();
+    if message.contains("UNIQUE constraint failed") {
+        (StatusCode::CONFLICT, "tag name already exists".to_string())
+    } else {
+        internal_error_tuple(err)
+    }
+}
+
+async fn validate_tag_ids(
+    pool: &Pool<Sqlite>,
+    tag_ids: &[i64],
+) -> Result<Vec<i64>, (StatusCode, String)> {
+    let mut normalized = tag_ids
+        .iter()
+        .copied()
+        .filter(|value| *value > 0)
+        .collect::<Vec<_>>();
+    normalized.sort_unstable();
+    normalized.dedup();
+    if normalized.is_empty() {
+        return Ok(normalized);
+    }
+    let rows = load_tags_by_ids(pool, &normalized)
+        .await
+        .map_err(internal_error_tuple)?;
+    if rows.len() != normalized.len() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "one or more tagIds do not exist".to_string(),
+        ));
+    }
+    Ok(normalized)
+}
+
+async fn sync_account_tag_links(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    tag_ids: &[i64],
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM pool_upstream_account_tags WHERE account_id = ?1")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
+    for tag_id in tag_ids {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_tags (
+                account_id, tag_id, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?3)
+            "#,
+        )
+        .bind(account_id)
+        .bind(tag_id)
+        .bind(&now_iso)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn count_recent_account_conversations(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    lookback_hours: i64,
+) -> Result<i64> {
+    let lower_bound = format_utc_iso(Utc::now() - ChronoDuration::hours(lookback_hours));
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_sticky_routes
+        WHERE account_id = ?1
+          AND last_seen_at >= ?2
+        "#,
+    )
+    .bind(account_id)
+    .bind(lower_bound)
+    .fetch_one(pool)
+    .await
+    .map_err(Into::into)
 }
 
 async fn load_upstream_account_summaries(
@@ -2046,11 +2738,14 @@ async fn load_upstream_account_summaries(
     )
     .fetch_all(pool)
     .await?;
+    let account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
+    let tag_map = load_account_tag_map(pool, &account_ids).await?;
 
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
         let latest = load_latest_usage_sample(pool, row.id).await?;
-        items.push(build_summary_from_row(&row, latest.as_ref()));
+        let tags = tag_map.get(&row.id).cloned().unwrap_or_default();
+        items.push(build_summary_from_row(&row, latest.as_ref(), tags));
     }
     Ok(items)
 }
@@ -2063,6 +2758,10 @@ async fn load_upstream_account_detail(
         return Ok(None);
     };
     let latest = load_latest_usage_sample(pool, row.id).await?;
+    let tags = load_account_tag_map(pool, &[row.id])
+        .await?
+        .remove(&row.id)
+        .unwrap_or_default();
     let history_rows = sqlx::query_as::<_, UpstreamAccountSampleRow>(
         r#"
         SELECT
@@ -2090,7 +2789,7 @@ async fn load_upstream_account_detail(
         .collect::<Vec<_>>();
     history.reverse();
 
-    let summary = build_summary_from_row(&row, latest.as_ref());
+    let summary = build_summary_from_row(&row, latest.as_ref(), tags);
     Ok(Some(UpstreamAccountDetail {
         summary,
         note: row.note,
@@ -2151,6 +2850,7 @@ async fn load_latest_usage_sample(
 fn build_summary_from_row(
     row: &UpstreamAccountRow,
     sample: Option<&UpstreamAccountSampleRow>,
+    tags: Vec<AccountTagSummary>,
 ) -> UpstreamAccountSummary {
     let local_limits = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
         Some(LocalLimitSnapshot {
@@ -2203,6 +2903,7 @@ fn build_summary_from_row(
                 balance: value.credits_balance.clone(),
             })
     });
+    let effective_routing_rule = build_effective_routing_rule(&tags);
 
     UpstreamAccountSummary {
         id: row.id,
@@ -2228,6 +2929,8 @@ fn build_summary_from_row(
         secondary_window,
         credits,
         local_limits,
+        tags,
+        effective_routing_rule,
     }
 }
 
@@ -2238,7 +2941,7 @@ async fn load_login_session_by_login_id(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, note, state, pkce_verifier, redirect_uri,
+            login_id, account_id, display_name, group_name, note, tag_ids_json, state, pkce_verifier, redirect_uri,
             status, auth_url, error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
         WHERE login_id = ?1
@@ -2258,7 +2961,7 @@ async fn load_login_session_by_state(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, note, state, pkce_verifier, redirect_uri,
+            login_id, account_id, display_name, group_name, note, tag_ids_json, state, pkce_verifier, redirect_uri,
             status, auth_url, error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
         WHERE state = ?1
@@ -2373,6 +3076,157 @@ fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusRe
         expires_at: row.expires_at.clone(),
         account_id: row.account_id,
         error: row.error_message.clone(),
+    }
+}
+
+fn normalize_tag_name(value: &str) -> Result<String, (StatusCode, String)> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "tag name is required".to_string()));
+    }
+    if trimmed.chars().count() > 48 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "tag name must be 48 characters or fewer".to_string(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_positive_i64(
+    value: Option<i64>,
+    field_name: &str,
+) -> Result<Option<i64>, (StatusCode, String)> {
+    match value {
+        Some(number) if number <= 0 => Err((
+            StatusCode::BAD_REQUEST,
+            format!("{field_name} must be a positive integer"),
+        )),
+        other => Ok(other),
+    }
+}
+
+fn normalize_tag_rule(
+    guard_enabled: bool,
+    lookback_hours: Option<i64>,
+    max_conversations: Option<i64>,
+    allow_cut_out: bool,
+    allow_cut_in: bool,
+) -> Result<TagRoutingRule, (StatusCode, String)> {
+    let lookback_hours = normalize_positive_i64(lookback_hours, "lookbackHours")?;
+    let max_conversations = normalize_positive_i64(max_conversations, "maxConversations")?;
+    if guard_enabled && (lookback_hours.is_none() || max_conversations.is_none()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "lookbackHours and maxConversations are required when guardEnabled is true".to_string(),
+        ));
+    }
+    Ok(TagRoutingRule {
+        guard_enabled,
+        lookback_hours: if guard_enabled { lookback_hours } else { None },
+        max_conversations: if guard_enabled {
+            max_conversations
+        } else {
+            None
+        },
+        allow_cut_out,
+        allow_cut_in,
+    })
+}
+
+fn parse_tag_ids_json(raw: Option<&str>) -> Vec<i64> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<i64>>(raw)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|value| *value > 0)
+        .collect()
+}
+
+fn encode_tag_ids_json(tag_ids: &[i64]) -> Result<String> {
+    serde_json::to_string(tag_ids).context("failed to encode tag ids")
+}
+
+fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
+    AccountTagSummary {
+        id: row.tag_id,
+        name: row.name.clone(),
+        routing_rule: TagRoutingRule {
+            guard_enabled: row.guard_enabled != 0,
+            lookback_hours: row.lookback_hours,
+            max_conversations: row.max_conversations,
+            allow_cut_out: row.allow_cut_out != 0,
+            allow_cut_in: row.allow_cut_in != 0,
+        },
+    }
+}
+
+fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
+    TagSummary {
+        id: row.id,
+        name: row.name.clone(),
+        routing_rule: TagRoutingRule {
+            guard_enabled: row.guard_enabled != 0,
+            lookback_hours: row.lookback_hours,
+            max_conversations: row.max_conversations,
+            allow_cut_out: row.allow_cut_out != 0,
+            allow_cut_in: row.allow_cut_in != 0,
+        },
+        account_count: row.account_count,
+        group_count: row.group_count,
+        updated_at: row.updated_at.clone(),
+    }
+}
+
+fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
+    let mut source_tag_ids = Vec::with_capacity(tags.len());
+    let mut source_tag_names = Vec::with_capacity(tags.len());
+    let mut guard_rules = Vec::new();
+    let mut allow_cut_out = true;
+    let mut allow_cut_in = true;
+    let mut representative_guard: Option<(i64, i64)> = None;
+
+    for tag in tags {
+        source_tag_ids.push(tag.id);
+        source_tag_names.push(tag.name.clone());
+        allow_cut_out &= tag.routing_rule.allow_cut_out;
+        allow_cut_in &= tag.routing_rule.allow_cut_in;
+        if tag.routing_rule.guard_enabled
+            && let (Some(lookback_hours), Some(max_conversations)) = (
+                tag.routing_rule.lookback_hours,
+                tag.routing_rule.max_conversations,
+            )
+        {
+            guard_rules.push(EffectiveConversationGuard {
+                tag_id: tag.id,
+                tag_name: tag.name.clone(),
+                lookback_hours,
+                max_conversations,
+            });
+            representative_guard = match representative_guard {
+                Some((current_hours, current_max))
+                    if current_max < max_conversations
+                        || (current_max == max_conversations
+                            && current_hours >= lookback_hours) =>
+                {
+                    Some((current_hours, current_max))
+                }
+                _ => Some((lookback_hours, max_conversations)),
+            };
+        }
+    }
+
+    EffectiveRoutingRule {
+        guard_enabled: !guard_rules.is_empty(),
+        lookback_hours: representative_guard.map(|(hours, _)| hours),
+        max_conversations: representative_guard.map(|(_, max)| max),
+        allow_cut_out,
+        allow_cut_in,
+        source_tag_ids,
+        source_tag_names,
+        guard_rules,
     }
 }
 
@@ -3149,23 +4003,90 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) authorization: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum PoolAccountResolution {
+    Resolved(PoolResolvedAccount),
+    NoCandidate,
+    BlockedByPolicy(String),
+}
+
+async fn load_effective_routing_rule_for_account(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<EffectiveRoutingRule> {
+    let tags = load_account_tag_map(pool, &[account_id])
+        .await?
+        .remove(&account_id)
+        .unwrap_or_default();
+    Ok(build_effective_routing_rule(&tags))
+}
+
+async fn account_accepts_sticky_assignment(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    source_account_id: Option<i64>,
+    rule: &EffectiveRoutingRule,
+) -> Result<bool> {
+    let Some(_) = sticky_key else {
+        return Ok(true);
+    };
+    let is_transfer = source_account_id.is_some_and(|source_id| source_id != account_id);
+    let is_new_assignment = source_account_id.is_none();
+    if !is_transfer && !is_new_assignment {
+        return Ok(true);
+    }
+    if is_transfer && !rule.allow_cut_in {
+        return Ok(false);
+    }
+    for guard in &rule.guard_rules {
+        let current =
+            count_recent_account_conversations(pool, account_id, guard.lookback_hours).await?;
+        if current >= guard.max_conversations {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub(crate) async fn resolve_pool_account_for_request(
     state: &AppState,
     sticky_key: Option<&str>,
     excluded_ids: &[i64],
-) -> Result<Option<PoolResolvedAccount>> {
+) -> Result<PoolAccountResolution> {
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
 
-    if let Some(sticky_key) = sticky_key
-        && let Some(route) = load_sticky_route(&state.pool, sticky_key).await?
-        && !tried.contains(&route.account_id)
-        && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
-        && is_account_selectable_for_routing(&row)
-    {
-        tried.insert(route.account_id);
-        if let Some(account) = prepare_pool_account(state, &row).await? {
-            record_account_selected(&state.pool, row.id).await?;
-            return Ok(Some(account));
+    let sticky_route = if let Some(sticky_key) = sticky_key {
+        load_sticky_route(&state.pool, sticky_key).await?
+    } else {
+        None
+    };
+    let sticky_source_id = sticky_route.as_ref().map(|route| route.account_id);
+    let sticky_source_rule = if let Some(route) = sticky_route.as_ref() {
+        Some(load_effective_routing_rule_for_account(&state.pool, route.account_id).await?)
+    } else {
+        None
+    };
+
+    if let Some(route) = sticky_route.as_ref() {
+        if !tried.contains(&route.account_id)
+            && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
+            && is_account_selectable_for_routing(&row)
+        {
+            tried.insert(route.account_id);
+            if let Some(account) = prepare_pool_account(state, &row).await? {
+                record_account_selected(&state.pool, row.id).await?;
+                return Ok(PoolAccountResolution::Resolved(account));
+            }
+        }
+        if sticky_source_rule
+            .as_ref()
+            .is_some_and(|rule| !rule.allow_cut_out)
+        {
+            return Ok(PoolAccountResolution::BlockedByPolicy(
+                "sticky conversation cannot cut out of the current account because a tag rule forbids it"
+                    .to_string(),
+            ));
         }
     }
 
@@ -3178,13 +4099,25 @@ pub(crate) async fn resolve_pool_account_for_request(
         if !is_account_selectable_for_routing(&row) {
             continue;
         }
+        let effective_rule = load_effective_routing_rule_for_account(&state.pool, row.id).await?;
+        if !account_accepts_sticky_assignment(
+            &state.pool,
+            row.id,
+            sticky_key,
+            sticky_source_id,
+            &effective_rule,
+        )
+        .await?
+        {
+            continue;
+        }
         if let Some(account) = prepare_pool_account(state, &row).await? {
             record_account_selected(&state.pool, row.id).await?;
-            return Ok(Some(account));
+            return Ok(PoolAccountResolution::Resolved(account));
         }
     }
 
-    Ok(None)
+    Ok(PoolAccountResolution::NoCandidate)
 }
 
 pub(crate) async fn record_pool_route_success(
