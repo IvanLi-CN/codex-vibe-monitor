@@ -1049,6 +1049,7 @@ export interface UpstreamAccountSummary {
   provider: string;
   displayName: string;
   groupName?: string | null;
+  isMother: boolean;
   status: "active" | "syncing" | "needs_reauth" | "error" | "disabled" | string;
   enabled: boolean;
   email?: string | null;
@@ -1074,6 +1075,11 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   history: UpstreamAccountHistoryPoint[];
 }
 
+export interface UpstreamAccountGroupSummary {
+  groupName: string
+  note?: string | null
+}
+
 export interface PoolRoutingSettings {
   apiKeyConfigured: boolean;
   maskedApiKey?: string | null;
@@ -1086,6 +1092,7 @@ export interface UpdatePoolRoutingSettingsPayload {
 export interface UpstreamAccountListResponse {
   writesEnabled: boolean;
   items: UpstreamAccountSummary[];
+  groups: UpstreamAccountGroupSummary[];
   routing?: PoolRoutingSettings | null;
 }
 
@@ -1103,7 +1110,9 @@ export interface CreateOauthLoginSessionPayload {
   displayName?: string;
   groupName?: string;
   note?: string;
+  groupNote?: string;
   accountId?: number;
+  isMother?: boolean;
 }
 
 export interface CompleteOauthLoginSessionPayload {
@@ -1114,7 +1123,9 @@ export interface CreateApiKeyAccountPayload {
   displayName: string;
   groupName?: string;
   note?: string;
+  groupNote?: string;
   apiKey: string;
+  isMother?: boolean;
   localPrimaryLimit?: number;
   localSecondaryLimit?: number;
   localLimitUnit?: string;
@@ -1124,11 +1135,17 @@ export interface UpdateUpstreamAccountPayload {
   displayName?: string;
   groupName?: string;
   note?: string;
+  groupNote?: string;
   enabled?: boolean;
+  isMother?: boolean;
   apiKey?: string;
   localPrimaryLimit?: number | null;
   localSecondaryLimit?: number | null;
   localLimitUnit?: string | null;
+}
+
+export interface UpdateUpstreamAccountGroupPayload {
+  note?: string
 }
 
 function normalizeRateWindowSnapshot(raw: unknown): RateWindowSnapshot | null {
@@ -1198,6 +1215,7 @@ function normalizeUpstreamAccountSummary(
     provider,
     displayName,
     groupName: typeof payload.groupName === "string" ? payload.groupName : null,
+    isMother: payload.isMother === true,
     status,
     enabled: payload.enabled !== false,
     email: typeof payload.email === "string" ? payload.email : null,
@@ -1293,16 +1311,33 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
   };
 }
 
+function normalizeUpstreamAccountGroupSummary(
+  raw: unknown,
+): UpstreamAccountGroupSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const groupName =
+    typeof payload.groupName === "string" ? payload.groupName.trim() : "";
+  if (!groupName) return null;
+  return {
+    groupName,
+    note: typeof payload.note === "string" ? payload.note : null,
+  };
+}
+
 function normalizeUpstreamAccountListResponse(
   raw: unknown,
 ): UpstreamAccountListResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
+  const groupsRaw = Array.isArray(payload.groups) ? payload.groups : [];
   return {
     writesEnabled: payload.writesEnabled !== false,
     items: itemsRaw
       .map(normalizeUpstreamAccountSummary)
       .filter((item): item is UpstreamAccountSummary => item != null),
+    groups: groupsRaw
+      .map(normalizeUpstreamAccountGroupSummary)
+      .filter((item): item is UpstreamAccountGroupSummary => item != null),
     routing: normalizePoolRoutingSettings(payload.routing),
   };
 }
@@ -1619,6 +1654,24 @@ export async function updateUpstreamAccount(
     },
   );
   return normalizeUpstreamAccountDetail(response);
+}
+
+export async function updateUpstreamAccountGroup(
+  groupName: string,
+  payload: UpdateUpstreamAccountGroupPayload,
+): Promise<UpstreamAccountGroupSummary> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-account-groups/${encodeURIComponent(groupName)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
+  )
+  const normalized = normalizeUpstreamAccountGroupSummary(response)
+  if (!normalized) {
+    throw new Error('Request failed: invalid upstream account group payload')
+  }
+  return normalized
 }
 
 export async function deleteUpstreamAccount(accountId: number): Promise<void> {

@@ -5,6 +5,7 @@ import type {
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
   LoginSessionStatusResponse,
+  UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
   UpstreamAccountListResponse,
@@ -22,13 +23,16 @@ type StoryStore = {
   }
   accounts: UpstreamAccountSummary[]
   details: Record<number, UpstreamAccountDetail>
+  groupNotes: Record<string, string>
   nextId: number
   sessions: Record<
     string,
     LoginSessionStatusResponse & {
       displayName?: string
       groupName?: string
+      isMother?: boolean
       note?: string
+      groupNote?: string
       state?: string
     }
   >
@@ -68,6 +72,25 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
+function normalizeGroupName(value?: string | null) {
+  const trimmed = value?.trim() ?? ''
+  return trimmed || null
+}
+
+function listGroupSummaries(store: StoryStore) {
+  const names = new Set<string>()
+  for (const account of store.accounts) {
+    const groupName = normalizeGroupName(account.groupName)
+    if (groupName) names.add(groupName)
+  }
+  return Array.from(names)
+    .sort((left, right) => left.localeCompare(right))
+    .map((groupName) => ({
+      groupName,
+      note: store.groupNotes[groupName] ?? null,
+    }))
+}
+
 function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetail>): UpstreamAccountDetail {
   const detail: UpstreamAccountDetail = {
     id,
@@ -75,6 +98,7 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
     provider: 'codex',
     displayName: 'Codex Pro - Tokyo',
     groupName: 'production',
+    isMother: true,
     status: 'active',
     enabled: true,
     email: 'tokyo@example.com',
@@ -116,6 +140,7 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
     provider: 'codex',
     displayName: 'Team key - staging',
     groupName: 'staging',
+    isMother: false,
     status: 'active',
     enabled: true,
     email: null,
@@ -159,6 +184,7 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     provider: detail.provider,
     displayName: detail.displayName,
     groupName: detail.groupName,
+    isMother: detail.isMother,
     status: detail.status,
     enabled: detail.enabled,
     email: detail.email,
@@ -219,6 +245,10 @@ function createStore(): StoryStore {
     routing: {
       apiKeyConfigured: true,
       maskedApiKey: 'pool-live••••••c0de',
+    },
+    groupNotes: {
+      production: 'Premium traffic group note.',
+      staging: 'Staging fallback group note.',
     },
     accounts: [toSummary(oauth), ...(duplicateOauth ? [toSummary(duplicateOauth)] : []), toSummary(apiKey)],
     details: {
@@ -454,6 +484,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       if (path === '/api/pool/upstream-accounts' && method === 'GET') {
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
+          groups: listGroupSummaries(store),
           routing: clone(store.routing),
           items: store.accounts.map((item) => clone(item)),
         }
@@ -471,7 +502,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       }
 
       if (path === '/api/pool/upstream-accounts/oauth/login-sessions' && method === 'POST') {
-        const body = parseBody<{ displayName?: string; groupName?: string; note?: string }>(init?.body, {})
+        const body = parseBody<{ displayName?: string; groupName?: string; note?: string; groupNote?: string; isMother?: boolean }>(init?.body, {})
         const loginId = `login_${Date.now()}`
         const redirectUri = `http://localhost:431${String(store.nextId).slice(-1)}/oauth/callback`
         const state = `state_${loginId}`
@@ -485,7 +516,9 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           error: null,
           displayName: body.displayName,
           groupName: body.groupName,
+          isMother: body.isMother,
           note: body.note,
+          groupNote: body.groupNote,
           state,
         }
         store.sessions[loginId] = session
@@ -517,8 +550,13 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         const detail = createOauthAccount(nextId, {
           displayName: session.displayName || existing?.displayName || 'Codex Pro - New login',
           groupName: session.groupName ?? existing?.groupName ?? 'default',
+          isMother: session.isMother ?? existing?.isMother ?? false,
           note: session.note ?? existing?.note ?? 'Freshly connected from Storybook OAuth mock.',
         })
+        const normalizedGroupName = normalizeGroupName(detail.groupName)
+        if (normalizedGroupName && session.groupNote?.trim()) {
+          store.groupNotes[normalizedGroupName] = session.groupNote.trim()
+        }
         store.details[nextId] = detail
         const summary = toSummary(detail)
         store.accounts = [summary, ...store.accounts.filter((item) => item.id !== nextId)]
@@ -539,6 +577,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         const detail = createApiKeyAccount(nextId, {
           displayName: body.displayName,
           groupName: body.groupName ?? 'default',
+          isMother: body.isMother === true,
           note: body.note ?? null,
           maskedApiKey: maskApiKey(body.apiKey),
           localLimits: {
@@ -548,6 +587,10 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           },
         })
         const synced = syncLocalWindows(detail)
+        const normalizedGroupName = normalizeGroupName(synced.groupName)
+        if (normalizedGroupName && body.groupNote?.trim()) {
+          store.groupNotes[normalizedGroupName] = body.groupNote.trim()
+        }
         store.details[nextId] = synced
         store.accounts = [toSummary(synced), ...store.accounts]
         return jsonResponse(clone(synced), 201)
@@ -612,6 +655,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           ...detail,
           displayName: body.displayName ?? detail.displayName,
           groupName: body.groupName ?? detail.groupName,
+          isMother: body.isMother ?? detail.isMother,
           note: body.note ?? detail.note,
           enabled: body.enabled ?? detail.enabled,
           status: body.enabled === false ? 'disabled' : detail.status === 'disabled' ? 'active' : detail.status,
@@ -628,6 +672,18 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         store.details[accountId] = updated
         store.accounts = store.accounts.map((item) => (item.id === accountId ? toSummary(updated) : item))
         return jsonResponse(clone(updated))
+      }
+
+      const groupMatch = path.match(/^\/api\/pool\/upstream-accounts\/groups\/(.+)$/)
+      if (groupMatch && method === 'PATCH') {
+        const groupName = decodeURIComponent(groupMatch[1])
+        const body = parseBody<UpdateUpstreamAccountGroupPayload>(init?.body, {})
+        const normalized = normalizeGroupName(groupName)
+        if (!normalized) return jsonResponse({ message: 'missing mock group' }, 404)
+        const note = body.note?.trim() ?? ''
+        if (note) store.groupNotes[normalized] = note
+        else delete store.groupNotes[normalized]
+        return jsonResponse({ groupName: normalized, note: note || null })
       }
 
       if (detailMatch && method === 'DELETE') {

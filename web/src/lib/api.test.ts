@@ -408,6 +408,7 @@ describe("account pool frontend API helpers", () => {
         return new Response(
           JSON.stringify({
             writesEnabled: true,
+            groups: [],
             routing: {
               apiKeyConfigured: true,
               maskedApiKey: "pool-live••••••c0de",
@@ -434,12 +435,14 @@ describe("account pool frontend API helpers", () => {
         return new Response(
           JSON.stringify({
             writesEnabled: true,
+            groups: [],
             items: [
               {
                 id: 1,
                 kind: "oauth_codex",
                 provider: "codex",
                 displayName: "Dup OAuth",
+                isMother: false,
                 status: "active",
                 enabled: true,
                 duplicateInfo: {

@@ -1,5 +1,6 @@
 import type { KeyboardEvent } from "react";
 import { Icon } from "@iconify/react";
+import { MotherAccountBadge } from "./MotherAccountToggle";
 import { Badge } from "./ui/badge";
 import type { UpstreamAccountSummary } from "../lib/api";
 import { cn } from "../lib/utils";
@@ -19,6 +20,7 @@ interface UpstreamAccountsTableProps {
     nextReset: string;
     oauth: string;
     apiKey: string;
+    mother: string;
     duplicate: string;
     status: (value: string) => string;
   };
@@ -196,6 +198,9 @@ export function UpstreamAccountsTable({
                       <span className="max-w-[18rem] truncate text-base font-semibold text-base-content">
                         {item.displayName}
                       </span>
+                      {item.isMother ? (
+                        <MotherAccountBadge label={labels.mother} />
+                      ) : null}
                       {item.duplicateInfo ? (
                         <Badge variant="warning" className="whitespace-nowrap">
                           {labels.duplicate}

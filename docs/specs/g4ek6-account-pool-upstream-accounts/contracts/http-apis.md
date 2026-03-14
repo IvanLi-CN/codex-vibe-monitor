@@ -12,6 +12,8 @@
       "kind": "oauth_codex",
       "provider": "codex",
       "displayName": "Work Pro",
+      "groupName": "production",
+      "isMother": true,
       "status": "active",
       "enabled": true,
       "email": "user@example.com",
@@ -60,6 +62,8 @@
 - `localLimits`（API Key 账号）
 - `duplicateInfo`（仅 OAuth；共享 `chatgptAccountId` / `chatgptUserId` 时返回 warning 信息）
 
+`isMother` 表示该账号是否为所在分组的母号；同一分组最多只能有一个母号，未分组账号视为同一个分组。
+
 ## `POST /api/pool/upstream-accounts/oauth/login-sessions`
 
 请求：
@@ -68,11 +72,14 @@
 {
   "displayName": "Work Pro",
   "note": "optional",
-  "accountId": 1
+  "accountId": 1,
+  "groupName": "production",
+  "isMother": true
 }
 ```
 
 - `accountId` 缺省时表示新建账号；存在时表示为现有账号重新登录。
+- `isMother=true` 时，callback 落库会自动把同组旧母号降级为非母号。
 
 响应：
 
@@ -109,7 +116,9 @@ Query:
 ```json
 {
   "displayName": "Fallback Key",
+  "groupName": "production",
   "note": "optional",
+  "isMother": true,
   "apiKey": "sk-...",
   "localPrimaryLimit": 200,
   "localSecondaryLimit": 2000,
@@ -126,8 +135,10 @@ Query:
 支持更新：
 
 - `displayName`
+- `groupName`
 - `note`
 - `enabled`
+- `isMother`
 - `localPrimaryLimit`
 - `localSecondaryLimit`
 - `localLimitUnit`
@@ -139,6 +150,10 @@ Query:
 - `POST /api/pool/upstream-accounts/oauth/login-sessions/:loginId/complete` 成功时仍返回 `UpstreamAccountDetail`。
 - 若该 OAuth 账号与其他 OAuth 账号共享 `chatgptAccountId` 或 `chatgptUserId`，响应中的 `duplicateInfo` 会带出 warning；这不会阻止保存。
 - 只有显式 `accountId` 的 re-login 会更新既有账号；新建 OAuth 不再按 `chatgptAccountId` 合并旧记录。
+规则：
+
+- `isMother=true` 会自动撤销同组其他账号的母号标记。
+- `isMother=false` 只清除当前账号的母号标记，不会自动提升其他账号。
 
 ## `DELETE /api/pool/upstream-accounts/:id`
 

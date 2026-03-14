@@ -11,6 +11,7 @@ import {
   vi,
 } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
 import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
 
@@ -99,14 +100,16 @@ function render(initialEntry = "/account-pool/upstream-accounts/new") {
   act(() => {
     root?.render(
       <I18nProvider>
-        <MemoryRouter initialEntries={[initialEntry]}>
-          <Routes>
-            <Route
-              path="/account-pool/upstream-accounts/new"
-              element={<UpstreamAccountCreatePage />}
-            />
-          </Routes>
-        </MemoryRouter>
+        <SystemNotificationProvider>
+          <MemoryRouter initialEntries={[initialEntry]}>
+            <Routes>
+              <Route
+                path="/account-pool/upstream-accounts/new"
+                element={<UpstreamAccountCreatePage />}
+              />
+            </Routes>
+          </MemoryRouter>
+        </SystemNotificationProvider>
       </I18nProvider>,
     );
   });
@@ -351,6 +354,8 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "Row One",
       groupName: undefined,
+      groupNote: undefined,
+      isMother: false,
       note: undefined,
     });
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);

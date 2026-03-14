@@ -11,6 +11,7 @@ const items: UpstreamAccountSummary[] = [
     provider: 'codex',
     displayName: 'Codex Pro - Tokyo',
     groupName: 'production',
+    isMother: true,
     status: 'active',
     enabled: true,
     email: 'tokyo@example.com',
@@ -49,6 +50,7 @@ const items: UpstreamAccountSummary[] = [
     provider: 'codex',
     displayName: 'Team key - staging',
     groupName: 'staging',
+    isMother: false,
     status: 'needs_reauth',
     enabled: true,
     maskedApiKey: 'sk-live••••••c9f2',
@@ -92,6 +94,7 @@ const labels = {
   oauth: 'OAuth',
   apiKey: 'API key',
   duplicate: 'Duplicate',
+  mother: 'Mother',
   status: (value: string) =>
     ({
       active: 'Active',

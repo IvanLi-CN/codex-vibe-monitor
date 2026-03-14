@@ -9,6 +9,7 @@ import {
   fetchUpstreamAccounts,
   reloginUpstreamAccount,
   syncUpstreamAccount,
+  updateUpstreamAccountGroup,
   updatePoolRoutingSettings,
   updateUpstreamAccount,
   type CreateApiKeyAccountPayload,
@@ -16,14 +17,19 @@ import {
   type CreateOauthLoginSessionPayload,
   type LoginSessionStatusResponse,
   type PoolRoutingSettings,
+  type UpstreamAccountGroupSummary,
   type UpdatePoolRoutingSettingsPayload,
+  type UpdateUpstreamAccountGroupPayload,
   type UpdateUpstreamAccountPayload,
   type UpstreamAccountDetail,
   type UpstreamAccountSummary,
 } from '../lib/api'
+import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
+import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
 
 export function useUpstreamAccounts() {
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
+  const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
   const [writesEnabled, setWritesEnabled] = useState(true)
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -38,6 +44,7 @@ export function useUpstreamAccounts() {
       try {
         const response = await fetchUpstreamAccounts()
         setItems(response.items)
+        setGroups(response.groups)
         setWritesEnabled(response.writesEnabled)
         setRouting(response.routing ?? null)
         setError(null)
@@ -48,8 +55,10 @@ export function useUpstreamAccounts() {
           }
           return response.items[0]?.id ?? null
         })
+        return true
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
+        return false
       } finally {
         setIsLoading(false)
       }
@@ -94,6 +103,16 @@ export function useUpstreamAccounts() {
     await loadDetail(selectedId)
   }, [loadDetail, loadList, selectedId])
 
+  useEffect(() => {
+    const handleChanged = () => {
+      void refresh()
+    }
+    window.addEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged)
+    return () => {
+      window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged)
+    }
+  }, [refresh])
+
   const selectAccount = useCallback((accountId: number) => {
     setSelectedId(accountId)
   }, [])
@@ -129,6 +148,7 @@ export function useUpstreamAccounts() {
       setDetail(response)
       setSelectedId(response.id)
       setError(null)
+      emitUpstreamAccountsChanged()
       return response
     },
     [loadList],
@@ -141,6 +161,7 @@ export function useUpstreamAccounts() {
       await loadDetail(response.id)
       setSelectedId(response.id)
       setError(null)
+      emitUpstreamAccountsChanged()
       return response
     },
     [loadDetail, loadList],
@@ -153,6 +174,7 @@ export function useUpstreamAccounts() {
       setDetail(response)
       setSelectedId(accountId)
       setError(null)
+      emitUpstreamAccountsChanged()
       return response
     },
     [loadList],
@@ -165,6 +187,17 @@ export function useUpstreamAccounts() {
     return response
   }, [])
 
+  const saveGroupNote = useCallback(
+    async (groupName: string, payload: UpdateUpstreamAccountGroupPayload) => {
+      const response = await updateUpstreamAccountGroup(groupName, payload)
+      setGroups((current) => upsertGroupSummary(current, response))
+      await loadList(selectedId)
+      emitUpstreamAccountsChanged()
+      return response
+    },
+    [loadList, selectedId],
+  )
+
   const runSync = useCallback(
     async (accountId: number) => {
       const response = await syncUpstreamAccount(accountId)
@@ -172,6 +205,7 @@ export function useUpstreamAccounts() {
       setDetail(response)
       setSelectedId(accountId)
       setError(null)
+      emitUpstreamAccountsChanged()
       return response
     },
     [loadList],
@@ -185,12 +219,14 @@ export function useUpstreamAccounts() {
       await loadList(fallbackId)
       await loadDetail(fallbackId)
       setError(null)
+      emitUpstreamAccountsChanged()
     },
     [items, loadDetail, loadList],
   )
 
   return {
     items,
+    groups,
     writesEnabled,
     routing,
     selectedId,
@@ -209,6 +245,7 @@ export function useUpstreamAccounts() {
     createApiKeyAccount,
     saveAccount,
     saveRouting,
+    saveGroupNote,
     runSync,
     removeAccount,
   }
