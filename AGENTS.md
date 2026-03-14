@@ -12,7 +12,9 @@
 - `cargo fmt` — format Rust sources with project defaults.
 - `cargo check` — type-check backend without producing binaries.
 - `cargo run` — start the backend (reads `.env.local`, listens on `127.0.0.1:8080`).
-- `bun install` — install repo-level tooling for hooks and docs checks.
+- `bun install` — install repo-level tooling for hooks, worktree bootstrap, and docs checks.
+- `bun run hooks:install` — install shared Git hooks for every linked worktree in this repository.
+- `bun run worktree:bootstrap` — manually rerun the copy-missing-only local config sync for the current worktree.
 - `cd web && bun install` — install SPA dependencies once per setup.
 - `cd web && bun run dev -- --host 127.0.0.1 --port 60080` — run the front-end dev server with proxy to the backend.
 - `cd web && bun run build` — produce production assets for `web/dist`.
@@ -68,5 +70,6 @@ Use non-blocking runtime management for long-lived services, but do not require 
 ## Security & Configuration Tips
 
 - Store authentication cookies and secrets in `.env.local`; the file is ignored—never commit credentials.
+- Worktree bootstrap only copies missing resources declared in `scripts/worktree-sync.paths`; the current contract syncs `.env.local` from the primary worktree into new linked worktrees, never overwrites existing local files, and never copies dependency or runtime directories.
 - SQLite files default to `codex_vibe_monitor.db` in the repo root; add alternate paths via `DATABASE_PATH` if running in containers.
 - SSE and HTTP clients depend on stable polling; monitor logs (`RUST_LOG=info cargo run`) when adjusting concurrency or timeouts.

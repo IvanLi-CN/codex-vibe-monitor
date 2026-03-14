@@ -60,6 +60,23 @@ bun run dev -- --host 127.0.0.1 --port 60080
 
 前端新增 `#/account-pool/upstream-accounts` 模块，用于管理 `Codex OAuth` 与 `Codex API Key` 上游账号；页面会展示归一化后的 `5 小时` / `7 天` 窗口、最近同步状态，以及 OAuth 一次性登录会话进度。
 
+## Worktree bootstrap
+
+首次拉到包含该功能的版本后，在任一 worktree 执行一次：
+
+```bash
+bun install
+bun run hooks:install
+```
+
+之后新建 linked worktree 时，shared Git `post-checkout` hook 会自动补齐缺失的 `.env.local`。如果需要手动重跑，可执行：
+
+```bash
+bun run worktree:bootstrap
+```
+
+该 bootstrap 只会复制 `scripts/worktree-sync.paths` 中声明的缺失本地资源；当前首版仅同步 `.env.local`，不会覆盖已有本地文件，也不会复制 `node_modules`、数据库文件或 `.codex/xray-forward` 一类运行态目录。
+
 ## 配置
 
 在仓库根目录创建 `.env.local`（已忽略提交），常用变量如下（括号内为默认值）：
