@@ -14,7 +14,12 @@ import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccount
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import type { LoginSessionStatusResponse } from '../../lib/api'
 import { copyText, selectAllReadonlyText } from '../../lib/clipboard'
-import { isExistingGroup, normalizeGroupName, resolveGroupNote } from '../../lib/upstreamAccountGroups'
+import {
+  buildGroupNameSuggestions,
+  isExistingGroup,
+  normalizeGroupName,
+  resolveGroupNote,
+} from '../../lib/upstreamAccountGroups'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
@@ -178,12 +183,10 @@ export default function UpstreamAccountCreatePage() {
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
   const batchManualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
 
-  const groupSuggestions = Array.from(
-    new Set(
-      [...items.map((item) => item.groupName?.trim()), ...groups.map((group) => group.groupName.trim())]
-        .filter((value): value is string => Boolean(value)),
-    ),
-  ).sort((left, right) => left.localeCompare(right))
+  const groupSuggestions = useMemo(
+    () => buildGroupNameSuggestions(items.map((item) => item.groupName), groups, groupDraftNotes),
+    [groupDraftNotes, groups, items],
+  )
 
   useEffect(() => {
     if (isRelinking) {
@@ -1049,33 +1052,19 @@ export default function UpstreamAccountCreatePage() {
                                     </label>
                                     <label className="field min-w-0 gap-2 whitespace-nowrap">
                                       <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
-                                      <div className="flex min-w-0 items-center gap-2">
-                                        <UpstreamAccountGroupCombobox
-                                          name={`batchOauthGroupName-${row.id}`}
-                                          value={row.groupName}
-                                          suggestions={groupSuggestions}
-                                          placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
-                                          searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
-                                          emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
-                                          createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                                          onValueChange={(value) => handleBatchMetadataChange(row.id, 'groupName', value)}
-                                          disabled={rowLocked}
-                                          className="min-w-0 flex-1"
-                                          triggerClassName="min-w-0 whitespace-nowrap"
-                                        />
-                                        <Button
-                                          type="button"
-                                          size="icon"
-                                          variant={hasGroupNote(row.groupName) ? 'secondary' : 'outline'}
-                                          className="shrink-0 rounded-full"
-                                          aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
-                                          title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
-                                          onClick={() => openGroupNoteEditor(row.groupName)}
-                                          disabled={!writesEnabled || !normalizeGroupName(row.groupName)}
-                                        >
-                                          <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
-                                        </Button>
-                                      </div>
+                                      <UpstreamAccountGroupCombobox
+                                        name={`batchOauthGroupName-${row.id}`}
+                                        value={row.groupName}
+                                        suggestions={groupSuggestions}
+                                        placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                                        searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                                        emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                                        createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                                        onValueChange={(value) => handleBatchMetadataChange(row.id, 'groupName', value)}
+                                        disabled={rowLocked}
+                                        className="min-w-0"
+                                        triggerClassName="min-w-0 whitespace-nowrap"
+                                      />
                                     </label>
                                     {row.noteExpanded ? (
                                       <label className="field min-w-0 gap-2 whitespace-nowrap">

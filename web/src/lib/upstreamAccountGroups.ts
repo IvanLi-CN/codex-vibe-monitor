@@ -10,6 +10,37 @@ export function buildGroupNoteMap(groups: UpstreamAccountGroupSummary[]): Map<st
   )
 }
 
+export function buildGroupNameSuggestions(
+  names: Array<string | null | undefined>,
+  groups: UpstreamAccountGroupSummary[],
+  drafts: Record<string, string>,
+): string[] {
+  const values = new Set<string>()
+
+  for (const name of names) {
+    const normalized = normalizeGroupName(name)
+    if (normalized) {
+      values.add(normalized)
+    }
+  }
+
+  for (const group of groups) {
+    const normalized = normalizeGroupName(group.groupName)
+    if (normalized) {
+      values.add(normalized)
+    }
+  }
+
+  for (const name of Object.keys(drafts)) {
+    const normalized = normalizeGroupName(name)
+    if (normalized) {
+      values.add(normalized)
+    }
+  }
+
+  return Array.from(values).sort((left, right) => left.localeCompare(right))
+}
+
 export function isExistingGroup(
   groups: UpstreamAccountGroupSummary[],
   groupName?: string | null,

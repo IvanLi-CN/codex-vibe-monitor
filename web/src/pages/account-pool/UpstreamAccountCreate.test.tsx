@@ -144,6 +144,14 @@ function findButton(matcher: RegExp) {
   ) as HTMLButtonElement | undefined
 }
 
+function findButtons(matcher: RegExp) {
+  return Array.from(document.body.querySelectorAll('button')).filter(
+    (candidate) =>
+      candidate instanceof HTMLButtonElement
+      && matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || candidate.title || ''),
+  ) as HTMLButtonElement[]
+}
+
 function getBatchRows() {
   return host?.querySelectorAll('[data-testid^="batch-oauth-row-"]') ?? []
 }
@@ -286,6 +294,13 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
 
     const updatedGroupInputs = Array.from(host?.querySelectorAll('input[name^="batchOauthGroupName-"]') ?? []) as HTMLInputElement[]
     expect(updatedGroupInputs[5]?.value).toBe('prod')
+  })
+
+  it('renders one batch-row group note button per row plus the shared default-group button', () => {
+    mockUpstreamAccounts()
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    expect(findButtons(/Edit group note/i)).toHaveLength(getBatchRows().length + 1)
   })
 
   it('clears pending row sessions when the default group rewrites inherited rows', async () => {

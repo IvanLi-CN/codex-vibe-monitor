@@ -26,7 +26,12 @@ import { UpstreamAccountsTable } from '../../components/UpstreamAccountsTable'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyConversations'
 import type { UpstreamAccountDetail, UpstreamAccountSummary } from '../../lib/api'
-import { isExistingGroup, normalizeGroupName, resolveGroupNote } from '../../lib/upstreamAccountGroups'
+import {
+  buildGroupNameSuggestions,
+  isExistingGroup,
+  normalizeGroupName,
+  resolveGroupNote,
+} from '../../lib/upstreamAccountGroups'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
@@ -400,27 +405,17 @@ export default function UpstreamAccountsPage() {
   }, [items, t])
 
   const availableGroups = useMemo(() => {
-    const values = new Set<string>()
     let hasUngrouped = false
     for (const item of items) {
-      const groupName = item.groupName?.trim()
-      if (groupName) {
-        values.add(groupName)
-      } else {
+      if (!normalizeGroupName(item.groupName)) {
         hasUngrouped = true
       }
     }
-    for (const group of groups) {
-      const groupName = group.groupName.trim()
-      if (groupName) {
-        values.add(groupName)
-      }
-    }
     return {
-      names: Array.from(values).sort((left, right) => left.localeCompare(right)),
+      names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, groupDraftNotes),
       hasUngrouped,
     }
-  }, [groups, items])
+  }, [groupDraftNotes, groups, items])
 
   const resolveGroupNoteForName = (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName)
   const resolvePendingGroupNoteForName = (groupName: string) => {
