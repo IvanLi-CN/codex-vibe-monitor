@@ -2,7 +2,10 @@ import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
-const items = [{ to: '/account-pool/upstream-accounts', key: 'accountPool.nav.upstreamAccounts' }] as const
+const items = [
+  { to: '/account-pool/upstream-accounts', key: 'accountPool.nav.upstreamAccounts' },
+  { to: '/account-pool/tags', key: 'accountPool.nav.tags' },
+] as const
 
 export default function AccountPoolLayout() {
   const { t } = useTranslation()

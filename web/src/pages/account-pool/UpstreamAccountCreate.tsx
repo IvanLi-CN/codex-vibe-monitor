@@ -24,10 +24,12 @@ import {
 } from '../../components/ui/popover'
 import { Spinner } from '../../components/ui/spinner'
 import { Tooltip } from '../../components/ui/tooltip'
+import { AccountTagField } from '../../components/AccountTagField'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
 import { MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotifications'
+import { usePoolTags } from '../../hooks/usePoolTags'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import type {
   LoginSessionStatusResponse,
@@ -83,6 +85,7 @@ type CreatePageDraft = {
     groupName?: string
     isMother?: boolean
     note?: string
+    tagIds?: number[]
     callbackUrl?: string
     session?: LoginSessionStatusResponse | null
     sessionHint?: string | null
@@ -91,6 +94,7 @@ type CreatePageDraft = {
   }
   batchOauth?: {
     defaultGroupName?: string
+    tagIds?: number[]
     rows?: Array<Partial<BatchOauthRow> & { id?: string }>
   }
   apiKey?: {
@@ -98,6 +102,7 @@ type CreatePageDraft = {
     groupName?: string
     isMother?: boolean
     note?: string
+    tagIds?: number[]
     apiKeyValue?: string
     primaryLimit?: string
     secondaryLimit?: string
@@ -481,6 +486,7 @@ export default function UpstreamAccountCreatePage() {
     createApiKeyAccount,
     saveGroupNote,
   } = useUpstreamAccounts()
+  const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags()
   const notifyMotherSwitches = useMotherSwitchNotifications()
 
   const relinkAccountId = useMemo(() => parseAccountId(location.search), [location.search])
@@ -504,11 +510,13 @@ export default function UpstreamAccountCreatePage() {
   const [oauthGroupName, setOauthGroupName] = useState(() => draft?.oauth?.groupName ?? '')
   const [oauthIsMother, setOauthIsMother] = useState(() => draft?.oauth?.isMother === true)
   const [oauthNote, setOauthNote] = useState(() => draft?.oauth?.note ?? '')
+  const [oauthTagIds, setOauthTagIds] = useState<number[]>(() => draft?.oauth?.tagIds ?? [])
   const [oauthCallbackUrl, setOauthCallbackUrl] = useState(() => draft?.oauth?.callbackUrl ?? '')
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState(() => draft?.apiKey?.displayName ?? '')
   const [apiKeyGroupName, setApiKeyGroupName] = useState(() => draft?.apiKey?.groupName ?? '')
   const [apiKeyIsMother, setApiKeyIsMother] = useState(() => draft?.apiKey?.isMother === true)
   const [apiKeyNote, setApiKeyNote] = useState(() => draft?.apiKey?.note ?? '')
+  const [apiKeyTagIds, setApiKeyTagIds] = useState<number[]>(() => draft?.apiKey?.tagIds ?? [])
   const [apiKeyValue, setApiKeyValue] = useState(() => draft?.apiKey?.apiKeyValue ?? '')
   const [apiKeyPrimaryLimit, setApiKeyPrimaryLimit] = useState(() => draft?.apiKey?.primaryLimit ?? '')
   const [apiKeySecondaryLimit, setApiKeySecondaryLimit] = useState(() => draft?.apiKey?.secondaryLimit ?? '')
@@ -526,6 +534,8 @@ export default function UpstreamAccountCreatePage() {
   const [manualCopyOpen, setManualCopyOpen] = useState(false)
   const [batchManualCopyRowId, setBatchManualCopyRowId] = useState<string | null>(null)
   const [batchDefaultGroupName, setBatchDefaultGroupName] = useState(() => draft?.batchOauth?.defaultGroupName ?? '')
+  const [batchTagIds, setBatchTagIds] = useState<number[]>(() => draft?.batchOauth?.tagIds ?? [])
+  const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(() => initialBatchRows)
   const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
@@ -610,6 +620,20 @@ export default function UpstreamAccountCreatePage() {
     }
   }
 
+  const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
+    const detail = await createTag(payload)
+    setPageCreatedTagIds((current) => (current.includes(detail.id) ? current : [...current, detail.id]))
+    return detail
+  }
+
+  const handleDeleteTag = async (tagId: number) => {
+    await deleteTag(tagId)
+    setPageCreatedTagIds((current) => current.filter((value) => value !== tagId))
+    setOauthTagIds((current) => current.filter((value) => value !== tagId))
+    setApiKeyTagIds((current) => current.filter((value) => value !== tagId))
+    setBatchTagIds((current) => current.filter((value) => value !== tagId))
+  }
+
   useEffect(() => {
     if (isRelinking) {
       setActiveTab('oauth')
@@ -623,6 +647,7 @@ export default function UpstreamAccountCreatePage() {
     setActiveTab('oauth')
     setOauthDisplayName((current) => current || relinkSummary.displayName)
     setOauthGroupName((current) => current || relinkSummary.groupName || '')
+    setOauthTagIds((current) => (current.length > 0 ? current : (relinkSummary.tags ?? []).map((tag) => tag.id)))
     setOauthIsMother((current) => current || relinkSummary.isMother)
   }, [isRelinking, relinkSummary])
 
@@ -903,6 +928,7 @@ export default function UpstreamAccountCreatePage() {
         note: oauthNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName) || undefined,
         accountId: relinkAccountId ?? undefined,
+        tagIds: oauthTagIds,
         isMother: oauthIsMother,
       })
       setSession(response)
@@ -990,6 +1016,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: row.displayName.trim() || undefined,
         groupName: row.groupName.trim() || undefined,
         note: row.note.trim() || undefined,
+        tagIds: batchTagIds,
         groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
         isMother: row.isMother,
       })
@@ -1123,6 +1150,7 @@ export default function UpstreamAccountCreatePage() {
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
         localSecondaryLimit: normalizeNumberInput(apiKeySecondaryLimit),
         localLimitUnit: apiKeyLimitUnit.trim() || 'requests',
+        tagIds: apiKeyTagIds,
       })
       notifyMotherChange(response)
       navigate('/account-pool/upstream-accounts', {
@@ -1150,6 +1178,31 @@ export default function UpstreamAccountCreatePage() {
     },
     { total: 0, draft: 0, pending: 0, completed: 0 },
   )
+  const tagFieldLabels = {
+    label: t('accountPool.tags.field.label'),
+    add: t('accountPool.tags.field.add'),
+    empty: t('accountPool.tags.field.empty'),
+    searchPlaceholder: t('accountPool.tags.field.searchPlaceholder'),
+    createInline: (value: string) => t('accountPool.tags.field.createInline', { value: value || t('accountPool.tags.field.newTag') }),
+    selectedFromCurrentPage: t('accountPool.tags.field.currentPage'),
+    remove: t('accountPool.tags.field.remove'),
+    deleteAndRemove: t('accountPool.tags.field.deleteAndRemove'),
+    edit: t('accountPool.tags.field.edit'),
+    createTitle: t('accountPool.tags.dialog.createTitle'),
+    editTitle: t('accountPool.tags.dialog.editTitle'),
+    dialogDescription: t('accountPool.tags.dialog.description'),
+    name: t('accountPool.tags.dialog.name'),
+    namePlaceholder: t('accountPool.tags.dialog.namePlaceholder'),
+    guardEnabled: t('accountPool.tags.dialog.guardEnabled'),
+    lookbackHours: t('accountPool.tags.dialog.lookbackHours'),
+    maxConversations: t('accountPool.tags.dialog.maxConversations'),
+    allowCutOut: t('accountPool.tags.dialog.allowCutOut'),
+    allowCutIn: t('accountPool.tags.dialog.allowCutIn'),
+    cancel: t('accountPool.tags.dialog.cancel'),
+    save: t('accountPool.tags.dialog.save'),
+    createAction: t('accountPool.tags.dialog.createAction'),
+    validation: t('accountPool.tags.dialog.validation'),
+  }
 
   return (
     <div className="grid gap-6">
@@ -1288,6 +1341,19 @@ export default function UpstreamAccountCreatePage() {
                         <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>
                     </div>
+                    <div className="w-full lg:w-[24rem]">
+                      <AccountTagField
+                        tags={tagItems}
+                        selectedTagIds={batchTagIds}
+                        writesEnabled={writesEnabled}
+                        pageCreatedTagIds={pageCreatedTagIds}
+                        labels={tagFieldLabels}
+                        onChange={setBatchTagIds}
+                        onCreateTag={handleCreateTag}
+                        onUpdateTag={updateTag}
+                        onDeleteTag={handleDeleteTag}
+                      />
+                    </div>
                     <Button type="button" variant="secondary" onClick={appendBatchRow} disabled={!writesEnabled} className="h-10 shrink-0 rounded-lg">
                       <Icon icon="mdi:playlist-plus" className="mr-2 h-4 w-4" aria-hidden />
                       {t('accountPool.upstreamAccounts.batchOauth.actions.addRow')}
@@ -1384,6 +1450,17 @@ export default function UpstreamAccountCreatePage() {
                       }}
                     />
                   </label>
+                  <AccountTagField
+                    tags={tagItems}
+                    selectedTagIds={oauthTagIds}
+                    writesEnabled={writesEnabled}
+                    pageCreatedTagIds={pageCreatedTagIds}
+                    labels={tagFieldLabels}
+                    onChange={setOauthTagIds}
+                    onCreateTag={handleCreateTag}
+                    onUpdateTag={updateTag}
+                    onDeleteTag={handleDeleteTag}
+                  />
 
                   <div className="rounded-2xl border border-base-300/80 bg-base-200/40 p-4 sm:p-5">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1953,6 +2030,19 @@ export default function UpstreamAccountCreatePage() {
                       onChange={(event) => setApiKeyNote(event.target.value)}
                     />
                   </label>
+                  <div className="md:col-span-2">
+                    <AccountTagField
+                      tags={tagItems}
+                      selectedTagIds={apiKeyTagIds}
+                      writesEnabled={writesEnabled}
+                      pageCreatedTagIds={pageCreatedTagIds}
+                      labels={tagFieldLabels}
+                      onChange={setApiKeyTagIds}
+                      onCreateTag={handleCreateTag}
+                      onUpdateTag={updateTag}
+                      onDeleteTag={handleDeleteTag}
+                    />
+                  </div>
                   <div className="md:col-span-2 flex flex-wrap justify-end gap-2">
                     <Button asChild type="button" variant="ghost">
                       <Link to="/account-pool/upstream-accounts">{t('accountPool.upstreamAccounts.actions.cancel')}</Link>

@@ -2,8 +2,10 @@ import { useEffect, useRef, type ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { useTheme } from '../theme/context'
 import type {
+  AccountTagSummary,
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
+  EffectiveRoutingRule,
   LoginSessionStatusResponse,
   UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
@@ -37,6 +39,18 @@ type StoryStore = {
       state?: string
     }
   >
+}
+
+const defaultTags: AccountTagSummary[] = []
+const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
+  guardEnabled: false,
+  lookbackHours: null,
+  maxConversations: null,
+  allowCutOut: true,
+  allowCutIn: true,
+  sourceTagIds: [],
+  sourceTagNames: [],
+  guardRules: [],
 }
 
 export type StoryInitialEntry =
@@ -123,6 +137,8 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
       secondaryLimit: null,
       limitUnit: 'requests',
     },
+    tags: defaultTags,
+    effectiveRoutingRule: defaultEffectiveRoutingRule,
     note: 'Primary team account for premium traffic.',
     maskedApiKey: null,
     history: buildHistory(2),
@@ -166,6 +182,8 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
       secondaryLimit,
       limitUnit,
     },
+    tags: defaultTags,
+    effectiveRoutingRule: defaultEffectiveRoutingRule,
     note: 'Fallback API key before router metrics land.',
     history: buildHistory(0).map((point) => ({
       ...point,
@@ -201,6 +219,8 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     credits: detail.credits,
     localLimits: detail.localLimits,
     duplicateInfo: detail.duplicateInfo,
+    tags: detail.tags,
+    effectiveRoutingRule: detail.effectiveRoutingRule,
   }
 }
 
