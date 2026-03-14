@@ -254,6 +254,7 @@ jobs:
     needs: [lint, frontend-tests, records-overlay-e2e, unit-tests]
     permissions:
       contents: write
+      issues: read
       pull-requests: read
     timeout-minutes: 10
     steps:
