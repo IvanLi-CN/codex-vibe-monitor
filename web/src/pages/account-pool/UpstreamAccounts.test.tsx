@@ -10,7 +10,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, type InitialEntry } from "react-router-dom";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
 import UpstreamAccountsPage from "./UpstreamAccounts";
@@ -103,7 +103,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(initialEntry = "/account-pool/upstream-accounts") {
+function render(initialEntry: InitialEntry = "/account-pool/upstream-accounts") {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -122,6 +122,13 @@ function render(initialEntry = "/account-pool/upstream-accounts") {
         </SystemNotificationProvider>
       </I18nProvider>,
     );
+  });
+}
+
+async function flushAsync() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
   });
 }
 
@@ -250,6 +257,31 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickButton(/Open details/i);
     expect(document.body.textContent).toContain(
       "Matched reasons: shared ChatGPT account id. Related account ids: 9.",
+    );
+  });
+
+  it("clears the one-time duplicate warning after dismissing it", async () => {
+    mockAccountsPage();
+    render({
+      pathname: "/account-pool/upstream-accounts",
+      state: {
+        selectedAccountId: 5,
+        duplicateWarning: {
+          accountId: 5,
+          displayName: "Existing OAuth",
+          peerAccountIds: [9],
+          reasons: ["sharedChatgptAccountId"],
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(document.body.textContent).toContain(
+      "was saved, but the upstream identity looks duplicated.",
+    );
+    clickButton(/Dismiss warning/i);
+    expect(document.body.textContent).not.toContain(
+      "was saved, but the upstream identity looks duplicated.",
     );
   });
 

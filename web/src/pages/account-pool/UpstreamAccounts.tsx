@@ -448,6 +448,12 @@ export default function UpstreamAccountsPage() {
     navigate(location.pathname, { replace: true, state: null })
   }, [location.pathname, location.state, navigate, selectAccount])
 
+  useEffect(() => {
+    if (!duplicateWarning) return
+    if (duplicateWarning.accountId === selectedId) return
+    setDuplicateWarning(null)
+  }, [duplicateWarning, selectedId])
+
   const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
     const detail = await createTag(payload)
     setPageCreatedTagIds((current) => (current.includes(detail.id) ? current : [...current, detail.id]))
@@ -810,6 +816,14 @@ export default function UpstreamAccountsPage() {
                     })}
                   </p>
                 </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDuplicateWarning(null)}
+                >
+                  {t('accountPool.upstreamAccounts.actions.dismissDuplicateWarning')}
+                </Button>
               </Alert>
             ) : null}
 

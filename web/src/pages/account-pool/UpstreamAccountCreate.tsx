@@ -995,7 +995,20 @@ export default function UpstreamAccountCreatePage() {
         })
       }
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      let latestSession: LoginSessionStatusResponse | null = null
+      try {
+        latestSession = await getLoginSession(session.loginId)
+      } catch {
+        latestSession = null
+      }
+      setSession((current) => latestSession ?? current)
+      if (latestSession?.status === 'failed' || latestSession?.status === 'expired') {
+        setOauthCallbackUrl('')
+        setSessionHint(latestSession.error ?? message)
+        setOauthDuplicateWarning(null)
+      }
+      setActionError(message)
     } finally {
       setBusyAction(null)
     }

@@ -1538,7 +1538,11 @@ pub(crate) async fn create_api_key_account(
     .map_err(internal_error_tuple)?;
     let inserted_id = {
         let _guard = state.upstream_accounts.sync_lock.lock().await;
-        let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
+        let mut tx = state
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(internal_error_tuple)?;
         ensure_display_name_available(&mut *tx, &display_name, None).await?;
         let inserted_id = sqlx::query_scalar::<_, i64>(
         r#"
@@ -1666,7 +1670,11 @@ pub(crate) async fn update_upstream_account(
     }
     validate_group_note_target(row.group_name.as_deref(), requested_group_note.is_some())?;
     let now_iso = format_utc_iso(Utc::now());
-    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
     ensure_display_name_available(&mut *tx, &row.display_name, Some(id)).await?;
     sqlx::query(
         r#"

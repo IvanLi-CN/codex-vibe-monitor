@@ -768,6 +768,41 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
+  it("refreshes the single oauth session after a server-side completion failure", async () => {
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "failed",
+      authUrl: null,
+      redirectUri: null,
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: "Display name must be unique.",
+    });
+    const completeOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("Display name must be unique."));
+    mockUpstreamAccounts({ completeOauthLogin, getLoginSession });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'textarea[name="oauthCallbackUrl"]',
+      "http://localhost:1455/oauth/callback?code=test",
+    );
+    await flushAsync();
+    clickButton(/Complete OAuth login/i);
+    await flushAsync();
+
+    expect(getLoginSession).toHaveBeenCalledWith("login-1");
+    expect(document.body.textContent).toContain(
+      "Display name must be unique.",
+    );
+    expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
+  });
+
   it("shows duplicate warnings inline after completing a batch oauth row", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
