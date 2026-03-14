@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { userEvent, within, expect } from 'storybook/test'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { SystemNotificationProvider } from './ui/system-notifications'
 import { I18nProvider } from '../i18n'
 import { useTheme } from '../theme/context'
 import type {
@@ -33,6 +34,7 @@ type StoryStore = {
     LoginSessionStatusResponse & {
       displayName?: string
       groupName?: string
+      isMother?: boolean
       note?: string
       state?: string
     }
@@ -82,6 +84,7 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
     provider: 'codex',
     displayName: 'Codex Pro - Tokyo',
     groupName: 'production',
+    isMother: true,
     status: 'active',
     enabled: true,
     email: 'tokyo@example.com',
@@ -125,6 +128,7 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
     provider: 'codex',
     displayName: 'Team key - staging',
     groupName: 'staging',
+    isMother: false,
     status: 'active',
     enabled: true,
     email: null,
@@ -170,6 +174,7 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     provider: detail.provider,
     displayName: detail.displayName,
     groupName: detail.groupName,
+    isMother: detail.isMother,
     status: detail.status,
     enabled: detail.enabled,
     email: detail.email,
@@ -188,6 +193,32 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     tags: detail.tags,
     effectiveRoutingRule: detail.effectiveRoutingRule,
   }
+}
+
+function normalizeGroupName(groupName?: string | null) {
+  const trimmed = groupName?.trim() ?? ''
+  return trimmed || null
+}
+
+function syncStoreAccounts(store: StoryStore) {
+  store.accounts = Object.values(store.details)
+    .map((detail) => toSummary(detail))
+    .sort((left, right) => right.id - left.id)
+}
+
+function applyMockMotherAssignment(store: StoryStore, updated: UpstreamAccountDetail) {
+  store.details[updated.id] = updated
+  if (updated.isMother) {
+    const groupName = normalizeGroupName(updated.groupName)
+    for (const [id, detail] of Object.entries(store.details)) {
+      if (Number(id) === updated.id) continue
+      if (!detail.isMother) continue
+      if (normalizeGroupName(detail.groupName) === groupName) {
+        store.details[Number(id)] = { ...detail, isMother: false }
+      }
+    }
+  }
+  syncStoreAccounts(store)
 }
 
 function createStore(): StoryStore {
@@ -437,7 +468,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       }
 
       if (path === '/api/pool/upstream-accounts/oauth/login-sessions' && method === 'POST') {
-        const body = parseBody<{ displayName?: string; groupName?: string; note?: string }>(init?.body, {})
+        const body = parseBody<{ displayName?: string; groupName?: string; note?: string; isMother?: boolean }>(init?.body, {})
         const loginId = `login_${Date.now()}`
         const redirectUri = `http://localhost:431${String(store.nextId).slice(-1)}/oauth/callback`
         const state = `state_${loginId}`
@@ -451,6 +482,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
           error: null,
           displayName: body.displayName,
           groupName: body.groupName,
+          isMother: body.isMother === true,
           note: body.note,
           state,
         }
@@ -483,11 +515,10 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         const detail = createOauthAccount(nextId, {
           displayName: session.displayName || existing?.displayName || 'Codex Pro - New login',
           groupName: session.groupName ?? existing?.groupName ?? 'default',
+          isMother: session.isMother ?? existing?.isMother ?? false,
           note: session.note ?? existing?.note ?? 'Freshly connected from Storybook OAuth mock.',
         })
-        store.details[nextId] = detail
-        const summary = toSummary(detail)
-        store.accounts = [summary, ...store.accounts.filter((item) => item.id !== nextId)]
+        applyMockMotherAssignment(store, detail)
         session.accountId = nextId
         session.status = 'completed'
         session.authUrl = null
@@ -505,6 +536,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         const detail = createApiKeyAccount(nextId, {
           displayName: body.displayName,
           groupName: body.groupName ?? 'default',
+          isMother: body.isMother === true,
           note: body.note ?? null,
           maskedApiKey: maskApiKey(body.apiKey),
           localLimits: {
@@ -514,8 +546,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
           },
         })
         const synced = syncLocalWindows(detail)
-        store.details[nextId] = synced
-        store.accounts = [toSummary(synced), ...store.accounts]
+        applyMockMotherAssignment(store, synced)
         return jsonResponse(clone(synced), 201)
       }
 
@@ -578,6 +609,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
           ...detail,
           displayName: body.displayName ?? detail.displayName,
           groupName: body.groupName ?? detail.groupName,
+          isMother: body.isMother ?? detail.isMother,
           note: body.note ?? detail.note,
           enabled: body.enabled ?? detail.enabled,
           status: body.enabled === false ? 'disabled' : detail.status === 'disabled' ? 'active' : detail.status,
@@ -591,8 +623,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
                 }
               : detail.localLimits,
         })
-        store.details[accountId] = updated
-        store.accounts = store.accounts.map((item) => (item.id === accountId ? toSummary(updated) : item))
+        applyMockMotherAssignment(store, updated)
         return jsonResponse(clone(updated))
       }
 
@@ -655,9 +686,11 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <StorybookUpstreamAccountsMock>
-          <Story />
-        </StorybookUpstreamAccountsMock>
+        <SystemNotificationProvider>
+          <StorybookUpstreamAccountsMock>
+            <Story />
+          </StorybookUpstreamAccountsMock>
+        </SystemNotificationProvider>
       </I18nProvider>
     ),
   ],

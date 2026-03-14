@@ -98,6 +98,7 @@ export default function TagsPage() {
             <label className="field">
               <span className="field-label">{t('accountPool.tags.filters.search')}</span>
               <Input
+                name="tagSearch"
                 value={search}
                 placeholder={t('accountPool.tags.filters.searchPlaceholder')}
                 onChange={(event) => {

@@ -953,6 +953,7 @@ export interface UpstreamAccountSummary {
   provider: string
   displayName: string
   groupName?: string | null
+  isMother: boolean
   status: 'active' | 'syncing' | 'needs_reauth' | 'error' | 'disabled' | string
   enabled: boolean
   email?: string | null
@@ -1010,6 +1011,7 @@ export interface CreateOauthLoginSessionPayload {
   note?: string
   accountId?: number
   tagIds?: number[]
+  isMother?: boolean
 }
 
 export interface CompleteOauthLoginSessionPayload {
@@ -1021,6 +1023,7 @@ export interface CreateApiKeyAccountPayload {
   groupName?: string
   note?: string
   apiKey: string
+  isMother?: boolean
   localPrimaryLimit?: number
   localSecondaryLimit?: number
   localLimitUnit?: string
@@ -1032,6 +1035,7 @@ export interface UpdateUpstreamAccountPayload {
   groupName?: string
   note?: string
   enabled?: boolean
+  isMother?: boolean
   apiKey?: string
   localPrimaryLimit?: number | null
   localSecondaryLimit?: number | null
@@ -1173,6 +1177,7 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
     provider,
     displayName,
     groupName: typeof payload.groupName === 'string' ? payload.groupName : null,
+    isMother: payload.isMother === true,
     status,
     enabled: payload.enabled !== false,
     email: typeof payload.email === 'string' ? payload.email : null,

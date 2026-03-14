@@ -2704,12 +2704,24 @@ async fn insert_test_pool_api_key_account(
     display_name: &str,
     api_key: &str,
 ) -> i64 {
+    insert_test_pool_api_key_account_with_options(state, display_name, api_key, None, None).await
+}
+
+async fn insert_test_pool_api_key_account_with_options(
+    state: &Arc<AppState>,
+    display_name: &str,
+    api_key: &str,
+    group_name: Option<&str>,
+    is_mother: Option<bool>,
+) -> i64 {
     ensure_upstream_accounts_schema(&state.pool)
         .await
         .expect("ensure upstream account schema");
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": display_name,
         "apiKey": api_key,
+        "groupName": group_name,
+        "isMother": is_mother,
     }))
     .expect("deserialize api key account request");
     let Json(detail) =
@@ -2722,6 +2734,196 @@ async fn insert_test_pool_api_key_account(
         .fetch_one(&state.pool)
         .await
         .expect("load inserted test pool upstream account id")
+}
+
+#[tokio::test]
+async fn create_api_key_account_enforces_single_mother_per_group() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let first_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "sk-primary",
+        Some("prod"),
+        Some(true),
+    )
+    .await;
+
+    let second_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "sk-secondary",
+        Some("prod"),
+        Some(true),
+    )
+    .await;
+
+    let first_is_mother: i64 =
+        sqlx::query_scalar("SELECT is_mother FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(first_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load first mother flag");
+    let second_is_mother: i64 =
+        sqlx::query_scalar("SELECT is_mother FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(second_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load second mother flag");
+
+    assert_eq!(first_is_mother, 0);
+    assert_eq!(second_is_mother, 1);
+}
+
+#[tokio::test]
+async fn update_upstream_account_clears_mother_without_promoting_group_peers() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let primary_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "sk-primary",
+        Some("prod"),
+        Some(true),
+    )
+    .await;
+    let secondary_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "sk-secondary",
+        Some("prod"),
+        Some(false),
+    )
+    .await;
+
+    let payload: UpdateUpstreamAccountRequest = serde_json::from_value(json!({
+        "isMother": false,
+    }))
+    .expect("deserialize update request");
+    let _ = update_upstream_account(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path(primary_id),
+        Json(payload),
+    )
+    .await
+    .expect("clear mother flag");
+
+    let flags: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT id, is_mother FROM pool_upstream_accounts WHERE id IN (?1, ?2) ORDER BY id ASC",
+    )
+    .bind(primary_id)
+    .bind(secondary_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load mother flags");
+
+    assert_eq!(flags, vec![(primary_id, 0), (secondary_id, 0)]);
+}
+
+#[tokio::test]
+async fn create_oauth_login_session_persists_mother_flag() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let payload: CreateOauthLoginSessionRequest = serde_json::from_value(json!({
+        "displayName": "OAuth Mother",
+        "groupName": "prod",
+        "isMother": true,
+    }))
+    .expect("deserialize oauth session request");
+
+    let _ = create_oauth_login_session(State(state.clone()), HeaderMap::new(), Json(payload))
+        .await
+        .expect("create oauth login session");
+
+    let stored_flag: i64 = sqlx::query_scalar(
+        r#"
+        SELECT is_mother
+        FROM pool_oauth_login_sessions
+        WHERE display_name = ?1
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind("OAuth Mother")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load oauth session mother flag");
+
+    assert_eq!(stored_flag, 1);
+}
+
+#[tokio::test]
+async fn create_oauth_login_session_relink_preserves_existing_metadata() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    ensure_upstream_accounts_schema(&state.pool)
+        .await
+        .expect("ensure upstream account schema");
+
+    let now_iso = format_utc_iso(Utc::now());
+    let account_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            kind, provider, display_name, group_name, is_mother, note, status, enabled,
+            email, chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key,
+            encrypted_credentials, token_expires_at, last_refreshed_at, last_synced_at,
+            last_successful_sync_at, last_error, last_error_at, local_primary_limit,
+            local_secondary_limit, local_limit_unit, created_at, updated_at
+        ) VALUES (
+            ?1, ?2, ?3, ?4, 1, ?5, ?6, 1,
+            NULL, NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, ?7, ?7
+        ) RETURNING id
+        "#,
+    )
+    .bind("oauth_codex")
+    .bind("codex")
+    .bind("Existing OAuth")
+    .bind("prod")
+    .bind("Keep this note")
+    .bind("active")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert oauth account");
+
+    let payload: CreateOauthLoginSessionRequest = serde_json::from_value(json!({
+        "accountId": account_id,
+    }))
+    .expect("deserialize relink payload");
+    let _ = create_oauth_login_session(State(state.clone()), HeaderMap::new(), Json(payload))
+        .await
+        .expect("create relink session");
+
+    let stored: (Option<String>, Option<String>, i64, Option<String>) = sqlx::query_as(
+        r#"
+        SELECT display_name, group_name, is_mother, note
+        FROM pool_oauth_login_sessions
+        WHERE account_id = ?1
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load relink session");
+
+    assert_eq!(stored.0.as_deref(), Some("Existing OAuth"));
+    assert_eq!(stored.1.as_deref(), Some("prod"));
+    assert_eq!(stored.2, 1);
+    assert_eq!(stored.3.as_deref(), Some("Keep this note"));
 }
 
 fn test_stage_timings() -> StageTimings {
