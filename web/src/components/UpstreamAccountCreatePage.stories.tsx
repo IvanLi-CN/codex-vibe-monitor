@@ -8,6 +8,18 @@ import {
   createPendingSession,
 } from './UpstreamAccountsPage.story-helpers'
 
+function createCompletedSession(loginId: string, accountId: number) {
+  return {
+    loginId,
+    status: 'completed' as const,
+    authUrl: null,
+    redirectUri: null,
+    expiresAt: '2026-03-11T13:30:00.000Z',
+    accountId,
+    error: null,
+  }
+}
+
 const meta = {
   title: 'Account Pool/Pages/Upstream Account Create',
   component: UpstreamAccountCreatePage,
@@ -191,6 +203,66 @@ export const BatchOauthDuplicateWarning: Story = {
                   displayName: 'Codex Pro - Osaka',
                   groupName: 'production',
                   note: 'Healthy comparison row.',
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+}
+
+export const BatchOauthMixedStates: Story = {
+  name: 'Batch OAuth Mixed States',
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              defaultGroupName: 'production',
+              rows: [
+                {
+                  id: 'row-1',
+                  displayName: 'Codex Pro - Tokyo',
+                  groupName: 'production',
+                  note: 'Completed row that also triggers duplicate upstream identity warning.',
+                  callbackUrl: 'http://localhost:43210/oauth/callback?code=batch-duplicate&state=storybook',
+                  session: createCompletedSession('story-batch-duplicate-done', 101),
+                  sessionHint: 'Codex Pro - Tokyo is ready. Continue with the remaining rows when you are done here.',
+                  duplicateWarning: {
+                    accountId: 101,
+                    displayName: 'Codex Pro - Tokyo',
+                    peerAccountIds: [103],
+                    reasons: ['sharedChatgptAccountId', 'sharedChatgptUserId'],
+                  },
+                },
+                {
+                  id: 'row-2',
+                  displayName: 'Codex Pro - Osaka',
+                  groupName: 'production',
+                  note: 'Pending row with callback still waiting to be completed.',
+                  callbackUrl: 'http://localhost:43210/oauth/callback?code=batch-pending&state=storybook',
+                  session: createPendingSession('story-batch-pending'),
+                  sessionHint: 'Pending OAuth session ready for callback review.',
+                },
+                {
+                  id: 'row-3',
+                  displayName: 'Codex Pro - Nagoya',
+                  groupName: 'production',
+                  note: 'Completed healthy row for side-by-side comparison.',
+                  callbackUrl: 'http://localhost:43210/oauth/callback?code=batch-clean&state=storybook',
+                  session: createCompletedSession('story-batch-clean-done', 104),
+                  sessionHint: 'Codex Pro - Nagoya is ready. Continue with the remaining rows when you are done here.',
+                },
+                {
+                  id: 'row-4',
+                  displayName: 'Codex Pro - Fukuoka',
+                  groupName: 'staging',
+                  note: 'Fresh draft row that still needs an OAuth URL.',
                 },
               ],
             },
