@@ -403,7 +403,7 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(navigateMock).not.toHaveBeenCalled()
   })
 
-  it('passes an existing shared group note when generating oauth for a grouped row', async () => {
+  it('does not resend an existing shared group note when generating oauth for a grouped row', async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: 'login-1',
       status: 'pending',
@@ -425,7 +425,40 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: undefined,
       groupName: 'prod',
-      groupNote: 'Existing production group note',
+      groupNote: undefined,
+      note: undefined,
+    })
+  })
+
+  it('passes a draft shared group note when generating oauth for a new grouped row', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'new-team')
+    await flushAsync()
+
+    clickButton(/Edit group note/i)
+    await flushAsync()
+    setInputValue('textarea', 'Draft shared group note')
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: undefined,
+      groupName: 'new-team',
+      groupNote: 'Draft shared group note',
       note: undefined,
     })
   })

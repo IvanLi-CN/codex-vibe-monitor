@@ -423,9 +423,15 @@ export default function UpstreamAccountsPage() {
   }, [groups, items])
 
   const resolveGroupNoteForName = (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName)
+  const resolvePendingGroupNoteForName = (groupName: string) => {
+    const normalized = normalizeGroupName(groupName)
+    if (!normalized || isExistingGroup(groups, normalized)) return ''
+    return groupDraftNotes[normalized]?.trim() ?? ''
+  }
   const hasGroupNote = (groupName: string) => resolveGroupNoteForName(groupName).trim().length > 0
 
   const openGroupNoteEditor = (groupName: string) => {
+    if (!writesEnabled) return
     const normalized = normalizeGroupName(groupName)
     if (!normalized) return
     setGroupNoteError(null)
@@ -444,6 +450,7 @@ export default function UpstreamAccountsPage() {
   }
 
   const handleSaveGroupNote = async () => {
+    if (!writesEnabled) return
     const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName)
     if (!normalizedGroupName) return
     const normalizedNote = groupNoteEditor.note.trim()
@@ -542,7 +549,7 @@ export default function UpstreamAccountsPage() {
         displayName: draft.displayName.trim() || undefined,
         groupName: draft.groupName.trim(),
         note: draft.note.trim() || undefined,
-        groupNote: resolveGroupNoteForName(draft.groupName).trim() || undefined,
+        groupNote: resolvePendingGroupNoteForName(draft.groupName) || undefined,
         apiKey: source.kind === 'api_key_codex' && draft.apiKey.trim() ? draft.apiKey.trim() : undefined,
         localPrimaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localPrimaryLimit) : undefined,
         localSecondaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localSecondaryLimit) : undefined,
@@ -887,7 +894,7 @@ export default function UpstreamAccountsPage() {
                         aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                         title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                         onClick={() => openGroupNoteEditor(draft.groupName)}
-                        disabled={!normalizeGroupName(draft.groupName)}
+                        disabled={!writesEnabled || !normalizeGroupName(draft.groupName)}
                       >
                         <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>

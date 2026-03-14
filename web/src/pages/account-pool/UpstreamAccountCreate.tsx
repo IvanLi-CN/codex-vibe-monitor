@@ -227,9 +227,15 @@ export default function UpstreamAccountCreatePage() {
   }, [groups])
 
   const resolveGroupNoteForName = (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName)
+  const resolvePendingGroupNoteForName = (groupName: string) => {
+    const normalized = normalizeGroupName(groupName)
+    if (!normalized || isExistingGroup(groups, normalized)) return ''
+    return groupDraftNotes[normalized]?.trim() ?? ''
+  }
   const hasGroupNote = (groupName: string) => resolveGroupNoteForName(groupName).trim().length > 0
 
   const openGroupNoteEditor = (groupName: string) => {
+    if (!writesEnabled) return
     const normalized = normalizeGroupName(groupName)
     if (!normalized) return
     setGroupNoteError(null)
@@ -248,6 +254,7 @@ export default function UpstreamAccountCreatePage() {
   }
 
   const handleSaveGroupNote = async () => {
+    if (!writesEnabled) return
     const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName)
     if (!normalizedGroupName) return
     const normalizedNote = groupNoteEditor.note.trim()
@@ -371,7 +378,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: oauthDisplayName.trim() || undefined,
         groupName: oauthGroupName.trim() || undefined,
         note: oauthNote.trim() || undefined,
-        groupNote: resolveGroupNoteForName(oauthGroupName).trim() || undefined,
+        groupNote: resolvePendingGroupNoteForName(oauthGroupName) || undefined,
         accountId: relinkAccountId ?? undefined,
       })
       setSession(response)
@@ -448,7 +455,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: row.displayName.trim() || undefined,
         groupName: row.groupName.trim() || undefined,
         note: row.note.trim() || undefined,
-        groupNote: resolveGroupNoteForName(row.groupName).trim() || undefined,
+        groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
       })
       setBatchManualCopyRowId((current) => (current === rowId ? null : current))
       updateBatchRow(rowId, (current) => ({
@@ -560,7 +567,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: apiKeyDisplayName.trim(),
         groupName: apiKeyGroupName.trim() || undefined,
         note: apiKeyNote.trim() || undefined,
-        groupNote: resolveGroupNoteForName(apiKeyGroupName).trim() || undefined,
+        groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
         apiKey: apiKeyValue.trim(),
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
         localSecondaryLimit: normalizeNumberInput(apiKeySecondaryLimit),
@@ -719,7 +726,7 @@ export default function UpstreamAccountCreatePage() {
                         aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                         title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                         onClick={() => openGroupNoteEditor(batchDefaultGroupName)}
-                        disabled={!normalizeGroupName(batchDefaultGroupName)}
+                        disabled={!writesEnabled || !normalizeGroupName(batchDefaultGroupName)}
                       >
                         <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>
@@ -778,7 +785,7 @@ export default function UpstreamAccountCreatePage() {
                         aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                         title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                         onClick={() => openGroupNoteEditor(oauthGroupName)}
-                        disabled={!normalizeGroupName(oauthGroupName)}
+                        disabled={!writesEnabled || !normalizeGroupName(oauthGroupName)}
                       >
                         <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>
@@ -999,7 +1006,7 @@ export default function UpstreamAccountCreatePage() {
                                           aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                                           title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                                           onClick={() => openGroupNoteEditor(row.groupName)}
-                                          disabled={!normalizeGroupName(row.groupName)}
+                                          disabled={!writesEnabled || !normalizeGroupName(row.groupName)}
                                         >
                                           <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
                                         </Button>
@@ -1126,7 +1133,7 @@ export default function UpstreamAccountCreatePage() {
                                             className="h-9 w-9 shrink-0 rounded-full"
                                             aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                                             onClick={() => openGroupNoteEditor(row.groupName)}
-                                            disabled={!normalizeGroupName(row.groupName)}
+                                            disabled={!writesEnabled || !normalizeGroupName(row.groupName)}
                                           >
                                             <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
                                           </Button>
@@ -1248,7 +1255,7 @@ export default function UpstreamAccountCreatePage() {
                         aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                         title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                         onClick={() => openGroupNoteEditor(apiKeyGroupName)}
-                        disabled={!normalizeGroupName(apiKeyGroupName)}
+                        disabled={!writesEnabled || !normalizeGroupName(apiKeyGroupName)}
                       >
                         <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>
