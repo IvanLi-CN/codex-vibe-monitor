@@ -120,6 +120,20 @@ pub(crate) struct UpstreamAccountListResponse {
     routing: PoolRoutingSettingsResponse,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum DuplicateReason {
+    SharedChatgptAccountId,
+    SharedChatgptUserId,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DuplicateInfo {
+    peer_account_ids: Vec<i64>,
+    reasons: Vec<DuplicateReason>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountSummary {
@@ -143,6 +157,7 @@ pub(crate) struct UpstreamAccountSummary {
     secondary_window: Option<RateWindowSnapshot>,
     credits: Option<CreditsSnapshot>,
     local_limits: Option<LocalLimitSnapshot>,
+    duplicate_info: Option<DuplicateInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1041,37 +1056,43 @@ pub(crate) async fn create_api_key_account(
         &StoredCredentials::ApiKey(StoredApiKeyCredentials { api_key }),
     )
     .map_err(internal_error_tuple)?;
-
-    let inserted_id = sqlx::query_scalar::<_, i64>(
-        r#"
-        INSERT INTO pool_upstream_accounts (
-            kind, provider, display_name, group_name, note, status, enabled, email, chatgpt_account_id,
-            chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
-            last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
-            local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
-        ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, 1, NULL, NULL,
-            NULL, NULL, ?7, ?8, NULL,
-            NULL, NULL, NULL, NULL, NULL,
-            ?9, ?10, ?11, ?12, ?12
-        ) RETURNING id
-        "#,
-    )
-    .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
-    .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
-    .bind(display_name)
-    .bind(group_name)
-    .bind(note)
-    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-    .bind(masked_api_key)
-    .bind(encrypted_credentials)
-    .bind(payload.local_primary_limit)
-    .bind(payload.local_secondary_limit)
-    .bind(limit_unit)
-    .bind(&now_iso)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(internal_error_tuple)?;
+    let inserted_id = {
+        let _guard = state.upstream_accounts.sync_lock.lock().await;
+        let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
+        ensure_display_name_available(&mut *tx, &display_name, None).await?;
+        let inserted_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                kind, provider, display_name, group_name, note, status, enabled, email, chatgpt_account_id,
+                chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
+                last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
+                local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, 1, NULL, NULL,
+                NULL, NULL, ?7, ?8, NULL,
+                NULL, NULL, NULL, NULL, NULL,
+                ?9, ?10, ?11, ?12, ?12
+            ) RETURNING id
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+        .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
+        .bind(display_name)
+        .bind(group_name)
+        .bind(note)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind(masked_api_key)
+        .bind(encrypted_credentials)
+        .bind(payload.local_primary_limit)
+        .bind(payload.local_secondary_limit)
+        .bind(limit_unit)
+        .bind(&now_iso)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(internal_error_tuple)?;
+        tx.commit().await.map_err(internal_error_tuple)?;
+        inserted_id
+    };
 
     let detail = sync_upstream_account_by_id(state.as_ref(), inserted_id, false)
         .await
@@ -1092,6 +1113,7 @@ pub(crate) async fn update_upstream_account(
         ));
     }
     let crypto_key = state.upstream_accounts.require_crypto_key()?;
+    let _guard = state.upstream_accounts.sync_lock.lock().await;
     let mut row = load_upstream_account_row(&state.pool, id)
         .await
         .map_err(internal_error_tuple)?
@@ -1135,6 +1157,8 @@ pub(crate) async fn update_upstream_account(
     }
 
     let now_iso = format_utc_iso(Utc::now());
+    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
+    ensure_display_name_available(&mut *tx, &row.display_name, Some(id)).await?;
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -1162,9 +1186,10 @@ pub(crate) async fn update_upstream_account(
     .bind(row.local_secondary_limit)
     .bind(&row.local_limit_unit)
     .bind(&now_iso)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
 
     let detail = load_upstream_account_detail(&state.pool, id)
         .await
@@ -1405,23 +1430,40 @@ async fn complete_oauth_login_session_with_query(
         .clone()
         .and_then(|value| normalize_optional_text(Some(value)))
         .unwrap_or(default_display_name);
-    let account_id = upsert_oauth_account(
-        &state.pool,
-        OauthAccountUpsert {
-            account_id: session.account_id,
-            display_name: &display_name,
-            group_name: session.group_name.clone(),
-            note: session.note.clone(),
-            claims: &claims,
-            encrypted_credentials: credentials,
-            token_expires_at: &token_expires_at,
-        },
-    )
-    .await
-    .map_err(internal_error_tuple)?;
-    complete_login_session(&state.pool, &session.login_id, account_id)
+    let account_id = {
+        let _guard = state.upstream_accounts.sync_lock.lock().await;
+        let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
+        let session = load_login_session_by_login_id_with_executor(&mut *tx, &session.login_id)
+            .await
+            .map_err(internal_error_tuple)?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+        if session.status != LOGIN_SESSION_STATUS_PENDING {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "This login session has already been consumed.".to_string(),
+            ));
+        }
+        ensure_display_name_available(&mut *tx, &display_name, session.account_id).await?;
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: session.account_id,
+                display_name: &display_name,
+                group_name: session.group_name.clone(),
+                note: session.note.clone(),
+                claims: &claims,
+                encrypted_credentials: credentials,
+                token_expires_at: &token_expires_at,
+            },
+        )
         .await
         .map_err(internal_error_tuple)?;
+        complete_login_session_with_executor(&mut *tx, &session.login_id, account_id)
+            .await
+            .map_err(internal_error_tuple)?;
+        tx.commit().await.map_err(internal_error_tuple)?;
+        account_id
+    };
 
     if let Err(err) = sync_upstream_account_by_id(state, account_id, false).await {
         warn!(account_id, error = %err, "OAuth callback created account but initial sync failed");
@@ -1916,7 +1958,53 @@ struct OauthAccountUpsert<'a> {
     token_expires_at: &'a str,
 }
 
-async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'_>) -> Result<i64> {
+fn duplicate_display_name_error() -> (StatusCode, String) {
+    (
+        StatusCode::CONFLICT,
+        "displayName must be unique".to_string(),
+    )
+}
+
+async fn load_conflicting_display_name_id(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    display_name: &str,
+    exclude_id: Option<i64>,
+) -> Result<Option<i64>> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT id
+        FROM pool_upstream_accounts
+        WHERE lower(trim(display_name)) = lower(trim(?1))
+          AND (?2 IS NULL OR id != ?2)
+        ORDER BY id ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(display_name)
+    .bind(exclude_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(Into::into)
+}
+
+async fn ensure_display_name_available(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    display_name: &str,
+    exclude_id: Option<i64>,
+) -> Result<(), (StatusCode, String)> {
+    let conflict = load_conflicting_display_name_id(executor, display_name, exclude_id)
+        .await
+        .map_err(internal_error_tuple)?;
+    if conflict.is_some() {
+        return Err(duplicate_display_name_error());
+    }
+    Ok(())
+}
+
+async fn upsert_oauth_account(
+    conn: &mut sqlx::SqliteConnection,
+    payload: OauthAccountUpsert<'_>,
+) -> Result<i64> {
     let OauthAccountUpsert {
         account_id,
         display_name,
@@ -1927,25 +2015,7 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         token_expires_at,
     } = payload;
     let now_iso = format_utc_iso(Utc::now());
-    let resolved_account_id = if let Some(account_id) = account_id {
-        Some(account_id)
-    } else if let Some(chatgpt_account_id) = claims.chatgpt_account_id.as_deref() {
-        sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT id
-            FROM pool_upstream_accounts
-            WHERE kind = ?1 AND chatgpt_account_id = ?2
-            ORDER BY id ASC
-            LIMIT 1
-            "#,
-        )
-        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
-        .bind(chatgpt_account_id)
-        .fetch_optional(pool)
-        .await?
-    } else {
-        None
-    };
+    let resolved_account_id = account_id;
 
     if let Some(existing_id) = resolved_account_id {
         sqlx::query(
@@ -1985,7 +2055,7 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         .bind(encrypted_credentials)
         .bind(token_expires_at)
         .bind(&now_iso)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         Ok(existing_id)
     } else {
@@ -2021,15 +2091,99 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         .bind(encrypted_credentials)
         .bind(token_expires_at)
         .bind(&now_iso)
-        .fetch_one(pool)
+        .fetch_one(&mut *conn)
         .await?;
         Ok(inserted_account_id)
     }
 }
 
+#[derive(Debug, FromRow)]
+struct UpstreamAccountIdentityRow {
+    id: i64,
+    chatgpt_account_id: Option<String>,
+    chatgpt_user_id: Option<String>,
+}
+
+async fn load_duplicate_info_map(
+    pool: &Pool<Sqlite>,
+) -> Result<std::collections::HashMap<i64, DuplicateInfo>> {
+    let rows = sqlx::query_as::<_, UpstreamAccountIdentityRow>(
+        r#"
+        SELECT id, chatgpt_account_id, chatgpt_user_id
+        FROM pool_upstream_accounts
+        WHERE kind = ?1
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    .fetch_all(pool)
+    .await?;
+
+    let mut by_account_id = std::collections::HashMap::<String, Vec<i64>>::new();
+    let mut by_user_id = std::collections::HashMap::<String, Vec<i64>>::new();
+    for row in &rows {
+        if let Some(chatgpt_account_id) = row.chatgpt_account_id.as_ref().cloned() {
+            by_account_id
+                .entry(chatgpt_account_id)
+                .or_default()
+                .push(row.id);
+        }
+        if let Some(chatgpt_user_id) = row.chatgpt_user_id.as_ref().cloned() {
+            by_user_id.entry(chatgpt_user_id).or_default().push(row.id);
+        }
+    }
+
+    let mut duplicate_info = std::collections::HashMap::new();
+    for row in rows {
+        let mut peer_ids = std::collections::BTreeSet::new();
+        let mut reasons = Vec::new();
+
+        if let Some(chatgpt_account_id) = row.chatgpt_account_id.as_ref()
+            && let Some(ids) = by_account_id
+                .get(chatgpt_account_id)
+                .filter(|ids| ids.len() > 1)
+        {
+            for peer_id in ids {
+                if *peer_id != row.id {
+                    peer_ids.insert(*peer_id);
+                }
+            }
+            if !peer_ids.is_empty() {
+                reasons.push(DuplicateReason::SharedChatgptAccountId);
+            }
+        }
+
+        if let Some(chatgpt_user_id) = row.chatgpt_user_id.as_ref()
+            && let Some(ids) = by_user_id.get(chatgpt_user_id).filter(|ids| ids.len() > 1)
+        {
+            for peer_id in ids {
+                if *peer_id != row.id {
+                    peer_ids.insert(*peer_id);
+                }
+            }
+            if ids.iter().any(|peer_id| *peer_id != row.id) {
+                reasons.push(DuplicateReason::SharedChatgptUserId);
+            }
+        }
+
+        if !peer_ids.is_empty() {
+            duplicate_info.insert(
+                row.id,
+                DuplicateInfo {
+                    peer_account_ids: peer_ids.into_iter().collect(),
+                    reasons,
+                },
+            );
+        }
+    }
+
+    Ok(duplicate_info)
+}
+
 async fn load_upstream_account_summaries(
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<UpstreamAccountSummary>> {
+    let duplicate_info_map = load_duplicate_info_map(pool).await?;
     let rows = sqlx::query_as::<_, UpstreamAccountRow>(
         r#"
         SELECT
@@ -2050,7 +2204,11 @@ async fn load_upstream_account_summaries(
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
         let latest = load_latest_usage_sample(pool, row.id).await?;
-        items.push(build_summary_from_row(&row, latest.as_ref()));
+        items.push(build_summary_from_row(
+            &row,
+            latest.as_ref(),
+            duplicate_info_map.get(&row.id).cloned(),
+        ));
     }
     Ok(items)
 }
@@ -2090,9 +2248,13 @@ async fn load_upstream_account_detail(
         .collect::<Vec<_>>();
     history.reverse();
 
-    let summary = build_summary_from_row(&row, latest.as_ref());
+    let duplicate_info_map = load_duplicate_info_map(pool).await?;
     Ok(Some(UpstreamAccountDetail {
-        summary,
+        summary: build_summary_from_row(
+            &row,
+            latest.as_ref(),
+            duplicate_info_map.get(&row.id).cloned(),
+        ),
         note: row.note,
         chatgpt_user_id: row.chatgpt_user_id,
         last_refreshed_at: row.last_refreshed_at,
@@ -2151,6 +2313,7 @@ async fn load_latest_usage_sample(
 fn build_summary_from_row(
     row: &UpstreamAccountRow,
     sample: Option<&UpstreamAccountSampleRow>,
+    duplicate_info: Option<DuplicateInfo>,
 ) -> UpstreamAccountSummary {
     let local_limits = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
         Some(LocalLimitSnapshot {
@@ -2228,11 +2391,12 @@ fn build_summary_from_row(
         secondary_window,
         credits,
         local_limits,
+        duplicate_info,
     }
 }
 
-async fn load_login_session_by_login_id(
-    pool: &Pool<Sqlite>,
+async fn load_login_session_by_login_id_with_executor(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
     login_id: &str,
 ) -> Result<Option<OauthLoginSessionRow>> {
     sqlx::query_as::<_, OauthLoginSessionRow>(
@@ -2246,9 +2410,16 @@ async fn load_login_session_by_login_id(
         "#,
     )
     .bind(login_id)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(Into::into)
+}
+
+async fn load_login_session_by_login_id(
+    pool: &Pool<Sqlite>,
+    login_id: &str,
+) -> Result<Option<OauthLoginSessionRow>> {
+    load_login_session_by_login_id_with_executor(pool, login_id).await
 }
 
 async fn load_login_session_by_state(
@@ -2288,8 +2459,8 @@ async fn expire_pending_login_sessions(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-async fn complete_login_session(
-    pool: &Pool<Sqlite>,
+async fn complete_login_session_with_executor(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
     login_id: &str,
     account_id: i64,
 ) -> Result<()> {
@@ -2308,7 +2479,7 @@ async fn complete_login_session(
     .bind(LOGIN_SESSION_STATUS_COMPLETED)
     .bind(account_id)
     .bind(&now_iso)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
@@ -3811,6 +3982,7 @@ fn decrypt_secret_value(key: &[u8; 32], payload: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::SqlitePool;
 
     #[test]
     fn derive_secret_key_is_stable() {
@@ -3933,5 +4105,242 @@ mod tests {
         .expect("callback query");
         assert_eq!(query.code.as_deref(), Some("test-code"));
         assert_eq!(query.state.as_deref(), Some("test-state"));
+    }
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+        ensure_upstream_accounts_schema(&pool)
+            .await
+            .expect("ensure schema");
+        pool
+    }
+
+    fn test_claims(
+        email: &str,
+        chatgpt_account_id: Option<&str>,
+        chatgpt_user_id: Option<&str>,
+    ) -> ChatgptJwtClaims {
+        ChatgptJwtClaims {
+            email: Some(email.to_string()),
+            chatgpt_plan_type: Some("team".to_string()),
+            chatgpt_user_id: chatgpt_user_id.map(str::to_string),
+            chatgpt_account_id: chatgpt_account_id.map(str::to_string),
+        }
+    }
+
+    async fn insert_api_key_account(pool: &SqlitePool, display_name: &str) -> i64 {
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                kind, provider, display_name, group_name, note, status, enabled, email, chatgpt_account_id,
+                chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
+                last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
+                local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
+            ) VALUES (
+                ?1, ?2, ?3, NULL, NULL, ?4, 1, NULL, NULL,
+                NULL, NULL, ?5, ?6, NULL,
+                NULL, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, ?7, ?7
+            ) RETURNING id
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+        .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
+        .bind(display_name)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind("sk-test")
+        .bind("encrypted")
+        .bind(&now_iso)
+        .fetch_one(pool)
+        .await
+        .expect("insert api key account")
+    }
+
+    #[tokio::test]
+    async fn new_oauth_accounts_with_shared_account_id_are_preserved_and_flagged() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx 1");
+        ensure_display_name_available(&mut *tx, "First OAuth", None)
+            .await
+            .expect("first name available");
+        let first_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "First OAuth",
+                group_name: None,
+                note: None,
+                claims: &test_claims("first@example.com", Some("org_shared"), Some("user_1")),
+                encrypted_credentials: "encrypted-1".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("first oauth insert");
+        tx.commit().await.expect("commit tx 1");
+
+        let mut tx = pool.begin().await.expect("begin tx 2");
+        ensure_display_name_available(&mut *tx, "Second OAuth", None)
+            .await
+            .expect("second name available");
+        let second_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Second OAuth",
+                group_name: None,
+                note: None,
+                claims: &test_claims("second@example.com", Some("org_shared"), Some("user_2")),
+                encrypted_credentials: "encrypted-2".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("second oauth insert");
+        tx.commit().await.expect("commit tx 2");
+
+        assert_ne!(first_id, second_id);
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pool_upstream_accounts WHERE kind = ?1",
+        )
+        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .fetch_one(&pool)
+        .await
+        .expect("count oauth rows");
+        assert_eq!(count, 2);
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert_eq!(
+            duplicate_info
+                .get(&first_id)
+                .map(|value| value.reasons.clone()),
+            Some(vec![DuplicateReason::SharedChatgptAccountId])
+        );
+        assert_eq!(
+            duplicate_info
+                .get(&second_id)
+                .map(|value| value.reasons.clone()),
+            Some(vec![DuplicateReason::SharedChatgptAccountId])
+        );
+    }
+
+    #[tokio::test]
+    async fn new_oauth_accounts_with_shared_user_id_are_preserved_and_flagged() {
+        let pool = test_pool().await;
+
+        for (display_name, email, account_id) in [
+            ("First OAuth", "first@example.com", "org_1"),
+            ("Second OAuth", "second@example.com", "org_2"),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    note: None,
+                    claims: &test_claims(email, Some(account_id), Some("user_shared")),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptUserId])
+        );
+    }
+
+    #[tokio::test]
+    async fn relink_updates_existing_oauth_row_without_inserting() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        let original_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Original OAuth",
+                group_name: Some("prod".to_string()),
+                note: Some("note".to_string()),
+                claims: &test_claims("first@example.com", Some("org_shared"), Some("user_1")),
+                encrypted_credentials: "encrypted-1".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("insert original oauth");
+        tx.commit().await.expect("commit tx");
+
+        let mut tx = pool.begin().await.expect("begin relink tx");
+        ensure_display_name_available(&mut *tx, "Renamed OAuth", Some(original_id))
+            .await
+            .expect("name available");
+        let relinked_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: Some(original_id),
+                display_name: "Renamed OAuth",
+                group_name: Some("prod".to_string()),
+                note: Some("fresh".to_string()),
+                claims: &test_claims("second@example.com", Some("org_shared"), Some("user_9")),
+                encrypted_credentials: "encrypted-2".to_string(),
+                token_expires_at: "2026-03-15T00:00:00Z",
+            },
+        )
+        .await
+        .expect("relink oauth");
+        tx.commit().await.expect("commit relink tx");
+
+        assert_eq!(relinked_id, original_id);
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_accounts")
+            .fetch_one(&pool)
+            .await
+            .expect("count accounts");
+        assert_eq!(count, 1);
+
+        let renamed = load_upstream_account_row(&pool, original_id)
+            .await
+            .expect("load updated row")
+            .expect("row exists");
+        assert_eq!(renamed.display_name, "Renamed OAuth");
+        assert_eq!(renamed.chatgpt_user_id.as_deref(), Some("user_9"));
+    }
+
+    #[tokio::test]
+    async fn display_name_uniqueness_is_case_insensitive_and_self_excluding() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, " Alpha ").await;
+
+        let mut tx = pool.begin().await.expect("begin tx conflict");
+        let conflict = ensure_display_name_available(&mut *tx, "alpha", None).await;
+        assert_eq!(
+            conflict,
+            Err((
+                StatusCode::CONFLICT,
+                "displayName must be unique".to_string()
+            ))
+        );
+
+        let allowed = ensure_display_name_available(&mut *tx, " alpha ", Some(account_id)).await;
+        assert!(allowed.is_ok());
     }
 }

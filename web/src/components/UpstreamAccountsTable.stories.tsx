@@ -91,6 +91,7 @@ const labels = {
   nextReset: 'Reset',
   oauth: 'OAuth',
   apiKey: 'API key',
+  duplicate: 'Duplicate',
   status: (value: string) =>
     ({
       active: 'Active',
