@@ -2859,6 +2859,73 @@ async fn create_oauth_login_session_persists_mother_flag() {
     assert_eq!(stored_flag, 1);
 }
 
+#[tokio::test]
+async fn create_oauth_login_session_relink_preserves_existing_metadata() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    ensure_upstream_accounts_schema(&state.pool)
+        .await
+        .expect("ensure upstream account schema");
+
+    let now_iso = format_utc_iso(Utc::now());
+    let account_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            kind, provider, display_name, group_name, is_mother, note, status, enabled,
+            email, chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key,
+            encrypted_credentials, token_expires_at, last_refreshed_at, last_synced_at,
+            last_successful_sync_at, last_error, last_error_at, local_primary_limit,
+            local_secondary_limit, local_limit_unit, created_at, updated_at
+        ) VALUES (
+            ?1, ?2, ?3, ?4, 1, ?5, ?6, 1,
+            NULL, NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL,
+            NULL, NULL, ?7, ?7
+        ) RETURNING id
+        "#,
+    )
+    .bind("oauth_codex")
+    .bind("codex")
+    .bind("Existing OAuth")
+    .bind("prod")
+    .bind("Keep this note")
+    .bind("active")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert oauth account");
+
+    let payload: CreateOauthLoginSessionRequest = serde_json::from_value(json!({
+        "accountId": account_id,
+    }))
+    .expect("deserialize relink payload");
+    let _ = create_oauth_login_session(State(state.clone()), HeaderMap::new(), Json(payload))
+        .await
+        .expect("create relink session");
+
+    let stored: (Option<String>, Option<String>, i64, Option<String>) = sqlx::query_as(
+        r#"
+        SELECT display_name, group_name, is_mother, note
+        FROM pool_oauth_login_sessions
+        WHERE account_id = ?1
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load relink session");
+
+    assert_eq!(stored.0.as_deref(), Some("Existing OAuth"));
+    assert_eq!(stored.1.as_deref(), Some("prod"));
+    assert_eq!(stored.2, 1);
+    assert_eq!(stored.3.as_deref(), Some("Keep this note"));
+}
+
 fn test_stage_timings() -> StageTimings {
     StageTimings {
         t_total_ms: 0.0,

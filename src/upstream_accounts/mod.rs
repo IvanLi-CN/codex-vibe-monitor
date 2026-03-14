@@ -888,6 +888,9 @@ pub(crate) async fn create_oauth_login_session(
     state.upstream_accounts.require_crypto_key()?;
 
     let mut preserved_mother_flag = false;
+    let mut preserved_display_name = None;
+    let mut preserved_group_name = None;
+    let mut preserved_note = None;
 
     if let Some(account_id) = payload.account_id {
         let Some(existing) = load_upstream_account_row(&state.pool, account_id)
@@ -903,9 +906,15 @@ pub(crate) async fn create_oauth_login_session(
             ));
         }
         preserved_mother_flag = existing.is_mother != 0;
+        preserved_display_name = Some(existing.display_name);
+        preserved_group_name = existing.group_name;
+        preserved_note = existing.note;
     }
 
     let is_mother = payload.is_mother.unwrap_or(preserved_mother_flag);
+    let display_name = normalize_optional_text(payload.display_name).or(preserved_display_name);
+    let group_name = normalize_optional_text(payload.group_name).or(preserved_group_name);
+    let note = normalize_optional_text(payload.note).or(preserved_note);
 
     let redirect_uri = build_manual_callback_redirect_uri().map_err(internal_error_tuple)?;
     let login_id = random_hex(16)?;
@@ -936,10 +945,10 @@ pub(crate) async fn create_oauth_login_session(
     )
     .bind(&login_id)
     .bind(payload.account_id)
-    .bind(normalize_optional_text(payload.display_name))
-    .bind(normalize_optional_text(payload.group_name))
+    .bind(display_name)
+    .bind(group_name)
     .bind(if is_mother { 1 } else { 0 })
-    .bind(normalize_optional_text(payload.note))
+    .bind(note)
     .bind(&state_token)
     .bind(&pkce_verifier)
     .bind(&redirect_uri)

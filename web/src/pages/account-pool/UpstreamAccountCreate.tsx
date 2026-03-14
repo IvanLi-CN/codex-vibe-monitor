@@ -302,7 +302,19 @@ export default function UpstreamAccountCreatePage() {
           current.map((row) => {
             if (row.busyAction || row.session?.status === 'completed') return row
             const inheritsDefault = !row.groupName.trim() || row.groupName === previousTrimmed
-            return inheritsDefault ? { ...row, groupName: nextTrimmed } : row
+            if (!inheritsDefault) return row
+            if (!row.session) {
+              return { ...row, groupName: nextTrimmed }
+            }
+            return {
+              ...row,
+              groupName: nextTrimmed,
+              callbackUrl: '',
+              session: null,
+              sessionHint: t('accountPool.upstreamAccounts.batchOauth.regenerateRequired'),
+              actionError: null,
+              busyAction: null,
+            }
           }),
         ),
       )
