@@ -118,6 +118,7 @@ impl UpstreamAccountsRuntime {
 pub(crate) struct UpstreamAccountListResponse {
     writes_enabled: bool,
     items: Vec<UpstreamAccountSummary>,
+    groups: Vec<UpstreamAccountGroupSummary>,
     routing: PoolRoutingSettingsResponse,
 }
 
@@ -184,6 +185,13 @@ pub(crate) struct TagDetail {
 pub(crate) struct TagListResponse {
     writes_enabled: bool,
     items: Vec<TagSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountGroupSummary {
+    group_name: String,
+    note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -325,6 +333,7 @@ pub(crate) struct CreateOauthLoginSessionRequest {
     display_name: Option<String>,
     group_name: Option<String>,
     note: Option<String>,
+    group_note: Option<String>,
     account_id: Option<i64>,
     #[serde(default)]
     tag_ids: Vec<i64>,
@@ -343,6 +352,7 @@ pub(crate) struct CreateApiKeyAccountRequest {
     display_name: String,
     group_name: Option<String>,
     note: Option<String>,
+    group_note: Option<String>,
     api_key: String,
     is_mother: Option<bool>,
     local_primary_limit: Option<f64>,
@@ -358,6 +368,7 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     display_name: Option<String>,
     group_name: Option<String>,
     note: Option<String>,
+    group_note: Option<String>,
     enabled: Option<bool>,
     is_mother: Option<bool>,
     api_key: Option<String>,
@@ -403,6 +414,12 @@ pub(crate) struct ListTagsQuery {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountStickyKeysQuery {
     limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateUpstreamAccountGroupRequest {
+    note: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -648,6 +665,7 @@ struct OauthLoginSessionRow {
     is_mother: i64,
     note: Option<String>,
     tag_ids_json: Option<String>,
+    group_note: Option<String>,
     state: String,
     pkce_verifier: String,
     redirect_uri: String,
@@ -761,6 +779,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             is_mother INTEGER NOT NULL DEFAULT 0,
             note TEXT,
             tag_ids_json TEXT,
+            group_note TEXT,
             state TEXT NOT NULL UNIQUE,
             pkce_verifier TEXT NOT NULL,
             redirect_uri TEXT NOT NULL,
@@ -781,6 +800,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_name")
         .await
         .context("failed to ensure pool_oauth_login_sessions.group_name")?;
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_note")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.group_note")?;
     ensure_integer_column_with_default(pool, "pool_oauth_login_sessions", "is_mother", "0")
         .await
         .context("failed to ensure pool_oauth_login_sessions.is_mother")?;
@@ -831,6 +853,20 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure idx_pool_upstream_account_tags_tag_id")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_account_group_notes (
+            group_name TEXT PRIMARY KEY,
+            note TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_account_group_notes table existence")?;
 
     sqlx::query(
         r#"
@@ -977,12 +1013,16 @@ pub(crate) async fn list_upstream_accounts(
     let items = load_upstream_account_summaries(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
+    let groups = load_upstream_account_groups(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
     let routing = load_pool_routing_settings(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(UpstreamAccountListResponse {
         writes_enabled: state.upstream_accounts.writes_enabled(),
         items,
+        groups,
         routing: PoolRoutingSettingsResponse {
             writes_enabled: state.upstream_accounts.writes_enabled(),
             api_key_configured: routing
@@ -1092,6 +1132,43 @@ pub(crate) async fn delete_tag(
     state.upstream_accounts.require_crypto_key()?;
     delete_tag_by_id(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn update_upstream_account_group(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(group_name): AxumPath<String>,
+    Json(payload): Json<UpdateUpstreamAccountGroupRequest>,
+) -> Result<Json<UpstreamAccountGroupSummary>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+
+    let group_name = normalize_optional_text(Some(group_name)).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "group name is required".to_string(),
+        )
+    })?;
+    let note = normalize_optional_text(payload.note);
+
+    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
+    if !group_has_accounts_conn(tx.as_mut(), &group_name)
+        .await
+        .map_err(internal_error_tuple)?
+    {
+        return Err((StatusCode::NOT_FOUND, "group not found".to_string()));
+    }
+    save_group_note_record_conn(tx.as_mut(), &group_name, note.clone())
+        .await
+        .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
+
+    Ok(Json(UpstreamAccountGroupSummary { group_name, note }))
 }
 
 pub(crate) async fn get_upstream_account(
@@ -1225,14 +1302,28 @@ pub(crate) async fn create_oauth_login_session(
         + ChronoDuration::seconds(state.config.upstream_accounts_login_session_ttl.as_secs() as i64);
     let now_iso = format_utc_iso(now);
     let expires_at_iso = format_utc_iso(expires_at);
+    let group_note = normalize_optional_text(payload.group_note.clone());
+    validate_group_note_target(group_name.as_deref(), payload.group_note.is_some())?;
+    let store_group_note = if payload.group_note.is_some() {
+        if let Some(group_name) = group_name.as_deref() {
+            !group_has_accounts(&state.pool, group_name)
+                .await
+                .map_err(internal_error_tuple)?
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let stored_group_note = if store_group_note { group_note } else { None };
 
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
-            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, state,
-            pkce_verifier, redirect_uri, status, auth_url, error_message, expires_at, consumed_at,
-            created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13, NULL, ?14, ?14)
+            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note, state,
+            pkce_verifier, redirect_uri, status, auth_url, error_message, expires_at, consumed_at, created_at,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, ?14, NULL, ?15, ?15)
         "#,
     )
     .bind(&login_id)
@@ -1242,6 +1333,7 @@ pub(crate) async fn create_oauth_login_session(
     .bind(if is_mother { 1 } else { 0 })
     .bind(note)
     .bind(tag_ids_json)
+    .bind(stored_group_note)
     .bind(&state_token)
     .bind(&pkce_verifier)
     .bind(&redirect_uri)
@@ -1342,6 +1434,7 @@ pub(crate) async fn relogin_upstream_account(
         display_name: None,
         group_name: None,
         note: None,
+        group_note: None,
         account_id: Some(id),
         tag_ids,
         is_mother: None,
@@ -1404,6 +1497,10 @@ pub(crate) async fn create_api_key_account(
     let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
     let group_name = normalize_optional_text(payload.group_name);
     let note = normalize_optional_text(payload.note);
+    let has_group_note = payload.group_note.is_some();
+    let group_note = normalize_optional_text(payload.group_note);
+    validate_group_note_target(group_name.as_deref(), has_group_note)?;
+    let target_group_name = group_name.clone();
     let is_mother = payload.is_mother.unwrap_or(false);
     let limit_unit = normalize_limit_unit(payload.local_limit_unit);
     let masked_api_key = mask_api_key(&api_key);
@@ -1449,6 +1546,16 @@ pub(crate) async fn create_api_key_account(
     apply_mother_assignment(&mut tx, inserted_id, group_name.as_deref(), is_mother)
         .await
         .map_err(internal_error_tuple)?;
+
+    save_group_note_after_account_write(
+        tx.as_mut(),
+        target_group_name.as_deref(),
+        group_note,
+        has_group_note,
+        false,
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
 
     sync_account_tag_links(&state.pool, inserted_id, &tag_ids)
@@ -1481,6 +1588,11 @@ pub(crate) async fn update_upstream_account(
         Some(values) => Some(validate_tag_ids(&state.pool, values).await?),
         None => None,
     };
+    let previous_group_name = row.group_name.clone();
+    let requested_group_note = payload
+        .group_note
+        .clone()
+        .map(|value| normalize_optional_text(Some(value)));
 
     if let Some(display_name) = payload.display_name {
         row.display_name = normalize_required_display_name(&display_name)?;
@@ -1521,7 +1633,7 @@ pub(crate) async fn update_upstream_account(
         }
         validate_local_limits(row.local_primary_limit, row.local_secondary_limit)?;
     }
-
+    validate_group_note_target(row.group_name.as_deref(), requested_group_note.is_some())?;
     let now_iso = format_utc_iso(Utc::now());
     let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
     sqlx::query(
@@ -1559,6 +1671,23 @@ pub(crate) async fn update_upstream_account(
     apply_mother_assignment(&mut tx, id, row.group_name.as_deref(), row.is_mother != 0)
         .await
         .map_err(internal_error_tuple)?;
+
+    if let Some(group_note) = requested_group_note {
+        save_group_note_after_account_write(
+            tx.as_mut(),
+            row.group_name.as_deref(),
+            group_note,
+            true,
+            previous_group_name == row.group_name,
+        )
+        .await
+        .map_err(internal_error_tuple)?;
+    }
+    if previous_group_name != row.group_name {
+        cleanup_orphaned_group_note(tx.as_mut(), previous_group_name.as_deref())
+            .await
+            .map_err(internal_error_tuple)?;
+    }
     tx.commit().await.map_err(internal_error_tuple)?;
     if let Some(tag_ids) = tag_ids {
         sync_account_tag_links(&state.pool, id, &tag_ids)
@@ -1585,9 +1714,14 @@ pub(crate) async fn delete_upstream_account(
         ));
     }
     state.upstream_accounts.require_crypto_key()?;
+    let group_name = load_upstream_account_row(&state.pool, id)
+        .await
+        .map_err(internal_error_tuple)?
+        .map(|row| row.group_name);
+    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_upstream_account_limit_samples WHERE account_id = ?1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_upstream_account_tags WHERE account_id = ?1")
@@ -1597,18 +1731,25 @@ pub(crate) async fn delete_upstream_account(
         .map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_oauth_login_sessions WHERE account_id = ?1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(internal_error_tuple)?;
     let affected = sqlx::query("DELETE FROM pool_upstream_accounts WHERE id = ?1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(internal_error_tuple)?
         .rows_affected();
     if affected == 0 {
         return Err((StatusCode::NOT_FOUND, "account not found".to_string()));
     }
+    cleanup_orphaned_group_note(
+        tx.as_mut(),
+        group_name.as_ref().and_then(|value| value.as_deref()),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1819,6 +1960,7 @@ async fn complete_oauth_login_session_with_query(
             is_mother: session.is_mother != 0,
             note: session.note.clone(),
             tag_ids: parse_tag_ids_json(session.tag_ids_json.as_deref()),
+            group_note: session.group_note.clone(),
             claims: &claims,
             encrypted_credentials: credentials,
             token_expires_at: &token_expires_at,
@@ -2344,6 +2486,7 @@ struct OauthAccountUpsert<'a> {
     is_mother: bool,
     note: Option<String>,
     tag_ids: Vec<i64>,
+    group_note: Option<String>,
     claims: &'a ChatgptJwtClaims,
     encrypted_credentials: String,
     token_expires_at: &'a str,
@@ -2357,10 +2500,13 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         is_mother,
         note,
         tag_ids,
+        group_note,
         claims,
         encrypted_credentials,
         token_expires_at,
     } = payload;
+    let target_group_name = group_name.clone();
+    let group_note_was_requested = group_note.is_some();
     let now_iso = format_utc_iso(Utc::now());
     let mut tx = pool.begin().await?;
     let resolved_account_id = if let Some(account_id) = account_id {
@@ -2384,6 +2530,9 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
     };
 
     if let Some(existing_id) = resolved_account_id {
+        let previous_group_name = load_upstream_account_row_conn(tx.as_mut(), existing_id)
+            .await?
+            .and_then(|row| row.group_name);
         sqlx::query(
             r#"
             UPDATE pool_upstream_accounts
@@ -2425,6 +2574,17 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         .bind(&now_iso)
         .execute(&mut *tx)
         .await?;
+        save_group_note_after_account_write(
+            tx.as_mut(),
+            target_group_name.as_deref(),
+            group_note,
+            group_note_was_requested,
+            previous_group_name == target_group_name,
+        )
+        .await?;
+        if previous_group_name != target_group_name {
+            cleanup_orphaned_group_note(tx.as_mut(), previous_group_name.as_deref()).await?;
+        }
         apply_mother_assignment(&mut tx, existing_id, group_name.as_deref(), is_mother).await?;
         tx.commit().await?;
         sync_account_tag_links(pool, existing_id, &tag_ids).await?;
@@ -2464,6 +2624,14 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         .bind(token_expires_at)
         .bind(&now_iso)
         .fetch_one(&mut *tx)
+        .await?;
+        save_group_note_after_account_write(
+            tx.as_mut(),
+            target_group_name.as_deref(),
+            group_note,
+            group_note_was_requested,
+            false,
+        )
         .await?;
         apply_mother_assignment(
             &mut tx,
@@ -2846,6 +3014,30 @@ async fn count_recent_account_conversations(
     .map_err(Into::into)
 }
 
+async fn load_upstream_account_groups(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<UpstreamAccountGroupSummary>> {
+    let rows = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT groups.group_name, notes.note
+        FROM (
+            SELECT DISTINCT TRIM(group_name) AS group_name
+            FROM pool_upstream_accounts
+            WHERE group_name IS NOT NULL AND TRIM(group_name) <> ''
+        ) groups
+        LEFT JOIN pool_upstream_account_group_notes notes
+            ON notes.group_name = groups.group_name
+        ORDER BY groups.group_name COLLATE NOCASE ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(group_name, note)| UpstreamAccountGroupSummary { group_name, note })
+        .collect())
+}
 async fn load_upstream_account_summaries(
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<UpstreamAccountSummary>> {
@@ -2930,6 +3122,14 @@ async fn load_upstream_account_row(
     pool: &Pool<Sqlite>,
     id: i64,
 ) -> Result<Option<UpstreamAccountRow>> {
+    let mut conn = pool.acquire().await?;
+    load_upstream_account_row_conn(&mut conn, id).await
+}
+
+async fn load_upstream_account_row_conn(
+    conn: &mut SqliteConnection,
+    id: i64,
+) -> Result<Option<UpstreamAccountRow>> {
     sqlx::query_as::<_, UpstreamAccountRow>(
         r#"
         SELECT
@@ -2946,7 +3146,7 @@ async fn load_upstream_account_row(
         "#,
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(conn)
     .await
     .map_err(Into::into)
 }
@@ -3062,6 +3262,118 @@ fn build_summary_from_row(
     }
 }
 
+async fn group_has_accounts(pool: &Pool<Sqlite>, group_name: &str) -> Result<bool> {
+    let mut conn = pool.acquire().await?;
+    group_has_accounts_conn(&mut conn, group_name).await
+}
+
+async fn group_account_count_conn(conn: &mut SqliteConnection, group_name: &str) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_accounts
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind(group_name)
+    .fetch_one(conn)
+    .await
+    .map_err(Into::into)
+}
+
+async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) -> Result<bool> {
+    Ok(group_account_count_conn(conn, group_name).await? > 0)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+async fn save_group_note_record(
+    pool: &Pool<Sqlite>,
+    group_name: &str,
+    note: Option<String>,
+) -> Result<()> {
+    let mut conn = pool.acquire().await?;
+    save_group_note_record_conn(&mut conn, group_name, note).await
+}
+
+async fn save_group_note_record_conn(
+    conn: &mut SqliteConnection,
+    group_name: &str,
+    note: Option<String>,
+) -> Result<()> {
+    if let Some(note) = note {
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_group_notes (group_name, note, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?3)
+            ON CONFLICT(group_name) DO UPDATE SET
+                note = excluded.note,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(group_name)
+        .bind(note)
+        .bind(now_iso)
+        .execute(conn)
+        .await?;
+    } else {
+        sqlx::query(
+            r#"
+            DELETE FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind(group_name)
+        .execute(conn)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn save_group_note_after_account_write(
+    conn: &mut SqliteConnection,
+    group_name: Option<&str>,
+    note: Option<String>,
+    note_was_requested: bool,
+    target_group_already_had_current_account: bool,
+) -> Result<()> {
+    if !note_was_requested {
+        return Ok(());
+    }
+    let Some(group_name) = group_name else {
+        return Ok(());
+    };
+    if target_group_already_had_current_account {
+        return Ok(());
+    }
+    if group_account_count_conn(conn, group_name).await? != 1 {
+        return Ok(());
+    }
+    save_group_note_record_conn(conn, group_name, note).await
+}
+
+async fn cleanup_orphaned_group_note(
+    conn: &mut SqliteConnection,
+    group_name: Option<&str>,
+) -> Result<()> {
+    let Some(group_name) = group_name else {
+        return Ok(());
+    };
+    if group_has_accounts_conn(conn, group_name).await? {
+        return Ok(());
+    }
+    sqlx::query(
+        r#"
+        DELETE FROM pool_upstream_account_group_notes
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind(group_name)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 async fn load_login_session_by_login_id(
     pool: &Pool<Sqlite>,
     login_id: &str,
@@ -3069,9 +3381,9 @@ async fn load_login_session_by_login_id(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, state,
-            pkce_verifier, redirect_uri,
-            status, auth_url, error_message, expires_at, consumed_at, created_at, updated_at
+            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note, state,
+            pkce_verifier, redirect_uri, status, auth_url, error_message, expires_at, consumed_at, created_at,
+            updated_at
         FROM pool_oauth_login_sessions
         WHERE login_id = ?1
         LIMIT 1
@@ -3090,9 +3402,9 @@ async fn load_login_session_by_state(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, state,
-            pkce_verifier, redirect_uri,
-            status, auth_url, error_message, expires_at, consumed_at, created_at, updated_at
+            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note, state,
+            pkce_verifier, redirect_uri, status, auth_url, error_message, expires_at, consumed_at, created_at,
+            updated_at
         FROM pool_oauth_login_sessions
         WHERE state = ?1
         LIMIT 1
@@ -3880,6 +4192,19 @@ fn normalize_required_display_name(raw: &str) -> Result<String, (StatusCode, Str
         ));
     }
     Ok(value.to_string())
+}
+
+fn validate_group_note_target(
+    group_name: Option<&str>,
+    has_group_note: bool,
+) -> Result<(), (StatusCode, String)> {
+    if has_group_note && group_name.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "groupNote requires groupName".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_optional_text(value: Option<String>) -> Option<String> {
@@ -4874,6 +5199,68 @@ fn decrypt_secret_value(key: &[u8; 32], payload: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::SqlitePool;
+
+    async fn group_note_test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect sqlite memory");
+        ensure_upstream_accounts_schema(&pool)
+            .await
+            .expect("ensure upstream account schema");
+        pool
+    }
+
+    async fn insert_test_account(
+        pool: &SqlitePool,
+        display_name: &str,
+        group_name: Option<&str>,
+    ) -> i64 {
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                kind, provider, display_name, group_name, note, status, enabled,
+                email, chatgpt_account_id, chatgpt_user_id, plan_type,
+                masked_api_key, encrypted_credentials, token_expires_at,
+                last_refreshed_at, last_synced_at, last_successful_sync_at,
+                last_error, last_error_at, local_primary_limit, local_secondary_limit,
+                local_limit_unit, created_at, updated_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, NULL, ?5, 1,
+                NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL,
+                NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL,
+                NULL, ?6, ?6
+            ) RETURNING id
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
+        .bind(display_name)
+        .bind(group_name)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind(now_iso)
+        .fetch_one(pool)
+        .await
+        .expect("insert test account")
+    }
+
+    async fn load_test_group_note(pool: &SqlitePool, group_name: &str) -> Option<String> {
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT note
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(group_name)
+        .fetch_optional(pool)
+        .await
+        .expect("load group note")
+    }
 
     #[test]
     fn derive_secret_key_is_stable() {
@@ -4996,5 +5383,179 @@ mod tests {
         .expect("callback query");
         assert_eq!(query.code.as_deref(), Some("test-code"));
         assert_eq!(query.state.as_deref(), Some("test-state"));
+    }
+
+    #[tokio::test]
+    async fn load_upstream_account_groups_reads_notes_for_existing_groups() {
+        let pool = group_note_test_pool().await;
+        insert_test_account(&pool, "Prod One", Some("prod")).await;
+        let mut conn = pool.acquire().await.expect("acquire pool connection");
+        save_group_note_after_account_write(
+            &mut conn,
+            Some("prod"),
+            Some("Shared prod note".to_string()),
+            true,
+            false,
+        )
+        .await
+        .expect("save group note");
+
+        let groups = load_upstream_account_groups(&pool)
+            .await
+            .expect("load upstream groups");
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_name, "prod");
+        assert_eq!(groups[0].note.as_deref(), Some("Shared prod note"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_orphaned_group_note_removes_note_after_last_account_is_deleted() {
+        let pool = group_note_test_pool().await;
+        let account_id = insert_test_account(&pool, "Prod One", Some("prod")).await;
+        let mut conn = pool.acquire().await.expect("acquire pool connection");
+        save_group_note_after_account_write(
+            &mut conn,
+            Some("prod"),
+            Some("Shared prod note".to_string()),
+            true,
+            false,
+        )
+        .await
+        .expect("save group note");
+
+        sqlx::query("DELETE FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .execute(&pool)
+            .await
+            .expect("delete test account");
+        cleanup_orphaned_group_note(&mut conn, Some("prod"))
+            .await
+            .expect("cleanup orphaned group note");
+
+        assert_eq!(load_test_group_note(&pool, "prod").await, None);
+    }
+
+    #[tokio::test]
+    async fn upsert_oauth_account_persists_group_note_for_new_group() {
+        let pool = group_note_test_pool().await;
+        let key = derive_secret_key("oauth-group-note-test");
+        let encrypted_credentials = encrypt_credentials(
+            &key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "access".to_string(),
+                refresh_token: "refresh".to_string(),
+                id_token: "id".to_string(),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+
+        let claims = ChatgptJwtClaims {
+            email: Some("prod@example.com".to_string()),
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_user_id: Some("user_prod".to_string()),
+            chatgpt_account_id: Some("acct_prod".to_string()),
+        };
+
+        let account_id = upsert_oauth_account(
+            &pool,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Prod OAuth",
+                group_name: Some("prod".to_string()),
+                is_mother: false,
+                note: Some("Account note".to_string()),
+                group_note: Some("Shared oauth group note".to_string()),
+                claims: &claims,
+                encrypted_credentials,
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("upsert oauth account");
+
+        assert!(account_id > 0);
+        assert_eq!(
+            load_test_group_note(&pool, "prod").await.as_deref(),
+            Some("Shared oauth group note")
+        );
+    }
+
+    #[tokio::test]
+    async fn save_group_note_after_account_write_skips_existing_groups_without_explicit_edit() {
+        let pool = group_note_test_pool().await;
+        insert_test_account(&pool, "Prod One", Some("prod")).await;
+        save_group_note_record(&pool, "prod", Some("Fresh shared note".to_string()))
+            .await
+            .expect("seed group note");
+        let mut conn = pool.acquire().await.expect("acquire pool connection");
+
+        save_group_note_after_account_write(
+            &mut conn,
+            Some("prod"),
+            Some("Stale shared note".to_string()),
+            false,
+            false,
+        )
+        .await
+        .expect("skip stale group note overwrite");
+
+        assert_eq!(
+            load_test_group_note(&pool, "prod").await.as_deref(),
+            Some("Fresh shared note")
+        );
+    }
+
+    #[tokio::test]
+    async fn save_group_note_after_account_write_skips_stale_note_once_group_has_multiple_accounts()
+    {
+        let pool = group_note_test_pool().await;
+        insert_test_account(&pool, "Prod One", Some("prod")).await;
+        insert_test_account(&pool, "Prod Two", Some("prod")).await;
+        save_group_note_record(&pool, "prod", Some("Fresh shared note".to_string()))
+            .await
+            .expect("seed group note");
+        let mut conn = pool.acquire().await.expect("acquire pool connection");
+
+        save_group_note_after_account_write(
+            &mut conn,
+            Some("prod"),
+            Some("Stale shared note".to_string()),
+            true,
+            false,
+        )
+        .await
+        .expect("skip stale shared note overwrite");
+
+        assert_eq!(
+            load_test_group_note(&pool, "prod").await.as_deref(),
+            Some("Fresh shared note")
+        );
+    }
+
+    #[tokio::test]
+    async fn save_group_note_after_account_write_skips_existing_unique_group_for_account_updates() {
+        let pool = group_note_test_pool().await;
+        insert_test_account(&pool, "Prod One", Some("prod")).await;
+        save_group_note_record(&pool, "prod", Some("Fresh shared note".to_string()))
+            .await
+            .expect("seed group note");
+        let mut conn = pool.acquire().await.expect("acquire pool connection");
+
+        save_group_note_after_account_write(
+            &mut conn,
+            Some("prod"),
+            Some("Overwritten shared note".to_string()),
+            true,
+            true,
+        )
+        .await
+        .expect("skip existing unique group update");
+
+        assert_eq!(
+            load_test_group_note(&pool, "prod").await.as_deref(),
+            Some("Fresh shared note")
+        );
     }
 }
