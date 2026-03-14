@@ -61,6 +61,7 @@
 - `post-checkout` 必须在 linked worktree 可用，并在目标 worktree 缺失 `.env.local` 时自动复制主 worktree 的同名文件。
 - 自动与手动同步都必须遵守 copy-missing-only；目标文件已存在时不得覆盖。
 - 若存在外部自定义 `core.hooksPath`，安装脚本必须 warning + exit 0，不改写他人的 hook 目录。
+- 若 shared hooks 目录中已存在未知来源的 hook 文件，安装脚本必须保留原文件并仅对该 hook 打 warning，不得静默覆盖。
 - 若当前 revision 缺少 bootstrap 脚本/manifest，hook 必须安全 no-op，不能让 checkout 失败。
 - CI 必须执行真实 linked worktree smoke test。
 
@@ -86,6 +87,7 @@
 
 - 当当前 worktree 就是主 worktree 时，同步脚本直接 no-op。
 - 当主 worktree 缺少 `.env.local` 时，同步脚本只打印提示，不失败。
+- 当脚本从仓库外通过绝对路径调用时，`git-common-dir` 的相对返回值仍必须锚定到目标 repo 根目录，不能错误读取调用者当前目录。
 - 当目标 worktree 已有 `.env.local` 时，自动/手动 bootstrap 都必须跳过，不覆盖。
 - 当切换到不包含 runner/sync 脚本的历史 commit 时，shared hook wrapper 必须因为找不到 repo 脚本而直接 exit 0。
 - 当 repo 设置了自定义 `core.hooksPath` 时，`hooks:install` 必须保留现状，不写入 managed marker。
@@ -119,6 +121,9 @@ None
 - Given repo 配置了外部 `core.hooksPath`
   When 执行 `bun run hooks:install`
   Then 命令退出码为 0，打印 warning，且不改写该自定义 hooks 目录。
+- Given shared hooks 目录中已有未知来源的 hook 文件
+  When 执行 `bun run hooks:install`
+  Then 该 hook 文件保持原样，安装脚本仅对该 hook 输出 warning，并继续处理其他可托管 hook。
 - Given 已安装 shared hooks
   When checkout 到不包含 bootstrap 脚本的历史 revision
   Then checkout 成功且 hook 安全 no-op。

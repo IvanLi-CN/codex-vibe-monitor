@@ -19,9 +19,32 @@ fi
 
 mkdir -p "$hooks_dir"
 
+is_managed_hook() {
+  hook_path="$1"
+  if [ ! -e "$hook_path" ] && [ ! -L "$hook_path" ]; then
+    return 0
+  fi
+
+  if grep -Fq "$managed_marker" "$hook_path" 2>/dev/null; then
+    return 0
+  fi
+
+  if grep -Fq 'call_lefthook()' "$hook_path" 2>/dev/null && grep -Fq 'lefthook -h >/dev/null 2>&1' "$hook_path" 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
 write_wrapper() {
   hook_name="$1"
   hook_path="$hooks_dir/$hook_name"
+
+  if ! is_managed_hook "$hook_path"; then
+    printf '[worktree-bootstrap] %s already exists and is unmanaged; skipping install for this hook\n' "$hook_name" >&2
+    return 0
+  fi
+
   cat > "$hook_path" <<EOF_HOOK
 #!/bin/sh
 $managed_marker
