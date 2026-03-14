@@ -451,18 +451,26 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     trusted_run = str(trusted_step.get("run", ""))
     require('elif [ "${{ github.event_name }}" = "merge_group" ]; then' in trusted_run, "ci-pr.yml.jobs.lint: merge_group trusted-source branch handling drifted")
     require('queue_prefix="refs/heads/gh-readonly-queue/"' in trusted_run, "ci-pr.yml.jobs.lint: merge_group queue ref parsing drifted")
+    require('supports_final_topology="true"' in trusted_run, "ci-pr.yml.jobs.lint: rollout support flag drifted")
     require('source_kind="merge-group-base-branch"' in trusted_run, "ci-pr.yml.jobs.lint: merge_group trusted source kind drifted")
     require(
-        "trusted quality-gates sources required for" in trusted_run
-        or "final split-topology quality-gates sources required for" in trusted_run,
-        "ci-pr.yml.jobs.lint: trusted-source fail-closed guard drifted",
+        "keeping trusted scripts pinned to base and skipping trusted final-topology checks during rollout" in trusted_run,
+        "ci-pr.yml.jobs.lint: rollout warning drifted",
     )
 
     contract_step = step_config(lint_job, "Quality-gates contract check", "ci-pr.yml.jobs.lint")
+    require(
+        contract_step.get("if") == "steps.trusted-quality-gates.outputs.supports_final_topology == 'true'",
+        "ci-pr.yml.jobs.lint: contract check rollout gate drifted",
+    )
     contract_run = str(contract_step.get("run", ""))
     require('steps.trusted-quality-gates.outputs.contract_script' in contract_run, "ci-pr.yml.jobs.lint: contract check must use trusted sources")
 
     live_step = step_config(lint_job, "Quality-gates live rules check", "ci-pr.yml.jobs.lint")
+    require(
+        live_step.get("if") == "steps.trusted-quality-gates.outputs.supports_final_topology == 'true'",
+        "ci-pr.yml.jobs.lint: live rules rollout gate drifted",
+    )
     live_env = require_mapping(live_step.get("env"), "ci-pr.yml.jobs.lint.steps['Quality-gates live rules check'].env")
     require(live_env.get("QUALITY_GATES_LIVE_RULES_MODE") == "require", "ci-pr.yml.jobs.lint: live rules mode must stay require")
 

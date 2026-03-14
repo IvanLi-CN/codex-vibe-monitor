@@ -109,6 +109,7 @@ jobs:
           )
           source_ref="HEAD"
           source_kind="current-branch"
+          supports_final_topology="true"
           base_branch=""
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base_branch="${{ github.base_ref }}"
@@ -145,9 +146,12 @@ jobs:
               fi
             done
             if [ "${#missing_paths[@]}" -gt 0 ]; then
-              echo "::warning::Base branch ${base_branch} does not yet contain the final split-topology quality-gates sources required for ${event_name}; using the current branch for rollout validation."
-              source_ref="HEAD"
-              source_kind="bootstrap-to-final-rollout-current-branch"
+              echo "::warning::Base branch ${base_branch} does not yet contain the final split-topology quality-gates sources required for ${event_name}; keeping trusted scripts pinned to base and skipping trusted final-topology checks during rollout."
+              supports_final_topology="false"
+              source_kind="bootstrap-compatible-base-branch"
+              if [ "${{ github.event_name }}" = "merge_group" ]; then
+                source_kind="merge-group-bootstrap-compatible-base-branch"
+              fi
             fi
           fi
 
@@ -163,6 +167,7 @@ jobs:
           {
             echo "source_kind=$source_kind"
             echo "source_ref=$source_ref"
+            echo "supports_final_topology=$supports_final_topology"
             echo "trusted_root=$trusted_root"
             echo "declaration=$trusted_root/.github/quality-gates.json"
             echo "contract_script=$trusted_root/.github/scripts/check_quality_gates_contract.py"
@@ -171,6 +176,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Quality-gates contract check
+        if: steps.trusted-quality-gates.outputs.supports_final_topology == 'true'
         run: |
           python3 "${{ steps.trusted-quality-gates.outputs.contract_script }}" \
             --repo-root "$PWD" \
@@ -178,6 +184,7 @@ jobs:
             --metadata-script "${{ steps.trusted-quality-gates.outputs.metadata_script }}"
 
       - name: Quality-gates live rules check
+        if: steps.trusted-quality-gates.outputs.supports_final_topology == 'true'
         env:
           QUALITY_GATES_LIVE_RULES_MODE: require
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
