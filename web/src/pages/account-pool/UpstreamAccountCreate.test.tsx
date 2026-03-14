@@ -540,6 +540,7 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: undefined,
       groupName: 'prod',
+      tagIds: [],
       groupNote: undefined,
       note: undefined,
       isMother: false,
@@ -574,6 +575,7 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: undefined,
       groupName: 'new-team',
+      tagIds: [],
       groupNote: 'Draft shared group note',
       note: undefined,
       isMother: false,
