@@ -104,7 +104,7 @@ export function AccountTagContextChip({
         onPointerUp={clearLongPress}
         onPointerCancel={clearLongPress}
       >
-        <Badge variant="secondary" className="gap-2 px-3 py-1.5 pr-10">
+        <Badge variant="secondary" className="gap-2 px-3 py-1.5 pr-8">
           <Icon icon="mdi:tag-outline" className="h-3.5 w-3.5" aria-hidden />
           <span>{name}</span>
           {currentPageCreated ? (
@@ -121,7 +121,7 @@ export function AccountTagContextChip({
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         className={cn(
-          'absolute right-1 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border border-base-300 bg-base-100/95 text-base-content shadow-sm transition-all',
+          'absolute right-0.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-base-300 bg-base-100/95 text-base-content shadow-sm transition-all',
           showActionButton || menuOpen
             ? 'pointer-events-auto opacity-100 scale-100'
             : 'pointer-events-none opacity-0 scale-95',
@@ -133,7 +133,7 @@ export function AccountTagContextChip({
           setMenuOpen((current) => !current)
         }}
       >
-        <Icon icon="mdi:dots-horizontal" className="h-4 w-4" aria-hidden />
+        <Icon icon="mdi:dots-horizontal" className="h-3.5 w-3.5" aria-hidden />
       </button>
 
       {menuOpen ? (
