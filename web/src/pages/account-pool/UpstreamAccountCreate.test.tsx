@@ -119,7 +119,7 @@ async function flushAsync() {
 }
 
 function setInputValue(selector: string, value: string) {
-  const input = host?.querySelector(selector)
+  const input = host?.querySelector(selector) ?? document.body.querySelector(selector)
   if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
     throw new Error(`missing input: ${selector}`)
   }
@@ -137,7 +137,7 @@ function setInputValue(selector: string, value: string) {
 }
 
 function clickButton(matcher: RegExp) {
-  const button = Array.from(host?.querySelectorAll('button') ?? []).find(
+  const button = Array.from(document.body.querySelectorAll('button')).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement
       && matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || candidate.title || ''),
@@ -152,11 +152,19 @@ function clickButton(matcher: RegExp) {
 }
 
 function findButton(matcher: RegExp) {
-  return Array.from(host?.querySelectorAll('button') ?? []).find(
+  return Array.from(document.body.querySelectorAll('button')).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement
       && matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || candidate.title || ''),
   ) as HTMLButtonElement | undefined
+}
+
+function findButtons(matcher: RegExp) {
+  return Array.from(document.body.querySelectorAll('button')).filter(
+    (candidate) =>
+      candidate instanceof HTMLButtonElement
+      && matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || candidate.title || ''),
+  ) as HTMLButtonElement[]
 }
 
 function clickElement(element: Element | null | undefined) {
@@ -227,6 +235,12 @@ function mockUpstreamAccounts(overrides: Partial<ReturnType<typeof hookMocks.use
         enabled: true,
       },
     ],
+    groups: [
+      {
+        groupName: 'prod',
+        note: 'Existing production group note',
+      },
+    ],
     writesEnabled: true,
     isLoading: false,
     error: null,
@@ -260,6 +274,7 @@ function mockUpstreamAccounts(overrides: Partial<ReturnType<typeof hookMocks.use
       history: [],
     }),
     createApiKeyAccount: vi.fn(),
+    saveGroupNote: vi.fn(),
     ...overrides,
   })
 }
@@ -316,6 +331,40 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(updatedGroupInputs[5]?.value).toBe('prod')
   })
 
+  it('renders one batch-row group note button per row plus the shared default-group button', () => {
+    mockUpstreamAccounts()
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    expect(findButtons(/Edit group note/i)).toHaveLength(getBatchRows().length + 1)
+  })
+
+  it('clears pending row sessions when the default group rewrites inherited rows', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'group-a')
+    await flushAsync()
+
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'group-b')
+    await flushAsync()
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true)
+    expect(host?.textContent).toContain('Metadata changed. Generate a fresh OAuth URL for this row before completing login.')
+  })
+
   it('clears a pending row session when metadata changes', async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: 'login-1',
@@ -337,6 +386,7 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: 'Row One',
       groupName: undefined,
+      groupNote: undefined,
       note: undefined,
       isMother: false,
     })
@@ -467,6 +517,98 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(navigateMock).not.toHaveBeenCalled()
   })
 
+  it('does not resend an existing shared group note when generating oauth for a grouped row', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'prod')
+    await flushAsync()
+
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: undefined,
+      groupName: 'prod',
+      groupNote: undefined,
+      note: undefined,
+      isMother: false,
+    })
+  })
+
+  it('passes a draft shared group note when generating oauth for a new grouped row', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'new-team')
+    await flushAsync()
+
+    clickButton(/Edit group note/i)
+    await flushAsync()
+    setInputValue('textarea', 'Draft shared group note')
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: undefined,
+      groupName: 'new-team',
+      groupNote: 'Draft shared group note',
+      note: undefined,
+      isMother: false,
+    })
+  })
+
+  it('invalidates pending batch oauth sessions when a draft group note changes', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'new-team')
+    await flushAsync()
+
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
+
+    clickButton(/Edit group note/i)
+    await flushAsync()
+    setInputValue('textarea', 'Updated draft shared note')
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true)
+    expect(host?.textContent).toContain('Metadata changed. Generate a fresh OAuth URL for this row before completing login.')
+  })
+
   it('keeps the mother crown unique within the same draft group', async () => {
     mockUpstreamAccounts()
     render('/account-pool/upstream-accounts/new?mode=batchOauth')
@@ -531,5 +673,29 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     await flushAsync()
 
     expect(apiMocks.updateUpstreamAccount).toHaveBeenCalledWith(5, { isMother: true })
+  })
+})
+
+describe('UpstreamAccountCreatePage single oauth', () => {
+  it('locks the single oauth group note button once a pending session exists', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=oauth')
+
+    setComboboxValue('input[name="oauthGroupName"]', 'solo-team')
+    await flushAsync()
+
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
+    expect(findButton(/Edit group note/i)?.disabled).toBe(true)
   })
 })

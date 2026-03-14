@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@iconify/react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../../components/ui/alert'
@@ -10,17 +10,30 @@ import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '../../co
 import { Spinner } from '../../components/ui/spinner'
 import { Tooltip } from '../../components/ui/tooltip'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
+import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
 import { MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotifications'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import type { LoginSessionStatusResponse, UpstreamAccountSummary } from '../../lib/api'
 import { copyText, selectAllReadonlyText } from '../../lib/clipboard'
+import {
+  buildGroupNameSuggestions,
+  isExistingGroup,
+  normalizeGroupName,
+  resolveGroupNote,
+} from '../../lib/upstreamAccountGroups'
 import { applyMotherUpdateToItems, normalizeMotherGroupKey } from '../../lib/upstreamMother'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
 type CreateTab = 'oauth' | 'batchOauth' | 'apiKey'
 type BatchOauthBusyAction = 'generate' | 'complete' | null
+type GroupNoteEditorState = {
+  open: boolean
+  groupName: string
+  note: string
+  existing: boolean
+}
 
 type BatchOauthRow = {
   id: string
@@ -146,6 +159,7 @@ export default function UpstreamAccountCreatePage() {
   const location = useLocation()
   const {
     items,
+    groups = [],
     writesEnabled,
     isLoading,
     error,
@@ -153,6 +167,7 @@ export default function UpstreamAccountCreatePage() {
     getLoginSession,
     completeOauthLogin,
     createApiKeyAccount,
+    saveGroupNote,
   } = useUpstreamAccounts()
   const notifyMotherSwitches = useMotherSwitchNotifications()
 
@@ -187,17 +202,23 @@ export default function UpstreamAccountCreatePage() {
   const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(() =>
     Array.from({ length: 5 }, (_, index) => createBatchOauthRow(`row-${index + 1}`)),
   )
+  const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
+  const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
+    open: false,
+    groupName: '',
+    note: '',
+    existing: false,
+  })
+  const [groupNoteBusy, setGroupNoteBusy] = useState(false)
+  const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
   const batchRowIdRef = useRef(6)
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
   const batchManualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
 
-  const groupSuggestions = Array.from(
-    new Set(
-      items
-        .map((item) => item.groupName?.trim())
-        .filter((value): value is string => Boolean(value)),
-    ),
-  ).sort((left, right) => left.localeCompare(right))
+  const groupSuggestions = useMemo(
+    () => buildGroupNameSuggestions(items.map((item) => item.groupName), groups, groupDraftNotes),
+    [groupDraftNotes, groups, items],
+  )
 
   useEffect(() => {
     if (isRelinking) {
@@ -231,6 +252,86 @@ export default function UpstreamAccountCreatePage() {
     return () => window.cancelAnimationFrame(frame)
   }, [batchManualCopyRowId])
 
+  useEffect(() => {
+    setGroupDraftNotes((current) => {
+      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
+      if (nextEntries.length === Object.keys(current).length) {
+        return current
+      }
+      return Object.fromEntries(nextEntries)
+    })
+  }, [groups])
+
+  const resolveGroupNoteForName = (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName)
+  const resolvePendingGroupNoteForName = (groupName: string) => {
+    const normalized = normalizeGroupName(groupName)
+    if (!normalized || isExistingGroup(groups, normalized)) return ''
+    return groupDraftNotes[normalized]?.trim() ?? ''
+  }
+  const hasGroupNote = (groupName: string) => resolveGroupNoteForName(groupName).trim().length > 0
+
+  const openGroupNoteEditor = (groupName: string) => {
+    if (!writesEnabled) return
+    const normalized = normalizeGroupName(groupName)
+    if (!normalized) return
+    setGroupNoteError(null)
+    setGroupNoteEditor({
+      open: true,
+      groupName: normalized,
+      note: resolveGroupNoteForName(normalized),
+      existing: isExistingGroup(groups, normalized),
+    })
+  }
+
+  const closeGroupNoteEditor = () => {
+    if (groupNoteBusy) return
+    setGroupNoteEditor((current) => ({ ...current, open: false }))
+    setGroupNoteError(null)
+  }
+
+  const handleSaveGroupNote = async () => {
+    if (!writesEnabled) return
+    const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName)
+    if (!normalizedGroupName) return
+    const normalizedNote = groupNoteEditor.note.trim()
+    const previousDraftNote = resolvePendingGroupNoteForName(normalizedGroupName)
+    setGroupNoteError(null)
+    if (!groupNoteEditor.existing) {
+      setGroupDraftNotes((current) => {
+        const next = { ...current }
+        if (normalizedNote) {
+          next[normalizedGroupName] = normalizedNote
+        } else {
+          delete next[normalizedGroupName]
+        }
+        return next
+      })
+      if (previousDraftNote !== normalizedNote) {
+        invalidatePendingOauthSessionsForDraftGroup(normalizedGroupName)
+      }
+      setGroupNoteEditor((current) => ({ ...current, open: false }))
+      return
+    }
+
+    setGroupNoteBusy(true)
+    try {
+      await saveGroupNote(normalizedGroupName, {
+        note: normalizedNote || undefined,
+      })
+      setGroupDraftNotes((current) => {
+        if (!(normalizedGroupName in current)) return current
+        const next = { ...current }
+        delete next[normalizedGroupName]
+        return next
+      })
+      setGroupNoteEditor((current) => ({ ...current, open: false }))
+    } catch (err) {
+      setGroupNoteError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setGroupNoteBusy(false)
+    }
+  }
+
   const appendBatchRow = () => {
     const nextId = `row-${batchRowIdRef.current++}`
     setBatchRows((current) => [...current, createBatchOauthRow(nextId, batchDefaultGroupName.trim())])
@@ -246,6 +347,50 @@ export default function UpstreamAccountCreatePage() {
       ),
     )
   }
+
+  const invalidatePendingOauthSessionsForDraftGroup = useCallback(
+    (groupName: string) => {
+      const normalizedGroupName = normalizeGroupName(groupName)
+      if (!normalizedGroupName) return
+
+      if (session && session.status !== 'completed' && normalizeGroupName(oauthGroupName) === normalizedGroupName) {
+        setSession(null)
+        setSessionHint(t('accountPool.upstreamAccounts.oauth.regenerateRequired'))
+        setOauthCallbackUrl('')
+        setManualCopyOpen(false)
+        setActionError(null)
+      }
+
+      const affectedRowIds = new Set(
+        batchRows
+          .filter(
+            (row) =>
+              row.session
+              && row.session.status !== 'completed'
+              && normalizeGroupName(row.groupName) === normalizedGroupName,
+          )
+          .map((row) => row.id),
+      )
+      if (affectedRowIds.size === 0) return
+
+      setBatchRows((current) =>
+        current.map((row) =>
+          affectedRowIds.has(row.id)
+            ? {
+                ...row,
+                callbackUrl: '',
+                session: null,
+                sessionHint: t('accountPool.upstreamAccounts.batchOauth.regenerateRequired'),
+                actionError: null,
+                busyAction: null,
+              }
+            : row,
+        ),
+      )
+      setBatchManualCopyRowId((current) => (current && affectedRowIds.has(current) ? null : current))
+    },
+    [batchRows, oauthGroupName, session, t],
+  )
 
   const removeBatchRow = (rowId: string) => {
     setBatchRows((current) => {
@@ -297,6 +442,7 @@ export default function UpstreamAccountCreatePage() {
     setBatchDefaultGroupName((previousDefault) => {
       const previousTrimmed = previousDefault.trim()
       const nextTrimmed = value.trim()
+      const affectedRowIds = new Set<string>()
       setBatchRows((current) =>
         enforceBatchMotherDraftUniqueness(
           current.map((row) => {
@@ -306,6 +452,7 @@ export default function UpstreamAccountCreatePage() {
             if (!row.session) {
               return { ...row, groupName: nextTrimmed }
             }
+            affectedRowIds.add(row.id)
             return {
               ...row,
               groupName: nextTrimmed,
@@ -318,6 +465,9 @@ export default function UpstreamAccountCreatePage() {
           }),
         ),
       )
+      if (affectedRowIds.size > 0) {
+        setBatchManualCopyRowId((current) => (current && affectedRowIds.has(current) ? null : current))
+      }
       return value
     })
   }
@@ -343,6 +493,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: oauthDisplayName.trim() || undefined,
         groupName: oauthGroupName.trim() || undefined,
         note: oauthNote.trim() || undefined,
+        groupNote: resolvePendingGroupNoteForName(oauthGroupName) || undefined,
         accountId: relinkAccountId ?? undefined,
         isMother: oauthIsMother,
       })
@@ -421,6 +572,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: row.displayName.trim() || undefined,
         groupName: row.groupName.trim() || undefined,
         note: row.note.trim() || undefined,
+        groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
         isMother: row.isMother,
       })
       setBatchManualCopyRowId((current) => (current === rowId ? null : current))
@@ -535,6 +687,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: apiKeyDisplayName.trim(),
         groupName: apiKeyGroupName.trim() || undefined,
         note: apiKeyNote.trim() || undefined,
+        groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
         apiKey: apiKeyValue.trim(),
         isMother: apiKeyIsMother,
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
@@ -673,19 +826,33 @@ export default function UpstreamAccountCreatePage() {
                     </Tooltip>
                   </div>
                   <div className="flex w-full flex-wrap items-center justify-end gap-2 lg:w-auto lg:flex-nowrap lg:self-start">
-                    <UpstreamAccountGroupCombobox
-                      name="batchOauthDefaultGroupName"
-                      value={batchDefaultGroupName}
-                      suggestions={groupSuggestions}
-                      placeholder={t('accountPool.upstreamAccounts.batchOauth.defaultGroupPlaceholder')}
-                      searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
-                      emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
-                      createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                      onValueChange={handleBatchDefaultGroupChange}
-                      ariaLabel={t('accountPool.upstreamAccounts.batchOauth.defaultGroupLabel')}
-                      className="min-w-0 sm:w-[24rem]"
-                      triggerClassName="h-10 min-w-0 whitespace-nowrap rounded-lg"
-                    />
+                    <div className="flex min-w-0 items-center gap-2 sm:w-[24rem]">
+                      <UpstreamAccountGroupCombobox
+                        name="batchOauthDefaultGroupName"
+                        value={batchDefaultGroupName}
+                        suggestions={groupSuggestions}
+                        placeholder={t('accountPool.upstreamAccounts.batchOauth.defaultGroupPlaceholder')}
+                        searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                        emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                        createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                        onValueChange={handleBatchDefaultGroupChange}
+                        ariaLabel={t('accountPool.upstreamAccounts.batchOauth.defaultGroupLabel')}
+                        className="min-w-0 flex-1"
+                        triggerClassName="h-10 min-w-0 whitespace-nowrap rounded-lg"
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant={hasGroupNote(batchDefaultGroupName) ? 'secondary' : 'outline'}
+                        className="h-10 w-10 shrink-0 rounded-full"
+                        aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                        title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                        onClick={() => openGroupNoteEditor(batchDefaultGroupName)}
+                        disabled={!writesEnabled || !normalizeGroupName(batchDefaultGroupName)}
+                      >
+                        <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                      </Button>
+                    </div>
                     <Button type="button" variant="secondary" onClick={appendBatchRow} disabled={!writesEnabled} className="h-10 shrink-0 rounded-lg">
                       <Icon icon="mdi:playlist-plus" className="mr-2 h-4 w-4" aria-hidden />
                       {t('accountPool.upstreamAccounts.batchOauth.actions.addRow')}
@@ -720,16 +887,31 @@ export default function UpstreamAccountCreatePage() {
                   </label>
                   <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
-                    <UpstreamAccountGroupCombobox
-                      name="oauthGroupName"
-                      value={oauthGroupName}
-                      suggestions={groupSuggestions}
-                      placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
-                      searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
-                      emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
-                      createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                      onValueChange={setOauthGroupName}
-                    />
+                    <div className="flex items-center gap-2">
+                      <UpstreamAccountGroupCombobox
+                        name="oauthGroupName"
+                        value={oauthGroupName}
+                        suggestions={groupSuggestions}
+                        placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                        searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                        emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                        createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                        onValueChange={setOauthGroupName}
+                        className="min-w-0 flex-1"
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant={hasGroupNote(oauthGroupName) ? 'secondary' : 'outline'}
+                        className="shrink-0 rounded-full"
+                        aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                        title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                        onClick={() => openGroupNoteEditor(oauthGroupName)}
+                        disabled={!writesEnabled || !normalizeGroupName(oauthGroupName) || oauthSessionActive}
+                      >
+                        <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                      </Button>
+                    </div>
                   </label>
                   <MotherAccountToggle
                     checked={oauthIsMother}
@@ -931,19 +1113,33 @@ export default function UpstreamAccountCreatePage() {
                                     </label>
                                     <label className="field min-w-0 gap-2 whitespace-nowrap">
                                       <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
-                                      <UpstreamAccountGroupCombobox
-                                        name={`batchOauthGroupName-${row.id}`}
-                                        value={row.groupName}
-                                        suggestions={groupSuggestions}
-                                        placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
-                                        searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
-                                        emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
-                                        createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                                        onValueChange={(value) => handleBatchMetadataChange(row.id, 'groupName', value)}
-                                        disabled={rowLocked}
-                                        className="min-w-0"
-                                        triggerClassName="min-w-0 whitespace-nowrap"
-                                      />
+                                      <div className="flex min-w-0 items-center gap-2">
+                                        <UpstreamAccountGroupCombobox
+                                          name={`batchOauthGroupName-${row.id}`}
+                                          value={row.groupName}
+                                          suggestions={groupSuggestions}
+                                          placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                                          searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                                          emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                                          createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                                          onValueChange={(value) => handleBatchMetadataChange(row.id, 'groupName', value)}
+                                          disabled={rowLocked}
+                                          className="min-w-0 flex-1"
+                                          triggerClassName="min-w-0 whitespace-nowrap"
+                                        />
+                                        <Button
+                                          type="button"
+                                          size="icon"
+                                          variant={hasGroupNote(row.groupName) ? 'secondary' : 'outline'}
+                                          className="h-10 w-10 shrink-0 rounded-full"
+                                          aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                                          title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                                          onClick={() => openGroupNoteEditor(row.groupName)}
+                                          disabled={!writesEnabled || !normalizeGroupName(row.groupName)}
+                                        >
+                                          <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                                        </Button>
+                                      </div>
                                     </label>
                                     {row.noteExpanded ? (
                                       <label className="field min-w-0 gap-2 whitespace-nowrap">
@@ -1170,16 +1366,31 @@ export default function UpstreamAccountCreatePage() {
                   </label>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
-                    <UpstreamAccountGroupCombobox
-                      name="apiKeyGroupName"
-                      value={apiKeyGroupName}
-                      suggestions={groupSuggestions}
-                      placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
-                      searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
-                      emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
-                      createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                      onValueChange={setApiKeyGroupName}
-                    />
+                    <div className="flex items-center gap-2">
+                      <UpstreamAccountGroupCombobox
+                        name="apiKeyGroupName"
+                        value={apiKeyGroupName}
+                        suggestions={groupSuggestions}
+                        placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                        searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                        emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                        createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                        onValueChange={setApiKeyGroupName}
+                        className="min-w-0 flex-1"
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant={hasGroupNote(apiKeyGroupName) ? 'secondary' : 'outline'}
+                        className="shrink-0 rounded-full"
+                        aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                        title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                        onClick={() => openGroupNoteEditor(apiKeyGroupName)}
+                        disabled={!writesEnabled || !normalizeGroupName(apiKeyGroupName)}
+                      >
+                        <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                      </Button>
+                    </div>
                   </label>
                   <div className="md:col-span-2">
                     <MotherAccountToggle
@@ -1250,6 +1461,30 @@ export default function UpstreamAccountCreatePage() {
           </Card>
         </div>
       </section>
+      <UpstreamAccountGroupNoteDialog
+        open={groupNoteEditor.open}
+        groupName={groupNoteEditor.groupName}
+        note={groupNoteEditor.note}
+        busy={groupNoteBusy}
+        error={groupNoteError}
+        existing={groupNoteEditor.existing}
+        onNoteChange={(value) => {
+          setGroupNoteError(null)
+          setGroupNoteEditor((current) => ({ ...current, note: value }))
+        }}
+        onClose={closeGroupNoteEditor}
+        onSave={() => void handleSaveGroupNote()}
+        title={t('accountPool.upstreamAccounts.groupNotes.dialogTitle')}
+        existingDescription={t('accountPool.upstreamAccounts.groupNotes.existingDescription')}
+        draftDescription={t('accountPool.upstreamAccounts.groupNotes.draftDescription')}
+        noteLabel={t('accountPool.upstreamAccounts.fields.note')}
+        notePlaceholder={t('accountPool.upstreamAccounts.groupNotes.notePlaceholder')}
+        cancelLabel={t('accountPool.upstreamAccounts.actions.cancel')}
+        saveLabel={t('accountPool.upstreamAccounts.actions.save')}
+        closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
+        existingBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.existing')}
+        draftBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.draft')}
+      />
     </div>
   )
 }

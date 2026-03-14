@@ -9,6 +9,7 @@ import type {
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
   LoginSessionStatusResponse,
+  UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
   UpstreamAccountListResponse,
@@ -26,6 +27,7 @@ type StoryStore = {
   }
   accounts: UpstreamAccountSummary[]
   details: Record<number, UpstreamAccountDetail>
+  groupNotes: Record<string, string>
   nextId: number
   sessions: Record<
     string,
@@ -34,6 +36,7 @@ type StoryStore = {
       groupName?: string
       isMother?: boolean
       note?: string
+      groupNote?: string
       state?: string
     }
   >
@@ -62,6 +65,54 @@ function buildHistory(seed = 0) {
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
+}
+
+function normalizeGroupName(value?: string | null) {
+  const trimmed = value?.trim() ?? ''
+  return trimmed || null
+}
+
+function listGroupSummaries(store: StoryStore) {
+  const names = new Set<string>()
+  for (const account of store.accounts) {
+    const groupName = normalizeGroupName(account.groupName)
+    if (groupName) names.add(groupName)
+  }
+  return Array.from(names)
+    .sort((left, right) => left.localeCompare(right))
+    .map((groupName) => ({
+      groupName,
+      note: store.groupNotes[groupName] ?? null,
+    }))
+}
+
+function countAccountsForGroup(store: StoryStore, groupName: string | null) {
+  if (!groupName) return 0
+  return store.accounts.filter((account) => normalizeGroupName(account.groupName) === groupName).length
+}
+
+function setGroupNote(store: StoryStore, groupName: string | null, groupNote: string | undefined) {
+  if (!groupName || groupNote == null) return
+  const trimmed = groupNote.trim()
+  if (trimmed) {
+    store.groupNotes[groupName] = trimmed
+    return
+  }
+  delete store.groupNotes[groupName]
+}
+
+function syncDraftGroupNote(store: StoryStore, groupName: string | null, groupNote: string | undefined) {
+  if (!groupName || groupNote == null) return
+  if (countAccountsForGroup(store, groupName) !== 1) return
+  setGroupNote(store, groupName, groupNote)
+}
+
+function cleanupOrphanedGroupNote(store: StoryStore, groupName: string | null) {
+  if (!groupName) return
+  const stillExists = store.accounts.some((account) => normalizeGroupName(account.groupName) === groupName)
+  if (!stillExists) {
+    delete store.groupNotes[groupName]
+  }
 }
 
 function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetail>): UpstreamAccountDetail {
@@ -176,11 +227,6 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
   }
 }
 
-function normalizeGroupName(groupName?: string | null) {
-  const trimmed = groupName?.trim() ?? ''
-  return trimmed || null
-}
-
 function syncStoreAccounts(store: StoryStore) {
   store.accounts = Object.values(store.details)
     .map((detail) => toSummary(detail))
@@ -215,6 +261,9 @@ function createStore(): StoryStore {
     details: {
       [oauth.id]: oauth,
       [apiKey.id]: apiKey,
+    },
+    groupNotes: {
+      production: 'Primary team group for premium traffic.',
     },
     nextId: 103,
     sessions: {},
@@ -434,6 +483,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
           writesEnabled: store.writesEnabled,
           routing: clone(store.routing),
           items: store.accounts.map((item) => clone(item)),
+          groups: listGroupSummaries(store),
         }
         return jsonResponse(payload)
       }
@@ -449,7 +499,13 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       }
 
       if (path === '/api/pool/upstream-accounts/oauth/login-sessions' && method === 'POST') {
-        const body = parseBody<{ displayName?: string; groupName?: string; note?: string; isMother?: boolean }>(init?.body, {})
+        const body = parseBody<{
+          displayName?: string
+          groupName?: string
+          note?: string
+          groupNote?: string
+          isMother?: boolean
+        }>(init?.body, {})
         const loginId = `login_${Date.now()}`
         const redirectUri = `http://localhost:431${String(store.nextId).slice(-1)}/oauth/callback`
         const state = `state_${loginId}`
@@ -465,6 +521,8 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
           groupName: body.groupName,
           isMother: body.isMother === true,
           note: body.note,
+          groupNote:
+            countAccountsForGroup(store, normalizeGroupName(body.groupName)) === 0 ? body.groupNote : undefined,
           state,
         }
         store.sessions[loginId] = session
@@ -500,6 +558,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
           note: session.note ?? existing?.note ?? 'Freshly connected from Storybook OAuth mock.',
         })
         applyMockMotherAssignment(store, detail)
+        syncDraftGroupNote(store, normalizeGroupName(detail.groupName), session.groupNote)
         session.accountId = nextId
         session.status = 'completed'
         session.authUrl = null
@@ -528,6 +587,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         })
         const synced = syncLocalWindows(detail)
         applyMockMotherAssignment(store, synced)
+        syncDraftGroupNote(store, normalizeGroupName(synced.groupName), body.groupNote)
         return jsonResponse(clone(synced), 201)
       }
 
@@ -568,6 +628,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       }
 
       const detailMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)$/)
+      const groupMatch = path.match(/^\/api\/pool\/upstream-account-groups\/(.+)$/)
       if (detailMatch && method === 'GET') {
         const accountId = Number(detailMatch[1])
         const detail = store.details[accountId]
@@ -581,11 +642,25 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         return jsonResponse(buildStickyConversations(accountId))
       }
 
+      if (groupMatch && method === 'PUT') {
+        const groupName = normalizeGroupName(decodeURIComponent(groupMatch[1]))
+        if (!groupName) return jsonResponse({ message: 'missing mock group' }, 404)
+        const exists = store.accounts.some((account) => normalizeGroupName(account.groupName) === groupName)
+        if (!exists) return jsonResponse({ message: 'missing mock group' }, 404)
+        const body = parseBody<UpdateUpstreamAccountGroupPayload>(init?.body, {})
+        setGroupNote(store, groupName, body.note)
+        return jsonResponse({
+          groupName,
+          note: store.groupNotes[groupName] ?? null,
+        })
+      }
+
       if (detailMatch && method === 'PATCH') {
         const accountId = Number(detailMatch[1])
         const detail = store.details[accountId]
         if (!detail) return jsonResponse({ message: 'missing mock account' }, 404)
         const body = parseBody<UpdateUpstreamAccountPayload>(init?.body, {})
+        const previousGroupName = normalizeGroupName(detail.groupName)
         const updated = syncLocalWindows({
           ...detail,
           displayName: body.displayName ?? detail.displayName,
@@ -605,13 +680,17 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
               : detail.localLimits,
         })
         applyMockMotherAssignment(store, updated)
+        syncDraftGroupNote(store, normalizeGroupName(updated.groupName), body.groupNote)
+        cleanupOrphanedGroupNote(store, previousGroupName)
         return jsonResponse(clone(updated))
       }
 
       if (detailMatch && method === 'DELETE') {
         const accountId = Number(detailMatch[1])
+        const previousGroupName = normalizeGroupName(store.details[accountId]?.groupName)
         delete store.details[accountId]
         store.accounts = store.accounts.filter((item) => item.id !== accountId)
+        cleanupOrphanedGroupNote(store, previousGroupName)
         return noContent()
       }
 
@@ -744,5 +823,62 @@ export const CreateAccountBatchOauthReady: Story = {
     await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
     await expect(canvas.getByDisplayValue(/https:\/\/auth\.openai\.com\/authorize/i)).toBeInTheDocument()
     await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeInTheDocument()
+  },
+}
+
+export const DetailDrawerGroupNotes: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+    await userEvent.click(
+      await canvas.findByRole('button', {
+        name: /打开详情/i,
+      }),
+    )
+    await userEvent.click(
+      await documentScope.findByRole('button', {
+        name: /编辑分组备注|edit group note/i,
+      }),
+    )
+    await expect(
+      documentScope.getByRole('dialog', { name: /编辑分组备注|edit group note/i }),
+    ).toBeInTheDocument()
+    await expect(documentScope.getByText(/production/i)).toBeInTheDocument()
+  },
+}
+
+export const CreateAccountBatchGroupNoteDraft: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const doc = canvasElement.ownerDocument
+    const trigger = canvas.getAllByRole('combobox')[0]
+    await userEvent.click(trigger)
+
+    const searchInput = doc.body.querySelector('[cmdk-input]')
+    if (!(searchInput instanceof HTMLInputElement)) {
+      throw new Error('missing group combobox search input')
+    }
+    await userEvent.type(searchInput, 'new-team')
+
+    const createOption = Array.from(doc.body.querySelectorAll('[cmdk-item]')).find((candidate) =>
+      (candidate.textContent || '').toLowerCase().includes('new-team'),
+    )
+    if (!(createOption instanceof HTMLElement)) {
+      throw new Error('missing create option for new-team')
+    }
+    await userEvent.click(createOption)
+
+    const documentScope = within(doc.body)
+    await userEvent.click(
+      await documentScope.findByRole('button', {
+        name: /编辑分组备注|edit group note/i,
+      }),
+    )
+    await expect(
+      documentScope.getByRole('dialog', { name: /编辑分组备注|edit group note/i }),
+    ).toBeInTheDocument()
+    await expect(documentScope.getByText(/new-team/i)).toBeInTheDocument()
   },
 }
