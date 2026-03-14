@@ -88,7 +88,8 @@
         "Lint & Format Check",
         "Front-end Tests",
         "Records Overlay E2E",
-        "Backend Tests"
+        "Backend Tests",
+        "Release Snapshot"
       ]
     }
   ],
@@ -96,7 +97,7 @@
     {
       "workflow": "Release",
       "jobs": [
-        "Release Meta (intent + version + tags)",
+        "Release Meta (snapshot + tags)",
         "Build + Smoke + Push Candidate (linux/amd64)",
         "Build + Smoke + Push Candidate (linux/arm64)",
         "Release Publish (manifest + tag + GitHub Release)"

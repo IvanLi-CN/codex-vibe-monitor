@@ -18,7 +18,7 @@
 
 - 拆分为 `CI PR`、`CI Main`、`Release` 三段式链路，明确并发语义与职责边界。
 - 保留现有 PR label 驱动的 release intent、版本/tag 规则、多架构 smoke 与发布幂等行为。
-- 为 release 增加 `workflow_dispatch(commit_sha)` 手动补发入口，作为 pending release run 被替换或需要显式重放历史 commit 时的人工 backfill 通道；入口只接受已经成功通过 `CI Main` 的 `main` commit。
+- 为 release 增加 `workflow_dispatch(commit_sha)` 手动补发入口，作为 pending release run 被替换或需要显式重放历史 commit 时的人工 backfill 通道；入口只接受已经成功通过 `CI Main` 且已写入 immutable release snapshot 的 `main` commit。
 - 将 `quality-gates`、trusted metadata gate、contract fixtures/self-tests 升级到 `final` profile。
 
 ### Non-goals
@@ -47,7 +47,8 @@
 
 - PR 侧 required checks 继续保持 `Validate PR labels`、`Lint & Format Check`、`Backend Tests`、`Build Artifacts`、`Review Policy Gate`。
 - `CI PR` 对同一 PR 必须保持可抢占；`CI Main` 与 `Release` 对运行中的 main/release run 必须保持非抢占。
-- `Release` 必须同时支持 `workflow_run(CI Main first success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 release-intent / version / publish 逻辑。
+- `CI Main` 必须为每个 merged commit 写入 immutable release snapshot，冻结 PR labels、版本分配与镜像/tag 元数据。
+- `Release` 必须同时支持 `workflow_run(CI Main first success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 publish 逻辑；自动与手动入口都只能消费 immutable release snapshot，禁止重新读取当前 PR labels 或重算版本。
 - `workflow_dispatch` 只接受 `commit_sha`，且对非法/不可解析输入、未通过 `CI Main` 的目标 SHA 一律 fail closed。
 - `quality-gates` contract、fixtures 与自测必须升级到 `final` profile，并校验新的 workflow 家族。
 
@@ -74,7 +75,7 @@
   Then 当前运行中的 `CI Main` 不会被取消，较早 merged commit 也不会因为共享 pending 队列而漏掉自己的 `CI Main` run，且 `Release` 运行中的发布不会被新 release run 打断。
 - Given 某个 merged commit 的自动 release pending run 被更晚的 pending run 替换
   When 维护者手动触发 `Release` 并传入该 commit SHA
-  Then workflow 仅在该 commit 已成功通过 `CI Main` 时继续执行，随后仍能解析唯一关联 PR、读取 labels，并按既有规则完成或跳过发布。
+  Then workflow 仅在该 commit 已成功通过 `CI Main` 且已有 immutable snapshot 时继续执行，随后只复用 snapshot 中冻结的 labels/version/tag 元数据来完成或跳过发布。
 - Given 本仓库执行 `python3 .github/scripts/check_quality_gates_contract.py --repo-root "$PWD" --profile final`
   When 校验 split topology
   Then contract、fixtures 与 trusted metadata gate 全部通过。
@@ -99,7 +100,8 @@
 
 - PR 路径只保留 PR/merge_group 相关 job；release job 从 PR workflow 中完全拆出。
 - `CI Main` 复用现有 lint/test/build 逻辑，但不再承担发布；发布只由 `Release` workflow 负责。
-- `Release` 通过统一的 target SHA 解析层兼容自动与手动入口，复用现有 smoke / manifest / tag / GitHub Release 步骤。
+- `CI Main` 通过 git notes 写入 immutable release snapshot，把 PR labels、版本分配与镜像/tag 元数据冻结到 merge commit。
+- `Release` 通过统一的 target SHA 解析层兼容自动与手动入口，但只加载 snapshot 并复用现有 smoke / manifest / tag / GitHub Release 步骤。
 - `quality-gates` contract 扩展为显式声明 PR/main/release workflow 家族，contract checker 与 fixtures 一起升级，避免只改 workflow 不改自证体系。
 
 ## 风险 / 假设（Risks / Assumptions）

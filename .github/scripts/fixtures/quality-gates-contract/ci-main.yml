@@ -18,6 +18,7 @@ env:
   PLATFORM_AMD64: linux/amd64
   PLATFORM_ARM64: linux/arm64
   PLATFORMS: linux/amd64,linux/arm64
+  RELEASE_SNAPSHOT_NOTES_REF: refs/notes/release-snapshots
 
 jobs:
   lint:
@@ -77,6 +78,7 @@ jobs:
             .github/scripts/metadata_gate.py \
             .github/scripts/check_live_quality_gates.py \
             .github/scripts/check_quality_gates_contract.py \
+            .github/scripts/release_snapshot.py \
             .github/scripts/verify_manifest_platforms.py
 
       - name: Resolve trusted quality-gates sources
@@ -128,6 +130,7 @@ jobs:
       - name: Quality gates self-tests
         run: |
           bash .github/scripts/test-quality-gates-contract.sh
+          bash .github/scripts/test-release-snapshot.sh
           bash .github/scripts/test-live-quality-gates.sh
 
       - name: Front-end lint
@@ -244,3 +247,47 @@ jobs:
 
       - name: Run cargo test
         run: cargo test --locked --all-features
+
+  release-snapshot:
+    name: Release Snapshot
+    runs-on: ubuntu-latest
+    needs: [lint, frontend-tests, records-overlay-e2e, unit-tests]
+    permissions:
+      contents: write
+      pull-requests: read
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure immutable release snapshot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_snapshot.py ensure \
+            --target-sha "${GITHUB_SHA}" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --registry "${REGISTRY}" \
+            --output "$RUNNER_TEMP/release-snapshot.json"
+
+      - name: Show release snapshot summary
+        env:
+          SNAPSHOT_PATH: ${{ runner.temp }}/release-snapshot.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["SNAPSHOT_PATH"]).read_text())
+          print("release_enabled=", payload["release_enabled"])
+          print("target_sha=", payload["target_sha"])
+          print("release_tag=", payload.get("release_tag", ""))
+          print("pr_number=", payload.get("pr_number", ""))
+          PY

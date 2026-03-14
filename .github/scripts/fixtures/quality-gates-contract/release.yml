@@ -28,27 +28,27 @@ env:
   PLATFORM_AMD64: linux/amd64
   PLATFORM_ARM64: linux/arm64
   PLATFORMS: linux/amd64,linux/arm64
+  RELEASE_SNAPSHOT_NOTES_REF: refs/notes/release-snapshots
 
 jobs:
   release-meta:
-    name: Release Meta (intent + version + tags)
+    name: Release Meta (snapshot + tags)
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt == 1) }}
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       target_sha: ${{ steps.target.outputs.target_sha }}
-      release_enabled: ${{ steps.intent.outputs.release_enabled }}
-      release_bump: ${{ steps.intent.outputs.release_bump }}
-      release_channel: ${{ steps.intent.outputs.release_channel }}
-      pr_number: ${{ steps.intent.outputs.pr_number }}
-      pr_title: ${{ steps.intent.outputs.pr_title }}
-      image_name_lower: ${{ steps.image-name.outputs.image_name_lower }}
-      app_effective_version: ${{ steps.version.outputs.app_effective_version }}
-      release_tag: ${{ steps.version.outputs.release_tag }}
-      release_prerelease: ${{ steps.version.outputs.release_prerelease }}
-      tags_csv: ${{ steps.image-tags.outputs.tags_csv }}
+      release_enabled: ${{ steps.snapshot.outputs.release_enabled }}
+      release_bump: ${{ steps.snapshot.outputs.release_bump }}
+      release_channel: ${{ steps.snapshot.outputs.release_channel }}
+      pr_number: ${{ steps.snapshot.outputs.pr_number }}
+      pr_title: ${{ steps.snapshot.outputs.pr_title }}
+      image_name_lower: ${{ steps.snapshot.outputs.image_name_lower }}
+      app_effective_version: ${{ steps.snapshot.outputs.app_effective_version }}
+      release_tag: ${{ steps.snapshot.outputs.release_tag }}
+      release_prerelease: ${{ steps.snapshot.outputs.release_prerelease }}
+      tags_csv: ${{ steps.snapshot.outputs.tags_csv }}
     timeout-minutes: 20
     steps:
       - name: Checkout code
@@ -85,88 +85,6 @@ jobs:
 
           echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve release intent (PR labels)
-        id: intent
-        uses: actions/github-script@v7
-        env:
-          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
-        with:
-          script: |
-            const { owner, repo } = context.repo
-            const sha = process.env.TARGET_SHA
-            const allowedTypes = new Set([
-              'type:patch',
-              'type:minor',
-              'type:major',
-              'type:docs',
-              'type:skip',
-            ])
-            const allowedChannels = new Set(['channel:stable', 'channel:rc'])
-
-            if (!sha) {
-              core.setFailed('Missing TARGET_SHA')
-              return
-            }
-
-            const prsResp = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-              owner,
-              repo,
-              commit_sha: sha,
-              mediaType: { previews: ['groot'] },
-            })
-            const prs = prsResp.data || []
-
-            if (prs.length !== 1) {
-              core.notice(
-                `Release disabled: expected exactly 1 PR associated with commit ${sha}, got ${prs.length}`
-              )
-              core.setOutput('release_enabled', 'false')
-              return
-            }
-
-            const pr = prs[0]
-            const labels = (pr.labels || []).map(l => l?.name).filter(Boolean)
-            const typeLabels = labels.filter(l => l.startsWith('type:'))
-            const channelLabels = labels.filter(l => l.startsWith('channel:'))
-
-            const problems = []
-            if (typeLabels.length !== 1) {
-              problems.push(
-                `Expected exactly 1 type:* label, got ${typeLabels.length}: ${typeLabels.join(', ') || '(none)'}`
-              )
-            } else if (!allowedTypes.has(typeLabels[0])) {
-              problems.push(`Unknown type label: ${typeLabels[0]}`)
-            }
-
-            if (channelLabels.length !== 1) {
-              problems.push(
-                `Expected exactly 1 channel:* label, got ${channelLabels.length}: ${channelLabels.join(', ') || '(none)'}`
-              )
-            } else if (!allowedChannels.has(channelLabels[0])) {
-              problems.push(`Unknown channel label: ${channelLabels[0]}`)
-            }
-
-            if (problems.length > 0) {
-              core.setFailed(problems.join('\n'))
-              return
-            }
-
-            const typeLabel = typeLabels[0]
-            const channelLabel = channelLabels[0]
-
-            core.setOutput('pr_number', String(pr.number))
-            core.setOutput('pr_title', pr.title || '')
-
-            if (typeLabel === 'type:docs' || typeLabel === 'type:skip') {
-              core.notice(`Release disabled: ${typeLabel} (${channelLabel})`)
-              core.setOutput('release_enabled', 'false')
-              return
-            }
-
-            core.setOutput('release_enabled', 'true')
-            core.setOutput('release_bump', typeLabel.split(':', 2)[1])
-            core.setOutput('release_channel', channelLabel.split(':', 2)[1])
-
       - name: Validate manual backfill target passed CI Main
         if: github.event_name == 'workflow_dispatch'
         uses: actions/github-script@v7
@@ -200,59 +118,21 @@ jobs:
 
             core.notice(`Verified successful CI Main history for ${sha}`)
 
-      - name: Compute lowercase image name
-        if: steps.intent.outputs.release_enabled == 'true'
-        id: image-name
-        shell: bash
-        run: |
-          set -euo pipefail
-          lower="${GITHUB_REPOSITORY,,}"
-          echo "IMAGE_NAME_LOWER=${lower}" >> "$GITHUB_ENV"
-          echo "image_name_lower=${lower}" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout target commit
-        if: steps.intent.outputs.release_enabled == 'true'
+      - name: Load immutable release snapshot
+        id: snapshot
         shell: bash
         env:
           TARGET_SHA: ${{ steps.target.outputs.target_sha }}
         run: |
           set -euo pipefail
-          git checkout --detach "$TARGET_SHA"
-
-      - name: Compute effective version
-        if: steps.intent.outputs.release_enabled == 'true'
-        shell: bash
-        env:
-          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
-          RELEASE_BUMP: ${{ steps.intent.outputs.release_bump }}
-          RELEASE_CHANNEL: ${{ steps.intent.outputs.release_channel }}
-        run: ./.github/scripts/compute-version.sh
-
-      - name: Export version outputs
-        if: steps.intent.outputs.release_enabled == 'true'
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "app_effective_version=${APP_EFFECTIVE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "release_prerelease=${RELEASE_PRERELEASE}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute image tags
-        if: steps.intent.outputs.release_enabled == 'true'
-        id: image-tags
-        shell: bash
-        run: |
-          set -euo pipefail
-          image="${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}"
-          if [[ "${RELEASE_CHANNEL}" == "stable" ]]; then
-            echo "tags_csv=${image}:v${APP_EFFECTIVE_VERSION},${image}:latest" >> "$GITHUB_OUTPUT"
-          else
-            echo "tags_csv=${image}:v${APP_EFFECTIVE_VERSION}" >> "$GITHUB_OUTPUT"
-          fi
+          git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}"
+          python3 .github/scripts/release_snapshot.py export \
+            --target-sha "${TARGET_SHA}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Validate platforms for smoke gate
-        if: steps.intent.outputs.release_enabled == 'true'
+        if: steps.snapshot.outputs.release_enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail

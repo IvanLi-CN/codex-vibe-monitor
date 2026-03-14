@@ -505,6 +505,35 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     require('source_kind="current-branch"' in trusted_run, "ci-main.yml.jobs.lint: trusted-source kind drifted")
     require("cp \"$path\" \"$trusted_root/$path\"" in trusted_run, "ci-main.yml.jobs.lint: trusted-source copy drifted")
 
+    release_snapshot = named_job_config(workflow, "release-snapshot", expected_jobs, "ci-main.yml")
+    require(
+        release_snapshot.get("needs") == ["lint", "frontend-tests", "records-overlay-e2e", "unit-tests"],
+        "ci-main.yml.jobs.release-snapshot.needs drifted",
+    )
+    release_snapshot_permissions = require_mapping(
+        release_snapshot.get("permissions"), "ci-main.yml.jobs.release-snapshot.permissions"
+    )
+    require(
+        release_snapshot_permissions.get("contents") == "write",
+        "ci-main.yml.jobs.release-snapshot.permissions.contents must stay write",
+    )
+    require(
+        release_snapshot_permissions.get("pull-requests") == "read",
+        "ci-main.yml.jobs.release-snapshot.permissions.pull-requests must stay read",
+    )
+    ensure_step = step_config(
+        release_snapshot, "Ensure immutable release snapshot", "ci-main.yml.jobs.release-snapshot"
+    )
+    ensure_run = str(ensure_step.get("run", ""))
+    require(
+        "release_snapshot.py ensure" in ensure_run,
+        "ci-main.yml.jobs.release-snapshot: snapshot writer must use release_snapshot.py ensure",
+    )
+    require(
+        "RELEASE_SNAPSHOT_NOTES_REF" in ensure_run,
+        "ci-main.yml.jobs.release-snapshot: notes-ref plumbing drifted",
+    )
+
 
 def validate_label_gate(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
@@ -658,13 +687,25 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require("inputs.commit_sha" in target_run, "release.yml.jobs.release-meta: manual commit_sha resolution drifted")
     require("git merge-base --is-ancestor" in target_run, "release.yml.jobs.release-meta: main ancestry gate drifted")
 
-    intent_step = step_config(release_meta, "Resolve release intent (PR labels)", "release.yml.jobs.release-meta")
-    intent_env = require_mapping(intent_step.get("env"), "release.yml.jobs.release-meta.steps['Resolve release intent (PR labels)'].env")
-    require(intent_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}", "release.yml.jobs.release-meta: release intent must consume target_sha")
     backfill_step = step_config(release_meta, "Validate manual backfill target passed CI Main", "release.yml.jobs.release-meta")
     require(backfill_step.get("if") == "github.event_name == 'workflow_dispatch'", "release.yml.jobs.release-meta: manual backfill validation gate drifted")
     backfill_env = require_mapping(backfill_step.get("env"), "release.yml.jobs.release-meta.steps['Validate manual backfill target passed CI Main'].env")
     require(backfill_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual backfill validation must consume target_sha")
+    snapshot_step = step_config(release_meta, "Load immutable release snapshot", "release.yml.jobs.release-meta")
+    snapshot_env = require_mapping(snapshot_step.get("env"), "release.yml.jobs.release-meta.steps['Load immutable release snapshot'].env")
+    require(
+        snapshot_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}",
+        "release.yml.jobs.release-meta: snapshot loader must consume target_sha",
+    )
+    snapshot_run = str(snapshot_step.get("run", ""))
+    require(
+        "release_snapshot.py export" in snapshot_run,
+        "release.yml.jobs.release-meta: snapshot loader must use release_snapshot.py export",
+    )
+    require(
+        "RELEASE_SNAPSHOT_NOTES_REF" in snapshot_run,
+        "release.yml.jobs.release-meta: snapshot notes-ref plumbing drifted",
+    )
 
     docker_amd = named_job_config(workflow, "docker-amd64", expected_jobs, "release.yml")
     require(docker_amd.get("needs") == ["release-meta"], "release.yml.jobs.docker-amd64.needs drifted")
@@ -683,9 +724,6 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     tag_step = step_config(publish, "Create and push git tag", "release.yml.jobs.release-publish")
     tag_run = str(tag_step.get("run", ""))
     require('sha="${TARGET_SHA}"' in tag_run, "release.yml.jobs.release-publish tag step must use target_sha")
-    compute_step = step_config(release_meta, "Compute effective version", "release.yml.jobs.release-meta")
-    compute_env = require_mapping(compute_step.get("env"), "release.yml.jobs.release-meta.steps['Compute effective version'].env")
-    require(compute_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}", "release.yml.jobs.release-meta: compute-version must consume target_sha")
 
 
 def validate_merge_group_helpers(module: Any) -> None:
