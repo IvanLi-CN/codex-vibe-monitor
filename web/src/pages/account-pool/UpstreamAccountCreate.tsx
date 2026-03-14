@@ -14,8 +14,17 @@ import {
 import { Input } from "../../components/ui/input";
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import {
+  Dialog,
+  DialogCloseIcon,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "../../components/ui/dialog";
+import {
   Popover,
   PopoverAnchor,
+  PopoverArrow,
   PopoverContent,
   PopoverTrigger,
 } from "../../components/ui/popover";
@@ -25,9 +34,11 @@ import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGr
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import type {
   LoginSessionStatusResponse,
+  UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
+import { fetchUpstreamAccountDetail } from "../../lib/api";
 import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
 import { cn } from "../../lib/utils";
 import { useTranslation } from "../../i18n";
@@ -120,12 +131,14 @@ function DuplicateWarningPopover({
   summaryTitle,
   summaryBody,
   openDetailsLabel,
+  onOpenDetails,
   side = "top",
 }: {
   duplicateWarning: DuplicateWarningState;
   summaryTitle: string;
   summaryBody: string;
   openDetailsLabel: string;
+  onOpenDetails: (accountId: number) => void;
   side?: "top" | "right" | "bottom" | "left";
 }) {
   const [open, setOpen] = useState(false);
@@ -150,11 +163,11 @@ function DuplicateWarningPopover({
       <PopoverContent
         align="end"
         side={side}
-        sideOffset={12}
+        sideOffset={10}
         onOpenAutoFocus={(event) => event.preventDefault()}
-        className="w-64 rounded-2xl border-warning/45 bg-base-100 p-0 shadow-2xl"
+        className="w-[16.5rem] rounded-2xl border border-warning/45 bg-base-100 p-0 shadow-[0_16px_38px_rgba(15,23,42,0.16)]"
       >
-        <div className="space-y-3 p-3.5">
+        <div className="space-y-3 p-3">
           <div className="flex items-start gap-3">
             <div className="mt-0.5 rounded-full bg-warning/12 p-1 text-warning">
               <Icon icon="mdi:alert-circle-outline" className="h-4 w-4" aria-hidden />
@@ -163,33 +176,155 @@ function DuplicateWarningPopover({
               <p className="text-sm font-semibold leading-5 text-warning">
                 {summaryTitle}
               </p>
-              <p className="text-xs leading-5 text-base-content/72">
+              <p className="text-[11px] leading-5 text-base-content/72">
                 {summaryBody}
               </p>
             </div>
           </div>
           <div className="flex justify-end">
             <Button
-              asChild
+              type="button"
               size="sm"
-              variant="secondary"
-              className="border-warning/35 bg-warning/12 text-warning hover:bg-warning/18"
+              variant="ghost"
+              className="h-7 rounded-full px-2.5 text-xs font-semibold text-warning hover:bg-warning/10 hover:text-warning"
+              onClick={() => {
+                setOpen(false);
+                onOpenDetails(duplicateWarning.accountId);
+              }}
             >
-              <Link
-                to="/account-pool/upstream-accounts"
-                state={{
-                  selectedAccountId: duplicateWarning.accountId,
-                  openDetail: true,
-                  duplicateWarning,
-                }}
-              >
-                {openDetailsLabel}
-              </Link>
+              {openDetailsLabel}
             </Button>
           </div>
         </div>
+        <PopoverArrow className="fill-base-100 stroke-warning/45 stroke-[0.8]" width={16} height={8} />
       </PopoverContent>
     </Popover>
+  );
+}
+
+function DuplicateDetailField({
+  label,
+  value,
+}: {
+  label: string;
+  value?: string | null;
+}) {
+  return (
+    <div className="rounded-2xl border border-base-300/70 bg-base-100/82 px-3 py-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/45">
+        {label}
+      </p>
+      <p className="mt-1 break-all text-sm text-base-content/82">
+        {value?.trim() ? value : "—"}
+      </p>
+    </div>
+  );
+}
+
+function DuplicateAccountDetailDialog({
+  open,
+  detail,
+  isLoading,
+  onClose,
+  title,
+  description,
+  duplicateLabel,
+  closeLabel,
+  formatDuplicateReasons,
+  statusLabel,
+  kindLabel,
+  fieldLabels,
+}: {
+  open: boolean;
+  detail: UpstreamAccountDetail | null;
+  isLoading: boolean;
+  onClose: () => void;
+  title: string;
+  description: string;
+  duplicateLabel: string;
+  closeLabel: string;
+  formatDuplicateReasons: (
+    duplicateInfo?: UpstreamAccountDuplicateInfo | null,
+  ) => string;
+  statusLabel: (status: string) => string;
+  kindLabel: (kind: string) => string;
+  fieldLabels: {
+    groupName: string;
+    email: string;
+    accountId: string;
+    userId: string;
+    lastSuccessSync: string;
+  };
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <DialogContent className="max-h-[85vh] overflow-hidden p-0 sm:max-w-[38rem]">
+        <div className="flex items-start justify-between gap-4 border-b border-base-300/70 px-5 py-4">
+          <DialogHeader className="min-w-0">
+            <DialogTitle className="truncate">
+              {detail?.displayName ?? title}
+            </DialogTitle>
+            <DialogDescription>{description}</DialogDescription>
+          </DialogHeader>
+          <DialogCloseIcon aria-label={closeLabel} />
+        </div>
+        <div className="space-y-4 overflow-y-auto px-5 py-5">
+          {isLoading ? (
+            <div className="flex min-h-44 items-center justify-center">
+              <Spinner />
+            </div>
+          ) : detail ? (
+            <>
+            <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={accountStatusVariant(detail.status)}>
+                  {statusLabel(detail.status)}
+                </Badge>
+                <Badge variant={accountKindVariant(detail.kind)}>
+                  {kindLabel(detail.kind)}
+                </Badge>
+                {detail.duplicateInfo ? (
+                  <Badge variant="warning">{duplicateLabel}</Badge>
+                ) : null}
+              </div>
+              {detail.duplicateInfo ? (
+                <div className="rounded-2xl border border-warning/35 bg-warning/8 px-4 py-3 text-sm text-base-content/78">
+                  <p className="font-semibold text-warning">{duplicateLabel}</p>
+                  <p className="mt-1 leading-6">
+                    {`命中：${formatDuplicateReasons(detail.duplicateInfo)}。关联账号 ID：${detail.duplicateInfo.peerAccountIds.join(", ") || "—"}。`}
+                  </p>
+                </div>
+              ) : null}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <DuplicateDetailField
+                  label={fieldLabels.groupName}
+                  value={detail.groupName}
+                />
+                <DuplicateDetailField
+                  label={fieldLabels.email}
+                  value={detail.email}
+                />
+                <DuplicateDetailField
+                  label={fieldLabels.accountId}
+                  value={detail.chatgptAccountId ?? detail.maskedApiKey}
+                />
+                <DuplicateDetailField
+                  label={fieldLabels.userId}
+                  value={detail.chatgptUserId}
+                />
+                <DuplicateDetailField
+                  label={fieldLabels.lastSuccessSync}
+                  value={formatDateTime(detail.lastSuccessfulSyncAt)}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-base-300/80 bg-base-100/50 px-4 py-10 text-center text-sm text-base-content/65">
+              {description}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -278,6 +413,19 @@ function batchStatusVariant(
   if (status === "pending") return "warning";
   if (status === "failed" || status === "expired") return "error";
   return "secondary";
+}
+
+function accountStatusVariant(
+  status: string,
+): "success" | "warning" | "error" | "secondary" {
+  if (status === "active") return "success";
+  if (status === "syncing") return "warning";
+  if (status === "error" || status === "needs_reauth") return "error";
+  return "secondary";
+}
+
+function accountKindVariant(kind: string): "secondary" | "success" {
+  return kind === "oauth_codex" ? "success" : "secondary";
 }
 
 function batchRowStatus(row: BatchOauthRow) {
@@ -388,6 +536,10 @@ export default function UpstreamAccountCreatePage() {
     peerAccountIds: number[];
     reasons: string[];
   } | null>(() => draft?.oauth?.duplicateWarning ?? null);
+  const [duplicateDetailOpen, setDuplicateDetailOpen] = useState(false);
+  const [duplicateDetailLoading, setDuplicateDetailLoading] = useState(false);
+  const [duplicateDetail, setDuplicateDetail] =
+    useState<UpstreamAccountDetail | null>(null);
   const [actionError, setActionError] = useState<string | null>(
     () => draft?.oauth?.actionError ?? null,
   );
@@ -475,6 +627,26 @@ export default function UpstreamAccountCreatePage() {
             : reason,
       )
       .join(" / ");
+  };
+
+  const accountStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.status.${status}`);
+  const accountKindLabel = (kind: string) =>
+    kind === "oauth_codex"
+      ? t("accountPool.upstreamAccounts.kind.oauth")
+      : t("accountPool.upstreamAccounts.kind.apiKey");
+
+  const openDuplicateDetailDialog = async (accountId: number) => {
+    setDuplicateDetailOpen(true);
+    setDuplicateDetailLoading(true);
+    try {
+      const response = await fetchUpstreamAccountDetail(accountId);
+      setDuplicateDetail(response);
+    } catch {
+      setDuplicateDetail(null);
+    } finally {
+      setDuplicateDetailLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -1350,6 +1522,7 @@ export default function UpstreamAccountCreatePage() {
                         openDetailsLabel={t(
                           "accountPool.upstreamAccounts.actions.openDetails",
                         )}
+                        onOpenDetails={openDuplicateDetailDialog}
                         side="top"
                       />
                     ) : null}
@@ -1825,7 +1998,10 @@ export default function UpstreamAccountCreatePage() {
                                             openDetailsLabel={t(
                                               "accountPool.upstreamAccounts.actions.openDetails",
                                             )}
-                                            side="left"
+                                            onOpenDetails={
+                                              openDuplicateDetailDialog
+                                            }
+                                            side="top"
                                           />
                                         ) : null}
                                       </div>
@@ -2030,6 +2206,31 @@ export default function UpstreamAccountCreatePage() {
             </CardContent>
           </Card>
         </div>
+        <DuplicateAccountDetailDialog
+          open={duplicateDetailOpen}
+          detail={duplicateDetail}
+          isLoading={duplicateDetailLoading}
+          onClose={() => {
+            setDuplicateDetailOpen(false);
+            setDuplicateDetail(null);
+          }}
+          title={t("accountPool.upstreamAccounts.detailTitle")}
+          description={t("accountPool.upstreamAccounts.editDescription")}
+          duplicateLabel={t("accountPool.upstreamAccounts.duplicate.badge")}
+          closeLabel={t("accountPool.upstreamAccounts.actions.closeDetails")}
+          formatDuplicateReasons={formatDuplicateReasons}
+          statusLabel={accountStatusLabel}
+          kindLabel={accountKindLabel}
+          fieldLabels={{
+            groupName: t("accountPool.upstreamAccounts.fields.groupName"),
+            email: t("accountPool.upstreamAccounts.fields.email"),
+            accountId: t("accountPool.upstreamAccounts.fields.accountId"),
+            userId: t("accountPool.upstreamAccounts.fields.userId"),
+            lastSuccessSync: t(
+              "accountPool.upstreamAccounts.fields.lastSuccessSync",
+            ),
+          }}
+        />
       </section>
     </div>
   );
