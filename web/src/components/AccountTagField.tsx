@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Icon } from '@iconify/react'
-import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import { AccountTagContextChip } from './AccountTagContextChip'
 import { Input } from './ui/input'
-import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from './ui/popover'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { TagRuleDialog } from './TagRuleDialog'
 import type { CreateTagPayload, TagDetail, TagSummary, UpdateTagPayload } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -60,13 +60,11 @@ export function AccountTagField({
 }: AccountTagFieldProps) {
   const [search, setSearch] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
-  const [menuTagId, setMenuTagId] = useState<number | null>(null)
   const [editingTag, setEditingTag] = useState<TagSummary | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogMode, setDialogMode] = useState<'create' | 'edit'>('create')
   const [dialogError, setDialogError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const longPressTimer = useRef<number | null>(null)
 
   const selectedTags = useMemo(
     () => tags.filter((tag) => selectedTagIds.includes(tag.id)),
@@ -79,10 +77,6 @@ export function AccountTagField({
   }, [search, tags])
   const selectedSet = useMemo(() => new Set(selectedTagIds), [selectedTagIds])
   const pageCreatedSet = useMemo(() => new Set(pageCreatedTagIds), [pageCreatedTagIds])
-
-  useEffect(() => () => {
-    if (longPressTimer.current != null) window.clearTimeout(longPressTimer.current)
-  }, [])
 
   const toggleTag = (tagId: number) => {
     if (selectedSet.has(tagId)) {
@@ -141,7 +135,6 @@ export function AccountTagField({
       }
     }
     onChange(selectedTagIds.filter((value) => value !== tag.id))
-    setMenuTagId(null)
   }
 
   return (
@@ -204,57 +197,20 @@ export function AccountTagField({
         {selectedTags.map((tag) => {
           const currentPageCreated = pageCreatedSet.has(tag.id)
           return (
-            <Popover key={tag.id} open={menuTagId === tag.id} onOpenChange={(open) => setMenuTagId(open ? tag.id : null)}>
-              <PopoverAnchor asChild>
-                <button
-                  type="button"
-                  className="group inline-flex"
-                  onMouseEnter={() => setMenuTagId(tag.id)}
-                  onFocus={() => setMenuTagId(tag.id)}
-                  onClick={() => setMenuTagId((current) => (current === tag.id ? null : tag.id))}
-                  onPointerDown={() => {
-                    longPressTimer.current = window.setTimeout(() => setMenuTagId(tag.id), 450)
-                  }}
-                  onPointerUp={() => {
-                    if (longPressTimer.current != null) window.clearTimeout(longPressTimer.current)
-                  }}
-                  onPointerLeave={() => {
-                    if (longPressTimer.current != null) window.clearTimeout(longPressTimer.current)
-                  }}
-                >
-                  <Badge variant="secondary" className="gap-2 px-3 py-1.5">
-                    <Icon icon="mdi:tag-outline" className="h-3.5 w-3.5" aria-hidden />
-                    <span>{tag.name}</span>
-                    {currentPageCreated ? (
-                      <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">
-                        {labels.selectedFromCurrentPage}
-                      </span>
-                    ) : null}
-                  </Badge>
-                </button>
-              </PopoverAnchor>
-              <PopoverContent align="start" className="w-56 p-2" onMouseLeave={() => setMenuTagId(null)}>
-                <div className="mb-2 px-2 text-xs text-base-content/60">{labels.hoverHint}</div>
-                <div className="space-y-1">
-                  <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => void handleRemove(tag)}>
-                    <Icon icon={currentPageCreated ? 'mdi:delete-outline' : 'mdi:link-variant-off'} className="mr-2 h-4 w-4" aria-hidden />
-                    {currentPageCreated ? labels.deleteAndRemove : labels.remove}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="w-full justify-start"
-                    onClick={() => {
-                      setMenuTagId(null)
-                      openEditDialog(tag)
-                    }}
-                  >
-                    <Icon icon="mdi:pencil-outline" className="mr-2 h-4 w-4" aria-hidden />
-                    {labels.edit}
-                  </Button>
-                </div>
-              </PopoverContent>
-            </Popover>
+            <AccountTagContextChip
+              key={tag.id}
+              name={tag.name}
+              currentPageCreated={currentPageCreated}
+              labels={{
+                selectedFromCurrentPage: labels.selectedFromCurrentPage,
+                remove: labels.remove,
+                deleteAndRemove: labels.deleteAndRemove,
+                edit: labels.edit,
+                hoverHint: labels.hoverHint,
+              }}
+              onRemove={() => handleRemove(tag)}
+              onEdit={() => openEditDialog(tag)}
+            />
           )
         })}
       </div>
