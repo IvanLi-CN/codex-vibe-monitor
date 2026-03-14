@@ -197,7 +197,9 @@ export function UpstreamAccountsTable({
                         {item.displayName}
                       </span>
                       {item.duplicateInfo ? (
-                        <Badge variant="warning">{labels.duplicate}</Badge>
+                        <Badge variant="warning" className="whitespace-nowrap">
+                          {labels.duplicate}
+                        </Badge>
                       ) : null}
                       {!item.enabled ? (
                         <span className="rounded-full bg-base-300/70 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
