@@ -131,6 +131,8 @@ jobs:
           python3 .github/scripts/release_snapshot.py export \
             --target-sha "${TARGET_SHA}" \
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --main-ref "origin/main" \
+            --resolve-publication-tags \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Compute candidate suffix

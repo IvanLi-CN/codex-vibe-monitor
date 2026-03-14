@@ -81,6 +81,12 @@ def parse_args() -> argparse.Namespace:
     export_cmd = subparsers.add_parser("export", help="Export a stored release snapshot into GitHub outputs.")
     export_cmd.add_argument("--target-sha", required=True)
     export_cmd.add_argument("--notes-ref", default=DEFAULT_NOTES_REF)
+    export_cmd.add_argument("--main-ref", default="")
+    export_cmd.add_argument(
+        "--resolve-publication-tags",
+        action="store_true",
+        help="Re-resolve stable manifest tags so superseded releases stop updating latest.",
+    )
     export_cmd.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
 
     return parser.parse_args()
@@ -338,6 +344,37 @@ def compute_base_stable_version(notes_ref: str, target_sha: str) -> StableVersio
     return max(candidates)
 
 
+def commits_after_target(main_ref: str, target_sha: str) -> list[str]:
+    git("merge-base", "--is-ancestor", target_sha, main_ref)
+    commits = git_output("rev-list", "--first-parent", f"{target_sha}..{main_ref}")
+    return [commit for commit in commits.splitlines() if commit]
+
+
+def has_newer_stable_snapshot(notes_ref: str, main_ref: str, target_sha: str) -> bool:
+    for commit in commits_after_target(main_ref, target_sha):
+        snapshot = read_snapshot(notes_ref, commit)
+        if not snapshot or not snapshot.get("release_enabled"):
+            continue
+        if snapshot.get("release_channel") != "stable":
+            continue
+        return True
+    return False
+
+
+def publication_tags(snapshot: dict[str, Any], *, notes_ref: str, main_ref: str) -> str:
+    if not snapshot.get("release_enabled"):
+        return ""
+
+    image = f"{snapshot['registry']}/{snapshot['image_name_lower']}"
+    release_tag = str(snapshot["release_tag"])
+    tags = [f"{image}:{release_tag}"]
+    if snapshot.get("release_channel") == "stable" and not has_newer_stable_snapshot(
+        notes_ref, main_ref, str(snapshot["target_sha"])
+    ):
+        tags.append(f"{image}:latest")
+    return ",".join(tags)
+
+
 def build_snapshot(*, target_sha: str, repository: str, token: str, notes_ref: str, registry: str, api_root: str) -> dict[str, Any]:
     pr = load_pr_for_commit(api_root, repository, token, target_sha)
     release_labels = labels_at_merge_time(api_root, repository, token, pr)
@@ -350,6 +387,7 @@ def build_snapshot(*, target_sha: str, repository: str, token: str, notes_ref: s
         "target_sha": target_sha,
         "pr_number": pr.get("number"),
         "pr_title": pr.get("title") or "",
+        "registry": registry,
         "type_label": type_label,
         "channel_label": channel_label,
         "release_bump": release_bump,
@@ -455,6 +493,8 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
         )
         write_json(output_path, snapshot)
 
+        # The notes ref acts like a CAS register: if another allocator wins first,
+        # our stale push is rejected and we recompute against the newer remote tip.
         git("notes", f"--ref={args.notes_ref}", "add", "-f", "-F", str(output_path), target_sha)
         push = git("push", "origin", args.notes_ref, check=False)
         if push.returncode == 0:
@@ -473,6 +513,11 @@ def export_existing_snapshot(args: argparse.Namespace) -> int:
     snapshot = read_snapshot(args.notes_ref, target_sha)
     if snapshot is None:
         raise SnapshotError(f"Missing immutable release snapshot for {target_sha}")
+    if args.resolve_publication_tags:
+        if not args.main_ref:
+            raise SnapshotError("--main-ref is required when --resolve-publication-tags is set")
+        snapshot = dict(snapshot)
+        snapshot["tags_csv"] = publication_tags(snapshot, notes_ref=args.notes_ref, main_ref=args.main_ref)
     export_snapshot(snapshot, args.github_output)
     return 0
 
