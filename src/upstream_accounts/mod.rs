@@ -5466,6 +5466,7 @@ mod tests {
                 group_name: Some("prod".to_string()),
                 is_mother: false,
                 note: Some("Account note".to_string()),
+                tag_ids: vec![],
                 group_note: Some("Shared oauth group note".to_string()),
                 claims: &claims,
                 encrypted_credentials,
