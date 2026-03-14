@@ -107,6 +107,7 @@ const labels = {
   nextReset: 'Reset',
   oauth: 'OAuth',
   apiKey: 'API key',
+  duplicate: 'Duplicate',
   mother: 'Mother',
   status: (value: string) =>
     ({
@@ -153,6 +154,22 @@ export const Default: Story = {}
 export const NeedsAttentionSelected: Story = {
   args: {
     selectedId: 12,
+  },
+}
+
+export const DuplicateIdentity: Story = {
+  args: {
+    items: [
+      {
+        ...items[0],
+        duplicateInfo: {
+          peerAccountIds: [27, 35],
+          reasons: ['sharedChatgptAccountId', 'sharedChatgptUserId'],
+        },
+      },
+      items[1],
+    ],
+    selectedId: 11,
   },
 }
 
