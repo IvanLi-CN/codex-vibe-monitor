@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@iconify/react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../../components/ui/alert'
@@ -258,6 +258,7 @@ export default function UpstreamAccountCreatePage() {
     const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName)
     if (!normalizedGroupName) return
     const normalizedNote = groupNoteEditor.note.trim()
+    const previousDraftNote = resolvePendingGroupNoteForName(normalizedGroupName)
     setGroupNoteError(null)
     if (!groupNoteEditor.existing) {
       setGroupDraftNotes((current) => {
@@ -269,6 +270,9 @@ export default function UpstreamAccountCreatePage() {
         }
         return next
       })
+      if (previousDraftNote !== normalizedNote) {
+        invalidatePendingOauthSessionsForDraftGroup(normalizedGroupName)
+      }
       setGroupNoteEditor((current) => ({ ...current, open: false }))
       return
     }
@@ -300,6 +304,50 @@ export default function UpstreamAccountCreatePage() {
   const updateBatchRow = (rowId: string, updater: (row: BatchOauthRow) => BatchOauthRow) => {
     setBatchRows((current) => current.map((row) => (row.id === rowId ? updater(row) : row)))
   }
+
+  const invalidatePendingOauthSessionsForDraftGroup = useCallback(
+    (groupName: string) => {
+      const normalizedGroupName = normalizeGroupName(groupName)
+      if (!normalizedGroupName) return
+
+      if (session && session.status !== 'completed' && normalizeGroupName(oauthGroupName) === normalizedGroupName) {
+        setSession(null)
+        setSessionHint(t('accountPool.upstreamAccounts.oauth.regenerateRequired'))
+        setOauthCallbackUrl('')
+        setManualCopyOpen(false)
+        setActionError(null)
+      }
+
+      const affectedRowIds = new Set(
+        batchRows
+          .filter(
+            (row) =>
+              row.session
+              && row.session.status !== 'completed'
+              && normalizeGroupName(row.groupName) === normalizedGroupName,
+          )
+          .map((row) => row.id),
+      )
+      if (affectedRowIds.size === 0) return
+
+      setBatchRows((current) =>
+        current.map((row) =>
+          affectedRowIds.has(row.id)
+            ? {
+                ...row,
+                callbackUrl: '',
+                session: null,
+                sessionHint: t('accountPool.upstreamAccounts.batchOauth.regenerateRequired'),
+                actionError: null,
+                busyAction: null,
+              }
+            : row,
+        ),
+      )
+      setBatchManualCopyRowId((current) => (current && affectedRowIds.has(current) ? null : current))
+    },
+    [batchRows, oauthGroupName, session, t],
+  )
 
   const removeBatchRow = (rowId: string) => {
     setBatchRows((current) => {
@@ -785,7 +833,7 @@ export default function UpstreamAccountCreatePage() {
                         aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                         title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                         onClick={() => openGroupNoteEditor(oauthGroupName)}
-                        disabled={!writesEnabled || !normalizeGroupName(oauthGroupName)}
+                        disabled={!writesEnabled || !normalizeGroupName(oauthGroupName) || oauthSessionActive}
                       >
                         <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>

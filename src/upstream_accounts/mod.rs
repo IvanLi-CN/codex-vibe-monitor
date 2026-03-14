@@ -997,14 +997,11 @@ pub(crate) async fn create_oauth_login_session(
             "groupNote can only be used for a new group; use PUT /api/pool/upstream-account-groups/:groupName for existing groups".to_string(),
         ));
     }
-    let store_group_note = if payload.group_note.is_some() {
-        should_persist_group_note_for_new_group(&state.pool, group_name.as_deref())
-            .await
-            .map_err(internal_error_tuple)?
+    let stored_group_note = if payload.group_note.is_some() {
+        group_note
     } else {
-        false
+        None
     };
-    let stored_group_note = if store_group_note { group_note } else { None };
 
     sqlx::query(
         r#"
@@ -1150,13 +1147,6 @@ pub(crate) async fn create_api_key_account(
         ));
     }
     let target_group_name = group_name.clone();
-    let should_persist_group_note = if has_group_note {
-        should_persist_group_note_for_new_group(&state.pool, target_group_name.as_deref())
-            .await
-            .map_err(internal_error_tuple)?
-    } else {
-        false
-    };
     let limit_unit = normalize_limit_unit(payload.local_limit_unit);
     let masked_api_key = mask_api_key(&api_key);
     let now_iso = format_utc_iso(Utc::now());
@@ -1202,7 +1192,7 @@ pub(crate) async fn create_api_key_account(
         tx.as_mut(),
         target_group_name.as_deref(),
         group_note,
-        should_persist_group_note,
+        has_group_note,
     )
     .await
     .map_err(internal_error_tuple)?;
@@ -1285,14 +1275,6 @@ pub(crate) async fn update_upstream_account(
             "groupNote can only be used for a new group; use PUT /api/pool/upstream-account-groups/:groupName for existing groups".to_string(),
         ));
     }
-    let should_persist_group_note = if requested_group_note.is_some() {
-        should_persist_group_note_for_new_group(&state.pool, row.group_name.as_deref())
-            .await
-            .map_err(internal_error_tuple)?
-    } else {
-        false
-    };
-
     let now_iso = format_utc_iso(Utc::now());
     let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
     sqlx::query(
@@ -1331,7 +1313,7 @@ pub(crate) async fn update_upstream_account(
             tx.as_mut(),
             row.group_name.as_deref(),
             group_note,
-            should_persist_group_note,
+            true,
         )
         .await
         .map_err(internal_error_tuple)?;
@@ -2119,8 +2101,7 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
         token_expires_at,
     } = payload;
     let target_group_name = group_name.clone();
-    let should_persist_group_note =
-        should_persist_group_note_for_new_group(pool, target_group_name.as_deref()).await?;
+    let group_note_was_requested = group_note.is_some();
     let now_iso = format_utc_iso(Utc::now());
     let resolved_account_id = if let Some(account_id) = account_id {
         Some(account_id)
@@ -2190,7 +2171,7 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
             tx.as_mut(),
             target_group_name.as_deref(),
             group_note,
-            should_persist_group_note,
+            group_note_was_requested,
         )
         .await?;
         if previous_group_name != target_group_name {
@@ -2238,7 +2219,7 @@ async fn upsert_oauth_account(pool: &Pool<Sqlite>, payload: OauthAccountUpsert<'
             tx.as_mut(),
             target_group_name.as_deref(),
             group_note,
-            should_persist_group_note,
+            group_note_was_requested,
         )
         .await?;
         tx.commit().await?;
@@ -2488,8 +2469,8 @@ async fn group_has_accounts(pool: &Pool<Sqlite>, group_name: &str) -> Result<boo
     group_has_accounts_conn(&mut conn, group_name).await
 }
 
-async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) -> Result<bool> {
-    let count = sqlx::query_scalar::<_, i64>(
+async fn group_account_count_conn(conn: &mut SqliteConnection, group_name: &str) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
         FROM pool_upstream_accounts
@@ -2498,18 +2479,12 @@ async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) 
     )
     .bind(group_name)
     .fetch_one(conn)
-    .await?;
-    Ok(count > 0)
+    .await
+    .map_err(Into::into)
 }
 
-async fn should_persist_group_note_for_new_group(
-    pool: &Pool<Sqlite>,
-    group_name: Option<&str>,
-) -> Result<bool> {
-    let Some(group_name) = group_name else {
-        return Ok(false);
-    };
-    Ok(!group_has_accounts(pool, group_name).await?)
+async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) -> Result<bool> {
+    Ok(group_account_count_conn(conn, group_name).await? > 0)
 }
 
 async fn save_group_note_record(
@@ -2560,15 +2535,15 @@ async fn save_group_note_after_account_write(
     conn: &mut SqliteConnection,
     group_name: Option<&str>,
     note: Option<String>,
-    should_persist: bool,
+    note_was_requested: bool,
 ) -> Result<()> {
-    if !should_persist {
+    if !note_was_requested {
         return Ok(());
     }
     let Some(group_name) = group_name else {
         return Ok(());
     };
-    if !group_has_accounts_conn(conn, group_name).await? {
+    if group_account_count_conn(conn, group_name).await? != 1 {
         return Ok(());
     }
     save_group_note_record_conn(conn, group_name, note).await
@@ -4486,6 +4461,32 @@ mod tests {
         )
         .await
         .expect("skip stale group note overwrite");
+
+        assert_eq!(
+            load_test_group_note(&pool, "prod").await.as_deref(),
+            Some("Fresh shared note")
+        );
+    }
+
+    #[tokio::test]
+    async fn save_group_note_after_account_write_skips_stale_note_once_group_has_multiple_accounts()
+    {
+        let pool = group_note_test_pool().await;
+        insert_test_account(&pool, "Prod One", Some("prod")).await;
+        insert_test_account(&pool, "Prod Two", Some("prod")).await;
+        save_group_note_record(&pool, "prod", Some("Fresh shared note".to_string()))
+            .await
+            .expect("seed group note");
+        let mut conn = pool.acquire().await.expect("acquire pool connection");
+
+        save_group_note_after_account_write(
+            &mut conn,
+            Some("prod"),
+            Some("Stale shared note".to_string()),
+            true,
+        )
+        .await
+        .expect("skip stale shared note overwrite");
 
         assert_eq!(
             load_test_group_note(&pool, "prod").await.as_deref(),

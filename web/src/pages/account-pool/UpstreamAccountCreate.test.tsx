@@ -462,4 +462,58 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
       note: undefined,
     })
   })
+
+  it('invalidates pending batch oauth sessions when a draft group note changes', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'new-team')
+    await flushAsync()
+
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
+
+    clickButton(/Edit group note/i)
+    await flushAsync()
+    setInputValue('textarea', 'Updated draft shared note')
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true)
+    expect(host?.textContent).toContain('Metadata changed. Generate a fresh OAuth URL for this row before completing login.')
+  })
+})
+
+describe('UpstreamAccountCreatePage single oauth', () => {
+  it('locks the single oauth group note button once a pending session exists', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=oauth')
+
+    setComboboxValue('input[name="oauthGroupName"]', 'solo-team')
+    await flushAsync()
+
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
+    expect(findButton(/Edit group note/i)?.disabled).toBe(true)
+  })
 })
