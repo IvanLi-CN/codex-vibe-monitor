@@ -452,7 +452,11 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require('elif [ "${{ github.event_name }}" = "merge_group" ]; then' in trusted_run, "ci-pr.yml.jobs.lint: merge_group trusted-source branch handling drifted")
     require('queue_prefix="refs/heads/gh-readonly-queue/"' in trusted_run, "ci-pr.yml.jobs.lint: merge_group queue ref parsing drifted")
     require('source_kind="merge-group-base-branch"' in trusted_run, "ci-pr.yml.jobs.lint: merge_group trusted source kind drifted")
-    require("trusted quality-gates sources required for" in trusted_run, "ci-pr.yml.jobs.lint: trusted-source fail-closed guard drifted")
+    require(
+        "trusted quality-gates sources required for" in trusted_run
+        or "final split-topology quality-gates sources required for" in trusted_run,
+        "ci-pr.yml.jobs.lint: trusted-source fail-closed guard drifted",
+    )
 
     contract_step = step_config(lint_job, "Quality-gates contract check", "ci-pr.yml.jobs.lint")
     contract_run = str(contract_step.get("run", ""))

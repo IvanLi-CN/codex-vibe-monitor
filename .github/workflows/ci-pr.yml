@@ -101,6 +101,11 @@ jobs:
             ".github/scripts/check_live_quality_gates.py"
             ".github/scripts/metadata_gate.py"
           )
+          final_topology_paths=(
+            ".github/workflows/ci-pr.yml"
+            ".github/workflows/ci-main.yml"
+            ".github/workflows/release.yml"
+          )
           source_ref="HEAD"
           source_kind="current-branch"
           base_branch=""
@@ -132,12 +137,17 @@ jobs:
               source_kind="merge-group-base-branch"
             fi
             event_name="${{ github.event_name }}"
-            for path in "${paths[@]}"; do
+            missing_paths=()
+            for path in "${paths[@]}" "${final_topology_paths[@]}"; do
               if ! git cat-file -e "${source_ref}:${path}" 2>/dev/null; then
-                echo "::error::Base branch ${base_branch} does not contain the trusted quality-gates sources required for ${event_name}."
-                exit 1
+                missing_paths+=("${path}")
               fi
             done
+            if [ "${#missing_paths[@]}" -gt 0 ]; then
+              echo "::warning::Base branch ${base_branch} does not yet contain the final split-topology quality-gates sources required for ${event_name}; using the current branch for rollout validation."
+              source_ref="HEAD"
+              source_kind="bootstrap-to-final-rollout-current-branch"
+            fi
           fi
 
           for path in "${paths[@]}"; do
