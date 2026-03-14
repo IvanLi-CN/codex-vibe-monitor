@@ -19,6 +19,9 @@ const navigateMock = vi.hoisted(() => vi.fn());
 const hookMocks = vi.hoisted(() => ({
   useUpstreamAccounts: vi.fn(),
 }));
+const apiMocks = vi.hoisted(() => ({
+  fetchUpstreamAccountDetail: vi.fn(),
+}));
 
 vi.mock("react-router-dom", async () => {
   const actual =
@@ -34,6 +37,16 @@ vi.mock("react-router-dom", async () => {
 vi.mock("../../hooks/useUpstreamAccounts", () => ({
   useUpstreamAccounts: hookMocks.useUpstreamAccounts,
 }));
+
+vi.mock("../../lib/api", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/api")>(
+    "../../lib/api",
+  );
+  return {
+    ...actual,
+    fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
+  };
+});
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -90,6 +103,7 @@ afterEach(() => {
   host = null;
   root = null;
   navigateMock.mockReset();
+  apiMocks.fetchUpstreamAccountDetail.mockReset();
   vi.clearAllMocks();
 });
 
@@ -267,6 +281,17 @@ function setComboboxValue(nameSelector: string, value: string) {
 function mockUpstreamAccounts(
   overrides: Partial<ReturnType<typeof hookMocks.useUpstreamAccounts>> = {},
 ) {
+  apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
+    id: 41,
+    kind: "oauth_codex",
+    provider: "codex",
+    displayName: "Row One",
+    groupName: "prod",
+    status: "active",
+    enabled: true,
+    duplicateInfo: null,
+    history: [],
+  });
   hookMocks.useUpstreamAccounts.mockReturnValue({
     items: [
       {
@@ -801,6 +826,49 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       "Display name must be unique.",
     );
     expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
+  });
+
+  it("recovers from a lost completion response when the session is already completed", async () => {
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "completed",
+      authUrl: null,
+      redirectUri: null,
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: 41,
+      error: null,
+    });
+    const completeOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("network failed"));
+    mockUpstreamAccounts({ completeOauthLogin, getLoginSession });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'textarea[name="oauthCallbackUrl"]',
+      "http://localhost:1455/oauth/callback?code=test",
+    );
+    await flushAsync();
+    clickButton(/Complete OAuth login/i);
+    await flushAsync();
+
+    expect(getLoginSession).toHaveBeenCalledWith("login-1");
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledWith(41);
+    expect(navigateMock).toHaveBeenCalledWith(
+      "/account-pool/upstream-accounts",
+      {
+        state: {
+          selectedAccountId: 41,
+          openDetail: true,
+          duplicateWarning: null,
+        },
+      },
+    );
+    expect(document.body.textContent).not.toContain("network failed");
   });
 
   it("shows duplicate warnings inline after completing a batch oauth row", async () => {

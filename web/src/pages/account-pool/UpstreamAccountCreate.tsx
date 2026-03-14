@@ -1003,6 +1003,38 @@ export default function UpstreamAccountCreatePage() {
         latestSession = null
       }
       setSession((current) => latestSession ?? current)
+      if (latestSession?.status === 'completed' && latestSession.accountId) {
+        setActionError(null)
+        try {
+          const detail = await fetchUpstreamAccountDetail(latestSession.accountId)
+          notifyMotherChange(detail)
+          if (detail.duplicateInfo) {
+            setOauthDuplicateWarning({
+              accountId: detail.id,
+              displayName: detail.displayName,
+              peerAccountIds: detail.duplicateInfo.peerAccountIds,
+              reasons: detail.duplicateInfo.reasons,
+            })
+          } else {
+            navigate('/account-pool/upstream-accounts', {
+              state: {
+                selectedAccountId: detail.id,
+                openDetail: true,
+                duplicateWarning: null,
+              },
+            })
+          }
+        } catch {
+          navigate('/account-pool/upstream-accounts', {
+            state: {
+              selectedAccountId: latestSession.accountId,
+              openDetail: true,
+              duplicateWarning: null,
+            },
+          })
+        }
+        return
+      }
       if (latestSession?.status === 'failed' || latestSession?.status === 'expired') {
         setOauthCallbackUrl('')
         setSessionHint(latestSession.error ?? message)
