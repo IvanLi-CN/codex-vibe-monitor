@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Icon } from '@iconify/react'
+import { AppIcon, type AppIconName } from '../../components/AppIcon'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
@@ -121,7 +121,7 @@ function kindVariant(kind: string): 'secondary' | 'success' {
 }
 
 
-function poolCardMetric(value: number, label: string, icon: string, accent: string) {
+function poolCardMetric(value: number, label: string, icon: AppIconName, accent: string) {
   return { value, label, icon, accent }
 }
 
@@ -209,7 +209,7 @@ function AccountDetailDrawer({
                 </h2>
               </div>
               <Button ref={closeButtonRef} type="button" variant="ghost" size="icon" onClick={onClose}>
-                <Icon icon="mdi:close" className="h-5 w-5" aria-hidden />
+                <AppIcon name="close" className="h-5 w-5" aria-hidden />
                 <span className="sr-only">{closeLabel}</span>
               </Button>
             </div>
@@ -289,7 +289,7 @@ function RoutingSettingsDialog({
                 {apiKeyLabel}
               </label>
               <Button type="button" variant="outline" size="sm" onClick={onGenerate} disabled={busy || !writesEnabled}>
-                <Icon icon="mdi:auto-fix" className="mr-2 h-4 w-4" aria-hidden />
+                <AppIcon name="auto-fix" className="mr-2 h-4 w-4" aria-hidden />
                 {generateLabel}
               </Button>
             </div>
@@ -316,7 +316,7 @@ function RoutingSettingsDialog({
             {cancelLabel}
           </Button>
           <Button type="button" onClick={onSave} disabled={busy || !writesEnabled}>
-            {busy ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:key-chain-variant" className="mr-2 h-4 w-4" aria-hidden />}
+            {busy ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="key-chain-variant" className="mr-2 h-4 w-4" aria-hidden />}
             {saveLabel}
           </Button>
         </DialogFooter>
@@ -413,13 +413,13 @@ export default function UpstreamAccountsPage() {
     const needsReauthCount = items.filter((item) => item.status === 'needs_reauth').length
     const syncingCount = items.filter((item) => item.status === 'syncing').length
     return [
-      poolCardMetric(items.length, t('accountPool.upstreamAccounts.metrics.total'), 'mdi:database-outline', 'text-primary'),
-      poolCardMetric(oauthCount, t('accountPool.upstreamAccounts.metrics.oauth'), 'mdi:badge-account-horizontal-outline', 'text-success'),
-      poolCardMetric(apiKeyCount, t('accountPool.upstreamAccounts.metrics.apiKey'), 'mdi:key-outline', 'text-info'),
+      poolCardMetric(items.length, t('accountPool.upstreamAccounts.metrics.total'), 'database-outline', 'text-primary'),
+      poolCardMetric(oauthCount, t('accountPool.upstreamAccounts.metrics.oauth'), 'badge-account-horizontal-outline', 'text-success'),
+      poolCardMetric(apiKeyCount, t('accountPool.upstreamAccounts.metrics.apiKey'), 'key-outline', 'text-info'),
       poolCardMetric(
         needsReauthCount + syncingCount,
         t('accountPool.upstreamAccounts.metrics.attention'),
-        'mdi:alert-decagram-outline',
+        'alert-decagram-outline',
         'text-warning',
       ),
     ]
@@ -652,19 +652,19 @@ export default function UpstreamAccountsPage() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button type="button" variant="secondary" onClick={() => void refresh()} disabled={busyAction != null}>
-                  <Icon icon="mdi:refresh" className="mr-2 h-4 w-4" aria-hidden />
+                  <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
                   {t('accountPool.upstreamAccounts.actions.refresh')}
                 </Button>
                 {writesEnabled ? (
                   <Button asChild>
                     <Link to="/account-pool/upstream-accounts/new">
-                      <Icon icon="mdi:plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
+                      <AppIcon name="plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
                       {t('accountPool.upstreamAccounts.actions.addAccount')}
                     </Link>
                   </Button>
                 ) : (
                   <Button type="button" disabled>
-                    <Icon icon="mdi:plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
+                    <AppIcon name="plus-circle-outline" className="mr-2 h-4 w-4" aria-hidden />
                     {t('accountPool.upstreamAccounts.actions.addAccount')}
                   </Button>
                 )}
@@ -673,7 +673,7 @@ export default function UpstreamAccountsPage() {
 
             {!writesEnabled ? (
               <Alert variant="warning">
-                <Icon icon="mdi:shield-key-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <AppIcon name="shield-key-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                 <div>
                   <p className="font-medium">{t('accountPool.upstreamAccounts.writesDisabledTitle')}</p>
                   <p className="mt-1 text-sm text-warning/90">{t('accountPool.upstreamAccounts.writesDisabledBody')}</p>
@@ -683,7 +683,7 @@ export default function UpstreamAccountsPage() {
 
             {actionError ? (
               <Alert variant="error">
-                <Icon icon="mdi:alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                 <div>{actionError}</div>
               </Alert>
             ) : null}
@@ -693,7 +693,7 @@ export default function UpstreamAccountsPage() {
                 <Card key={metric.label} className="border-base-300/80 bg-base-100/72">
                   <CardContent className="flex items-center gap-4 p-5">
                     <div className={cn('flex h-12 w-12 items-center justify-center rounded-2xl bg-base-200/70', metric.accent)}>
-                      <Icon icon={metric.icon} className="h-6 w-6" aria-hidden />
+                      <AppIcon name={metric.icon} className="h-6 w-6" aria-hidden />
                     </div>
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-base-content/55">{metric.label}</p>
@@ -728,7 +728,7 @@ export default function UpstreamAccountsPage() {
                     onClick={() => setIsRoutingDialogOpen(true)}
                     disabled={!writesEnabled}
                   >
-                    <Icon icon="mdi:pencil-outline" className="h-4 w-4" aria-hidden />
+                    <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
                     <span className="sr-only">{t('accountPool.upstreamAccounts.routing.edit')}</span>
                   </Button>
                 </div>
@@ -761,7 +761,7 @@ export default function UpstreamAccountsPage() {
                 </label>
                 {selected && selectedVisible && !isDetailDrawerOpen ? (
                   <Button type="button" variant="outline" onClick={() => setIsDetailDrawerOpen(true)}>
-                    <Icon icon="mdi:account-details-outline" className="mr-2 h-4 w-4" aria-hidden />
+                    <AppIcon name="account-details-outline" className="mr-2 h-4 w-4" aria-hidden />
                     {t('accountPool.upstreamAccounts.actions.openDetails')}
                   </Button>
                 ) : null}
@@ -823,7 +823,7 @@ export default function UpstreamAccountsPage() {
         {!selected ? (
           <div className="flex min-h-[20rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 text-center">
             <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <Icon icon="mdi:account-details-outline" className="h-7 w-7" aria-hidden />
+              <AppIcon name="account-details-outline" className="h-7 w-7" aria-hidden />
             </div>
             <h3 className="text-lg font-semibold">{t('accountPool.upstreamAccounts.detailEmptyTitle')}</h3>
             <p className="mt-2 max-w-sm text-sm leading-6 text-base-content/65">
@@ -865,17 +865,17 @@ export default function UpstreamAccountsPage() {
                   />
                 </div>
                 <Button type="button" variant="secondary" onClick={() => void handleSync(selected)} disabled={busyAction === 'sync'}>
-                  {busyAction === 'sync' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:refresh-circle" className="mr-2 h-4 w-4" aria-hidden />}
+                  {busyAction === 'sync' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="refresh-circle" className="mr-2 h-4 w-4" aria-hidden />}
                   {t('accountPool.upstreamAccounts.actions.syncNow')}
                 </Button>
                 {selected.kind === 'oauth_codex' ? (
                   <Button type="button" variant="outline" onClick={() => void handleOauthLogin(selected.id)} disabled={busyAction === 'relogin' || !writesEnabled}>
-                    {busyAction === 'relogin' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:login-variant" className="mr-2 h-4 w-4" aria-hidden />}
+                    {busyAction === 'relogin' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />}
                     {t('accountPool.upstreamAccounts.actions.relogin')}
                   </Button>
                 ) : null}
                 <Button type="button" variant="destructive" onClick={() => void handleDelete(selected)} disabled={busyAction === 'delete' || !writesEnabled}>
-                  {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                  {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
                   {t('accountPool.upstreamAccounts.actions.delete')}
                 </Button>
               </div>
@@ -929,7 +929,7 @@ export default function UpstreamAccountsPage() {
                         onClick={() => openGroupNoteEditor(draft.groupName)}
                         disabled={!writesEnabled || !normalizeGroupName(draft.groupName)}
                       >
-                        <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                        <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>
                     </div>
                   </label>
@@ -990,7 +990,7 @@ export default function UpstreamAccountsPage() {
                     ) : null}
                     <div className="md:col-span-2 flex justify-end">
                       <Button type="button" onClick={() => void handleSave(detail)} disabled={busyAction === 'save' || !writesEnabled}>
-                        {busyAction === 'save' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:content-save-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                        {busyAction === 'save' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="content-save-outline" className="mr-2 h-4 w-4" aria-hidden />}
                         {t('accountPool.upstreamAccounts.actions.save')}
                       </Button>
                     </div>
@@ -1102,7 +1102,7 @@ export default function UpstreamAccountsPage() {
 
       {error ? (
         <Alert variant="warning">
-          <Icon icon="mdi:information-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <AppIcon name="information-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <div>{error}</div>
         </Alert>
       ) : null}

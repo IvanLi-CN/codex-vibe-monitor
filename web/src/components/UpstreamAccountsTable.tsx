@@ -1,5 +1,5 @@
 import type { KeyboardEvent } from 'react'
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import { MotherAccountBadge } from './MotherAccountToggle'
 import { Badge } from './ui/badge'
 import type { UpstreamAccountSummary } from '../lib/api'
@@ -105,7 +105,7 @@ export function UpstreamAccountsTable({
     return (
       <div className="flex min-h-[16rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 py-10 text-center">
         <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-          <Icon icon="mdi:server-network-outline" className="h-7 w-7" aria-hidden />
+          <AppIcon name="server-network-outline" className="h-7 w-7" aria-hidden />
         </div>
         <h3 className="text-lg font-semibold text-base-content">{emptyTitle}</h3>
         <p className="mt-2 max-w-sm text-sm leading-6 text-base-content/65">{emptyDescription}</p>
@@ -215,8 +215,8 @@ export function UpstreamAccountsTable({
                     />
                   </td>
                   <td className="px-4 py-4 text-right">
-                    <Icon
-                      icon={selected ? 'mdi:chevron-right-circle' : 'mdi:chevron-right'}
+                    <AppIcon
+                      name={selected ? 'chevron-right-circle' : 'chevron-right'}
                       className={cn('h-5 w-5', selected ? 'text-primary' : 'text-base-content/35')}
                       aria-hidden
                     />

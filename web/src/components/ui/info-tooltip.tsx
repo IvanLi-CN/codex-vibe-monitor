@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { AppIcon } from '../AppIcon'
 import { useEffect, useId, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
 
@@ -95,7 +95,7 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
         }}
       >
         <span className="inline-flex h-[18px] w-[18px] items-center justify-center text-[inherit]" aria-hidden>
-          <Icon icon="mdi:help-circle-outline" className="h-full w-full" />
+          <AppIcon name="help-circle-outline" className="h-full w-full" />
         </span>
       </button>
       <span

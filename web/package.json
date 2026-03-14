@@ -15,6 +15,7 @@
     "build-storybook": "bunx --bun storybook build"
   },
   "dependencies": {
+    "@iconify-icons/mdi": "^1.2.48",
     "@iconify/react": "^6.0.2",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-popover": "^1.1.15",

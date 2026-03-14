@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import type { ApiInvocation, InvocationFocus } from '../lib/api'
 import { resolveInvocationDisplayStatus } from '../lib/invocationStatus'
 import { useTranslation } from '../i18n'
@@ -284,7 +284,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
                   aria-expanded={isExpanded}
                   aria-label={isExpanded ? t('records.table.hideDetails') : t('records.table.showDetails')}
                 >
-                  <Icon icon={isExpanded ? 'mdi:chevron-down' : 'mdi:chevron-right'} className="h-5 w-5" aria-hidden />
+                  <AppIcon name={isExpanded ? 'chevron-down' : 'chevron-right'} className="h-5 w-5" aria-hidden />
                 </button>
               </div>
               <div className="mt-3 text-sm font-medium">{formatText(record.model)}</div>
@@ -344,7 +344,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
                         aria-expanded={isExpanded}
                         aria-label={isExpanded ? t('records.table.hideDetails') : t('records.table.showDetails')}
                       >
-                        <Icon icon={isExpanded ? 'mdi:chevron-down' : 'mdi:chevron-right'} className="h-4 w-4" aria-hidden />
+                        <AppIcon name={isExpanded ? 'chevron-down' : 'chevron-right'} className="h-4 w-4" aria-hidden />
                       </button>
                     </td>
                   </tr>

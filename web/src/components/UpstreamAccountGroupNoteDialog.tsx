@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import { Button } from './ui/button'
 import {
   Dialog,
@@ -75,7 +75,7 @@ export function UpstreamAccountGroupNoteDialog({
         <div className="grid gap-4 px-6 py-5">
           {error ? (
             <div className="flex items-start gap-3 rounded-2xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
-              <Icon icon="mdi:alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <div>{error}</div>
             </div>
           ) : null}
@@ -96,7 +96,7 @@ export function UpstreamAccountGroupNoteDialog({
             {cancelLabel}
           </Button>
           <Button type="button" onClick={onSave} disabled={busy}>
-            {busy ? <Icon icon="mdi:loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
+            {busy ? <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
             {saveLabel}
           </Button>
         </DialogFooter>

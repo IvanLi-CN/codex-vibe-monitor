@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import type { Formatter, NameType, ValueType } from 'recharts/types/component/DefaultTooltipContent'
 import { Badge } from './ui/badge'
@@ -77,7 +77,7 @@ export function UpstreamAccountUsageCard({
             <p className="text-base font-semibold text-base-content">{window?.usedText ?? emptyLabel}</p>
             <p>{window?.limitText ?? emptyLabel}</p>
             <p className="inline-flex items-center gap-1">
-              <Icon icon="mdi:timer-refresh-outline" className="h-4 w-4 text-base-content/50" aria-hidden />
+              <AppIcon name="timer-refresh-outline" className="h-4 w-4 text-base-content/50" aria-hidden />
               <span>{resetLabel}</span>
             </p>
           </div>

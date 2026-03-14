@@ -8,6 +8,7 @@
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                                                          |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
+| k7kpk | 前端运行时图标内置打包 | 部分完成（3/4） | `k7kpk-bundle-icons-locally/SPEC.md` | 2026-03-14 | fast-track / branch pushed / PR blocked by GitHub MCP handshake failure |
 | thyxm | 上游账号分组共享备注                                                          | 已实现          | `thyxm-upstream-account-group-notes/SPEC.md`             | 2026-03-14 | 增量 spec / shared group notes / local validation + browser smoke complete                     |
 | 9r45m | PR CI 关键路径提速                                                            | 已完成          | `9r45m-ci-pr-critical-path-optimization/SPEC.md`         | 2026-03-13 | fast-track / PR CI critical path / quality-gates preserved                                     |
 | jg7a5 | raw 负载冷压缩与磁盘全文搜索                                                  | 进行中          | `jg7a5-raw-payload-cold-compression-search/SPEC.md`      | 2026-03-13 | fast-track / PR #119 / review fixes landed / Rust validation green / Docker smoke pending      |
