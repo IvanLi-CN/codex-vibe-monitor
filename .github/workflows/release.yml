@@ -33,7 +33,7 @@ jobs:
   release-meta:
     name: Release Meta (intent + version + tags)
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt == 1) }}
     permissions:
       contents: read
       pull-requests: read
@@ -167,6 +167,39 @@ jobs:
             core.setOutput('release_bump', typeLabel.split(':', 2)[1])
             core.setOutput('release_channel', channelLabel.split(':', 2)[1])
 
+      - name: Validate manual backfill target passed CI Main
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const sha = process.env.TARGET_SHA
+            if (!sha) {
+              core.setFailed('Missing TARGET_SHA')
+              return
+            }
+
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: 'ci-main.yml',
+              branch: 'main',
+              event: 'push',
+              head_sha: sha,
+              status: 'completed',
+              per_page: 100,
+            })
+
+            const passed = (runs.data.workflow_runs || []).some(run => run.head_sha === sha && run.conclusion === 'success')
+            if (!passed) {
+              core.setFailed(`Manual backfill requires a successful CI Main run for ${sha}`)
+              return
+            }
+
+            core.notice(`Verified successful CI Main history for ${sha}`)
+
       - name: Compute lowercase image name
         if: steps.intent.outputs.release_enabled == 'true'
         id: image-name
@@ -190,6 +223,7 @@ jobs:
         if: steps.intent.outputs.release_enabled == 'true'
         shell: bash
         env:
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
           RELEASE_BUMP: ${{ steps.intent.outputs.release_bump }}
           RELEASE_CHANNEL: ${{ steps.intent.outputs.release_channel }}
         run: ./.github/scripts/compute-version.sh

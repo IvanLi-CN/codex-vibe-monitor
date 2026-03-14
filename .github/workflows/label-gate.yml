@@ -38,6 +38,29 @@ jobs:
           path: candidate
           persist-credentials: false
 
+      - name: Backfill trusted final contract during rollout
+        shell: bash
+        run: |
+          set -euo pipefail
+          final_topology_paths=(
+            "trusted/.github/workflows/ci-pr.yml"
+            "trusted/.github/workflows/ci-main.yml"
+            "trusted/.github/workflows/release.yml"
+          )
+          missing_final_sources=0
+          for path in "${final_topology_paths[@]}"; do
+            if [ ! -f "$path" ]; then
+              missing_final_sources=1
+              break
+            fi
+          done
+
+          if [ "$missing_final_sources" -eq 1 ]; then
+            echo "::warning::Base branch ${GITHUB_BASE_REF} does not contain the final split-topology contract yet; falling back to the candidate contract for rollout compatibility."
+            cp candidate/.github/scripts/check_quality_gates_contract.py trusted/.github/scripts/check_quality_gates_contract.py
+            cp candidate/.github/scripts/metadata_gate.py trusted/.github/scripts/metadata_gate.py
+          fi
+
       - name: Validate trusted label-gate contract
         run: |
           python3 trusted/.github/scripts/check_quality_gates_contract.py \

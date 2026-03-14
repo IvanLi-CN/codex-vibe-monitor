@@ -490,7 +490,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     assert_event_branches(push_config, {"main"}, "ci-main.yml.on.push")
 
     concurrency = require_mapping(workflow.get("concurrency"), "ci-main.yml.concurrency")
-    require(concurrency.get("group") == "ci-main-${{ github.ref }}", "ci-main.yml.concurrency.group drifted")
+    require(concurrency.get("group") == "ci-main-${{ github.sha }}", "ci-main.yml.concurrency.group drifted")
     require(concurrency.get("cancel-in-progress") is False, "ci-main.yml.concurrency.cancel-in-progress must stay false")
 
     permissions = require_mapping(workflow.get("permissions"), "ci-main.yml.permissions")
@@ -647,7 +647,7 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     release_meta = named_job_config(workflow, "release-meta", expected_jobs, "release.yml")
     require_exact_if(
         release_meta,
-        "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}",
+        "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt == 1) }}",
         "release.yml.jobs.release-meta",
     )
     outputs = require_mapping(release_meta.get("outputs"), "release.yml.jobs.release-meta.outputs")
@@ -661,6 +661,10 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     intent_step = step_config(release_meta, "Resolve release intent (PR labels)", "release.yml.jobs.release-meta")
     intent_env = require_mapping(intent_step.get("env"), "release.yml.jobs.release-meta.steps['Resolve release intent (PR labels)'].env")
     require(intent_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}", "release.yml.jobs.release-meta: release intent must consume target_sha")
+    backfill_step = step_config(release_meta, "Validate manual backfill target passed CI Main", "release.yml.jobs.release-meta")
+    require(backfill_step.get("if") == "github.event_name == 'workflow_dispatch'", "release.yml.jobs.release-meta: manual backfill validation gate drifted")
+    backfill_env = require_mapping(backfill_step.get("env"), "release.yml.jobs.release-meta.steps['Validate manual backfill target passed CI Main'].env")
+    require(backfill_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual backfill validation must consume target_sha")
 
     docker_amd = named_job_config(workflow, "docker-amd64", expected_jobs, "release.yml")
     require(docker_amd.get("needs") == ["release-meta"], "release.yml.jobs.docker-amd64.needs drifted")
@@ -679,6 +683,9 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     tag_step = step_config(publish, "Create and push git tag", "release.yml.jobs.release-publish")
     tag_run = str(tag_step.get("run", ""))
     require('sha="${TARGET_SHA}"' in tag_run, "release.yml.jobs.release-publish tag step must use target_sha")
+    compute_step = step_config(release_meta, "Compute effective version", "release.yml.jobs.release-meta")
+    compute_env = require_mapping(compute_step.get("env"), "release.yml.jobs.release-meta.steps['Compute effective version'].env")
+    require(compute_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}", "release.yml.jobs.release-meta: compute-version must consume target_sha")
 
 
 def validate_merge_group_helpers(module: Any) -> None:

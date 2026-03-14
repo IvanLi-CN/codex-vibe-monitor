@@ -55,8 +55,8 @@ Use non-blocking runtime management for long-lived services, but do not require 
 ## CI / CD (Release via PR labels)
 
 - PR checks run in `.github/workflows/ci-pr.yml`; old PR runs are preemptible so stale commits do not keep consuming runners.
-- Mainline verification runs in `.github/workflows/ci-main.yml`; running `main` jobs are non-preemptive and are not cancelled by newer pushes.
-- Releases run in `.github/workflows/release.yml` after `CI Main` succeeds on `main`, and can be manually backfilled with `workflow_dispatch(commit_sha)` when GitHub concurrency replaces an older pending release run.
+- Mainline verification runs in `.github/workflows/ci-main.yml`; each merged commit gets its own non-preemptive `main` run, so newer pushes do not cancel or replace older pending `CI Main` work.
+- Releases run in `.github/workflows/release.yml` after the first successful `CI Main` attempt on `main`, and can be manually backfilled with `workflow_dispatch(commit_sha)` when GitHub concurrency replaces an older pending release run; manual backfill is limited to commits that already passed `CI Main`.
 - Every PR must set exactly **one** release type label and exactly **one** release channel label
   (enforced by `.github/workflows/label-gate.yml`).
 - Release type (`type:*`):

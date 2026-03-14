@@ -9,7 +9,7 @@
 ## 背景 / 问题陈述
 
 - 当前仓库把 PR 检查、`main` 校验与 release 发布都耦合在 `.github/workflows/ci.yml`，只能做到“运行中的 `main` run 不被新 push 取消”，不能从工作流拓扑上明确区分 PR 与发布职责。
-- style playbook 的 `PR label release` 约定要求：PR 检查可抢占、`main` CI 与 release run 非抢占、并为 burst merges 下可能丢失的 pending release 提供明确的 backfill 路径。
+- style playbook 的 `PR label release` 约定要求：PR 检查可抢占、`main` CI 与 release run 非抢占、并为 burst merges 下可能丢失的 pending release 提供明确的 backfill 路径；同时不能让 `CI Main` 自己因为共享 pending 队列静默漏掉 merged commit。
 - 仓库内置 `quality-gates` 当前仍处于 `bootstrap` profile；若直接拆 workflow 而不升级 contract/fixtures/self-tests，仓库自己的 CI 契约会先漂移失效。
 
 ## 目标 / 非目标
@@ -18,7 +18,7 @@
 
 - 拆分为 `CI PR`、`CI Main`、`Release` 三段式链路，明确并发语义与职责边界。
 - 保留现有 PR label 驱动的 release intent、版本/tag 规则、多架构 smoke 与发布幂等行为。
-- 为 release 增加 `workflow_dispatch(commit_sha)` 手动补发入口，作为 pending run 被替换时的人工 backfill 通道。
+- 为 release 增加 `workflow_dispatch(commit_sha)` 手动补发入口，作为 pending release run 被替换或需要显式重放历史 commit 时的人工 backfill 通道；入口只接受已经成功通过 `CI Main` 的 `main` commit。
 - 将 `quality-gates`、trusted metadata gate、contract fixtures/self-tests 升级到 `final` profile。
 
 ### Non-goals
@@ -47,8 +47,8 @@
 
 - PR 侧 required checks 继续保持 `Validate PR labels`、`Lint & Format Check`、`Backend Tests`、`Build Artifacts`、`Review Policy Gate`。
 - `CI PR` 对同一 PR 必须保持可抢占；`CI Main` 与 `Release` 对运行中的 main/release run 必须保持非抢占。
-- `Release` 必须同时支持 `workflow_run(CI Main success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 release-intent / version / publish 逻辑。
-- `workflow_dispatch` 只接受 `commit_sha`，且对非法/不可解析输入 fail closed。
+- `Release` 必须同时支持 `workflow_run(CI Main first success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 release-intent / version / publish 逻辑。
+- `workflow_dispatch` 只接受 `commit_sha`，且对非法/不可解析输入、未通过 `CI Main` 的目标 SHA 一律 fail closed。
 - `quality-gates` contract、fixtures 与自测必须升级到 `final` profile，并校验新的 workflow 家族。
 
 ### SHOULD
@@ -71,10 +71,10 @@
   Then `CI PR` 运行 required checks，且同一 PR 的旧 run 会被新提交取消。
 - Given `main` 上连续合入多个 PR
   When 新的 `push main` 到来
-  Then 当前运行中的 `CI Main` 不会被取消，且 `Release` 运行中的发布也不会被新 release run 打断。
+  Then 当前运行中的 `CI Main` 不会被取消，较早 merged commit 也不会因为共享 pending 队列而漏掉自己的 `CI Main` run，且 `Release` 运行中的发布不会被新 release run 打断。
 - Given 某个 merged commit 的自动 release pending run 被更晚的 pending run 替换
   When 维护者手动触发 `Release` 并传入该 commit SHA
-  Then workflow 仍能解析唯一关联 PR、读取 labels，并按既有规则完成或跳过发布。
+  Then workflow 仅在该 commit 已成功通过 `CI Main` 时继续执行，随后仍能解析唯一关联 PR、读取 labels，并按既有规则完成或跳过发布。
 - Given 本仓库执行 `python3 .github/scripts/check_quality_gates_contract.py --repo-root "$PWD" --profile final`
   When 校验 split topology
   Then contract、fixtures 与 trusted metadata gate 全部通过。
@@ -111,7 +111,7 @@
 ## 变更记录（Change log）
 
 - 2026-03-14: 创建 strict anti-cancel release topology spec，冻结三段式 workflow + final quality-gates 升级范围。
-- 2026-03-14: 完成 workflow split、final quality-gates contract、release backfill 入口与本地 contract/self-tests；等待快车道 PR 收敛收口 M4。
+- 2026-03-14: 完成 workflow split、final quality-gates contract、release backfill 入口与本地 contract/self-tests；补上 label-gate rollout 兼容、`CI Main` 按 SHA 分组、`Release` 仅接受首次成功 attempt，继续等待快车道 PR 收敛收口 M4。
 
 ## 参考（References）
 

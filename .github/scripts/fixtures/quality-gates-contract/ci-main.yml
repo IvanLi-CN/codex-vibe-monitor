@@ -6,7 +6,7 @@ on:
       - main
 
 concurrency:
-  group: ci-main-${{ github.ref }}
+  group: ci-main-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:
