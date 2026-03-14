@@ -19,8 +19,44 @@ if [ "$hook_name" = "post-checkout" ]; then
   exit 0
 fi
 
-if [ -x "$repo_root/node_modules/.bin/lefthook" ]; then
-  exec "$repo_root/node_modules/.bin/lefthook" run "$hook_name" "$@"
+os_arch="$(uname | tr '[:upper:]' '[:lower:]')"
+cpu_arch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')"
+
+candidate_roots() {
+  printf '%s\n' "$repo_root"
+  git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print substr($0, 10)}'
+}
+
+resolve_lefthook_binary() {
+  seen=''
+  while IFS= read -r candidate_root; do
+    if [ -z "$candidate_root" ] || [ ! -d "$candidate_root" ]; then
+      continue
+    fi
+
+    case ":$seen:" in
+      *":$candidate_root:"*) continue ;;
+      *) seen="$seen:$candidate_root" ;;
+    esac
+
+    native_bin="$candidate_root/node_modules/lefthook-$os_arch-$cpu_arch/bin/lefthook"
+    if [ -x "$native_bin" ]; then
+      printf '%s\n' "$native_bin"
+      return 0
+    fi
+
+    legacy_bin="$candidate_root/node_modules/@evilmartians/lefthook/bin/lefthook-$os_arch-$cpu_arch/lefthook"
+    if [ -x "$legacy_bin" ]; then
+      printf '%s\n' "$legacy_bin"
+      return 0
+    fi
+  done < <(candidate_roots)
+
+  return 1
+}
+
+if lefthook_bin="$(resolve_lefthook_binary)"; then
+  exec "$lefthook_bin" run "$hook_name" "$@"
 fi
 
 if command -v lefthook >/dev/null 2>&1; then
