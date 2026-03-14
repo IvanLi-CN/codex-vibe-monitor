@@ -36,6 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt == 1) }}
     permissions:
+      actions: read
       contents: read
     outputs:
       target_sha: ${{ steps.target.outputs.target_sha }}

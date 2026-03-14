@@ -576,7 +576,22 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
     require(candidate_checkout.get("path") == "candidate", "label-gate.yml: candidate checkout path drifted")
     require(candidate_checkout.get("persist-credentials") is False, "label-gate.yml: candidate checkout must disable persisted credentials")
 
+    rollout_step = step_config(job, "Detect rollout contract support", "label-gate.yml.jobs.validate-pr-labels")
+    rollout_run = str(rollout_step.get("run", ""))
+    require(
+        "supports_final_contract=false" in rollout_run and "supports_final_contract=true" in rollout_run,
+        "label-gate.yml: rollout support detection outputs drifted",
+    )
+    require(
+        "skipping trusted contract validation during rollout" in rollout_run,
+        "label-gate.yml: rollout warning drifted",
+    )
+
     contract_step = step_config(job, "Validate trusted label-gate contract", "label-gate.yml.jobs.validate-pr-labels")
+    require(
+        contract_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
+        "label-gate.yml: trusted contract validation gate drifted",
+    )
     contract_command = require_command(
         contract_step,
         ["python3", "trusted/.github/scripts/check_quality_gates_contract.py"],
@@ -678,6 +693,15 @@ def validate_release(path: Path, contract: ContractModel) -> None:
         release_meta,
         "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt == 1) }}",
         "release.yml.jobs.release-meta",
+    )
+    release_meta_permissions = require_mapping(release_meta.get("permissions"), "release.yml.jobs.release-meta.permissions")
+    require(
+        release_meta_permissions.get("actions") == "read",
+        "release.yml.jobs.release-meta.permissions.actions must stay read",
+    )
+    require(
+        release_meta_permissions.get("contents") == "read",
+        "release.yml.jobs.release-meta.permissions.contents must stay read",
     )
     outputs = require_mapping(release_meta.get("outputs"), "release.yml.jobs.release-meta.outputs")
     require("target_sha" in outputs, "release.yml.jobs.release-meta.outputs.target_sha must be exported")
