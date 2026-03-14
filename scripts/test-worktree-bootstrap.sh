@@ -49,11 +49,26 @@ assert_equal_file() {
   fi
 }
 
+write_fake_lefthook() {
+  repo="$1"
+  os_arch="$(uname | tr '[:upper:]' '[:lower:]')"
+  cpu_arch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')"
+  native_dir="$repo/node_modules/lefthook-$os_arch-$cpu_arch/bin"
+  mkdir -p "$native_dir"
+  cat > "$native_dir/lefthook" <<'EOF_FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > .lefthook-run.log
+EOF_FAKE
+  chmod +x "$native_dir/lefthook"
+}
+
 fixture_repo="$tmp_dir/fixture"
 copy_repo "$repo_root" "$fixture_repo"
 init_repo "$fixture_repo"
 
 printf 'PRIMARY_SECRET=from-primary\n' > "$fixture_repo/.env.local"
+write_fake_lefthook "$fixture_repo"
 
 install_output="$(bash "$fixture_repo/scripts/install-hooks.sh" 2>&1)"
 assert_file_contains <(printf '%s' "$install_output") 'installed shared hooks'
@@ -70,6 +85,13 @@ assert_equal_file "$fixture_repo/.env.local" "$worktree_dir/.env.local"
 printf 'TARGET_SECRET=keep-me\n' > "$worktree_dir/.env.local"
 git -C "$worktree_dir" checkout --detach HEAD >/dev/null 2>&1
 assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
+
+rm -rf "$worktree_dir/node_modules"
+(
+  cd "$worktree_dir"
+  "$hooks_dir/pre-commit" >/dev/null
+)
+assert_file_contains "$worktree_dir/.lefthook-run.log" 'run pre-commit'
 
 bash "$worktree_dir/scripts/worktree-bootstrap.sh" >/dev/null
 assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
