@@ -252,5 +252,43 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
         module.git = real_git
         os.chdir(old_cwd)
 
+with tempfile.TemporaryDirectory(prefix="release-snapshot-cargo-version-") as tmp:
+    repo = Path(tmp)
+    run("init", cwd=repo)
+    run("config", "user.name", "Test User", cwd=repo)
+    run("config", "user.email", "test@example.com", cwd=repo)
+    (repo / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+    (repo / "README.md").write_text("base\n")
+    run("add", "Cargo.toml", "README.md", cwd=repo)
+    run("commit", "-m", "base", cwd=repo)
+    old_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    (repo / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.2.0"\n')
+    (repo / "README.md").write_text("next\n")
+    run("add", "Cargo.toml", "README.md", cwd=repo)
+    run("commit", "-m", "next", cwd=repo)
+
+    original_cwd = Path.cwd()
+    os.chdir(repo)
+    try:
+        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: {
+            "number": 301,
+            "title": "Initial stable release",
+            "merged_at": "2026-03-14T00:00:00Z",
+        }
+        module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
+        snapshot = module.build_snapshot(
+            target_sha=old_sha,
+            repository="IvanLi-CN/codex-vibe-monitor",
+            token="token",
+            notes_ref=module.DEFAULT_NOTES_REF,
+            registry="ghcr.io",
+            api_root="https://api.github.com",
+        )
+        assert snapshot["base_stable_version"] == "0.1.0"
+        assert snapshot["next_stable_version"] == "0.1.1"
+    finally:
+        os.chdir(original_cwd)
+
 print("test-release-snapshot: all checks passed")
 PY

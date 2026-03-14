@@ -312,9 +312,9 @@ def parse_release_labels(labels: list[str]) -> tuple[str, str]:
     return type_label, channel_label
 
 
-def cargo_base_version() -> StableVersion:
-    cargo_toml = Path("Cargo.toml")
-    match = re.search(r'^version\s*=\s*"(\d+\.\d+\.\d+)"', cargo_toml.read_text(), re.MULTILINE)
+def cargo_base_version(target_sha: str) -> StableVersion:
+    cargo_toml = git_output("show", f"{target_sha}:Cargo.toml")
+    match = re.search(r'^version\s*=\s*"(\d+\.\d+\.\d+)"', cargo_toml, re.MULTILINE)
     if not match:
         raise SnapshotError("Failed to detect version from Cargo.toml")
     return StableVersion.parse(match.group(1))
@@ -350,7 +350,7 @@ def compute_base_stable_version(notes_ref: str, target_sha: str) -> StableVersio
     candidates = stable_versions_from_tags(target_sha)
     candidates.extend(stable_versions_from_snapshots(notes_ref, target_sha))
     if not candidates:
-        return cargo_base_version()
+        return cargo_base_version(target_sha)
     return max(candidates)
 
 
