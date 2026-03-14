@@ -599,7 +599,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       }
 
       const detailMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)$/)
-      const groupMatch = path.match(/^\/api\/pool\/upstream-account-groups\/([^/]+)$/)
+      const groupMatch = path.match(/^\/api\/pool\/upstream-account-groups\/(.+)$/)
       if (detailMatch && method === 'GET') {
         const accountId = Number(detailMatch[1])
         const detail = store.details[accountId]

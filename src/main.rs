@@ -3903,7 +3903,7 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
         )
         .route("/api/pool/upstream-accounts", get(list_upstream_accounts))
         .route(
-            "/api/pool/upstream-account-groups/:groupName",
+            "/api/pool/upstream-account-groups/*groupName",
             put(update_upstream_account_group),
         )
         .route(
