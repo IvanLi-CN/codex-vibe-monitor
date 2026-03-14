@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-03-14
 - Last: 2026-03-14
 
@@ -171,10 +171,10 @@ None
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: 建立 spec/index 并冻结 worktree bootstrap 契约。
-- [ ] M2: 完成 shared hook 安装链、bootstrap runner 与 sync manifest。
-- [ ] M3: 完成 linked worktree smoke test、CI 接入与文档更新。
-- [ ] M4: 完成本地验证、PR 与 review-loop 收敛。
+- [x] M1: 建立 spec/index 并冻结 worktree bootstrap 契约。
+- [x] M2: 完成 shared hook 安装链、bootstrap runner 与 sync manifest。
+- [x] M3: 完成 linked worktree smoke test、CI 接入与文档更新。
+- [x] M4: 完成本地验证、PR 与 review-loop 收敛。
 
 ## 方案概述（Approach, high-level）
 
@@ -193,6 +193,7 @@ None
 ## 变更记录（Change log）
 
 - 2026-03-14: 创建 spec，冻结 shared hooks + `post-checkout` + `.env.local` copy-missing-only + fast-track 的实现口径。
+- 2026-03-14: 完成 shared hooks、copy-missing-only sync、linked worktree smoke、PR #129 与 review 修复收敛。
 
 ## 参考（References）
 

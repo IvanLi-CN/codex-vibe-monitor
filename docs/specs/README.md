@@ -7,7 +7,7 @@
 ## Index
 
 | ID    | Title                                                                         | Status                          | Spec                                                     | Last       | Notes                                                                                                                                              |
-| v7se4 | Worktree bootstrap 同步开发环境配置 | 待实现 | `v7se4-worktree-bootstrap/SPEC.md` | 2026-03-14 | fast-track / shared hooks / linked worktree bootstrap |
+| v7se4 | Worktree bootstrap 同步开发环境配置 | 已完成 | `v7se4-worktree-bootstrap/SPEC.md` | 2026-03-14 | fast-track / PR #129 / checks green / review fixes landed |
 | sbacc | Storybook 可访问性门禁 | 已实现，待 PR CI 收敛 | `sbacc-storybook-accessibility/SPEC.md` | 2026-04-26 | PR #123 基于最新 main 复活；Storybook a11y gate 接入现有 Front-end Tests 状态上下文 |
 | wjowd | `main` 主干保护禁止直推与 PR 全检查必过 | 已实现，待 PR / CI / review-proof 收敛 | `wjowd-main-branch-protection/SPEC.md` | 2026-04-22 | fast-track / main direct pushes blocked via GitHub ruleset / PR required checks expanded to 7 gate jobs / live quality-gates now reports bypass actor verification as verified vs unverified instead of assuming empty bypass actors |
 | 5uxj8 | pool `/v1/*` live 路由显式综合打分 follow-up | 已实现，待 PR / CI / review-proof 收敛 | `5uxj8-pool-live-routing-score-followup/SPEC.md` | 2026-04-18 | fast-track / follow-up of `#6b9ra` / live routing explicit score breakdown + node-shunt soft-degrade fallback + assigned-account blocked preservation for InvocationTable + current Dashboard cards |
