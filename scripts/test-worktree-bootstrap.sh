@@ -11,6 +11,8 @@ copy_repo() {
   mkdir -p "$dest"
   rsync -a \
     --exclude '.git' \
+    --exclude '.env.local' \
+    --exclude 'web/.env.local' \
     --exclude 'node_modules' \
     --exclude 'web/node_modules' \
     --exclude 'target' \
@@ -84,6 +86,31 @@ head_sha="$(git -C "$fixture_repo" rev-parse HEAD^)"
 git -C "$worktree_dir" checkout --detach "$legacy_sha" >/dev/null
 git -C "$worktree_dir" checkout --detach "$head_sha" >/dev/null
 assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
+
+preserve_repo="$tmp_dir/preserve-existing-hook"
+copy_repo "$repo_root" "$preserve_repo"
+init_repo "$preserve_repo"
+printf '#!/bin/sh\necho custom-pre-commit\n' > "$preserve_repo/.git/hooks/pre-commit"
+chmod +x "$preserve_repo/.git/hooks/pre-commit"
+preserve_output="$(bash "$preserve_repo/scripts/install-hooks.sh" 2>&1)"
+assert_file_contains <(printf '%s' "$preserve_output") 'pre-commit already exists and is unmanaged'
+assert_file_contains "$preserve_repo/.git/hooks/pre-commit" 'custom-pre-commit'
+assert_file_contains "$preserve_repo/.git/hooks/post-checkout" '# managed by codex-vibe-monitor hooks:install'
+
+path_repo="$tmp_dir/path-resolution"
+copy_repo "$repo_root" "$path_repo"
+init_repo "$path_repo"
+caller_dir="$tmp_dir/outside-caller"
+mkdir -p "$caller_dir"
+printf 'CALLER_SECRET=outside\n' > "$caller_dir/.env.local"
+(
+  cd "$caller_dir"
+  bash "$path_repo/scripts/sync-worktree-resources.sh" >/dev/null
+)
+if [ -e "$path_repo/.env.local" ]; then
+  printf 'sync script must not resolve source_root from the caller working directory\n' >&2
+  exit 1
+fi
 
 custom_repo="$tmp_dir/custom-hooks"
 copy_repo "$repo_root" "$custom_repo"

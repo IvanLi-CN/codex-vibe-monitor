@@ -17,6 +17,10 @@ common_dir="${WORKTREE_BOOTSTRAP_GIT_COMMON_DIR:-$(git -C "$repo_root" rev-parse
 if [ -z "$common_dir" ]; then
   exit 0
 fi
+case "$common_dir" in
+  /*) ;;
+  *) common_dir="$repo_root/$common_dir" ;;
+esac
 
 source_root="${WORKTREE_BOOTSTRAP_SOURCE_ROOT:-$(cd "$(dirname "$common_dir")" && pwd)}"
 manifest_path="${WORKTREE_BOOTSTRAP_MANIFEST:-$repo_root/scripts/worktree-sync.paths}"
