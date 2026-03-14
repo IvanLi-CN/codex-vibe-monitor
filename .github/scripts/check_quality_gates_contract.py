@@ -703,7 +703,7 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     release_meta = named_job_config(workflow, "release-meta", expected_jobs, "release.yml")
     require_exact_if(
         release_meta,
-        "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt == 1) }}",
+        "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}",
         "release.yml.jobs.release-meta",
     )
     release_meta_permissions = require_mapping(release_meta.get("permissions"), "release.yml.jobs.release-meta.permissions")
@@ -742,16 +742,35 @@ def validate_release(path: Path, contract: ContractModel) -> None:
         "RELEASE_SNAPSHOT_NOTES_REF" in snapshot_run,
         "release.yml.jobs.release-meta: snapshot notes-ref plumbing drifted",
     )
+    candidate_step = step_config(release_meta, "Compute candidate suffix", "release.yml.jobs.release-meta")
+    require(
+        candidate_step.get("if") == "steps.snapshot.outputs.release_enabled == 'true'",
+        "release.yml.jobs.release-meta: candidate suffix gate drifted",
+    )
+    candidate_run = str(candidate_step.get("run", ""))
+    require("candidate_suffix=${TARGET_SHA:0:12}" in candidate_run, "release.yml.jobs.release-meta: candidate suffix drifted")
 
     docker_amd = named_job_config(workflow, "docker-amd64", expected_jobs, "release.yml")
     require(docker_amd.get("needs") == ["release-meta"], "release.yml.jobs.docker-amd64.needs drifted")
     require(docker_amd.get("if") == "needs.release-meta.outputs.release_enabled == 'true'", "release.yml.jobs.docker-amd64.if drifted")
     amd_checkout = checkout_step(docker_amd, "Checkout code", "release.yml.jobs.docker-amd64")
     require(amd_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.docker-amd64 checkout ref drifted")
+    amd_smoke_step = step_config(docker_amd, "Smoke test image (linux/amd64)", "release.yml.jobs.docker-amd64")
+    amd_smoke_env = require_mapping(amd_smoke_step.get("env"), "release.yml.jobs.docker-amd64.steps['Smoke test image (linux/amd64)'].env")
+    require(
+        amd_smoke_env.get("SMOKE_TAG") == "${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-amd64",
+        "release.yml.jobs.docker-amd64 smoke tag drifted",
+    )
 
     docker_arm = named_job_config(workflow, "docker-arm64", expected_jobs, "release.yml")
     arm_checkout = checkout_step(docker_arm, "Checkout code", "release.yml.jobs.docker-arm64")
     require(arm_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.docker-arm64 checkout ref drifted")
+    arm_smoke_step = step_config(docker_arm, "Smoke test image (linux/arm64)", "release.yml.jobs.docker-arm64")
+    arm_smoke_env = require_mapping(arm_smoke_step.get("env"), "release.yml.jobs.docker-arm64.steps['Smoke test image (linux/arm64)'].env")
+    require(
+        arm_smoke_env.get("SMOKE_TAG") == "${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64",
+        "release.yml.jobs.docker-arm64 smoke tag drifted",
+    )
 
     publish = named_job_config(workflow, "release-publish", expected_jobs, "release.yml")
     require(publish.get("needs") == ["release-meta", "docker-amd64", "docker-arm64"], "release.yml.jobs.release-publish.needs drifted")

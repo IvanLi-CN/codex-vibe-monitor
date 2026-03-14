@@ -34,7 +34,7 @@ jobs:
   release-meta:
     name: Release Meta (snapshot + tags)
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt == 1) }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
     permissions:
       actions: read
       contents: read
@@ -50,6 +50,7 @@ jobs:
       release_tag: ${{ steps.snapshot.outputs.release_tag }}
       release_prerelease: ${{ steps.snapshot.outputs.release_prerelease }}
       tags_csv: ${{ steps.snapshot.outputs.tags_csv }}
+      candidate_suffix: ${{ steps.candidate.outputs.candidate_suffix }}
     timeout-minutes: 20
     steps:
       - name: Checkout code
@@ -132,6 +133,16 @@ jobs:
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
             --github-output "$GITHUB_OUTPUT"
 
+      - name: Compute candidate suffix
+        if: steps.snapshot.outputs.release_enabled == 'true'
+        id: candidate
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          echo "candidate_suffix=${TARGET_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
       - name: Validate platforms for smoke gate
         if: steps.snapshot.outputs.release_enabled == 'true'
         shell: bash
@@ -180,8 +191,8 @@ jobs:
           push: false
           load: true
           tags: |
-            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-amd64
-            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}-amd64
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
           build-args: |
             APP_EFFECTIVE_VERSION=${{ needs.release-meta.outputs.app_effective_version }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-amd64
@@ -190,8 +201,8 @@ jobs:
       - name: Smoke test image (linux/amd64)
         shell: bash
         env:
-          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-amd64
-          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-amd64-${{ needs.release-meta.outputs.candidate_suffix }}
           SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
 
@@ -202,7 +213,7 @@ jobs:
         run: |
           set -euo pipefail
           image="${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}"
-          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          suffix="${{ needs.release-meta.outputs.candidate_suffix }}"
           candidate_amd64="${image}:candidate-${suffix}-amd64"
           echo "[push] ${candidate_amd64}"
           docker push "${candidate_amd64}"
@@ -241,8 +252,8 @@ jobs:
           push: false
           load: true
           tags: |
-            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-arm64
-            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
           build-args: |
             APP_EFFECTIVE_VERSION=${{ needs.release-meta.outputs.app_effective_version }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64
@@ -251,8 +262,8 @@ jobs:
       - name: Smoke test image (linux/arm64)
         shell: bash
         env:
-          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ github.run_id }}-${{ github.run_attempt }}-arm64
-          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-arm64-${{ needs.release-meta.outputs.candidate_suffix }}
           SMOKE_PLATFORM: ${{ env.PLATFORM_ARM64 }}
           SMOKE_TIMEOUT_SECS: "120"
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
@@ -264,7 +275,7 @@ jobs:
         run: |
           set -euo pipefail
           image="${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}"
-          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          suffix="${{ needs.release-meta.outputs.candidate_suffix }}"
           candidate_arm64="${image}:candidate-${suffix}-arm64"
           echo "[push] ${candidate_arm64}"
           docker push "${candidate_arm64}"
@@ -303,7 +314,7 @@ jobs:
         run: |
           set -euo pipefail
           image="${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}"
-          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          suffix="${{ needs.release-meta.outputs.candidate_suffix }}"
           candidate_amd64="${image}:candidate-${suffix}-amd64"
           candidate_arm64="${image}:candidate-${suffix}-arm64"
 

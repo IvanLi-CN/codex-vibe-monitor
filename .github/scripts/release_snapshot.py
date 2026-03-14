@@ -11,7 +11,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib import error, request
+from datetime import datetime
+from urllib import error, parse, request
 
 SNAPSHOT_SCHEMA_VERSION = 1
 DEFAULT_NOTES_REF = "refs/notes/release-snapshots"
@@ -186,9 +187,10 @@ def normalize_sha(target_sha: str) -> str:
     return target_sha
 
 
-def load_pr_for_commit(api_root: str, repository: str, token: str, target_sha: str) -> dict[str, Any]:
-    owner, repo = repository.split("/", 1)
-    url = f"{api_root}/repos/{owner}/{repo}/commits/{target_sha}/pulls"
+def github_request_json(api_root: str, token: str, path: str, query: dict[str, Any] | None = None) -> Any:
+    url = f"{api_root.rstrip('/')}{path}"
+    if query:
+        url += "?" + parse.urlencode(query)
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json, application/vnd.github.groot-preview+json",
@@ -198,26 +200,81 @@ def load_pr_for_commit(api_root: str, repository: str, token: str, target_sha: s
     req = request.Request(url, headers=headers)
     try:
         with request.urlopen(req) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+            return json.loads(resp.read().decode("utf-8"))
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise SnapshotError(f"GitHub API error while resolving PR for {target_sha}: {exc.code} {body}") from exc
+        raise SnapshotError(f"GitHub API error on {path}: {exc.code} {body}") from exc
     except error.URLError as exc:
-        raise SnapshotError(f"GitHub API request failed while resolving PR for {target_sha}: {exc}") from exc
+        raise SnapshotError(f"GitHub API request failed on {path}: {exc}") from exc
 
+
+def github_paginate(api_root: str, token: str, path: str) -> list[dict[str, Any]]:
+    page = 1
+    items: list[dict[str, Any]] = []
+    while True:
+        payload = github_request_json(api_root, token, path, {"per_page": 100, "page": page})
+        if not isinstance(payload, list):
+            raise SnapshotError(f"GitHub API returned an unexpected payload for {path}")
+        normalized = [item for item in payload if isinstance(item, dict)]
+        items.extend(normalized)
+        if len(payload) < 100:
+            return items
+        page += 1
+
+
+def load_pr_for_commit(api_root: str, repository: str, token: str, target_sha: str) -> dict[str, Any]:
+    owner, repo = repository.split("/", 1)
+    payload = github_request_json(api_root, token, f"/repos/{owner}/{repo}/commits/{target_sha}/pulls")
     if not isinstance(payload, list):
         raise SnapshotError("GitHub API returned an unexpected payload for commit-associated PRs")
     if len(payload) != 1:
         raise SnapshotError(f"Expected exactly 1 PR associated with commit {target_sha}, got {len(payload)}")
-    pr = payload[0]
-    if not isinstance(pr, dict):
+    pr_summary = payload[0]
+    if not isinstance(pr_summary, dict):
         raise SnapshotError("GitHub API returned a malformed PR payload")
+    pr_number = pr_summary.get("number")
+    if not isinstance(pr_number, int):
+        raise SnapshotError("Commit-associated PR payload is missing a numeric PR number")
+    pr = github_request_json(api_root, token, f"/repos/{owner}/{repo}/pulls/{pr_number}")
+    if not isinstance(pr, dict):
+        raise SnapshotError("GitHub API returned a malformed pull request payload")
     return pr
 
 
-def parse_release_labels(pr: dict[str, Any]) -> tuple[str, str]:
-    raw_labels = pr.get("labels") or []
-    labels = [item.get("name") for item in raw_labels if isinstance(item, dict) and isinstance(item.get("name"), str)]
+def labels_at_merge_time(api_root: str, repository: str, token: str, pr: dict[str, Any]) -> list[str]:
+    owner, repo = repository.split("/", 1)
+    pr_number = pr.get("number")
+    merged_at = pr.get("merged_at")
+    if not isinstance(pr_number, int):
+        raise SnapshotError("Pull request payload is missing a numeric PR number")
+    if not isinstance(merged_at, str) or not merged_at:
+        raise SnapshotError(f"Pull request #{pr_number} is missing merged_at; cannot freeze release labels")
+
+    merge_moment = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+    timeline = github_paginate(api_root, token, f"/repos/{owner}/{repo}/issues/{pr_number}/timeline")
+
+    labels: set[str] = set()
+    for event in sorted(timeline, key=lambda item: str(item.get("created_at", ""))):
+        created_at = event.get("created_at")
+        if not isinstance(created_at, str):
+            continue
+        event_moment = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if event_moment > merge_moment:
+            continue
+        event_name = event.get("event")
+        label = event.get("label")
+        label_name = label.get("name") if isinstance(label, dict) else None
+        if not isinstance(label_name, str) or not label_name:
+            continue
+        if event_name == "labeled":
+            labels.add(label_name)
+        elif event_name == "unlabeled":
+            labels.discard(label_name)
+
+    return sorted(labels)
+
+
+def parse_release_labels(labels: list[str]) -> tuple[str, str]:
     type_labels = [label for label in labels if label.startswith("type:")]
     channel_labels = [label for label in labels if label.startswith("channel:")]
 
@@ -283,7 +340,8 @@ def compute_base_stable_version(notes_ref: str, target_sha: str) -> StableVersio
 
 def build_snapshot(*, target_sha: str, repository: str, token: str, notes_ref: str, registry: str, api_root: str) -> dict[str, Any]:
     pr = load_pr_for_commit(api_root, repository, token, target_sha)
-    type_label, channel_label = parse_release_labels(pr)
+    release_labels = labels_at_merge_time(api_root, repository, token, pr)
+    type_label, channel_label = parse_release_labels(release_labels)
     release_bump = type_label.split(":", 1)[1]
     release_channel = channel_label.split(":", 1)[1]
     image_name_lower = repository.lower()

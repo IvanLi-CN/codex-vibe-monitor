@@ -48,7 +48,7 @@
 - PR 侧 required checks 继续保持 `Validate PR labels`、`Lint & Format Check`、`Backend Tests`、`Build Artifacts`、`Review Policy Gate`。
 - `CI PR` 对同一 PR 必须保持可抢占；`CI Main` 与 `Release` 对运行中的 main/release run 必须保持非抢占。
 - `CI Main` 必须为每个 merged commit 写入 immutable release snapshot，冻结 PR labels、版本分配与镜像/tag 元数据。
-- `Release` 必须同时支持 `workflow_run(CI Main first success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 publish 逻辑；自动与手动入口都只能消费 immutable release snapshot，禁止重新读取当前 PR labels 或重算版本。
+- `Release` 必须同时支持 `workflow_run(CI Main success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 publish 逻辑；自动与手动入口都只能消费 immutable release snapshot，禁止重新读取当前 PR labels 或重算版本。
 - `workflow_dispatch` 只接受 `commit_sha`，且对非法/不可解析输入、未通过 `CI Main` 的目标 SHA 一律 fail closed。
 - `quality-gates` contract、fixtures 与自测必须升级到 `final` profile，并校验新的 workflow 家族。
 
@@ -113,7 +113,7 @@
 ## 变更记录（Change log）
 
 - 2026-03-14: 创建 strict anti-cancel release topology spec，冻结三段式 workflow + final quality-gates 升级范围。
-- 2026-03-14: 完成 workflow split、final quality-gates contract、release backfill 入口与本地 contract/self-tests；补上 label-gate rollout 兼容、`CI Main` 按 SHA 分组、`Release` 仅接受首次成功 attempt，继续等待快车道 PR 收敛收口 M4。
+- 2026-03-14: 完成 workflow split、final quality-gates contract、release backfill 入口与本地 contract/self-tests；补上 label-gate rollout 兼容、`CI Main` 按 SHA 分组、immutable release snapshot 与按 target SHA 隔离的 backfill/concurrency 收敛，继续等待快车道 PR 收敛收口 M4。
 
 ## 参考（References）
 

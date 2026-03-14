@@ -57,8 +57,9 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
     module.load_pr_for_commit = lambda api_root, repository, token, target_sha: {
         "number": 101,
         "title": f"Release {target_sha[:7]}",
-        "labels": [{"name": "type:patch"}, {"name": "channel:stable"}],
+        "merged_at": "2026-03-14T00:00:00Z",
     }
+    module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
     snapshot1 = module.build_snapshot(
         target_sha=sha1,
         repository="IvanLi-CN/codex-vibe-monitor",
@@ -84,8 +85,9 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
     module.load_pr_for_commit = lambda api_root, repository, token, target_sha: {
         "number": 102,
         "title": f"RC {target_sha[:7]}",
-        "labels": [{"name": "type:patch"}, {"name": "channel:rc"}],
+        "merged_at": "2026-03-14T00:00:00Z",
     }
+    module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:rc"]
     snapshot3 = module.build_snapshot(
         target_sha=sha3,
         repository="IvanLi-CN/codex-vibe-monitor",
