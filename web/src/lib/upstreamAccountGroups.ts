@@ -41,6 +41,28 @@ export function buildGroupNameSuggestions(
   return Array.from(values).sort((left, right) => left.localeCompare(right))
 }
 
+export function upsertGroupSummary(
+  groups: UpstreamAccountGroupSummary[],
+  nextGroup: UpstreamAccountGroupSummary,
+): UpstreamAccountGroupSummary[] {
+  const normalized = normalizeGroupName(nextGroup.groupName)
+  if (!normalized) return groups
+
+  const nextSummary = {
+    ...nextGroup,
+    groupName: normalized,
+  }
+  const existingIndex = groups.findIndex(
+    (group) => normalizeGroupName(group.groupName) === normalized,
+  )
+
+  if (existingIndex >= 0) {
+    return groups.map((group, index) => (index === existingIndex ? nextSummary : group))
+  }
+
+  return [...groups, nextSummary].sort((left, right) => left.groupName.localeCompare(right.groupName))
+}
+
 export function isExistingGroup(
   groups: UpstreamAccountGroupSummary[],
   groupName?: string | null,

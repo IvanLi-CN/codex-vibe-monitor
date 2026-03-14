@@ -24,6 +24,7 @@ import {
   type UpstreamAccountDetail,
   type UpstreamAccountSummary,
 } from '../lib/api'
+import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
 
 export function useUpstreamAccounts() {
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
@@ -53,8 +54,10 @@ export function useUpstreamAccounts() {
           }
           return response.items[0]?.id ?? null
         })
+        return true
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
+        return false
       } finally {
         setIsLoading(false)
       }
@@ -173,8 +176,8 @@ export function useUpstreamAccounts() {
   const saveGroupNote = useCallback(
     async (groupName: string, payload: UpdateUpstreamAccountGroupPayload) => {
       const response = await updateUpstreamAccountGroup(groupName, payload)
+      setGroups((current) => upsertGroupSummary(current, response))
       await loadList(selectedId)
-      setError(null)
       return response
     },
     [loadList, selectedId],
