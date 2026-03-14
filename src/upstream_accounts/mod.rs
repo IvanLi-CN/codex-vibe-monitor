@@ -1227,7 +1227,7 @@ pub(crate) async fn create_api_key_account(
         let _guard = state.upstream_accounts.sync_lock.lock().await;
         let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
         ensure_display_name_available(&mut *tx, &display_name, None).await?;
-    let inserted_id = sqlx::query_scalar::<_, i64>(
+        let inserted_id = sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO pool_upstream_accounts (
             kind, provider, display_name, group_name, is_mother, note, status, enabled, email, chatgpt_account_id,
@@ -1258,20 +1258,20 @@ pub(crate) async fn create_api_key_account(
     .fetch_one(&mut *tx)
     .await
     .map_err(internal_error_tuple)?;
-    apply_mother_assignment(&mut tx, inserted_id, group_name.as_deref(), is_mother)
+        apply_mother_assignment(&mut tx, inserted_id, group_name.as_deref(), is_mother)
+            .await
+            .map_err(internal_error_tuple)?;
+
+        save_group_note_after_account_write(
+            tx.as_mut(),
+            target_group_name.as_deref(),
+            group_note,
+            has_group_note,
+            false,
+        )
         .await
         .map_err(internal_error_tuple)?;
-
-    save_group_note_after_account_write(
-        tx.as_mut(),
-        target_group_name.as_deref(),
-        group_note,
-        has_group_note,
-        false,
-    )
-    .await
-    .map_err(internal_error_tuple)?;
-    tx.commit().await.map_err(internal_error_tuple)?;
+        tx.commit().await.map_err(internal_error_tuple)?;
         inserted_id
     };
 
