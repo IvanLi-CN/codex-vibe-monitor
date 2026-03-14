@@ -210,6 +210,39 @@
   image:
   ![Batch OAuth create page](./assets/upstream-accounts-batch-oauth.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Pages / Upstream Account Create / Batch OAuth Mixed States
+  state: duplicate-warning-bubble
+  evidence_note: 验证批量 OAuth 行内的重复身份告警已改成贴锚点的小气泡，并使用三角警告图标作为触发器，不再占用公共区域。
+  image:
+  ![Batch OAuth duplicate warning bubble](./assets/batch-oauth-duplicate-bubble.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Components / Upstream Accounts Table / Duplicate Identity
+  state: duplicate-badge-nowrap
+  evidence_note: 验证账号列表中的“重复账号”标签保持单行展示，不再在窄列宽下自动换行。
+  image:
+  ![Upstream accounts duplicate badge](./assets/upstream-accounts-duplicate-badge.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Duplicate OAuth Detail
+  state: detail-drawer-open
+  evidence_note: 验证账号列表页的重复账号详情抽屉持续展示重复标记与原因，作为创建页“打开详情”后的承接界面参考。
+  image:
+  ![Upstream accounts duplicate detail drawer](./assets/upstream-accounts-duplicate-detail-drawer.png)
+
 ## 风险 / 假设
 
 - 风险：OpenAI/Codex usage 接口只返回百分比窗口，不提供绝对请求/额度值，因此 OAuth 页面文字展示需围绕“窗口配额百分比 + reset time”展开。
