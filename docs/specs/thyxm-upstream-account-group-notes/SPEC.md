@@ -69,7 +69,43 @@
 - `cd web && bun run build`
 - 浏览器 smoke：批量 OAuth、单账号 OAuth、API Key、详情编辑中的组备注入口与保存路径
 
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Components / Upstream Account Group Note Dialog / Existing Group
+  state: existing-group
+  evidence_note: 验证复用的组备注弹窗在“已存在分组”场景下展示共享备注说明、分组名与立即保存动作。
+  image:
+  ![Existing group note dialog](./assets/group-note-dialog-existing-group.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Detail Drawer Group Notes
+  state: detail-drawer-dialog-open
+  evidence_note: 验证账号详情抽屉中的分组备注入口会打开共享备注弹窗，并与账号级备注编辑保持独立。
+  image:
+  ![Detail drawer group notes](./assets/detail-drawer-group-notes.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Create Account Batch Group Note Draft
+  state: batch-oauth-inline-action
+  evidence_note: 验证批量 OAuth 场景中默认分组入口与每行分组输入框右侧的组备注按钮都已到位，且行级入口位于分组控件旁边。
+  image:
+  ![Batch OAuth inline group note action](./assets/create-account-batch-group-note-draft.png)
+
 ## 变更记录
 
 - 2026-03-14: 创建增量 spec，冻结上游账号分组共享备注的数据模型、交互边界与验收标准。
 - 2026-03-14: 完成后端组备注持久化、前端复用弹窗与批量/单账号/API Key/详情编辑入口接入，并通过本地自动化验证与浏览器 smoke。
+- 2026-03-14: 补充 Storybook 视觉证据，覆盖复用组备注弹窗、详情抽屉入口，以及批量 OAuth 行内组备注按钮位置。
