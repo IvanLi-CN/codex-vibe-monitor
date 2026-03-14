@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import { Button } from './ui/button'
 import {
   Command,
@@ -102,7 +102,7 @@ export function UpstreamAccountGroupCombobox({
             )}
           >
             <span className="truncate">{trimmedValue || placeholder}</span>
-            <Icon icon="mdi:chevron-down" className="ml-2 h-4 w-4 shrink-0 text-base-content/45" aria-hidden />
+            <AppIcon name="chevron-down" className="ml-2 h-4 w-4 shrink-0 text-base-content/45" aria-hidden />
           </Button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
@@ -118,7 +118,7 @@ export function UpstreamAccountGroupCombobox({
                 {showCreateOption ? (
                   <>
                     <CommandItem value={trimmedQuery} onSelect={() => commitValue(trimmedQuery)}>
-                      <Icon icon="mdi:plus-circle-outline" className="mr-2 h-4 w-4 text-primary" aria-hidden />
+                      <AppIcon name="plus-circle-outline" className="mr-2 h-4 w-4 text-primary" aria-hidden />
                       <span className="truncate">{createLabel(trimmedQuery)}</span>
                     </CommandItem>
                     <CommandSeparator />
@@ -126,8 +126,8 @@ export function UpstreamAccountGroupCombobox({
                 ) : null}
                 {uniqueSuggestions.map((suggestion) => (
                   <CommandItem key={suggestion} value={suggestion} onSelect={() => commitValue(suggestion)}>
-                    <Icon
-                      icon="mdi:check"
+                    <AppIcon
+                      name="check"
                       className={cn(
                         'mr-2 h-4 w-4 text-primary transition-opacity',
                         suggestion === trimmedValue ? 'opacity-100' : 'opacity-0',

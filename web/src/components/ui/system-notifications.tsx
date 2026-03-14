@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { Icon } from '@iconify/react'
+import { AppIcon } from '../AppIcon'
 import { Button } from './button'
 import type { MotherSwitchSnapshot } from '../../lib/upstreamMother'
 import { useTranslation } from '../../i18n'
@@ -148,7 +148,7 @@ function MotherSwitchUndoToast({
     >
       <div className="flex items-start gap-3">
         <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-300/18 text-amber-200">
-          <Icon icon="mdi:crown" className="h-5 w-5" aria-hidden />
+          <AppIcon name="crown" className="h-5 w-5" aria-hidden />
         </div>
         <div className="min-w-0 flex-1 space-y-2">
           <div className="space-y-1">
@@ -166,9 +166,9 @@ function MotherSwitchUndoToast({
               className="h-8 rounded-full bg-amber-300/85 px-3 text-neutral hover:bg-amber-200"
             >
               {pending ? (
-                <Icon icon="mdi:loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
               ) : (
-                <Icon icon="mdi:undo-variant" className="mr-2 h-4 w-4" aria-hidden />
+                <AppIcon name="undo-variant" className="mr-2 h-4 w-4" aria-hidden />
               )}
               {t('accountPool.upstreamAccounts.mother.notifications.undo')}
             </Button>
