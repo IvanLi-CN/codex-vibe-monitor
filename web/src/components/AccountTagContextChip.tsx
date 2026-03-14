@@ -138,19 +138,22 @@ export function AccountTagContextChip({
       {menuOpen ? (
         <div
           role="menu"
-          className={cn('absolute left-0 top-full z-30 mt-2 w-56 rounded-2xl border border-base-300 bg-base-100/95 p-2 shadow-xl backdrop-blur', 'animate-in fade-in-0 zoom-in-95')}
+          className={cn(
+            'absolute right-0 top-full z-30 mt-1.5 w-44 rounded-[1rem] border border-base-300/90 bg-base-100/97 p-1.5 shadow-lg backdrop-blur',
+            'animate-in fade-in-0 zoom-in-95',
+          )}
         >
           <div className="space-y-1">
             <Button
               type="button"
               variant="ghost"
-              className="w-full justify-start"
+              className="h-8.5 w-full justify-start rounded-[0.85rem] px-2.5 text-[0.9rem] whitespace-nowrap"
               disabled={busyAction === 'remove'}
               onClick={() => void handleRemove()}
             >
               <Icon
                 icon={currentPageCreated ? 'mdi:delete-outline' : 'mdi:link-variant-off'}
-                className="mr-2 h-4 w-4"
+                className="mr-2 h-[0.9rem] w-[0.9rem]"
                 aria-hidden
               />
               {currentPageCreated ? labels.deleteAndRemove : labels.remove}
@@ -158,13 +161,13 @@ export function AccountTagContextChip({
             <Button
               type="button"
               variant="ghost"
-              className="w-full justify-start"
+              className="h-8.5 w-full justify-start rounded-[0.85rem] px-2.5 text-[0.9rem] whitespace-nowrap"
               onClick={() => {
                 setMenuOpen(false)
                 onEdit()
               }}
             >
-              <Icon icon="mdi:pencil-outline" className="mr-2 h-4 w-4" aria-hidden />
+              <Icon icon="mdi:pencil-outline" className="mr-2 h-[0.9rem] w-[0.9rem]" aria-hidden />
               {labels.edit}
             </Button>
           </div>
