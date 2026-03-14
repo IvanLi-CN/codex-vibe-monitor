@@ -39,6 +39,7 @@ import type {
 } from '../../lib/api'
 import { fetchUpstreamAccountDetail } from '../../lib/api'
 import { copyText, selectAllReadonlyText } from '../../lib/clipboard'
+import { emitUpstreamAccountsChanged } from '../../lib/upstreamAccountsEvents'
 import {
   buildGroupNameSuggestions,
   isExistingGroup,
@@ -220,7 +221,7 @@ function invalidatePendingSingleOauthSession(
   setOauthDuplicateWarning: (value: DuplicateWarningState | null) => void,
   regenerateRequiredLabel: string,
 ) {
-  if (!currentSession || currentSession.status === 'completed') return
+  if (!currentSession) return
   setSession(null)
   setSessionHint(regenerateRequiredLabel)
   setOauthCallbackUrl('')
@@ -1005,6 +1006,7 @@ export default function UpstreamAccountCreatePage() {
       setSession((current) => latestSession ?? current)
       if (latestSession?.status === 'completed' && latestSession.accountId) {
         setActionError(null)
+        emitUpstreamAccountsChanged()
         try {
           const detail = await fetchUpstreamAccountDetail(latestSession.accountId)
           notifyMotherChange(detail)
@@ -1160,6 +1162,67 @@ export default function UpstreamAccountCreatePage() {
         latestSession = await getLoginSession(row.session.loginId)
       } catch {
         latestSession = null
+      }
+      if (latestSession?.status === 'completed' && latestSession.accountId) {
+        emitUpstreamAccountsChanged()
+        try {
+          const detail = await fetchUpstreamAccountDetail(latestSession.accountId)
+          notifyMotherChange(detail)
+          updateBatchRow(rowId, (current) => {
+            const baseSession = (current.session ?? row.session) as LoginSessionStatusResponse
+            return {
+              ...current,
+              busyAction: null,
+              session: {
+                loginId: baseSession.loginId,
+                status: 'completed',
+                authUrl: null,
+                redirectUri: null,
+                expiresAt: baseSession.expiresAt,
+                accountId: detail.id,
+                error: null,
+              },
+              callbackUrl: '',
+              sessionHint: t('accountPool.upstreamAccounts.batchOauth.completed', {
+                name: detail.displayName || current.displayName || `#${detail.id}`,
+              }),
+              duplicateWarning: detail.duplicateInfo
+                ? {
+                    accountId: detail.id,
+                    displayName: detail.displayName,
+                    peerAccountIds: detail.duplicateInfo.peerAccountIds,
+                    reasons: detail.duplicateInfo.reasons,
+                  }
+                : null,
+              actionError: null,
+              isMother: detail.isMother,
+            }
+          })
+        } catch {
+          updateBatchRow(rowId, (current) => {
+            const baseSession = (current.session ?? row.session) as LoginSessionStatusResponse
+            return {
+              ...current,
+              busyAction: null,
+              session: {
+                loginId: baseSession.loginId,
+                status: 'completed',
+                authUrl: null,
+                redirectUri: null,
+                expiresAt: baseSession.expiresAt,
+                accountId: latestSession.accountId,
+                error: null,
+              },
+              callbackUrl: '',
+              sessionHint: t('accountPool.upstreamAccounts.batchOauth.completed', {
+                name: current.displayName || `#${latestSession.accountId}`,
+              }),
+              duplicateWarning: null,
+              actionError: null,
+            }
+          })
+        }
+        return
       }
 
       updateBatchRow(rowId, (current) => ({
@@ -1525,7 +1588,8 @@ export default function UpstreamAccountCreatePage() {
                           disabled={
                             busyAction === 'oauth-generate' ||
                             !writesEnabled ||
-                            oauthDisplayNameConflict != null
+                            oauthDisplayNameConflict != null ||
+                            session?.status === 'completed'
                           }
                         >
                           {busyAction === 'oauth-generate' ? (
