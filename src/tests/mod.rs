@@ -2816,7 +2816,7 @@ async fn create_api_key_account_persists_upstream_base_url() {
 }
 
 #[tokio::test]
-async fn update_upstream_account_can_clear_upstream_base_url() {
+async fn update_upstream_account_can_clear_upstream_base_url_with_null_payload() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2832,7 +2832,7 @@ async fn update_upstream_account_can_clear_upstream_base_url() {
     .await;
 
     let payload: UpdateUpstreamAccountRequest = serde_json::from_value(json!({
-        "upstreamBaseUrl": "",
+        "upstreamBaseUrl": null,
     }))
     .expect("deserialize update request");
     let Json(detail) = update_upstream_account(
@@ -9149,6 +9149,28 @@ async fn pool_route_uses_account_specific_upstream_base_url() {
 
     global_upstream_handle.abort();
     account_upstream_handle.abort();
+}
+
+#[test]
+fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite() {
+    let global = Url::parse("https://api.openai.com/").expect("global upstream base url");
+    let account = PoolResolvedAccount {
+        account_id: 8,
+        display_name: "Gateway Key".to_string(),
+        kind: "api_key_codex".to_string(),
+        authorization: "Bearer upstream-primary".to_string(),
+        upstream_base_url: Url::parse("https://proxy.example.com/gateway")
+            .expect("account upstream base url"),
+    };
+
+    assert_eq!(
+        location_rewrite_upstream_base(Some(&account), &global).as_str(),
+        "https://proxy.example.com/gateway"
+    );
+    assert_eq!(
+        location_rewrite_upstream_base(None, &global).as_str(),
+        "https://api.openai.com/"
+    );
 }
 
 #[tokio::test]

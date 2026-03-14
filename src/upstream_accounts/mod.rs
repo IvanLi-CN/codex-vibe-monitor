@@ -386,7 +386,8 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     group_name: Option<String>,
     note: Option<String>,
     group_note: Option<String>,
-    upstream_base_url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    upstream_base_url: OptionalField<String>,
     enabled: Option<bool>,
     is_mother: Option<bool>,
     api_key: Option<String>,
@@ -582,6 +583,29 @@ struct UpstreamAccountRow {
 struct PoolRoutingSettingsRow {
     encrypted_api_key: Option<String>,
     masked_api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum OptionalField<T> {
+    #[default]
+    Missing,
+    Null,
+    Value(T),
+}
+
+fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<OptionalField<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    if raw.is_null() {
+        return Ok(OptionalField::Null);
+    }
+
+    serde_json::from_value(raw)
+        .map(OptionalField::Value)
+        .map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, FromRow)]
@@ -1648,8 +1672,16 @@ pub(crate) async fn update_upstream_account(
     if let Some(note) = payload.note {
         row.note = normalize_optional_text(Some(note));
     }
-    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX && payload.upstream_base_url.is_some() {
-        row.upstream_base_url = normalize_optional_upstream_base_url(payload.upstream_base_url)?;
+    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        match payload.upstream_base_url {
+            OptionalField::Missing => {}
+            OptionalField::Null => {
+                row.upstream_base_url = None;
+            }
+            OptionalField::Value(value) => {
+                row.upstream_base_url = normalize_optional_upstream_base_url(Some(value))?;
+            }
+        }
     }
     if let Some(enabled) = payload.enabled {
         row.enabled = if enabled { 1 } else { 0 };
@@ -4469,6 +4501,22 @@ fn normalize_optional_upstream_base_url(
     Ok(Some(parsed.to_string()))
 }
 
+fn resolve_pool_account_upstream_base_url(
+    row: &UpstreamAccountRow,
+    global_upstream_base_url: &Url,
+) -> Result<Url> {
+    if row.kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        return Ok(global_upstream_base_url.clone());
+    }
+
+    row.upstream_base_url
+        .as_deref()
+        .map(Url::parse)
+        .transpose()
+        .context("account upstreamBaseUrl is invalid")?
+        .map_or_else(|| Ok(global_upstream_base_url.clone()), Ok)
+}
+
 fn normalize_required_secret(raw: &str, field_name: &str) -> Result<String, (StatusCode, String)> {
     let value = raw.trim();
     if value.is_empty() {
@@ -5135,13 +5183,8 @@ async fn prepare_pool_account(
     let Some(encrypted_credentials) = row.encrypted_credentials.as_deref() else {
         return Ok(None);
     };
-    let upstream_base_url = row
-        .upstream_base_url
-        .as_deref()
-        .map(Url::parse)
-        .transpose()
-        .context("account upstreamBaseUrl is invalid")?
-        .unwrap_or_else(|| state.config.openai_upstream_base_url.clone());
+    let upstream_base_url =
+        resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)?;
     let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
     match credentials {
         StoredCredentials::ApiKey(value) => Ok(Some(PoolResolvedAccount {
@@ -5489,6 +5532,87 @@ mod tests {
             panic!("expected API key credentials")
         };
         assert_eq!(value.api_key, "sk-test-1234");
+    }
+
+    #[test]
+    fn deserialize_optional_field_distinguishes_missing_null_and_value() {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Payload {
+            #[serde(default, deserialize_with = "deserialize_optional_field")]
+            upstream_base_url: OptionalField<String>,
+        }
+
+        let missing: Payload = serde_json::from_value(json!({})).expect("deserialize missing");
+        assert_eq!(missing.upstream_base_url, OptionalField::Missing);
+
+        let null_value: Payload =
+            serde_json::from_value(json!({ "upstreamBaseUrl": null })).expect("deserialize null");
+        assert_eq!(null_value.upstream_base_url, OptionalField::Null);
+
+        let string_value: Payload = serde_json::from_value(json!({
+            "upstreamBaseUrl": "https://proxy.example.com/gateway"
+        }))
+        .expect("deserialize string");
+        assert_eq!(
+            string_value.upstream_base_url,
+            OptionalField::Value("https://proxy.example.com/gateway".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts() {
+        fn build_row(kind: &str, upstream_base_url: Option<&str>) -> UpstreamAccountRow {
+            UpstreamAccountRow {
+                id: 1,
+                kind: kind.to_string(),
+                provider: UPSTREAM_ACCOUNT_PROVIDER_CODEX.to_string(),
+                display_name: "Test".to_string(),
+                group_name: None,
+                is_mother: 0,
+                note: None,
+                status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+                enabled: 1,
+                email: None,
+                chatgpt_account_id: None,
+                chatgpt_user_id: None,
+                plan_type: None,
+                masked_api_key: None,
+                encrypted_credentials: None,
+                token_expires_at: None,
+                last_refreshed_at: None,
+                last_synced_at: None,
+                last_successful_sync_at: None,
+                last_error: None,
+                last_error_at: None,
+                last_selected_at: None,
+                last_route_failure_at: None,
+                cooldown_until: None,
+                consecutive_route_failures: 0,
+                local_primary_limit: None,
+                local_secondary_limit: None,
+                local_limit_unit: None,
+                upstream_base_url: upstream_base_url.map(str::to_string),
+                created_at: "2026-03-15T00:00:00Z".to_string(),
+                updated_at: "2026-03-15T00:00:00Z".to_string(),
+            }
+        }
+
+        let global = Url::parse("https://api.openai.com/").expect("global upstream base url");
+        let override_url = "https://proxy.example.com/gateway";
+
+        let oauth_row = build_row(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX, Some(override_url));
+        let oauth_resolved = resolve_pool_account_upstream_base_url(&oauth_row, &global)
+            .expect("resolve oauth upstream base url");
+        assert_eq!(oauth_resolved, global);
+
+        let api_key_row = build_row(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX, Some(override_url));
+        let api_key_resolved = resolve_pool_account_upstream_base_url(&api_key_row, &global)
+            .expect("resolve api key upstream base url");
+        assert_eq!(
+            api_key_resolved.as_str(),
+            "https://proxy.example.com/gateway"
+        );
     }
 
     #[test]
