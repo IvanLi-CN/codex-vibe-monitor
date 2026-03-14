@@ -862,92 +862,6 @@ export default function UpstreamAccountCreatePage() {
             </Alert>
           ) : null}
 
-          {session ? (
-            <Alert
-              variant={
-                session.status === "completed"
-                  ? "success"
-                  : session.status === "pending"
-                    ? "info"
-                    : "warning"
-              }
-            >
-              <Icon
-                icon={
-                  session.status === "completed"
-                    ? "mdi:check-circle-outline"
-                    : "mdi:link-variant-plus"
-                }
-                className="mt-0.5 h-4 w-4 shrink-0"
-                aria-hidden
-              />
-              <div className="space-y-1">
-                <p className="font-medium">
-                  {t(
-                    `accountPool.upstreamAccounts.oauth.status.${session.status}`,
-                  )}
-                </p>
-                <p className="text-sm opacity-90">
-                  {sessionHint ??
-                    session.error ??
-                    formatDateTime(session.expiresAt)}
-                </p>
-              </div>
-            </Alert>
-          ) : null}
-
-          {oauthDuplicateWarning ? (
-            <Alert variant="warning">
-              <Icon
-                icon="mdi:alert-outline"
-                className="mt-0.5 h-4 w-4 shrink-0"
-                aria-hidden
-              />
-              <div className="space-y-2">
-                <div>
-                  <p className="font-medium">
-                    {t("accountPool.upstreamAccounts.duplicate.warningTitle", {
-                      name: oauthDuplicateWarning.displayName,
-                    })}
-                  </p>
-                  <p className="mt-1 text-sm text-warning/90">
-                    {t("accountPool.upstreamAccounts.duplicate.warningBody", {
-                      reasons: formatDuplicateReasons(oauthDuplicateWarning),
-                      peers: oauthDuplicateWarning.peerAccountIds.join(", "),
-                    })}
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    asChild
-                    size="sm"
-                    variant="secondary"
-                    className="border-warning/35 bg-warning/12 text-warning hover:bg-warning/18"
-                  >
-                    <Link
-                      to="/account-pool/upstream-accounts"
-                      state={{
-                        selectedAccountId: oauthDuplicateWarning.accountId,
-                        openDetail: true,
-                        duplicateWarning: oauthDuplicateWarning,
-                      }}
-                    >
-                      {t("accountPool.upstreamAccounts.actions.openDetails")}
-                    </Link>
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setOauthDuplicateWarning(null)}
-                  >
-                    {t("accountPool.upstreamAccounts.actions.dismissDuplicateWarning")}
-                  </Button>
-                </div>
-              </div>
-            </Alert>
-          ) : null}
-
           {!isRelinking ? (
             <div
               className="segment-group self-start"
@@ -1144,6 +1058,109 @@ export default function UpstreamAccountCreatePage() {
                   </label>
 
                   <div className="rounded-2xl border border-base-300/80 bg-base-200/40 p-4 sm:p-5">
+                    {session ? (
+                      <Alert
+                        variant={
+                          session.status === "completed"
+                            ? "success"
+                            : session.status === "pending"
+                              ? "info"
+                              : "warning"
+                        }
+                        className="mb-4"
+                      >
+                        <Icon
+                          icon={
+                            session.status === "completed"
+                              ? "mdi:check-circle-outline"
+                              : "mdi:link-variant-plus"
+                          }
+                          className="mt-0.5 h-4 w-4 shrink-0"
+                          aria-hidden
+                        />
+                        <div className="space-y-1">
+                          <p className="font-medium">
+                            {t(
+                              `accountPool.upstreamAccounts.oauth.status.${session.status}`,
+                            )}
+                          </p>
+                          <p className="text-sm opacity-90">
+                            {sessionHint ??
+                              session.error ??
+                              formatDateTime(session.expiresAt)}
+                          </p>
+                        </div>
+                      </Alert>
+                    ) : null}
+
+                    {oauthDuplicateWarning ? (
+                      <Alert variant="warning" className="mb-4">
+                        <Icon
+                          icon="mdi:alert-outline"
+                          className="mt-0.5 h-4 w-4 shrink-0"
+                          aria-hidden
+                        />
+                        <div className="space-y-2">
+                          <div>
+                            <p className="font-medium">
+                              {t(
+                                "accountPool.upstreamAccounts.duplicate.warningTitle",
+                                {
+                                  name: oauthDuplicateWarning.displayName,
+                                },
+                              )}
+                            </p>
+                            <p className="mt-1 text-sm text-warning/90">
+                              {t(
+                                "accountPool.upstreamAccounts.duplicate.warningBody",
+                                {
+                                  reasons: formatDuplicateReasons(
+                                    oauthDuplicateWarning,
+                                  ),
+                                  peers:
+                                    oauthDuplicateWarning.peerAccountIds.join(
+                                      ", ",
+                                    ),
+                                },
+                              )}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              asChild
+                              size="sm"
+                              variant="secondary"
+                              className="border-warning/35 bg-warning/12 text-warning hover:bg-warning/18"
+                            >
+                              <Link
+                                to="/account-pool/upstream-accounts"
+                                state={{
+                                  selectedAccountId:
+                                    oauthDuplicateWarning.accountId,
+                                  openDetail: true,
+                                  duplicateWarning: oauthDuplicateWarning,
+                                }}
+                              >
+                                {t(
+                                  "accountPool.upstreamAccounts.actions.openDetails",
+                                )}
+                              </Link>
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setOauthDuplicateWarning(null)}
+                            >
+                              {t(
+                                "accountPool.upstreamAccounts.actions.dismissDuplicateWarning",
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                      </Alert>
+                    ) : null}
+
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                       <div className="space-y-1">
                         <h3 className="text-sm font-semibold text-base-content">
