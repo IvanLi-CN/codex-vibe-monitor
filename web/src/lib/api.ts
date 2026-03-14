@@ -975,6 +975,7 @@ export interface UpstreamAccountSummary {
 
 export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   note?: string | null
+  upstreamBaseUrl?: string | null
   chatgptUserId?: string | null
   lastRefreshedAt?: string | null
   history: UpstreamAccountHistoryPoint[]
@@ -1030,6 +1031,7 @@ export interface CreateApiKeyAccountPayload {
   groupName?: string
   note?: string
   groupNote?: string
+  upstreamBaseUrl?: string
   apiKey: string
   isMother?: boolean
   localPrimaryLimit?: number
@@ -1043,6 +1045,7 @@ export interface UpdateUpstreamAccountPayload {
   groupName?: string
   note?: string
   groupNote?: string
+  upstreamBaseUrl?: string | null
   enabled?: boolean
   isMother?: boolean
   apiKey?: string
@@ -1235,6 +1238,7 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
   return {
     ...summary,
     note: typeof payload.note === 'string' ? payload.note : null,
+    upstreamBaseUrl: typeof payload.upstreamBaseUrl === 'string' ? payload.upstreamBaseUrl : null,
     chatgptUserId: typeof payload.chatgptUserId === 'string' ? payload.chatgptUserId : null,
     lastRefreshedAt: typeof payload.lastRefreshedAt === 'string' ? payload.lastRefreshedAt : null,
     history: historyRaw

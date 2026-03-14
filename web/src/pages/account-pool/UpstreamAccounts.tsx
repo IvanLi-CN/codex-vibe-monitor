@@ -47,6 +47,7 @@ type AccountDraft = {
   groupName: string
   isMother: boolean
   note: string
+  upstreamBaseUrl: string
   tagIds: number[]
   localPrimaryLimit: string
   localSecondaryLimit: string
@@ -97,6 +98,7 @@ function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
     groupName: detail?.groupName ?? '',
     isMother: detail?.isMother ?? false,
     note: detail?.note ?? '',
+    upstreamBaseUrl: detail?.upstreamBaseUrl ?? '',
     tagIds: detail?.tags?.map((tag) => tag.id) ?? [],
     localPrimaryLimit:
       detail?.localLimits?.primaryLimit == null ? '' : String(detail.localLimits.primaryLimit),
@@ -617,6 +619,8 @@ export default function UpstreamAccountsPage() {
         note: draft.note.trim() || undefined,
         tagIds: draft.tagIds,
         groupNote: resolvePendingGroupNoteForName(draft.groupName) || undefined,
+        upstreamBaseUrl:
+          source.kind === 'api_key_codex' ? draft.upstreamBaseUrl.trim() || null : undefined,
         apiKey: source.kind === 'api_key_codex' && draft.apiKey.trim() ? draft.apiKey.trim() : undefined,
         localPrimaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localPrimaryLimit) : undefined,
         localSecondaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localSecondaryLimit) : undefined,
@@ -1033,6 +1037,15 @@ export default function UpstreamAccountsPage() {
                             name="detailLimitUnit"
                             value={draft.localLimitUnit}
                             onChange={(event) => setDraft((current) => ({ ...current, localLimitUnit: event.target.value }))}
+                          />
+                        </label>
+                        <label className="field">
+                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}</span>
+                          <Input
+                            name="detailUpstreamBaseUrl"
+                            value={draft.upstreamBaseUrl}
+                            onChange={(event) => setDraft((current) => ({ ...current, upstreamBaseUrl: event.target.value }))}
+                            placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
                           />
                         </label>
                         <label className="field">

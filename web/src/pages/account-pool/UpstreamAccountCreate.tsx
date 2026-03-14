@@ -194,6 +194,7 @@ export default function UpstreamAccountCreatePage() {
   const [apiKeyNote, setApiKeyNote] = useState('')
   const [apiKeyTagIds, setApiKeyTagIds] = useState<number[]>([])
   const [apiKeyValue, setApiKeyValue] = useState('')
+  const [apiKeyUpstreamBaseUrl, setApiKeyUpstreamBaseUrl] = useState('')
   const [apiKeyPrimaryLimit, setApiKeyPrimaryLimit] = useState('')
   const [apiKeySecondaryLimit, setApiKeySecondaryLimit] = useState('')
   const [apiKeyLimitUnit, setApiKeyLimitUnit] = useState('requests')
@@ -713,6 +714,7 @@ export default function UpstreamAccountCreatePage() {
         note: apiKeyNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
         apiKey: apiKeyValue.trim(),
+        upstreamBaseUrl: apiKeyUpstreamBaseUrl.trim() || undefined,
         isMother: apiKeyIsMother,
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
         localSecondaryLimit: normalizeNumberInput(apiKeySecondaryLimit),
@@ -1481,6 +1483,17 @@ export default function UpstreamAccountCreatePage() {
                       name="apiKeyValue"
                       value={apiKeyValue}
                       onChange={(event) => setApiKeyValue(event.target.value)}
+                    />
+                  </label>
+                  <label className="field md:col-span-2">
+                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}</span>
+                    <Input
+                      name="apiKeyUpstreamBaseUrl"
+                      value={apiKeyUpstreamBaseUrl}
+                      onChange={(event) => setApiKeyUpstreamBaseUrl(event.target.value)}
+                      placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
+                      autoCapitalize="none"
+                      spellCheck={false}
                     />
                   </label>
                   <label className="field">

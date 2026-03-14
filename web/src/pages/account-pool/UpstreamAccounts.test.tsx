@@ -99,6 +99,23 @@ async function flushAsync() {
   })
 }
 
+function setInputValue(selector: string, value: string) {
+  const input = host?.querySelector(selector) ?? document.body.querySelector(selector)
+  if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
+    throw new Error(`missing input: ${selector}`)
+  }
+  const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set
+  if (!setter) {
+    throw new Error(`missing native setter: ${selector}`)
+  }
+  act(() => {
+    setter.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+}
+
 describe('UpstreamAccountsPage mother account editing', () => {
   it('shows the crown badge and emits an undo notification after saving a new mother account', async () => {
     const saveAccount = vi.fn().mockResolvedValue({
@@ -297,6 +314,104 @@ describe('UpstreamAccountsPage mother account editing', () => {
       6,
       expect.objectContaining({
         isMother: true,
+      }),
+    )
+  })
+
+  it('saves api key upstreamBaseUrl from the detail drawer', async () => {
+    const saveAccount = vi.fn().mockResolvedValue({
+      id: 8,
+      kind: 'api_key_codex',
+      provider: 'codex',
+      displayName: 'Gateway Key',
+      groupName: 'prod',
+      isMother: false,
+      status: 'active',
+      enabled: true,
+      history: [],
+      note: null,
+      upstreamBaseUrl: 'https://proxy.example.com/gateway',
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: 'requests',
+      },
+    })
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: 'api_key_codex',
+          provider: 'codex',
+          displayName: 'Gateway Key',
+          groupName: 'prod',
+          isMother: false,
+          status: 'active',
+          enabled: true,
+          maskedApiKey: 'sk-gate••••',
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Gateway Key',
+        groupName: 'prod',
+        isMother: false,
+        status: 'active',
+        enabled: true,
+        maskedApiKey: 'sk-gate••••',
+      },
+      detail: {
+        id: 8,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Gateway Key',
+        groupName: 'prod',
+        isMother: false,
+        status: 'active',
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: 'https://proxy.example.com/gateway',
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: 'requests',
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      saveAccount,
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: 'pool-live••••' },
+      saveRouting: vi.fn(),
+      groups: [],
+    })
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: '', rangeEnd: '' },
+      isLoading: false,
+      error: null,
+    })
+
+    render()
+
+    clickByText(/Open details/i)
+    setInputValue('input[name="detailUpstreamBaseUrl"]', 'https://proxy.example.com/gateway/v2')
+    clickByText(/Save changes/i)
+    await flushAsync()
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      8,
+      expect.objectContaining({
+        upstreamBaseUrl: 'https://proxy.example.com/gateway/v2',
       }),
     )
   })
