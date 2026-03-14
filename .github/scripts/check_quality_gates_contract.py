@@ -690,7 +690,11 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require(commit_sha.get("type") == "string", "release.yml: workflow_dispatch.commit_sha must stay string")
 
     concurrency = require_mapping(workflow.get("concurrency"), "release.yml.concurrency")
-    require(concurrency.get("group") == "release-main", "release.yml.concurrency.group drifted")
+    require(
+        concurrency.get("group")
+        == "release-${{ github.event_name == 'workflow_dispatch' && inputs.commit_sha || github.event.workflow_run.head_sha }}",
+        "release.yml.concurrency.group drifted",
+    )
     require(concurrency.get("cancel-in-progress") is False, "release.yml.concurrency.cancel-in-progress must stay false")
 
     permissions = require_mapping(workflow.get("permissions"), "release.yml.permissions")

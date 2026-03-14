@@ -16,7 +16,7 @@ on:
         type: string
 
 concurrency:
-  group: release-main
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.commit_sha || github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 permissions:
