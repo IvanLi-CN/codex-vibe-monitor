@@ -104,7 +104,7 @@ export function AccountTagContextChip({
         onPointerUp={clearLongPress}
         onPointerCancel={clearLongPress}
       >
-        <Badge variant="secondary" className="gap-2 px-3 py-1.5 pr-8">
+        <Badge variant="secondary" className="gap-2 px-3 py-1.5">
           <Icon icon="mdi:tag-outline" className="h-3.5 w-3.5" aria-hidden />
           <span>{name}</span>
           {currentPageCreated ? (
