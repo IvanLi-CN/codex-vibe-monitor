@@ -21,6 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
+import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { Input } from "../../components/ui/input";
 import { Spinner } from "../../components/ui/spinner";
 import { Switch } from "../../components/ui/switch";
@@ -1179,13 +1180,14 @@ export default function UpstreamAccountsPage() {
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="grid gap-4 md:grid-cols-2">
-                    <label className="field md:col-span-2">
+                    <label className="field relative overflow-visible md:col-span-2">
                       <span className="field-label">
                         {t("accountPool.upstreamAccounts.fields.displayName")}
                       </span>
                       <Input
                         name="detailDisplayName"
                         value={draft.displayName}
+                        aria-invalid={detailDisplayNameConflict != null}
                         onChange={(event) =>
                           setDraft((current) => ({
                             ...current,
@@ -1194,11 +1196,11 @@ export default function UpstreamAccountsPage() {
                         }
                       />
                       {detailDisplayNameConflict ? (
-                        <span className="text-xs text-error">
-                          {t(
+                        <FloatingFieldError
+                          message={t(
                             "accountPool.upstreamAccounts.validation.displayNameDuplicate",
                           )}
-                        </span>
+                        />
                       ) : null}
                     </label>
                     <label className="field md:col-span-2">

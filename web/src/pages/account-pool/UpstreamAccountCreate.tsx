@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
+import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import {
   Popover,
   PopoverAnchor,
@@ -963,23 +964,24 @@ export default function UpstreamAccountCreatePage() {
             >
               {activeTab === "oauth" ? (
                 <>
-                  <label className="field">
+                  <label className="field relative overflow-visible">
                     <span className="field-label">
                       {t("accountPool.upstreamAccounts.fields.displayName")}
                     </span>
                     <Input
                       name="oauthDisplayName"
                       value={oauthDisplayName}
+                      aria-invalid={oauthDisplayNameConflict != null}
                       onChange={(event) =>
                         setOauthDisplayName(event.target.value)
                       }
                     />
                     {oauthDisplayNameConflict ? (
-                      <span className="text-xs text-error">
-                        {t(
+                      <FloatingFieldError
+                        message={t(
                           "accountPool.upstreamAccounts.validation.displayNameDuplicate",
                         )}
-                      </span>
+                      />
                     ) : null}
                   </label>
                   <label className="field">
@@ -1280,7 +1282,7 @@ export default function UpstreamAccountCreatePage() {
                                 </td>
                                 <td className="px-3 py-4">
                                   <div className="grid gap-3">
-                                    <label className="field min-w-0 gap-2 whitespace-nowrap">
+                                    <label className="field relative min-w-0 gap-2 overflow-visible whitespace-nowrap">
                                       <span className="field-label">
                                         {t(
                                           "accountPool.upstreamAccounts.fields.displayName",
@@ -1290,6 +1292,7 @@ export default function UpstreamAccountCreatePage() {
                                         name={`batchOauthDisplayName-${row.id}`}
                                         value={row.displayName}
                                         disabled={rowLocked}
+                                        aria-invalid={duplicateNameError != null}
                                         className="min-w-0"
                                         onChange={(event) =>
                                           handleBatchMetadataChange(
@@ -1300,9 +1303,9 @@ export default function UpstreamAccountCreatePage() {
                                         }
                                       />
                                       {duplicateNameError ? (
-                                        <span className="text-xs text-error">
-                                          {duplicateNameError}
-                                        </span>
+                                        <FloatingFieldError
+                                          message={duplicateNameError}
+                                        />
                                       ) : null}
                                     </label>
                                     <label className="field min-w-0 gap-2 whitespace-nowrap">
@@ -1694,23 +1697,24 @@ export default function UpstreamAccountCreatePage() {
                 </>
               ) : (
                 <>
-                  <label className="field md:col-span-2">
+                  <label className="field relative overflow-visible md:col-span-2">
                     <span className="field-label">
                       {t("accountPool.upstreamAccounts.fields.displayName")}
                     </span>
                     <Input
                       name="apiKeyDisplayName"
                       value={apiKeyDisplayName}
+                      aria-invalid={apiKeyDisplayNameConflict != null}
                       onChange={(event) =>
                         setApiKeyDisplayName(event.target.value)
                       }
                     />
                     {apiKeyDisplayNameConflict ? (
-                      <span className="text-xs text-error">
-                        {t(
+                      <FloatingFieldError
+                        message={t(
                           "accountPool.upstreamAccounts.validation.displayNameDuplicate",
                         )}
-                      </span>
+                      />
                     ) : null}
                   </label>
                   <label className="field md:col-span-2">
