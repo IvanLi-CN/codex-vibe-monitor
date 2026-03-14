@@ -8,6 +8,7 @@ import type {
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
   LoginSessionStatusResponse,
+  UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
   UpstreamAccountListResponse,
@@ -25,6 +26,7 @@ type StoryStore = {
   }
   accounts: UpstreamAccountSummary[]
   details: Record<number, UpstreamAccountDetail>
+  groupNotes: Record<string, string>
   nextId: number
   sessions: Record<
     string,
@@ -32,6 +34,7 @@ type StoryStore = {
       displayName?: string
       groupName?: string
       note?: string
+      groupNote?: string
       state?: string
     }
   >
@@ -60,6 +63,43 @@ function buildHistory(seed = 0) {
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
+}
+
+function normalizeGroupName(value?: string | null) {
+  const trimmed = value?.trim() ?? ''
+  return trimmed || null
+}
+
+function listGroupSummaries(store: StoryStore) {
+  const names = new Set<string>()
+  for (const account of store.accounts) {
+    const groupName = normalizeGroupName(account.groupName)
+    if (groupName) names.add(groupName)
+  }
+  return Array.from(names)
+    .sort((left, right) => left.localeCompare(right))
+    .map((groupName) => ({
+      groupName,
+      note: store.groupNotes[groupName] ?? null,
+    }))
+}
+
+function syncGroupNote(store: StoryStore, groupName: string | null, groupNote: string | undefined) {
+  if (!groupName || groupNote == null) return
+  const trimmed = groupNote.trim()
+  if (trimmed) {
+    store.groupNotes[groupName] = trimmed
+    return
+  }
+  delete store.groupNotes[groupName]
+}
+
+function cleanupOrphanedGroupNote(store: StoryStore, groupName: string | null) {
+  if (!groupName) return
+  const stillExists = store.accounts.some((account) => normalizeGroupName(account.groupName) === groupName)
+  if (!stillExists) {
+    delete store.groupNotes[groupName]
+  }
 }
 
 function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetail>): UpstreamAccountDetail {
@@ -184,6 +224,9 @@ function createStore(): StoryStore {
     details: {
       [oauth.id]: oauth,
       [apiKey.id]: apiKey,
+    },
+    groupNotes: {
+      production: 'Primary team group for premium traffic.',
     },
     nextId: 103,
     sessions: {},
@@ -403,6 +446,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
           writesEnabled: store.writesEnabled,
           routing: clone(store.routing),
           items: store.accounts.map((item) => clone(item)),
+          groups: listGroupSummaries(store),
         }
         return jsonResponse(payload)
       }
@@ -418,7 +462,10 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       }
 
       if (path === '/api/pool/upstream-accounts/oauth/login-sessions' && method === 'POST') {
-        const body = parseBody<{ displayName?: string; groupName?: string; note?: string }>(init?.body, {})
+        const body = parseBody<{ displayName?: string; groupName?: string; note?: string; groupNote?: string }>(
+          init?.body,
+          {},
+        )
         const loginId = `login_${Date.now()}`
         const redirectUri = `http://localhost:431${String(store.nextId).slice(-1)}/oauth/callback`
         const state = `state_${loginId}`
@@ -433,6 +480,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
           displayName: body.displayName,
           groupName: body.groupName,
           note: body.note,
+          groupNote: body.groupNote,
           state,
         }
         store.sessions[loginId] = session
@@ -469,6 +517,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         store.details[nextId] = detail
         const summary = toSummary(detail)
         store.accounts = [summary, ...store.accounts.filter((item) => item.id !== nextId)]
+        syncGroupNote(store, normalizeGroupName(detail.groupName), session.groupNote)
         session.accountId = nextId
         session.status = 'completed'
         session.authUrl = null
@@ -497,6 +546,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         const synced = syncLocalWindows(detail)
         store.details[nextId] = synced
         store.accounts = [toSummary(synced), ...store.accounts]
+        syncGroupNote(store, normalizeGroupName(synced.groupName), body.groupNote)
         return jsonResponse(clone(synced), 201)
       }
 
@@ -537,6 +587,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
       }
 
       const detailMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)$/)
+      const groupMatch = path.match(/^\/api\/pool\/upstream-account-groups\/([^/]+)$/)
       if (detailMatch && method === 'GET') {
         const accountId = Number(detailMatch[1])
         const detail = store.details[accountId]
@@ -550,11 +601,25 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         return jsonResponse(buildStickyConversations(accountId))
       }
 
+      if (groupMatch && method === 'PUT') {
+        const groupName = normalizeGroupName(decodeURIComponent(groupMatch[1]))
+        if (!groupName) return jsonResponse({ message: 'missing mock group' }, 404)
+        const exists = store.accounts.some((account) => normalizeGroupName(account.groupName) === groupName)
+        if (!exists) return jsonResponse({ message: 'missing mock group' }, 404)
+        const body = parseBody<UpdateUpstreamAccountGroupPayload>(init?.body, {})
+        syncGroupNote(store, groupName, body.note)
+        return jsonResponse({
+          groupName,
+          note: store.groupNotes[groupName] ?? null,
+        })
+      }
+
       if (detailMatch && method === 'PATCH') {
         const accountId = Number(detailMatch[1])
         const detail = store.details[accountId]
         if (!detail) return jsonResponse({ message: 'missing mock account' }, 404)
         const body = parseBody<UpdateUpstreamAccountPayload>(init?.body, {})
+        const previousGroupName = normalizeGroupName(detail.groupName)
         const updated = syncLocalWindows({
           ...detail,
           displayName: body.displayName ?? detail.displayName,
@@ -574,13 +639,17 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         })
         store.details[accountId] = updated
         store.accounts = store.accounts.map((item) => (item.id === accountId ? toSummary(updated) : item))
+        syncGroupNote(store, normalizeGroupName(updated.groupName), body.groupNote)
+        cleanupOrphanedGroupNote(store, previousGroupName)
         return jsonResponse(clone(updated))
       }
 
       if (detailMatch && method === 'DELETE') {
         const accountId = Number(detailMatch[1])
+        const previousGroupName = normalizeGroupName(store.details[accountId]?.groupName)
         delete store.details[accountId]
         store.accounts = store.accounts.filter((item) => item.id !== accountId)
+        cleanupOrphanedGroupNote(store, previousGroupName)
         return noContent()
       }
 

@@ -9,6 +9,7 @@ import {
   fetchUpstreamAccounts,
   reloginUpstreamAccount,
   syncUpstreamAccount,
+  updateUpstreamAccountGroup,
   updatePoolRoutingSettings,
   updateUpstreamAccount,
   type CreateApiKeyAccountPayload,
@@ -16,7 +17,9 @@ import {
   type CreateOauthLoginSessionPayload,
   type LoginSessionStatusResponse,
   type PoolRoutingSettings,
+  type UpstreamAccountGroupSummary,
   type UpdatePoolRoutingSettingsPayload,
+  type UpdateUpstreamAccountGroupPayload,
   type UpdateUpstreamAccountPayload,
   type UpstreamAccountDetail,
   type UpstreamAccountSummary,
@@ -24,6 +27,7 @@ import {
 
 export function useUpstreamAccounts() {
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
+  const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
   const [writesEnabled, setWritesEnabled] = useState(true)
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -38,6 +42,7 @@ export function useUpstreamAccounts() {
       try {
         const response = await fetchUpstreamAccounts()
         setItems(response.items)
+        setGroups(response.groups)
         setWritesEnabled(response.writesEnabled)
         setRouting(response.routing ?? null)
         setError(null)
@@ -165,6 +170,19 @@ export function useUpstreamAccounts() {
     return response
   }, [])
 
+  const saveGroupNote = useCallback(
+    async (groupName: string, payload: UpdateUpstreamAccountGroupPayload) => {
+      const response = await updateUpstreamAccountGroup(groupName, payload)
+      await loadList(selectedId)
+      if (selectedId != null) {
+        await loadDetail(selectedId)
+      }
+      setError(null)
+      return response
+    },
+    [loadDetail, loadList, selectedId],
+  )
+
   const runSync = useCallback(
     async (accountId: number) => {
       const response = await syncUpstreamAccount(accountId)
@@ -191,6 +209,7 @@ export function useUpstreamAccounts() {
 
   return {
     items,
+    groups,
     writesEnabled,
     routing,
     selectedId,
@@ -209,6 +228,7 @@ export function useUpstreamAccounts() {
     createApiKeyAccount,
     saveAccount,
     saveRouting,
+    saveGroupNote,
     runSync,
     removeAccount,
   }

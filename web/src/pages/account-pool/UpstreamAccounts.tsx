@@ -19,12 +19,14 @@ import { Input } from '../../components/ui/input'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
+import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
 import { UpstreamAccountUsageCard } from '../../components/UpstreamAccountUsageCard'
 import { StickyKeyConversationTable } from '../../components/StickyKeyConversationTable'
 import { UpstreamAccountsTable } from '../../components/UpstreamAccountsTable'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyConversations'
 import type { UpstreamAccountDetail, UpstreamAccountSummary } from '../../lib/api'
+import { isExistingGroup, normalizeGroupName, resolveGroupNote } from '../../lib/upstreamAccountGroups'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
@@ -43,6 +45,13 @@ const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
 type UpstreamAccountsLocationState = {
   selectedAccountId?: number
   openDetail?: boolean
+}
+
+type GroupNoteEditorState = {
+  open: boolean
+  groupName: string
+  note: string
+  existing: boolean
 }
 
 function formatDateTime(value?: string | null) {
@@ -297,6 +306,7 @@ export default function UpstreamAccountsPage() {
   const navigate = useNavigate()
   const {
     items,
+    groups,
     writesEnabled,
     selectedId,
     selectedSummary,
@@ -311,6 +321,7 @@ export default function UpstreamAccountsPage() {
     removeAccount,
     routing,
     saveRouting,
+    saveGroupNote,
   } = useUpstreamAccounts()
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
@@ -321,6 +332,15 @@ export default function UpstreamAccountsPage() {
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
+  const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
+  const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
+    open: false,
+    groupName: '',
+    note: '',
+    existing: false,
+  })
+  const [groupNoteBusy, setGroupNoteBusy] = useState(false)
+  const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
 
   useEffect(() => {
     setDraft(buildDraft(detail))
@@ -341,6 +361,16 @@ export default function UpstreamAccountsPage() {
       setIsRoutingDialogOpen(false)
     }
   }, [writesEnabled])
+
+  useEffect(() => {
+    setGroupDraftNotes((current) => {
+      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
+      if (nextEntries.length === Object.keys(current).length) {
+        return current
+      }
+      return Object.fromEntries(nextEntries)
+    })
+  }, [groups])
 
   useEffect(() => {
     const state = location.state as UpstreamAccountsLocationState | null
@@ -380,11 +410,76 @@ export default function UpstreamAccountsPage() {
         hasUngrouped = true
       }
     }
+    for (const group of groups) {
+      const groupName = group.groupName.trim()
+      if (groupName) {
+        values.add(groupName)
+      }
+    }
     return {
       names: Array.from(values).sort((left, right) => left.localeCompare(right)),
       hasUngrouped,
     }
-  }, [items])
+  }, [groups, items])
+
+  const resolveGroupNoteForName = (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName)
+  const hasGroupNote = (groupName: string) => resolveGroupNoteForName(groupName).trim().length > 0
+
+  const openGroupNoteEditor = (groupName: string) => {
+    const normalized = normalizeGroupName(groupName)
+    if (!normalized) return
+    setGroupNoteError(null)
+    setGroupNoteEditor({
+      open: true,
+      groupName: normalized,
+      note: resolveGroupNoteForName(normalized),
+      existing: isExistingGroup(groups, normalized),
+    })
+  }
+
+  const closeGroupNoteEditor = () => {
+    if (groupNoteBusy) return
+    setGroupNoteEditor((current) => ({ ...current, open: false }))
+    setGroupNoteError(null)
+  }
+
+  const handleSaveGroupNote = async () => {
+    const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName)
+    if (!normalizedGroupName) return
+    const normalizedNote = groupNoteEditor.note.trim()
+    setGroupNoteError(null)
+    if (!groupNoteEditor.existing) {
+      setGroupDraftNotes((current) => {
+        const next = { ...current }
+        if (normalizedNote) {
+          next[normalizedGroupName] = normalizedNote
+        } else {
+          delete next[normalizedGroupName]
+        }
+        return next
+      })
+      setGroupNoteEditor((current) => ({ ...current, open: false }))
+      return
+    }
+
+    setGroupNoteBusy(true)
+    try {
+      await saveGroupNote(normalizedGroupName, {
+        note: normalizedNote || undefined,
+      })
+      setGroupDraftNotes((current) => {
+        if (!(normalizedGroupName in current)) return current
+        const next = { ...current }
+        delete next[normalizedGroupName]
+        return next
+      })
+      setGroupNoteEditor((current) => ({ ...current, open: false }))
+    } catch (err) {
+      setGroupNoteError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setGroupNoteBusy(false)
+    }
+  }
 
   const groupFilterSuggestions = useMemo(() => {
     const suggestions = [t('accountPool.upstreamAccounts.groupFilter.all'), ...availableGroups.names]
@@ -447,6 +542,7 @@ export default function UpstreamAccountsPage() {
         displayName: draft.displayName.trim() || undefined,
         groupName: draft.groupName.trim(),
         note: draft.note.trim() || undefined,
+        groupNote: resolveGroupNoteForName(draft.groupName).trim() || undefined,
         apiKey: source.kind === 'api_key_codex' && draft.apiKey.trim() ? draft.apiKey.trim() : undefined,
         localPrimaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localPrimaryLimit) : undefined,
         localSecondaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localSecondaryLimit) : undefined,
@@ -771,16 +867,31 @@ export default function UpstreamAccountsPage() {
                   </label>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
-                    <UpstreamAccountGroupCombobox
-                      name="detailGroupName"
-                      value={draft.groupName}
-                      suggestions={availableGroups.names}
-                      placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
-                      searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
-                      emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
-                      createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                      onValueChange={(value) => setDraft((current) => ({ ...current, groupName: value }))}
-                    />
+                    <div className="flex items-center gap-2">
+                      <UpstreamAccountGroupCombobox
+                        name="detailGroupName"
+                        value={draft.groupName}
+                        suggestions={availableGroups.names}
+                        placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                        searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                        emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                        createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                        onValueChange={(value) => setDraft((current) => ({ ...current, groupName: value }))}
+                        className="min-w-0 flex-1"
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant={hasGroupNote(draft.groupName) ? 'secondary' : 'outline'}
+                        className="shrink-0 rounded-full"
+                        aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                        title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                        onClick={() => openGroupNoteEditor(draft.groupName)}
+                        disabled={!normalizeGroupName(draft.groupName)}
+                      >
+                        <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                      </Button>
+                    </div>
                   </label>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
@@ -914,6 +1025,31 @@ export default function UpstreamAccountsPage() {
           </>
         )}
       </AccountDetailDrawer>
+
+      <UpstreamAccountGroupNoteDialog
+        open={groupNoteEditor.open}
+        groupName={groupNoteEditor.groupName}
+        note={groupNoteEditor.note}
+        busy={groupNoteBusy}
+        error={groupNoteError}
+        existing={groupNoteEditor.existing}
+        onNoteChange={(value) => {
+          setGroupNoteError(null)
+          setGroupNoteEditor((current) => ({ ...current, note: value }))
+        }}
+        onClose={closeGroupNoteEditor}
+        onSave={() => void handleSaveGroupNote()}
+        title={t('accountPool.upstreamAccounts.groupNotes.dialogTitle')}
+        existingDescription={t('accountPool.upstreamAccounts.groupNotes.existingDescription')}
+        draftDescription={t('accountPool.upstreamAccounts.groupNotes.draftDescription')}
+        noteLabel={t('accountPool.upstreamAccounts.fields.note')}
+        notePlaceholder={t('accountPool.upstreamAccounts.groupNotes.notePlaceholder')}
+        cancelLabel={t('accountPool.upstreamAccounts.actions.cancel')}
+        saveLabel={t('accountPool.upstreamAccounts.actions.save')}
+        closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
+        existingBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.existing')}
+        draftBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.draft')}
+      />
 
       {error ? (
         <Alert variant="warning">

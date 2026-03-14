@@ -6,6 +6,7 @@ import {
   fetchSummary,
   fetchUpstreamAccounts,
   fetchUpstreamStickyConversations,
+  updateUpstreamAccountGroup,
   updateProxySettings,
   updatePoolRoutingSettings,
   validateForwardProxyCandidate,
@@ -385,6 +386,12 @@ describe('account pool frontend API helpers', () => {
               apiKeyConfigured: true,
               maskedApiKey: 'pool-live••••••c0de',
             },
+            groups: [
+              {
+                groupName: 'prod',
+                note: 'Shared routing note',
+              },
+            ],
             items: [],
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -398,6 +405,12 @@ describe('account pool frontend API helpers', () => {
       apiKeyConfigured: true,
       maskedApiKey: 'pool-live••••••c0de',
     })
+    expect(response.groups).toEqual([
+      {
+        groupName: 'prod',
+        note: 'Shared routing note',
+      },
+    ])
   })
 
   it('saves pool routing settings through the dedicated endpoint', async () => {
@@ -419,6 +432,29 @@ describe('account pool frontend API helpers', () => {
 
     expect(response.apiKeyConfigured).toBe(true)
     expect(response.maskedApiKey).toBe('pool-live••••••cret')
+  })
+
+  it('saves a shared upstream account group note through the dedicated endpoint', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(_input)).toContain('/api/pool/upstream-account-groups/prod')
+      expect(init?.method).toBe('PUT')
+      expect(JSON.parse(String(init?.body))).toEqual({ note: 'Primary production accounts' })
+      return new Response(
+        JSON.stringify({
+          groupName: 'prod',
+          note: 'Primary production accounts',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock as typeof fetch)
+
+    const response = await updateUpstreamAccountGroup('prod', { note: 'Primary production accounts' })
+
+    expect(response).toEqual({
+      groupName: 'prod',
+      note: 'Primary production accounts',
+    })
   })
 
   it('normalizes sticky key conversations for one upstream account', async () => {

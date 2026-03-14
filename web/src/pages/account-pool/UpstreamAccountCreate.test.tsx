@@ -104,7 +104,7 @@ async function flushAsync() {
 }
 
 function setInputValue(selector: string, value: string) {
-  const input = host?.querySelector(selector)
+  const input = host?.querySelector(selector) ?? document.body.querySelector(selector)
   if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
     throw new Error(`missing input: ${selector}`)
   }
@@ -122,7 +122,7 @@ function setInputValue(selector: string, value: string) {
 }
 
 function clickButton(matcher: RegExp) {
-  const button = Array.from(host?.querySelectorAll('button') ?? []).find(
+  const button = Array.from(document.body.querySelectorAll('button')).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement
       && matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || candidate.title || ''),
@@ -137,7 +137,7 @@ function clickButton(matcher: RegExp) {
 }
 
 function findButton(matcher: RegExp) {
-  return Array.from(host?.querySelectorAll('button') ?? []).find(
+  return Array.from(document.body.querySelectorAll('button')).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement
       && matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || candidate.title || ''),
@@ -202,6 +202,12 @@ function mockUpstreamAccounts(overrides: Partial<ReturnType<typeof hookMocks.use
         enabled: true,
       },
     ],
+    groups: [
+      {
+        groupName: 'prod',
+        note: 'Existing production group note',
+      },
+    ],
     writesEnabled: true,
     isLoading: false,
     error: null,
@@ -225,6 +231,7 @@ function mockUpstreamAccounts(overrides: Partial<ReturnType<typeof hookMocks.use
     }),
     completeOauthLogin: vi.fn().mockResolvedValue({ id: 41, displayName: 'Row One' }),
     createApiKeyAccount: vi.fn(),
+    saveGroupNote: vi.fn(),
     ...overrides,
   })
 }
@@ -302,6 +309,7 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: 'Row One',
       groupName: undefined,
+      groupNote: undefined,
       note: undefined,
     })
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
@@ -393,5 +401,32 @@ describe('UpstreamAccountCreatePage batch oauth', () => {
     expect(host?.textContent).toContain('Row One is ready. Continue with the remaining rows when you are done here.')
     expect(getBatchRows()).toHaveLength(6)
     expect(navigateMock).not.toHaveBeenCalled()
+  })
+
+  it('passes an existing shared group note when generating oauth for a grouped row', async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: 'login-1',
+      status: 'pending',
+      authUrl: 'https://auth.openai.com/authorize?login=1',
+      redirectUri: 'http://localhost:1455/oauth/callback',
+      expiresAt: '2026-03-13T10:00:00.000Z',
+      accountId: null,
+      error: null,
+    })
+    mockUpstreamAccounts({ beginOauthLogin })
+    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'prod')
+    await flushAsync()
+
+    clickButton(/Generate OAuth URL/i)
+    await flushAsync()
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: undefined,
+      groupName: 'prod',
+      groupNote: 'Existing production group note',
+      note: undefined,
+    })
   })
 })
