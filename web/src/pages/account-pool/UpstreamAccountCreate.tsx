@@ -602,7 +602,6 @@ export default function UpstreamAccountCreatePage() {
     remove: t('accountPool.tags.field.remove'),
     deleteAndRemove: t('accountPool.tags.field.deleteAndRemove'),
     edit: t('accountPool.tags.field.edit'),
-    hoverHint: t('accountPool.tags.field.hoverHint'),
     createTitle: t('accountPool.tags.dialog.createTitle'),
     editTitle: t('accountPool.tags.dialog.editTitle'),
     dialogDescription: t('accountPool.tags.dialog.description'),

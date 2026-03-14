@@ -9,7 +9,6 @@ interface AccountTagContextChipLabels {
   remove: string
   deleteAndRemove: string
   edit: string
-  hoverHint: string
 }
 
 interface AccountTagContextChipProps {
@@ -141,7 +140,6 @@ export function AccountTagContextChip({
           role="menu"
           className={cn('absolute left-0 top-full z-30 mt-2 w-56 rounded-2xl border border-base-300 bg-base-100/95 p-2 shadow-xl backdrop-blur', 'animate-in fade-in-0 zoom-in-95')}
         >
-          <div className="mb-2 px-2 text-xs text-base-content/60">{labels.hoverHint}</div>
           <div className="space-y-1">
             <Button
               type="button"

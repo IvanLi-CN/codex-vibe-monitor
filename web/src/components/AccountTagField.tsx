@@ -18,7 +18,6 @@ interface AccountTagFieldLabels {
   remove: string
   deleteAndRemove: string
   edit: string
-  hoverHint: string
   createTitle: string
   editTitle: string
   dialogDescription: string
@@ -206,7 +205,6 @@ export function AccountTagField({
                 remove: labels.remove,
                 deleteAndRemove: labels.deleteAndRemove,
                 edit: labels.edit,
-                hoverHint: labels.hoverHint,
               }}
               onRemove={() => handleRemove(tag)}
               onEdit={() => openEditDialog(tag)}

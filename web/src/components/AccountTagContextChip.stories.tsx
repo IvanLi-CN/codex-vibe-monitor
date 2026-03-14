@@ -7,7 +7,6 @@ const labels = {
   remove: 'Unlink tag',
   deleteAndRemove: 'Delete and unlink',
   edit: 'Edit routing rule',
-  hoverHint: 'Hover to reveal the in-tag action button, then click it to open the menu. Touch users can long-press.',
 }
 
 function StorySurface({ children }: { children: React.ReactNode }) {

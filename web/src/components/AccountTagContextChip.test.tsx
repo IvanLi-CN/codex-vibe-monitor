@@ -59,7 +59,6 @@ function labels() {
     remove: 'Unlink tag',
     deleteAndRemove: 'Delete and unlink',
     edit: 'Edit routing rule',
-    hoverHint: 'Hover to reveal the in-tag action button, then click it to open the menu. Touch users can long-press.',
   }
 }
 
@@ -115,7 +114,8 @@ describe('AccountTagContextChip', () => {
     })
 
     expect(document.querySelector('[role="menu"]')).not.toBeNull()
-    expect(document.body.textContent).toContain('Hover to reveal the in-tag action button, then click it to open the menu. Touch users can long-press.')
+    expect(document.body.textContent).toContain('Unlink tag')
+    expect(document.body.textContent).toContain('Edit routing rule')
   })
 
   it('uses the delete copy for tags created on the current page', () => {
