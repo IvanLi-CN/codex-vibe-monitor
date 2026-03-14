@@ -84,7 +84,12 @@ function listGroupSummaries(store: StoryStore) {
     }))
 }
 
-function syncGroupNote(store: StoryStore, groupName: string | null, groupNote: string | undefined) {
+function countAccountsForGroup(store: StoryStore, groupName: string | null) {
+  if (!groupName) return 0
+  return store.accounts.filter((account) => normalizeGroupName(account.groupName) === groupName).length
+}
+
+function setGroupNote(store: StoryStore, groupName: string | null, groupNote: string | undefined) {
   if (!groupName || groupNote == null) return
   const trimmed = groupNote.trim()
   if (trimmed) {
@@ -92,6 +97,12 @@ function syncGroupNote(store: StoryStore, groupName: string | null, groupNote: s
     return
   }
   delete store.groupNotes[groupName]
+}
+
+function syncDraftGroupNote(store: StoryStore, groupName: string | null, groupNote: string | undefined) {
+  if (!groupName || groupNote == null) return
+  if (countAccountsForGroup(store, groupName) !== 1) return
+  setGroupNote(store, groupName, groupNote)
 }
 
 function cleanupOrphanedGroupNote(store: StoryStore, groupName: string | null) {
@@ -480,7 +491,8 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
           displayName: body.displayName,
           groupName: body.groupName,
           note: body.note,
-          groupNote: body.groupNote,
+          groupNote:
+            countAccountsForGroup(store, normalizeGroupName(body.groupName)) === 0 ? body.groupNote : undefined,
           state,
         }
         store.sessions[loginId] = session
@@ -517,7 +529,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         store.details[nextId] = detail
         const summary = toSummary(detail)
         store.accounts = [summary, ...store.accounts.filter((item) => item.id !== nextId)]
-        syncGroupNote(store, normalizeGroupName(detail.groupName), session.groupNote)
+        syncDraftGroupNote(store, normalizeGroupName(detail.groupName), session.groupNote)
         session.accountId = nextId
         session.status = 'completed'
         session.authUrl = null
@@ -546,7 +558,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         const synced = syncLocalWindows(detail)
         store.details[nextId] = synced
         store.accounts = [toSummary(synced), ...store.accounts]
-        syncGroupNote(store, normalizeGroupName(synced.groupName), body.groupNote)
+        syncDraftGroupNote(store, normalizeGroupName(synced.groupName), body.groupNote)
         return jsonResponse(clone(synced), 201)
       }
 
@@ -607,7 +619,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         const exists = store.accounts.some((account) => normalizeGroupName(account.groupName) === groupName)
         if (!exists) return jsonResponse({ message: 'missing mock group' }, 404)
         const body = parseBody<UpdateUpstreamAccountGroupPayload>(init?.body, {})
-        syncGroupNote(store, groupName, body.note)
+        setGroupNote(store, groupName, body.note)
         return jsonResponse({
           groupName,
           note: store.groupNotes[groupName] ?? null,
@@ -639,7 +651,7 @@ function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
         })
         store.details[accountId] = updated
         store.accounts = store.accounts.map((item) => (item.id === accountId ? toSummary(updated) : item))
-        syncGroupNote(store, normalizeGroupName(updated.groupName), body.groupNote)
+        syncDraftGroupNote(store, normalizeGroupName(updated.groupName), body.groupNote)
         cleanupOrphanedGroupNote(store, previousGroupName)
         return jsonResponse(clone(updated))
       }

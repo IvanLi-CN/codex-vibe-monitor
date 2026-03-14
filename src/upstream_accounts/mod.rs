@@ -987,22 +987,18 @@ pub(crate) async fn create_oauth_login_session(
     let note = normalize_optional_text(payload.note.clone());
     let group_note = normalize_optional_text(payload.group_note.clone());
     validate_group_note_target(group_name.as_deref(), payload.group_note.is_some())?;
-    if payload.group_note.is_some()
-        && let Some(group_name) = group_name.as_deref()
-        && group_has_accounts(&state.pool, group_name)
-            .await
-            .map_err(internal_error_tuple)?
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "groupNote can only be used for a new group; use PUT /api/pool/upstream-account-groups/:groupName for existing groups".to_string(),
-        ));
-    }
-    let stored_group_note = if payload.group_note.is_some() {
-        group_note
+    let store_group_note = if payload.group_note.is_some() {
+        if let Some(group_name) = group_name.as_deref() {
+            !group_has_accounts(&state.pool, group_name)
+                .await
+                .map_err(internal_error_tuple)?
+        } else {
+            false
+        }
     } else {
-        None
+        false
     };
+    let stored_group_note = if store_group_note { group_note } else { None };
 
     sqlx::query(
         r#"
@@ -1136,17 +1132,6 @@ pub(crate) async fn create_api_key_account(
     let has_group_note = payload.group_note.is_some();
     let group_note = normalize_optional_text(payload.group_note);
     validate_group_note_target(group_name.as_deref(), has_group_note)?;
-    if has_group_note
-        && let Some(group_name) = group_name.as_deref()
-        && group_has_accounts(&state.pool, group_name)
-            .await
-            .map_err(internal_error_tuple)?
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "groupNote can only be used for a new group; use PUT /api/pool/upstream-account-groups/:groupName for existing groups".to_string(),
-        ));
-    }
     let target_group_name = group_name.clone();
     let limit_unit = normalize_limit_unit(payload.local_limit_unit);
     let masked_api_key = mask_api_key(&api_key);
@@ -1265,17 +1250,6 @@ pub(crate) async fn update_upstream_account(
         validate_local_limits(row.local_primary_limit, row.local_secondary_limit)?;
     }
     validate_group_note_target(row.group_name.as_deref(), requested_group_note.is_some())?;
-    if requested_group_note.is_some()
-        && let Some(group_name) = row.group_name.as_deref()
-        && group_has_accounts(&state.pool, group_name)
-            .await
-            .map_err(internal_error_tuple)?
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "groupNote can only be used for a new group; use PUT /api/pool/upstream-account-groups/:groupName for existing groups".to_string(),
-        ));
-    }
     let now_iso = format_utc_iso(Utc::now());
     let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
     sqlx::query(
