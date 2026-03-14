@@ -19,9 +19,8 @@ interface AccountTagContextChipProps {
   onRemove: () => void | Promise<void>
   onEdit: () => void
   defaultOpen?: boolean
+  defaultShowActionButton?: boolean
 }
-
-type MenuMode = 'hover' | 'sticky' | null
 
 export function AccountTagContextChip({
   name,
@@ -30,11 +29,12 @@ export function AccountTagContextChip({
   onRemove,
   onEdit,
   defaultOpen = false,
+  defaultShowActionButton = false,
 }: AccountTagContextChipProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null)
   const longPressTimer = useRef<number | null>(null)
-  const suppressClickRef = useRef(false)
-  const [menuMode, setMenuMode] = useState<MenuMode>(defaultOpen ? 'sticky' : null)
+  const [showActionButton, setShowActionButton] = useState(defaultShowActionButton || defaultOpen)
+  const [menuOpen, setMenuOpen] = useState(defaultOpen)
   const [busyAction, setBusyAction] = useState<'remove' | null>(null)
 
   useEffect(() => {
@@ -47,13 +47,13 @@ export function AccountTagContextChip({
 
     const handlePointerDown = (event: PointerEvent) => {
       if (!wrapperRef.current?.contains(event.target as Node)) {
-        setMenuMode(null)
+        setMenuOpen(false)
       }
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setMenuMode(null)
+        setMenuOpen(false)
       }
     }
 
@@ -67,10 +67,6 @@ export function AccountTagContextChip({
     }
   }, [])
 
-  const openStickyMenu = () => {
-    setMenuMode('sticky')
-  }
-
   const clearLongPress = () => {
     if (longPressTimer.current != null) {
       window.clearTimeout(longPressTimer.current)
@@ -82,7 +78,7 @@ export function AccountTagContextChip({
     setBusyAction('remove')
     try {
       await onRemove()
-      setMenuMode(null)
+      setMenuOpen(false)
     } finally {
       setBusyAction(null)
     }
@@ -92,28 +88,17 @@ export function AccountTagContextChip({
     <div
       ref={wrapperRef}
       className="relative inline-flex"
-      onMouseEnter={() => setMenuMode((current) => (current === 'sticky' ? current : 'hover'))}
-      onMouseLeave={() => setMenuMode((current) => (current === 'hover' ? null : current))}
+      onMouseEnter={() => setShowActionButton(true)}
+      onMouseLeave={() => setShowActionButton(menuOpen)}
     >
-      <button
-        type="button"
-        className="group inline-flex"
-        aria-haspopup="menu"
-        aria-expanded={menuMode != null}
-        onClick={() => {
-          if (suppressClickRef.current) {
-            suppressClickRef.current = false
-            return
-          }
-          setMenuMode((current) => (current == null ? 'sticky' : null))
-        }}
-        onFocus={openStickyMenu}
+      <div
+        className="inline-flex"
         onPointerDown={(event) => {
           if (event.pointerType !== 'touch') return
           clearLongPress()
           longPressTimer.current = window.setTimeout(() => {
-            suppressClickRef.current = true
-            openStickyMenu()
+            setShowActionButton(true)
+            setMenuOpen(true)
           }, 450)
         }}
         onPointerUp={clearLongPress}
@@ -128,15 +113,33 @@ export function AccountTagContextChip({
             </span>
           ) : null}
         </Badge>
+      </div>
+
+      <button
+        type="button"
+        aria-label={`${name} more actions`}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        className={cn(
+          'absolute -right-3 -top-3 inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300 bg-base-100 text-base-content shadow-sm transition-all',
+          showActionButton || menuOpen
+            ? 'pointer-events-auto opacity-100 scale-100'
+            : 'pointer-events-none opacity-0 scale-95',
+        )}
+        onFocus={() => setShowActionButton(true)}
+        onBlur={() => setShowActionButton(menuOpen)}
+        onClick={() => {
+          setShowActionButton(true)
+          setMenuOpen((current) => !current)
+        }}
+      >
+        <Icon icon="mdi:dots-horizontal" className="h-4 w-4" aria-hidden />
       </button>
 
-      {menuMode != null ? (
+      {menuOpen ? (
         <div
           role="menu"
-          className={cn(
-            'absolute left-0 top-full z-30 mt-2 w-56 rounded-2xl border border-base-300 bg-base-100/95 p-2 shadow-xl backdrop-blur',
-            'animate-in fade-in-0 zoom-in-95',
-          )}
+          className={cn('absolute left-0 top-full z-30 mt-2 w-56 rounded-2xl border border-base-300 bg-base-100/95 p-2 shadow-xl backdrop-blur', 'animate-in fade-in-0 zoom-in-95')}
         >
           <div className="mb-2 px-2 text-xs text-base-content/60">{labels.hoverHint}</div>
           <div className="space-y-1">
@@ -159,7 +162,7 @@ export function AccountTagContextChip({
               variant="ghost"
               className="w-full justify-start"
               onClick={() => {
-                setMenuMode(null)
+                setMenuOpen(false)
                 onEdit()
               }}
             >

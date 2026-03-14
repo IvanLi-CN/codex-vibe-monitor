@@ -7,7 +7,7 @@ const labels = {
   remove: 'Unlink tag',
   deleteAndRemove: 'Delete and unlink',
   edit: 'Edit routing rule',
-  hoverHint: 'Hover or long-press to open the tag actions.',
+  hoverHint: 'Hover to reveal the action button, then click it to open the menu. Touch users can long-press.',
 }
 
 function StorySurface({ children }: { children: React.ReactNode }) {
@@ -23,9 +23,11 @@ function StorySurface({ children }: { children: React.ReactNode }) {
 function ChipHarness({
   currentPageCreated = false,
   defaultOpen = false,
+  defaultShowActionButton = false,
 }: {
   currentPageCreated?: boolean
   defaultOpen?: boolean
+  defaultShowActionButton?: boolean
 }) {
   const [lastAction, setLastAction] = useState('None')
 
@@ -36,6 +38,7 @@ function ChipHarness({
           name="vip-routing"
           currentPageCreated={currentPageCreated}
           defaultOpen={defaultOpen}
+          defaultShowActionButton={defaultShowActionButton}
           labels={labels}
           onRemove={() => setLastAction(currentPageCreated ? 'delete-and-unlink' : 'unlink')}
           onEdit={() => setLastAction('edit')}
@@ -57,7 +60,7 @@ const meta = {
     docs: {
       description: {
         component:
-          '上游账号 tag 的固有交互芯片：桌面端悬浮可见菜单，移动端长按可见菜单；菜单内支持反关联/删除和编辑。',
+          '上游账号 tag 的固有交互芯片：桌面端悬浮后显示三点按钮，点击三点再打开上下文菜单；移动端保留长按打开菜单。',
       },
     },
   },
@@ -82,6 +85,10 @@ export const CurrentPageCreated: Story = {
   render: () => <ChipHarness currentPageCreated />,
 }
 
+export const ActionButtonVisible: Story = {
+  render: () => <ChipHarness defaultShowActionButton />,
+}
+
 export const MenuVisible: Story = {
-  render: () => <ChipHarness defaultOpen />,
+  render: () => <ChipHarness defaultOpen defaultShowActionButton />,
 }

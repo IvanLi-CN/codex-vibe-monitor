@@ -59,12 +59,12 @@ function labels() {
     remove: 'Unlink tag',
     deleteAndRemove: 'Delete and unlink',
     edit: 'Edit routing rule',
-    hoverHint: 'Hover or long-press to open the menu.',
+    hoverHint: 'Hover to reveal the action button, then click it to open the menu. Touch users can long-press.',
   }
 }
 
 describe('AccountTagContextChip', () => {
-  it('opens the context menu on hover', () => {
+  it('reveals the action button on hover and opens the menu on click', () => {
     render(
       <AccountTagContextChip
         name="vip-routing"
@@ -74,11 +74,23 @@ describe('AccountTagContextChip', () => {
       />,
     )
 
-    const trigger = document.querySelector('button[aria-haspopup="menu"]') as HTMLElement
+    const wrapper = document.querySelector('.relative.inline-flex') as HTMLElement
+    const actionButton = document.querySelector('button[aria-haspopup="menu"]') as HTMLElement
+
+    expect(actionButton.className).toContain('opacity-0')
+    expect(actionButton.getAttribute('aria-expanded')).toBe('false')
+
     act(() => {
-      trigger.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+      wrapper.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: null }))
     })
 
+    expect(actionButton.className).toContain('opacity-100')
+
+    act(() => {
+      actionButton.click()
+    })
+
+    expect(actionButton.getAttribute('aria-expanded')).toBe('true')
     expect(document.body.textContent).toContain('Unlink tag')
     expect(document.body.textContent).toContain('Edit routing rule')
   })
@@ -94,16 +106,16 @@ describe('AccountTagContextChip', () => {
       />,
     )
 
-    const trigger = document.querySelector('button[aria-haspopup="menu"]') as HTMLElement
+    const touchSurface = document.querySelector('.relative.inline-flex > .inline-flex') as HTMLElement
     act(() => {
-      trigger.dispatchEvent(new MockPointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))
+      touchSurface.dispatchEvent(new MockPointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))
     })
     await act(async () => {
       await vi.advanceTimersByTimeAsync(460)
     })
 
     expect(document.querySelector('[role="menu"]')).not.toBeNull()
-    expect(document.body.textContent).toContain('Hover or long-press to open the menu.')
+    expect(document.body.textContent).toContain('Hover to reveal the action button, then click it to open the menu. Touch users can long-press.')
   })
 
   it('uses the delete copy for tags created on the current page', () => {
