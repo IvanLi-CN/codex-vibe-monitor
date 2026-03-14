@@ -1,7 +1,7 @@
 name: Label Gate
 
 on:
-  pull_request_target:
+  pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, edited]
 
@@ -38,7 +38,33 @@ jobs:
           path: candidate
           persist-credentials: false
 
+      - name: Detect rollout contract support
+        id: rollout
+        shell: bash
+        run: |
+          set -euo pipefail
+          final_topology_paths=(
+            "trusted/.github/workflows/ci-pr.yml"
+            "trusted/.github/workflows/ci-main.yml"
+            "trusted/.github/workflows/release.yml"
+          )
+          missing_final_sources=0
+          for path in "${final_topology_paths[@]}"; do
+            if [ ! -f "$path" ]; then
+              missing_final_sources=1
+              break
+            fi
+          done
+
+          if [ "$missing_final_sources" -eq 1 ]; then
+            echo "::warning::Base branch ${GITHUB_BASE_REF} does not contain the final split-topology contract yet; skipping trusted contract validation during rollout and keeping trusted metadata_gate.py pinned to base."
+            echo "supports_final_contract=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "supports_final_contract=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Validate trusted label-gate contract
+        if: steps.rollout.outputs.supports_final_contract == 'true'
         run: |
           python3 trusted/.github/scripts/check_quality_gates_contract.py \
             --repo-root "$PWD/candidate" \

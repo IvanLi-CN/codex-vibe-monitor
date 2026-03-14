@@ -7,6 +7,7 @@
 ## Index
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                                                          |
+| f6f6e | GH Actions 防取消发布链路全面对齐                                              | 部分完成（3/4） | `f6f6e-gh-actions-release-anti-cancel/SPEC.md`           | 2026-03-14 | strict anti-cancel / split workflows / final quality-gates / local contract tests green        |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
 | t3rdp | 号池 Tag 路由与管理扩展                                                       | 已实现          | `t3rdp-account-pool-tag-routing/SPEC.md`                 | 2026-03-14 | fast-track / account-pool tags / routing policy / Storybook visual evidence synced            |
 | thyxm | 上游账号分组共享备注                                                          | 已实现          | `thyxm-upstream-account-group-notes/SPEC.md`             | 2026-03-14 | 增量 spec / shared group notes / local validation + browser smoke complete                     |

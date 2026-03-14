@@ -4,11 +4,12 @@ set -euo pipefail
 # Compute effective semver based on release intent from PR labels.
 #
 # Inputs (env):
+#   TARGET_SHA: commit SHA being released/backfilled (preferred when set)
 #   RELEASE_BUMP: patch|minor|major
 #   RELEASE_CHANNEL: stable|rc
 #
 # Uses:
-#   GITHUB_SHA: commit SHA (required for rc, used as -rc.<sha7> suffix)
+#   GITHUB_SHA: workflow context SHA (fallback when TARGET_SHA is unset)
 #
 # Outputs (to $GITHUB_ENV when set, otherwise prints key=val lines):
 #   APP_EFFECTIVE_VERSION: X.Y.Z or X.Y.Z-rc.<sha7>
@@ -23,6 +24,7 @@ git fetch --tags --force || true
 
 release_bump="${RELEASE_BUMP:-}"
 release_channel="${RELEASE_CHANNEL:-}"
+target_sha="${TARGET_SHA:-${GITHUB_SHA:-}}"
 
 if [[ -z "$release_bump" ]]; then
   echo "Missing RELEASE_BUMP (patch|minor|major)" >&2
@@ -32,10 +34,19 @@ if [[ -z "$release_channel" ]]; then
   echo "Missing RELEASE_CHANNEL (stable|rc)" >&2
   exit 1
 fi
+if [[ -z "$target_sha" ]]; then
+  echo "Missing TARGET_SHA/GITHUB_SHA (required to resolve release target)" >&2
+  exit 1
+fi
+if ! git rev-parse --verify "${target_sha}^{commit}" >/dev/null 2>&1; then
+  echo "Unknown target commit: ${target_sha}" >&2
+  exit 1
+fi
 
-# Base version: the max existing *stable* semver tag vX.Y.Z (ignore prereleases).
+# Base version: the max existing *stable* semver tag vX.Y.Z reachable from the release target
+# (ignore prereleases) so manual backfills do not accidentally bump from newer descendants.
 latest_stable_tag=$(
-  git tag -l 'v*' \
+  git tag --merged "${target_sha}" -l 'v*' \
     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
     | sort -V \
     | tail -n 1
@@ -90,10 +101,10 @@ case "$release_channel" in
     effective="$next_stable"
     ;;
   rc)
-    sha="${GITHUB_SHA:-}"
+    sha="${target_sha}"
     sha7="$(printf '%s' "$sha" | cut -c1-7)"
     if [[ -z "$sha7" ]]; then
-      echo "Missing GITHUB_SHA (required for rc version suffix)" >&2
+      echo "Missing TARGET_SHA/GITHUB_SHA (required for rc version suffix)" >&2
       exit 1
     fi
     prerelease="true"
@@ -123,4 +134,4 @@ else
   echo "RELEASE_CHANNEL=${release_channel}"
 fi
 
-echo "Computed APP_EFFECTIVE_VERSION=${effective} (base ${latest_stable_tag}, bump ${release_bump}, channel ${release_channel})"
+echo "Computed APP_EFFECTIVE_VERSION=${effective} (target ${target_sha}, base ${latest_stable_tag}, bump ${release_bump}, channel ${release_channel})"
