@@ -5,17 +5,41 @@ import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
+import {
+  Dialog,
+  DialogCloseIcon,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '../../components/ui/dialog'
+import { FloatingFieldError } from '../../components/ui/floating-field-error'
 import { Input } from '../../components/ui/input'
-import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverArrow,
+  PopoverContent,
+  PopoverTrigger,
+} from '../../components/ui/popover'
 import { Spinner } from '../../components/ui/spinner'
 import { Tooltip } from '../../components/ui/tooltip'
+import { AccountTagField } from '../../components/AccountTagField'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
 import { MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotifications'
+import { usePoolTags } from '../../hooks/usePoolTags'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
-import type { LoginSessionStatusResponse, UpstreamAccountSummary } from '../../lib/api'
+import type {
+  LoginSessionStatusResponse,
+  UpstreamAccountDetail,
+  UpstreamAccountDuplicateInfo,
+  UpstreamAccountSummary,
+} from '../../lib/api'
+import { fetchUpstreamAccountDetail } from '../../lib/api'
 import { copyText, selectAllReadonlyText } from '../../lib/clipboard'
+import { emitUpstreamAccountsChanged } from '../../lib/upstreamAccountsEvents'
 import {
   buildGroupNameSuggestions,
   isExistingGroup,
@@ -28,6 +52,12 @@ import { useTranslation } from '../../i18n'
 
 type CreateTab = 'oauth' | 'batchOauth' | 'apiKey'
 type BatchOauthBusyAction = 'generate' | 'complete' | null
+type DuplicateWarningState = {
+  accountId: number
+  displayName: string
+  peerAccountIds: number[]
+  reasons: string[]
+}
 type GroupNoteEditorState = {
   open: boolean
   groupName: string
@@ -45,9 +75,46 @@ type BatchOauthRow = {
   callbackUrl: string
   session: LoginSessionStatusResponse | null
   sessionHint: string | null
+  duplicateWarning: DuplicateWarningState | null
+  needsRefresh: boolean
   actionError: string | null
   busyAction: BatchOauthBusyAction
 }
+
+type CreatePageDraft = {
+  oauth?: {
+    displayName?: string
+    groupName?: string
+    isMother?: boolean
+    note?: string
+    tagIds?: number[]
+    callbackUrl?: string
+    session?: LoginSessionStatusResponse | null
+    sessionHint?: string | null
+    duplicateWarning?: DuplicateWarningState | null
+    actionError?: string | null
+  }
+  batchOauth?: {
+    defaultGroupName?: string
+    tagIds?: number[]
+    rows?: Array<Partial<BatchOauthRow> & { id?: string }>
+  }
+  apiKey?: {
+    displayName?: string
+    groupName?: string
+    isMother?: boolean
+    note?: string
+    tagIds?: number[]
+    apiKeyValue?: string
+    primaryLimit?: string
+    secondaryLimit?: string
+    limitUnit?: string
+  }
+}
+
+type CreatePageLocationState = {
+  draft?: CreatePageDraft
+} | null
 
 function normalizeNumberInput(value: string): number | undefined {
   const trimmed = value.trim()
@@ -96,9 +163,74 @@ function createBatchOauthRow(id: string, groupName = ''): BatchOauthRow {
     callbackUrl: '',
     session: null,
     sessionHint: null,
+    duplicateWarning: null,
+    needsRefresh: false,
     actionError: null,
     busyAction: null,
   }
+}
+
+function hydrateBatchOauthRow(
+  seed: Partial<BatchOauthRow> & { id?: string },
+  fallbackId: string,
+  fallbackGroupName = '',
+): BatchOauthRow {
+  return {
+    ...createBatchOauthRow(seed.id ?? fallbackId, seed.groupName ?? fallbackGroupName),
+    ...seed,
+    id: seed.id ?? fallbackId,
+    groupName: seed.groupName ?? fallbackGroupName,
+    isMother: seed.isMother === true,
+    duplicateWarning: seed.duplicateWarning ?? null,
+    needsRefresh: seed.needsRefresh === true,
+  }
+}
+
+function getNextBatchRowIndex(rows: BatchOauthRow[]) {
+  return rows.reduce((max, row) => {
+    const matched = /^row-(\d+)$/.exec(row.id)
+    const current = matched ? Number(matched[1]) : 0
+    return Number.isFinite(current) ? Math.max(max, current + 1) : max
+  }, 1)
+}
+
+function normalizeDisplayNameKey(value: string) {
+  return value.trim().toLocaleLowerCase()
+}
+
+function findDisplayNameConflict(
+  items: UpstreamAccountSummary[],
+  displayName: string,
+  excludeId?: number | null,
+) {
+  const normalized = normalizeDisplayNameKey(displayName)
+  if (!normalized) return null
+  return (
+    items.find(
+      (item) =>
+        item.id !== excludeId &&
+        normalizeDisplayNameKey(item.displayName) === normalized,
+    ) ?? null
+  )
+}
+
+function invalidatePendingSingleOauthSession(
+  currentSession: LoginSessionStatusResponse | null,
+  setSession: (value: LoginSessionStatusResponse | null) => void,
+  setSessionHint: (value: string | null) => void,
+  setOauthCallbackUrl: (value: string) => void,
+  setManualCopyOpen: (value: boolean) => void,
+  setActionError: (value: string | null) => void,
+  setOauthDuplicateWarning: (value: DuplicateWarningState | null) => void,
+  regenerateRequiredLabel: string,
+) {
+  if (!currentSession) return
+  setSession(null)
+  setSessionHint(regenerateRequiredLabel)
+  setOauthCallbackUrl('')
+  setManualCopyOpen(false)
+  setActionError(null)
+  setOauthDuplicateWarning(null)
 }
 
 function applyBatchMotherDraftRules(rows: BatchOauthRow[], changedRowId: string) {
@@ -127,12 +259,14 @@ function enforceBatchMotherDraftUniqueness(rows: BatchOauthRow[]) {
 
 function batchStatusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
   if (status === 'completed') return 'success'
+  if (status === 'completedNeedsRefresh') return 'warning'
   if (status === 'pending') return 'warning'
   if (status === 'failed' || status === 'expired') return 'error'
   return 'secondary'
 }
 
 function batchRowStatus(row: BatchOauthRow) {
+  if (row.needsRefresh) return 'completedNeedsRefresh'
   return row.session?.status ?? 'draft'
 }
 
@@ -153,10 +287,199 @@ function buildActionTooltip(title: string, description: string) {
   )
 }
 
+function DuplicateWarningPopover({
+  duplicateWarning,
+  summaryTitle,
+  summaryBody,
+  openDetailsLabel,
+  onOpenDetails,
+  side = 'top',
+}: {
+  duplicateWarning: DuplicateWarningState
+  summaryTitle: string
+  summaryBody: string
+  openDetailsLabel: string
+  onOpenDetails: (accountId: number) => void
+  side?: 'top' | 'right' | 'bottom' | 'left'
+}) {
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    setOpen(true)
+  }, [duplicateWarning.accountId, summaryTitle, summaryBody])
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-warning transition-colors hover:text-warning/90"
+          aria-label={summaryTitle}
+        >
+          <AppIcon name="alert-outline" className="h-5 w-5" aria-hidden />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side={side}
+        sideOffset={10}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        className="w-[16.5rem] rounded-2xl border border-warning/45 bg-base-100 p-0 shadow-[0_16px_38px_rgba(15,23,42,0.16)]"
+      >
+        <div className="space-y-3 p-3">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 text-warning">
+              <AppIcon name="alert-outline" className="h-4 w-4" aria-hidden />
+            </div>
+            <div className="min-w-0 space-y-1">
+              <p className="text-sm font-semibold leading-5 text-warning">{summaryTitle}</p>
+              <p className="text-[11px] leading-5 text-base-content/72">{summaryBody}</p>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 rounded-full px-2.5 text-xs font-semibold text-warning hover:bg-warning/10 hover:text-warning"
+              onClick={() => {
+                setOpen(false)
+                onOpenDetails(duplicateWarning.accountId)
+              }}
+            >
+              {openDetailsLabel}
+            </Button>
+          </div>
+        </div>
+        <PopoverArrow className="fill-base-100 stroke-warning/45 stroke-[0.8]" width={16} height={8} />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function DuplicateDetailField({
+  label,
+  value,
+}: {
+  label: string
+  value?: string | null
+}) {
+  return (
+    <div className="rounded-2xl border border-base-300/70 bg-base-100/82 px-3 py-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/45">
+        {label}
+      </p>
+      <p className="mt-1 break-all text-sm text-base-content/82">{value?.trim() ? value : '—'}</p>
+    </div>
+  )
+}
+
+function accountStatusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
+  if (status === 'active') return 'success'
+  if (status === 'syncing') return 'warning'
+  if (status === 'error' || status === 'needs_reauth') return 'error'
+  return 'secondary'
+}
+
+function accountKindVariant(kind: string): 'secondary' | 'success' {
+  return kind === 'oauth_codex' ? 'success' : 'secondary'
+}
+
+function DuplicateAccountDetailDialog({
+  open,
+  detail,
+  isLoading,
+  onClose,
+  title,
+  description,
+  duplicateLabel,
+  closeLabel,
+  formatDuplicateReasons,
+  statusLabel,
+  kindLabel,
+  fieldLabels,
+}: {
+  open: boolean
+  detail: UpstreamAccountDetail | null
+  isLoading: boolean
+  onClose: () => void
+  title: string
+  description: string
+  duplicateLabel: string
+  closeLabel: string
+  formatDuplicateReasons: (duplicateInfo?: UpstreamAccountDuplicateInfo | null) => string
+  statusLabel: (status: string) => string
+  kindLabel: (kind: string) => string
+  fieldLabels: {
+    groupName: string
+    email: string
+    accountId: string
+    userId: string
+    lastSuccessSync: string
+  }
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <DialogContent className="max-h-[85vh] overflow-hidden p-0 sm:max-w-[38rem]">
+        <div className="flex items-start justify-between gap-4 border-b border-base-300/70 px-5 py-4">
+          <DialogHeader className="min-w-0">
+            <DialogTitle className="truncate">{detail?.displayName ?? title}</DialogTitle>
+            <DialogDescription>{description}</DialogDescription>
+          </DialogHeader>
+          <DialogCloseIcon aria-label={closeLabel} />
+        </div>
+        <div className="space-y-4 overflow-y-auto px-5 py-5">
+          {isLoading ? (
+            <div className="flex min-h-44 items-center justify-center">
+              <Spinner />
+            </div>
+          ) : detail ? (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={accountStatusVariant(detail.status)}>{statusLabel(detail.status)}</Badge>
+                <Badge variant={accountKindVariant(detail.kind)}>{kindLabel(detail.kind)}</Badge>
+                {detail.duplicateInfo ? <Badge variant="warning">{duplicateLabel}</Badge> : null}
+              </div>
+              {detail.duplicateInfo ? (
+                <Alert variant="warning">
+                  <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <div>
+                    <p className="font-semibold text-warning">{duplicateLabel}</p>
+                    <p className="mt-1 text-sm text-warning/90">
+                      {`命中：${formatDuplicateReasons(detail.duplicateInfo)}。关联账号 ID：${detail.duplicateInfo.peerAccountIds.join(', ') || '—'}。`}
+                    </p>
+                  </div>
+                </Alert>
+              ) : null}
+              <div className="grid gap-3 md:grid-cols-2">
+                <DuplicateDetailField label={fieldLabels.groupName} value={detail.groupName ?? ''} />
+                <DuplicateDetailField label={fieldLabels.email} value={detail.email ?? ''} />
+                <DuplicateDetailField
+                  label={fieldLabels.accountId}
+                  value={detail.chatgptAccountId ?? detail.maskedApiKey ?? ''}
+                />
+                <DuplicateDetailField label={fieldLabels.userId} value={detail.chatgptUserId ?? ''} />
+                <DuplicateDetailField
+                  label={fieldLabels.lastSuccessSync}
+                  value={formatDateTime(detail.lastSuccessfulSyncAt)}
+                />
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-base-content/65">{description}</p>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export default function UpstreamAccountCreatePage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
+  const locationState = (location.state as CreatePageLocationState) ?? null
+  const draft = locationState?.draft ?? null
   const {
     items,
     groups = [],
@@ -169,6 +492,7 @@ export default function UpstreamAccountCreatePage() {
     createApiKeyAccount,
     saveGroupNote,
   } = useUpstreamAccounts()
+  const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags()
   const notifyMotherSwitches = useMotherSwitchNotifications()
 
   const relinkAccountId = useMemo(() => parseAccountId(location.search), [location.search])
@@ -177,31 +501,48 @@ export default function UpstreamAccountCreatePage() {
     [items, relinkAccountId],
   )
   const isRelinking = relinkAccountId != null
+  const initialBatchRows = useMemo(() => {
+    const defaultGroupName = draft?.batchOauth?.defaultGroupName ?? ''
+    if (!draft?.batchOauth?.rows?.length) {
+      return Array.from({ length: 5 }, (_, index) => createBatchOauthRow(`row-${index + 1}`, defaultGroupName))
+    }
+    return draft.batchOauth.rows.map((row, index) =>
+      hydrateBatchOauthRow(row, `row-${index + 1}`, defaultGroupName),
+    )
+  }, [draft])
 
   const [activeTab, setActiveTab] = useState<CreateTab>(() => (isRelinking ? 'oauth' : parseCreateMode(location.search)))
-  const [oauthDisplayName, setOauthDisplayName] = useState('')
-  const [oauthGroupName, setOauthGroupName] = useState('')
-  const [oauthIsMother, setOauthIsMother] = useState(false)
-  const [oauthNote, setOauthNote] = useState('')
-  const [oauthCallbackUrl, setOauthCallbackUrl] = useState('')
-  const [apiKeyDisplayName, setApiKeyDisplayName] = useState('')
-  const [apiKeyGroupName, setApiKeyGroupName] = useState('')
-  const [apiKeyIsMother, setApiKeyIsMother] = useState(false)
-  const [apiKeyNote, setApiKeyNote] = useState('')
-  const [apiKeyValue, setApiKeyValue] = useState('')
-  const [apiKeyPrimaryLimit, setApiKeyPrimaryLimit] = useState('')
-  const [apiKeySecondaryLimit, setApiKeySecondaryLimit] = useState('')
-  const [apiKeyLimitUnit, setApiKeyLimitUnit] = useState('requests')
-  const [session, setSession] = useState<LoginSessionStatusResponse | null>(null)
-  const [sessionHint, setSessionHint] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [oauthDisplayName, setOauthDisplayName] = useState(() => draft?.oauth?.displayName ?? '')
+  const [oauthGroupName, setOauthGroupName] = useState(() => draft?.oauth?.groupName ?? '')
+  const [oauthIsMother, setOauthIsMother] = useState(() => draft?.oauth?.isMother === true)
+  const [oauthNote, setOauthNote] = useState(() => draft?.oauth?.note ?? '')
+  const [oauthTagIds, setOauthTagIds] = useState<number[]>(() => draft?.oauth?.tagIds ?? [])
+  const [oauthCallbackUrl, setOauthCallbackUrl] = useState(() => draft?.oauth?.callbackUrl ?? '')
+  const [apiKeyDisplayName, setApiKeyDisplayName] = useState(() => draft?.apiKey?.displayName ?? '')
+  const [apiKeyGroupName, setApiKeyGroupName] = useState(() => draft?.apiKey?.groupName ?? '')
+  const [apiKeyIsMother, setApiKeyIsMother] = useState(() => draft?.apiKey?.isMother === true)
+  const [apiKeyNote, setApiKeyNote] = useState(() => draft?.apiKey?.note ?? '')
+  const [apiKeyTagIds, setApiKeyTagIds] = useState<number[]>(() => draft?.apiKey?.tagIds ?? [])
+  const [apiKeyValue, setApiKeyValue] = useState(() => draft?.apiKey?.apiKeyValue ?? '')
+  const [apiKeyPrimaryLimit, setApiKeyPrimaryLimit] = useState(() => draft?.apiKey?.primaryLimit ?? '')
+  const [apiKeySecondaryLimit, setApiKeySecondaryLimit] = useState(() => draft?.apiKey?.secondaryLimit ?? '')
+  const [apiKeyLimitUnit, setApiKeyLimitUnit] = useState(() => draft?.apiKey?.limitUnit ?? 'requests')
+  const [session, setSession] = useState<LoginSessionStatusResponse | null>(() => draft?.oauth?.session ?? null)
+  const [sessionHint, setSessionHint] = useState<string | null>(() => draft?.oauth?.sessionHint ?? null)
+  const [oauthDuplicateWarning, setOauthDuplicateWarning] = useState<DuplicateWarningState | null>(
+    () => draft?.oauth?.duplicateWarning ?? null,
+  )
+  const [duplicateDetailOpen, setDuplicateDetailOpen] = useState(false)
+  const [duplicateDetailLoading, setDuplicateDetailLoading] = useState(false)
+  const [duplicateDetail, setDuplicateDetail] = useState<UpstreamAccountDetail | null>(null)
+  const [actionError, setActionError] = useState<string | null>(() => draft?.oauth?.actionError ?? null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [manualCopyOpen, setManualCopyOpen] = useState(false)
   const [batchManualCopyRowId, setBatchManualCopyRowId] = useState<string | null>(null)
-  const [batchDefaultGroupName, setBatchDefaultGroupName] = useState('')
-  const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(() =>
-    Array.from({ length: 5 }, (_, index) => createBatchOauthRow(`row-${index + 1}`)),
-  )
+  const [batchDefaultGroupName, setBatchDefaultGroupName] = useState(() => draft?.batchOauth?.defaultGroupName ?? '')
+  const [batchTagIds, setBatchTagIds] = useState<number[]>(() => draft?.batchOauth?.tagIds ?? [])
+  const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
+  const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(() => initialBatchRows)
   const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
     open: false,
@@ -211,7 +552,7 @@ export default function UpstreamAccountCreatePage() {
   })
   const [groupNoteBusy, setGroupNoteBusy] = useState(false)
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
-  const batchRowIdRef = useRef(6)
+  const batchRowIdRef = useRef(getNextBatchRowIndex(initialBatchRows))
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
   const batchManualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -219,6 +560,85 @@ export default function UpstreamAccountCreatePage() {
     () => buildGroupNameSuggestions(items.map((item) => item.groupName), groups, groupDraftNotes),
     [groupDraftNotes, groups, items],
   )
+  const oauthConflictExcludeId =
+    relinkAccountId ??
+    (session?.status === 'completed' ? (session.accountId ?? null) : null)
+  const oauthDisplayNameConflict = useMemo(
+    () => findDisplayNameConflict(items, oauthDisplayName, oauthConflictExcludeId),
+    [items, oauthConflictExcludeId, oauthDisplayName],
+  )
+  const apiKeyDisplayNameConflict = useMemo(
+    () => findDisplayNameConflict(items, apiKeyDisplayName),
+    [apiKeyDisplayName, items],
+  )
+  const batchDraftNameCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const row of batchRows) {
+      if (row.session?.status === 'completed') continue
+      const key = normalizeDisplayNameKey(row.displayName)
+      if (!key) continue
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return counts
+  }, [batchRows])
+  const batchDisplayNameError = (row: BatchOauthRow) => {
+    const existingConflict = findDisplayNameConflict(items, row.displayName, row.session?.accountId ?? null)
+    if (existingConflict) {
+      return t('accountPool.upstreamAccounts.validation.displayNameDuplicate')
+    }
+    const key = normalizeDisplayNameKey(row.displayName)
+    if (key && (batchDraftNameCounts.get(key) ?? 0) > 1) {
+      return t('accountPool.upstreamAccounts.validation.displayNameDuplicate')
+    }
+    return null
+  }
+  const formatDuplicateReasons = (
+    duplicateInfo?: UpstreamAccountDuplicateInfo | null,
+  ) => {
+    const reasons = duplicateInfo?.reasons ?? []
+    return reasons
+      .map((reason) => {
+        if (reason === 'sharedChatgptAccountId') {
+          return t('accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId')
+        }
+        if (reason === 'sharedChatgptUserId') {
+          return t('accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId')
+        }
+        return reason
+      })
+      .join(' / ')
+  }
+  const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
+  const accountKindLabel = (kind: string) =>
+    kind === 'oauth_codex'
+      ? t('accountPool.upstreamAccounts.kind.oauth')
+      : t('accountPool.upstreamAccounts.kind.apiKey')
+  const openDuplicateDetailDialog = async (accountId: number) => {
+    setDuplicateDetailOpen(true)
+    setDuplicateDetailLoading(true)
+    try {
+      const response = await fetchUpstreamAccountDetail(accountId)
+      setDuplicateDetail(response)
+    } catch {
+      setDuplicateDetail(null)
+    } finally {
+      setDuplicateDetailLoading(false)
+    }
+  }
+
+  const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
+    const detail = await createTag(payload)
+    setPageCreatedTagIds((current) => (current.includes(detail.id) ? current : [...current, detail.id]))
+    return detail
+  }
+
+  const handleDeleteTag = async (tagId: number) => {
+    await deleteTag(tagId)
+    setPageCreatedTagIds((current) => current.filter((value) => value !== tagId))
+    setOauthTagIds((current) => current.filter((value) => value !== tagId))
+    setApiKeyTagIds((current) => current.filter((value) => value !== tagId))
+    setBatchTagIds((current) => current.filter((value) => value !== tagId))
+  }
 
   useEffect(() => {
     if (isRelinking) {
@@ -233,6 +653,7 @@ export default function UpstreamAccountCreatePage() {
     setActiveTab('oauth')
     setOauthDisplayName((current) => current || relinkSummary.displayName)
     setOauthGroupName((current) => current || relinkSummary.groupName || '')
+    setOauthTagIds((current) => (current.length > 0 ? current : (relinkSummary.tags ?? []).map((tag) => tag.id)))
     setOauthIsMother((current) => current || relinkSummary.isMother)
   }, [isRelinking, relinkSummary])
 
@@ -479,14 +900,32 @@ export default function UpstreamAccountCreatePage() {
     navigate(`${location.pathname}${search}`, { replace: true })
   }
 
+  const invalidateOauthSession = useCallback(() => {
+    invalidatePendingSingleOauthSession(
+      session,
+      setSession,
+      setSessionHint,
+      setOauthCallbackUrl,
+      setManualCopyOpen,
+      setActionError,
+      setOauthDuplicateWarning,
+      t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
+    )
+  }, [session, t])
+
   const notifyMotherChange = (updated: UpstreamAccountSummary) => {
     const nextItems = applyMotherUpdateToItems(items, updated)
     notifyMotherSwitches(items, nextItems)
   }
 
   const handleGenerateOauthUrl = async () => {
+    if (oauthDisplayNameConflict) {
+      setActionError(null)
+      return
+    }
     setActionError(null)
     setSessionHint(null)
+    setOauthDuplicateWarning(null)
     setBusyAction('oauth-generate')
     try {
       const response = await beginOauthLogin({
@@ -495,6 +934,7 @@ export default function UpstreamAccountCreatePage() {
         note: oauthNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName) || undefined,
         accountId: relinkAccountId ?? undefined,
+        tagIds: oauthTagIds,
         isMother: oauthIsMother,
       })
       setSession(response)
@@ -544,14 +984,70 @@ export default function UpstreamAccountCreatePage() {
         authUrl: null,
         redirectUri: null,
       })
-      navigate('/account-pool/upstream-accounts', {
-        state: {
-          selectedAccountId: detail.id,
-          openDetail: true,
-        },
-      })
+      if (detail.duplicateInfo) {
+        setOauthDuplicateWarning({
+          accountId: detail.id,
+          displayName: detail.displayName,
+          peerAccountIds: detail.duplicateInfo.peerAccountIds,
+          reasons: detail.duplicateInfo.reasons,
+        })
+      } else {
+        navigate('/account-pool/upstream-accounts', {
+          state: {
+            selectedAccountId: detail.id,
+            openDetail: true,
+            duplicateWarning: null,
+          },
+        })
+      }
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      let latestSession: LoginSessionStatusResponse | null = null
+      try {
+        latestSession = await getLoginSession(session.loginId)
+      } catch {
+        latestSession = null
+      }
+      setSession((current) => latestSession ?? current)
+      if (latestSession?.status === 'completed' && latestSession.accountId) {
+        setActionError(null)
+        emitUpstreamAccountsChanged()
+        try {
+          const detail = await fetchUpstreamAccountDetail(latestSession.accountId)
+          notifyMotherChange(detail)
+          if (detail.duplicateInfo) {
+            setOauthDuplicateWarning({
+              accountId: detail.id,
+              displayName: detail.displayName,
+              peerAccountIds: detail.duplicateInfo.peerAccountIds,
+              reasons: detail.duplicateInfo.reasons,
+            })
+          } else {
+            navigate('/account-pool/upstream-accounts', {
+              state: {
+                selectedAccountId: detail.id,
+                openDetail: true,
+                duplicateWarning: null,
+              },
+            })
+          }
+        } catch {
+          navigate('/account-pool/upstream-accounts', {
+            state: {
+              selectedAccountId: latestSession.accountId,
+              openDetail: true,
+              duplicateWarning: null,
+            },
+          })
+        }
+        return
+      }
+      if (latestSession?.status === 'failed' || latestSession?.status === 'expired') {
+        setOauthCallbackUrl('')
+        setSessionHint(latestSession.error ?? message)
+        setOauthDuplicateWarning(null)
+      }
+      setActionError(message)
     } finally {
       setBusyAction(null)
     }
@@ -560,6 +1056,7 @@ export default function UpstreamAccountCreatePage() {
   const handleBatchGenerateOauthUrl = async (rowId: string) => {
     const row = batchRows.find((item) => item.id === rowId)
     if (!row) return
+    if (row.needsRefresh) return
 
     updateBatchRow(rowId, (current) => ({
       ...current,
@@ -572,6 +1069,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: row.displayName.trim() || undefined,
         groupName: row.groupName.trim() || undefined,
         note: row.note.trim() || undefined,
+        tagIds: batchTagIds,
         groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
         isMother: row.isMother,
       })
@@ -584,6 +1082,7 @@ export default function UpstreamAccountCreatePage() {
         sessionHint: t('accountPool.upstreamAccounts.oauth.generated', {
           expiresAt: formatDateTime(response.expiresAt),
         }),
+        needsRefresh: false,
         actionError: null,
       }))
     } catch (err) {
@@ -651,6 +1150,15 @@ export default function UpstreamAccountCreatePage() {
           sessionHint: t('accountPool.upstreamAccounts.batchOauth.completed', {
             name: detail.displayName || current.displayName || `#${detail.id}`,
           }),
+          duplicateWarning: detail.duplicateInfo
+            ? {
+                accountId: detail.id,
+                displayName: detail.displayName,
+                peerAccountIds: detail.duplicateInfo.peerAccountIds,
+                reasons: detail.duplicateInfo.reasons,
+              }
+            : null,
+          needsRefresh: false,
           actionError: null,
           isMother: detail.isMother,
         }
@@ -663,6 +1171,67 @@ export default function UpstreamAccountCreatePage() {
       } catch {
         latestSession = null
       }
+      if (latestSession?.status === 'completed' && latestSession.accountId) {
+        emitUpstreamAccountsChanged()
+        try {
+          const detail = await fetchUpstreamAccountDetail(latestSession.accountId)
+          notifyMotherChange(detail)
+          updateBatchRow(rowId, (current) => {
+            const baseSession = (current.session ?? row.session) as LoginSessionStatusResponse
+            return {
+              ...current,
+              busyAction: null,
+              session: {
+                loginId: baseSession.loginId,
+                status: 'completed',
+                authUrl: null,
+                redirectUri: null,
+                expiresAt: baseSession.expiresAt,
+                accountId: detail.id,
+                error: null,
+              },
+              callbackUrl: '',
+              sessionHint: t('accountPool.upstreamAccounts.batchOauth.completed', {
+                name: detail.displayName || current.displayName || `#${detail.id}`,
+              }),
+              duplicateWarning: detail.duplicateInfo
+                ? {
+                    accountId: detail.id,
+                    displayName: detail.displayName,
+                    peerAccountIds: detail.duplicateInfo.peerAccountIds,
+                    reasons: detail.duplicateInfo.reasons,
+                  }
+                : null,
+              needsRefresh: false,
+              actionError: null,
+              isMother: detail.isMother,
+            }
+          })
+        } catch {
+          updateBatchRow(rowId, (current) => {
+            const baseSession = (current.session ?? row.session) as LoginSessionStatusResponse
+            return {
+              ...current,
+              busyAction: null,
+              session: {
+                loginId: baseSession.loginId,
+                status: 'completed',
+                authUrl: null,
+                redirectUri: null,
+                expiresAt: baseSession.expiresAt,
+                accountId: latestSession.accountId,
+                error: null,
+              },
+              callbackUrl: '',
+              sessionHint: null,
+              duplicateWarning: current.duplicateWarning,
+              needsRefresh: true,
+              actionError: t('accountPool.upstreamAccounts.batchOauth.completedNeedsRefresh'),
+            }
+          })
+        }
+        return
+      }
 
       updateBatchRow(rowId, (current) => ({
         ...current,
@@ -674,6 +1243,11 @@ export default function UpstreamAccountCreatePage() {
           latestSession?.status === 'failed' || latestSession?.status === 'expired'
             ? latestSession.error ?? current.sessionHint
             : current.sessionHint,
+        duplicateWarning:
+          latestSession?.status === 'failed' || latestSession?.status === 'expired'
+            ? null
+            : current.duplicateWarning,
+        needsRefresh: false,
         actionError: message,
       }))
     }
@@ -693,6 +1267,7 @@ export default function UpstreamAccountCreatePage() {
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
         localSecondaryLimit: normalizeNumberInput(apiKeySecondaryLimit),
         localLimitUnit: apiKeyLimitUnit.trim() || 'requests',
+        tagIds: apiKeyTagIds,
       })
       notifyMotherChange(response)
       navigate('/account-pool/upstream-accounts', {
@@ -714,12 +1289,37 @@ export default function UpstreamAccountCreatePage() {
       const status = batchRowStatus(row)
       accumulator.total += 1
       if (status === 'completed') accumulator.completed += 1
-      else if (status === 'pending') accumulator.pending += 1
+      else if (status === 'pending' || status === 'completedNeedsRefresh') accumulator.pending += 1
       else accumulator.draft += 1
       return accumulator
     },
     { total: 0, draft: 0, pending: 0, completed: 0 },
   )
+  const tagFieldLabels = {
+    label: t('accountPool.tags.field.label'),
+    add: t('accountPool.tags.field.add'),
+    empty: t('accountPool.tags.field.empty'),
+    searchPlaceholder: t('accountPool.tags.field.searchPlaceholder'),
+    createInline: (value: string) => t('accountPool.tags.field.createInline', { value: value || t('accountPool.tags.field.newTag') }),
+    selectedFromCurrentPage: t('accountPool.tags.field.currentPage'),
+    remove: t('accountPool.tags.field.remove'),
+    deleteAndRemove: t('accountPool.tags.field.deleteAndRemove'),
+    edit: t('accountPool.tags.field.edit'),
+    createTitle: t('accountPool.tags.dialog.createTitle'),
+    editTitle: t('accountPool.tags.dialog.editTitle'),
+    dialogDescription: t('accountPool.tags.dialog.description'),
+    name: t('accountPool.tags.dialog.name'),
+    namePlaceholder: t('accountPool.tags.dialog.namePlaceholder'),
+    guardEnabled: t('accountPool.tags.dialog.guardEnabled'),
+    lookbackHours: t('accountPool.tags.dialog.lookbackHours'),
+    maxConversations: t('accountPool.tags.dialog.maxConversations'),
+    allowCutOut: t('accountPool.tags.dialog.allowCutOut'),
+    allowCutIn: t('accountPool.tags.dialog.allowCutIn'),
+    cancel: t('accountPool.tags.dialog.cancel'),
+    save: t('accountPool.tags.dialog.save'),
+    createAction: t('accountPool.tags.dialog.createAction'),
+    validation: t('accountPool.tags.dialog.validation'),
+  }
 
   return (
     <div className="grid gap-6">
@@ -777,6 +1377,11 @@ export default function UpstreamAccountCreatePage() {
                 <p className="font-medium">{t(`accountPool.upstreamAccounts.oauth.status.${session.status}`)}</p>
                 <p className="text-sm opacity-90">{sessionHint ?? session.error ?? formatDateTime(session.expiresAt)}</p>
               </div>
+            </Alert>
+          ) : sessionHint ? (
+            <Alert variant="warning">
+              <AppIcon name="refresh-circle" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <div className="text-sm">{sessionHint}</div>
             </Alert>
           ) : null}
 
@@ -853,6 +1458,19 @@ export default function UpstreamAccountCreatePage() {
                         <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>
                     </div>
+                    <div className="w-full lg:w-[24rem]">
+                      <AccountTagField
+                        tags={tagItems}
+                        selectedTagIds={batchTagIds}
+                        writesEnabled={writesEnabled}
+                        pageCreatedTagIds={pageCreatedTagIds}
+                        labels={tagFieldLabels}
+                        onChange={setBatchTagIds}
+                        onCreateTag={handleCreateTag}
+                        onUpdateTag={updateTag}
+                        onDeleteTag={handleDeleteTag}
+                      />
+                    </div>
                     <Button type="button" variant="secondary" onClick={appendBatchRow} disabled={!writesEnabled} className="h-10 shrink-0 rounded-lg">
                       <AppIcon name="playlist-plus" className="mr-2 h-4 w-4" aria-hidden />
                       {t('accountPool.upstreamAccounts.batchOauth.actions.addRow')}
@@ -879,11 +1497,22 @@ export default function UpstreamAccountCreatePage() {
                 <>
                   <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                    <Input
-                      name="oauthDisplayName"
-                      value={oauthDisplayName}
-                      onChange={(event) => setOauthDisplayName(event.target.value)}
-                    />
+                    <div className="relative">
+                      <Input
+                        name="oauthDisplayName"
+                        value={oauthDisplayName}
+                        aria-invalid={oauthDisplayNameConflict != null}
+                        onChange={(event) => {
+                          setOauthDisplayName(event.target.value)
+                          invalidateOauthSession()
+                        }}
+                      />
+                      {oauthDisplayNameConflict ? (
+                        <FloatingFieldError
+                          message={t('accountPool.upstreamAccounts.validation.displayNameDuplicate')}
+                        />
+                      ) : null}
+                    </div>
                   </label>
                   <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
@@ -896,7 +1525,10 @@ export default function UpstreamAccountCreatePage() {
                         searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
                         emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
                         createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                        onValueChange={setOauthGroupName}
+                        onValueChange={(value) => {
+                          setOauthGroupName(value)
+                          invalidateOauthSession()
+                        }}
                         className="min-w-0 flex-1"
                       />
                       <Button
@@ -918,7 +1550,10 @@ export default function UpstreamAccountCreatePage() {
                     disabled={!writesEnabled}
                     label={t('accountPool.upstreamAccounts.mother.toggleLabel')}
                     description={t('accountPool.upstreamAccounts.mother.toggleDescription')}
-                    onToggle={() => setOauthIsMother((current) => !current)}
+                    onToggle={() => {
+                      setOauthIsMother((current) => !current)
+                      invalidateOauthSession()
+                    }}
                   />
                   <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
@@ -926,9 +1561,23 @@ export default function UpstreamAccountCreatePage() {
                       className="min-h-28 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
                       name="oauthNote"
                       value={oauthNote}
-                      onChange={(event) => setOauthNote(event.target.value)}
+                      onChange={(event) => {
+                        setOauthNote(event.target.value)
+                        invalidateOauthSession()
+                      }}
                     />
                   </label>
+                  <AccountTagField
+                    tags={tagItems}
+                    selectedTagIds={oauthTagIds}
+                    writesEnabled={writesEnabled}
+                    pageCreatedTagIds={pageCreatedTagIds}
+                    labels={tagFieldLabels}
+                    onChange={setOauthTagIds}
+                    onCreateTag={handleCreateTag}
+                    onUpdateTag={updateTag}
+                    onDeleteTag={handleDeleteTag}
+                  />
 
                   <div className="rounded-2xl border border-base-300/80 bg-base-200/40 p-4 sm:p-5">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -945,7 +1594,12 @@ export default function UpstreamAccountCreatePage() {
                           type="button"
                           variant="secondary"
                           onClick={() => void handleGenerateOauthUrl()}
-                          disabled={busyAction === 'oauth-generate' || !writesEnabled}
+                          disabled={
+                            busyAction === 'oauth-generate' ||
+                            !writesEnabled ||
+                            oauthDisplayNameConflict != null ||
+                            session?.status === 'completed'
+                          }
                         >
                           {busyAction === 'oauth-generate' ? (
                             <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
@@ -1018,7 +1672,13 @@ export default function UpstreamAccountCreatePage() {
                     <Button
                       type="button"
                       onClick={() => void handleCompleteOauth()}
-                      disabled={!oauthSessionActive || !oauthCallbackUrl.trim() || busyAction === 'oauth-complete' || !writesEnabled}
+                      disabled={
+                        !oauthSessionActive ||
+                        !oauthCallbackUrl.trim() ||
+                        busyAction === 'oauth-complete' ||
+                        !writesEnabled ||
+                        oauthDisplayNameConflict != null
+                      }
                     >
                       {busyAction === 'oauth-complete' ? (
                         <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
@@ -1027,6 +1687,18 @@ export default function UpstreamAccountCreatePage() {
                       )}
                       {t('accountPool.upstreamAccounts.actions.completeOauth')}
                     </Button>
+                    {oauthDuplicateWarning ? (
+                      <DuplicateWarningPopover
+                        duplicateWarning={oauthDuplicateWarning}
+                        summaryTitle={t('accountPool.upstreamAccounts.duplicate.compactTitle')}
+                        summaryBody={t('accountPool.upstreamAccounts.duplicate.compactBody', {
+                          reasons: formatDuplicateReasons(oauthDuplicateWarning),
+                          peers: oauthDuplicateWarning.peerAccountIds.join(', '),
+                        })}
+                        openDetailsLabel={t('accountPool.upstreamAccounts.actions.openDetails')}
+                        onOpenDetails={openDuplicateDetailDialog}
+                      />
+                    ) : null}
                   </div>
                 </>
               ) : activeTab === 'batchOauth' ? (
@@ -1083,10 +1755,12 @@ export default function UpstreamAccountCreatePage() {
                           {batchRows.map((row, index) => {
                             const status = batchRowStatus(row)
                             const statusDetail = batchRowStatusDetail(row)
+                            const duplicateNameError = batchDisplayNameError(row)
                             const isCompleted = status === 'completed'
+                            const isRecoveredNeedsRefresh = status === 'completedNeedsRefresh'
                             const isPending = status === 'pending'
                             const isBusy = row.busyAction != null
-                            const rowLocked = isBusy || isCompleted
+                            const rowLocked = isBusy || isCompleted || isRecoveredNeedsRefresh
                             const authUrl = row.session?.authUrl ?? ''
                             return (
                               <tr
@@ -1103,13 +1777,19 @@ export default function UpstreamAccountCreatePage() {
                                   <div className="grid gap-3">
                                     <label className="field min-w-0 gap-2 whitespace-nowrap">
                                       <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                                      <Input
-                                        name={`batchOauthDisplayName-${row.id}`}
-                                        value={row.displayName}
-                                        disabled={rowLocked}
-                                        className="min-w-0"
-                                        onChange={(event) => handleBatchMetadataChange(row.id, 'displayName', event.target.value)}
-                                      />
+                                      <div className="relative">
+                                        <Input
+                                          name={`batchOauthDisplayName-${row.id}`}
+                                          value={row.displayName}
+                                          disabled={rowLocked}
+                                          aria-invalid={duplicateNameError != null}
+                                          className="min-w-0"
+                                          onChange={(event) => handleBatchMetadataChange(row.id, 'displayName', event.target.value)}
+                                        />
+                                        {duplicateNameError ? (
+                                          <FloatingFieldError message={duplicateNameError} />
+                                        ) : null}
+                                      </div>
                                     </label>
                                     <label className="field min-w-0 gap-2 whitespace-nowrap">
                                       <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
@@ -1189,7 +1869,7 @@ export default function UpstreamAccountCreatePage() {
                                               ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
                                               : t('accountPool.upstreamAccounts.actions.generateOauthUrl')}
                                             onClick={() => void handleBatchGenerateOauthUrl(row.id)}
-                                            disabled={isBusy || isCompleted || !writesEnabled}
+                                            disabled={isBusy || isCompleted || isRecoveredNeedsRefresh || !writesEnabled}
                                           >
                                             {row.busyAction === 'generate' ? (
                                               <Spinner size="sm" />
@@ -1284,7 +1964,14 @@ export default function UpstreamAccountCreatePage() {
                                             className="h-9 w-9 shrink-0 rounded-full"
                                             aria-label={t('accountPool.upstreamAccounts.actions.completeOauth')}
                                             onClick={() => void handleBatchCompleteOauth(row.id)}
-                                            disabled={!writesEnabled || isBusy || isCompleted || !isPending || !row.callbackUrl.trim()}
+                                            disabled={
+                                              !writesEnabled ||
+                                              isBusy ||
+                                              isCompleted ||
+                                              !isPending ||
+                                              !row.callbackUrl.trim() ||
+                                              duplicateNameError != null
+                                            }
                                           >
                                             {row.busyAction === 'complete' ? (
                                               <Spinner size="sm" />
@@ -1313,6 +2000,18 @@ export default function UpstreamAccountCreatePage() {
                                             }
                                           />
                                         </Tooltip>
+                                        {row.duplicateWarning ? (
+                                          <DuplicateWarningPopover
+                                            duplicateWarning={row.duplicateWarning}
+                                            summaryTitle={t('accountPool.upstreamAccounts.duplicate.compactTitle')}
+                                            summaryBody={t('accountPool.upstreamAccounts.duplicate.compactBody', {
+                                              reasons: formatDuplicateReasons(row.duplicateWarning),
+                                              peers: row.duplicateWarning.peerAccountIds.join(', '),
+                                            })}
+                                            openDetailsLabel={t('accountPool.upstreamAccounts.actions.openDetails')}
+                                            onOpenDetails={openDuplicateDetailDialog}
+                                          />
+                                        ) : null}
                                       </div>
                                       <div className="ml-auto flex shrink-0 items-center gap-2">
                                         <Badge variant={batchStatusVariant(status)}>
@@ -1358,11 +2057,19 @@ export default function UpstreamAccountCreatePage() {
                 <>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                    <Input
-                      name="apiKeyDisplayName"
-                      value={apiKeyDisplayName}
-                      onChange={(event) => setApiKeyDisplayName(event.target.value)}
-                    />
+                    <div className="relative">
+                      <Input
+                        name="apiKeyDisplayName"
+                        value={apiKeyDisplayName}
+                        aria-invalid={apiKeyDisplayNameConflict != null}
+                        onChange={(event) => setApiKeyDisplayName(event.target.value)}
+                      />
+                      {apiKeyDisplayNameConflict ? (
+                        <FloatingFieldError
+                          message={t('accountPool.upstreamAccounts.validation.displayNameDuplicate')}
+                        />
+                      ) : null}
+                    </div>
                   </label>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
@@ -1442,11 +2149,32 @@ export default function UpstreamAccountCreatePage() {
                       onChange={(event) => setApiKeyNote(event.target.value)}
                     />
                   </label>
+                  <div className="md:col-span-2">
+                    <AccountTagField
+                      tags={tagItems}
+                      selectedTagIds={apiKeyTagIds}
+                      writesEnabled={writesEnabled}
+                      pageCreatedTagIds={pageCreatedTagIds}
+                      labels={tagFieldLabels}
+                      onChange={setApiKeyTagIds}
+                      onCreateTag={handleCreateTag}
+                      onUpdateTag={updateTag}
+                      onDeleteTag={handleDeleteTag}
+                    />
+                  </div>
                   <div className="md:col-span-2 flex flex-wrap justify-end gap-2">
                     <Button asChild type="button" variant="ghost">
                       <Link to="/account-pool/upstream-accounts">{t('accountPool.upstreamAccounts.actions.cancel')}</Link>
                     </Button>
-                    <Button type="button" onClick={() => void handleCreateApiKey()} disabled={busyAction === 'apiKey' || !writesEnabled}>
+                    <Button
+                      type="button"
+                      onClick={() => void handleCreateApiKey()}
+                      disabled={
+                        busyAction === 'apiKey' ||
+                        !writesEnabled ||
+                        apiKeyDisplayNameConflict != null
+                      }
+                    >
                       {busyAction === 'apiKey' ? (
                         <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
                       ) : (
@@ -1484,6 +2212,29 @@ export default function UpstreamAccountCreatePage() {
         closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
         existingBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.existing')}
         draftBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.draft')}
+      />
+      <DuplicateAccountDetailDialog
+        open={duplicateDetailOpen}
+        detail={duplicateDetail}
+        isLoading={duplicateDetailLoading}
+        onClose={() => {
+          setDuplicateDetailOpen(false)
+          setDuplicateDetail(null)
+        }}
+        title={t('accountPool.upstreamAccounts.detailTitle')}
+        description={t('accountPool.upstreamAccounts.detailEmptyDescription')}
+        duplicateLabel={t('accountPool.upstreamAccounts.duplicate.badge')}
+        closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
+        formatDuplicateReasons={formatDuplicateReasons}
+        statusLabel={accountStatusLabel}
+        kindLabel={accountKindLabel}
+        fieldLabels={{
+          groupName: t('accountPool.upstreamAccounts.fields.groupName'),
+          email: t('accountPool.upstreamAccounts.fields.email'),
+          accountId: t('accountPool.upstreamAccounts.fields.accountId'),
+          userId: t('accountPool.upstreamAccounts.fields.userId'),
+          lastSuccessSync: t('accountPool.upstreamAccounts.fields.lastSuccessSync'),
+        }}
       />
     </div>
   )

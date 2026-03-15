@@ -18,6 +18,10 @@
       "enabled": true,
       "email": "user@example.com",
       "chatgptAccountId": "org_xxx",
+      "duplicateInfo": {
+        "peerAccountIds": [2],
+        "reasons": ["sharedChatgptAccountId"]
+      },
       "planType": "pro",
       "lastSyncedAt": "2026-03-11T12:00:00Z",
       "lastSuccessfulSyncAt": "2026-03-11T12:00:00Z",
@@ -56,6 +60,7 @@
 - `lastRefreshedAt`
 - `history`（最近 7 天样本）
 - `localLimits`（API Key 账号）
+- `duplicateInfo`（仅 OAuth；共享 `chatgptAccountId` / `chatgptUserId` 时返回 warning 信息）
 
 `isMother` 表示该账号是否为所在分组的母号；同一分组最多只能有一个母号，未分组账号视为同一个分组。
 
@@ -123,6 +128,8 @@ Query:
 
 响应：返回新账号的 `UpstreamAccountDetail`。
 
+- 若 `displayName` 与现有账号重复（忽略大小写 + 去首尾空格），返回 `409 Conflict`，消息为 `displayName must be unique`。
+
 ## `PATCH /api/pool/upstream-accounts/:id`
 
 支持更新：
@@ -136,6 +143,13 @@ Query:
 - `localSecondaryLimit`
 - `localLimitUnit`
 
+- 若更新后的 `displayName` 与其他账号重复（忽略大小写 + 去首尾空格），返回 `409 Conflict`，消息为 `displayName must be unique`。
+
+## OAuth 完成的重复 warning
+
+- `POST /api/pool/upstream-accounts/oauth/login-sessions/:loginId/complete` 成功时仍返回 `UpstreamAccountDetail`。
+- 若该 OAuth 账号与其他 OAuth 账号共享 `chatgptAccountId` 或 `chatgptUserId`，响应中的 `duplicateInfo` 会带出 warning；这不会阻止保存。
+- 只有显式 `accountId` 的 re-login 会更新既有账号；新建 OAuth 不再按 `chatgptAccountId` 合并旧记录。
 规则：
 
 - `isMother=true` 会自动撤销同组其他账号的母号标记。

@@ -1,8 +1,18 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import type { UpstreamAccountSummary } from '../lib/api'
+import type { EffectiveRoutingRule, UpstreamAccountSummary } from '../lib/api'
 import { UpstreamAccountsTable } from './UpstreamAccountsTable'
 
 const now = '2026-03-11T12:30:00.000Z'
+const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
+  guardEnabled: false,
+  lookbackHours: null,
+  maxConversations: null,
+  allowCutOut: true,
+  allowCutIn: true,
+  sourceTagIds: [],
+  sourceTagNames: [],
+  guardRules: [],
+}
 
 const items: UpstreamAccountSummary[] = [
   {
@@ -38,6 +48,8 @@ const items: UpstreamAccountSummary[] = [
       unlimited: false,
       balance: '12.80',
     },
+    tags: [],
+    effectiveRoutingRule: defaultEffectiveRoutingRule,
     localLimits: {
       primaryLimit: null,
       secondaryLimit: null,
@@ -76,6 +88,8 @@ const items: UpstreamAccountSummary[] = [
       unlimited: false,
       balance: null,
     },
+    tags: [],
+    effectiveRoutingRule: defaultEffectiveRoutingRule,
     localLimits: {
       primaryLimit: 120,
       secondaryLimit: 500,
@@ -93,6 +107,7 @@ const labels = {
   nextReset: 'Reset',
   oauth: 'OAuth',
   apiKey: 'API key',
+  duplicate: 'Duplicate',
   mother: 'Mother',
   status: (value: string) =>
     ({
@@ -139,6 +154,22 @@ export const Default: Story = {}
 export const NeedsAttentionSelected: Story = {
   args: {
     selectedId: 12,
+  },
+}
+
+export const DuplicateIdentity: Story = {
+  args: {
+    items: [
+      {
+        ...items[0],
+        duplicateInfo: {
+          peerAccountIds: [27, 35],
+          reasons: ['sharedChatgptAccountId', 'sharedChatgptUserId'],
+        },
+      },
+      items[1],
+    ],
+    selectedId: 11,
   },
 }
 

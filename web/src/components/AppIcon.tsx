@@ -5,6 +5,7 @@ import accountDetailsOutlineIcon from '@iconify-icons/mdi/account-details-outlin
 import alertCircleIcon from '@iconify-icons/mdi/alert-circle'
 import alertCircleOutlineIcon from '@iconify-icons/mdi/alert-circle-outline'
 import alertDecagramOutlineIcon from '@iconify-icons/mdi/alert-decagram-outline'
+import alertOutlineIcon from '@iconify-icons/mdi/alert-outline'
 import arrowDownBoldIcon from '@iconify-icons/mdi/arrow-down-bold'
 import arrowLeftIcon from '@iconify-icons/mdi/arrow-left'
 import arrowRightBoldIcon from '@iconify-icons/mdi/arrow-right-bold'
@@ -27,6 +28,7 @@ import crownIcon from '@iconify-icons/mdi/crown'
 import crownOutlineIcon from '@iconify-icons/mdi/crown-outline'
 import databaseOutlineIcon from '@iconify-icons/mdi/database-outline'
 import deleteOutlineIcon from '@iconify-icons/mdi/delete-outline'
+import dotsHorizontalIcon from '@iconify-icons/mdi/dots-horizontal'
 import earthIcon from '@iconify-icons/mdi/earth'
 import fileDocumentEditOutlineIcon from '@iconify-icons/mdi/file-document-edit-outline'
 import githubIcon from '@iconify-icons/mdi/github'
@@ -35,6 +37,7 @@ import informationOutlineIcon from '@iconify-icons/mdi/information-outline'
 import keyChainVariantIcon from '@iconify-icons/mdi/key-chain-variant'
 import keyOutlineIcon from '@iconify-icons/mdi/key-outline'
 import lightningBoltIcon from '@iconify-icons/mdi/lightning-bolt'
+import linkVariantOffIcon from '@iconify-icons/mdi/link-variant-off'
 import linkVariantPlusIcon from '@iconify-icons/mdi/link-variant-plus'
 import loadingIcon from '@iconify-icons/mdi/loading'
 import loginVariantIcon from '@iconify-icons/mdi/login-variant'
@@ -48,6 +51,8 @@ import refreshIcon from '@iconify-icons/mdi/refresh'
 import refreshCircleIcon from '@iconify-icons/mdi/refresh-circle'
 import serverNetworkOutlineIcon from '@iconify-icons/mdi/server-network-outline'
 import shieldKeyOutlineIcon from '@iconify-icons/mdi/shield-key-outline'
+import tagOutlineIcon from '@iconify-icons/mdi/tag-outline'
+import tagPlusOutlineIcon from '@iconify-icons/mdi/tag-plus-outline'
 import timerRefreshOutlineIcon from '@iconify-icons/mdi/timer-refresh-outline'
 import trashCanOutlineIcon from '@iconify-icons/mdi/trash-can-outline'
 import undoVariantIcon from '@iconify-icons/mdi/undo-variant'
@@ -59,6 +64,7 @@ const appIconRegistry = {
   'alert-circle': alertCircleIcon,
   'alert-circle-outline': alertCircleOutlineIcon,
   'alert-decagram-outline': alertDecagramOutlineIcon,
+  'alert-outline': alertOutlineIcon,
   'arrow-down-bold': arrowDownBoldIcon,
   'arrow-left': arrowLeftIcon,
   'arrow-right-bold': arrowRightBoldIcon,
@@ -81,6 +87,7 @@ const appIconRegistry = {
   'crown-outline': crownOutlineIcon,
   'database-outline': databaseOutlineIcon,
   'delete-outline': deleteOutlineIcon,
+  'dots-horizontal': dotsHorizontalIcon,
   'earth': earthIcon,
   'file-document-edit-outline': fileDocumentEditOutlineIcon,
   'github': githubIcon,
@@ -89,6 +96,7 @@ const appIconRegistry = {
   'key-chain-variant': keyChainVariantIcon,
   'key-outline': keyOutlineIcon,
   'lightning-bolt': lightningBoltIcon,
+  'link-variant-off': linkVariantOffIcon,
   'link-variant-plus': linkVariantPlusIcon,
   'loading': loadingIcon,
   'login-variant': loginVariantIcon,
@@ -102,6 +110,8 @@ const appIconRegistry = {
   'refresh-circle': refreshCircleIcon,
   'server-network-outline': serverNetworkOutlineIcon,
   'shield-key-outline': shieldKeyOutlineIcon,
+  'tag-outline': tagOutlineIcon,
+  'tag-plus-outline': tagPlusOutlineIcon,
   'timer-refresh-outline': timerRefreshOutlineIcon,
   'trash-can-outline': trashCanOutlineIcon,
   'undo-variant': undoVariantIcon,

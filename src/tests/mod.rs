@@ -8593,10 +8593,13 @@ async fn resolve_pool_account_for_request_defers_sticky_binding_until_success() 
     .await;
     let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
-    let account = resolve_pool_account_for_request(state.as_ref(), Some("sticky-001"), &[])
+    let account = match resolve_pool_account_for_request(state.as_ref(), Some("sticky-001"), &[])
         .await
         .expect("resolve pool account")
-        .expect("pool account should resolve");
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
     assert_eq!(account.account_id, account_id);
     assert!(
         load_test_sticky_route_account_id(&state.pool, "sticky-001")

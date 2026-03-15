@@ -15,19 +15,27 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../../components/ui/dialog'
+import { FloatingFieldError } from '../../components/ui/floating-field-error'
 import { Input } from '../../components/ui/input'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
+import { AccountTagField } from '../../components/AccountTagField'
+import { EffectiveRoutingRuleCard } from '../../components/EffectiveRoutingRuleCard'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
 import { UpstreamAccountUsageCard } from '../../components/UpstreamAccountUsageCard'
 import { StickyKeyConversationTable } from '../../components/StickyKeyConversationTable'
 import { UpstreamAccountsTable } from '../../components/UpstreamAccountsTable'
+import { usePoolTags } from '../../hooks/usePoolTags'
 import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotifications'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyConversations'
-import type { UpstreamAccountDetail, UpstreamAccountSummary } from '../../lib/api'
+import type {
+  UpstreamAccountDetail,
+  UpstreamAccountDuplicateInfo,
+  UpstreamAccountSummary,
+} from '../../lib/api'
 import {
   buildGroupNameSuggestions,
   isExistingGroup,
@@ -44,6 +52,7 @@ type AccountDraft = {
   groupName: string
   isMother: boolean
   note: string
+  tagIds: number[]
   localPrimaryLimit: string
   localSecondaryLimit: string
   localLimitUnit: string
@@ -55,6 +64,12 @@ const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
 type UpstreamAccountsLocationState = {
   selectedAccountId?: number
   openDetail?: boolean
+  duplicateWarning?: {
+    accountId: number
+    displayName: string
+    peerAccountIds: number[]
+    reasons: string[]
+  } | null
 }
 
 type GroupNoteEditorState = {
@@ -87,12 +102,33 @@ function normalizeNumberInput(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+function normalizeDisplayNameKey(value: string) {
+  return value.trim().toLocaleLowerCase()
+}
+
+function findDisplayNameConflict(
+  items: UpstreamAccountSummary[],
+  displayName: string,
+  excludeId?: number | null,
+) {
+  const normalized = normalizeDisplayNameKey(displayName)
+  if (!normalized) return null
+  return (
+    items.find(
+      (item) =>
+        item.id !== excludeId &&
+        normalizeDisplayNameKey(item.displayName) === normalized,
+    ) ?? null
+  )
+}
+
 function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
   return {
     displayName: detail?.displayName ?? '',
     groupName: detail?.groupName ?? '',
     isMother: detail?.isMother ?? false,
     note: detail?.note ?? '',
+    tagIds: detail?.tags?.map((tag) => tag.id) ?? [],
     localPrimaryLimit:
       detail?.localLimits?.primaryLimit == null ? '' : String(detail.localLimits.primaryLimit),
     localSecondaryLimit:
@@ -348,6 +384,7 @@ export default function UpstreamAccountsPage() {
     saveRouting,
     saveGroupNote,
   } = useUpstreamAccounts()
+  const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags()
   const notifyMotherSwitches = useMotherSwitchNotifications()
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
@@ -356,9 +393,12 @@ export default function UpstreamAccountsPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
+  const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
   const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
+  const [duplicateWarning, setDuplicateWarning] =
+    useState<UpstreamAccountsLocationState['duplicateWarning']>(null)
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
     open: false,
     groupName: '',
@@ -404,8 +444,27 @@ export default function UpstreamAccountsPage() {
 
     selectAccount(state.selectedAccountId)
     setIsDetailDrawerOpen(Boolean(state.openDetail))
+    setDuplicateWarning(state.duplicateWarning ?? null)
     navigate(location.pathname, { replace: true, state: null })
   }, [location.pathname, location.state, navigate, selectAccount])
+
+  useEffect(() => {
+    if (!duplicateWarning) return
+    if (duplicateWarning.accountId === selectedId) return
+    setDuplicateWarning(null)
+  }, [duplicateWarning, selectedId])
+
+  const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
+    const detail = await createTag(payload)
+    setPageCreatedTagIds((current) => (current.includes(detail.id) ? current : [...current, detail.id]))
+    return detail
+  }
+
+  const handleDeleteTag = async (tagId: number) => {
+    await deleteTag(tagId)
+    setPageCreatedTagIds((current) => current.filter((value) => value !== tagId))
+    setDraft((current) => ({ ...current, tagIds: current.tagIds.filter((value) => value !== tagId) }))
+  }
 
   const metrics = useMemo(() => {
     const oauthCount = items.filter((item) => item.kind === 'oauth_codex').length
@@ -540,11 +599,60 @@ export default function UpstreamAccountsPage() {
 
   const selected = detail ?? selectedSummary
   const selectedVisible = filteredItems.some((item) => item.id === selectedId)
+  const formatDuplicateReasons = (
+    duplicateInfo?: UpstreamAccountDuplicateInfo | null,
+  ) => {
+    const reasons = duplicateInfo?.reasons ?? []
+    return reasons
+      .map((reason) => {
+        if (reason === 'sharedChatgptAccountId') {
+          return t(
+            'accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId',
+          )
+        }
+        if (reason === 'sharedChatgptUserId') {
+          return t(
+            'accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId',
+          )
+        }
+        return reason
+      })
+      .join(' / ')
+  }
   const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
   const accountKindLabel = (kind: string) =>
     kind === 'oauth_codex'
       ? t('accountPool.upstreamAccounts.kind.oauth')
       : t('accountPool.upstreamAccounts.kind.apiKey')
+  const detailDisplayNameConflict = useMemo(
+    () => findDisplayNameConflict(items, draft.displayName, detail?.id ?? null),
+    [detail?.id, draft.displayName, items],
+  )
+  const tagFieldLabels = {
+    label: t('accountPool.tags.field.label'),
+    add: t('accountPool.tags.field.add'),
+    empty: t('accountPool.tags.field.empty'),
+    searchPlaceholder: t('accountPool.tags.field.searchPlaceholder'),
+    createInline: (value: string) => t('accountPool.tags.field.createInline', { value: value || t('accountPool.tags.field.newTag') }),
+    selectedFromCurrentPage: t('accountPool.tags.field.currentPage'),
+    remove: t('accountPool.tags.field.remove'),
+    deleteAndRemove: t('accountPool.tags.field.deleteAndRemove'),
+    edit: t('accountPool.tags.field.edit'),
+    createTitle: t('accountPool.tags.dialog.createTitle'),
+    editTitle: t('accountPool.tags.dialog.editTitle'),
+    dialogDescription: t('accountPool.tags.dialog.description'),
+    name: t('accountPool.tags.dialog.name'),
+    namePlaceholder: t('accountPool.tags.dialog.namePlaceholder'),
+    guardEnabled: t('accountPool.tags.dialog.guardEnabled'),
+    lookbackHours: t('accountPool.tags.dialog.lookbackHours'),
+    maxConversations: t('accountPool.tags.dialog.maxConversations'),
+    allowCutOut: t('accountPool.tags.dialog.allowCutOut'),
+    allowCutIn: t('accountPool.tags.dialog.allowCutIn'),
+    cancel: t('accountPool.tags.dialog.cancel'),
+    save: t('accountPool.tags.dialog.save'),
+    createAction: t('accountPool.tags.dialog.createAction'),
+    validation: t('accountPool.tags.dialog.validation'),
+  }
   const handleSelectAccount = (accountId: number) => {
     setIsDetailDrawerOpen(true)
     selectAccount(accountId)
@@ -571,6 +679,7 @@ export default function UpstreamAccountsPage() {
         groupName: draft.groupName.trim(),
         isMother: draft.isMother,
         note: draft.note.trim() || undefined,
+        tagIds: draft.tagIds,
         groupNote: resolvePendingGroupNoteForName(draft.groupName) || undefined,
         apiKey: source.kind === 'api_key_codex' && draft.apiKey.trim() ? draft.apiKey.trim() : undefined,
         localPrimaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localPrimaryLimit) : undefined,
@@ -688,6 +797,36 @@ export default function UpstreamAccountsPage() {
               </Alert>
             ) : null}
 
+            {duplicateWarning ? (
+              <Alert variant="warning">
+                <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                  <p className="font-medium">
+                    {t('accountPool.upstreamAccounts.duplicate.warningTitle', {
+                      name: duplicateWarning.displayName,
+                    })}
+                  </p>
+                  <p className="text-sm text-warning/90">
+                    {t('accountPool.upstreamAccounts.duplicate.warningBody', {
+                      reasons: formatDuplicateReasons({
+                        peerAccountIds: duplicateWarning.peerAccountIds,
+                        reasons: duplicateWarning.reasons,
+                      }),
+                      peers: duplicateWarning.peerAccountIds.join(', '),
+                    })}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDuplicateWarning(null)}
+                >
+                  {t('accountPool.upstreamAccounts.actions.dismissDuplicateWarning')}
+                </Button>
+              </Alert>
+            ) : null}
+
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {metrics.map((metric) => (
                 <Card key={metric.label} className="border-base-300/80 bg-base-100/72">
@@ -784,6 +923,7 @@ export default function UpstreamAccountsPage() {
                 oauth: t('accountPool.upstreamAccounts.kind.oauth'),
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 mother: t('accountPool.upstreamAccounts.mother.badge'),
+                duplicate: t('accountPool.upstreamAccounts.duplicate.badge'),
                 status: accountStatusLabel,
               }}
             />
@@ -840,6 +980,11 @@ export default function UpstreamAccountsPage() {
                   <Badge variant={statusVariant(selected.status)}>{accountStatusLabel(selected.status)}</Badge>
                   <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
                   {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}
+                  {selected.duplicateInfo ? (
+                    <Badge variant="warning">
+                      {t('accountPool.upstreamAccounts.duplicate.badge')}
+                    </Badge>
+                  ) : null}
                   {selected.kind === 'api_key_codex' ? (
                     <Badge variant="secondary">{t('accountPool.upstreamAccounts.apiKey.localPlaceholder')}</Badge>
                   ) : null}
@@ -883,6 +1028,22 @@ export default function UpstreamAccountsPage() {
 
             {detail ? (
               <div className="grid gap-5">
+                {detail.duplicateInfo ? (
+                  <Alert variant="warning">
+                    <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                    <div>
+                      <p className="font-medium">
+                        {t('accountPool.upstreamAccounts.duplicate.badge')}
+                      </p>
+                      <p className="mt-1 text-sm text-warning/90">
+                        {t('accountPool.upstreamAccounts.duplicate.warningBody', {
+                          reasons: formatDuplicateReasons(detail.duplicateInfo),
+                          peers: detail.duplicateInfo.peerAccountIds.join(', '),
+                        })}
+                      </p>
+                    </div>
+                  </Alert>
+                ) : null}
                 <div className="metric-grid">
                   <DetailField label={t('accountPool.upstreamAccounts.fields.groupName')} value={detail.groupName ?? ''} />
                   <DetailField
@@ -903,7 +1064,26 @@ export default function UpstreamAccountsPage() {
                   <CardContent className="grid gap-4 md:grid-cols-2">
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                    <Input name="detailDisplayName" value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} />
+                    <div className="relative">
+                      <Input
+                        name="detailDisplayName"
+                        value={draft.displayName}
+                        aria-invalid={detailDisplayNameConflict != null}
+                        onChange={(event) =>
+                          setDraft((current) => ({
+                            ...current,
+                            displayName: event.target.value,
+                          }))
+                        }
+                      />
+                      {detailDisplayNameConflict ? (
+                        <FloatingFieldError
+                          message={t(
+                            'accountPool.upstreamAccounts.validation.displayNameDuplicate',
+                          )}
+                        />
+                      ) : null}
+                    </div>
                   </label>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
@@ -951,6 +1131,19 @@ export default function UpstreamAccountsPage() {
                         onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))}
                       />
                     </label>
+                    <div className="md:col-span-2">
+                      <AccountTagField
+                        tags={tagItems}
+                        selectedTagIds={draft.tagIds}
+                        writesEnabled={writesEnabled}
+                        pageCreatedTagIds={pageCreatedTagIds}
+                        labels={tagFieldLabels}
+                        onChange={(tagIds) => setDraft((current) => ({ ...current, tagIds }))}
+                        onCreateTag={handleCreateTag}
+                        onUpdateTag={updateTag}
+                        onDeleteTag={handleDeleteTag}
+                      />
+                    </div>
                     {detail.kind === 'api_key_codex' ? (
                       <>
                         <label className="field">
@@ -989,7 +1182,15 @@ export default function UpstreamAccountsPage() {
                       </>
                     ) : null}
                     <div className="md:col-span-2 flex justify-end">
-                      <Button type="button" onClick={() => void handleSave(detail)} disabled={busyAction === 'save' || !writesEnabled}>
+                      <Button
+                        type="button"
+                        onClick={() => void handleSave(detail)}
+                        disabled={
+                          busyAction === 'save' ||
+                          !writesEnabled ||
+                          detailDisplayNameConflict != null
+                        }
+                      >
                         {busyAction === 'save' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="content-save-outline" className="mr-2 h-4 w-4" aria-hidden />}
                         {t('accountPool.upstreamAccounts.actions.save')}
                       </Button>
@@ -1019,6 +1220,24 @@ export default function UpstreamAccountsPage() {
                   />
                 </div>
 
+                <EffectiveRoutingRuleCard
+                  rule={detail.effectiveRoutingRule}
+                  labels={{
+                    title: t('accountPool.upstreamAccounts.effectiveRule.title'),
+                    description: t('accountPool.upstreamAccounts.effectiveRule.description'),
+                    noTags: t('accountPool.upstreamAccounts.effectiveRule.noTags'),
+                    guardEnabled: t('accountPool.upstreamAccounts.effectiveRule.guardEnabled'),
+                    guardDisabled: t('accountPool.upstreamAccounts.effectiveRule.guardDisabled'),
+                    allowCutOut: t('accountPool.upstreamAccounts.effectiveRule.allowCutOut'),
+                    denyCutOut: t('accountPool.upstreamAccounts.effectiveRule.denyCutOut'),
+                    allowCutIn: t('accountPool.upstreamAccounts.effectiveRule.allowCutIn'),
+                    denyCutIn: t('accountPool.upstreamAccounts.effectiveRule.denyCutIn'),
+                    sourceTags: t('accountPool.upstreamAccounts.effectiveRule.sourceTags'),
+                    guardRule: (hours, count) => t('accountPool.upstreamAccounts.effectiveRule.guardRule', { hours, count }),
+                    allGuardsApply: t('accountPool.upstreamAccounts.effectiveRule.allGuardsApply'),
+                  }}
+                />
+
                 <Card className="border-base-300/80 bg-base-100/72">
                   <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
@@ -1028,6 +1247,7 @@ export default function UpstreamAccountsPage() {
                     <label className="field w-36">
                       <span className="field-label">{t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}</span>
                       <select
+                        name="stickyConversationLimit"
                         className="field-select field-select-sm"
                         value={stickyConversationLimit}
                         onChange={(event) => setStickyConversationLimit(Number(event.target.value))}
