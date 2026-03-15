@@ -280,7 +280,6 @@ jobs:
             --github-token "${GITHUB_TOKEN}" \
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
             --registry "${REGISTRY}" \
-            --target-only \
             --output "$RUNNER_TEMP/release-snapshot.json"
 
       - name: Show release snapshot summary

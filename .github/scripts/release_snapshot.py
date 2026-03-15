@@ -95,6 +95,15 @@ def parse_args() -> argparse.Namespace:
     )
     export_cmd.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
 
+    next_pending = subparsers.add_parser(
+        "next-pending",
+        help="Find the oldest unreleased snapshot on the first-parent path up to a given main commit.",
+    )
+    next_pending.add_argument("--notes-ref", default=DEFAULT_NOTES_REF)
+    next_pending.add_argument("--main-ref", required=True)
+    next_pending.add_argument("--upper-bound", default="")
+    next_pending.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
+
     return parser.parse_args()
 
 
@@ -199,6 +208,10 @@ def fetch_notes_ref(notes_ref: str) -> None:
     if probe.returncode != 0:
         return
     git("fetch", "--no-tags", "origin", f"+{notes_ref}:{notes_ref}")
+
+
+def fetch_tags() -> None:
+    git("fetch", "--tags", "origin")
 
 
 def normalize_sha(target_sha: str) -> str:
@@ -383,6 +396,34 @@ def publication_tags(snapshot: dict[str, Any], *, notes_ref: str, main_ref: str)
     return ",".join(tags)
 
 
+def release_tag_points_to_target(snapshot: dict[str, Any]) -> bool:
+    if not snapshot.get("release_enabled"):
+        return False
+    release_tag = snapshot.get("release_tag")
+    target_sha = snapshot.get("target_sha")
+    if not isinstance(release_tag, str) or not release_tag:
+        return False
+    if not isinstance(target_sha, str) or not target_sha:
+        return False
+    result = git("rev-parse", "-q", "--verify", f"refs/tags/{release_tag}", check=False)
+    if result.returncode != 0:
+        return False
+    tagged_sha = git_output("rev-list", "-n", "1", release_tag)
+    return tagged_sha == target_sha
+
+
+def pending_release_targets(notes_ref: str, upper_bound_sha: str) -> list[str]:
+    pending: list[str] = []
+    for commit in first_parent_commits(upper_bound_sha):
+        snapshot = read_snapshot(notes_ref, commit)
+        if not snapshot or not snapshot.get("release_enabled"):
+            continue
+        if release_tag_points_to_target(snapshot):
+            continue
+        pending.append(commit)
+    return pending
+
+
 def build_snapshot(
     *,
     target_sha: str,
@@ -459,6 +500,29 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 def first_parent_commits(target_sha: str) -> list[str]:
     commits = git_output("rev-list", "--first-parent", "--reverse", target_sha)
     return [commit for commit in commits.splitlines() if commit]
+
+
+def export_key_values(values: dict[str, Any], github_output: str) -> None:
+    lines = []
+    for key, value in values.items():
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif value is None:
+            rendered = ""
+        else:
+            rendered = str(value)
+        if "\n" in rendered:
+            lines.append(f"{key}<<__CODex__")
+            lines.append(rendered)
+            lines.append("__CODex__")
+        else:
+            lines.append(f"{key}={rendered}")
+    payload = "\n".join(lines) + "\n"
+    if github_output:
+        with Path(github_output).open("a", encoding="utf-8") as handle:
+            handle.write(payload)
+    else:
+        sys.stdout.write(payload)
 
 
 def export_snapshot(snapshot: dict[str, Any], github_output: str) -> None:
@@ -575,6 +639,17 @@ def export_existing_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+def export_next_pending(args: argparse.Namespace) -> int:
+    upper_bound = args.upper_bound or git_output("rev-parse", args.main_ref)
+    upper_bound = normalize_sha(upper_bound)
+    git("merge-base", "--is-ancestor", upper_bound, args.main_ref)
+    fetch_notes_ref(args.notes_ref)
+    fetch_tags()
+    pending = pending_release_targets(args.notes_ref, upper_bound)
+    export_key_values({"target_sha": pending[0] if pending else ""}, args.github_output)
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -582,6 +657,8 @@ def main() -> int:
             return ensure_snapshot(args)
         if args.command == "export":
             return export_existing_snapshot(args)
+        if args.command == "next-pending":
+            return export_next_pending(args)
         raise SnapshotError(f"Unsupported command: {args.command}")
     except SnapshotError as exc:
         print(f"release_snapshot.py: {exc}", file=sys.stderr)

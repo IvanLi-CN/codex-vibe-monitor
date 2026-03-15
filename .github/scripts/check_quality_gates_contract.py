@@ -550,8 +550,8 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         "ci-main.yml.jobs.release-snapshot: notes-ref plumbing drifted",
     )
     require(
-        "--target-only" in ensure_run,
-        "ci-main.yml.jobs.release-snapshot: automatic snapshot ensure must stay target-only",
+        "--target-only" not in ensure_run,
+        "ci-main.yml.jobs.release-snapshot: automatic snapshot ensure must materialize missing commits on the mainline path",
     )
 
 
@@ -720,7 +720,7 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     outputs = require_mapping(release_meta.get("outputs"), "release.yml.jobs.release-meta.outputs")
     require("target_sha" in outputs, "release.yml.jobs.release-meta.outputs.target_sha must be exported")
 
-    target_step = step_config(release_meta, "Resolve target commit", "release.yml.jobs.release-meta")
+    target_step = step_config(release_meta, "Resolve requested commit", "release.yml.jobs.release-meta")
     target_run = str(target_step.get("run", ""))
     require("inputs.commit_sha" in target_run, "release.yml.jobs.release-meta: manual commit_sha resolution drifted")
     require("git merge-base --is-ancestor" in target_run, "release.yml.jobs.release-meta: main ancestry gate drifted")
@@ -728,23 +728,29 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     backfill_step = step_config(release_meta, "Validate manual backfill target passed CI Main", "release.yml.jobs.release-meta")
     require(backfill_step.get("if") == "github.event_name == 'workflow_dispatch'", "release.yml.jobs.release-meta: manual backfill validation gate drifted")
     backfill_env = require_mapping(backfill_step.get("env"), "release.yml.jobs.release-meta.steps['Validate manual backfill target passed CI Main'].env")
-    require(backfill_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual backfill validation must consume target_sha")
+    require(backfill_env.get("TARGET_SHA") == "${{ steps.requested-target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual backfill validation must consume target_sha")
     backfill_script = str(backfill_step.get("with", {}).get("script", ""))
     require("snapshot-only CI Main failure" in backfill_script, "release.yml.jobs.release-meta: snapshot-only backfill exception drifted")
     require("listJobsForWorkflowRun" in backfill_script, "release.yml.jobs.release-meta: snapshot-only backfill job inspection drifted")
     ensure_step = step_config(release_meta, "Ensure immutable release snapshot for manual backfill", "release.yml.jobs.release-meta")
     require(ensure_step.get("if") == "github.event_name == 'workflow_dispatch'", "release.yml.jobs.release-meta: manual snapshot ensure gate drifted")
     ensure_env = require_mapping(ensure_step.get("env"), "release.yml.jobs.release-meta.steps['Ensure immutable release snapshot for manual backfill'].env")
-    require(ensure_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual snapshot ensure must consume target_sha")
+    require(ensure_env.get("TARGET_SHA") == "${{ steps.requested-target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual snapshot ensure must consume target_sha")
     require(ensure_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "release.yml.jobs.release-meta: manual snapshot ensure must use GITHUB_TOKEN")
     ensure_run = str(ensure_step.get("run", ""))
     require("release_snapshot.py ensure" in ensure_run, "release.yml.jobs.release-meta: manual snapshot ensure must use release_snapshot.py ensure")
+    pending_step = step_config(release_meta, "Select pending release target", "release.yml.jobs.release-meta")
+    pending_env = require_mapping(pending_step.get("env"), "release.yml.jobs.release-meta.steps['Select pending release target'].env")
+    require(pending_env.get("REQUESTED_SHA") == "${{ steps.requested-target.outputs.target_sha }}", "release.yml.jobs.release-meta: pending target selector must consume requested target")
+    pending_run = str(pending_step.get("run", ""))
+    require("release_snapshot.py next-pending" in pending_run, "release.yml.jobs.release-meta: pending target selector must use release_snapshot.py next-pending")
     snapshot_step = step_config(release_meta, "Load immutable release snapshot", "release.yml.jobs.release-meta")
     snapshot_env = require_mapping(snapshot_step.get("env"), "release.yml.jobs.release-meta.steps['Load immutable release snapshot'].env")
     require(
-        snapshot_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}",
+        snapshot_env.get("TARGET_SHA") == "${{ steps.pending-target.outputs.target_sha }}",
         "release.yml.jobs.release-meta: snapshot loader must consume target_sha",
     )
+    require(snapshot_step.get("if") == "steps.pending-target.outputs.target_sha != ''", "release.yml.jobs.release-meta: snapshot loader gate drifted")
     snapshot_run = str(snapshot_step.get("run", ""))
     require(
         "release_snapshot.py export" in snapshot_run,
@@ -756,7 +762,7 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
     candidate_step = step_config(release_meta, "Compute candidate suffix", "release.yml.jobs.release-meta")
     require(
-        candidate_step.get("if") == "steps.snapshot.outputs.release_enabled == 'true'",
+        candidate_step.get("if") == "steps.pending-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'",
         "release.yml.jobs.release-meta: candidate suffix gate drifted",
     )
     candidate_run = str(candidate_step.get("run", ""))
@@ -791,6 +797,12 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     tag_step = step_config(publish, "Create and push git tag", "release.yml.jobs.release-publish")
     tag_run = str(tag_step.get("run", ""))
     require('sha="${TARGET_SHA}"' in tag_run, "release.yml.jobs.release-publish tag step must use target_sha")
+    next_step = step_config(publish, "Resolve next pending release target", "release.yml.jobs.release-publish")
+    require(next_step.get("if") == "github.event_name != 'workflow_dispatch'", "release.yml.jobs.release-publish: next pending target gate drifted")
+    next_run = str(next_step.get("run", ""))
+    require("release_snapshot.py next-pending" in next_run, "release.yml.jobs.release-publish: next pending target must use release_snapshot.py next-pending")
+    continue_step = step_config(publish, "Continue release queue", "release.yml.jobs.release-publish")
+    require(continue_step.get("if") == "github.event_name != 'workflow_dispatch' && steps.next-pending.outputs.target_sha != ''", "release.yml.jobs.release-publish: release queue continuation gate drifted")
 
 
 def validate_merge_group_helpers(module: Any) -> None:
