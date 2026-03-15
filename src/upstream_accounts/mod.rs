@@ -2854,29 +2854,29 @@ async fn load_duplicate_info_map(
             account.chatgpt_account_id,
             account.chatgpt_user_id,
             COALESCE(
-                (
-                    SELECT CASE
-                        WHEN NULLIF(TRIM(sample.plan_type), '') IS NOT NULL
-                            THEN NULLIF(TRIM(sample.plan_type), '')
-                        WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
-                             AND account.last_refreshed_at IS NOT NULL
-                             AND account.last_refreshed_at > sample.captured_at
-                            THEN NULLIF(TRIM(account.plan_type), '')
-                        ELSE (
-                            SELECT NULLIF(TRIM(previous_sample.plan_type), '')
+                CASE
+                    WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
+                         AND account.last_refreshed_at IS NOT NULL
+                         AND account.last_refreshed_at > (
+                            SELECT previous_sample.captured_at
                             FROM pool_upstream_account_limit_samples previous_sample
                             WHERE previous_sample.account_id = account.id
                               AND previous_sample.plan_type IS NOT NULL
                               AND TRIM(previous_sample.plan_type) <> ''
                             ORDER BY previous_sample.captured_at DESC
                             LIMIT 1
-                        )
-                    END
-                    FROM pool_upstream_account_limit_samples sample
-                    WHERE sample.account_id = account.id
-                    ORDER BY sample.captured_at DESC
-                    LIMIT 1
-                ),
+                         )
+                        THEN NULLIF(TRIM(account.plan_type), '')
+                    ELSE (
+                        SELECT NULLIF(TRIM(previous_sample.plan_type), '')
+                        FROM pool_upstream_account_limit_samples previous_sample
+                        WHERE previous_sample.account_id = account.id
+                          AND previous_sample.plan_type IS NOT NULL
+                          AND TRIM(previous_sample.plan_type) <> ''
+                        ORDER BY previous_sample.captured_at DESC
+                        LIMIT 1
+                    )
+                END,
                 NULLIF(TRIM(account.plan_type), '')
             ) AS plan_type
         FROM pool_upstream_accounts account
@@ -3495,11 +3495,17 @@ async fn load_latest_usage_sample(
             sample.limit_name,
             COALESCE(
                 CASE
-                    WHEN NULLIF(TRIM(sample.plan_type), '') IS NOT NULL
-                        THEN NULLIF(TRIM(sample.plan_type), '')
                     WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
                          AND account.last_refreshed_at IS NOT NULL
-                         AND account.last_refreshed_at > sample.captured_at
+                         AND account.last_refreshed_at > (
+                            SELECT previous_sample.captured_at
+                            FROM pool_upstream_account_limit_samples previous_sample
+                            WHERE previous_sample.account_id = sample.account_id
+                              AND previous_sample.plan_type IS NOT NULL
+                              AND TRIM(previous_sample.plan_type) <> ''
+                            ORDER BY previous_sample.captured_at DESC
+                            LIMIT 1
+                         )
                         THEN NULLIF(TRIM(account.plan_type), '')
                     ELSE (
                         SELECT NULLIF(TRIM(previous_sample.plan_type), '')
@@ -6137,6 +6143,18 @@ mod tests {
                 Some("team"),
             )
             .await;
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET last_refreshed_at = '2026-03-14T00:00:00Z',
+                    updated_at = '2026-03-14T00:00:00Z'
+                WHERE id = ?1
+                "#,
+            )
+            .bind(*account_id)
+            .execute(&pool)
+            .await
+            .expect("age account claims");
         }
 
         let duplicate_info = load_duplicate_info_map(&pool)
@@ -6341,6 +6359,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_plan_type_fallback_prefers_refreshed_claims_over_stale_non_empty_sample() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, "Refreshed Fallback OAuth", None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Refreshed Fallback OAuth",
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims_with_plan_type(
+                    "refreshed-fallback@example.com",
+                    Some("refreshed_fallback_org"),
+                    Some("refreshed_fallback_user"),
+                    Some("team"),
+                ),
+                encrypted_credentials: "encrypted-refreshed-fallback".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+
+        insert_limit_sample(&pool, account_id, "2026-03-15T00:00:01Z", Some("team")).await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type = 'pro',
+                last_refreshed_at = '2026-03-15T00:00:02Z'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .expect("refresh account claims");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row")
+            .expect("row exists");
+        let snapshot = NormalizedUsageSnapshot {
+            plan_type: None,
+            limit_id: "gpt-4".to_string(),
+            limit_name: Some("GPT-4".to_string()),
+            primary: None,
+            secondary: None,
+            credits: None,
+        };
+
+        let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
+            .await
+            .expect("resolve snapshot plan type");
+        assert_eq!(effective_plan_type.as_deref(), Some("pro"));
+    }
+
+    #[tokio::test]
     async fn fresher_account_claims_override_stale_non_empty_samples() {
         let pool = test_pool().await;
 
@@ -6423,6 +6506,82 @@ mod tests {
                 .expect("detail exists");
             assert_eq!(detail.summary.plan_type.as_deref(), Some("pro"));
         }
+    }
+
+    #[tokio::test]
+    async fn refreshed_claims_override_older_non_empty_samples_without_newer_plan_samples() {
+        let pool = test_pool().await;
+
+        let mut inserted_ids = Vec::new();
+        for (display_name, email) in [
+            ("Claims Fresh One", "claims-fresh-1@example.com"),
+            ("Claims Fresh Two", "claims-fresh-2@example.com"),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some("claims_fresh_shared_org"),
+                        None,
+                        Some("team"),
+                    ),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        for account_id in &inserted_ids {
+            insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:01Z", Some("team")).await;
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type = 'pro',
+                    last_refreshed_at = '2026-03-15T00:00:02Z',
+                    updated_at = '2026-03-15T00:00:03Z'
+                WHERE id = ?1
+                "#,
+            )
+            .bind(*account_id)
+            .execute(&pool)
+            .await
+            .expect("refresh account claims");
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+        );
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| inserted_ids.contains(&summary.id))
+                .all(|summary| summary.plan_type.as_deref() == Some("pro"))
+        );
     }
 
     #[tokio::test]

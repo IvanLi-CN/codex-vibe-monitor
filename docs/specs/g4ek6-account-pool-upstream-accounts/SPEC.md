@@ -60,6 +60,7 @@
 - usage sample 持久化在上游未返回 `plan_type` 时不得把账户表旧值回填进最新 sample；列表、详情与重复判定读取到的 `planType` 必须共享同一份“最新非空 sample 优先、账户表兜底”的解析口径。
 - 当 OAuth 刷新拿到更新后的 `id_token plan_type` 而 usage 响应省略 `plan_type` 时，同步流程必须把该次刷新确认过的有效 plan type 一并写入最新 sample；若账户 claims 的观测时间晚于最近一个非空 sample，列表、详情与重复判定必须以更新后的账户 claims 为准。
 - 上述 freshness 比较只允许使用认证身份实际更新产生的时间戳（如 `lastRefreshedAt` / 新 OAuth 落库时刻）；普通状态写入、备注编辑或同步成功导致的通用 `updatedAt` 变化不得改变 `planType` 的优先级。若本次 usage 省略 `plan_type` 且账户 claims 也不比历史 sample 更新，则必须沿用现有有效 sample 值，而不是回退到更旧的账户 claims。
+- freshness 判定所比较的 sample 基线必须是“最近一个非空 `plan_type` sample”，而不是“最新一行 sample”；否则在最新采样缺失 `plan_type` 时，会把更晚刷新得到的 claims 或更晚确认过的有效 sample 错误地压回旧值。
 - `displayName` 必须全局唯一，按“忽略大小写 + 去首尾空格”判重；单 OAuth、批量 OAuth、API Key 创建与详情编辑命中重复时必须拒绝提交。
 - 服务端必须定期刷新即将过期的 OAuth token，并定期从 Codex / ChatGPT usage 接口采集 `5 小时(primary)` 与 `7 天(secondary)` 窗口，落库为最新快照与历史样本。
 - `5 小时` 与 `7 天` 必须在列表和详情中同时以图形化 + 文字展示：列表展示最新进度，详情展示进度条/图 + 趋势图 + 重置时间 + 状态说明。
@@ -275,3 +276,4 @@
 - 2026-03-16: 补充 latest-sample 读写一致性约束：空 `plan_type` sample 不得回填旧账户值，列表/详情展示的 `planType` 也必须与 Team 判重使用同一解析结果。
 - 2026-03-16: 进一步收紧 freshness 语义：同步时若 usage 未返回 `plan_type`，必须落库存活跃账户当前确认过的有效值；若账户 claims 比最近非空 sample 更新，则读取路径必须让更新后的 claims 覆盖旧 sample。
 - 2026-03-16: 明确 freshness 只认认证身份更新时间，不认通用 `updatedAt`；并补充“usage 省略 `plan_type` 时沿用当前有效值”的同步兜底，避免旧 claims 在下一次采样里反向覆盖更新 sample。
+- 2026-03-16: 补充“最近一个非空 sample”基线约束，避免用最新空 sample 参与 freshness 比较，导致刷新后的 claims 或现有有效 sample 被错误回退。
