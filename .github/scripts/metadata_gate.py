@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 API_VERSION = "2022-11-28"
-RELEASE_INTENT_SCHEMA_VERSION = 1
 ALLOWED_INTENT_LABELS = frozenset(
     {
         "type:docs",
@@ -103,7 +102,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     parser.add_argument("--event-path", default=os.environ.get("GITHUB_EVENT_PATH", ""))
     parser.add_argument("--pull-number", type=int, default=None)
-    parser.add_argument("--write-intent", default="")
     return parser.parse_args()
 
 
@@ -218,39 +216,6 @@ def fetch_issue_labels(client: GitHubClient, pull_number: int) -> list[str]:
     return sorted(set(names))
 
 
-def fetch_pull_payload(client: GitHubClient, pull_number: int) -> dict[str, Any]:
-    payload = client.request_json(f"/repos/{client.owner}/{client.repo}/pulls/{pull_number}")
-    if not isinstance(payload, dict):
-        raise GateError(f"Pull request payload for PR #{pull_number} must be an object")
-    return payload
-
-
-def build_release_intent_record(pull_number: int, labels: list[str], pull_payload: dict[str, Any]) -> dict[str, Any]:
-    head = pull_payload.get("head") or {}
-    head_sha = head.get("sha") if isinstance(head, dict) else None
-    if not isinstance(head_sha, str) or not head_sha:
-        raise GateError(f"PR #{pull_number} is missing head.sha")
-
-    type_labels = sorted(label for label in labels if label.startswith("type:"))
-    channel_labels = sorted(label for label in labels if label.startswith("channel:"))
-    if len(type_labels) != 1 or len(channel_labels) != 1:
-        raise GateError(f"PR #{pull_number} does not have a deterministic release intent")
-
-    return {
-        "schema_version": RELEASE_INTENT_SCHEMA_VERSION,
-        "pr_number": pull_number,
-        "pr_head_sha": head_sha,
-        "type_label": type_labels[0],
-        "channel_label": channel_labels[0],
-        "created_at": "",
-    }
-
-
-def write_release_intent(path: str, payload: dict[str, Any]) -> None:
-    record = dict(payload)
-    record["created_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    Path(path).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
 
 def write_step_summary(lines: list[str]) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
@@ -260,12 +225,11 @@ def write_step_summary(lines: list[str]) -> None:
         handle.write("\n".join(lines) + "\n")
 
 
-def run_label_gate(context: GateContext, client: GitHubClient, write_intent_path: str = "") -> int:
+def run_label_gate(context: GateContext, client: GitHubClient) -> int:
     pull_numbers = resolve_pull_numbers(context, client)
     results: list[dict[str, Any]] = []
     for pull_number in pull_numbers:
         labels = fetch_issue_labels(client, pull_number)
-        pull_payload = fetch_pull_payload(client, pull_number)
         passed, description = evaluate_labels_from_names(labels)
         results.append(
             {
@@ -273,7 +237,6 @@ def run_label_gate(context: GateContext, client: GitHubClient, write_intent_path
                 "passed": passed,
                 "labels": labels,
                 "description": description,
-                "release_intent": build_release_intent_record(pull_number, labels, pull_payload) if passed else None,
             }
         )
 
@@ -297,11 +260,6 @@ def run_label_gate(context: GateContext, client: GitHubClient, write_intent_path
             file=sys.stderr,
         )
         return 1
-
-    if write_intent_path:
-        if len(results) != 1 or results[0].get("release_intent") is None:
-            raise GateError("Expected exactly one passing PR result before writing release intent")
-        write_release_intent(write_intent_path, results[0]["release_intent"])
 
     print(f"metadata-gate[label]: validated {len(results)} pull request(s)")
     return 0
@@ -433,7 +391,7 @@ def main() -> int:
         context = build_context(args)
         client = GitHubClient(context.owner, context.repo, context.api_root, context.token)
         if context.gate == "label":
-            return run_label_gate(context, client, args.write_intent)
+            return run_label_gate(context, client)
         return run_review_gate(context, client)
     except (GateError, GitHubApiError) as exc:
         print(f"metadata-gate[{args.gate}]: {exc}", file=sys.stderr)

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import os
 import re
@@ -10,30 +9,14 @@ import subprocess
 import sys
 import tempfile
 import time
-import zipfile
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
 SNAPSHOT_SCHEMA_VERSION = 1
-RELEASE_INTENT_SCHEMA_VERSION = 1
 DEFAULT_NOTES_REF = "refs/notes/release-snapshots"
-RELEASE_INTENT_ARTIFACT_PREFIX = "release-intent-pr-"
-TRUSTED_RELEASE_INTENT_WORKFLOW_PATH = ".github/workflows/label-gate.yml"
-TRUSTED_RELEASE_INTENT_EVENT = "pull_request"
-ALLOWED_SNAPSHOT_SOURCES = {"ci-main", "pr-intent-artifact", "legacy-pr-labels"}
-RELEASE_INTENT_SUPPORT_PATHS = (
-    ".github/quality-gates.json",
-    ".github/scripts/check_quality_gates_contract.py",
-    ".github/scripts/metadata_gate.py",
-    ".github/workflows/ci-pr.yml",
-    ".github/workflows/ci-main.yml",
-    ".github/workflows/release.yml",
-    ".github/workflows/label-gate.yml",
-    ".github/workflows/review-policy.yml",
-)
+ALLOWED_SNAPSHOT_SOURCES = {"ci-main", "manual-backfill", "pr-intent-artifact", "legacy-pr-labels"}
 ALLOWED_TYPE_LABELS = {
     "type:patch",
     "type:minor",
@@ -96,11 +79,6 @@ def parse_args() -> argparse.Namespace:
     ensure.add_argument("--output", required=True)
     ensure.add_argument("--max-attempts", type=int, default=6)
     ensure.add_argument(
-        "--allow-current-pr-label-fallback",
-        action="store_true",
-        help="Allow historical backfill to fall back to the merged PR's current labels when no frozen intent artifact exists.",
-    )
-    ensure.add_argument(
         "--target-only",
         action="store_true",
         help="Only materialize the requested target commit instead of filling every missing first-parent snapshot on the path.",
@@ -137,10 +115,6 @@ def git(*args: str, check: bool = True, capture_output: bool = True) -> subproce
 
 def git_output(*args: str) -> str:
     return git(*args).stdout.strip()
-
-
-def note_exists(notes_ref: str, target_sha: str) -> bool:
-    return git("notes", f"--ref={notes_ref}", "show", target_sha, check=False).returncode == 0
 
 
 def read_snapshot(notes_ref: str, target_sha: str) -> dict[str, Any] | None:
@@ -255,86 +229,6 @@ def github_request_json(api_root: str, token: str, path: str, query: dict[str, A
         raise SnapshotError(f"GitHub API request failed on {path}: {exc}") from exc
 
 
-def github_request_bytes(url: str, token: str) -> bytes:
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "codex-vibe-monitor-release-snapshot",
-    }
-    req = request.Request(url, headers=headers)
-    try:
-        with request.urlopen(req) as resp:
-            return resp.read()
-    except error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise SnapshotError(f"GitHub artifact download failed on {url}: {exc.code} {body}") from exc
-    except error.URLError as exc:
-        raise SnapshotError(f"GitHub artifact download failed on {url}: {exc}") from exc
-
-
-def github_paginate(api_root: str, token: str, path: str) -> list[dict[str, Any]]:
-    page = 1
-    items: list[dict[str, Any]] = []
-    while True:
-        payload = github_request_json(api_root, token, path, {"per_page": 100, "page": page})
-        if not isinstance(payload, list):
-            raise SnapshotError(f"GitHub API returned an unexpected payload for {path}")
-        normalized = [item for item in payload if isinstance(item, dict)]
-        items.extend(normalized)
-        if len(payload) < 100:
-            return items
-        page += 1
-
-
-def github_paginate_artifacts(api_root: str, token: str, path: str) -> list[dict[str, Any]]:
-    page = 1
-    items: list[dict[str, Any]] = []
-    while True:
-        payload = github_request_json(api_root, token, path, {"per_page": 100, "page": page})
-        if not isinstance(payload, dict):
-            raise SnapshotError(f"GitHub API returned an unexpected artifacts payload for {path}")
-        artifacts = payload.get("artifacts") or []
-        if not isinstance(artifacts, list):
-            raise SnapshotError(f"GitHub API returned malformed artifacts data for {path}")
-        normalized = [item for item in artifacts if isinstance(item, dict)]
-        items.extend(normalized)
-        if len(artifacts) < 100:
-            return items
-        page += 1
-
-
-def github_paginate_workflow_runs(
-    api_root: str,
-    token: str,
-    path: str,
-    query: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    page = 1
-    items: list[dict[str, Any]] = []
-    while True:
-        page_query = dict(query or {})
-        page_query.update({"per_page": 100, "page": page})
-        payload = github_request_json(api_root, token, path, page_query)
-        if not isinstance(payload, dict):
-            raise SnapshotError(f"GitHub API returned an unexpected workflow runs payload for {path}")
-        workflow_runs = payload.get("workflow_runs") or []
-        if not isinstance(workflow_runs, list):
-            raise SnapshotError(f"GitHub API returned malformed workflow runs data for {path}")
-        normalized = [item for item in workflow_runs if isinstance(item, dict)]
-        items.extend(normalized)
-        if len(workflow_runs) < 100:
-            return items
-        page += 1
-
-
-def parse_github_timestamp(value: str, *, where: str) -> datetime:
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise SnapshotError(f"{where} must be an ISO-8601 timestamp") from exc
-
-
 def load_pr_for_commit(
     api_root: str,
     repository: str,
@@ -363,76 +257,6 @@ def load_pr_for_commit(
     return pr
 
 
-def artifact_name_for_pr(pr_number: int, pr_head_sha: str) -> str:
-    return f"{RELEASE_INTENT_ARTIFACT_PREFIX}{pr_number}-{pr_head_sha}"
-
-
-def validate_release_intent(
-    payload: Any, *, expected_pr_number: int | None = None, expected_head_sha: str | None = None
-) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise SnapshotError("Release intent artifact must decode to an object")
-    if payload.get("schema_version") != RELEASE_INTENT_SCHEMA_VERSION:
-        raise SnapshotError(f"Unsupported release intent schema: {payload.get('schema_version')!r}")
-
-    pr_number = payload.get("pr_number")
-    if not isinstance(pr_number, int):
-        raise SnapshotError("Release intent pr_number must be an integer")
-    if expected_pr_number is not None and pr_number != expected_pr_number:
-        raise SnapshotError(f"Release intent pr_number mismatch: expected {expected_pr_number}, got {pr_number}")
-
-    pr_head_sha = payload.get("pr_head_sha")
-    if not isinstance(pr_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head_sha):
-        raise SnapshotError("Release intent pr_head_sha must be a 40-char commit SHA")
-    if expected_head_sha is not None and pr_head_sha != expected_head_sha:
-        raise SnapshotError(f"Release intent pr_head_sha mismatch: expected {expected_head_sha}, got {pr_head_sha}")
-
-    for key, allowed in (("type_label", ALLOWED_TYPE_LABELS), ("channel_label", ALLOWED_CHANNEL_LABELS)):
-        value = payload.get(key)
-        if not isinstance(value, str) or value not in allowed:
-            raise SnapshotError(f"Release intent {key} must be one of {', '.join(sorted(allowed))}")
-
-    created_at = payload.get("created_at")
-    if not isinstance(created_at, str) or not created_at:
-        raise SnapshotError("Release intent created_at must be a non-empty string")
-
-    return payload
-
-
-def labels_at_merge_time(api_root: str, repository: str, token: str, pr: dict[str, Any]) -> list[str]:
-    owner, repo = repository.split("/", 1)
-    pr_number = pr.get("number")
-    merged_at = pr.get("merged_at")
-    if not isinstance(pr_number, int):
-        raise SnapshotError("Pull request payload is missing a numeric PR number")
-    if not isinstance(merged_at, str) or not merged_at:
-        raise SnapshotError(f"Pull request #{pr_number} is missing merged_at; cannot freeze release labels")
-
-    merge_moment = parse_github_timestamp(merged_at, where=f"Pull request #{pr_number} merged_at")
-    timeline = github_paginate(api_root, token, f"/repos/{owner}/{repo}/issues/{pr_number}/timeline")
-
-    labels: set[str] = set()
-    for event in sorted(timeline, key=lambda item: str(item.get("created_at", ""))):
-        created_at = event.get("created_at")
-        if not isinstance(created_at, str):
-            continue
-        event_moment = parse_github_timestamp(created_at, where=f"Pull request #{pr_number} timeline created_at")
-        if event_moment > merge_moment:
-            continue
-        event_type = event.get("event")
-        label = event.get("label")
-        if not isinstance(label, dict):
-            continue
-        name = label.get("name")
-        if not isinstance(name, str):
-            continue
-        if event_type == "labeled":
-            labels.add(name)
-        elif event_type == "unlabeled":
-            labels.discard(name)
-    return sorted(labels)
-
-
 def current_pr_labels(pr: dict[str, Any]) -> list[str]:
     labels = pr.get("labels")
     if not isinstance(labels, list):
@@ -449,310 +273,13 @@ def current_pr_labels(pr: dict[str, Any]) -> list[str]:
     return sorted(names)
 
 
-def repo_root_supports_release_intent_artifact(repo_root: Path) -> bool:
-    contract_script = repo_root / ".github/scripts/check_quality_gates_contract.py"
-    metadata_script = repo_root / ".github/scripts/metadata_gate.py"
-    if not contract_script.is_file() or not metadata_script.is_file():
-        return False
-
-    contract_check = subprocess.run(
-        [sys.executable, str(contract_script), "--repo-root", str(repo_root), "--profile", "final"],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    if contract_check.returncode != 0:
-        return False
-
-    metadata_help = subprocess.run(
-        [sys.executable, str(metadata_script), "label", "--help"],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    if metadata_help.returncode != 0:
-        return False
-
-    help_output = f"{metadata_help.stdout}\n{metadata_help.stderr}"
-    return "--write-intent" in help_output
-
-
-def checkout_commit_file(commit_sha: str, path: str, destination: Path) -> bool:
-    result = git("show", f"{commit_sha}:{path}", check=False)
-    if result.returncode != 0:
-        return False
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(result.stdout)
-    return True
-
-
-def commit_supports_release_intent_artifact(commit_sha: str) -> bool:
-    with tempfile.TemporaryDirectory(prefix="release-intent-support-") as tmp:
-        repo_root = Path(tmp)
-        for path in RELEASE_INTENT_SUPPORT_PATHS:
-            if not checkout_commit_file(commit_sha, path, repo_root / path):
-                return False
-        return repo_root_supports_release_intent_artifact(repo_root)
-
-
-def support_rollout_moment_for_target(target_sha: str) -> datetime | None:
-    parents = git_output("rev-list", "--parents", "-n", "1", target_sha).split()
-    if len(parents) <= 1:
-        return None
-    previous_main_sha = parents[1]
-    if not commit_supports_release_intent_artifact(previous_main_sha):
-        return None
-
-    for commit_sha in git_output("rev-list", "--first-parent", "--reverse", previous_main_sha).splitlines():
-        if commit_supports_release_intent_artifact(commit_sha):
-            committed_at = git_output("show", "-s", "--format=%cI", commit_sha)
-            return parse_github_timestamp(committed_at, where=f"Mainline support commit {commit_sha} committed_at")
-    raise SnapshotError("Failed to locate the first mainline commit that introduced release-intent artifact support")
-
-
-def pr_had_rollout_trigger_after(
-    api_root: str, repository: str, token: str, pr: dict[str, Any], rollout_moment: datetime
-) -> bool:
-    pr_number = pr.get("number")
-    created_at = pr.get("created_at")
-    if not isinstance(pr_number, int):
-        raise SnapshotError("Pull request payload is missing a numeric PR number")
-    if isinstance(created_at, str) and parse_github_timestamp(created_at, where=f"Pull request #{pr_number} created_at") >= rollout_moment:
-        return True
-
-    owner, repo = repository.split("/", 1)
-    rollout_events = {"reopened", "synchronize", "labeled", "unlabeled", "ready_for_review", "edited"}
-    timeline = github_paginate(api_root, token, f"/repos/{owner}/{repo}/issues/{pr_number}/timeline")
-    for event in timeline:
-        if not isinstance(event, dict):
-            continue
-        event_type = event.get("event")
-        created_at = event.get("created_at")
-        if event_type not in rollout_events or not isinstance(created_at, str):
-            continue
-        if parse_github_timestamp(created_at, where=f"Pull request #{pr_number} timeline created_at") >= rollout_moment:
-            return True
-    return False
-
-
-def legacy_fallback_allowed_for_target(
-    api_root: str, repository: str, token: str, pr: dict[str, Any], *, target_sha: str
-) -> bool:
-    rollout_moment = support_rollout_moment_for_target(target_sha)
-    if rollout_moment is None:
-        return True
-    return not pr_had_rollout_trigger_after(api_root, repository, token, pr, rollout_moment)
-
-
-def merged_pr_head_sha(target_sha: str) -> str | None:
-    parents = git_output("rev-list", "--parents", "-n", "1", target_sha).split()
-    if len(parents) >= 3 and re.fullmatch(r"[0-9a-f]{40}", parents[2]):
-        return parents[2]
-    return None
-
-
-def workflow_run_matches_release_intent(
-    run_payload: dict[str, Any],
-    *,
-    pr_number: int,
-    expected_head_sha: str | None = None,
-) -> bool:
-    if run_payload.get("path") != TRUSTED_RELEASE_INTENT_WORKFLOW_PATH:
-        return False
-    if run_payload.get("event") != TRUSTED_RELEASE_INTENT_EVENT:
-        return False
-    if run_payload.get("status") != "completed":
-        return False
-    if run_payload.get("conclusion") != "success":
-        return False
-    if expected_head_sha is not None and run_payload.get("head_sha") == expected_head_sha:
-        return True
-
-    pull_requests = run_payload.get("pull_requests") or []
-    if not isinstance(pull_requests, list):
-        raise SnapshotError("GitHub API returned malformed workflow run pull_requests")
-    return any(
-        isinstance(item, dict)
-        and item.get("number") == pr_number
-        and (
-            expected_head_sha is None
-            or (isinstance(item.get("head"), dict) and item["head"].get("sha") == expected_head_sha)
-        )
-        for item in pull_requests
-    )
-
-
-def workflow_run_artifacts(
-    api_root: str,
-    repository: str,
-    token: str,
-    *,
-    run_id: int,
-) -> list[dict[str, Any]]:
-    owner, repo = repository.split("/", 1)
-    return github_paginate_artifacts(api_root, token, f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts")
-
-
-def find_release_intent_artifact_for_run(
-    api_root: str,
-    repository: str,
-    token: str,
-    *,
-    run_id: int,
-    artifact_name: str,
-    merge_moment: datetime,
-) -> dict[str, Any] | None:
-    for artifact in workflow_run_artifacts(api_root, repository, token, run_id=run_id):
-        if not isinstance(artifact, dict):
-            continue
-        if artifact.get("name") != artifact_name:
-            continue
-        if artifact.get("expired") is not False:
-            continue
-        created_at = artifact.get("created_at")
-        if not isinstance(created_at, str):
-            continue
-        if parse_github_timestamp(created_at, where=f"Artifact {artifact_name} created_at") > merge_moment:
-            continue
-        return artifact
-    return None
-
-
-def discover_release_intent_artifact_via_workflow_runs(
-    api_root: str,
-    repository: str,
-    token: str,
-    *,
-    pr_number: int,
-    merged_at: str,
-    expected_head_sha: str | None,
-    pr_head_ref: str | None,
-) -> dict[str, Any] | None:
-    if expected_head_sha is None or not pr_head_ref:
-        return None
-
-    owner, repo = repository.split("/", 1)
-    merge_moment = parse_github_timestamp(merged_at, where=f"Pull request #{pr_number} merged_at")
-    artifact_name = artifact_name_for_pr(pr_number, expected_head_sha)
-    workflow_runs = github_paginate_workflow_runs(
-        api_root,
-        token,
-        f"/repos/{owner}/{repo}/actions/workflows/label-gate.yml/runs",
-        {"event": TRUSTED_RELEASE_INTENT_EVENT, "branch": pr_head_ref},
-    )
-    candidates: list[tuple[datetime, dict[str, Any]]] = []
-    for run_payload in workflow_runs:
-        created_at = run_payload.get("created_at")
-        if not isinstance(created_at, str):
-            continue
-        created_moment = parse_github_timestamp(created_at, where="Workflow run created_at")
-        if created_moment > merge_moment:
-            continue
-        run_id = run_payload.get("id")
-        if not isinstance(run_id, int):
-            continue
-        if not workflow_run_matches_release_intent(
-            run_payload,
-            pr_number=pr_number,
-            expected_head_sha=expected_head_sha,
-        ):
-            continue
-        artifact = find_release_intent_artifact_for_run(
-            api_root,
-            repository,
-            token,
-            run_id=run_id,
-            artifact_name=artifact_name,
-            merge_moment=merge_moment,
-        )
-        if artifact is not None:
-            candidates.append((created_moment, artifact))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
-
-
-def load_release_intent_artifact(
-    api_root: str,
-    repository: str,
-    token: str,
-    pr_number: int,
-    *,
-    merged_at: str,
-    expected_head_sha: str | None = None,
-    pr_head_ref: str | None = None,
-) -> dict[str, Any] | None:
-    owner, repo = repository.split("/", 1)
-    artifact_prefix = f"{RELEASE_INTENT_ARTIFACT_PREFIX}{pr_number}-"
-    merge_moment = parse_github_timestamp(merged_at, where=f"Pull request #{pr_number} merged_at")
-    artifacts = github_paginate_artifacts(api_root, token, f"/repos/{owner}/{repo}/actions/artifacts")
-
-    candidates: list[dict[str, Any]] = []
-    workflow_runs: dict[int, dict[str, Any]] = {}
-    for artifact in artifacts:
-        if not isinstance(artifact, dict):
-            continue
-        artifact_name = artifact.get("name")
-        if not isinstance(artifact_name, str) or not artifact_name.startswith(artifact_prefix):
-            continue
-        if artifact.get("expired") is not False:
-            continue
-        created_at = artifact.get("created_at")
-        if not isinstance(created_at, str):
-            continue
-        if parse_github_timestamp(created_at, where=f"Artifact {artifact_name} created_at") > merge_moment:
-            continue
-        workflow_run = artifact.get("workflow_run")
-        if not isinstance(workflow_run, dict):
-            raise SnapshotError(f"Artifact {artifact_name} is missing workflow_run metadata")
-        run_id = workflow_run.get("id")
-        if not isinstance(run_id, int):
-            raise SnapshotError(f"Artifact {artifact_name} is missing a numeric workflow_run.id")
-        run_payload = workflow_runs.get(run_id)
-        if run_payload is None:
-            run_payload = github_request_json(api_root, token, f"/repos/{owner}/{repo}/actions/runs/{run_id}")
-            if not isinstance(run_payload, dict):
-                raise SnapshotError(f"GitHub API returned malformed workflow run data for artifact {artifact_name}")
-            workflow_runs[run_id] = run_payload
-        if not workflow_run_matches_release_intent(
-            run_payload,
-            pr_number=pr_number,
-            expected_head_sha=expected_head_sha,
-        ):
-            continue
-        candidates.append(artifact)
-    if not candidates:
-        run_artifact = discover_release_intent_artifact_via_workflow_runs(
-            api_root,
-            repository,
-            token,
-            pr_number=pr_number,
-            merged_at=merged_at,
-            expected_head_sha=expected_head_sha,
-            pr_head_ref=pr_head_ref,
-        )
-        if run_artifact is None:
-            return None
-        candidates.append(run_artifact)
-
-    candidates.sort(key=lambda artifact: str(artifact.get("created_at") or ""), reverse=True)
-    artifact = candidates[0]
-    artifact_name = str(artifact.get("name") or f"{artifact_prefix}unknown")
-    archive_url = artifact.get("archive_download_url")
-    if not isinstance(archive_url, str) or not archive_url:
-        raise SnapshotError(f"Artifact {artifact_name} is missing archive_download_url")
-
-    raw_bytes = github_request_bytes(archive_url, token)
-    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as archive:
-        members = [name for name in archive.namelist() if name.endswith(".json")]
-        if len(members) != 1:
-            raise SnapshotError(f"Artifact {artifact_name} must contain exactly one JSON file")
-        try:
-            payload = json.loads(archive.read(members[0]).decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise SnapshotError(f"Artifact {artifact_name} does not contain valid JSON") from exc
-    return validate_release_intent(payload, expected_pr_number=pr_number, expected_head_sha=expected_head_sha)
+def current_pr_head_sha(pr: dict[str, Any]) -> str:
+    head = pr.get("head") or {}
+    pr_head_sha = head.get("sha") if isinstance(head, dict) else None
+    if not isinstance(pr_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head_sha):
+        pr_number = pr.get("number")
+        raise SnapshotError(f"Pull request #{pr_number} is missing a valid head.sha")
+    return pr_head_sha
 
 
 def parse_release_labels(labels: list[str]) -> tuple[str, str]:
@@ -777,66 +304,10 @@ def parse_release_labels(labels: list[str]) -> tuple[str, str]:
     return type_label, channel_label
 
 
-def resolve_release_intent_for_pr(
-    api_root: str,
-    repository: str,
-    token: str,
-    pr: dict[str, Any],
-    *,
-    target_sha: str,
-    allow_current_pr_label_fallback: bool = False,
-) -> tuple[str, str, str, str]:
-    pr_number = pr.get("number")
-    if not isinstance(pr_number, int):
-        raise SnapshotError("Pull request payload is missing a numeric PR number")
-    merged_at = pr.get("merged_at")
-    if not isinstance(merged_at, str) or not merged_at:
-        raise SnapshotError(f"Pull request #{pr_number} is missing merged_at")
-    merged_head_sha = merged_pr_head_sha(target_sha)
-    head = pr.get("head") or {}
-    pr_head_ref = head.get("ref") if isinstance(head, dict) else None
-    if not isinstance(pr_head_ref, str) or not pr_head_ref:
-        pr_head_ref = None
-    pr_head_sha = head.get("sha") if isinstance(head, dict) else None
-    if not isinstance(pr_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head_sha):
-        pr_head_sha = None
-    expected_head_sha = merged_head_sha or pr_head_sha
-
-    release_intent = load_release_intent_artifact(
-        api_root,
-        repository,
-        token,
-        pr_number,
-        merged_at=merged_at,
-        expected_head_sha=expected_head_sha,
-        pr_head_ref=pr_head_ref,
-    )
-    if release_intent is not None:
-        pr_head_sha = str(release_intent["pr_head_sha"])
-        return (
-            str(release_intent["type_label"]),
-            str(release_intent["channel_label"]),
-            "pr-intent-artifact",
-            pr_head_sha,
-        )
-
-    if pr_head_sha is None:
-        if expected_head_sha is None:
-            raise SnapshotError(f"Pull request #{pr_number} is missing a valid head.sha")
-        pr_head_sha = expected_head_sha
-    if legacy_fallback_allowed_for_target(api_root, repository, token, pr, target_sha=target_sha):
-        labels = (
-            current_pr_labels(pr)
-            if allow_current_pr_label_fallback
-            else labels_at_merge_time(api_root, repository, token, pr)
-        )
-        type_label, channel_label = parse_release_labels(labels)
-        return (type_label, channel_label, "legacy-pr-labels", pr_head_sha)
-
-    raise SnapshotError(
-        f"Missing pre-frozen release intent artifact {RELEASE_INTENT_ARTIFACT_PREFIX}{pr_number}-* for PR #{pr_number}; "
-        "legacy label fallback is only allowed when the target commit's previous mainline parent predates artifact-capable label-gate support"
-    )
+def resolve_release_intent_for_pr(pr: dict[str, Any]) -> tuple[str, str, str, str]:
+    labels = current_pr_labels(pr)
+    type_label, channel_label = parse_release_labels(labels)
+    return type_label, channel_label, "ci-main", current_pr_head_sha(pr)
 
 
 def cargo_base_version(target_sha: str) -> StableVersion:
@@ -921,20 +392,12 @@ def build_snapshot(
     registry: str,
     api_root: str,
     pr: dict[str, Any] | None = None,
-    allow_current_pr_label_fallback: bool = False,
 ) -> dict[str, Any]:
     if pr is None:
         pr = load_pr_for_commit(api_root, repository, token, target_sha)
     if pr is None:
         raise SnapshotError(f"Commit {target_sha} is not associated with a merged pull request")
-    type_label, channel_label, snapshot_source, pr_head_sha = resolve_release_intent_for_pr(
-        api_root,
-        repository,
-        token,
-        pr,
-        target_sha=target_sha,
-        allow_current_pr_label_fallback=allow_current_pr_label_fallback,
-    )
+    type_label, channel_label, snapshot_source, pr_head_sha = resolve_release_intent_for_pr(pr)
     release_bump = type_label.split(":", 1)[1]
     release_channel = channel_label.split(":", 1)[1]
     image_name_lower = repository.lower()
@@ -1075,7 +538,6 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
                     registry=args.registry,
                     api_root=args.api_root,
                     pr=pr,
-                    allow_current_pr_label_fallback=args.allow_current_pr_label_fallback,
                 )
                 write_json(temp_note, snapshot)
                 git("notes", f"--ref={args.notes_ref}", "add", "-f", "-F", str(temp_note), commit)
@@ -1087,8 +549,6 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
 
         write_json(output_path, target_snapshot)
 
-        # The notes ref acts like a CAS register: if another allocator wins first,
-        # our stale push is rejected and we recompute against the newer remote tip.
         push = git("push", "origin", args.notes_ref, check=False)
         if push.returncode == 0:
             return 0

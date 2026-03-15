@@ -18,7 +18,7 @@
 
 - 拆分为 `CI PR`、`CI Main`、`Release` 三段式链路，明确并发语义与职责边界。
 - 保留现有 PR label 驱动的 release intent、版本/tag 规则、多架构 smoke 与发布幂等行为。
-- 为 release 增加 `workflow_dispatch(commit_sha)` 手动补发入口，作为 pending release run 被替换或需要显式重放历史 commit 时的人工 backfill 通道；入口接受已经成功通过 `CI Main` 的 `main` commit，以及仅在 `Release Snapshot` 失败、其余 `CI Main` 校验均成功的历史 commit；手动 backfill 必须使用当前主干脚本只补齐目标 commit 的 immutable release snapshot，且仅在这个手动恢复路径里允许对缺失 artifact 的历史 PR 回退到 merged PR 当前 labels。
+- 为 release 增加 `workflow_dispatch(commit_sha)` 手动补发入口，作为需要显式重放历史 commit 时的人工 backfill 通道；入口接受已经成功通过 `CI Main` 的 `main` commit，以及仅在 `Release Snapshot` 失败、其余 `CI Main` 校验均成功的历史 commit；手动 backfill 必须使用当前主干脚本只补齐目标 commit 的 immutable release snapshot。
 - 将 `quality-gates`、trusted metadata gate、contract fixtures/self-tests 升级到 `final` profile。
 
 ### Non-goals
@@ -46,13 +46,13 @@
 ### MUST
 
 - PR 侧 required checks 继续保持 `Validate PR labels`、`Lint & Format Check`、`Backend Tests`、`Build Artifacts`、`Review Policy Gate`。
-- `CI PR` 对同一 PR 必须保持可抢占；`CI Main` 与 `Release` 对运行中的 main/release run 必须保持非抢占。
-- `Label Gate` 必须在 trusted base 上为每个通过标签门禁的 PR 产出预冻结 `release-intent` artifact，至少包含 `pr_number`、`pr_head_sha`、`type_label`、`channel_label` 与生成时间。
-- `CI Main` 必须为每个 merged commit 写入 immutable release snapshot，冻结 PR labels、版本分配与镜像/tag 元数据；自动路径只允许 materialize 当前 target commit，不得为了补历史缺口而阻塞新的 merged commit。
-- `CI Main` 写 snapshot 时，自动发布路径必须优先消费与 merged PR 匹配的预冻结 `release-intent` artifact；不得再依赖 issue timeline label 回放。
-- `Release` 必须同时支持 `workflow_run(CI Main success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 publish 逻辑；自动与手动入口都只能消费 immutable release snapshot，禁止重新读取当前 PR labels 或重算版本。
+- `CI PR` 对同一 PR 必须保持可抢占；`CI Main` 与 `Release` 对运行中的 main/release run 必须保持非抢占，并使用固定并发组做全局串行。
+- `Label Gate` 必须在 trusted base 上校验 merged PR 进入主线前的 `type:*` / `channel:*` 标签合法性，但不再负责冻结或传递发布意图元数据。
+- `CI Main` 必须为每个 merged commit 写入 immutable release snapshot，冻结当前 PR labels、版本分配与镜像/tag 元数据；自动路径只允许 materialize 当前 target commit，不得为了补历史缺口而阻塞新的 merged commit。
+- `CI Main` 写 snapshot 时，自动发布路径必须直接读取 merged commit 关联 PR 的当前 labels；不得依赖 artifact、timeline label 回放或历史 rollout 分支。
+- `Release` 必须同时支持 `workflow_run(CI Main success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 publish 逻辑；自动与手动入口都只能消费 immutable release snapshot，禁止重新读取 PR labels 或重算版本。
 - `workflow_dispatch` 只接受 `commit_sha`，且对非法/不可解析输入、既未通过 `CI Main` 也不满足“仅 `Release Snapshot` 失败”的目标 SHA 一律 fail closed。
-- 历史补发只允许对修复前、且缺少预冻结 artifact 的旧 PR 使用一次性 legacy label 回退；修复上线后的新 PR 若缺工件必须 fail closed。
+- merge 后的 `type:*` / `channel:*` labels 视为发布输入的一部分；若合并后人为改动标签，后续 backfill 将按改动后的标签重建 snapshot，仓库规则必须禁止这种操作。
 - `quality-gates` contract、fixtures 与自测必须升级到 `final` profile，并校验新的 workflow 家族。
 
 ### SHOULD
@@ -66,7 +66,7 @@
 - GitHub Actions 内部契约变更：
   - 新增 workflow `CI PR`、`CI Main`、`Release`。
 - `Release` 新增 `workflow_dispatch` 输入 `commit_sha`（40 位 commit SHA）。
-- `Label Gate` 新增 `release-intent` artifact，作为 PR 到 `CI Main` 的内部发布意图接口。
+- `Label Gate` 不再生成额外 artifact，发布意图接口收敛为 merged PR 当前 labels。
 - `quality-gates.json` 新增 split-topology workflow 声明，作为 contract checker 的源事实。
 
 ## 验收标准（Acceptance Criteria）
@@ -105,7 +105,7 @@
 - PR 路径只保留 PR/merge_group 相关 job；release job 从 PR workflow 中完全拆出。
 - `CI Main` 复用现有 lint/test/build 逻辑，但不再承担发布；发布只由 `Release` workflow 负责。
 - `CI Main` 通过 git notes 写入 immutable release snapshot，把 PR labels、版本分配与镜像/tag 元数据冻结到 merge commit。
-- `Label Gate` 在 trusted source 上把标签决议冻结为 artifact；`CI Main` 再把 artifact 决议提升为 immutable git-notes snapshot。
+- `Label Gate` 在 trusted source 上校验标签；`CI Main` 再把当前 PR labels 提升为 immutable git-notes snapshot。
 - `Release` 通过统一的 target SHA 解析层兼容自动与手动入口，但只加载 snapshot 并复用现有 smoke / manifest / tag / GitHub Release 步骤。
 - `quality-gates` contract 扩展为显式声明 PR/main/release workflow 家族，contract checker 与 fixtures 一起升级，避免只改 workflow 不改自证体系。
 
@@ -113,14 +113,14 @@
 
 - 风险：workflow 拆分后，contract checker、fixtures 与 live-quality-gates 之间容易出现声明不一致。
 - 风险：`workflow_dispatch` backfill 若未验证 SHA 所属分支，可能误对非 main commit 执行发布。
-- 风险：artifact 丢失若没有明确 rollout 边界，容易让历史补发与未来 fail-closed 语义混淆。
+- 风险：若合并后有人手改 release labels，后续手动 backfill 会跟随漂移，因此必须把“merge 后不得改 release labels”写成仓库操作规约。
 - 假设：仓库权限允许 `workflow_run` 触发 release 并继续推 tag / 建 GitHub Release。
 
 ## 变更记录（Change log）
 
 - 2026-03-14: 创建 strict anti-cancel release topology spec，冻结三段式 workflow + final quality-gates 升级范围。
-- 2026-03-14: 完成 workflow split、final quality-gates contract、release backfill 入口与本地 contract/self-tests；补上 label-gate rollout 兼容、`CI Main` 按 SHA 分组、immutable release snapshot 与按 target SHA 隔离的 backfill/concurrency 收敛，继续等待快车道 PR 收敛收口 M4。
-- 2026-03-15: 增加 trusted `release-intent` artifact 冻结层，移除 `CI Main` 对 issue timeline label 回放的自动依赖，并把 legacy label 回退收敛为 merge-time labels + “前一个 mainline parent 尚未部署 artifact-capable Label Gate”这一 rollout 判定。
+- 2026-03-14: 完成 workflow split、final quality-gates contract、release backfill 入口与本地 contract/self-tests。
+- 2026-03-15: 将发布链路进一步收敛为“PR 标签校验 → 全局串行 `CI Main` 写 snapshot → 全局串行 `Release` 消费 snapshot”，删除 artifact、rollout 与 legacy fallback 复杂度。
 
 ## 参考（References）
 
