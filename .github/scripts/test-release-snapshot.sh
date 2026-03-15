@@ -525,12 +525,69 @@ finally:
     module.load_release_intent_artifact = real_load_release_intent_artifact
     module.legacy_fallback_allowed_for_target = real_legacy_fallback_allowed_for_target
 
+artifact_payload_fallback = make_release_intent(142, "e" * 40, type_label="type:skip")
+artifact_bytes_fallback = io.BytesIO()
+with zipfile.ZipFile(artifact_bytes_fallback, "w") as archive:
+    archive.writestr("release-intent.json", json.dumps(artifact_payload_fallback))
+
+real_request_json = module.github_request_json
+real_request_bytes = module.github_request_bytes
+try:
+    def fake_request_json(api_root, token, path, query=None):
+        if path.endswith("/actions/artifacts"):
+            return {"artifacts": []}
+        if path.endswith("/actions/workflows/label-gate.yml/runs"):
+            return {
+                "workflow_runs": [
+                    {
+                        "id": 9,
+                        "path": module.TRUSTED_RELEASE_INTENT_WORKFLOW_PATH,
+                        "event": module.TRUSTED_RELEASE_INTENT_EVENT,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "created_at": "2026-03-15T00:00:00Z",
+                        "head_sha": "e" * 40,
+                    }
+                ]
+            }
+        if path.endswith("/actions/runs/9/artifacts"):
+            return {
+                "artifacts": [
+                    {
+                        "name": module.artifact_name_for_pr(142, "e" * 40),
+                        "expired": False,
+                        "created_at": "2026-03-15T00:00:01Z",
+                        "archive_download_url": "https://example.test/artifacts/9/zip",
+                        "workflow_run": {"id": 9},
+                    }
+                ]
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    module.github_request_json = fake_request_json
+    module.github_request_bytes = lambda url, token: artifact_bytes_fallback.getvalue()
+    loaded_intent = module.load_release_intent_artifact(
+        "https://api.github.com",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        142,
+        merged_at="2026-03-15T00:00:02Z",
+        expected_head_sha="e" * 40,
+        pr_head_ref="th/fix-release-intent-run-artifact-lookup",
+    )
+    assert loaded_intent is not None
+    assert loaded_intent["type_label"] == "type:skip"
+    assert loaded_intent["pr_head_sha"] == "e" * 40
+finally:
+    module.github_request_json = real_request_json
+    module.github_request_bytes = real_request_bytes
+
 real_merged_pr_head_sha = module.merged_pr_head_sha
 real_load_release_intent_artifact = module.load_release_intent_artifact
 try:
     captured_expected_head_sha = {"value": None}
 
-    def fake_load_release_intent_artifact(api_root, repository, token, pr_number, *, merged_at, expected_head_sha=None):
+    def fake_load_release_intent_artifact(api_root, repository, token, pr_number, *, merged_at, expected_head_sha=None, pr_head_ref=None):
         captured_expected_head_sha["value"] = expected_head_sha
         return make_release_intent(pr_number, "d" * 40, type_label="type:skip")
 

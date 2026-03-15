@@ -304,6 +304,30 @@ def github_paginate_artifacts(api_root: str, token: str, path: str) -> list[dict
         page += 1
 
 
+def github_paginate_workflow_runs(
+    api_root: str,
+    token: str,
+    path: str,
+    query: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    page = 1
+    items: list[dict[str, Any]] = []
+    while True:
+        page_query = dict(query or {})
+        page_query.update({"per_page": 100, "page": page})
+        payload = github_request_json(api_root, token, path, page_query)
+        if not isinstance(payload, dict):
+            raise SnapshotError(f"GitHub API returned an unexpected workflow runs payload for {path}")
+        workflow_runs = payload.get("workflow_runs") or []
+        if not isinstance(workflow_runs, list):
+            raise SnapshotError(f"GitHub API returned malformed workflow runs data for {path}")
+        normalized = [item for item in workflow_runs if isinstance(item, dict)]
+        items.extend(normalized)
+        if len(workflow_runs) < 100:
+            return items
+        page += 1
+
+
 def parse_github_timestamp(value: str, *, where: str) -> datetime:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -527,8 +551,137 @@ def merged_pr_head_sha(target_sha: str) -> str | None:
     return None
 
 
+def workflow_run_matches_release_intent(
+    run_payload: dict[str, Any],
+    *,
+    pr_number: int,
+    expected_head_sha: str | None = None,
+) -> bool:
+    if run_payload.get("path") != TRUSTED_RELEASE_INTENT_WORKFLOW_PATH:
+        return False
+    if run_payload.get("event") != TRUSTED_RELEASE_INTENT_EVENT:
+        return False
+    if run_payload.get("status") != "completed":
+        return False
+    if run_payload.get("conclusion") != "success":
+        return False
+    if expected_head_sha is not None and run_payload.get("head_sha") == expected_head_sha:
+        return True
+
+    pull_requests = run_payload.get("pull_requests") or []
+    if not isinstance(pull_requests, list):
+        raise SnapshotError("GitHub API returned malformed workflow run pull_requests")
+    return any(
+        isinstance(item, dict)
+        and item.get("number") == pr_number
+        and (
+            expected_head_sha is None
+            or (isinstance(item.get("head"), dict) and item["head"].get("sha") == expected_head_sha)
+        )
+        for item in pull_requests
+    )
+
+
+def workflow_run_artifacts(
+    api_root: str,
+    repository: str,
+    token: str,
+    *,
+    run_id: int,
+) -> list[dict[str, Any]]:
+    owner, repo = repository.split("/", 1)
+    return github_paginate_artifacts(api_root, token, f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts")
+
+
+def find_release_intent_artifact_for_run(
+    api_root: str,
+    repository: str,
+    token: str,
+    *,
+    run_id: int,
+    artifact_name: str,
+    merge_moment: datetime,
+) -> dict[str, Any] | None:
+    for artifact in workflow_run_artifacts(api_root, repository, token, run_id=run_id):
+        if not isinstance(artifact, dict):
+            continue
+        if artifact.get("name") != artifact_name:
+            continue
+        if artifact.get("expired") is not False:
+            continue
+        created_at = artifact.get("created_at")
+        if not isinstance(created_at, str):
+            continue
+        if parse_github_timestamp(created_at, where=f"Artifact {artifact_name} created_at") > merge_moment:
+            continue
+        return artifact
+    return None
+
+
+def discover_release_intent_artifact_via_workflow_runs(
+    api_root: str,
+    repository: str,
+    token: str,
+    *,
+    pr_number: int,
+    merged_at: str,
+    expected_head_sha: str | None,
+    pr_head_ref: str | None,
+) -> dict[str, Any] | None:
+    if expected_head_sha is None or not pr_head_ref:
+        return None
+
+    owner, repo = repository.split("/", 1)
+    merge_moment = parse_github_timestamp(merged_at, where=f"Pull request #{pr_number} merged_at")
+    artifact_name = artifact_name_for_pr(pr_number, expected_head_sha)
+    workflow_runs = github_paginate_workflow_runs(
+        api_root,
+        token,
+        f"/repos/{owner}/{repo}/actions/workflows/label-gate.yml/runs",
+        {"event": TRUSTED_RELEASE_INTENT_EVENT, "branch": pr_head_ref},
+    )
+    candidates: list[tuple[datetime, dict[str, Any]]] = []
+    for run_payload in workflow_runs:
+        created_at = run_payload.get("created_at")
+        if not isinstance(created_at, str):
+            continue
+        created_moment = parse_github_timestamp(created_at, where="Workflow run created_at")
+        if created_moment > merge_moment:
+            continue
+        run_id = run_payload.get("id")
+        if not isinstance(run_id, int):
+            continue
+        if not workflow_run_matches_release_intent(
+            run_payload,
+            pr_number=pr_number,
+            expected_head_sha=expected_head_sha,
+        ):
+            continue
+        artifact = find_release_intent_artifact_for_run(
+            api_root,
+            repository,
+            token,
+            run_id=run_id,
+            artifact_name=artifact_name,
+            merge_moment=merge_moment,
+        )
+        if artifact is not None:
+            candidates.append((created_moment, artifact))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
 def load_release_intent_artifact(
-    api_root: str, repository: str, token: str, pr_number: int, *, merged_at: str, expected_head_sha: str | None = None
+    api_root: str,
+    repository: str,
+    token: str,
+    pr_number: int,
+    *,
+    merged_at: str,
+    expected_head_sha: str | None = None,
+    pr_head_ref: str | None = None,
 ) -> dict[str, Any] | None:
     owner, repo = repository.split("/", 1)
     artifact_prefix = f"{RELEASE_INTENT_ARTIFACT_PREFIX}{pr_number}-"
@@ -562,36 +715,30 @@ def load_release_intent_artifact(
             if not isinstance(run_payload, dict):
                 raise SnapshotError(f"GitHub API returned malformed workflow run data for artifact {artifact_name}")
             workflow_runs[run_id] = run_payload
-        if run_payload.get("path") != TRUSTED_RELEASE_INTENT_WORKFLOW_PATH:
-            continue
-        if run_payload.get("event") != TRUSTED_RELEASE_INTENT_EVENT:
-            continue
-        if run_payload.get("status") != "completed":
-            continue
-        if run_payload.get("conclusion") != "success":
-            continue
-        if expected_head_sha is not None and artifact_name == artifact_name_for_pr(pr_number, expected_head_sha):
-            candidates.append(artifact)
-            continue
-        pull_requests = run_payload.get("pull_requests") or []
-        if not isinstance(pull_requests, list):
-            raise SnapshotError(f"GitHub API returned malformed workflow run pull_requests for artifact {artifact_name}")
-        if not any(
-            isinstance(item, dict)
-            and item.get("number") == pr_number
-            and (
-                expected_head_sha is None
-                or (isinstance(item.get("head"), dict) and item["head"].get("sha") == expected_head_sha)
-            )
-            for item in pull_requests
+        if not workflow_run_matches_release_intent(
+            run_payload,
+            pr_number=pr_number,
+            expected_head_sha=expected_head_sha,
         ):
             continue
         candidates.append(artifact)
     if not candidates:
-        return None
+        run_artifact = discover_release_intent_artifact_via_workflow_runs(
+            api_root,
+            repository,
+            token,
+            pr_number=pr_number,
+            merged_at=merged_at,
+            expected_head_sha=expected_head_sha,
+            pr_head_ref=pr_head_ref,
+        )
+        if run_artifact is None:
+            return None
+        candidates.append(run_artifact)
 
     candidates.sort(key=lambda artifact: str(artifact.get("created_at") or ""), reverse=True)
     artifact = candidates[0]
+    artifact_name = str(artifact.get("name") or f"{artifact_prefix}unknown")
     archive_url = artifact.get("archive_download_url")
     if not isinstance(archive_url, str) or not archive_url:
         raise SnapshotError(f"Artifact {artifact_name} is missing archive_download_url")
@@ -647,6 +794,9 @@ def resolve_release_intent_for_pr(
         raise SnapshotError(f"Pull request #{pr_number} is missing merged_at")
     merged_head_sha = merged_pr_head_sha(target_sha)
     head = pr.get("head") or {}
+    pr_head_ref = head.get("ref") if isinstance(head, dict) else None
+    if not isinstance(pr_head_ref, str) or not pr_head_ref:
+        pr_head_ref = None
     pr_head_sha = head.get("sha") if isinstance(head, dict) else None
     if not isinstance(pr_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head_sha):
         pr_head_sha = None
@@ -659,6 +809,7 @@ def resolve_release_intent_for_pr(
         pr_number,
         merged_at=merged_at,
         expected_head_sha=expected_head_sha,
+        pr_head_ref=pr_head_ref,
     )
     if release_intent is not None:
         pr_head_sha = str(release_intent["pr_head_sha"])
