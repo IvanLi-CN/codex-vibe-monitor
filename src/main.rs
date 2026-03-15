@@ -6151,6 +6151,9 @@ pub(crate) struct PoolUpstreamError {
     pub(crate) message: String,
     pub(crate) failure_kind: &'static str,
     pub(crate) connect_latency_ms: f64,
+    pub(crate) upstream_error_code: Option<String>,
+    pub(crate) upstream_error_message: Option<String>,
+    pub(crate) upstream_request_id: Option<String>,
 }
 
 fn proxy_forward_response_status_is_success(status: StatusCode, stream_error: bool) -> bool {
@@ -6244,6 +6247,9 @@ async fn send_pool_request_with_failover(
                         message: "no healthy pool account is available".to_string(),
                         failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
                         connect_latency_ms: 0.0,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
                     }));
                 }
                 Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
@@ -6253,6 +6259,9 @@ async fn send_pool_request_with_failover(
                         message,
                         failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
                         connect_latency_ms: 0.0,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
                     });
                 }
                 Err(err) => {
@@ -6262,6 +6271,9 @@ async fn send_pool_request_with_failover(
                         message: format!("failed to resolve pool account: {err}"),
                         failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
                         connect_latency_ms: 0.0,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
                     });
                 }
             };
@@ -6276,6 +6288,9 @@ async fn send_pool_request_with_failover(
                     message: format!("failed to build pool upstream url: {err}"),
                     failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                     connect_latency_ms: 0.0,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    upstream_request_id: None,
                 });
             }
         };
@@ -6288,6 +6303,9 @@ async fn send_pool_request_with_failover(
                     message: format!("failed to initialize upstream client: {err}"),
                     failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                     connect_latency_ms: 0.0,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    upstream_request_id: None,
                 });
             }
         };
@@ -6343,6 +6361,9 @@ async fn send_pool_request_with_failover(
                         message: message.clone(),
                         failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                         connect_latency_ms: elapsed_ms(connect_started),
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
                     });
                     if excluded_ids.len() >= 64 {
                         return Err(last_error.expect("pool transport failure should be recorded"));
@@ -6385,6 +6406,9 @@ async fn send_pool_request_with_failover(
                         message: message.clone(),
                         failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
                         connect_latency_ms: elapsed_ms(connect_started),
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
                     });
                     if excluded_ids.len() >= 64 {
                         return Err(last_error.expect("pool handshake failure should be recorded"));
@@ -6399,7 +6423,6 @@ async fn send_pool_request_with_failover(
                 || status.is_server_error()
                 || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
             {
-                let message = format!("pool upstream responded with {}", status.as_u16());
                 let has_retry_budget =
                     same_account_attempt + 1 < POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS;
                 let should_retry_same_account = has_retry_budget
@@ -6423,6 +6446,19 @@ async fn send_pool_request_with_failover(
                     sleep(retry_delay).await;
                     continue;
                 }
+                let (upstream_error_code, upstream_error_message, upstream_request_id, message) =
+                    match response.bytes().await {
+                        Ok(body_bytes) => summarize_pool_upstream_http_failure(status, &body_bytes),
+                        Err(err) => (
+                            None,
+                            None,
+                            None,
+                            format!(
+                                "pool upstream responded with {} (failed to read error body: {err})",
+                                status.as_u16()
+                            ),
+                        ),
+                    };
                 if let Err(route_err) = record_pool_route_http_failure(
                     &state.pool,
                     account.account_id,
@@ -6448,6 +6484,9 @@ async fn send_pool_request_with_failover(
                     message: message.clone(),
                     failure_kind,
                     connect_latency_ms,
+                    upstream_error_code,
+                    upstream_error_message,
+                    upstream_request_id,
                 });
                 if excluded_ids.len() >= 64 {
                     return Err(last_error.expect("pool http failure should be recorded"));
@@ -6492,6 +6531,9 @@ async fn send_pool_request_with_failover(
                         message: message.clone(),
                         failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
                         connect_latency_ms,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
                     });
                     if excluded_ids.len() >= 64 {
                         return Err(
@@ -7593,9 +7635,9 @@ async fn proxy_openai_v1_capture_target(
                             .map(|account| account.display_name.as_str()),
                         None,
                         None,
-                        None,
-                        None,
-                        None,
+                        err.upstream_error_code.as_deref(),
+                        err.upstream_error_message.as_deref(),
+                        err.upstream_request_id.as_deref(),
                         None,
                         None,
                     )),
@@ -8968,6 +9010,47 @@ fn extract_error_message_from_response(bytes: &[u8]) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(|v| v.to_string())
         })
+}
+
+fn summarize_pool_upstream_http_failure(
+    status: StatusCode,
+    bytes: &[u8],
+) -> (Option<String>, Option<String>, Option<String>, String) {
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return (
+            None,
+            None,
+            None,
+            format!("pool upstream responded with {}", status.as_u16()),
+        );
+    };
+    let upstream_error_code = extract_upstream_error_code(&value);
+    let upstream_error_message = extract_upstream_error_message(&value);
+    let upstream_request_id = extract_upstream_request_id(&value);
+
+    let detail = upstream_error_message
+        .as_deref()
+        .or_else(|| value.get("message").and_then(|entry| entry.as_str()))
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty())
+        .map(|detail| detail.chars().take(240).collect::<String>());
+
+    let message = if let Some(detail) = detail {
+        format!(
+            "pool upstream responded with {}: {}",
+            status.as_u16(),
+            detail
+        )
+    } else {
+        format!("pool upstream responded with {}", status.as_u16())
+    };
+
+    (
+        upstream_error_code,
+        upstream_error_message,
+        upstream_request_id,
+        message,
+    )
 }
 
 async fn estimate_proxy_cost_from_shared_catalog(

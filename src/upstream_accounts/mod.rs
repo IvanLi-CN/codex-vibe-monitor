@@ -47,8 +47,9 @@ const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
 const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
 const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
 const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
-const DEFAULT_OAUTH_SCOPE: &str =
-    "openid profile email offline_access api.connectors.read api.connectors.invoke";
+const DEFAULT_OAUTH_SCOPE: &str = "openid profile email offline_access api.connectors.read api.connectors.invoke api.model.read api.responses.write";
+const DEFAULT_OAUTH_AUDIENCE: &str = "https://api.openai.com/v1";
+const DEFAULT_OAUTH_PROMPT: &str = "login";
 const OAUTH_ORIGINATOR: &str = "Codex Desktop";
 const DEFAULT_USAGE_LIMIT_ID: &str = "codex";
 const DEFAULT_API_KEY_LIMIT_UNIT: &str = "requests";
@@ -4264,7 +4265,9 @@ fn build_oauth_authorize_url(
         .append_pair("response_type", "code")
         .append_pair("client_id", client_id)
         .append_pair("redirect_uri", redirect_uri)
+        .append_pair("audience", DEFAULT_OAUTH_AUDIENCE)
         .append_pair("scope", DEFAULT_OAUTH_SCOPE)
+        .append_pair("prompt", DEFAULT_OAUTH_PROMPT)
         .append_pair("code_challenge", code_challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("id_token_add_organizations", "true")
@@ -4681,13 +4684,32 @@ fn extract_error_message(body: &str) -> String {
     body.trim().chars().take(240).collect()
 }
 
+fn is_scope_permission_error_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("missing scopes")
+        || msg.contains("insufficient permissions for this operation")
+        || msg.contains("api.responses.write")
+        || msg.contains("api.model.read")
+}
+
+fn is_explicit_reauth_error_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("invalid_grant")
+        || msg.contains("token has been invalidated")
+        || msg.contains("token was invalidated")
+        || msg.contains("invalidated oauth token")
+        || msg.contains("refresh token expired")
+        || msg.contains("refresh token revoked")
+        || msg.contains("refresh token is invalid")
+        || msg.contains("session expired")
+        || msg.contains("please sign in again")
+        || msg.contains("must sign in again")
+        || msg.contains("re-authorize")
+        || msg.contains("reauthorize")
+}
+
 fn is_reauth_error(err: &anyhow::Error) -> bool {
-    let msg = err.to_string().to_ascii_lowercase();
-    msg.contains("400")
-        || msg.contains("401")
-        || msg.contains("403")
-        || msg.contains("invalid_grant")
-        || msg.contains("refresh token")
+    is_explicit_reauth_error_message(&err.to_string())
 }
 
 fn internal_error_tuple(err: impl ToString) -> (StatusCode, String) {
@@ -4923,7 +4945,10 @@ pub(crate) async fn record_pool_route_http_failure(
         if let Some(sticky_key) = sticky_key {
             delete_sticky_route(pool, sticky_key).await?;
         }
-        let next_status = if account_kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
+        let next_status = if account_kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+            && is_explicit_reauth_error_message(error_message)
+            && !is_scope_permission_error_message(error_message)
+        {
             UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
         } else {
             UPSTREAM_ACCOUNT_STATUS_ERROR
@@ -5509,6 +5534,7 @@ fn decrypt_secret_value(key: &[u8; 32], payload: &str) -> Result<String> {
 mod tests {
     use super::*;
     use sqlx::SqlitePool;
+    use std::collections::HashMap;
 
     #[test]
     fn derive_secret_key_is_stable() {
@@ -5714,6 +5740,53 @@ mod tests {
         assert_eq!(query.state.as_deref(), Some("test-state"));
     }
 
+    #[test]
+    fn build_oauth_authorize_url_requests_api_scopes_and_audience() {
+        let url = build_oauth_authorize_url(
+            &Url::parse("https://auth.openai.com").expect("issuer"),
+            "client-id",
+            "http://localhost:1455/auth/callback",
+            "state-token",
+            "challenge",
+        )
+        .expect("build authorize url");
+        let parsed = Url::parse(&url).expect("parse authorize url");
+        let query = parsed.query_pairs().into_owned().collect::<HashMap<_, _>>();
+        let scope = query
+            .get("scope")
+            .cloned()
+            .expect("scope should be present");
+        let scope_parts = scope.split_whitespace().collect::<Vec<_>>();
+
+        assert_eq!(
+            query.get("audience").map(String::as_str),
+            Some(DEFAULT_OAUTH_AUDIENCE)
+        );
+        assert_eq!(
+            query.get("prompt").map(String::as_str),
+            Some(DEFAULT_OAUTH_PROMPT)
+        );
+        assert!(scope_parts.contains(&"api.model.read"));
+        assert!(scope_parts.contains(&"api.responses.write"));
+        assert!(scope_parts.contains(&"offline_access"));
+    }
+
+    #[test]
+    fn is_reauth_error_requires_explicit_invalidated_signal() {
+        assert!(is_reauth_error(&anyhow!(
+            "OAuth token endpoint returned 400: invalid_grant"
+        )));
+        assert!(is_reauth_error(&anyhow!(
+            "Authentication token has been invalidated, please sign in again"
+        )));
+        assert!(!is_reauth_error(&anyhow!(
+            "usage endpoint returned 401: Missing scopes: api.responses.write"
+        )));
+        assert!(!is_reauth_error(&anyhow!(
+            "pool upstream responded with 403: You have insufficient permissions for this operation."
+        )));
+    }
+
     async fn test_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
@@ -5764,6 +5837,89 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("insert api key account")
+    }
+
+    async fn insert_oauth_account(pool: &SqlitePool, display_name: &str) -> i64 {
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                kind, provider, display_name, group_name, note, status, enabled, email, chatgpt_account_id,
+                chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
+                last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
+                local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
+            ) VALUES (
+                ?1, ?2, ?3, NULL, NULL, ?4, 1, ?5, ?6,
+                ?7, ?8, NULL, ?9, ?10,
+                NULL, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, ?11, ?11
+            ) RETURNING id
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
+        .bind(display_name)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind("oauth@example.com")
+        .bind("org_test")
+        .bind("user_test")
+        .bind("team")
+        .bind("encrypted")
+        .bind("2026-03-26T00:00:00Z")
+        .bind(&now_iso)
+        .fetch_one(pool)
+        .await
+        .expect("insert oauth account")
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_keeps_missing_scope_oauth_as_error() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Scope OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-scope"),
+            StatusCode::UNAUTHORIZED,
+            "pool upstream responded with 401: Missing scopes: api.responses.write",
+        )
+        .await
+        .expect("record route failure");
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+                .bind(account_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load account status");
+        assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_marks_explicit_invalidated_oauth_for_reauth() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Invalidated OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-invalidated"),
+            StatusCode::FORBIDDEN,
+            "pool upstream responded with 403: Authentication token has been invalidated, please sign in again",
+        )
+        .await
+        .expect("record route failure");
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+                .bind(account_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load account status");
+        assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
     }
 
     #[tokio::test]
