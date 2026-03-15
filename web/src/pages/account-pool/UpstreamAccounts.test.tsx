@@ -527,6 +527,77 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     expect(syncButton?.querySelector(".animate-spin")).not.toBeNull();
   });
 
+  it("locks the whole account while one action is still pending", async () => {
+    const saveAccount = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+    const baseState = {
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+
+    render();
+    clickButton(/Open details/i);
+    clickButton(/Save changes/i);
+
+    const syncButton = document.body.querySelector(
+      '[data-testid="account-sync-button"]',
+    ) as HTMLButtonElement | null;
+    const deleteButton = findButton(/Delete/i);
+
+    expect(saveAccount).toHaveBeenCalledWith(5, expect.any(Object));
+    expect(syncButton?.disabled).toBe(true);
+    expect(deleteButton?.disabled).toBe(true);
+  });
+
   it("does not show a stale sync error after switching to another account", async () => {
     const syncAlpha = deferred<void>();
     const runSync = vi.fn((accountId: number) =>
@@ -620,6 +691,113 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
     expect(document.body.textContent).toContain("Another OAuth");
     expect(document.body.textContent).not.toContain("Alpha failed");
+  });
+
+  it("preserves one account's action error after another account starts a new action", async () => {
+    const syncAlpha = deferred<void>();
+    const runSync = vi.fn((accountId: number) =>
+      accountId === 5 ? syncAlpha.promise : Promise.resolve(),
+    );
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+    const baseState = {
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+        {
+          id: 9,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Another OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+
+    render();
+    clickButton(/Open details/i);
+    clickButton(/Sync now/i);
+    syncAlpha.reject(new Error("Alpha failed"));
+    await flushAsync();
+    expect(document.body.textContent).toContain("Alpha failed");
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 9,
+      selectedSummary: baseState.items[1],
+      detail: {
+        ...baseState.items[1],
+        history: [],
+      },
+    });
+    rerender();
+    await flushAsync();
+    clickButton(/Sync now/i);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+    rerender();
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Alpha failed");
   });
 
   it("does not render stale detail content when the selected summary changed", async () => {

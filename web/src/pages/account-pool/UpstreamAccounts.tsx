@@ -82,10 +82,10 @@ type GroupNoteEditorState = {
   existing: boolean
 }
 
-type ActionErrorState =
-  | { scope: 'account'; accountId: number; message: string }
-  | { scope: 'routing'; message: string }
-  | null
+type ActionErrorState = {
+  routing: string | null
+  accountMessages: Record<number, string>
+}
 
 type AccountBusyActionType = 'save' | 'sync' | 'toggle' | 'relogin' | 'delete'
 
@@ -110,6 +110,15 @@ function isBusyAction(
 
 function hasBusyAction(busyAction: BusyActionState) {
   return busyAction.routing || busyAction.accountActions.size > 0
+}
+
+function hasBusyAccountAction(busyAction: BusyActionState, accountId?: number | null) {
+  if (typeof accountId !== 'number') return false
+  const suffix = `:${accountId}`
+  for (const key of busyAction.accountActions) {
+    if (key.endsWith(suffix)) return true
+  }
+  return false
 }
 
 function formatDateTime(value?: string | null) {
@@ -423,7 +432,10 @@ export default function UpstreamAccountsPage() {
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
-  const [actionError, setActionError] = useState<ActionErrorState>(null)
+  const [actionError, setActionError] = useState<ActionErrorState>(() => ({
+    routing: null,
+    accountMessages: {},
+  }))
   const [busyAction, setBusyAction] = useState<BusyActionState>(() => ({
     routing: false,
     accountActions: new Set(),
@@ -648,13 +660,8 @@ export default function UpstreamAccountsPage() {
   const selectedDetail = detail?.id === selectedId ? detail : null
   const selected = selectedDetail ?? selectedSummary
   const visibleActionError =
-    actionError == null
-      ? null
-      : actionError.scope === 'routing'
-        ? actionError.message
-        : actionError.accountId === selectedId
-          ? actionError.message
-          : null
+    actionError.routing ??
+    (typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null)
   const selectedVisible = filteredItems.some((item) => item.id === selectedId)
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
@@ -729,7 +736,12 @@ export default function UpstreamAccountsPage() {
 
   const handleSave = async (source: UpstreamAccountDetail) => {
     if (source.kind === 'api_key_codex' && draftUpstreamBaseUrlError) return
-    setActionError(null)
+    if (hasBusyAccountAction(busyAction, source.id)) return
+    setActionError((current) => {
+      const nextMessages = { ...current.accountMessages }
+      delete nextMessages[source.id]
+      return { ...current, accountMessages: nextMessages }
+    })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
       nextActions.add(createBusyActionKey('save', source.id))
@@ -753,11 +765,13 @@ export default function UpstreamAccountsPage() {
       notifyMotherChange(response)
       setDraft((current) => ({ ...current, apiKey: '' }))
     } catch (err) {
-      setActionError({
-        scope: 'account',
-        accountId: source.id,
-        message: err instanceof Error ? err.message : String(err),
-      })
+      setActionError((current) => ({
+        ...current,
+        accountMessages: {
+          ...current.accountMessages,
+          [source.id]: err instanceof Error ? err.message : String(err),
+        },
+      }))
     } finally {
       setBusyAction((current) => {
         const nextActions = new Set(current.accountActions)
@@ -768,7 +782,12 @@ export default function UpstreamAccountsPage() {
   }
 
   const handleSync = async (source: UpstreamAccountSummary) => {
-    setActionError(null)
+    if (hasBusyAccountAction(busyAction, source.id)) return
+    setActionError((current) => {
+      const nextMessages = { ...current.accountMessages }
+      delete nextMessages[source.id]
+      return { ...current, accountMessages: nextMessages }
+    })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
       nextActions.add(createBusyActionKey('sync', source.id))
@@ -777,11 +796,13 @@ export default function UpstreamAccountsPage() {
     try {
       await runSync(source.id)
     } catch (err) {
-      setActionError({
-        scope: 'account',
-        accountId: source.id,
-        message: err instanceof Error ? err.message : String(err),
-      })
+      setActionError((current) => ({
+        ...current,
+        accountMessages: {
+          ...current.accountMessages,
+          [source.id]: err instanceof Error ? err.message : String(err),
+        },
+      }))
     } finally {
       setBusyAction((current) => {
         const nextActions = new Set(current.accountActions)
@@ -792,7 +813,12 @@ export default function UpstreamAccountsPage() {
   }
 
   const handleToggleEnabled = async (source: UpstreamAccountSummary, enabled: boolean) => {
-    setActionError(null)
+    if (hasBusyAccountAction(busyAction, source.id)) return
+    setActionError((current) => {
+      const nextMessages = { ...current.accountMessages }
+      delete nextMessages[source.id]
+      return { ...current, accountMessages: nextMessages }
+    })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
       nextActions.add(createBusyActionKey('toggle', source.id))
@@ -801,11 +827,13 @@ export default function UpstreamAccountsPage() {
     try {
       await saveAccount(source.id, { enabled })
     } catch (err) {
-      setActionError({
-        scope: 'account',
-        accountId: source.id,
-        message: err instanceof Error ? err.message : String(err),
-      })
+      setActionError((current) => ({
+        ...current,
+        accountMessages: {
+          ...current.accountMessages,
+          [source.id]: err instanceof Error ? err.message : String(err),
+        },
+      }))
     } finally {
       setBusyAction((current) => {
         const nextActions = new Set(current.accountActions)
@@ -817,17 +845,17 @@ export default function UpstreamAccountsPage() {
 
 
   const handleSaveRouting = async () => {
-    setActionError(null)
+    setActionError((current) => ({ ...current, routing: null }))
     setBusyAction((current) => ({ ...current, routing: true }))
     try {
       await saveRouting({ apiKey: routingDraft.apiKey.trim() })
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
       setIsRoutingDialogOpen(false)
     } catch (err) {
-      setActionError({
-        scope: 'routing',
-        message: err instanceof Error ? err.message : String(err),
-      })
+      setActionError((current) => ({
+        ...current,
+        routing: err instanceof Error ? err.message : String(err),
+      }))
     } finally {
       setBusyAction((current) => ({ ...current, routing: false }))
     }
@@ -837,7 +865,12 @@ export default function UpstreamAccountsPage() {
     if (!window.confirm(t('accountPool.upstreamAccounts.deleteConfirm', { name: source.displayName }))) {
       return
     }
-    setActionError(null)
+    if (hasBusyAccountAction(busyAction, source.id)) return
+    setActionError((current) => {
+      const nextMessages = { ...current.accountMessages }
+      delete nextMessages[source.id]
+      return { ...current, accountMessages: nextMessages }
+    })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
       nextActions.add(createBusyActionKey('delete', source.id))
@@ -846,11 +879,13 @@ export default function UpstreamAccountsPage() {
     try {
       await removeAccount(source.id)
     } catch (err) {
-      setActionError({
-        scope: 'account',
-        accountId: source.id,
-        message: err instanceof Error ? err.message : String(err),
-      })
+      setActionError((current) => ({
+        ...current,
+        accountMessages: {
+          ...current.accountMessages,
+          [source.id]: err instanceof Error ? err.message : String(err),
+        },
+      }))
     } finally {
       setBusyAction((current) => {
         const nextActions = new Set(current.accountActions)
@@ -1116,7 +1151,7 @@ export default function UpstreamAccountsPage() {
                   <Switch
                     checked={selected.enabled}
                     onCheckedChange={(checked) => void handleToggleEnabled(selected, checked)}
-                    disabled={isBusyAction(busyAction, 'toggle', selected.id) || !writesEnabled}
+                    disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
                     aria-label={t('accountPool.upstreamAccounts.actions.enable')}
                   />
                 </div>
@@ -1124,7 +1159,7 @@ export default function UpstreamAccountsPage() {
                   type="button"
                   variant="secondary"
                   onClick={() => void handleSync(selected)}
-                  disabled={isBusyAction(busyAction, 'sync', selected.id)}
+                  disabled={hasBusyAccountAction(busyAction, selected.id)}
                   data-testid="account-sync-button"
                 >
                   {isBusyAction(busyAction, 'sync', selected.id) ? (
@@ -1144,7 +1179,7 @@ export default function UpstreamAccountsPage() {
                     type="button"
                     variant="outline"
                     onClick={() => void handleOauthLogin(selected.id)}
-                    disabled={isBusyAction(busyAction, 'relogin', selected.id) || !writesEnabled}
+                    disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
                   >
                     {isBusyAction(busyAction, 'relogin', selected.id) ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />}
                     {t('accountPool.upstreamAccounts.actions.relogin')}
@@ -1154,7 +1189,7 @@ export default function UpstreamAccountsPage() {
                   type="button"
                   variant="destructive"
                   onClick={() => void handleDelete(selected)}
-                  disabled={isBusyAction(busyAction, 'delete', selected.id) || !writesEnabled}
+                  disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
                 >
                   {isBusyAction(busyAction, 'delete', selected.id) ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
                   {t('accountPool.upstreamAccounts.actions.delete')}
@@ -1339,7 +1374,7 @@ export default function UpstreamAccountsPage() {
                         type="button"
                         onClick={() => void handleSave(selectedDetail)}
                         disabled={
-                          isBusyAction(busyAction, 'save', selectedDetail.id) ||
+                          hasBusyAccountAction(busyAction, selectedDetail.id) ||
                           !writesEnabled ||
                           detailDisplayNameConflict != null ||
                           (selectedDetail.kind === 'api_key_codex' && Boolean(draftUpstreamBaseUrlError))
