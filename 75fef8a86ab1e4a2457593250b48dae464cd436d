@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-15T17:13:33Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c91c321fcabcb4165a4b87ae6e0c3e20a63e77fb",
+  "pr_number": 147,
+  "pr_title": "fix(ci): narrow release snapshot catch-up",
+  "registry": "ghcr.io",
+  "release_bump": "skip",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "",
+  "target_sha": "75fef8a86ab1e4a2457593250b48dae464cd436d",
+  "type_label": "type:skip"
+}
