@@ -1056,4 +1056,28 @@ describe("UpstreamAccountCreatePage api key", () => {
       }),
     );
   });
+
+  it("blocks api key creation when upstreamBaseUrl is not a valid absolute URL", () => {
+    const createApiKeyAccount = vi.fn().mockResolvedValue({
+      id: 42,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: null,
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+    });
+    mockUpstreamAccounts({ createApiKeyAccount });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    setInputValue('input[name="apiKeyUpstreamBaseUrl"]', "proxy.example.com/gateway");
+
+    expect(document.body.textContent).toContain("Use an absolute http(s) URL");
+    expect(findButton(/Create API Key account/i)?.disabled).toBe(true);
+    expect(createApiKeyAccount).not.toHaveBeenCalled();
+  });
 });

@@ -46,6 +46,7 @@ import {
   normalizeGroupName,
   resolveGroupNote,
 } from '../../lib/upstreamAccountGroups'
+import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { applyMotherUpdateToItems, normalizeMotherGroupKey } from '../../lib/upstreamMother'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
@@ -627,6 +628,16 @@ export default function UpstreamAccountCreatePage() {
       setDuplicateDetailLoading(false)
     }
   }
+  const apiKeyUpstreamBaseUrlError = useMemo(() => {
+    const code = validateUpstreamBaseUrl(apiKeyUpstreamBaseUrl)
+    if (code === 'invalid_absolute_url') {
+      return t('accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid')
+    }
+    if (code === 'query_or_fragment_not_allowed') {
+      return t('accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment')
+    }
+    return null
+  }, [apiKeyUpstreamBaseUrl, t])
 
   const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
     const detail = await createTag(payload)
@@ -1256,6 +1267,7 @@ export default function UpstreamAccountCreatePage() {
   }
 
   const handleCreateApiKey = async () => {
+    if (apiKeyUpstreamBaseUrlError) return
     setActionError(null)
     setBusyAction('apiKey')
     try {
@@ -2121,14 +2133,21 @@ export default function UpstreamAccountCreatePage() {
                   </label>
                   <label className="field md:col-span-2">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}</span>
-                    <Input
-                      name="apiKeyUpstreamBaseUrl"
-                      value={apiKeyUpstreamBaseUrl}
-                      onChange={(event) => setApiKeyUpstreamBaseUrl(event.target.value)}
-                      placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
-                      autoCapitalize="none"
-                      spellCheck={false}
-                    />
+                    <div className="relative">
+                      <Input
+                        name="apiKeyUpstreamBaseUrl"
+                        value={apiKeyUpstreamBaseUrl}
+                        onChange={(event) => setApiKeyUpstreamBaseUrl(event.target.value)}
+                        placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        aria-invalid={apiKeyUpstreamBaseUrlError ? 'true' : 'false'}
+                        className={cn(apiKeyUpstreamBaseUrlError ? 'border-error/70 focus-visible:ring-error' : '')}
+                      />
+                      {apiKeyUpstreamBaseUrlError ? (
+                        <FloatingFieldError message={apiKeyUpstreamBaseUrlError} />
+                      ) : null}
+                    </div>
                   </label>
                   <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.primaryLimit')}</span>
@@ -2186,7 +2205,8 @@ export default function UpstreamAccountCreatePage() {
                       disabled={
                         busyAction === 'apiKey' ||
                         !writesEnabled ||
-                        apiKeyDisplayNameConflict != null
+                        apiKeyDisplayNameConflict != null ||
+                        Boolean(apiKeyUpstreamBaseUrlError)
                       }
                     >
                       {busyAction === 'apiKey' ? (

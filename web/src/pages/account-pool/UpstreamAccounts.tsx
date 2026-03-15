@@ -42,6 +42,7 @@ import {
   normalizeGroupName,
   resolveGroupNote,
 } from '../../lib/upstreamAccountGroups'
+import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { generatePoolRoutingKey } from '../../lib/poolRouting'
 import { applyMotherUpdateToItems } from '../../lib/upstreamMother'
 import { cn } from '../../lib/utils'
@@ -410,6 +411,17 @@ export default function UpstreamAccountsPage() {
   const [groupNoteBusy, setGroupNoteBusy] = useState(false)
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
 
+  const draftUpstreamBaseUrlError = useMemo(() => {
+    const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl)
+    if (code === 'invalid_absolute_url') {
+      return t('accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid')
+    }
+    if (code === 'query_or_fragment_not_allowed') {
+      return t('accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment')
+    }
+    return null
+  }, [draft.upstreamBaseUrl, t])
+
   useEffect(() => {
     setDraft(buildDraft(detail))
   }, [detail])
@@ -673,6 +685,7 @@ export default function UpstreamAccountsPage() {
   }
 
   const handleSave = async (source: UpstreamAccountDetail) => {
+    if (source.kind === 'api_key_codex' && draftUpstreamBaseUrlError) return
     setActionError(null)
     setBusyAction('save')
     try {
@@ -1176,12 +1189,19 @@ export default function UpstreamAccountsPage() {
                         </label>
                         <label className="field">
                           <span className="field-label">{t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}</span>
-                          <Input
-                            name="detailUpstreamBaseUrl"
-                            value={draft.upstreamBaseUrl}
-                            onChange={(event) => setDraft((current) => ({ ...current, upstreamBaseUrl: event.target.value }))}
-                            placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
-                          />
+                          <div className="relative">
+                            <Input
+                              name="detailUpstreamBaseUrl"
+                              value={draft.upstreamBaseUrl}
+                              onChange={(event) => setDraft((current) => ({ ...current, upstreamBaseUrl: event.target.value }))}
+                              placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
+                              aria-invalid={draftUpstreamBaseUrlError ? 'true' : 'false'}
+                              className={cn(draftUpstreamBaseUrlError ? 'border-error/70 focus-visible:ring-error' : '')}
+                            />
+                            {draftUpstreamBaseUrlError ? (
+                              <FloatingFieldError message={draftUpstreamBaseUrlError} />
+                            ) : null}
+                          </div>
                         </label>
                         <label className="field">
                           <span className="field-label">{t('accountPool.upstreamAccounts.fields.rotateApiKey')}</span>
@@ -1201,7 +1221,8 @@ export default function UpstreamAccountsPage() {
                         disabled={
                           busyAction === 'save' ||
                           !writesEnabled ||
-                          detailDisplayNameConflict != null
+                          detailDisplayNameConflict != null ||
+                          (detail.kind === 'api_key_codex' && Boolean(draftUpstreamBaseUrlError))
                         }
                       >
                         {busyAction === 'save' ? <Spinner size="sm" className="mr-2" /> : <Icon icon="mdi:content-save-outline" className="mr-2 h-4 w-4" aria-hidden />}

@@ -125,6 +125,12 @@ function render(initialEntry: InitialEntry = "/account-pool/upstream-accounts") 
   });
 }
 
+function findButton(pattern: RegExp) {
+  return Array.from(document.body.querySelectorAll('button')).find((candidate) =>
+    pattern.test(candidate.textContent || candidate.getAttribute('aria-label') || ''),
+  ) as HTMLButtonElement | undefined
+}
+
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
@@ -511,5 +517,92 @@ describe("UpstreamAccountsPage api key details", () => {
         upstreamBaseUrl: null,
       }),
     );
+  });
+
+  it("blocks saving api key detail when upstreamBaseUrl includes a query string", () => {
+    const saveAccount = vi.fn().mockResolvedValue({});
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex",
+          provider: "codex",
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: "https://proxy.example.com/gateway",
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: "requests",
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Open details/i);
+    setInputValue(
+      'input[name="detailUpstreamBaseUrl"]',
+      "https://proxy.example.com/gateway?team=prod",
+    );
+
+    expect(document.body.textContent).toContain(
+      "cannot include a query string or fragment",
+    );
+    expect(findButton(/Save changes/i)?.disabled).toBe(true);
+    expect(saveAccount).not.toHaveBeenCalled();
   });
 });
