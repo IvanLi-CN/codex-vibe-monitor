@@ -22,6 +22,7 @@ module = importlib.util.module_from_spec(spec)
 assert spec is not None and spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
+real_load_release_intent_artifact = module.load_release_intent_artifact
 
 
 def run(*args: str, cwd: Path) -> str:
@@ -89,7 +90,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             131, f"Release {target_sha[:7]}", target_sha
         )
         module.load_release_intent_artifact = (
-            lambda api_root, repository, token, pr_number, pr_head_sha: make_release_intent(pr_number, pr_head_sha)
+            lambda api_root, repository, token, pr_number, **kwargs: make_release_intent(pr_number, "1" * 40)
         )
         module.labels_at_merge_time = lambda api_root, repository, token, pr: []
         module.legacy_fallback_allowed_for_target = lambda target_sha: False
@@ -103,6 +104,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         )
         assert snapshot1["next_stable_version"] == "0.1.1"
         assert snapshot1["snapshot_source"] == "pr-intent-artifact"
+        assert snapshot1["pr_head_sha"] == "1" * 40
         run("notes", f"--ref={module.DEFAULT_NOTES_REF}", "add", "-f", "-m", json.dumps(snapshot1), sha1, cwd=repo)
 
         snapshot2 = module.build_snapshot(
@@ -124,9 +126,9 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         )
 
         module.load_release_intent_artifact = (
-            lambda api_root, repository, token, pr_number, pr_head_sha: make_release_intent(
+            lambda api_root, repository, token, pr_number, **kwargs: make_release_intent(
                 pr_number,
-                pr_head_sha,
+                "2" * 40,
                 type_label="type:patch",
                 channel_label="channel:rc",
             )
@@ -156,7 +158,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: make_pr(
             130, "Historical stable release", target_sha
         )
-        module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, pr_head_sha: None
+        module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, **kwargs: None
         module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
         module.legacy_fallback_allowed_for_target = lambda target_sha: True
         legacy_snapshot = module.build_snapshot(
@@ -172,7 +174,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: make_pr(
             140, "Future release without artifact", target_sha, merged_at="2026-03-16T00:00:01Z"
         )
-        module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, pr_head_sha: None
+        module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, **kwargs: None
         module.legacy_fallback_allowed_for_target = lambda target_sha: False
         try:
             module.build_snapshot(
@@ -237,7 +239,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
         else prs[target_sha]
     )
     module.load_release_intent_artifact = (
-        lambda api_root, repository, token, pr_number, pr_head_sha: make_release_intent(pr_number, pr_head_sha)
+        lambda api_root, repository, token, pr_number, **kwargs: make_release_intent(pr_number, "3" * 40)
     )
     module.labels_at_merge_time = lambda api_root, repository, token, pr: []
 
@@ -350,7 +352,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-cargo-version-") as tm
             301, "Initial stable release", target_sha
         )
         module.load_release_intent_artifact = (
-            lambda api_root, repository, token, pr_number, pr_head_sha: make_release_intent(pr_number, pr_head_sha)
+            lambda api_root, repository, token, pr_number, **kwargs: make_release_intent(pr_number, "4" * 40)
         )
         snapshot = module.build_snapshot(
             target_sha=old_sha,
@@ -409,12 +411,13 @@ artifact_bytes = buffer.getvalue()
 real_request_json = module.github_request_json
 real_request_bytes = module.github_request_bytes
 try:
+    module.load_release_intent_artifact = real_load_release_intent_artifact
     def fake_request_json(api_root, token, path, query=None):
         if path.endswith("/actions/artifacts"):
             return {
                 "artifacts": [
                     {
-                        "name": module.artifact_name_for_pr(140, "a" * 40),
+                        "name": module.artifact_name_for_pr(140, "b" * 40),
                         "expired": False,
                         "created_at": "2026-03-15T00:00:01Z",
                         "archive_download_url": "https://example.test/artifacts/2/zip",
@@ -433,15 +436,17 @@ try:
             return {
                 "path": module.TRUSTED_RELEASE_INTENT_WORKFLOW_PATH,
                 "event": module.TRUSTED_RELEASE_INTENT_EVENT,
-                "head_sha": "a" * 40,
+                "status": "completed",
+                "conclusion": "success",
                 "pull_requests": [{"number": 140, "head": {"sha": "a" * 40}}],
             }
         if path.endswith("/actions/runs/2"):
             return {
-                "path": ".github/workflows/ci-pr.yml",
+                "path": module.TRUSTED_RELEASE_INTENT_WORKFLOW_PATH,
                 "event": "pull_request",
-                "head_sha": "a" * 40,
-                "pull_requests": [{"number": 140, "head": {"sha": "a" * 40}}],
+                "status": "completed",
+                "conclusion": "cancelled",
+                "pull_requests": [{"number": 140, "head": {"sha": "b" * 40}}],
             }
         raise AssertionError(f"unexpected path: {path}")
 
@@ -452,13 +457,15 @@ try:
         "IvanLi-CN/codex-vibe-monitor",
         "token",
         140,
-        "a" * 40,
+        merged_at="2026-03-15T00:00:02Z",
     )
     assert loaded_intent is not None
     assert loaded_intent["type_label"] == "type:patch"
+    assert loaded_intent["pr_head_sha"] == "a" * 40
 finally:
     module.github_request_json = real_request_json
     module.github_request_bytes = real_request_bytes
+    module.load_release_intent_artifact = real_load_release_intent_artifact
 
 print("test-release-snapshot: all checks passed")
 PY
