@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from '../../components/ui/dialog'
 import { FloatingFieldError } from '../../components/ui/floating-field-error'
+import { FormFieldFeedback } from '../../components/ui/form-field-feedback'
 import { Input } from '../../components/ui/input'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
@@ -1188,16 +1189,11 @@ export default function UpstreamAccountsPage() {
                           />
                         </label>
                         <label className="field">
-                          <div className="flex flex-wrap items-start gap-2 md:min-h-7 md:flex-nowrap md:items-center md:justify-between">
-                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}</span>
-                            {draftUpstreamBaseUrlError ? (
-                              <FloatingFieldError
-                                placement="label-inline"
-                                message={draftUpstreamBaseUrlError}
-                                className="md:max-w-[min(20rem,calc(100%-8rem))]"
-                              />
-                            ) : null}
-                          </div>
+                          <FormFieldFeedback
+                            label={t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}
+                            message={draftUpstreamBaseUrlError}
+                            messageClassName="md:max-w-[min(20rem,calc(100%-8rem))]"
+                          />
                           <div className="relative">
                             <Input
                               name="detailUpstreamBaseUrl"
