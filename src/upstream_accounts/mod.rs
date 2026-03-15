@@ -2808,9 +2808,22 @@ async fn load_duplicate_info_map(
 ) -> Result<std::collections::HashMap<i64, DuplicateInfo>> {
     let rows = sqlx::query_as::<_, UpstreamAccountIdentityRow>(
         r#"
-        SELECT id, chatgpt_account_id, chatgpt_user_id, plan_type
-        FROM pool_upstream_accounts
-        WHERE kind = ?1
+        SELECT
+            account.id,
+            account.chatgpt_account_id,
+            account.chatgpt_user_id,
+            COALESCE(
+                (
+                    SELECT NULLIF(TRIM(sample.plan_type), '')
+                    FROM pool_upstream_account_limit_samples sample
+                    WHERE sample.account_id = account.id
+                    ORDER BY sample.captured_at DESC
+                    LIMIT 1
+                ),
+                NULLIF(TRIM(account.plan_type), '')
+            ) AS plan_type
+        FROM pool_upstream_accounts account
+        WHERE account.kind = ?1
         ORDER BY id ASC
         "#,
     )
@@ -5796,6 +5809,35 @@ mod tests {
         .expect("insert api key account")
     }
 
+    async fn insert_limit_sample(
+        pool: &SqlitePool,
+        account_id: i64,
+        captured_at: &str,
+        plan_type: Option<&str>,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_limit_samples (
+                account_id, captured_at, limit_id, limit_name, plan_type,
+                primary_used_percent, primary_window_minutes, primary_resets_at,
+                secondary_used_percent, secondary_window_minutes, secondary_resets_at,
+                credits_has_credits, credits_unlimited, credits_balance
+            ) VALUES (
+                ?1, ?2, NULL, NULL, ?3,
+                NULL, NULL, NULL,
+                NULL, NULL, NULL,
+                NULL, NULL, NULL
+            )
+            "#,
+        )
+        .bind(account_id)
+        .bind(captured_at)
+        .bind(plan_type)
+        .execute(pool)
+        .await
+        .expect("insert limit sample");
+    }
+
     #[tokio::test]
     async fn team_oauth_accounts_with_shared_account_id_are_not_flagged_as_duplicates() {
         let pool = test_pool().await;
@@ -5957,6 +5999,113 @@ mod tests {
             .expect("oauth insert");
             tx.commit().await.expect("commit tx");
         }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+        );
+    }
+
+    #[tokio::test]
+    async fn latest_usage_sample_plan_type_clears_legacy_team_duplicate_flags() {
+        let pool = test_pool().await;
+
+        let mut inserted_ids = Vec::new();
+        for (display_name, email, plan_type) in [
+            ("Legacy Team One", "legacy-team-1@example.com", None),
+            ("Legacy Team Two", "legacy-team-2@example.com", Some("pro")),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some("legacy_shared_org"),
+                        None,
+                        plan_type,
+                    ),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        for (index, account_id) in inserted_ids.iter().enumerate() {
+            insert_limit_sample(
+                &pool,
+                *account_id,
+                &format!("2026-03-15T00:00:0{}Z", index + 1),
+                Some("team"),
+            )
+            .await;
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(duplicate_info.is_empty());
+    }
+
+    #[tokio::test]
+    async fn latest_usage_sample_plan_type_restores_non_team_duplicate_flags() {
+        let pool = test_pool().await;
+
+        let mut inserted_ids = Vec::new();
+        for (display_name, email) in [
+            ("Stale Team One", "stale-team-1@example.com"),
+            ("Stale Team Two", "stale-team-2@example.com"),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some("stale_shared_org"),
+                        None,
+                        Some("team"),
+                    ),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        insert_limit_sample(&pool, inserted_ids[0], "2026-03-15T00:00:01Z", Some("team")).await;
+        insert_limit_sample(&pool, inserted_ids[1], "2026-03-15T00:00:02Z", Some("pro")).await;
 
         let duplicate_info = load_duplicate_info_map(&pool)
             .await

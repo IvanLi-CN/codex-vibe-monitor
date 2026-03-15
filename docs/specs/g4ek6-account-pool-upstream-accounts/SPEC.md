@@ -56,6 +56,7 @@
 - OAuth 账号持久化后必须保存 `access_token`、`refresh_token`、`id_token`、`token_expires_at`、`chatgpt_account_id`、`chatgpt_user_id`、`email`、`plan_type` 等最小恢复信息；应用重启后必须可以继续刷新与同步。
 - 上游账号身份重复（共享 `chatgpt_account_id` 或 `chatgpt_user_id`）只能告警、不得阻止保存；列表与详情必须持续显示重复标记，且 OAuth 新建完成后要给出一次性 warning。
 - 当同一 `chatgpt_account_id` 的账号簇全部满足 `plan_type=team` 时，共享 account id 视为 Team 合法共享，不得单独标记为重复；若共享 `chatgpt_user_id`，仍必须继续标记为重复身份。
+- Team 共享 account id 的判定必须优先使用账号最新 usage sample 中的 `plan_type`，仅在最新 sample 不可用时才回退到账户表字段，避免 legacy / stale `plan_type` 把整簇 Team 账号误判或漏判。
 - `displayName` 必须全局唯一，按“忽略大小写 + 去首尾空格”判重；单 OAuth、批量 OAuth、API Key 创建与详情编辑命中重复时必须拒绝提交。
 - 服务端必须定期刷新即将过期的 OAuth token，并定期从 Codex / ChatGPT usage 接口采集 `5 小时(primary)` 与 `7 天(secondary)` 窗口，落库为最新快照与历史样本。
 - `5 小时` 与 `7 天` 必须在列表和详情中同时以图形化 + 文字展示：列表展示最新进度，详情展示进度条/图 + 趋势图 + 重置时间 + 状态说明。
@@ -267,3 +268,4 @@
 - 2026-03-13: 刷新 Storybook 视觉证据，补充路由设置弹窗、Sticky Key 对话与记录页上游筛选展示。
 - 2026-03-14: 调整 OAuth 新建语义为“重复身份仅告警不合并”，并补充 `displayName` 全局唯一约束与 UI warning/inline error 验收口径。
 - 2026-03-16: 收紧重复身份口径：纯 `plan_type=team` 账号簇共享 `chatgpt_account_id` 不再判重，但共享 `chatgpt_user_id` 与 mixed-plan 簇仍继续告警。
+- 2026-03-16: 明确 Team 判重必须优先使用最新 usage sample 的 `plan_type`，账户表字段只做兜底，避免旧数据让 101 上的 legacy Team 账号继续误报。
