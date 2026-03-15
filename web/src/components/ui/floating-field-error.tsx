@@ -9,10 +9,10 @@ interface FloatingFieldErrorProps {
 }
 
 const bubbleSurfaceClasses =
-  "relative rounded-xl border border-error/35 bg-error/12 px-3 py-1.5 text-xs font-medium text-error shadow-lg shadow-error/10 backdrop-blur";
+  "relative rounded-xl border border-error/45 bg-error/15 px-3 py-1.5 text-xs font-medium text-error shadow-md shadow-error/10";
 
 const bubbleArrowClasses =
-  "h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-error/35 bg-error/12";
+  "h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-error/45 bg-error/15";
 
 export function FloatingFieldError({
   message,
