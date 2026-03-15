@@ -64,7 +64,7 @@
 - 批量 OAuth 行操作区必须在“完成 OAuth 登录”与状态 badge 之间提供母号皇冠按钮，使用 Iconify `mdi:crown` / `mdi:crown-outline`。
 - 账号状态至少支持 `active`、`syncing`、`needs_reauth`、`error` 与 `disabled`；授权失效只能转 `needs_reauth`，不得静默删除账号或清空最后一次成功快照。
 - 任何导致组内母号归属变化的写操作，都必须触发系统级通知，并提供 10 秒可撤销窗口；同组后续切换应覆盖旧撤销上下文。
-- 账号详情页的操作忙碌态必须按账号隔离：当账号 A 正在同步/保存/删除/启停时，切到账号 B 的详情不得继承 A 的 loading/spinning 状态。
+- 账号详情页的操作忙碌态必须按账号隔离：当账号 A 正在同步/保存/删除/启停时，切到账号 B 的详情不得继承 A 的 loading/spinning 状态；若随后对账号 B 发起同类操作，账号 A 原有的按钮 busy 态也不得被覆盖或提前清除。
 
 ### SHOULD
 
@@ -121,6 +121,7 @@
 - Given OAuth 账号已有 usage 样本，When 打开详情页，Then `5 小时` 与 `7 天` 卡片都能展示最新百分比、重置时间和最近 7 天趋势线。
 - Given 用户打开号池路由密钥弹窗，When 点击“生成密钥”后关闭且未保存，Then 新生成的 key 只停留在当前草稿中，再次打开弹窗时输入框恢复为已保存状态。
 - Given 账号 A 正在执行手动同步，When 用户切换并打开账号 B 的详情，Then B 的“立即同步”按钮保持空闲 outline 图标，且不会显示 A 的 spinner。
+- Given 账号 A 的手动同步尚未结束，When 用户切到账号 B 并再次触发手动同步后再回到 A，Then A 的“立即同步”按钮仍保持 disabled + spinner，直到 A 自己的同步完成。
 - Given 账号 A 的详情请求或同步响应晚于账号 B 返回，When 当前选中账号已经是 B，Then 页面只接受 B 的 detail 结果，A 的晚到响应不会覆盖详情内容，也不会把选中项切回 A。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
@@ -155,7 +156,7 @@
 
 ## Change log
 
-- 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 隔离、晚到 detail/sync 响应丢弃，以及同步按钮 idle 态改用 outline 图标。
+- 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 隔离、同类动作跨账号并发时不得互相覆盖 busy 态、晚到 detail/sync 响应丢弃，以及同步按钮 idle 态改用 outline 图标。
 
 ## Visual Evidence (PR)
 

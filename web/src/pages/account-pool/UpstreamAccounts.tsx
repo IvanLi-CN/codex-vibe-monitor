@@ -84,20 +84,27 @@ type GroupNoteEditorState = {
 
 type AccountBusyActionType = 'save' | 'sync' | 'toggle' | 'relogin' | 'delete'
 
-type BusyActionState =
-  | { type: AccountBusyActionType; accountId: number }
-  | { type: 'routing' }
-  | null
+type BusyActionState = {
+  routing: boolean
+  accountActions: Set<string>
+}
+
+function createBusyActionKey(type: AccountBusyActionType, accountId: number) {
+  return `${type}:${accountId}`
+}
 
 function isBusyAction(
   busyAction: BusyActionState,
   type: AccountBusyActionType | 'routing',
   accountId?: number,
 ) {
-  if (!busyAction || busyAction.type !== type) return false
-  if (type === 'routing') return true
-  if (busyAction.type === 'routing') return false
-  return busyAction.accountId === accountId
+  if (type === 'routing') return busyAction.routing
+  if (typeof accountId !== 'number') return false
+  return busyAction.accountActions.has(createBusyActionKey(type, accountId))
+}
+
+function hasBusyAction(busyAction: BusyActionState) {
+  return busyAction.routing || busyAction.accountActions.size > 0
 }
 
 function formatDateTime(value?: string | null) {
@@ -412,7 +419,10 @@ export default function UpstreamAccountsPage() {
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
   const [actionError, setActionError] = useState<string | null>(null)
-  const [busyAction, setBusyAction] = useState<BusyActionState>(null)
+  const [busyAction, setBusyAction] = useState<BusyActionState>(() => ({
+    routing: false,
+    accountActions: new Set(),
+  }))
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
@@ -707,7 +717,11 @@ export default function UpstreamAccountsPage() {
   const handleSave = async (source: UpstreamAccountDetail) => {
     if (source.kind === 'api_key_codex' && draftUpstreamBaseUrlError) return
     setActionError(null)
-    setBusyAction({ type: 'save', accountId: source.id })
+    setBusyAction((current) => {
+      const nextActions = new Set(current.accountActions)
+      nextActions.add(createBusyActionKey('save', source.id))
+      return { ...current, accountActions: nextActions }
+    })
     try {
       const response = await saveAccount(source.id, {
         displayName: draft.displayName.trim() || undefined,
@@ -728,38 +742,58 @@ export default function UpstreamAccountsPage() {
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyAction((current) => (isBusyAction(current, 'save', source.id) ? null : current))
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions)
+        nextActions.delete(createBusyActionKey('save', source.id))
+        return { ...current, accountActions: nextActions }
+      })
     }
   }
 
   const handleSync = async (source: UpstreamAccountSummary) => {
     setActionError(null)
-    setBusyAction({ type: 'sync', accountId: source.id })
+    setBusyAction((current) => {
+      const nextActions = new Set(current.accountActions)
+      nextActions.add(createBusyActionKey('sync', source.id))
+      return { ...current, accountActions: nextActions }
+    })
     try {
       await runSync(source.id)
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyAction((current) => (isBusyAction(current, 'sync', source.id) ? null : current))
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions)
+        nextActions.delete(createBusyActionKey('sync', source.id))
+        return { ...current, accountActions: nextActions }
+      })
     }
   }
 
   const handleToggleEnabled = async (source: UpstreamAccountSummary, enabled: boolean) => {
     setActionError(null)
-    setBusyAction({ type: 'toggle', accountId: source.id })
+    setBusyAction((current) => {
+      const nextActions = new Set(current.accountActions)
+      nextActions.add(createBusyActionKey('toggle', source.id))
+      return { ...current, accountActions: nextActions }
+    })
     try {
       await saveAccount(source.id, { enabled })
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyAction((current) => (isBusyAction(current, 'toggle', source.id) ? null : current))
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions)
+        nextActions.delete(createBusyActionKey('toggle', source.id))
+        return { ...current, accountActions: nextActions }
+      })
     }
   }
 
 
   const handleSaveRouting = async () => {
     setActionError(null)
-    setBusyAction({ type: 'routing' })
+    setBusyAction((current) => ({ ...current, routing: true }))
     try {
       await saveRouting({ apiKey: routingDraft.apiKey.trim() })
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
@@ -767,7 +801,7 @@ export default function UpstreamAccountsPage() {
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyAction((current) => (isBusyAction(current, 'routing') ? null : current))
+      setBusyAction((current) => ({ ...current, routing: false }))
     }
   }
 
@@ -776,13 +810,21 @@ export default function UpstreamAccountsPage() {
       return
     }
     setActionError(null)
-    setBusyAction({ type: 'delete', accountId: source.id })
+    setBusyAction((current) => {
+      const nextActions = new Set(current.accountActions)
+      nextActions.add(createBusyActionKey('delete', source.id))
+      return { ...current, accountActions: nextActions }
+    })
     try {
       await removeAccount(source.id)
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyAction((current) => (isBusyAction(current, 'delete', source.id) ? null : current))
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions)
+        nextActions.delete(createBusyActionKey('delete', source.id))
+        return { ...current, accountActions: nextActions }
+      })
     }
   }
 
@@ -797,7 +839,7 @@ export default function UpstreamAccountsPage() {
                 <p className="section-description">{t('accountPool.upstreamAccounts.description')}</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" variant="secondary" onClick={() => void refresh()} disabled={busyAction != null}>
+                <Button type="button" variant="secondary" onClick={() => void refresh()} disabled={hasBusyAction(busyAction)}>
                   <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
                   {t('accountPool.upstreamAccounts.actions.refresh')}
                 </Button>
