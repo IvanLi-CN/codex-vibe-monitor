@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import type { EffectiveRoutingRule, UpstreamAccountSummary } from '../lib/api'
+import type { AccountTagSummary, EffectiveRoutingRule, UpstreamAccountSummary } from '../lib/api'
 import { UpstreamAccountsTable } from './UpstreamAccountsTable'
 
 const now = '2026-03-11T12:30:00.000Z'
@@ -13,6 +13,29 @@ const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   sourceTagNames: [],
   guardRules: [],
 }
+
+const rosterTags: AccountTagSummary[] = [
+  {
+    id: 1,
+    name: 'vip',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  {
+    id: 2,
+    name: 'burst-safe',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  {
+    id: 3,
+    name: 'prod-apac',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  {
+    id: 4,
+    name: 'sticky-pool',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+]
 
 const items: UpstreamAccountSummary[] = [
   {
@@ -48,7 +71,7 @@ const items: UpstreamAccountSummary[] = [
       unlimited: false,
       balance: '12.80',
     },
-    tags: [],
+    tags: rosterTags,
     effectiveRoutingRule: defaultEffectiveRoutingRule,
     localLimits: {
       primaryLimit: null,
@@ -60,7 +83,7 @@ const items: UpstreamAccountSummary[] = [
     id: 12,
     kind: 'api_key_codex',
     provider: 'codex',
-    displayName: 'Team key - staging',
+    displayName: 'Team key - staging with an intentionally long roster label',
     groupName: 'staging',
     isMother: false,
     status: 'needs_reauth',
@@ -88,7 +111,13 @@ const items: UpstreamAccountSummary[] = [
       unlimited: false,
       balance: null,
     },
-    tags: [],
+    tags: [
+      {
+        id: 5,
+        name: 'fallback',
+        routingRule: defaultEffectiveRoutingRule,
+      },
+    ],
     effectiveRoutingRule: defaultEffectiveRoutingRule,
     localLimits: {
       primaryLimit: 120,
@@ -100,6 +129,7 @@ const items: UpstreamAccountSummary[] = [
 
 const labels = {
   sync: 'Last sync',
+  windows: 'Windows',
   never: 'Never',
   group: 'Group',
   primary: '5h',
@@ -109,6 +139,7 @@ const labels = {
   apiKey: 'API key',
   duplicate: 'Duplicate',
   mother: 'Mother',
+  off: 'Off',
   status: (value: string) =>
     ({
       active: 'Active',
@@ -170,6 +201,29 @@ export const DuplicateIdentity: Story = {
       items[1],
     ],
     selectedId: 11,
+  },
+}
+
+export const CompactLongLabels: Story = {
+  args: {
+    items: [
+      {
+        ...items[0],
+        displayName: 'Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title',
+        groupName: 'production-apac-primary-operators',
+      },
+      {
+        ...items[1],
+        duplicateInfo: {
+          peerAccountIds: [11, 27],
+          reasons: ['sharedChatgptUserId'],
+        },
+        enabled: false,
+        status: 'disabled',
+        planType: null,
+      },
+    ],
+    selectedId: 12,
   },
 }
 

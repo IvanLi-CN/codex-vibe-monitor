@@ -933,6 +933,7 @@ export default function UpstreamAccountsPage() {
               emptyDescription={t('accountPool.upstreamAccounts.emptyDescription')}
               labels={{
                 sync: t('accountPool.upstreamAccounts.table.lastSync'),
+                windows: t('accountPool.upstreamAccounts.table.windows'),
                 never: t('accountPool.upstreamAccounts.never'),
                 group: t('accountPool.upstreamAccounts.fields.groupName'),
                 primary: t('accountPool.upstreamAccounts.primaryWindowLabel'),
@@ -942,6 +943,7 @@ export default function UpstreamAccountsPage() {
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 mother: t('accountPool.upstreamAccounts.mother.badge'),
                 duplicate: t('accountPool.upstreamAccounts.duplicate.badge'),
+                off: t('accountPool.upstreamAccounts.table.off'),
                 status: accountStatusLabel,
               }}
             />

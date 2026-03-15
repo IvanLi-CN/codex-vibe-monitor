@@ -41,7 +41,6 @@ type StoryStore = {
   >
 }
 
-const defaultTags: AccountTagSummary[] = []
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   guardEnabled: false,
   lookbackHours: null,
@@ -52,6 +51,29 @@ const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   sourceTagNames: [],
   guardRules: [],
 }
+
+const defaultTags: AccountTagSummary[] = [
+  {
+    id: 1,
+    name: 'vip',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  {
+    id: 2,
+    name: 'burst-safe',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  {
+    id: 3,
+    name: 'prod-apac',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  {
+    id: 4,
+    name: 'sticky-pool',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+]
 
 export type StoryInitialEntry =
   | string
@@ -236,6 +258,7 @@ function createStore(): StoryStore {
   const duplicateStory =
     storyId === 'account-pool-pages-upstream-accounts--duplicate-oauth-warning' ||
     storyId === 'account-pool-pages-upstream-accounts--duplicate-oauth-detail'
+  const compactStory = storyId === 'account-pool-pages-upstream-accounts--compact-long-labels'
 
   const oauth = createOauthAccount(101, duplicateStory
     ? {
@@ -245,6 +268,11 @@ function createStore(): StoryStore {
         },
         note: 'Primary team account sharing the same upstream identity.',
       }
+    : compactStory
+      ? {
+          displayName: 'Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title',
+          groupName: 'production-apac-primary-operators',
+        }
     : undefined)
   const apiKey = createApiKeyAccount(102)
   const duplicateOauth = duplicateStory

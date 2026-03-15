@@ -7,6 +7,7 @@
 ## Index
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                                                          |
+| 62uhg | 上游账号列表紧凑化改版                                                        | 部分完成（4/5） | `62uhg-upstream-account-roster-compact/SPEC.md`          | 2026-03-16 | fast-track / compact roster shipped locally / lint+test+build+storybook smoke green           |
 | f6f6e | GH Actions 防取消发布链路全面对齐                                              | 部分完成（3/4） | `f6f6e-gh-actions-release-anti-cancel/SPEC.md`           | 2026-03-15 | strict anti-cancel / global serial CI Main+Release / current PR labels / contract refresh |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
 | v6epa | API Key 账号上游地址支持                                                      | 已完成          | `v6epa-api-key-upstream-base-url/SPEC.md`                | 2026-03-15 | fast-track / account-pool api-key upstream base url / local validation green                   |
