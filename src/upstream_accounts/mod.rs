@@ -2468,14 +2468,12 @@ async fn sync_oauth_account(state: &AppState, row: &UpstreamAccountRow) -> Resul
         }
     };
 
-    let effective_snapshot_plan_type = snapshot
-        .plan_type
-        .as_deref()
-        .or(latest_row.plan_type.as_deref());
+    let effective_snapshot_plan_type =
+        resolve_snapshot_plan_type(&state.pool, &latest_row, &snapshot).await?;
     persist_usage_snapshot(
         &state.pool,
         latest_row.id,
-        effective_snapshot_plan_type,
+        effective_snapshot_plan_type.as_deref(),
         &snapshot,
         state.config.upstream_accounts_history_retention_days,
     )
@@ -2831,6 +2829,21 @@ fn resolve_effective_plan_type(
     normalize_plan_type(sample_plan_type).or_else(|| normalize_plan_type(account_plan_type))
 }
 
+async fn resolve_snapshot_plan_type(
+    pool: &Pool<Sqlite>,
+    row: &UpstreamAccountRow,
+    snapshot: &NormalizedUsageSnapshot,
+) -> Result<Option<String>> {
+    if let Some(plan_type) = normalize_plan_type(snapshot.plan_type.as_deref()) {
+        return Ok(Some(plan_type));
+    }
+
+    let latest_sample_plan_type = load_latest_usage_sample(pool, row.id)
+        .await?
+        .and_then(|sample| sample.plan_type);
+    Ok(latest_sample_plan_type.or_else(|| normalize_plan_type(row.plan_type.as_deref())))
+}
+
 async fn load_duplicate_info_map(
     pool: &Pool<Sqlite>,
 ) -> Result<std::collections::HashMap<i64, DuplicateInfo>> {
@@ -2846,7 +2859,8 @@ async fn load_duplicate_info_map(
                         WHEN NULLIF(TRIM(sample.plan_type), '') IS NOT NULL
                             THEN NULLIF(TRIM(sample.plan_type), '')
                         WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
-                             AND COALESCE(account.last_refreshed_at, account.updated_at, account.created_at) > sample.captured_at
+                             AND account.last_refreshed_at IS NOT NULL
+                             AND account.last_refreshed_at > sample.captured_at
                             THEN NULLIF(TRIM(account.plan_type), '')
                         ELSE (
                             SELECT NULLIF(TRIM(previous_sample.plan_type), '')
@@ -3484,7 +3498,8 @@ async fn load_latest_usage_sample(
                     WHEN NULLIF(TRIM(sample.plan_type), '') IS NOT NULL
                         THEN NULLIF(TRIM(sample.plan_type), '')
                     WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
-                         AND COALESCE(account.last_refreshed_at, account.updated_at, account.created_at) > sample.captured_at
+                         AND account.last_refreshed_at IS NOT NULL
+                         AND account.last_refreshed_at > sample.captured_at
                         THEN NULLIF(TRIM(account.plan_type), '')
                     ELSE (
                         SELECT NULLIF(TRIM(previous_sample.plan_type), '')
@@ -6261,6 +6276,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_plan_type_fallback_prefers_latest_effective_sample() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, "Fallback OAuth", None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Fallback OAuth",
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims_with_plan_type(
+                    "fallback@example.com",
+                    Some("fallback_org"),
+                    Some("fallback_user"),
+                    Some("team"),
+                ),
+                encrypted_credentials: "encrypted-fallback".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type = 'team',
+                last_refreshed_at = '2026-03-15T00:00:01Z'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .expect("age account claims");
+        insert_limit_sample(&pool, account_id, "2026-03-15T00:00:02Z", Some("pro")).await;
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row")
+            .expect("row exists");
+        let snapshot = NormalizedUsageSnapshot {
+            plan_type: None,
+            limit_id: "gpt-4".to_string(),
+            limit_name: Some("GPT-4".to_string()),
+            primary: None,
+            secondary: None,
+            credits: None,
+        };
+
+        let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
+            .await
+            .expect("resolve snapshot plan type");
+        assert_eq!(effective_plan_type.as_deref(), Some("pro"));
+    }
+
+    #[tokio::test]
     async fn fresher_account_claims_override_stale_non_empty_samples() {
         let pool = test_pool().await;
 
@@ -6343,6 +6423,95 @@ mod tests {
                 .expect("detail exists");
             assert_eq!(detail.summary.plan_type.as_deref(), Some("pro"));
         }
+    }
+
+    #[tokio::test]
+    async fn metadata_updates_do_not_override_newer_usage_sample_plan_type() {
+        let pool = test_pool().await;
+
+        let mut inserted_ids = Vec::new();
+        for (display_name, email) in [
+            ("Sample Fresh One", "sample-fresh-1@example.com"),
+            ("Sample Fresh Two", "sample-fresh-2@example.com"),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some("sample_fresh_shared_org"),
+                        None,
+                        Some("team"),
+                    ),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        for account_id in &inserted_ids {
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type = 'team',
+                    last_refreshed_at = '2026-03-15T00:00:01Z',
+                    updated_at = '2026-03-15T00:00:01Z'
+                WHERE id = ?1
+                "#,
+            )
+            .bind(*account_id)
+            .execute(&pool)
+            .await
+            .expect("seed account claims");
+            insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:02Z", Some("pro")).await;
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET status = ?2,
+                    updated_at = '2026-03-15T00:00:03Z'
+                WHERE id = ?1
+                "#,
+            )
+            .bind(*account_id)
+            .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+            .execute(&pool)
+            .await
+            .expect("simulate metadata update");
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+        );
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| inserted_ids.contains(&summary.id))
+                .all(|summary| summary.plan_type.as_deref() == Some("pro"))
+        );
     }
 
     #[tokio::test]
