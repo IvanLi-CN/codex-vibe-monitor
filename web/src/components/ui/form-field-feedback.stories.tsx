@@ -116,6 +116,10 @@ export const QuietField: Story = {
 }
 
 export const DenseTwoColumnLayout: Story = {
+  args: {
+    label: '上游地址',
+    message: null,
+  },
   render: () => (
     <div className="grid gap-4 md:grid-cols-2">
       <FieldHarness label="上游地址" message="请填写 http(s) 的绝对 URL，例如 https://proxy.example.com/gateway" placeholder="proxy.example.com/gateway" />
