@@ -53,6 +53,7 @@ export function useUpstreamAccounts() {
       setIsLoading(true)
       try {
         const response = await fetchUpstreamAccounts()
+        let nextSelectedId: number | null = null
         setItems(response.items)
         setGroups(response.groups)
         setWritesEnabled(response.writesEnabled)
@@ -65,14 +66,18 @@ export function useUpstreamAccounts() {
             (!options?.respectCurrentSelection || current === selectionAnchorId)
           const nextId = shouldPreferRequestedId ? preferredId : current
           if (nextId != null && response.items.some((item) => item.id === nextId)) {
+            nextSelectedId = nextId
+            selectedIdRef.current = nextId
             return nextId
           }
-          return response.items[0]?.id ?? null
+          nextSelectedId = response.items[0]?.id ?? null
+          selectedIdRef.current = nextSelectedId
+          return nextSelectedId
         })
-        return true
+        return nextSelectedId
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
-        return false
+        return null
       } finally {
         setIsLoading(false)
       }
@@ -135,11 +140,11 @@ export function useUpstreamAccounts() {
 
   const refresh = useCallback(async () => {
     const currentSelectedId = selectedIdRef.current
-    await loadList(currentSelectedId, {
+    const nextSelectedId = await loadList(currentSelectedId, {
       respectCurrentSelection: true,
       selectionAnchorId: currentSelectedId,
     })
-    await loadDetail(selectedIdRef.current)
+    await loadDetail(nextSelectedId)
   }, [loadDetail, loadList])
 
   useEffect(() => {

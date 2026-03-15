@@ -660,8 +660,8 @@ export default function UpstreamAccountsPage() {
   const selectedDetail = detail?.id === selectedId ? detail : null
   const selected = selectedDetail ?? selectedSummary
   const visibleActionError =
-    actionError.routing ??
-    (typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null)
+    (typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null) ??
+    actionError.routing
   const selectedVisible = filteredItems.some((item) => item.id === selectedId)
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
@@ -740,7 +740,7 @@ export default function UpstreamAccountsPage() {
     setActionError((current) => {
       const nextMessages = { ...current.accountMessages }
       delete nextMessages[source.id]
-      return { ...current, accountMessages: nextMessages }
+      return { routing: null, accountMessages: nextMessages }
     })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
@@ -786,7 +786,7 @@ export default function UpstreamAccountsPage() {
     setActionError((current) => {
       const nextMessages = { ...current.accountMessages }
       delete nextMessages[source.id]
-      return { ...current, accountMessages: nextMessages }
+      return { routing: null, accountMessages: nextMessages }
     })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
@@ -817,7 +817,7 @@ export default function UpstreamAccountsPage() {
     setActionError((current) => {
       const nextMessages = { ...current.accountMessages }
       delete nextMessages[source.id]
-      return { ...current, accountMessages: nextMessages }
+      return { routing: null, accountMessages: nextMessages }
     })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
@@ -869,7 +869,7 @@ export default function UpstreamAccountsPage() {
     setActionError((current) => {
       const nextMessages = { ...current.accountMessages }
       delete nextMessages[source.id]
-      return { ...current, accountMessages: nextMessages }
+      return { routing: null, accountMessages: nextMessages }
     })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)

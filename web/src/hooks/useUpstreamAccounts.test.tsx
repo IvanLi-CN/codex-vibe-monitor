@@ -141,7 +141,7 @@ function createListResponse(): UpstreamAccountListResponse {
 }
 
 function Probe() {
-  const { selectedId, selectedSummary, detail, isDetailLoading, error, selectAccount, runSync } =
+  const { selectedId, selectedSummary, detail, isDetailLoading, error, selectAccount, runSync, refresh } =
     useUpstreamAccounts();
 
   return (
@@ -157,6 +157,9 @@ function Probe() {
       </button>
       <button data-testid="sync-alpha" onClick={() => void runSync(1)}>
         sync alpha
+      </button>
+      <button data-testid="refresh" onClick={() => void refresh()}>
+        refresh
       </button>
     </div>
   );
@@ -238,7 +241,48 @@ describe("useUpstreamAccounts", () => {
 
     expect(text("selected-id")).toBe("2");
     expect(text("selected-name")).toBe("Beta");
+    expect(text("detail-id")).not.toBe("1");
+    expect(text("detail-name")).not.toBe("Alpha");
+  });
+
+  it("refreshes detail using the list's final selection", async () => {
+    const betaDetail = deferred<UpstreamAccountDetail>();
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockResolvedValueOnce({
+        writesEnabled: true,
+        items: [createSummary(2, "Beta")],
+        groups: [],
+        routing: { apiKeyConfigured: false, maskedApiKey: null },
+      });
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockImplementationOnce(async (accountId: number) => {
+        if (accountId !== 2) {
+          throw new Error(`unexpected account ${accountId}`);
+        }
+        return betaDetail.promise;
+      })
+      .mockResolvedValue(createDetail(2, "Beta"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("refresh");
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenNthCalledWith(
+      2,
+      2,
+      expect.any(AbortSignal),
+    );
+
+    betaDetail.resolve(createDetail(2, "Beta"));
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("2");
     expect(text("detail-id")).toBe("2");
     expect(text("detail-name")).toBe("Beta");
+    expect(text("error")).toBe("");
   });
 });
