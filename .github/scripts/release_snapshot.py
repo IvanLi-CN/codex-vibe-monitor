@@ -255,18 +255,44 @@ def github_request_json(api_root: str, token: str, path: str, query: dict[str, A
         raise SnapshotError(f"GitHub API request failed on {path}: {exc}") from exc
 
 
+class _NoRedirectHandler(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def github_request_bytes(url: str, token: str) -> bytes:
-    headers = {
+    api_headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "codex-vibe-monitor-release-snapshot",
     }
-    req = request.Request(url, headers=headers)
+    opener = request.build_opener(_NoRedirectHandler)
+    req = request.Request(url, headers=api_headers)
     try:
-        with request.urlopen(req) as resp:
+        with opener.open(req) as resp:
             return resp.read()
     except error.HTTPError as exc:
+        if exc.code in {301, 302, 303, 307, 308}:
+            redirect_url = exc.headers.get("Location")
+            if not redirect_url:
+                body = exc.read().decode("utf-8", errors="replace")
+                raise SnapshotError(f"GitHub artifact download failed on {url}: redirect missing Location header: {body}") from exc
+            download_headers = {
+                "Accept": "application/octet-stream",
+                "User-Agent": "codex-vibe-monitor-release-snapshot",
+            }
+            download_req = request.Request(redirect_url, headers=download_headers)
+            try:
+                with request.urlopen(download_req) as resp:
+                    return resp.read()
+            except error.HTTPError as redirect_exc:
+                body = redirect_exc.read().decode("utf-8", errors="replace")
+                raise SnapshotError(
+                    f"GitHub artifact download failed on {redirect_url}: {redirect_exc.code} {body}"
+                ) from redirect_exc
+            except error.URLError as redirect_exc:
+                raise SnapshotError(f"GitHub artifact download failed on {redirect_url}: {redirect_exc}") from redirect_exc
         body = exc.read().decode("utf-8", errors="replace")
         raise SnapshotError(f"GitHub artifact download failed on {url}: {exc.code} {body}") from exc
     except error.URLError as exc:

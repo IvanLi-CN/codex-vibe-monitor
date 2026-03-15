@@ -712,8 +712,10 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-target-only-") as tmp:
         module.git = original_git
         os.chdir(original_cwd)
 
-captured_headers: dict[str, str] = {}
+api_headers: dict[str, str] = {}
+blob_headers: dict[str, str] = {}
 original_urlopen = module.request.urlopen
+original_build_opener = module.request.build_opener
 
 class FakeResponse:
     def __enter__(self):
@@ -725,16 +727,32 @@ class FakeResponse:
     def read(self) -> bytes:
         return b"artifact-bytes"
 
+class FakeOpener:
+    def open(self, req):
+        api_headers.update({key.lower(): value for key, value in req.header_items()})
+        raise module.error.HTTPError(
+            req.full_url,
+            302,
+            "Found",
+            {"Location": "https://blob.example/artifact.zip"},
+            None,
+        )
+
 try:
     def fake_urlopen(req):
-        captured_headers.update({key.lower(): value for key, value in req.header_items()})
+        blob_headers.update({key.lower(): value for key, value in req.header_items()})
         return FakeResponse()
 
+    module.request.build_opener = lambda *handlers: FakeOpener()
     module.request.urlopen = fake_urlopen
     payload = module.github_request_bytes("https://api.github.com/repos/demo/actions/artifacts/1/zip", "token")
     assert payload == b"artifact-bytes"
-    assert captured_headers["accept"] == "application/vnd.github+json"
+    assert api_headers["accept"] == "application/vnd.github+json"
+    assert api_headers["authorization"] == "Bearer token"
+    assert blob_headers["accept"] == "application/octet-stream"
+    assert "authorization" not in blob_headers
 finally:
+    module.request.build_opener = original_build_opener
     module.request.urlopen = original_urlopen
 
 print("test-release-snapshot: all checks passed")
