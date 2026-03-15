@@ -18,7 +18,7 @@
 
 - 拆分为 `CI PR`、`CI Main`、`Release` 三段式链路，明确并发语义与职责边界。
 - 保留现有 PR label 驱动的 release intent、版本/tag 规则、多架构 smoke 与发布幂等行为。
-- 为 release 增加 `workflow_dispatch(commit_sha)` 手动补发入口，作为 pending release run 被替换或需要显式重放历史 commit 时的人工 backfill 通道；入口只接受已经成功通过 `CI Main` 且已写入 immutable release snapshot 的 `main` commit。
+- 为 release 增加 `workflow_dispatch(commit_sha)` 手动补发入口，作为 pending release run 被替换或需要显式重放历史 commit 时的人工 backfill 通道；入口接受已经成功通过 `CI Main` 的 `main` commit，以及仅在 `Release Snapshot` 失败、其余 `CI Main` 校验均成功的历史 commit；手动 backfill 必须使用当前主干脚本补齐 immutable release snapshot。
 - 将 `quality-gates`、trusted metadata gate、contract fixtures/self-tests 升级到 `final` profile。
 
 ### Non-goals
@@ -51,7 +51,7 @@
 - `CI Main` 必须为每个 merged commit 写入 immutable release snapshot，冻结 PR labels、版本分配与镜像/tag 元数据。
 - `CI Main` 写 snapshot 时，自动发布路径必须优先消费与 merged PR 匹配的预冻结 `release-intent` artifact；不得再依赖 issue timeline label 回放。
 - `Release` 必须同时支持 `workflow_run(CI Main success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 publish 逻辑；自动与手动入口都只能消费 immutable release snapshot，禁止重新读取当前 PR labels 或重算版本。
-- `workflow_dispatch` 只接受 `commit_sha`，且对非法/不可解析输入、未通过 `CI Main` 的目标 SHA 一律 fail closed。
+- `workflow_dispatch` 只接受 `commit_sha`，且对非法/不可解析输入、既未通过 `CI Main` 也不满足“仅 `Release Snapshot` 失败”的目标 SHA 一律 fail closed。
 - 历史补发只允许对修复前、且缺少预冻结 artifact 的旧 PR 使用一次性 legacy label 回退；修复上线后的新 PR 若缺工件必须 fail closed。
 - `quality-gates` contract、fixtures 与自测必须升级到 `final` profile，并校验新的 workflow 家族。
 
