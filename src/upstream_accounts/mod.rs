@@ -2788,6 +2788,19 @@ struct UpstreamAccountIdentityRow {
     id: i64,
     chatgpt_account_id: Option<String>,
     chatgpt_user_id: Option<String>,
+    plan_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct UpstreamAccountIdentityClusterMember {
+    id: i64,
+    plan_type: Option<String>,
+}
+
+fn is_team_plan_type(plan_type: Option<&str>) -> bool {
+    plan_type
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("team"))
 }
 
 async fn load_duplicate_info_map(
@@ -2795,7 +2808,7 @@ async fn load_duplicate_info_map(
 ) -> Result<std::collections::HashMap<i64, DuplicateInfo>> {
     let rows = sqlx::query_as::<_, UpstreamAccountIdentityRow>(
         r#"
-        SELECT id, chatgpt_account_id, chatgpt_user_id
+        SELECT id, chatgpt_account_id, chatgpt_user_id, plan_type
         FROM pool_upstream_accounts
         WHERE kind = ?1
         ORDER BY id ASC
@@ -2805,14 +2818,17 @@ async fn load_duplicate_info_map(
     .fetch_all(pool)
     .await?;
 
-    let mut by_account_id = std::collections::HashMap::<String, Vec<i64>>::new();
+    let mut by_account_id =
+        std::collections::HashMap::<String, Vec<UpstreamAccountIdentityClusterMember>>::new();
     let mut by_user_id = std::collections::HashMap::<String, Vec<i64>>::new();
     for row in &rows {
         if let Some(chatgpt_account_id) = row.chatgpt_account_id.as_ref().cloned() {
-            by_account_id
-                .entry(chatgpt_account_id)
-                .or_default()
-                .push(row.id);
+            by_account_id.entry(chatgpt_account_id).or_default().push(
+                UpstreamAccountIdentityClusterMember {
+                    id: row.id,
+                    plan_type: row.plan_type.clone(),
+                },
+            );
         }
         if let Some(chatgpt_user_id) = row.chatgpt_user_id.as_ref().cloned() {
             by_user_id.entry(chatgpt_user_id).or_default().push(row.id);
@@ -2825,17 +2841,22 @@ async fn load_duplicate_info_map(
         let mut reasons = Vec::new();
 
         if let Some(chatgpt_account_id) = row.chatgpt_account_id.as_ref()
-            && let Some(ids) = by_account_id
+            && let Some(cluster) = by_account_id
                 .get(chatgpt_account_id)
-                .filter(|ids| ids.len() > 1)
+                .filter(|members| members.len() > 1)
         {
-            for peer_id in ids {
-                if *peer_id != row.id {
-                    peer_ids.insert(*peer_id);
+            let is_all_team_cluster = cluster
+                .iter()
+                .all(|member| is_team_plan_type(member.plan_type.as_deref()));
+            if !is_all_team_cluster {
+                for member in cluster {
+                    if member.id != row.id {
+                        peer_ids.insert(member.id);
+                    }
                 }
-            }
-            if !peer_ids.is_empty() {
-                reasons.push(DuplicateReason::SharedChatgptAccountId);
+                if !peer_ids.is_empty() {
+                    reasons.push(DuplicateReason::SharedChatgptAccountId);
+                }
             }
         }
 
@@ -5724,17 +5745,26 @@ mod tests {
         pool
     }
 
+    fn test_claims_with_plan_type(
+        email: &str,
+        chatgpt_account_id: Option<&str>,
+        chatgpt_user_id: Option<&str>,
+        plan_type: Option<&str>,
+    ) -> ChatgptJwtClaims {
+        ChatgptJwtClaims {
+            email: Some(email.to_string()),
+            chatgpt_plan_type: plan_type.map(str::to_string),
+            chatgpt_user_id: chatgpt_user_id.map(str::to_string),
+            chatgpt_account_id: chatgpt_account_id.map(str::to_string),
+        }
+    }
+
     fn test_claims(
         email: &str,
         chatgpt_account_id: Option<&str>,
         chatgpt_user_id: Option<&str>,
     ) -> ChatgptJwtClaims {
-        ChatgptJwtClaims {
-            email: Some(email.to_string()),
-            chatgpt_plan_type: Some("team".to_string()),
-            chatgpt_user_id: chatgpt_user_id.map(str::to_string),
-            chatgpt_account_id: chatgpt_account_id.map(str::to_string),
-        }
+        test_claims_with_plan_type(email, chatgpt_account_id, chatgpt_user_id, Some("team"))
     }
 
     async fn insert_api_key_account(pool: &SqlitePool, display_name: &str) -> i64 {
@@ -5767,7 +5797,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_oauth_accounts_with_shared_account_id_are_preserved_and_flagged() {
+    async fn team_oauth_accounts_with_shared_account_id_are_not_flagged_as_duplicates() {
         let pool = test_pool().await;
 
         let mut tx = pool.begin().await.expect("begin tx 1");
@@ -5829,18 +5859,29 @@ mod tests {
         let duplicate_info = load_duplicate_info_map(&pool)
             .await
             .expect("load duplicate info");
-        assert_eq!(
-            duplicate_info
-                .get(&first_id)
-                .map(|value| value.reasons.clone()),
-            Some(vec![DuplicateReason::SharedChatgptAccountId])
+        assert!(duplicate_info.get(&first_id).is_none());
+        assert!(duplicate_info.get(&second_id).is_none());
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| summary.id == first_id || summary.id == second_id)
+                .all(|summary| summary.duplicate_info.is_none())
         );
-        assert_eq!(
-            duplicate_info
-                .get(&second_id)
-                .map(|value| value.reasons.clone()),
-            Some(vec![DuplicateReason::SharedChatgptAccountId])
-        );
+
+        let first_detail = load_upstream_account_detail(&pool, first_id)
+            .await
+            .expect("load first detail")
+            .expect("first detail exists");
+        let second_detail = load_upstream_account_detail(&pool, second_id)
+            .await
+            .expect("load second detail")
+            .expect("second detail exists");
+        assert!(first_detail.summary.duplicate_info.is_none());
+        assert!(second_detail.summary.duplicate_info.is_none());
     }
 
     #[tokio::test]
@@ -5882,6 +5923,48 @@ mod tests {
             duplicate_info
                 .values()
                 .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptUserId])
+        );
+    }
+
+    #[tokio::test]
+    async fn mixed_plan_type_accounts_with_shared_account_id_remain_flagged() {
+        let pool = test_pool().await;
+
+        for (display_name, email, plan_type) in [
+            ("Team OAuth", "team@example.com", Some("team")),
+            ("Personal OAuth", "personal@example.com", Some("pro")),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(email, Some("org_shared"), None, plan_type),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
         );
     }
 
