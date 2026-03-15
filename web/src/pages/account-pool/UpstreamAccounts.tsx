@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { AppIcon, type AppIconName } from '../../components/AppIcon'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
@@ -189,6 +189,7 @@ function AccountDetailDrawer({
   title,
   subtitle,
   closeLabel,
+  closeDisabled = false,
   onClose,
   children,
 }: {
@@ -196,6 +197,7 @@ function AccountDetailDrawer({
   title: string
   subtitle?: string
   closeLabel: string
+  closeDisabled?: boolean
   onClose: () => void
   children: ReactNode
 }) {
@@ -207,6 +209,7 @@ function AccountDetailDrawer({
     const previousOverflow = document.body.style.overflow
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (closeDisabled) return
         onClose()
       }
     }
@@ -220,7 +223,7 @@ function AccountDetailDrawer({
       document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [onClose, open])
+  }, [closeDisabled, onClose, open])
 
   if (!open || typeof document === 'undefined') return null
 
@@ -229,7 +232,7 @@ function AccountDetailDrawer({
       <div
         aria-hidden="true"
         className="absolute inset-0 bg-neutral/50 backdrop-blur-sm"
-        onClick={onClose}
+        onClick={closeDisabled ? undefined : onClose}
       />
       <div className="absolute inset-y-0 right-0 flex w-full justify-end pl-4 sm:pl-8">
         <section
@@ -248,7 +251,14 @@ function AccountDetailDrawer({
                   {title}
                 </h2>
               </div>
-              <Button ref={closeButtonRef} type="button" variant="ghost" size="icon" onClick={onClose}>
+              <Button
+                ref={closeButtonRef}
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={onClose}
+                disabled={closeDisabled}
+              >
                 <AppIcon name="close" className="h-5 w-5" aria-hidden />
                 <span className="sr-only">{closeLabel}</span>
               </Button>
@@ -413,6 +423,11 @@ export default function UpstreamAccountsPage() {
   })
   const [groupNoteBusy, setGroupNoteBusy] = useState(false)
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
+  const deleteConfirmTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const deleteConfirmPanelRef = useRef<HTMLDivElement | null>(null)
+  const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
+  const deleteConfirmTitleId = useId()
+  const deleteConfirmDescriptionId = useId()
 
   const draftUpstreamBaseUrlError = useMemo(() => {
     const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl)
@@ -450,6 +465,33 @@ export default function UpstreamAccountsPage() {
       setIsDeleteConfirmOpen(false)
     }
   }, [writesEnabled])
+
+  useEffect(() => {
+    if (!isDeleteConfirmOpen) return undefined
+
+    const focusTimer = window.setTimeout(() => deleteConfirmCancelRef.current?.focus(), 0)
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (deleteConfirmPanelRef.current?.contains(target)) return
+      if (deleteConfirmTriggerRef.current?.contains(target)) return
+      setIsDeleteConfirmOpen(false)
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setIsDeleteConfirmOpen(false)
+    }
+
+    document.addEventListener('mousedown', handlePointerDown, true)
+    document.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      window.clearTimeout(focusTimer)
+      document.removeEventListener('mousedown', handlePointerDown, true)
+      document.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [isDeleteConfirmOpen])
 
   useEffect(() => {
     setGroupDraftNotes((current) => {
@@ -982,6 +1024,7 @@ export default function UpstreamAccountsPage() {
         title={selected?.displayName ?? t('accountPool.upstreamAccounts.detailTitle')}
         subtitle={t('accountPool.upstreamAccounts.detailTitle')}
         closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
+        closeDisabled={busyAction != null}
         onClose={handleCloseDetailDrawer}
       >
         {!selected ? (
@@ -1045,9 +1088,13 @@ export default function UpstreamAccountsPage() {
                 ) : null}
                 <div className="relative">
                   <Button
+                    ref={deleteConfirmTriggerRef}
                     type="button"
                     variant="destructive"
                     disabled={busyAction === 'delete' || !writesEnabled}
+                    aria-haspopup="dialog"
+                    aria-expanded={isDeleteConfirmOpen}
+                    aria-controls={isDeleteConfirmOpen ? deleteConfirmTitleId : undefined}
                     onClick={() => {
                       if (busyAction === 'delete') return
                       setDetailActionError(null)
@@ -1058,17 +1105,30 @@ export default function UpstreamAccountsPage() {
                     {t('accountPool.upstreamAccounts.actions.delete')}
                   </Button>
                   {isDeleteConfirmOpen ? (
-                    <div className="absolute right-0 top-full z-20 mt-2 w-[22rem] space-y-3 rounded-2xl border border-error/30 bg-base-100/98 p-4 shadow-2xl">
+                    <div
+                      ref={deleteConfirmPanelRef}
+                      role="alertdialog"
+                      aria-modal="false"
+                      aria-labelledby={deleteConfirmTitleId}
+                      aria-describedby={deleteConfirmDescriptionId}
+                      className="absolute right-0 top-full z-20 mt-2 w-[22rem] space-y-3 rounded-2xl border border-error/30 bg-base-100/98 p-4 shadow-2xl"
+                    >
                       <div className="space-y-1">
-                        <p className="text-sm font-semibold text-base-content">
+                        <p id={deleteConfirmTitleId} className="text-sm font-semibold text-base-content">
                           {t('accountPool.upstreamAccounts.deleteConfirmTitle')}
                         </p>
-                        <p className="text-sm leading-6 text-base-content/70">
+                        <p id={deleteConfirmDescriptionId} className="text-sm leading-6 text-base-content/70">
                           {t('accountPool.upstreamAccounts.deleteConfirmBody', { name: selected.displayName })}
                         </p>
                       </div>
                       <div className="flex justify-end gap-2">
-                        <Button type="button" variant="ghost" size="sm" onClick={() => setIsDeleteConfirmOpen(false)}>
+                        <Button
+                          ref={deleteConfirmCancelRef}
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setIsDeleteConfirmOpen(false)}
+                        >
                           {t('accountPool.upstreamAccounts.actions.cancel')}
                         </Button>
                         <Button
