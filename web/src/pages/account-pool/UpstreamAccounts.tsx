@@ -429,7 +429,6 @@ export default function UpstreamAccountsPage() {
   const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
   const skipNextDeleteConfirmResetRef = useRef(false)
   const deleteConfirmTitleId = useId()
-  const deleteConfirmDescriptionId = useId()
 
   const draftUpstreamBaseUrlError = useMemo(() => {
     const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl)
@@ -475,7 +474,10 @@ export default function UpstreamAccountsPage() {
   useEffect(() => {
     if (!isDeleteConfirmOpen) return undefined
 
-    const focusTimer = window.setTimeout(() => deleteConfirmCancelRef.current?.focus(), 0)
+    let rafId = 0
+    const focusTimer = window.setTimeout(() => {
+      rafId = window.requestAnimationFrame(() => deleteConfirmCancelRef.current?.focus())
+    }, 80)
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target
       if (!(target instanceof Node)) return
@@ -494,6 +496,9 @@ export default function UpstreamAccountsPage() {
     document.addEventListener('keydown', handleKeyDown, true)
     return () => {
       window.clearTimeout(focusTimer)
+      if (rafId) {
+        window.cancelAnimationFrame(rafId)
+      }
       document.removeEventListener('mousedown', handlePointerDown, true)
       document.removeEventListener('keydown', handleKeyDown, true)
     }
@@ -1094,7 +1099,7 @@ export default function UpstreamAccountsPage() {
                     {t('accountPool.upstreamAccounts.actions.relogin')}
                   </Button>
                 ) : null}
-                <div className="relative">
+                <div className="relative overflow-visible">
                   <Button
                     ref={deleteConfirmTriggerRef}
                     type="button"
@@ -1104,7 +1109,7 @@ export default function UpstreamAccountsPage() {
                     aria-expanded={isDeleteConfirmOpen}
                     aria-controls={isDeleteConfirmOpen ? deleteConfirmTitleId : undefined}
                     onClick={() => {
-                      if (busyAction === 'delete') return
+                      if (busyAction === 'delete' || isDeleteConfirmOpen) return
                       setDetailActionError(null)
                       setIsDeleteConfirmOpen(true)
                     }}
@@ -1118,36 +1123,48 @@ export default function UpstreamAccountsPage() {
                       role="alertdialog"
                       aria-modal="false"
                       aria-labelledby={deleteConfirmTitleId}
-                      aria-describedby={deleteConfirmDescriptionId}
-                      className="absolute right-0 top-full z-20 mt-2 w-[22rem] space-y-3 rounded-2xl border border-error/30 bg-base-100/98 p-4 shadow-2xl"
+                      className="absolute bottom-full right-0 z-20 mb-3 w-[min(19rem,calc(100vw-2rem))]"
                     >
-                      <div className="space-y-1">
-                        <p id={deleteConfirmTitleId} className="text-sm font-semibold text-base-content">
-                          {t('accountPool.upstreamAccounts.deleteConfirmTitle')}
-                        </p>
-                        <p id={deleteConfirmDescriptionId} className="text-sm leading-6 text-base-content/70">
-                          {t('accountPool.upstreamAccounts.deleteConfirmBody', { name: selected.displayName })}
-                        </p>
-                      </div>
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          ref={deleteConfirmCancelRef}
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setIsDeleteConfirmOpen(false)}
-                        >
-                          {t('accountPool.upstreamAccounts.actions.cancel')}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          size="sm"
-                          disabled={busyAction === 'delete' || !writesEnabled}
-                          onClick={() => void handleDelete(selected)}
-                        >
-                          {t('accountPool.upstreamAccounts.actions.confirmDelete')}
-                        </Button>
+                      <div className="relative rounded-2xl border border-error/40 bg-base-100/98 p-3.5 shadow-[0_18px_44px_rgba(15,23,42,0.24)]">
+                        <div
+                          aria-hidden
+                          className="absolute -bottom-2 right-5 h-4 w-4 rotate-45 border-b border-r border-error/40 bg-base-100/98"
+                        />
+                        <div className="space-y-3">
+                          <div className="flex items-start gap-2.5">
+                            <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-error/12 text-error">
+                              <AppIcon name="trash-can-outline" className="h-3.5 w-3.5" aria-hidden />
+                            </div>
+                            <p
+                              id={deleteConfirmTitleId}
+                              className="min-w-0 break-words pr-2 text-sm font-semibold leading-5 text-base-content"
+                            >
+                              {t('accountPool.upstreamAccounts.deleteConfirmTitle', { name: selected.displayName })}
+                            </p>
+                          </div>
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              ref={deleteConfirmCancelRef}
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              className="rounded-full px-3.5"
+                              onClick={() => setIsDeleteConfirmOpen(false)}
+                            >
+                              {t('accountPool.upstreamAccounts.actions.cancel')}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              className="rounded-full px-3.5"
+                              disabled={busyAction === 'delete' || !writesEnabled}
+                              onClick={() => void handleDelete(selected)}
+                            >
+                              {t('accountPool.upstreamAccounts.actions.confirmDelete')}
+                            </Button>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   ) : null}

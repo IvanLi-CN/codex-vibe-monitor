@@ -138,6 +138,12 @@ async function flushAsync() {
   });
 }
 
+async function flushTimers() {
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
+}
+
 function setInputValue(selector: string, value: string) {
   const input = document.body.querySelector(selector);
   if (
@@ -711,11 +717,23 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     }
     pressButton(deleteButton);
     await flushAsync();
+    await flushTimers();
 
     expect(removeAccount).not.toHaveBeenCalled();
     expect(confirmSpy).not.toHaveBeenCalled();
-    expect(findButton(/Delete account/i)).toBeInstanceOf(HTMLButtonElement);
-    expect(document.body.querySelector('[role="alertdialog"]')).not.toBeNull();
+    const confirmDialog = document.body.querySelector('[role="alertdialog"]');
+    expect(confirmDialog).not.toBeNull();
+    const confirmDeleteButton = confirmDialog
+      ? Array.from(confirmDialog.querySelectorAll('button')).find((candidate) =>
+          /Delete account/i.test(
+            candidate.textContent ||
+              candidate.getAttribute('aria-label') ||
+              candidate.title ||
+              '',
+          ),
+        )
+      : null;
+    expect(confirmDeleteButton).toBeInstanceOf(HTMLButtonElement);
 
     clickButton(/Delete account/i);
     await flushAsync();

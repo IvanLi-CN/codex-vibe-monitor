@@ -67,8 +67,7 @@ export const DeleteConfirmation: Story = {
     const documentScope = within(canvasElement.ownerDocument.body)
     await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
     await expect(documentScope.getByRole('alertdialog')).toBeInTheDocument()
-    await expect(documentScope.getByText(/删除这个上游账号|delete this upstream account/i)).toBeInTheDocument()
-    await expect(documentScope.getByText(/不会保留恢复副本|does not keep a recovery copy/i)).toBeInTheDocument()
+    await expect(documentScope.getByText(/确认删除 Codex Pro - Tokyo|delete Codex Pro - Tokyo/i)).toBeInTheDocument()
   },
 }
 
