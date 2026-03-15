@@ -48,7 +48,7 @@
 - PR 侧 required checks 继续保持 `Validate PR labels`、`Lint & Format Check`、`Backend Tests`、`Build Artifacts`、`Review Policy Gate`。
 - `CI PR` 对同一 PR 必须保持可抢占；`CI Main` 与 `Release` 对运行中的 main/release run 必须保持非抢占。
 - `Label Gate` 必须在 trusted base 上为每个通过标签门禁的 PR 产出预冻结 `release-intent` artifact，至少包含 `pr_number`、`pr_head_sha`、`type_label`、`channel_label` 与生成时间。
-- `CI Main` 必须为每个 merged commit 写入 immutable release snapshot，冻结 PR labels、版本分配与镜像/tag 元数据。
+- `CI Main` 必须为每个 merged commit 写入 immutable release snapshot，冻结 PR labels、版本分配与镜像/tag 元数据；自动路径只允许 materialize 当前 target commit，不得为了补历史缺口而阻塞新的 merged commit。
 - `CI Main` 写 snapshot 时，自动发布路径必须优先消费与 merged PR 匹配的预冻结 `release-intent` artifact；不得再依赖 issue timeline label 回放。
 - `Release` 必须同时支持 `workflow_run(CI Main success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 publish 逻辑；自动与手动入口都只能消费 immutable release snapshot，禁止重新读取当前 PR labels 或重算版本。
 - `workflow_dispatch` 只接受 `commit_sha`，且对非法/不可解析输入、既未通过 `CI Main` 也不满足“仅 `Release Snapshot` 失败”的目标 SHA 一律 fail closed。
