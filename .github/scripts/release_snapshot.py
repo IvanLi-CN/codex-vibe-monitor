@@ -20,7 +20,7 @@ from urllib import error, parse, request
 SNAPSHOT_SCHEMA_VERSION = 1
 RELEASE_INTENT_SCHEMA_VERSION = 1
 DEFAULT_NOTES_REF = "refs/notes/release-snapshots"
-LEGACY_LABEL_FALLBACK_MAX_PR_NUMBER = 130
+LEGACY_LABEL_FALLBACK_PR_ALLOWLIST = frozenset({126, 130, 131, 133})
 RELEASE_INTENT_ARTIFACT_PREFIX = "release-intent-pr-"
 TRUSTED_RELEASE_INTENT_WORKFLOW_PATH = ".github/workflows/label-gate.yml"
 TRUSTED_RELEASE_INTENT_EVENT = "pull_request"
@@ -458,14 +458,14 @@ def resolve_release_intent_for_pr(
             pr_head_sha,
         )
 
-    if pr_number <= LEGACY_LABEL_FALLBACK_MAX_PR_NUMBER:
+    if pr_number in LEGACY_LABEL_FALLBACK_PR_ALLOWLIST:
         type_label, channel_label = parse_release_labels(current_labels_for_pr(api_root, repository, token, pr_number))
         return (type_label, channel_label, "legacy-pr-labels", pr_head_sha)
 
     artifact_name = artifact_name_for_pr(pr_number, pr_head_sha)
     raise SnapshotError(
         f"Missing pre-frozen release intent artifact {artifact_name} for PR #{pr_number}; "
-        "legacy label fallback is only allowed for historical releases"
+        "legacy label fallback is only allowed for the historical backfill and rollout bridge allowlist"
     )
 
 

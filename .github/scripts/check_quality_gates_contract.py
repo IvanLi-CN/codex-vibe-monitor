@@ -666,35 +666,11 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
         "label-gate.yml: trusted release intent write step must write to the runner temp artifact path",
     )
 
-    rollout_write_step = step_config(job, "Bootstrap release intent artifact during rollout", "label-gate.yml.jobs.validate-pr-labels")
-    require(
-        rollout_write_step.get("if") == "steps.rollout.outputs.supports_final_contract != 'true'",
-        "label-gate.yml: rollout release intent write gate drifted",
-    )
-    rollout_write_env = require_mapping(
-        rollout_write_step.get("env"),
-        "label-gate.yml.jobs.validate-pr-labels.steps['Bootstrap release intent artifact during rollout'].env",
-    )
-    require(
-        rollout_write_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}",
-        "label-gate.yml: rollout release intent write step must pass GITHUB_TOKEN via env",
-    )
-    rollout_write_command = require_command(
-        rollout_write_step,
-        ["python3", "candidate/.github/scripts/metadata_gate.py", "label"],
-        "label-gate.yml.jobs.validate-pr-labels.steps['Bootstrap release intent artifact during rollout']",
-        "label-gate.yml: rollout release intent write step must invoke the candidate metadata gate in label mode",
-    )
-    rollout_write_options = command_option_map(
-        rollout_write_command[3:],
-        "label-gate.yml: rollout release intent write command options",
-    )
-    require(
-        rollout_write_options.get("--write-intent") == "$RUNNER_TEMP/release-intent.json",
-        "label-gate.yml: rollout release intent write step must write to the runner temp artifact path",
-    )
-
     upload_step = step_config(job, "Upload release intent artifact", "label-gate.yml.jobs.validate-pr-labels")
+    require(
+        upload_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
+        "label-gate.yml: release intent artifact upload gate drifted",
+    )
     uses_value = str(upload_step.get("uses") or "")
     require(
         uses_value == "actions/upload-artifact@v4",

@@ -120,7 +120,7 @@
 
 - 2026-03-14: 创建 strict anti-cancel release topology spec，冻结三段式 workflow + final quality-gates 升级范围。
 - 2026-03-14: 完成 workflow split、final quality-gates contract、release backfill 入口与本地 contract/self-tests；补上 label-gate rollout 兼容、`CI Main` 按 SHA 分组、immutable release snapshot 与按 target SHA 隔离的 backfill/concurrency 收敛，继续等待快车道 PR 收敛收口 M4。
-- 2026-03-15: 增加 trusted `release-intent` artifact 冻结层，移除 `CI Main` 对 issue timeline label 回放的自动依赖，并限定历史补发只对 `PR #130` 及更早的 legacy commit 开放当前 labels 回退。
+- 2026-03-15: 增加 trusted `release-intent` artifact 冻结层，移除 `CI Main` 对 issue timeline label 回放的自动依赖，并把 legacy label 回退收敛为显式 allowlist（历史补发 `PR #126/#130/#131` + rollout bridge `PR #133`）。
 
 ## 参考（References）
 

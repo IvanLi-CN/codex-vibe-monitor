@@ -166,7 +166,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         assert legacy_snapshot["snapshot_source"] == "legacy-pr-labels"
 
         module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: make_pr(
-            131, "Future release without artifact", target_sha
+            140, "Future release without artifact", target_sha
         )
         module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, pr_head_sha: None
         try:
