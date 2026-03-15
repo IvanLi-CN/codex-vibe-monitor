@@ -191,6 +191,7 @@ function AccountDetailDrawer({
   subtitle,
   closeLabel,
   closeDisabled = false,
+  autoFocusCloseButton = true,
   onClose,
   children,
 }: {
@@ -199,6 +200,7 @@ function AccountDetailDrawer({
   subtitle?: string
   closeLabel: string
   closeDisabled?: boolean
+  autoFocusCloseButton?: boolean
   onClose: () => void
   children: ReactNode
 }) {
@@ -217,14 +219,18 @@ function AccountDetailDrawer({
 
     document.body.style.overflow = 'hidden'
     document.addEventListener('keydown', handleKeyDown)
-    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+    const focusTimer = autoFocusCloseButton
+      ? window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+      : null
 
     return () => {
-      window.clearTimeout(focusTimer)
+      if (focusTimer != null) {
+        window.clearTimeout(focusTimer)
+      }
       document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [closeDisabled, onClose, open])
+  }, [autoFocusCloseButton, closeDisabled, onClose, open])
 
   if (!open || typeof document === 'undefined') return null
 
@@ -1038,6 +1044,7 @@ export default function UpstreamAccountsPage() {
         subtitle={t('accountPool.upstreamAccounts.detailTitle')}
         closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
         closeDisabled={busyAction != null}
+        autoFocusCloseButton={!isDeleteConfirmOpen}
         onClose={handleCloseDetailDrawer}
       >
         {!selected ? (
