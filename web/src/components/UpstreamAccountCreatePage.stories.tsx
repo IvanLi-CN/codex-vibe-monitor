@@ -3,6 +3,7 @@ import { userEvent, within, expect } from 'storybook/test'
 import { SystemNotificationProvider } from './ui/system-notifications'
 import { I18nProvider } from '../i18n'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
+import type { OauthMailboxSession, OauthMailboxStatus } from '../lib/api'
 import {
   AccountPoolStoryRouter,
   StorybookUpstreamAccountsMock,
@@ -18,6 +19,29 @@ function createCompletedSession(loginId: string, accountId: number) {
     expiresAt: '2026-03-11T13:30:00.000Z',
     accountId,
     error: null,
+  }
+}
+
+function createMailboxSession(sessionId: string, emailAddress: string): OauthMailboxSession {
+  return {
+    sessionId,
+    emailAddress,
+    expiresAt: '2026-03-11T12:50:00.000Z',
+  }
+}
+
+function createMailboxStatus(
+  session: OauthMailboxSession,
+  overrides?: Partial<OauthMailboxStatus>,
+): OauthMailboxStatus {
+  return {
+    sessionId: session.sessionId,
+    emailAddress: session.emailAddress,
+    expiresAt: session.expiresAt,
+    latestCode: null,
+    invite: null,
+    invited: false,
+    ...overrides,
   }
 }
 
@@ -60,6 +84,104 @@ export const OauthReady: Story = {
   },
 }
 
+export const OauthMailboxGenerated: Story = {
+  name: 'OAuth Mailbox Generated',
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: /^generate$/i }))
+
+    const displayName = canvas.getByLabelText(/display name/i) as HTMLInputElement
+    const mailbox = canvas.getByLabelText(/generated mailbox/i) as HTMLInputElement
+
+    await expect(displayName.value).toBe(mailbox.value)
+    await expect(mailbox.selectionStart).toBe(0)
+    await expect(mailbox.selectionEnd).toBe(mailbox.value.length)
+    await expect(canvas.getByRole('button', { name: /^generate$/i })).toBeDisabled()
+  },
+}
+
+export const OauthMailboxReady: Story = {
+  name: 'OAuth Mailbox Ready',
+  render: () => {
+    const mailboxSession = createMailboxSession('story-mailbox-oauth-ready', 'oauth-ready@mail-tw.707079.xyz')
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          state: {
+            draft: {
+              oauth: {
+                displayName: mailboxSession.emailAddress,
+                groupName: 'production',
+                mailboxSession,
+                mailboxInput: mailboxSession.emailAddress,
+                mailboxStatus: createMailboxStatus(mailboxSession, {
+                  latestCode: {
+                    value: '824931',
+                    source: 'subject',
+                    updatedAt: '2026-03-11T12:36:00.000Z',
+                  },
+                  invite: {
+                    subject: 'Alice has invited you to join OpenAI Workspace',
+                    copyValue: 'https://chatgpt.com/invite/story-ready',
+                    copyLabel: 'Join workspace',
+                    updatedAt: '2026-03-11T12:37:00.000Z',
+                  },
+                  invited: true,
+                }),
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+}
+
+export const OauthMailboxMismatchDisabled: Story = {
+  name: 'OAuth Mailbox Mismatch Disabled',
+  render: () => {
+    const mailboxSession = createMailboxSession('story-mailbox-oauth-mismatch', 'oauth-lock@mail-tw.707079.xyz')
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          state: {
+            draft: {
+              oauth: {
+                displayName: 'manual-alias@mail-tw.707079.xyz',
+                groupName: 'production',
+                mailboxSession,
+                mailboxInput: mailboxSession.emailAddress,
+                mailboxStatus: createMailboxStatus(mailboxSession, {
+                  latestCode: {
+                    value: '190284',
+                    source: 'body',
+                    updatedAt: '2026-03-11T12:36:00.000Z',
+                  },
+                  invite: {
+                    subject: 'Alice has invited you to join OpenAI Workspace',
+                    copyValue: 'https://chatgpt.com/invite/story-locked',
+                    copyLabel: 'Join workspace',
+                    updatedAt: '2026-03-11T12:37:00.000Z',
+                  },
+                  invited: true,
+                }),
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('button', { name: /copy verification code/i })).toBeDisabled()
+    await expect(canvas.getByRole('button', { name: /copy invite/i })).toBeDisabled()
+  },
+}
+
 export const BatchOauthReady: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
   play: async ({ canvasElement }) => {
@@ -67,6 +189,126 @@ export const BatchOauthReady: Story = {
     await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
     await expect(canvas.getByDisplayValue(/https:\/\/auth\.openai\.com\/authorize/i)).toBeInTheDocument()
     await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeInTheDocument()
+  },
+}
+
+export const BatchOauthMailboxGenerated: Story = {
+  name: 'Batch OAuth Mailbox Generated',
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getAllByRole('button', { name: /^generate$/i })[0])
+
+    const displayName = canvas.getAllByLabelText(/display name/i)[0] as HTMLInputElement
+    const mailbox = canvas.getAllByLabelText(/generated mailbox/i)[0] as HTMLInputElement
+
+    await expect(displayName.value).toBe(mailbox.value)
+    await expect(mailbox.selectionStart).toBe(0)
+    await expect(mailbox.selectionEnd).toBe(mailbox.value.length)
+    await expect(canvas.getAllByRole('button', { name: /^generate$/i })[0]).toBeDisabled()
+  },
+}
+
+export const BatchOauthMailboxReady: Story = {
+  name: 'Batch OAuth Mailbox Ready',
+  render: () => {
+    const mailboxSession = createMailboxSession('story-mailbox-batch-ready', 'batch-row@mail-tw.707079.xyz')
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          search: '?mode=batchOauth',
+          state: {
+            draft: {
+              batchOauth: {
+                defaultGroupName: 'production',
+                rows: [
+                  {
+                    id: 'row-1',
+                    displayName: mailboxSession.emailAddress,
+                    groupName: 'production',
+                    mailboxSession,
+                    mailboxInput: mailboxSession.emailAddress,
+                    mailboxCodeTone: 'idle',
+                    mailboxStatus: createMailboxStatus(mailboxSession, {
+                      latestCode: {
+                        value: '556677',
+                        source: 'subject',
+                        updatedAt: '2026-03-11T12:36:00.000Z',
+                      },
+                      invite: {
+                        subject: 'Alice has invited you to join OpenAI Workspace',
+                        copyValue: 'https://chatgpt.com/invite/batch-ready',
+                        copyLabel: 'Join workspace',
+                        updatedAt: '2026-03-11T12:37:00.000Z',
+                      },
+                      invited: true,
+                    }),
+                  },
+                  {
+                    id: 'row-2',
+                    displayName: 'Codex Pro - Spare',
+                    groupName: 'production',
+                  },
+                ],
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('button', { name: /copy verification code/i })).toBeEnabled()
+  },
+}
+
+export const BatchOauthMailboxMismatch: Story = {
+  name: 'Batch OAuth Mailbox Mismatch',
+  render: () => {
+    const mailboxSession = createMailboxSession('story-mailbox-batch-mismatch', 'batch-locked@mail-tw.707079.xyz')
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          search: '?mode=batchOauth',
+          state: {
+            draft: {
+              batchOauth: {
+                defaultGroupName: 'production',
+                rows: [
+                  {
+                    id: 'row-1',
+                    displayName: 'manual-alias@mail-tw.707079.xyz',
+                    groupName: 'production',
+                    mailboxSession,
+                    mailboxInput: mailboxSession.emailAddress,
+                    mailboxStatus: createMailboxStatus(mailboxSession, {
+                      latestCode: {
+                        value: '334455',
+                        source: 'body',
+                        updatedAt: '2026-03-11T12:36:00.000Z',
+                      },
+                      invited: true,
+                    }),
+                  },
+                  {
+                    id: 'row-2',
+                    displayName: 'Codex Pro - Spare',
+                    groupName: 'production',
+                  },
+                ],
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.queryByRole('button', { name: /copy verification code/i })).toBeNull()
   },
 }
 

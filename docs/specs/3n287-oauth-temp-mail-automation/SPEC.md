@@ -83,7 +83,7 @@
 - Rust 侧在 `src/upstream_accounts/mod.rs` 中落地 MoeMail client、邮箱会话表、状态聚合与过期清理，并把 OAuth login session 扩展为可记录 `mailboxSessionId` / `generatedMailboxAddress` 绑定信息。
 - `src/main.rs` 已挂载 `POST /api/pool/upstream-accounts/oauth/mailbox-sessions`、`POST /api/pool/upstream-accounts/oauth/mailbox-sessions/status`、`DELETE /api/pool/upstream-accounts/oauth/mailbox-sessions/:sessionId` 三个内部接口。
 - 前端在 `web/src/lib/api.ts`、`web/src/hooks/useUpstreamAccounts.ts` 与 `web/src/pages/account-pool/UpstreamAccountCreate.tsx` 对齐邮箱会话契约，并在单个 / 批量 OAuth 页面分别落地严格名称绑定门禁、5 秒轮询、复制状态机与邀请态呈现。
-- 文案与测试已同步到 `web/src/i18n/translations.ts`、`web/src/pages/account-pool/UpstreamAccountCreate.test.tsx`。
+- 文案、测试与 Storybook 场景已同步到 `web/src/i18n/translations.ts`、`web/src/pages/account-pool/UpstreamAccountCreate.test.tsx`、`web/src/components/UpstreamAccountCreatePage.stories.tsx`。
 
 ## 验证结果
 
@@ -91,6 +91,7 @@
 - 2026-03-16：`cargo test`
 - 2026-03-16：`cd /Users/ivan/.codex/worktrees/9b13/codex-vibe-monitor/web && bun run test`
 - 2026-03-16：`cd /Users/ivan/.codex/worktrees/9b13/codex-vibe-monitor/web && bun run build`
+- 2026-03-16：`cd /Users/ivan/.codex/worktrees/9b13/codex-vibe-monitor/web && bun run build-storybook`
 - 2026-03-16：浏览器 smoke（`http://127.0.0.1:60080/#/account-pool/upstream-accounts/new?mode=oauth` 与 `?mode=batchOauth`）确认：
   - 单个 OAuth 生成邮箱后会立即写入邮箱框与显示名称，且邮箱框内容被完整选中。
   - 未清空邮箱框前“生成”按钮保持禁用；当显示名称改成与生成邮箱不一致时，验证码 / 邀请区域整体进入置灰状态。
