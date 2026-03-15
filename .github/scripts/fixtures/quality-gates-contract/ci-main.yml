@@ -253,6 +253,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, frontend-tests, records-overlay-e2e, unit-tests]
     permissions:
+      actions: read
       contents: write
       issues: read
       pull-requests: read

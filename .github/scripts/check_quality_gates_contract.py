@@ -522,6 +522,10 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         release_snapshot.get("permissions"), "ci-main.yml.jobs.release-snapshot.permissions"
     )
     require(
+        release_snapshot_permissions.get("actions") == "read",
+        "ci-main.yml.jobs.release-snapshot.permissions.actions must stay read",
+    )
+    require(
         release_snapshot_permissions.get("contents") == "write",
         "ci-main.yml.jobs.release-snapshot.permissions.contents must stay write",
     )
@@ -624,7 +628,71 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
         "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels']",
         "label-gate.yml: Evaluate PR labels must execute the trusted metadata gate in label mode",
     )
-    require(label_command == ["python3", "trusted/.github/scripts/metadata_gate.py", "label"], "label-gate.yml: label gate command drifted")
+    require(
+        label_command[:3] == ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
+        "label-gate.yml: label gate command drifted",
+    )
+    label_options = command_option_map(label_command[3:], "label-gate.yml: label gate command options")
+    require(
+        "--write-intent" not in label_options,
+        "label-gate.yml: Evaluate PR labels must validate labels before any release-intent write step",
+    )
+
+    trusted_write_step = step_config(job, "Write trusted release intent artifact", "label-gate.yml.jobs.validate-pr-labels")
+    require(
+        trusted_write_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
+        "label-gate.yml: trusted release intent write gate drifted",
+    )
+    trusted_write_env = require_mapping(
+        trusted_write_step.get("env"),
+        "label-gate.yml.jobs.validate-pr-labels.steps['Write trusted release intent artifact'].env",
+    )
+    require(
+        trusted_write_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}",
+        "label-gate.yml: trusted release intent write step must pass GITHUB_TOKEN via env",
+    )
+    trusted_write_command = require_command(
+        trusted_write_step,
+        ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
+        "label-gate.yml.jobs.validate-pr-labels.steps['Write trusted release intent artifact']",
+        "label-gate.yml: trusted release intent write step must invoke the trusted metadata gate in label mode",
+    )
+    trusted_write_options = command_option_map(
+        trusted_write_command[3:],
+        "label-gate.yml: trusted release intent write command options",
+    )
+    require(
+        trusted_write_options.get("--write-intent") == "$RUNNER_TEMP/release-intent.json",
+        "label-gate.yml: trusted release intent write step must write to the runner temp artifact path",
+    )
+
+    upload_step = step_config(job, "Upload release intent artifact", "label-gate.yml.jobs.validate-pr-labels")
+    require(
+        upload_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
+        "label-gate.yml: release intent artifact upload gate drifted",
+    )
+    uses_value = str(upload_step.get("uses") or "")
+    require(
+        uses_value == "actions/upload-artifact@v4",
+        "label-gate.yml: release intent artifact step must use actions/upload-artifact@v4",
+    )
+    upload_with = require_mapping(upload_step.get("with"), "label-gate.yml.jobs.validate-pr-labels.steps['Upload release intent artifact'].with")
+    require(
+        upload_with.get("name") == "release-intent-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
+        "label-gate.yml: release intent artifact name drifted",
+    )
+    require(
+        upload_with.get("path") == "${{ runner.temp }}/release-intent.json",
+        "label-gate.yml: release intent artifact path drifted",
+    )
+    require(
+        upload_with.get("retention-days") == 30,
+        "label-gate.yml: release intent artifact retention must stay 30 days",
+    )
+    require(
+        upload_with.get("if-no-files-found") == "error",
+        "label-gate.yml: release intent artifact must fail when the JSON is missing",
+    )
 
 
 def validate_review_policy(path: Path, contract: ContractModel) -> None:

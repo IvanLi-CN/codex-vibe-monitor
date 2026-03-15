@@ -8,10 +8,12 @@ from __future__ import annotations
 import importlib.util
 import argparse
 import json
+import io
 import os
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 script_path = Path(sys.argv[1])
@@ -20,11 +22,39 @@ module = importlib.util.module_from_spec(spec)
 assert spec is not None and spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
+real_load_release_intent_artifact = module.load_release_intent_artifact
+real_legacy_fallback_allowed_for_target = module.legacy_fallback_allowed_for_target
 
 
 def run(*args: str, cwd: Path) -> str:
     result = subprocess.run(["git", *args], cwd=cwd, check=True, text=True, capture_output=True)
     return result.stdout.strip()
+
+
+def make_pr(number: int, title: str, head_sha: str, *, merged_at: str = "2026-03-14T00:00:00Z") -> dict[str, object]:
+    return {
+        "number": number,
+        "title": title,
+        "merged_at": merged_at,
+        "head": {"sha": head_sha},
+    }
+
+
+def make_release_intent(
+    pr_number: int,
+    head_sha: str,
+    *,
+    type_label: str = "type:patch",
+    channel_label: str = "channel:stable",
+) -> dict[str, object]:
+    return {
+        "schema_version": module.RELEASE_INTENT_SCHEMA_VERSION,
+        "pr_number": pr_number,
+        "pr_head_sha": head_sha,
+        "type_label": type_label,
+        "channel_label": channel_label,
+        "created_at": "2026-03-14T00:00:00Z",
+    }
 
 
 with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
@@ -57,12 +87,14 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
     os.chdir(repo)
 
     try:
-        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: {
-            "number": 101,
-            "title": f"Release {target_sha[:7]}",
-            "merged_at": "2026-03-14T00:00:00Z",
-        }
-        module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
+        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: make_pr(
+            131, f"Release {target_sha[:7]}", target_sha
+        )
+        module.load_release_intent_artifact = (
+            lambda api_root, repository, token, pr_number, **kwargs: make_release_intent(pr_number, "1" * 40)
+        )
+        module.labels_at_merge_time = lambda api_root, repository, token, pr: []
+        module.legacy_fallback_allowed_for_target = lambda *args, **kwargs: False
         snapshot1 = module.build_snapshot(
             target_sha=sha1,
             repository="IvanLi-CN/codex-vibe-monitor",
@@ -72,6 +104,8 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             api_root="https://api.github.com",
         )
         assert snapshot1["next_stable_version"] == "0.1.1"
+        assert snapshot1["snapshot_source"] == "pr-intent-artifact"
+        assert snapshot1["pr_head_sha"] == "1" * 40
         run("notes", f"--ref={module.DEFAULT_NOTES_REF}", "add", "-f", "-m", json.dumps(snapshot1), sha1, cwd=repo)
 
         snapshot2 = module.build_snapshot(
@@ -92,12 +126,14 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.2,ghcr.io/ivanli-cn/codex-vibe-monitor:latest"
         )
 
-        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: {
-            "number": 102,
-            "title": f"RC {target_sha[:7]}",
-            "merged_at": "2026-03-14T00:00:00Z",
-        }
-        module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:rc"]
+        module.load_release_intent_artifact = (
+            lambda api_root, repository, token, pr_number, **kwargs: make_release_intent(
+                pr_number,
+                "2" * 40,
+                type_label="type:patch",
+                channel_label="channel:rc",
+            )
+        )
         snapshot3 = module.build_snapshot(
             target_sha=sha3,
             repository="IvanLi-CN/codex-vibe-monitor",
@@ -115,6 +151,45 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         read_back = module.read_snapshot(module.DEFAULT_NOTES_REF, sha2)
         assert read_back is not None
         assert read_back["release_tag"] == "v0.1.2"
+        legacy_note = dict(snapshot1)
+        legacy_note.pop("snapshot_source", None)
+        restored_legacy_note = module.validate_snapshot(legacy_note, expected_sha=sha1)
+        assert restored_legacy_note["snapshot_source"] == "ci-main"
+
+        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: make_pr(
+            130, "Historical stable release", target_sha
+        )
+        module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, **kwargs: None
+        module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
+        module.legacy_fallback_allowed_for_target = lambda *args, **kwargs: True
+        legacy_snapshot = module.build_snapshot(
+            target_sha=sha1,
+            repository="IvanLi-CN/codex-vibe-monitor",
+            token="token",
+            notes_ref=module.DEFAULT_NOTES_REF,
+            registry="ghcr.io",
+            api_root="https://api.github.com",
+        )
+        assert legacy_snapshot["snapshot_source"] == "legacy-pr-labels"
+
+        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: make_pr(
+            140, "Future release without artifact", target_sha, merged_at="2026-03-16T00:00:01Z"
+        )
+        module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, **kwargs: None
+        module.legacy_fallback_allowed_for_target = lambda *args, **kwargs: False
+        try:
+            module.build_snapshot(
+                target_sha=sha2,
+                repository="IvanLi-CN/codex-vibe-monitor",
+                token="token",
+                notes_ref=module.DEFAULT_NOTES_REF,
+                registry="ghcr.io",
+                api_root="https://api.github.com",
+            )
+        except module.SnapshotError as exc:
+            assert "Missing pre-frozen release intent artifact" in str(exc)
+        else:
+            raise AssertionError("expected future snapshot without artifact to fail closed")
     finally:
         os.chdir(original_cwd)
 
@@ -156,15 +231,18 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
         run("config", "user.email", "test@example.com", cwd=clone)
 
     prs = {
-        race_sha1: {"number": 201, "title": "Stable one", "merged_at": "2026-03-14T00:00:00Z"},
-        race_sha2: {"number": 202, "title": "Stable two", "merged_at": "2026-03-14T00:00:00Z"},
+        race_sha1: make_pr(201, "Stable one", race_sha1),
+        race_sha2: make_pr(202, "Stable two", race_sha2),
     }
     module.load_pr_for_commit = (
         lambda api_root, repository, token, target_sha, **kwargs: prs.get(target_sha)
         if kwargs.get("allow_zero")
         else prs[target_sha]
     )
-    module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
+    module.load_release_intent_artifact = (
+        lambda api_root, repository, token, pr_number, **kwargs: make_release_intent(pr_number, "3" * 40)
+    )
+    module.labels_at_merge_time = lambda api_root, repository, token, pr: []
 
     snapshot_a_path = worker_a / "snapshot-a.json"
     snapshot_b_path = worker_b / "snapshot-b.json"
@@ -271,12 +349,12 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-cargo-version-") as tm
     original_cwd = Path.cwd()
     os.chdir(repo)
     try:
-        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: {
-            "number": 301,
-            "title": "Initial stable release",
-            "merged_at": "2026-03-14T00:00:00Z",
-        }
-        module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
+        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: make_pr(
+            301, "Initial stable release", target_sha
+        )
+        module.load_release_intent_artifact = (
+            lambda api_root, repository, token, pr_number, **kwargs: make_release_intent(pr_number, "4" * 40)
+        )
         snapshot = module.build_snapshot(
             target_sha=old_sha,
             repository="IvanLi-CN/codex-vibe-monitor",
@@ -289,6 +367,157 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-cargo-version-") as tm
         assert snapshot["next_stable_version"] == "0.1.1"
     finally:
         os.chdir(original_cwd)
+
+with tempfile.TemporaryDirectory(prefix="release-intent-support-") as tmp:
+    repo = Path(tmp)
+    source_repo = script_path.parents[2]
+    run("init", cwd=repo)
+    run("config", "user.name", "Test User", cwd=repo)
+    run("config", "user.email", "test@example.com", cwd=repo)
+
+    support_paths = module.RELEASE_INTENT_SUPPORT_PATHS
+    for relative in support_paths:
+        destination = repo / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text((source_repo / relative).read_text())
+
+    broken_metadata = repo / ".github/scripts/metadata_gate.py"
+    text = broken_metadata.read_text()
+    broken_arg = '    parser.add_argument("--write-intent", default="")\n'
+    assert broken_arg in text
+    broken_metadata.write_text(text.replace(broken_arg, "", 1))
+    run("add", ".github", cwd=repo)
+    run("commit", "-m", "broken rollout support", cwd=repo)
+    broken_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    broken_metadata.write_text((source_repo / ".github/scripts/metadata_gate.py").read_text())
+    run("add", ".github", cwd=repo)
+    run("commit", "-m", "full rollout support", cwd=repo)
+    full_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    original_cwd = Path.cwd()
+    os.chdir(repo)
+    try:
+        assert module.commit_supports_release_intent_artifact(broken_sha) is False
+        assert module.commit_supports_release_intent_artifact(full_sha) is True
+    finally:
+        os.chdir(original_cwd)
+
+real_support_rollout_moment_for_target = module.support_rollout_moment_for_target
+real_pr_had_rollout_trigger_after = module.pr_had_rollout_trigger_after
+try:
+    module.legacy_fallback_allowed_for_target = real_legacy_fallback_allowed_for_target
+    module.support_rollout_moment_for_target = (
+        lambda target_sha: module.parse_github_timestamp("2026-03-15T00:00:00Z", where="test rollout")
+    )
+    module.pr_had_rollout_trigger_after = lambda api_root, repository, token, pr, rollout_moment: False
+    assert module.legacy_fallback_allowed_for_target(
+        "https://api.github.com",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        make_pr(150, "Old PR without rerun", "5" * 40),
+        target_sha="6" * 40,
+    ) is True
+    module.pr_had_rollout_trigger_after = lambda api_root, repository, token, pr, rollout_moment: True
+    assert module.legacy_fallback_allowed_for_target(
+        "https://api.github.com",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        make_pr(151, "New PR with rerun", "7" * 40),
+        target_sha="8" * 40,
+    ) is False
+finally:
+    module.support_rollout_moment_for_target = real_support_rollout_moment_for_target
+    module.pr_had_rollout_trigger_after = real_pr_had_rollout_trigger_after
+    module.legacy_fallback_allowed_for_target = real_legacy_fallback_allowed_for_target
+
+artifact_payloads = {
+    "https://example.test/artifacts/1/zip": make_release_intent(140, "a" * 40),
+    "https://example.test/artifacts/2/zip": make_release_intent(140, "b" * 40),
+    "https://example.test/artifacts/3/zip": make_release_intent(140, "c" * 40),
+}
+artifact_bytes = {}
+for url, artifact_payload in artifact_payloads.items():
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("release-intent.json", json.dumps(artifact_payload))
+    artifact_bytes[url] = buffer.getvalue()
+
+real_request_json = module.github_request_json
+real_request_bytes = module.github_request_bytes
+try:
+    module.load_release_intent_artifact = real_load_release_intent_artifact
+    def fake_request_json(api_root, token, path, query=None):
+        if path.endswith("/actions/artifacts"):
+            return {
+                "artifacts": [
+                    {
+                        "name": module.artifact_name_for_pr(140, "c" * 40),
+                        "expired": False,
+                        "created_at": "2026-03-15T00:00:01Z",
+                        "archive_download_url": "https://example.test/artifacts/3/zip",
+                        "workflow_run": {"id": 3},
+                    },
+                    {
+                        "name": module.artifact_name_for_pr(140, "b" * 40),
+                        "expired": False,
+                        "created_at": "2026-03-15T00:00:00Z",
+                        "archive_download_url": "https://example.test/artifacts/2/zip",
+                        "workflow_run": {"id": 2},
+                    },
+                    {
+                        "name": module.artifact_name_for_pr(140, "a" * 40),
+                        "expired": False,
+                        "created_at": "2026-03-14T23:59:59Z",
+                        "archive_download_url": "https://example.test/artifacts/1/zip",
+                        "workflow_run": {"id": 1},
+                    },
+                ]
+            }
+        if path.endswith("/actions/runs/1"):
+            return {
+                "path": module.TRUSTED_RELEASE_INTENT_WORKFLOW_PATH,
+                "event": module.TRUSTED_RELEASE_INTENT_EVENT,
+                "status": "completed",
+                "conclusion": "success",
+                "pull_requests": [{"number": 140, "head": {"sha": "a" * 40}}],
+            }
+        if path.endswith("/actions/runs/2"):
+            return {
+                "path": module.TRUSTED_RELEASE_INTENT_WORKFLOW_PATH,
+                "event": "pull_request",
+                "status": "completed",
+                "conclusion": "success",
+                "pull_requests": [{"number": 140, "head": {"sha": "b" * 40}}],
+            }
+        if path.endswith("/actions/runs/3"):
+            return {
+                "path": module.TRUSTED_RELEASE_INTENT_WORKFLOW_PATH,
+                "event": "pull_request",
+                "status": "completed",
+                "conclusion": "cancelled",
+                "pull_requests": [{"number": 140, "head": {"sha": "c" * 40}}],
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    module.github_request_json = fake_request_json
+    module.github_request_bytes = lambda url, token: artifact_bytes[url]
+    loaded_intent = module.load_release_intent_artifact(
+        "https://api.github.com",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        140,
+        merged_at="2026-03-15T00:00:02Z",
+        expected_head_sha="a" * 40,
+    )
+    assert loaded_intent is not None
+    assert loaded_intent["type_label"] == "type:patch"
+    assert loaded_intent["pr_head_sha"] == "a" * 40
+finally:
+    module.github_request_json = real_request_json
+    module.github_request_bytes = real_request_bytes
+    module.load_release_intent_artifact = real_load_release_intent_artifact
+    module.legacy_fallback_allowed_for_target = real_legacy_fallback_allowed_for_target
 
 print("test-release-snapshot: all checks passed")
 PY
