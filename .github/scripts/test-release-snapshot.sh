@@ -365,6 +365,41 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-cargo-version-") as tm
     finally:
         os.chdir(original_cwd)
 
+with tempfile.TemporaryDirectory(prefix="release-intent-support-") as tmp:
+    repo = Path(tmp)
+    source_repo = script_path.parents[2]
+    run("init", cwd=repo)
+    run("config", "user.name", "Test User", cwd=repo)
+    run("config", "user.email", "test@example.com", cwd=repo)
+
+    support_paths = module.RELEASE_INTENT_SUPPORT_PATHS
+    for relative in support_paths:
+        destination = repo / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text((source_repo / relative).read_text())
+
+    broken_metadata = repo / ".github/scripts/metadata_gate.py"
+    text = broken_metadata.read_text()
+    broken_arg = '    parser.add_argument("--write-intent", default="")\n'
+    assert broken_arg in text
+    broken_metadata.write_text(text.replace(broken_arg, "", 1))
+    run("add", ".github", cwd=repo)
+    run("commit", "-m", "broken rollout support", cwd=repo)
+    broken_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    broken_metadata.write_text((source_repo / ".github/scripts/metadata_gate.py").read_text())
+    run("add", ".github", cwd=repo)
+    run("commit", "-m", "full rollout support", cwd=repo)
+    full_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    original_cwd = Path.cwd()
+    os.chdir(repo)
+    try:
+        assert module.commit_supports_release_intent_artifact(broken_sha) is False
+        assert module.commit_supports_release_intent_artifact(full_sha) is True
+    finally:
+        os.chdir(original_cwd)
+
 payload = make_release_intent(140, "a" * 40)
 buffer = io.BytesIO()
 with zipfile.ZipFile(buffer, "w") as archive:

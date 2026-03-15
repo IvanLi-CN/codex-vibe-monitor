@@ -43,23 +43,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          final_topology_paths=(
-            "trusted/.github/workflows/ci-pr.yml"
-            "trusted/.github/workflows/ci-main.yml"
-            "trusted/.github/workflows/release.yml"
-          )
-          missing_final_sources=0
-          for path in "${final_topology_paths[@]}"; do
-            if [ ! -f "$path" ]; then
-              missing_final_sources=1
-              break
-            fi
-          done
-
-          if [ "$missing_final_sources" -eq 1 ]; then
+          if ! python3 trusted/.github/scripts/check_quality_gates_contract.py \
+            --repo-root "$PWD/trusted" \
+            --profile final >/dev/null 2>&1; then
             echo "::warning::Base branch ${GITHUB_BASE_REF} does not contain the final split-topology contract yet; skipping trusted contract validation during rollout and keeping trusted metadata_gate.py pinned to base."
             echo "supports_final_contract=false" >> "$GITHUB_OUTPUT"
-          elif ! grep -q -- "--write-intent" trusted/.github/scripts/check_quality_gates_contract.py; then
+          elif ! python3 trusted/.github/scripts/metadata_gate.py label --help 2>&1 | grep -q -- "--write-intent"; then
             echo "::warning::Base branch ${GITHUB_BASE_REF} does not yet understand the release-intent rollout; skipping trusted contract validation during rollout and keeping trusted metadata_gate.py pinned to base."
             echo "supports_final_contract=false" >> "$GITHUB_OUTPUT"
           else

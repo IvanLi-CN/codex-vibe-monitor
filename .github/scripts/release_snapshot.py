@@ -24,6 +24,16 @@ RELEASE_INTENT_ARTIFACT_PREFIX = "release-intent-pr-"
 TRUSTED_RELEASE_INTENT_WORKFLOW_PATH = ".github/workflows/label-gate.yml"
 TRUSTED_RELEASE_INTENT_EVENT = "pull_request"
 ALLOWED_SNAPSHOT_SOURCES = {"ci-main", "pr-intent-artifact", "legacy-pr-labels"}
+RELEASE_INTENT_SUPPORT_PATHS = (
+    ".github/quality-gates.json",
+    ".github/scripts/check_quality_gates_contract.py",
+    ".github/scripts/metadata_gate.py",
+    ".github/workflows/ci-pr.yml",
+    ".github/workflows/ci-main.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/label-gate.yml",
+    ".github/workflows/review-policy.yml",
+)
 ALLOWED_TYPE_LABELS = {
     "type:patch",
     "type:minor",
@@ -331,18 +341,6 @@ def validate_release_intent(
     return payload
 
 
-def current_labels_for_pr(api_root: str, repository: str, token: str, pr_number: int) -> list[str]:
-    owner, repo = repository.split("/", 1)
-    payload = github_request_json(api_root, token, f"/repos/{owner}/{repo}/issues/{pr_number}")
-    if not isinstance(payload, dict):
-        raise SnapshotError(f"GitHub API returned a malformed issue payload for PR #{pr_number}")
-    labels = payload.get("labels") or []
-    if not isinstance(labels, list):
-        raise SnapshotError(f"GitHub API returned malformed labels for PR #{pr_number}")
-    names = [str(label.get("name")) for label in labels if isinstance(label, dict) and label.get("name")]
-    return sorted(set(names))
-
-
 def labels_at_merge_time(api_root: str, repository: str, token: str, pr: dict[str, Any]) -> list[str]:
     owner, repo = repository.split("/", 1)
     pr_number = pr.get("number")
@@ -377,13 +375,50 @@ def labels_at_merge_time(api_root: str, repository: str, token: str, pr: dict[st
     return sorted(labels)
 
 
-def commit_supports_release_intent_artifact(commit_sha: str) -> bool:
-    try:
-        workflow_yaml = git_output("show", f"{commit_sha}:.github/workflows/label-gate.yml")
-        metadata_gate = git_output("show", f"{commit_sha}:.github/scripts/metadata_gate.py")
-    except SnapshotError:
+def repo_root_supports_release_intent_artifact(repo_root: Path) -> bool:
+    contract_script = repo_root / ".github/scripts/check_quality_gates_contract.py"
+    metadata_script = repo_root / ".github/scripts/metadata_gate.py"
+    if not contract_script.is_file() or not metadata_script.is_file():
         return False
-    return "--write-intent" in workflow_yaml and "write_release_intent" in metadata_gate
+
+    contract_check = subprocess.run(
+        [sys.executable, str(contract_script), "--repo-root", str(repo_root), "--profile", "final"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if contract_check.returncode != 0:
+        return False
+
+    metadata_help = subprocess.run(
+        [sys.executable, str(metadata_script), "label", "--help"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if metadata_help.returncode != 0:
+        return False
+
+    help_output = f"{metadata_help.stdout}\n{metadata_help.stderr}"
+    return "--write-intent" in help_output
+
+
+def checkout_commit_file(commit_sha: str, path: str, destination: Path) -> bool:
+    result = git("show", f"{commit_sha}:{path}", check=False)
+    if result.returncode != 0:
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(result.stdout)
+    return True
+
+
+def commit_supports_release_intent_artifact(commit_sha: str) -> bool:
+    with tempfile.TemporaryDirectory(prefix="release-intent-support-") as tmp:
+        repo_root = Path(tmp)
+        for path in RELEASE_INTENT_SUPPORT_PATHS:
+            if not checkout_commit_file(commit_sha, path, repo_root / path):
+                return False
+        return repo_root_supports_release_intent_artifact(repo_root)
 
 
 def legacy_fallback_allowed_for_target(target_sha: str) -> bool:
