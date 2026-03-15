@@ -1,0 +1,300 @@
+name: CI Main
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-main-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PLATFORM_AMD64: linux/amd64
+  PLATFORM_ARM64: linux/arm64
+  PLATFORMS: linux/amd64,linux/arm64
+  RELEASE_SNAPSHOT_NOTES_REF: refs/notes/release-snapshots
+
+jobs:
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.91.0
+          components: rustfmt
+
+      - name: Cache cargo directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cargo fmt check
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --locked --all-targets --all-features
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install repo tooling
+        run: bun install --frozen-lockfile
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Bun-first guard
+        run: bun run check:bun-first
+
+      - name: Check quality-gates scripts
+        run: |
+          python3 -m py_compile \
+            .github/scripts/metadata_gate.py \
+            .github/scripts/check_live_quality_gates.py \
+            .github/scripts/check_quality_gates_contract.py \
+            .github/scripts/release_snapshot.py \
+            .github/scripts/verify_manifest_platforms.py
+
+      - name: Resolve trusted quality-gates sources
+        id: trusted-quality-gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted_root="$RUNNER_TEMP/trusted-quality-gates"
+          mkdir -p "$trusted_root/.github/scripts"
+          paths=(
+            ".github/quality-gates.json"
+            ".github/scripts/check_quality_gates_contract.py"
+            ".github/scripts/check_live_quality_gates.py"
+            ".github/scripts/metadata_gate.py"
+          )
+          source_ref="HEAD"
+          source_kind="current-branch"
+          for path in "${paths[@]}"; do
+            mkdir -p "$trusted_root/$(dirname "$path")"
+            cp "$path" "$trusted_root/$path"
+          done
+
+          {
+            echo "source_kind=$source_kind"
+            echo "source_ref=$source_ref"
+            echo "trusted_root=$trusted_root"
+            echo "declaration=$trusted_root/.github/quality-gates.json"
+            echo "contract_script=$trusted_root/.github/scripts/check_quality_gates_contract.py"
+            echo "live_script=$trusted_root/.github/scripts/check_live_quality_gates.py"
+            echo "metadata_script=$trusted_root/.github/scripts/metadata_gate.py"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Quality-gates contract check
+        run: |
+          python3 "${{ steps.trusted-quality-gates.outputs.contract_script }}" \
+            --repo-root "$PWD" \
+            --declaration "${{ steps.trusted-quality-gates.outputs.declaration }}" \
+            --metadata-script "${{ steps.trusted-quality-gates.outputs.metadata_script }}"
+
+      - name: Quality-gates live rules check
+        env:
+          QUALITY_GATES_LIVE_RULES_MODE: require
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 "${{ steps.trusted-quality-gates.outputs.live_script }}" \
+            --repo "${{ github.repository }}" \
+            --declaration "${{ steps.trusted-quality-gates.outputs.declaration }}"
+
+      - name: Quality gates self-tests
+        run: |
+          bash .github/scripts/test-quality-gates-contract.sh
+          bash .github/scripts/test-release-snapshot.sh
+          bash .github/scripts/test-live-quality-gates.sh
+
+      - name: Front-end lint
+        working-directory: web
+        run: bun run lint
+
+  frontend-tests:
+    name: Front-end Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Run front-end Vitest suite
+        working-directory: web
+        run: bun run test
+
+  records-overlay-e2e:
+    name: Records Overlay E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        working-directory: web
+        run: bunx playwright install --with-deps chromium
+
+      - name: Start Vite dev server
+        working-directory: web
+        run: |
+          bun run dev -- --host 127.0.0.1 --port 60080 > /tmp/codex-vibe-monitor-vite.log 2>&1 &
+          echo $! > /tmp/codex-vibe-monitor-vite.pid
+
+      - name: Wait for Vite readiness
+        run: |
+          for _ in {1..60}; do
+            if curl -fsS http://127.0.0.1:60080/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Vite dev server failed to start within 60 seconds."
+          cat /tmp/codex-vibe-monitor-vite.log || true
+          exit 1
+
+      - name: Run records overlay Playwright regression
+        working-directory: web
+        run: bun run test:e2e -- records-filter-overlay.spec.ts
+
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: records-overlay-playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          if-no-files-found: ignore
+
+      - name: Stop Vite dev server
+        if: always()
+        run: |
+          if [ -f /tmp/codex-vibe-monitor-vite.pid ]; then
+            kill "$(cat /tmp/codex-vibe-monitor-vite.pid)" || true
+          fi
+
+  unit-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run cargo test
+        run: cargo test --locked --all-features
+
+  release-snapshot:
+    name: Release Snapshot
+    runs-on: ubuntu-latest
+    needs: [lint, frontend-tests, records-overlay-e2e, unit-tests]
+    permissions:
+      actions: read
+      contents: write
+      issues: read
+      pull-requests: read
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for release notes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Ensure immutable release snapshot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_snapshot.py ensure \
+            --target-sha "${GITHUB_SHA}" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --registry "${REGISTRY}" \
+            --output "$RUNNER_TEMP/release-snapshot.json"
+
+      - name: Show release snapshot summary
+        env:
+          SNAPSHOT_PATH: ${{ runner.temp }}/release-snapshot.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["SNAPSHOT_PATH"]).read_text())
+          print("release_enabled=", payload["release_enabled"])
+          print("target_sha=", payload["target_sha"])
+          print("release_tag=", payload.get("release_tag", ""))
+          print("pr_number=", payload.get("pr_number", ""))
+          PY
