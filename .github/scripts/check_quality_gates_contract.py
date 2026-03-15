@@ -630,8 +630,64 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
     )
     label_options = command_option_map(label_command[3:], "label-gate.yml: label gate command options")
     require(
-        label_options.get("--write-intent") == "$RUNNER_TEMP/release-intent.json",
-        "label-gate.yml: label gate must write release intent to the runner temp artifact path",
+        "--write-intent" not in label_options,
+        "label-gate.yml: Evaluate PR labels must validate labels before any release-intent write step",
+    )
+
+    trusted_write_step = step_config(job, "Write trusted release intent artifact", "label-gate.yml.jobs.validate-pr-labels")
+    require(
+        trusted_write_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
+        "label-gate.yml: trusted release intent write gate drifted",
+    )
+    trusted_write_env = require_mapping(
+        trusted_write_step.get("env"),
+        "label-gate.yml.jobs.validate-pr-labels.steps['Write trusted release intent artifact'].env",
+    )
+    require(
+        trusted_write_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}",
+        "label-gate.yml: trusted release intent write step must pass GITHUB_TOKEN via env",
+    )
+    trusted_write_command = require_command(
+        trusted_write_step,
+        ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
+        "label-gate.yml.jobs.validate-pr-labels.steps['Write trusted release intent artifact']",
+        "label-gate.yml: trusted release intent write step must invoke the trusted metadata gate in label mode",
+    )
+    trusted_write_options = command_option_map(
+        trusted_write_command[3:],
+        "label-gate.yml: trusted release intent write command options",
+    )
+    require(
+        trusted_write_options.get("--write-intent") == "$RUNNER_TEMP/release-intent.json",
+        "label-gate.yml: trusted release intent write step must write to the runner temp artifact path",
+    )
+
+    rollout_write_step = step_config(job, "Bootstrap release intent artifact during rollout", "label-gate.yml.jobs.validate-pr-labels")
+    require(
+        rollout_write_step.get("if") == "steps.rollout.outputs.supports_final_contract != 'true'",
+        "label-gate.yml: rollout release intent write gate drifted",
+    )
+    rollout_write_env = require_mapping(
+        rollout_write_step.get("env"),
+        "label-gate.yml.jobs.validate-pr-labels.steps['Bootstrap release intent artifact during rollout'].env",
+    )
+    require(
+        rollout_write_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}",
+        "label-gate.yml: rollout release intent write step must pass GITHUB_TOKEN via env",
+    )
+    rollout_write_command = require_command(
+        rollout_write_step,
+        ["python3", "candidate/.github/scripts/metadata_gate.py", "label"],
+        "label-gate.yml.jobs.validate-pr-labels.steps['Bootstrap release intent artifact during rollout']",
+        "label-gate.yml: rollout release intent write step must invoke the candidate metadata gate in label mode",
+    )
+    rollout_write_options = command_option_map(
+        rollout_write_command[3:],
+        "label-gate.yml: rollout release intent write command options",
+    )
+    require(
+        rollout_write_options.get("--write-intent") == "$RUNNER_TEMP/release-intent.json",
+        "label-gate.yml: rollout release intent write step must write to the runner temp artifact path",
     )
 
     upload_step = step_config(job, "Upload release intent artifact", "label-gate.yml.jobs.validate-pr-labels")
