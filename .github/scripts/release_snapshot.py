@@ -645,7 +645,12 @@ def resolve_release_intent_for_pr(
     merged_at = pr.get("merged_at")
     if not isinstance(merged_at, str) or not merged_at:
         raise SnapshotError(f"Pull request #{pr_number} is missing merged_at")
-    expected_head_sha = merged_pr_head_sha(target_sha)
+    merged_head_sha = merged_pr_head_sha(target_sha)
+    head = pr.get("head") or {}
+    pr_head_sha = head.get("sha") if isinstance(head, dict) else None
+    if not isinstance(pr_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head_sha):
+        pr_head_sha = None
+    expected_head_sha = merged_head_sha or pr_head_sha
 
     release_intent = load_release_intent_artifact(
         api_root,
@@ -664,9 +669,7 @@ def resolve_release_intent_for_pr(
             pr_head_sha,
         )
 
-    head = pr.get("head") or {}
-    pr_head_sha = head.get("sha") if isinstance(head, dict) else None
-    if not isinstance(pr_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head_sha):
+    if pr_head_sha is None:
         if expected_head_sha is None:
             raise SnapshotError(f"Pull request #{pr_number} is missing a valid head.sha")
         pr_head_sha = expected_head_sha
