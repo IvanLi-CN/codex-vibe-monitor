@@ -184,6 +184,7 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
     },
     tags: defaultTags,
     effectiveRoutingRule: defaultEffectiveRoutingRule,
+    upstreamBaseUrl: 'https://proxy.example.com/gateway',
     note: 'Fallback API key before router metrics land.',
     history: buildHistory(0).map((point) => ({
       ...point,
@@ -587,6 +588,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           groupName: body.groupName ?? 'default',
           isMother: body.isMother === true,
           note: body.note ?? null,
+          upstreamBaseUrl: body.upstreamBaseUrl ?? null,
           maskedApiKey: maskApiKey(body.apiKey),
           localLimits: {
             primaryLimit: body.localPrimaryLimit ?? 120,
@@ -665,6 +667,10 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           groupName: body.groupName ?? detail.groupName,
           isMother: body.isMother ?? detail.isMother,
           note: body.note ?? detail.note,
+          upstreamBaseUrl:
+            detail.kind === 'api_key_codex' && Object.prototype.hasOwnProperty.call(body, 'upstreamBaseUrl')
+              ? body.upstreamBaseUrl ?? null
+              : detail.upstreamBaseUrl,
           enabled: body.enabled ?? detail.enabled,
           status: body.enabled === false ? 'disabled' : detail.status === 'disabled' ? 'active' : detail.status,
           maskedApiKey: body.apiKey ? maskApiKey(body.apiKey) : detail.maskedApiKey,

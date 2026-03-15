@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from '../../components/ui/dialog'
 import { FloatingFieldError } from '../../components/ui/floating-field-error'
+import { FormFieldFeedback } from '../../components/ui/form-field-feedback'
 import { Input } from '../../components/ui/input'
 import {
   Popover,
@@ -46,6 +47,7 @@ import {
   normalizeGroupName,
   resolveGroupNote,
 } from '../../lib/upstreamAccountGroups'
+import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { applyMotherUpdateToItems, normalizeMotherGroupKey } from '../../lib/upstreamMother'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
@@ -106,6 +108,7 @@ type CreatePageDraft = {
     note?: string
     tagIds?: number[]
     apiKeyValue?: string
+    upstreamBaseUrl?: string
     primaryLimit?: string
     secondaryLimit?: string
     limitUnit?: string
@@ -524,6 +527,7 @@ export default function UpstreamAccountCreatePage() {
   const [apiKeyNote, setApiKeyNote] = useState(() => draft?.apiKey?.note ?? '')
   const [apiKeyTagIds, setApiKeyTagIds] = useState<number[]>(() => draft?.apiKey?.tagIds ?? [])
   const [apiKeyValue, setApiKeyValue] = useState(() => draft?.apiKey?.apiKeyValue ?? '')
+  const [apiKeyUpstreamBaseUrl, setApiKeyUpstreamBaseUrl] = useState(() => draft?.apiKey?.upstreamBaseUrl ?? '')
   const [apiKeyPrimaryLimit, setApiKeyPrimaryLimit] = useState(() => draft?.apiKey?.primaryLimit ?? '')
   const [apiKeySecondaryLimit, setApiKeySecondaryLimit] = useState(() => draft?.apiKey?.secondaryLimit ?? '')
   const [apiKeyLimitUnit, setApiKeyLimitUnit] = useState(() => draft?.apiKey?.limitUnit ?? 'requests')
@@ -625,6 +629,16 @@ export default function UpstreamAccountCreatePage() {
       setDuplicateDetailLoading(false)
     }
   }
+  const apiKeyUpstreamBaseUrlError = useMemo(() => {
+    const code = validateUpstreamBaseUrl(apiKeyUpstreamBaseUrl)
+    if (code === 'invalid_absolute_url') {
+      return t('accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid')
+    }
+    if (code === 'query_or_fragment_not_allowed') {
+      return t('accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment')
+    }
+    return null
+  }, [apiKeyUpstreamBaseUrl, t])
 
   const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
     const detail = await createTag(payload)
@@ -1254,6 +1268,7 @@ export default function UpstreamAccountCreatePage() {
   }
 
   const handleCreateApiKey = async () => {
+    if (apiKeyUpstreamBaseUrlError) return
     setActionError(null)
     setBusyAction('apiKey')
     try {
@@ -1263,6 +1278,7 @@ export default function UpstreamAccountCreatePage() {
         note: apiKeyNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
         apiKey: apiKeyValue.trim(),
+        upstreamBaseUrl: apiKeyUpstreamBaseUrl.trim() || undefined,
         isMother: apiKeyIsMother,
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
         localSecondaryLimit: normalizeNumberInput(apiKeySecondaryLimit),
@@ -2116,6 +2132,25 @@ export default function UpstreamAccountCreatePage() {
                       onChange={(event) => setApiKeyValue(event.target.value)}
                     />
                   </label>
+                  <label className="field md:col-span-2">
+                    <FormFieldFeedback
+                      label={t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}
+                      message={apiKeyUpstreamBaseUrlError}
+                      messageClassName="md:max-w-[min(30rem,calc(100%-9rem))]"
+                    />
+                    <div className="relative">
+                      <Input
+                        name="apiKeyUpstreamBaseUrl"
+                        value={apiKeyUpstreamBaseUrl}
+                        onChange={(event) => setApiKeyUpstreamBaseUrl(event.target.value)}
+                        placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        aria-invalid={apiKeyUpstreamBaseUrlError ? 'true' : 'false'}
+                        className={cn(apiKeyUpstreamBaseUrlError ? 'border-error/70 focus-visible:ring-error' : '')}
+                      />
+                    </div>
+                  </label>
                   <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.primaryLimit')}</span>
                     <Input
@@ -2172,7 +2207,8 @@ export default function UpstreamAccountCreatePage() {
                       disabled={
                         busyAction === 'apiKey' ||
                         !writesEnabled ||
-                        apiKeyDisplayNameConflict != null
+                        apiKeyDisplayNameConflict != null ||
+                        Boolean(apiKeyUpstreamBaseUrlError)
                       }
                     >
                       {busyAction === 'apiKey' ? (

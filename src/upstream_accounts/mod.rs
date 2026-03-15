@@ -243,6 +243,7 @@ pub(crate) struct UpstreamAccountDetail {
     #[serde(flatten)]
     summary: UpstreamAccountSummary,
     note: Option<String>,
+    upstream_base_url: Option<String>,
     chatgpt_user_id: Option<String>,
     last_refreshed_at: Option<String>,
     history: Vec<UpstreamAccountHistoryPoint>,
@@ -368,6 +369,7 @@ pub(crate) struct CreateApiKeyAccountRequest {
     group_name: Option<String>,
     note: Option<String>,
     group_note: Option<String>,
+    upstream_base_url: Option<String>,
     api_key: String,
     is_mother: Option<bool>,
     local_primary_limit: Option<f64>,
@@ -384,6 +386,8 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     group_name: Option<String>,
     note: Option<String>,
     group_note: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    upstream_base_url: OptionalField<String>,
     enabled: Option<bool>,
     is_mother: Option<bool>,
     api_key: Option<String>,
@@ -570,6 +574,7 @@ struct UpstreamAccountRow {
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
+    upstream_base_url: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -578,6 +583,29 @@ struct UpstreamAccountRow {
 struct PoolRoutingSettingsRow {
     encrypted_api_key: Option<String>,
     masked_api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum OptionalField<T> {
+    #[default]
+    Missing,
+    Null,
+    Value(T),
+}
+
+fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<OptionalField<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    if raw.is_null() {
+        return Ok(OptionalField::Null);
+    }
+
+    serde_json::from_value(raw)
+        .map(OptionalField::Value)
+        .map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, FromRow)]
@@ -725,6 +753,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             local_primary_limit REAL,
             local_secondary_limit REAL,
             local_limit_unit TEXT,
+            upstream_base_url TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -749,6 +778,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_integer_column_with_default(pool, "pool_upstream_accounts", "is_mother", "0")
         .await
         .context("failed to ensure pool_upstream_accounts.is_mother")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "upstream_base_url")
+        .await
+        .context("failed to ensure pool_upstream_accounts.upstream_base_url")?;
 
     if let Err(err) = sqlx::query(
         r#"
@@ -1529,6 +1561,7 @@ pub(crate) async fn create_api_key_account(
     let target_group_name = group_name.clone();
     let is_mother = payload.is_mother.unwrap_or(false);
     let limit_unit = normalize_limit_unit(payload.local_limit_unit);
+    let upstream_base_url = normalize_optional_upstream_base_url(payload.upstream_base_url)?;
     let masked_api_key = mask_api_key(&api_key);
     let now_iso = format_utc_iso(Utc::now());
     let encrypted_credentials = encrypt_credentials(
@@ -1550,12 +1583,12 @@ pub(crate) async fn create_api_key_account(
             kind, provider, display_name, group_name, is_mother, note, status, enabled, email, chatgpt_account_id,
             chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
             last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
-            local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
+            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url, created_at, updated_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, NULL, NULL,
             NULL, NULL, ?8, ?9, NULL,
             NULL, NULL, NULL, NULL, NULL,
-            ?10, ?11, ?12, ?13, ?13
+            ?10, ?11, ?12, ?13, ?14, ?14
         ) RETURNING id
         "#,
     )
@@ -1571,6 +1604,7 @@ pub(crate) async fn create_api_key_account(
     .bind(payload.local_primary_limit)
     .bind(payload.local_secondary_limit)
     .bind(limit_unit)
+    .bind(upstream_base_url)
     .bind(&now_iso)
     .fetch_one(&mut *tx)
     .await
@@ -1638,6 +1672,17 @@ pub(crate) async fn update_upstream_account(
     if let Some(note) = payload.note {
         row.note = normalize_optional_text(Some(note));
     }
+    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        match payload.upstream_base_url {
+            OptionalField::Missing => {}
+            OptionalField::Null => {
+                row.upstream_base_url = None;
+            }
+            OptionalField::Value(value) => {
+                row.upstream_base_url = normalize_optional_upstream_base_url(Some(value))?;
+            }
+        }
+    }
     if let Some(enabled) = payload.enabled {
         row.enabled = if enabled { 1 } else { 0 };
     }
@@ -1689,7 +1734,8 @@ pub(crate) async fn update_upstream_account(
             local_primary_limit = ?9,
             local_secondary_limit = ?10,
             local_limit_unit = ?11,
-            updated_at = ?12
+            upstream_base_url = ?12,
+            updated_at = ?13
         WHERE id = ?1
         "#,
     )
@@ -1704,6 +1750,7 @@ pub(crate) async fn update_upstream_account(
     .bind(row.local_primary_limit)
     .bind(row.local_secondary_limit)
     .bind(&row.local_limit_unit)
+    .bind(&row.upstream_base_url)
     .bind(&now_iso)
     .execute(tx.as_mut())
     .await
@@ -3232,7 +3279,7 @@ async fn load_upstream_account_summaries(
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit,
+            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
             created_at, updated_at
         FROM pool_upstream_accounts
         ORDER BY updated_at DESC, id DESC
@@ -3305,6 +3352,7 @@ async fn load_upstream_account_detail(
             duplicate_info_map.get(&row.id).cloned(),
         ),
         note: row.note,
+        upstream_base_url: row.upstream_base_url,
         chatgpt_user_id: row.chatgpt_user_id,
         last_refreshed_at: row.last_refreshed_at,
         history,
@@ -3331,7 +3379,7 @@ async fn load_upstream_account_row_conn(
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit,
+            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
             created_at, updated_at
         FROM pool_upstream_accounts
         WHERE id = ?1
@@ -4423,6 +4471,52 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn normalize_optional_upstream_base_url(
+    value: Option<String>,
+) -> Result<Option<String>, (StatusCode, String)> {
+    let Some(raw) = normalize_optional_text(value) else {
+        return Ok(None);
+    };
+    let parsed = Url::parse(&raw).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "upstreamBaseUrl must be a valid absolute URL".to_string(),
+        )
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || parsed.cannot_be_a_base()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "upstreamBaseUrl must be a valid absolute URL".to_string(),
+        ));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "upstreamBaseUrl must not include query or fragment".to_string(),
+        ));
+    }
+    Ok(Some(parsed.to_string()))
+}
+
+fn resolve_pool_account_upstream_base_url(
+    row: &UpstreamAccountRow,
+    global_upstream_base_url: &Url,
+) -> Result<Url> {
+    if row.kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        return Ok(global_upstream_base_url.clone());
+    }
+
+    row.upstream_base_url
+        .as_deref()
+        .map(Url::parse)
+        .transpose()
+        .context("account upstreamBaseUrl is invalid")?
+        .map_or_else(|| Ok(global_upstream_base_url.clone()), Ok)
+}
+
 fn normalize_required_secret(raw: &str, field_name: &str) -> Result<String, (StatusCode, String)> {
     let value = raw.trim();
     if value.is_empty() {
@@ -4666,6 +4760,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) display_name: String,
     pub(crate) kind: String,
     pub(crate) authorization: String,
+    pub(crate) upstream_base_url: Url,
 }
 
 #[derive(Debug, Clone)]
@@ -5088,6 +5183,8 @@ async fn prepare_pool_account(
     let Some(encrypted_credentials) = row.encrypted_credentials.as_deref() else {
         return Ok(None);
     };
+    let upstream_base_url =
+        resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)?;
     let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
     match credentials {
         StoredCredentials::ApiKey(value) => Ok(Some(PoolResolvedAccount {
@@ -5095,6 +5192,7 @@ async fn prepare_pool_account(
             display_name: row.display_name.clone(),
             kind: row.kind.clone(),
             authorization: format!("Bearer {}", value.api_key),
+            upstream_base_url,
         })),
         StoredCredentials::Oauth(mut value) => {
             let expires_at = row.token_expires_at.as_deref().and_then(parse_rfc3339_utc);
@@ -5164,6 +5262,7 @@ async fn prepare_pool_account(
                 display_name: row.display_name.clone(),
                 kind: row.kind.clone(),
                 authorization: format!("Bearer {}", value.access_token),
+                upstream_base_url,
             }))
         }
     }
@@ -5433,6 +5532,87 @@ mod tests {
             panic!("expected API key credentials")
         };
         assert_eq!(value.api_key, "sk-test-1234");
+    }
+
+    #[test]
+    fn deserialize_optional_field_distinguishes_missing_null_and_value() {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Payload {
+            #[serde(default, deserialize_with = "deserialize_optional_field")]
+            upstream_base_url: OptionalField<String>,
+        }
+
+        let missing: Payload = serde_json::from_value(json!({})).expect("deserialize missing");
+        assert_eq!(missing.upstream_base_url, OptionalField::Missing);
+
+        let null_value: Payload =
+            serde_json::from_value(json!({ "upstreamBaseUrl": null })).expect("deserialize null");
+        assert_eq!(null_value.upstream_base_url, OptionalField::Null);
+
+        let string_value: Payload = serde_json::from_value(json!({
+            "upstreamBaseUrl": "https://proxy.example.com/gateway"
+        }))
+        .expect("deserialize string");
+        assert_eq!(
+            string_value.upstream_base_url,
+            OptionalField::Value("https://proxy.example.com/gateway".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts() {
+        fn build_row(kind: &str, upstream_base_url: Option<&str>) -> UpstreamAccountRow {
+            UpstreamAccountRow {
+                id: 1,
+                kind: kind.to_string(),
+                provider: UPSTREAM_ACCOUNT_PROVIDER_CODEX.to_string(),
+                display_name: "Test".to_string(),
+                group_name: None,
+                is_mother: 0,
+                note: None,
+                status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+                enabled: 1,
+                email: None,
+                chatgpt_account_id: None,
+                chatgpt_user_id: None,
+                plan_type: None,
+                masked_api_key: None,
+                encrypted_credentials: None,
+                token_expires_at: None,
+                last_refreshed_at: None,
+                last_synced_at: None,
+                last_successful_sync_at: None,
+                last_error: None,
+                last_error_at: None,
+                last_selected_at: None,
+                last_route_failure_at: None,
+                cooldown_until: None,
+                consecutive_route_failures: 0,
+                local_primary_limit: None,
+                local_secondary_limit: None,
+                local_limit_unit: None,
+                upstream_base_url: upstream_base_url.map(str::to_string),
+                created_at: "2026-03-15T00:00:00Z".to_string(),
+                updated_at: "2026-03-15T00:00:00Z".to_string(),
+            }
+        }
+
+        let global = Url::parse("https://api.openai.com/").expect("global upstream base url");
+        let override_url = "https://proxy.example.com/gateway";
+
+        let oauth_row = build_row(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX, Some(override_url));
+        let oauth_resolved = resolve_pool_account_upstream_base_url(&oauth_row, &global)
+            .expect("resolve oauth upstream base url");
+        assert_eq!(oauth_resolved, global);
+
+        let api_key_row = build_row(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX, Some(override_url));
+        let api_key_resolved = resolve_pool_account_upstream_base_url(&api_key_row, &global)
+            .expect("resolve api key upstream base url");
+        assert_eq!(
+            api_key_resolved.as_str(),
+            "https://proxy.example.com/gateway"
+        );
     }
 
     #[test]

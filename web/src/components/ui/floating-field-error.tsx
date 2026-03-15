@@ -1,14 +1,42 @@
 import { cn } from "../../lib/utils";
 
+type FloatingFieldErrorPlacement = "input-corner" | "label-inline";
+
 interface FloatingFieldErrorProps {
   message: string;
   className?: string;
+  placement?: FloatingFieldErrorPlacement;
 }
+
+const bubbleSurfaceClasses =
+  "relative rounded-xl border border-error/45 bg-error/15 px-3 py-1.5 text-xs font-medium text-error shadow-md shadow-error/10";
+
+const bubbleArrowClasses =
+  "h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-error/45 bg-error/15";
 
 export function FloatingFieldError({
   message,
   className,
+  placement = "input-corner",
 }: FloatingFieldErrorProps) {
+  if (placement === "label-inline") {
+    return (
+      <div
+        role="alert"
+        aria-live="polite"
+        className={cn("pointer-events-none flex max-w-full justify-start", className)}
+      >
+        <div className={bubbleSurfaceClasses}>
+          <span
+            aria-hidden
+            className={`absolute left-6 top-full border-b border-r ${bubbleArrowClasses}`}
+          />
+          {message}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       role="alert"
@@ -18,10 +46,10 @@ export function FloatingFieldError({
         className,
       )}
     >
-      <div className="relative rounded-xl border border-error/55 bg-base-100 px-3 py-1.5 text-xs font-medium text-error shadow-lg shadow-error/10 backdrop-blur">
+      <div className={bubbleSurfaceClasses}>
         <span
           aria-hidden
-          className="absolute right-4 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-error/55 bg-base-100"
+          className={`absolute right-4 top-0 border-l border-t ${bubbleArrowClasses}`}
         />
         {message}
       </div>

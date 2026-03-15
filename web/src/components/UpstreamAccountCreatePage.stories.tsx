@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { userEvent, within, expect } from 'storybook/test'
+import { SystemNotificationProvider } from './ui/system-notifications'
 import { I18nProvider } from '../i18n'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
 import {
@@ -30,9 +31,11 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <StorybookUpstreamAccountsMock>
-          <Story />
-        </StorybookUpstreamAccountsMock>
+        <SystemNotificationProvider>
+          <StorybookUpstreamAccountsMock>
+            <Story />
+          </StorybookUpstreamAccountsMock>
+        </SystemNotificationProvider>
       </I18nProvider>
     ),
   ],

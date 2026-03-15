@@ -2704,7 +2704,8 @@ async fn insert_test_pool_api_key_account(
     display_name: &str,
     api_key: &str,
 ) -> i64 {
-    insert_test_pool_api_key_account_with_options(state, display_name, api_key, None, None).await
+    insert_test_pool_api_key_account_with_options(state, display_name, api_key, None, None, None)
+        .await
 }
 
 async fn insert_test_pool_api_key_account_with_options(
@@ -2713,6 +2714,7 @@ async fn insert_test_pool_api_key_account_with_options(
     api_key: &str,
     group_name: Option<&str>,
     is_mother: Option<bool>,
+    upstream_base_url: Option<&str>,
 ) -> i64 {
     ensure_upstream_accounts_schema(&state.pool)
         .await
@@ -2722,6 +2724,7 @@ async fn insert_test_pool_api_key_account_with_options(
         "apiKey": api_key,
         "groupName": group_name,
         "isMother": is_mother,
+        "upstreamBaseUrl": upstream_base_url,
     }))
     .expect("deserialize api key account request");
     let Json(detail) =
@@ -2748,6 +2751,7 @@ async fn create_api_key_account_enforces_single_mother_per_group() {
         "sk-primary",
         Some("prod"),
         Some(true),
+        None,
     )
     .await;
 
@@ -2757,6 +2761,7 @@ async fn create_api_key_account_enforces_single_mother_per_group() {
         "sk-secondary",
         Some("prod"),
         Some(true),
+        None,
     )
     .await;
 
@@ -2778,6 +2783,100 @@ async fn create_api_key_account_enforces_single_mother_per_group() {
 }
 
 #[tokio::test]
+async fn create_api_key_account_persists_upstream_base_url() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
+        "displayName": "Gateway Key",
+        "apiKey": "sk-gateway",
+        "upstreamBaseUrl": "https://proxy.example.com/gateway",
+    }))
+    .expect("deserialize api key account request");
+    let Json(detail) =
+        create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
+            .await
+            .expect("create api key account");
+
+    let detail_json = serde_json::to_value(detail).expect("serialize detail");
+    assert_eq!(
+        detail_json["upstreamBaseUrl"].as_str(),
+        Some("https://proxy.example.com/gateway")
+    );
+
+    let stored: Option<String> = sqlx::query_scalar(
+        "SELECT upstream_base_url FROM pool_upstream_accounts WHERE display_name = ?1",
+    )
+    .bind("Gateway Key")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stored upstream base url");
+    assert_eq!(stored.as_deref(), Some("https://proxy.example.com/gateway"));
+}
+
+#[tokio::test]
+async fn update_upstream_account_can_clear_upstream_base_url_with_null_payload() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Gateway Key",
+        "sk-gateway",
+        None,
+        None,
+        Some("https://proxy.example.com/gateway"),
+    )
+    .await;
+
+    let payload: UpdateUpstreamAccountRequest = serde_json::from_value(json!({
+        "upstreamBaseUrl": null,
+    }))
+    .expect("deserialize update request");
+    let Json(detail) = update_upstream_account(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path(account_id),
+        Json(payload),
+    )
+    .await
+    .expect("clear upstream base url");
+
+    let detail_json = serde_json::to_value(detail).expect("serialize detail");
+    assert!(detail_json["upstreamBaseUrl"].is_null());
+
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT upstream_base_url FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load cleared upstream base url");
+    assert_eq!(stored, None);
+}
+
+#[tokio::test]
+async fn create_api_key_account_rejects_invalid_upstream_base_url() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
+        "displayName": "Broken Key",
+        "apiKey": "sk-broken",
+        "upstreamBaseUrl": "not-a-url",
+    }))
+    .expect("deserialize api key account request");
+
+    let err = create_api_key_account(State(state), HeaderMap::new(), Json(payload))
+        .await
+        .expect_err("invalid upstream base url should fail");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(err.1, "upstreamBaseUrl must be a valid absolute URL");
+}
+
+#[tokio::test]
 async fn update_upstream_account_clears_mother_without_promoting_group_peers() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -2789,6 +2888,7 @@ async fn update_upstream_account_clears_mother_without_promoting_group_peers() {
         "sk-primary",
         Some("prod"),
         Some(true),
+        None,
     )
     .await;
     let secondary_id = insert_test_pool_api_key_account_with_options(
@@ -2797,6 +2897,7 @@ async fn update_upstream_account_clears_mother_without_promoting_group_peers() {
         "sk-secondary",
         Some("prod"),
         Some(false),
+        None,
     )
     .await;
 
@@ -4003,6 +4104,44 @@ async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
     });
 
     (format!("http://{addr}/"), handle)
+}
+
+async fn spawn_test_upstream_with_prefix(prefix: &str) -> (String, JoinHandle<()>) {
+    let echo_path = format!("{prefix}/v1/echo");
+    let redirect_path = format!("{prefix}/v1/redirect");
+    let redirect_location = HeaderValue::from_str(&format!("{prefix}/v1/echo?from=redirect"))
+        .expect("valid redirect location");
+
+    let app = Router::new()
+        .route(&echo_path, any(test_upstream_echo))
+        .route(
+            &redirect_path,
+            any({
+                let redirect_location = redirect_location.clone();
+                move || {
+                    let redirect_location = redirect_location.clone();
+                    async move {
+                        (
+                            StatusCode::TEMPORARY_REDIRECT,
+                            [(http_header::LOCATION, redirect_location)],
+                            Body::empty(),
+                        )
+                    }
+                }
+            }),
+        );
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind prefixed upstream test server");
+    let addr = listener.local_addr().expect("prefixed upstream local addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("prefixed upstream test server should run");
+    });
+
+    (format!("http://{addr}{prefix}/"), handle)
 }
 
 async fn test_upstream_capture_target_echo(
@@ -8959,6 +9098,79 @@ async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
     );
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_uses_account_specific_upstream_base_url() {
+    let (global_upstream_base, global_upstream_handle) = spawn_test_upstream().await;
+    let (account_upstream_base, account_upstream_handle) =
+        spawn_test_upstream_with_prefix("/gateway").await;
+    let state = test_state_with_openai_base(
+        Url::parse(&global_upstream_base).expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Gateway Key",
+        "upstream-primary",
+        None,
+        None,
+        Some(&account_upstream_base),
+    )
+    .await;
+
+    let echo_response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/echo?from=pool".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(br#"{"model":"gpt-5","input":"hello"}"#.to_vec()),
+    )
+    .await;
+
+    assert_eq!(echo_response.status(), StatusCode::CREATED);
+    let echo_body = to_bytes(echo_response.into_body(), usize::MAX)
+        .await
+        .expect("read echo response body");
+    let echo_payload: Value = serde_json::from_slice(&echo_body).expect("decode echo payload");
+    assert_eq!(
+        echo_payload["path"].as_str(),
+        Some("/gateway/v1/echo"),
+        "the request should be routed through the account-specific upstream base path",
+    );
+    assert_eq!(
+        echo_payload["authorization"].as_str(),
+        Some("Bearer upstream-primary")
+    );
+
+    global_upstream_handle.abort();
+    account_upstream_handle.abort();
+}
+
+#[test]
+fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite() {
+    let global = Url::parse("https://api.openai.com/").expect("global upstream base url");
+    let account = PoolResolvedAccount {
+        account_id: 8,
+        display_name: "Gateway Key".to_string(),
+        kind: "api_key_codex".to_string(),
+        authorization: "Bearer upstream-primary".to_string(),
+        upstream_base_url: Url::parse("https://proxy.example.com/gateway")
+            .expect("account upstream base url"),
+    };
+
+    assert_eq!(
+        location_rewrite_upstream_base(Some(&account), &global).as_str(),
+        "https://proxy.example.com/gateway"
+    );
+    assert_eq!(
+        location_rewrite_upstream_base(None, &global).as_str(),
+        "https://api.openai.com/"
+    );
 }
 
 #[tokio::test]
