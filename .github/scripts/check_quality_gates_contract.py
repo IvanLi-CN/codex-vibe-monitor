@@ -522,6 +522,10 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         release_snapshot.get("permissions"), "ci-main.yml.jobs.release-snapshot.permissions"
     )
     require(
+        release_snapshot_permissions.get("actions") == "read",
+        "ci-main.yml.jobs.release-snapshot.permissions.actions must stay read",
+    )
+    require(
         release_snapshot_permissions.get("contents") == "write",
         "ci-main.yml.jobs.release-snapshot.permissions.contents must stay write",
     )

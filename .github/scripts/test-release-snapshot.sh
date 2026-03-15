@@ -369,16 +369,43 @@ artifact_bytes = buffer.getvalue()
 real_request_json = module.github_request_json
 real_request_bytes = module.github_request_bytes
 try:
-    module.github_request_json = lambda api_root, token, path, query=None: {
-        "artifacts": [
-            {
-                "name": module.artifact_name_for_pr(140, "a" * 40),
-                "expired": False,
-                "created_at": "2026-03-15T00:00:00Z",
-                "archive_download_url": "https://example.test/artifacts/1/zip",
+    def fake_request_json(api_root, token, path, query=None):
+        if path.endswith("/actions/artifacts"):
+            return {
+                "artifacts": [
+                    {
+                        "name": module.artifact_name_for_pr(140, "a" * 40),
+                        "expired": False,
+                        "created_at": "2026-03-15T00:00:01Z",
+                        "archive_download_url": "https://example.test/artifacts/2/zip",
+                        "workflow_run": {"id": 2},
+                    },
+                    {
+                        "name": module.artifact_name_for_pr(140, "a" * 40),
+                        "expired": False,
+                        "created_at": "2026-03-15T00:00:00Z",
+                        "archive_download_url": "https://example.test/artifacts/1/zip",
+                        "workflow_run": {"id": 1},
+                    },
+                ]
             }
-        ]
-    }
+        if path.endswith("/actions/runs/1"):
+            return {
+                "path": module.TRUSTED_RELEASE_INTENT_WORKFLOW_PATH,
+                "event": module.TRUSTED_RELEASE_INTENT_EVENT,
+                "head_sha": "a" * 40,
+                "pull_requests": [{"number": 140, "head": {"sha": "a" * 40}}],
+            }
+        if path.endswith("/actions/runs/2"):
+            return {
+                "path": ".github/workflows/ci-pr.yml",
+                "event": "pull_request",
+                "head_sha": "a" * 40,
+                "pull_requests": [{"number": 140, "head": {"sha": "a" * 40}}],
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    module.github_request_json = fake_request_json
     module.github_request_bytes = lambda url, token: artifact_bytes
     loaded_intent = module.load_release_intent_artifact(
         "https://api.github.com",

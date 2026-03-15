@@ -22,6 +22,8 @@ RELEASE_INTENT_SCHEMA_VERSION = 1
 DEFAULT_NOTES_REF = "refs/notes/release-snapshots"
 LEGACY_LABEL_FALLBACK_MAX_PR_NUMBER = 130
 RELEASE_INTENT_ARTIFACT_PREFIX = "release-intent-pr-"
+TRUSTED_RELEASE_INTENT_WORKFLOW_PATH = ".github/workflows/label-gate.yml"
+TRUSTED_RELEASE_INTENT_EVENT = "pull_request"
 ALLOWED_SNAPSHOT_SOURCES = {"ci-main", "pr-intent-artifact", "legacy-pr-labels"}
 ALLOWED_TYPE_LABELS = {
     "type:patch",
@@ -356,13 +358,43 @@ def load_release_intent_artifact(
     if not isinstance(artifacts, list):
         raise SnapshotError("GitHub API returned malformed artifacts data")
 
-    candidates = [
-        artifact
-        for artifact in artifacts
-        if isinstance(artifact, dict)
-        and artifact.get("name") == artifact_name
-        and artifact.get("expired") is False
-    ]
+    candidates: list[dict[str, Any]] = []
+    workflow_runs: dict[int, dict[str, Any]] = {}
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        if artifact.get("name") != artifact_name or artifact.get("expired") is not False:
+            continue
+        workflow_run = artifact.get("workflow_run")
+        if not isinstance(workflow_run, dict):
+            raise SnapshotError(f"Artifact {artifact_name} is missing workflow_run metadata")
+        run_id = workflow_run.get("id")
+        if not isinstance(run_id, int):
+            raise SnapshotError(f"Artifact {artifact_name} is missing a numeric workflow_run.id")
+        run_payload = workflow_runs.get(run_id)
+        if run_payload is None:
+            run_payload = github_request_json(api_root, token, f"/repos/{owner}/{repo}/actions/runs/{run_id}")
+            if not isinstance(run_payload, dict):
+                raise SnapshotError(f"GitHub API returned malformed workflow run data for artifact {artifact_name}")
+            workflow_runs[run_id] = run_payload
+        if run_payload.get("path") != TRUSTED_RELEASE_INTENT_WORKFLOW_PATH:
+            continue
+        if run_payload.get("event") != TRUSTED_RELEASE_INTENT_EVENT:
+            continue
+        if run_payload.get("head_sha") != pr_head_sha:
+            continue
+        pull_requests = run_payload.get("pull_requests") or []
+        if not isinstance(pull_requests, list):
+            raise SnapshotError(f"GitHub API returned malformed workflow run pull_requests for artifact {artifact_name}")
+        if not any(
+            isinstance(item, dict)
+            and item.get("number") == pr_number
+            and isinstance(item.get("head"), dict)
+            and item["head"].get("sha") == pr_head_sha
+            for item in pull_requests
+        ):
+            continue
+        candidates.append(artifact)
     if not candidates:
         return None
 
