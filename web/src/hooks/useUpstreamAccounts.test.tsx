@@ -141,7 +141,7 @@ function createListResponse(): UpstreamAccountListResponse {
 }
 
 function Probe() {
-  const { selectedId, selectedSummary, detail, isDetailLoading, selectAccount, runSync } =
+  const { selectedId, selectedSummary, detail, isDetailLoading, error, selectAccount, runSync } =
     useUpstreamAccounts();
 
   return (
@@ -151,6 +151,7 @@ function Probe() {
       <div data-testid="detail-id">{detail?.id ?? ""}</div>
       <div data-testid="detail-name">{detail?.displayName ?? ""}</div>
       <div data-testid="detail-loading">{isDetailLoading ? "true" : "false"}</div>
+      <div data-testid="error">{error ?? ""}</div>
       <button data-testid="select-beta" onClick={() => selectAccount(2)}>
         select beta
       </button>
@@ -186,6 +187,31 @@ describe("useUpstreamAccounts", () => {
     expect(text("selected-id")).toBe("2");
     expect(text("detail-id")).toBe("2");
     expect(text("detail-name")).toBe("Beta");
+  });
+
+  it("ignores stale detail errors after account switches", async () => {
+    const first = deferred<UpstreamAccountDetail>();
+    const second = deferred<UpstreamAccountDetail>();
+    apiMocks.fetchUpstreamAccountDetail
+      .mockImplementationOnce(async () => first.promise)
+      .mockImplementationOnce(async () => second.promise);
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("select-beta");
+    await flushAsync();
+
+    second.resolve(createDetail(2, "Beta"));
+    await flushAsync();
+
+    first.reject(new Error("Alpha failed"));
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("2");
+    expect(text("detail-id")).toBe("2");
+    expect(text("detail-name")).toBe("Beta");
+    expect(text("error")).toBe("");
   });
 
   it("does not reclaim selection when an older account sync finishes later", async () => {

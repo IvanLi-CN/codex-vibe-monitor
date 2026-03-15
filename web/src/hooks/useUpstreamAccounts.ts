@@ -107,7 +107,7 @@ export function useUpstreamAccounts() {
       if (controller.signal.aborted) {
         return null
       }
-      if (requestSeq !== detailRequestSeqRef.current) {
+      if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
         return null
       }
       setError(err instanceof Error ? err.message : String(err))
