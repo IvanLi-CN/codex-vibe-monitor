@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import { NavLink, Outlet } from 'react-router-dom'
 import { subscribeToSse, requestImmediateReconnect } from '../lib/sse'
 import useSseStatus from '../hooks/useSseStatus'
@@ -233,8 +233,8 @@ export function AppLayout() {
               aria-label={t('app.theme.switcherAria')}
               title={themeSwitcherLabel}
             >
-              <Icon
-                icon={isDarkTheme ? 'mdi:weather-night' : 'mdi:white-balance-sunny'}
+              <AppIcon
+                name={isDarkTheme ? 'weather-night' : 'white-balance-sunny'}
                 className="h-[18px] w-[18px] text-primary"
                 aria-hidden
               />
@@ -253,9 +253,9 @@ export function AppLayout() {
                 aria-label={t('app.language.switcherAria')}
                 onClick={toggleLanguageMenu}
               >
-                <Icon icon="mdi:earth" className="h-[18px] w-[18px] text-base-content/75" aria-hidden />
+                <AppIcon name="earth" className="h-[18px] w-[18px] text-base-content/75" aria-hidden />
                 <span className="hidden sm:inline">{activeChoice?.label}</span>
-                <Icon icon="mdi:chevron-down" className="h-4 w-4 text-base-content/60" aria-hidden />
+                <AppIcon name="chevron-down" className="h-4 w-4 text-base-content/60" aria-hidden />
               </button>
               <ul
                 className={`absolute right-0 top-[calc(100%+0.4rem)] z-50 mt-2 min-w-[10.5rem] rounded-xl border border-base-300 bg-base-100/95 p-2 shadow-lg backdrop-blur ${
@@ -296,7 +296,7 @@ export function AppLayout() {
             aria-live="assertive"
           >
             <div className="flex min-w-0 flex-1 items-center gap-3">
-              <Icon icon="mdi:alert-circle" className="h-6 w-6 flex-shrink-0" aria-hidden />
+              <AppIcon name="alert-circle" className="h-6 w-6 flex-shrink-0" aria-hidden />
               <div className="min-w-0 space-y-1">
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="font-semibold">{t('app.sse.banner.title')}</span>
@@ -350,7 +350,7 @@ export function AppLayout() {
               rel="noreferrer"
               aria-label={t('app.footer.githubAria')}
             >
-              <Icon icon="mdi:github" className="h-4 w-4" aria-hidden />
+              <AppIcon name="github" className="h-4 w-4" aria-hidden />
               <span>GitHub</span>
             </a>
             <div className="flex items-center gap-2">
@@ -372,7 +372,7 @@ export function AppLayout() {
                   {renderDiffVersion(normalizedFrontendVersion, normalizedBackendVersion)}
                   {backendLoading && (
                     <span className="flex items-center gap-1 text-base-content/60" aria-live="polite">
-                      <Icon icon="mdi:loading" className="h-3 w-3 animate-spin" aria-hidden />
+                      <AppIcon name="loading" className="h-3 w-3 animate-spin" aria-hidden />
                       <span className="sr-only">{t('app.footer.loadingVersion')}</span>
                     </span>
                   )}
@@ -382,7 +382,7 @@ export function AppLayout() {
                   <span className="font-mono">{normalizedFrontendVersion}</span>
                   {backendLoading && (
                     <span className="flex items-center gap-1 text-base-content/60" aria-live="polite">
-                      <Icon icon="mdi:loading" className="h-3 w-3 animate-spin" aria-hidden />
+                      <AppIcon name="loading" className="h-3 w-3 animate-spin" aria-hidden />
                       <span className="sr-only">{t('app.footer.loadingVersion')}</span>
                     </span>
                   )}

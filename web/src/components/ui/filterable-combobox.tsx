@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { AppIcon } from '../AppIcon'
 import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
 
@@ -135,7 +135,7 @@ export function FilterableCombobox({
         className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-base-content/55 transition hover:bg-base-200/70 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
         onClick={() => setOpen((current) => !current)}
       >
-        <Icon icon="mdi:chevron-down" className={cn('h-4 w-4 transition-transform', open && 'rotate-180')} aria-hidden />
+        <AppIcon name="chevron-down" className={cn('h-4 w-4 transition-transform', open && 'rotate-180')} aria-hidden />
       </button>
 
       {open ? (

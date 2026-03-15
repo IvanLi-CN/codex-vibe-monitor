@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { AppIcon } from '../../components/AppIcon'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -101,7 +101,7 @@ export default function TagsPage() {
             <div className="flex flex-wrap gap-2">
               {writesEnabled ? (
                 <Button type="button" onClick={openCreate}>
-                  <Icon icon="mdi:tag-plus-outline" className="mr-2 h-4 w-4" aria-hidden />
+                  <AppIcon name="tag-plus-outline" className="mr-2 h-4 w-4" aria-hidden />
                   {t('accountPool.tags.actions.create')}
                 </Button>
               ) : null}
@@ -110,7 +110,7 @@ export default function TagsPage() {
 
           {error ? (
             <Alert variant="error">
-              <Icon icon="mdi:alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <div>{error}</div>
             </Alert>
           ) : null}
@@ -259,7 +259,7 @@ export default function TagsPage() {
                       <td className="px-4 py-4 text-right">
                         <div className="flex justify-end gap-2">
                           <Button type="button" variant="ghost" size="sm" onClick={() => openEdit(tag)} disabled={!writesEnabled}>
-                            <Icon icon="mdi:pencil-outline" className="h-4 w-4" aria-hidden />
+                            <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
                           </Button>
                           <Button
                             type="button"
@@ -268,7 +268,7 @@ export default function TagsPage() {
                             onClick={() => void deleteTag(tag.id)}
                             disabled={!writesEnabled || tag.accountCount > 0}
                           >
-                            <Icon icon="mdi:delete-outline" className="h-4 w-4" aria-hidden />
+                            <AppIcon name="delete-outline" className="h-4 w-4" aria-hidden />
                           </Button>
                         </div>
                       </td>

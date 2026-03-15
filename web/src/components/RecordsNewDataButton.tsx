@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import { useState } from 'react'
 import { useTranslation } from '../i18n'
 import { cn } from '../lib/utils'
@@ -87,8 +87,8 @@ export function RecordsNewDataButton({
         )}
         aria-hidden
       >
-        <Icon
-          icon={visualState === 'loading' ? 'mdi:refresh' : 'mdi:help-circle-outline'}
+        <AppIcon
+          name={visualState === 'loading' ? 'refresh' : 'help-circle-outline'}
           className={cn('h-4 w-4', visualState === 'loading' && 'animate-spin')}
         />
       </span>

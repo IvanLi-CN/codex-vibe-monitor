@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { AppIcon } from '../../components/AppIcon'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
@@ -319,7 +319,7 @@ function DuplicateWarningPopover({
           className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-warning transition-colors hover:text-warning/90"
           aria-label={summaryTitle}
         >
-          <Icon icon="mdi:alert-outline" className="h-5 w-5" aria-hidden />
+          <AppIcon name="alert-outline" className="h-5 w-5" aria-hidden />
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -332,7 +332,7 @@ function DuplicateWarningPopover({
         <div className="space-y-3 p-3">
           <div className="flex items-start gap-3">
             <div className="mt-0.5 text-warning">
-              <Icon icon="mdi:alert-outline" className="h-4 w-4" aria-hidden />
+              <AppIcon name="alert-outline" className="h-4 w-4" aria-hidden />
             </div>
             <div className="min-w-0 space-y-1">
               <p className="text-sm font-semibold leading-5 text-warning">{summaryTitle}</p>
@@ -445,7 +445,7 @@ function DuplicateAccountDetailDialog({
               </div>
               {detail.duplicateInfo ? (
                 <Alert variant="warning">
-                  <Icon icon="mdi:alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                   <div>
                     <p className="font-semibold text-warning">{duplicateLabel}</p>
                     <p className="mt-1 text-sm text-warning/90">
@@ -1345,7 +1345,7 @@ export default function UpstreamAccountCreatePage() {
             <div className="section-heading">
               <Button asChild variant="ghost" size="sm" className="mb-1 self-start px-0">
                 <Link to="/account-pool/upstream-accounts">
-                  <Icon icon="mdi:arrow-left" className="mr-2 h-4 w-4" aria-hidden />
+                  <AppIcon name="arrow-left" className="mr-2 h-4 w-4" aria-hidden />
                   {t('accountPool.upstreamAccounts.actions.backToList')}
                 </Link>
               </Button>
@@ -1367,7 +1367,7 @@ export default function UpstreamAccountCreatePage() {
 
           {!writesEnabled ? (
             <Alert variant="warning">
-              <Icon icon="mdi:shield-key-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <AppIcon name="shield-key-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <div>
                 <p className="font-medium">{t('accountPool.upstreamAccounts.writesDisabledTitle')}</p>
                 <p className="mt-1 text-sm text-warning/90">{t('accountPool.upstreamAccounts.writesDisabledBody')}</p>
@@ -1377,15 +1377,15 @@ export default function UpstreamAccountCreatePage() {
 
           {error || actionError ? (
             <Alert variant="error">
-              <Icon icon="mdi:alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <div>{actionError ?? error}</div>
             </Alert>
           ) : null}
 
           {session ? (
             <Alert variant={session.status === 'completed' ? 'success' : session.status === 'pending' ? 'info' : 'warning'}>
-              <Icon
-                icon={session.status === 'completed' ? 'mdi:check-circle-outline' : 'mdi:link-variant-plus'}
+              <AppIcon
+                name={session.status === 'completed' ? 'check-circle-outline' : 'link-variant-plus'}
                 className="mt-0.5 h-4 w-4 shrink-0"
                 aria-hidden
               />
@@ -1396,7 +1396,7 @@ export default function UpstreamAccountCreatePage() {
             </Alert>
           ) : sessionHint ? (
             <Alert variant="warning">
-              <Icon icon="mdi:refresh-circle" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <AppIcon name="refresh-circle" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <div className="text-sm">{sessionHint}</div>
             </Alert>
           ) : null}
@@ -1442,7 +1442,7 @@ export default function UpstreamAccountCreatePage() {
                         className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-base-300/70 bg-base-100/72 text-base-content/55 transition hover:border-base-300 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                         aria-label={t('accountPool.upstreamAccounts.batchOauth.createDescription')}
                       >
-                        <Icon icon="mdi:information-outline" className="h-4 w-4" aria-hidden />
+                        <AppIcon name="information-outline" className="h-4 w-4" aria-hidden />
                       </button>
                     </Tooltip>
                   </div>
@@ -1471,7 +1471,7 @@ export default function UpstreamAccountCreatePage() {
                         onClick={() => openGroupNoteEditor(batchDefaultGroupName)}
                         disabled={!writesEnabled || !normalizeGroupName(batchDefaultGroupName)}
                       >
-                        <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                        <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>
                     </div>
                     <div className="w-full lg:w-[24rem]">
@@ -1488,7 +1488,7 @@ export default function UpstreamAccountCreatePage() {
                       />
                     </div>
                     <Button type="button" variant="secondary" onClick={appendBatchRow} disabled={!writesEnabled} className="h-10 shrink-0 rounded-lg">
-                      <Icon icon="mdi:playlist-plus" className="mr-2 h-4 w-4" aria-hidden />
+                      <AppIcon name="playlist-plus" className="mr-2 h-4 w-4" aria-hidden />
                       {t('accountPool.upstreamAccounts.batchOauth.actions.addRow')}
                     </Button>
                   </div>
@@ -1557,7 +1557,7 @@ export default function UpstreamAccountCreatePage() {
                         onClick={() => openGroupNoteEditor(oauthGroupName)}
                         disabled={!writesEnabled || !normalizeGroupName(oauthGroupName) || oauthSessionActive}
                       >
-                        <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                        <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>
                     </div>
                   </label>
@@ -1618,9 +1618,9 @@ export default function UpstreamAccountCreatePage() {
                           }
                         >
                           {busyAction === 'oauth-generate' ? (
-                            <Icon icon="mdi:loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                            <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
                           ) : (
-                            <Icon icon="mdi:link-variant-plus" className="mr-2 h-4 w-4" aria-hidden />
+                            <AppIcon name="link-variant-plus" className="mr-2 h-4 w-4" aria-hidden />
                           )}
                           {session?.status === 'pending'
                             ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
@@ -1634,7 +1634,7 @@ export default function UpstreamAccountCreatePage() {
                               onClick={() => void handleCopyOauthUrl()}
                               disabled={!oauthSessionActive || !session?.authUrl}
                             >
-                              <Icon icon="mdi:content-copy" className="mr-2 h-4 w-4" aria-hidden />
+                              <AppIcon name="content-copy" className="mr-2 h-4 w-4" aria-hidden />
                               {t('accountPool.upstreamAccounts.actions.copyOauthUrl')}
                             </Button>
                           </PopoverTrigger>
@@ -1697,9 +1697,9 @@ export default function UpstreamAccountCreatePage() {
                       }
                     >
                       {busyAction === 'oauth-complete' ? (
-                        <Icon icon="mdi:loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                        <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
                       ) : (
-                        <Icon icon="mdi:check-decagram-outline" className="mr-2 h-4 w-4" aria-hidden />
+                        <AppIcon name="check-decagram-outline" className="mr-2 h-4 w-4" aria-hidden />
                       )}
                       {t('accountPool.upstreamAccounts.actions.completeOauth')}
                     </Button>
@@ -1833,7 +1833,7 @@ export default function UpstreamAccountCreatePage() {
                                           onClick={() => openGroupNoteEditor(row.groupName)}
                                           disabled={!writesEnabled || !normalizeGroupName(row.groupName)}
                                         >
-                                          <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                                          <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
                                         </Button>
                                       </div>
                                     </label>
@@ -1890,7 +1890,7 @@ export default function UpstreamAccountCreatePage() {
                                             {row.busyAction === 'generate' ? (
                                               <Spinner size="sm" />
                                             ) : (
-                                              <Icon icon={isPending ? 'mdi:refresh' : 'mdi:link-variant-plus'} className="h-4 w-4" aria-hidden />
+                                              <AppIcon name={isPending ? 'refresh' : 'link-variant-plus'} className="h-4 w-4" aria-hidden />
                                             )}
                                           </Button>
                                         </Tooltip>
@@ -1916,7 +1916,7 @@ export default function UpstreamAccountCreatePage() {
                                                 onClick={() => void handleBatchCopyOauthUrl(row.id)}
                                                 disabled={!authUrl || isBusy}
                                               >
-                                                <Icon icon="mdi:content-copy" className="h-4 w-4" aria-hidden />
+                                                <AppIcon name="content-copy" className="h-4 w-4" aria-hidden />
                                               </Button>
                                             </PopoverAnchor>
                                             <PopoverContent
@@ -1961,8 +1961,8 @@ export default function UpstreamAccountCreatePage() {
                                               : t('accountPool.upstreamAccounts.batchOauth.actions.expandNote')}
                                             onClick={() => toggleBatchNoteExpanded(row.id)}
                                           >
-                                            <Icon
-                                              icon={row.noteExpanded ? 'mdi:chevron-up' : 'mdi:note-text-outline'}
+                                            <AppIcon
+                                              name={row.noteExpanded ? 'chevron-up' : 'note-text-outline'}
                                               className="h-4 w-4"
                                               aria-hidden
                                             />
@@ -1992,7 +1992,7 @@ export default function UpstreamAccountCreatePage() {
                                             {row.busyAction === 'complete' ? (
                                               <Spinner size="sm" />
                                             ) : (
-                                              <Icon icon="mdi:check-bold" className="h-4 w-4" aria-hidden />
+                                              <AppIcon name="check-bold" className="h-4 w-4" aria-hidden />
                                             )}
                                           </Button>
                                         </Tooltip>
@@ -2048,7 +2048,7 @@ export default function UpstreamAccountCreatePage() {
                                             onClick={() => removeBatchRow(row.id)}
                                             disabled={isBusy || isCompleted}
                                           >
-                                            <Icon icon="mdi:delete-outline" className="h-4 w-4" aria-hidden />
+                                            <AppIcon name="delete-outline" className="h-4 w-4" aria-hidden />
                                           </Button>
                                         </Tooltip>
                                       </div>
@@ -2111,7 +2111,7 @@ export default function UpstreamAccountCreatePage() {
                         onClick={() => openGroupNoteEditor(apiKeyGroupName)}
                         disabled={!writesEnabled || !normalizeGroupName(apiKeyGroupName)}
                       >
-                        <Icon icon="mdi:file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                        <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
                       </Button>
                     </div>
                   </label>
@@ -2212,9 +2212,9 @@ export default function UpstreamAccountCreatePage() {
                       }
                     >
                       {busyAction === 'apiKey' ? (
-                        <Icon icon="mdi:loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                        <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
                       ) : (
-                        <Icon icon="mdi:content-save-plus-outline" className="mr-2 h-4 w-4" aria-hidden />
+                        <AppIcon name="content-save-plus-outline" className="mr-2 h-4 w-4" aria-hidden />
                       )}
                       {t('accountPool.upstreamAccounts.actions.createApiKey')}
                     </Button>

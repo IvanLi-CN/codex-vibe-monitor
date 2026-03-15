@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Icon } from '@iconify/react'
+import { AppIcon } from '../components/AppIcon'
 import { Badge } from '../components/ui/badge'
 import { Alert } from '../components/ui/alert'
 import { Button } from '../components/ui/button'
@@ -1470,7 +1470,7 @@ export default function SettingsPage() {
               </div>
             </div>
             <Button type="button" size="sm" className="h-9 gap-1.5 px-3.5" onClick={handleAddPricingEntry}>
-              <Icon icon="mdi:plus" className="h-[18px] w-[18px]" aria-hidden />
+              <AppIcon name="plus" className="h-[18px] w-[18px]" aria-hidden />
               {t('settings.pricing.add')}
             </Button>
           </CardHeader>
@@ -1625,7 +1625,7 @@ export default function SettingsPage() {
               disabled={isForwardProxySaving}
               onClick={() => openForwardProxyAddModal('proxyBatch')}
             >
-              <Icon icon="mdi:plus" className="mr-1 h-4 w-4" aria-hidden />
+              <AppIcon name="plus" className="mr-1 h-4 w-4" aria-hidden />
               {t('settings.forwardProxy.addProxyBatch')}
             </Button>
             <span className="text-xs text-base-content/70">{t('settings.forwardProxy.proxyCount', { count: forwardProxyUrls.length })}</span>
@@ -1636,7 +1636,7 @@ export default function SettingsPage() {
               disabled={isForwardProxySaving}
               onClick={() => openForwardProxyAddModal('subscriptionUrl')}
             >
-              <Icon icon="mdi:plus" className="mr-1 h-4 w-4" aria-hidden />
+              <AppIcon name="plus" className="mr-1 h-4 w-4" aria-hidden />
               {t('settings.forwardProxy.addSubscription')}
             </Button>
             <span className="text-xs text-base-content/70">
@@ -1677,7 +1677,7 @@ export default function SettingsPage() {
                         title={t('settings.forwardProxy.remove')}
                         aria-label={t('settings.forwardProxy.remove')}
                       >
-                        <Icon icon="mdi:trash-can-outline" className="h-4 w-4" aria-hidden />
+                        <AppIcon name="trash-can-outline" className="h-4 w-4" aria-hidden />
                         <span className="sr-only">{t('settings.forwardProxy.remove')}</span>
                       </Button>
                     </li>
@@ -1717,7 +1717,7 @@ export default function SettingsPage() {
                         title={t('settings.forwardProxy.remove')}
                         aria-label={t('settings.forwardProxy.remove')}
                       >
-                        <Icon icon="mdi:trash-can-outline" className="h-4 w-4" aria-hidden />
+                        <AppIcon name="trash-can-outline" className="h-4 w-4" aria-hidden />
                         <span className="sr-only">{t('settings.forwardProxy.remove')}</span>
                       </Button>
                     </li>
@@ -2125,7 +2125,7 @@ export default function SettingsPage() {
                                       disabled={item.status === 'validating' || forwardProxyBatchValidatingCount > 0 || isForwardProxySaving}
                                       onClick={() => void handleRetryBatchNode(item.key)}
                                     >
-                                      <Icon icon="mdi:refresh" className="h-4 w-4" aria-hidden />
+                                      <AppIcon name="refresh" className="h-4 w-4" aria-hidden />
                                       <span className="sr-only">{t('settings.forwardProxy.modal.retryNode')}</span>
                                     </Button>
                                     <Button
@@ -2136,7 +2136,7 @@ export default function SettingsPage() {
                                       disabled={item.status !== 'available' || isForwardProxySaving}
                                       onClick={() => handleAddValidatedBatchNode(item.key)}
                                     >
-                                      <Icon icon="mdi:plus" className="h-4 w-4" aria-hidden />
+                                      <AppIcon name="plus" className="h-4 w-4" aria-hidden />
                                       <span className="sr-only">{t('settings.forwardProxy.modal.addNode')}</span>
                                     </Button>
                                   </div>

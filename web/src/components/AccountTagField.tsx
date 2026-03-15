@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import { Button } from './ui/button'
 import { AccountTagContextChip } from './AccountTagContextChip'
 import { Input } from './ui/input'
@@ -143,7 +143,7 @@ export function AccountTagField({
         <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
           <PopoverTrigger asChild>
             <Button type="button" variant="outline" size="sm" disabled={!writesEnabled}>
-              <Icon icon="mdi:tag-plus-outline" className="mr-2 h-4 w-4" aria-hidden />
+              <AppIcon name="tag-plus-outline" className="mr-2 h-4 w-4" aria-hidden />
               {labels.add}
             </Button>
           </PopoverTrigger>
@@ -168,7 +168,7 @@ export function AccountTagField({
                     onClick={() => toggleTag(tag.id)}
                   >
                     <span className="truncate">{tag.name}</span>
-                    {selected ? <Icon icon="mdi:check" className="h-4 w-4" aria-hidden /> : null}
+                    {selected ? <AppIcon name="check" className="h-4 w-4" aria-hidden /> : null}
                   </button>
                 )
               })}
