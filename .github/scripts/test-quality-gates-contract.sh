@@ -7,23 +7,11 @@ fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
-probe_release_intent_rollout() {
-  local repo_root="$1"
-
-  python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
-    --repo-root "$repo_root" \
-    --profile final >/dev/null 2>&1
-
-  python3 "$repo_root/.github/scripts/metadata_gate.py" label --help 2>&1 | grep -q -- "--write-intent"
-}
-
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
   --repo-root "$repo_root" \
   --declaration "$repo_root/.github/quality-gates.json" \
   --metadata-script "$repo_root/.github/scripts/metadata_gate.py" \
   --profile final
-
-probe_release_intent_rollout "$repo_root"
 
 if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
   --repo-root "$repo_root" \
@@ -45,7 +33,6 @@ done
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
-probe_release_intent_rollout "$baseline_repo"
 
 simplified_topology_repo="$tmp_dir/simplified-topology-repo"
 cp -R "$baseline_repo/." "$simplified_topology_repo"
@@ -54,26 +41,6 @@ for workflow in ci-main.yml release.yml label-gate.yml; do
 done
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$simplified_topology_repo" --profile final
-
-rollout_probe_repo="$tmp_dir/rollout-probe-repo"
-cp -R "$baseline_repo/." "$rollout_probe_repo"
-python3 - <<'PY' "$rollout_probe_repo"
-from pathlib import Path
-import sys
-
-repo = Path(sys.argv[1])
-path = repo / ".github/scripts/metadata_gate.py"
-text = path.read_text()
-needle = '    parser.add_argument("--write-intent", default="")\n'
-if needle not in text:
-    raise SystemExit("failed to rewrite metadata gate intent arg")
-path.write_text(text.replace(needle, "", 1))
-PY
-
-if probe_release_intent_rollout "$rollout_probe_repo"; then
-  echo "expected rollout probe fixture to fail without metadata_gate --write-intent support" >&2
-  exit 1
-fi
 
 label_concurrency_repo="$tmp_dir/label-concurrency-repo"
 cp -R "$baseline_repo/." "$label_concurrency_repo"
@@ -174,10 +141,15 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/ci-main.yml"
 text = path.read_text()
+needle = "  group: ci-main-main\n"
+replacement = "  group: ci-main-${{ github.sha }}\n"
+if needle not in text:
+    raise SystemExit("failed to rewrite ci-main concurrency group")
+text = text.replace(needle, replacement, 1)
 needle = "  cancel-in-progress: false\n"
 replacement = "  cancel-in-progress: true\n"
 if needle not in text:
-    raise SystemExit("failed to rewrite ci-main concurrency")
+    raise SystemExit("failed to rewrite ci-main concurrency cancel")
 path.write_text(text.replace(needle, replacement, 1))
 PY
 
@@ -186,7 +158,29 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "ci-main.yml.concurrency.cancel-in-progress must stay false" "$tmp_dir/ci-main.log"
+grep -Eq "ci-main.yml.concurrency.(group drifted|cancel-in-progress must stay false)" "$tmp_dir/ci-main.log"
+
+release_concurrency_repo="$tmp_dir/release-concurrency-repo"
+cp -R "$baseline_repo/." "$release_concurrency_repo"
+python3 - <<'PY' "$release_concurrency_repo"
+from pathlib import Path
+import sys
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/release.yml"
+text = path.read_text()
+needle = "  group: release-main\n"
+replacement = "  group: release-${{ github.event.workflow_run.head_sha }}\n"
+if needle not in text:
+    raise SystemExit("failed to rewrite release concurrency group")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$release_concurrency_repo" --profile final >/dev/null 2>"$tmp_dir/release-concurrency.log"; then
+  echo "expected release concurrency fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "release.yml.concurrency.group drifted" "$tmp_dir/release-concurrency.log"
 
 metadata_policy_repo="$tmp_dir/metadata-policy-repo"
 cp -R "$baseline_repo/." "$metadata_policy_repo"

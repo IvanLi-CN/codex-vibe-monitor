@@ -16,7 +16,7 @@ on:
         type: string
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.commit_sha || github.event.workflow_run.head_sha }}
+  group: release-main
   cancel-in-progress: false
 
 permissions:
@@ -39,7 +39,7 @@ jobs:
       actions: read
       contents: read
     outputs:
-      target_sha: ${{ steps.target.outputs.target_sha }}
+      target_sha: ${{ steps.pending-target.outputs.target_sha }}
       release_enabled: ${{ steps.snapshot.outputs.release_enabled }}
       release_bump: ${{ steps.snapshot.outputs.release_bump }}
       release_channel: ${{ steps.snapshot.outputs.release_channel }}
@@ -63,8 +63,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Resolve target commit
-        id: target
+      - name: Resolve requested commit
+        id: requested-target
         shell: bash
         run: |
           set -euo pipefail
@@ -96,7 +96,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/github-script@v7
         env:
-          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+          TARGET_SHA: ${{ steps.requested-target.outputs.target_sha }}
         with:
           script: |
             const { owner, repo } = context.repo
@@ -155,7 +155,7 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+          TARGET_SHA: ${{ steps.requested-target.outputs.target_sha }}
         run: |
           set -euo pipefail
           python3 .github/scripts/release_snapshot.py ensure \
@@ -164,15 +164,36 @@ jobs:
             --github-token "${GITHUB_TOKEN}" \
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
             --registry "${REGISTRY}" \
-            --allow-current-pr-label-fallback \
             --target-only \
             --output "$RUNNER_TEMP/release-snapshot.json"
 
+      - name: Select pending release target
+        id: pending-target
+        shell: bash
+        env:
+          REQUESTED_SHA: ${{ steps.requested-target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "target_sha=${REQUESTED_SHA}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --no-tags origin main
+          git fetch --tags origin
+          git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}" || true
+          python3 .github/scripts/release_snapshot.py next-pending \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --main-ref "origin/main" \
+            --upper-bound "${REQUESTED_SHA}" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Load immutable release snapshot
+        if: steps.pending-target.outputs.target_sha != ''
         id: snapshot
         shell: bash
         env:
-          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+          TARGET_SHA: ${{ steps.pending-target.outputs.target_sha }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
@@ -186,17 +207,17 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
       - name: Compute candidate suffix
-        if: steps.snapshot.outputs.release_enabled == 'true'
+        if: steps.pending-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'
         id: candidate
         shell: bash
         env:
-          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+          TARGET_SHA: ${{ steps.pending-target.outputs.target_sha }}
         run: |
           set -euo pipefail
           echo "candidate_suffix=${TARGET_SHA:0:12}" >> "$GITHUB_OUTPUT"
 
       - name: Validate platforms for smoke gate
-        if: steps.snapshot.outputs.release_enabled == 'true'
+        if: steps.pending-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -338,6 +359,7 @@ jobs:
     needs: [release-meta, docker-amd64, docker-arm64]
     if: needs.release-meta.outputs.release_enabled == 'true'
     permissions:
+      actions: write
       contents: write
       packages: write
     timeout-minutes: 45
@@ -505,3 +527,41 @@ jobs:
             })
 
             core.notice(`Created GitHub Release for tag ${tag}`)
+
+      - name: Resolve next pending release target
+        if: github.event_name != 'workflow_dispatch'
+        id: next-pending
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git fetch --tags origin
+          git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}" || true
+          python3 .github/scripts/release_snapshot.py next-pending \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --main-ref "origin/main" \
+            --upper-bound "$(git rev-parse origin/main)" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Continue release queue
+        if: github.event_name != 'workflow_dispatch' && steps.next-pending.outputs.target_sha != ''
+        uses: actions/github-script@v7
+        env:
+          NEXT_TARGET_SHA: ${{ steps.next-pending.outputs.target_sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const nextSha = process.env.NEXT_TARGET_SHA
+            if (!nextSha) {
+              core.notice('Release queue is empty.')
+              return
+            }
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner,
+              repo,
+              workflow_id: 'release.yml',
+              ref: 'main',
+              inputs: { commit_sha: nextSha },
+            })
+            core.notice(`Queued next release target ${nextSha}`)
