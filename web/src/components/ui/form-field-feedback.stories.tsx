@@ -1,12 +1,15 @@
 import type { ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { Stories } from '@storybook/addon-docs/blocks'
 import { Input } from './input'
 import { FormFieldFeedback } from './form-field-feedback'
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-base-200 px-6 py-8 text-base-content">
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">{children}</div>
+    <div className="bg-base-200 px-4 py-4 text-base-content">
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 rounded-2xl border border-base-300/60 bg-base-100/70 p-5 shadow-sm">
+        {children}
+      </div>
     </div>
   )
 }
@@ -45,9 +48,12 @@ const meta = {
   parameters: {
     layout: 'padded',
     docs: {
-      description: {
-        component:
-          'Shared label-row feedback for form fields. It keeps the validation bubble in the reserved space beside the label instead of overlaying the next field.',
+      page: () => <Stories title="" includePrimary={true} />,
+      canvas: {
+        sourceState: 'hidden',
+      },
+      controls: {
+        hideNoControlsWarning: true,
       },
     },
   },
@@ -110,14 +116,6 @@ export const QuietField: Story = {
 }
 
 export const DenseTwoColumnLayout: Story = {
-  parameters: {
-    docs: {
-      description: {
-        story:
-          'Matches the account-pool form density: the message stays in the label row, leaving the next row untouched.',
-      },
-    },
-  },
   render: () => (
     <div className="grid gap-4 md:grid-cols-2">
       <FieldHarness label="上游地址" message="请填写 http(s) 的绝对 URL，例如 https://proxy.example.com/gateway" placeholder="proxy.example.com/gateway" />
