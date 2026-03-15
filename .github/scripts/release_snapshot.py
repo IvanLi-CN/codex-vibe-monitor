@@ -258,7 +258,7 @@ def github_request_json(api_root: str, token: str, path: str, query: dict[str, A
 def github_request_bytes(url: str, token: str) -> bytes:
     headers = {
         "Authorization": f"Bearer {token}",
-        "Accept": "application/octet-stream",
+        "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "codex-vibe-monitor-release-snapshot",
     }
