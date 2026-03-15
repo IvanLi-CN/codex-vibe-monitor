@@ -92,6 +92,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             lambda api_root, repository, token, pr_number, pr_head_sha: make_release_intent(pr_number, pr_head_sha)
         )
         module.labels_at_merge_time = lambda api_root, repository, token, pr: []
+        module.legacy_fallback_allowed_for_target = lambda target_sha: False
         snapshot1 = module.build_snapshot(
             target_sha=sha1,
             repository="IvanLi-CN/codex-vibe-monitor",
@@ -147,12 +148,17 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         read_back = module.read_snapshot(module.DEFAULT_NOTES_REF, sha2)
         assert read_back is not None
         assert read_back["release_tag"] == "v0.1.2"
+        legacy_note = dict(snapshot1)
+        legacy_note.pop("snapshot_source", None)
+        restored_legacy_note = module.validate_snapshot(legacy_note, expected_sha=sha1)
+        assert restored_legacy_note["snapshot_source"] == "ci-main"
 
         module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: make_pr(
             130, "Historical stable release", target_sha
         )
         module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, pr_head_sha: None
         module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
+        module.legacy_fallback_allowed_for_target = lambda target_sha: True
         legacy_snapshot = module.build_snapshot(
             target_sha=sha1,
             repository="IvanLi-CN/codex-vibe-monitor",
@@ -167,6 +173,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             140, "Future release without artifact", target_sha, merged_at="2026-03-16T00:00:01Z"
         )
         module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, pr_head_sha: None
+        module.legacy_fallback_allowed_for_target = lambda target_sha: False
         try:
             module.build_snapshot(
                 target_sha=sha2,

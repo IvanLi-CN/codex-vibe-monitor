@@ -20,8 +20,6 @@ from urllib import error, parse, request
 SNAPSHOT_SCHEMA_VERSION = 1
 RELEASE_INTENT_SCHEMA_VERSION = 1
 DEFAULT_NOTES_REF = "refs/notes/release-snapshots"
-LEGACY_LABEL_FALLBACK_PR_ALLOWLIST = frozenset({126, 130, 131, 133})
-LEGACY_LABEL_FALLBACK_ROLLOUT_CUTOFF = "2026-03-16T00:00:00Z"
 RELEASE_INTENT_ARTIFACT_PREFIX = "release-intent-pr-"
 TRUSTED_RELEASE_INTENT_WORKFLOW_PATH = ".github/workflows/label-gate.yml"
 TRUSTED_RELEASE_INTENT_EVENT = "pull_request"
@@ -146,6 +144,9 @@ def validate_snapshot(payload: Any, *, expected_sha: str | None = None) -> dict[
         raise SnapshotError("Release snapshot target_sha must be a 40-char commit SHA")
     if expected_sha and target_sha != expected_sha:
         raise SnapshotError(f"Release snapshot target_sha mismatch: expected {expected_sha}, got {target_sha}")
+    if not isinstance(payload.get("snapshot_source"), str) or not payload.get("snapshot_source"):
+        payload = dict(payload)
+        payload["snapshot_source"] = "ci-main"
 
     required_strings = [
         "type_label",
@@ -376,6 +377,23 @@ def labels_at_merge_time(api_root: str, repository: str, token: str, pr: dict[st
     return sorted(labels)
 
 
+def commit_supports_release_intent_artifact(commit_sha: str) -> bool:
+    try:
+        workflow_yaml = git_output("show", f"{commit_sha}:.github/workflows/label-gate.yml")
+        metadata_gate = git_output("show", f"{commit_sha}:.github/scripts/metadata_gate.py")
+    except SnapshotError:
+        return False
+    return "--write-intent" in workflow_yaml and "write_release_intent" in metadata_gate
+
+
+def legacy_fallback_allowed_for_target(target_sha: str) -> bool:
+    parents = git_output("rev-list", "--parents", "-n", "1", target_sha).split()
+    if len(parents) <= 1:
+        return True
+    previous_main_sha = parents[1]
+    return not commit_supports_release_intent_artifact(previous_main_sha)
+
+
 def load_release_intent_artifact(
     api_root: str, repository: str, token: str, pr_number: int, pr_head_sha: str
 ) -> dict[str, Any] | None:
@@ -474,7 +492,7 @@ def parse_release_labels(labels: list[str]) -> tuple[str, str]:
 
 
 def resolve_release_intent_for_pr(
-    api_root: str, repository: str, token: str, pr: dict[str, Any]
+    api_root: str, repository: str, token: str, pr: dict[str, Any], *, target_sha: str
 ) -> tuple[str, str, str, str]:
     pr_number = pr.get("number")
     if not isinstance(pr_number, int):
@@ -493,22 +511,14 @@ def resolve_release_intent_for_pr(
             pr_head_sha,
         )
 
-    merged_at = pr.get("merged_at")
-    rollout_cutoff = datetime.fromisoformat(LEGACY_LABEL_FALLBACK_ROLLOUT_CUTOFF.replace("Z", "+00:00"))
-    merge_moment = None
-    if isinstance(merged_at, str) and merged_at:
-        merge_moment = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
-
-    if pr_number in LEGACY_LABEL_FALLBACK_PR_ALLOWLIST or (
-        merge_moment is not None and merge_moment <= rollout_cutoff
-    ):
+    if legacy_fallback_allowed_for_target(target_sha):
         type_label, channel_label = parse_release_labels(labels_at_merge_time(api_root, repository, token, pr))
         return (type_label, channel_label, "legacy-pr-labels", pr_head_sha)
 
     artifact_name = artifact_name_for_pr(pr_number, pr_head_sha)
     raise SnapshotError(
         f"Missing pre-frozen release intent artifact {artifact_name} for PR #{pr_number}; "
-        f"legacy label fallback is only allowed for the historical allowlist or PRs merged by {LEGACY_LABEL_FALLBACK_ROLLOUT_CUTOFF}"
+        "legacy label fallback is only allowed when the target commit's previous mainline parent predates artifact-capable label-gate support"
     )
 
 
@@ -600,7 +610,7 @@ def build_snapshot(
     if pr is None:
         raise SnapshotError(f"Commit {target_sha} is not associated with a merged pull request")
     type_label, channel_label, snapshot_source, pr_head_sha = resolve_release_intent_for_pr(
-        api_root, repository, token, pr
+        api_root, repository, token, pr, target_sha=target_sha
     )
     release_bump = type_label.split(":", 1)[1]
     release_channel = channel_label.split(":", 1)[1]
