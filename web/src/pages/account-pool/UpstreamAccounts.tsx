@@ -427,6 +427,7 @@ export default function UpstreamAccountsPage() {
   const deleteConfirmTriggerRef = useRef<HTMLButtonElement | null>(null)
   const deleteConfirmPanelRef = useRef<HTMLDivElement | null>(null)
   const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
+  const skipNextDeleteConfirmResetRef = useRef(false)
   const deleteConfirmTitleId = useId()
   const deleteConfirmDescriptionId = useId()
 
@@ -453,6 +454,10 @@ export default function UpstreamAccountsPage() {
 
   useEffect(() => {
     setDetailActionError(null)
+    if (skipNextDeleteConfirmResetRef.current) {
+      skipNextDeleteConfirmResetRef.current = false
+      return
+    }
     setIsDeleteConfirmOpen(false)
   }, [selectedId, isDetailDrawerOpen])
 
@@ -508,6 +513,7 @@ export default function UpstreamAccountsPage() {
     const state = location.state as UpstreamAccountsLocationState | null
     if (!state?.selectedAccountId) return
 
+    skipNextDeleteConfirmResetRef.current = Boolean(state.openDeleteConfirm)
     selectAccount(state.selectedAccountId)
     setIsDetailDrawerOpen(Boolean(state.openDetail))
     setIsDeleteConfirmOpen(Boolean(state.openDeleteConfirm))
