@@ -157,7 +157,7 @@
 
 ## Change log
 
-- 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 隔离、同类动作跨账号并发时不得互相覆盖 busy 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
+- 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 与 action error 都要按账号隔离、同类动作跨账号并发时不得互相覆盖 busy 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
 
 ## Visual Evidence (PR)
 

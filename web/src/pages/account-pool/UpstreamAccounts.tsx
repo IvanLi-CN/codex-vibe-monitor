@@ -82,6 +82,11 @@ type GroupNoteEditorState = {
   existing: boolean
 }
 
+type ActionErrorState =
+  | { scope: 'account'; accountId: number; message: string }
+  | { scope: 'routing'; message: string }
+  | null
+
 type AccountBusyActionType = 'save' | 'sync' | 'toggle' | 'relogin' | 'delete'
 
 type BusyActionState = {
@@ -418,7 +423,7 @@ export default function UpstreamAccountsPage() {
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<ActionErrorState>(null)
   const [busyAction, setBusyAction] = useState<BusyActionState>(() => ({
     routing: false,
     accountActions: new Set(),
@@ -642,6 +647,14 @@ export default function UpstreamAccountsPage() {
 
   const selectedDetail = detail?.id === selectedId ? detail : null
   const selected = selectedDetail ?? selectedSummary
+  const visibleActionError =
+    actionError == null
+      ? null
+      : actionError.scope === 'routing'
+        ? actionError.message
+        : actionError.accountId === selectedId
+          ? actionError.message
+          : null
   const selectedVisible = filteredItems.some((item) => item.id === selectedId)
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
@@ -740,7 +753,11 @@ export default function UpstreamAccountsPage() {
       notifyMotherChange(response)
       setDraft((current) => ({ ...current, apiKey: '' }))
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setActionError({
+        scope: 'account',
+        accountId: source.id,
+        message: err instanceof Error ? err.message : String(err),
+      })
     } finally {
       setBusyAction((current) => {
         const nextActions = new Set(current.accountActions)
@@ -760,7 +777,11 @@ export default function UpstreamAccountsPage() {
     try {
       await runSync(source.id)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setActionError({
+        scope: 'account',
+        accountId: source.id,
+        message: err instanceof Error ? err.message : String(err),
+      })
     } finally {
       setBusyAction((current) => {
         const nextActions = new Set(current.accountActions)
@@ -780,7 +801,11 @@ export default function UpstreamAccountsPage() {
     try {
       await saveAccount(source.id, { enabled })
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setActionError({
+        scope: 'account',
+        accountId: source.id,
+        message: err instanceof Error ? err.message : String(err),
+      })
     } finally {
       setBusyAction((current) => {
         const nextActions = new Set(current.accountActions)
@@ -799,7 +824,10 @@ export default function UpstreamAccountsPage() {
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
       setIsRoutingDialogOpen(false)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setActionError({
+        scope: 'routing',
+        message: err instanceof Error ? err.message : String(err),
+      })
     } finally {
       setBusyAction((current) => ({ ...current, routing: false }))
     }
@@ -818,7 +846,11 @@ export default function UpstreamAccountsPage() {
     try {
       await removeAccount(source.id)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setActionError({
+        scope: 'account',
+        accountId: source.id,
+        message: err instanceof Error ? err.message : String(err),
+      })
     } finally {
       setBusyAction((current) => {
         const nextActions = new Set(current.accountActions)
@@ -869,10 +901,10 @@ export default function UpstreamAccountsPage() {
               </Alert>
             ) : null}
 
-            {actionError ? (
+            {visibleActionError ? (
               <Alert variant="error">
                 <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <div>{actionError}</div>
+                <div>{visibleActionError}</div>
               </Alert>
             ) : null}
 
