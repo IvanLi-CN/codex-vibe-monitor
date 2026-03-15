@@ -8,6 +8,12 @@ interface FloatingFieldErrorProps {
   placement?: FloatingFieldErrorPlacement;
 }
 
+const bubbleSurfaceClasses =
+  "relative rounded-xl border border-error/35 bg-error/12 px-3 py-1.5 text-xs font-medium text-error shadow-lg shadow-error/10 backdrop-blur";
+
+const bubbleArrowClasses =
+  "h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-error/35 bg-error/12";
+
 export function FloatingFieldError({
   message,
   className,
@@ -20,10 +26,10 @@ export function FloatingFieldError({
         aria-live="polite"
         className={cn("pointer-events-none flex max-w-full justify-start", className)}
       >
-        <div className="relative rounded-xl border border-error/55 bg-base-100 px-3 py-1.5 text-xs font-medium text-error shadow-lg shadow-error/10 backdrop-blur">
+        <div className={bubbleSurfaceClasses}>
           <span
             aria-hidden
-            className="absolute left-6 top-full h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-b border-r border-error/55 bg-base-100"
+            className={`absolute left-6 top-full border-b border-r ${bubbleArrowClasses}`}
           />
           {message}
         </div>
@@ -40,10 +46,10 @@ export function FloatingFieldError({
         className,
       )}
     >
-      <div className="relative rounded-xl border border-error/55 bg-base-100 px-3 py-1.5 text-xs font-medium text-error shadow-lg shadow-error/10 backdrop-blur">
+      <div className={bubbleSurfaceClasses}>
         <span
           aria-hidden
-          className="absolute right-4 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-error/55 bg-base-100"
+          className={`absolute right-4 top-0 border-l border-t ${bubbleArrowClasses}`}
         />
         {message}
       </div>
