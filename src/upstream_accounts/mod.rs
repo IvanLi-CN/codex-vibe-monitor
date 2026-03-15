@@ -2535,7 +2535,7 @@ async fn persist_usage_snapshot(
     .bind(&now_iso)
     .bind(&snapshot.limit_id)
     .bind(&snapshot.limit_name)
-    .bind(snapshot.plan_type.clone().or_else(|| row.plan_type.clone()))
+    .bind(snapshot.plan_type.clone())
     .bind(snapshot.primary.as_ref().map(|value| value.used_percent))
     .bind(
         snapshot
@@ -2803,6 +2803,20 @@ fn is_team_plan_type(plan_type: Option<&str>) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case("team"))
 }
 
+fn normalize_plan_type(plan_type: Option<&str>) -> Option<String> {
+    plan_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn resolve_effective_plan_type(
+    account_plan_type: Option<&str>,
+    sample_plan_type: Option<&str>,
+) -> Option<String> {
+    normalize_plan_type(sample_plan_type).or_else(|| normalize_plan_type(account_plan_type))
+}
+
 async fn load_duplicate_info_map(
     pool: &Pool<Sqlite>,
 ) -> Result<std::collections::HashMap<i64, DuplicateInfo>> {
@@ -2817,6 +2831,8 @@ async fn load_duplicate_info_map(
                     SELECT NULLIF(TRIM(sample.plan_type), '')
                     FROM pool_upstream_account_limit_samples sample
                     WHERE sample.account_id = account.id
+                      AND sample.plan_type IS NOT NULL
+                      AND TRIM(sample.plan_type) <> ''
                     ORDER BY sample.captured_at DESC
                     LIMIT 1
                 ),
@@ -3433,13 +3449,27 @@ async fn load_latest_usage_sample(
     sqlx::query_as::<_, UpstreamAccountSampleRow>(
         r#"
         SELECT
-            captured_at, limit_id, limit_name, plan_type,
+            sample.captured_at,
+            sample.limit_id,
+            sample.limit_name,
+            COALESCE(
+                NULLIF(TRIM(sample.plan_type), ''),
+                (
+                    SELECT NULLIF(TRIM(previous_sample.plan_type), '')
+                    FROM pool_upstream_account_limit_samples previous_sample
+                    WHERE previous_sample.account_id = sample.account_id
+                      AND previous_sample.plan_type IS NOT NULL
+                      AND TRIM(previous_sample.plan_type) <> ''
+                    ORDER BY previous_sample.captured_at DESC
+                    LIMIT 1
+                )
+            ) AS plan_type,
             primary_used_percent, primary_window_minutes, primary_resets_at,
             secondary_used_percent, secondary_window_minutes, secondary_resets_at,
             credits_has_credits, credits_unlimited, credits_balance
-        FROM pool_upstream_account_limit_samples
-        WHERE account_id = ?1
-        ORDER BY captured_at DESC
+        FROM pool_upstream_account_limit_samples sample
+        WHERE sample.account_id = ?1
+        ORDER BY sample.captured_at DESC
         LIMIT 1
         "#,
     )
@@ -3519,10 +3549,10 @@ fn build_summary_from_row(
         enabled: row.enabled != 0,
         email: row.email.clone(),
         chatgpt_account_id: row.chatgpt_account_id.clone(),
-        plan_type: row
-            .plan_type
-            .clone()
-            .or_else(|| sample.and_then(|value| value.plan_type.clone())),
+        plan_type: resolve_effective_plan_type(
+            row.plan_type.as_deref(),
+            sample.and_then(|value| value.plan_type.as_deref()),
+        ),
         masked_api_key: row.masked_api_key.clone(),
         last_synced_at: row.last_synced_at.clone(),
         last_successful_sync_at: row.last_successful_sync_at.clone(),
@@ -6063,6 +6093,24 @@ mod tests {
             .await
             .expect("load duplicate info");
         assert!(duplicate_info.is_empty());
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| inserted_ids.contains(&summary.id))
+                .all(|summary| summary.plan_type.as_deref() == Some("team"))
+        );
+
+        for account_id in inserted_ids {
+            let detail = load_upstream_account_detail(&pool, account_id)
+                .await
+                .expect("load detail")
+                .expect("detail exists");
+            assert_eq!(detail.summary.plan_type.as_deref(), Some("team"));
+        }
     }
 
     #[tokio::test]
@@ -6115,6 +6163,72 @@ mod tests {
                 .values()
                 .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
         );
+    }
+
+    #[tokio::test]
+    async fn persist_usage_snapshot_does_not_backfill_stale_account_plan_type() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, "Snapshot OAuth", None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Snapshot OAuth",
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims_with_plan_type(
+                    "snapshot@example.com",
+                    Some("snapshot_org"),
+                    Some("snapshot_user"),
+                    Some("team"),
+                ),
+                encrypted_credentials: "encrypted-snapshot".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row")
+            .expect("row exists");
+        assert_eq!(row.plan_type.as_deref(), Some("team"));
+
+        let snapshot = NormalizedUsageSnapshot {
+            plan_type: None,
+            limit_id: "gpt-4".to_string(),
+            limit_name: Some("GPT-4".to_string()),
+            primary: None,
+            secondary: None,
+            credits: None,
+        };
+        persist_usage_snapshot(&pool, &row, &snapshot, 30)
+            .await
+            .expect("persist snapshot");
+
+        let stored_plan_type = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT plan_type
+            FROM pool_upstream_account_limit_samples
+            WHERE account_id = ?1
+            ORDER BY captured_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(account_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load sample plan type");
+        assert_eq!(stored_plan_type, None);
     }
 
     #[tokio::test]
