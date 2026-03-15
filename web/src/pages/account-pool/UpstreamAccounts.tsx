@@ -1188,7 +1188,16 @@ export default function UpstreamAccountsPage() {
                           />
                         </label>
                         <label className="field">
-                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}</span>
+                          <div className="flex flex-wrap items-start gap-2 md:min-h-7 md:flex-nowrap md:items-center md:justify-between">
+                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}</span>
+                            {draftUpstreamBaseUrlError ? (
+                              <FloatingFieldError
+                                placement="label-inline"
+                                message={draftUpstreamBaseUrlError}
+                                className="md:max-w-[min(20rem,calc(100%-8rem))]"
+                              />
+                            ) : null}
+                          </div>
                           <div className="relative">
                             <Input
                               name="detailUpstreamBaseUrl"
@@ -1198,9 +1207,6 @@ export default function UpstreamAccountsPage() {
                               aria-invalid={draftUpstreamBaseUrlError ? 'true' : 'false'}
                               className={cn(draftUpstreamBaseUrlError ? 'border-error/70 focus-visible:ring-error' : '')}
                             />
-                            {draftUpstreamBaseUrlError ? (
-                              <FloatingFieldError message={draftUpstreamBaseUrlError} />
-                            ) : null}
                           </div>
                         </label>
                         <label className="field">

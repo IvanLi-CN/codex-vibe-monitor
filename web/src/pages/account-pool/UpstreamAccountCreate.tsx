@@ -2132,7 +2132,16 @@ export default function UpstreamAccountCreatePage() {
                     />
                   </label>
                   <label className="field md:col-span-2">
-                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}</span>
+                    <div className="flex flex-wrap items-start gap-2 md:min-h-7 md:flex-nowrap md:items-center md:justify-between">
+                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}</span>
+                      {apiKeyUpstreamBaseUrlError ? (
+                        <FloatingFieldError
+                          placement="label-inline"
+                          message={apiKeyUpstreamBaseUrlError}
+                          className="md:max-w-[min(30rem,calc(100%-9rem))]"
+                        />
+                      ) : null}
+                    </div>
                     <div className="relative">
                       <Input
                         name="apiKeyUpstreamBaseUrl"
@@ -2144,9 +2153,6 @@ export default function UpstreamAccountCreatePage() {
                         aria-invalid={apiKeyUpstreamBaseUrlError ? 'true' : 'false'}
                         className={cn(apiKeyUpstreamBaseUrlError ? 'border-error/70 focus-visible:ring-error' : '')}
                       />
-                      {apiKeyUpstreamBaseUrlError ? (
-                        <FloatingFieldError message={apiKeyUpstreamBaseUrlError} />
-                      ) : null}
                     </div>
                   </label>
                   <label className="field">
