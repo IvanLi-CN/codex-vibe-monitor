@@ -827,4 +827,93 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     expect(matchingStatuses).toHaveLength(1);
     expect(matchingStatuses[0]?.closest('[role="dialog"]')).not.toBeNull();
   });
+
+  it("keeps delete failures visible when the detail payload is unavailable", async () => {
+    const removeAccount = vi
+      .fn()
+      .mockRejectedValue(new Error("Request failed: 500 database is locked"));
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex",
+          provider: "codex",
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: null,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount,
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+      saveGroupNote: vi.fn(),
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Open details/i);
+    const dialog = document.body.querySelector('[role="dialog"]');
+    const deleteButton = dialog
+      ? Array.from(dialog.querySelectorAll("button")).find((candidate) =>
+          /^Delete$/i.test(
+            candidate.textContent ||
+              candidate.getAttribute("aria-label") ||
+              candidate.title ||
+              "",
+          ),
+        )
+      : null;
+    if (!(deleteButton instanceof HTMLButtonElement)) {
+      throw new Error("missing detail drawer delete button");
+    }
+
+    pressButton(deleteButton);
+    clickButton(/Delete account/i);
+    await flushAsync();
+
+    const matchingStatuses = Array.from(
+      document.body.querySelectorAll('[role="status"]'),
+    ).filter((node) =>
+      (node.textContent || "").includes("Request failed: 500 database is locked"),
+    );
+    expect(matchingStatuses).toHaveLength(1);
+    expect(matchingStatuses[0]?.closest('[role="dialog"]')).not.toBeNull();
+  });
 });

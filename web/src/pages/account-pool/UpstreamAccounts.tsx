@@ -447,6 +447,7 @@ export default function UpstreamAccountsPage() {
   useEffect(() => {
     if (!writesEnabled) {
       setIsRoutingDialogOpen(false)
+      setIsDeleteConfirmOpen(false)
     }
   }, [writesEnabled])
 
@@ -1070,7 +1071,13 @@ export default function UpstreamAccountsPage() {
                         <Button type="button" variant="ghost" size="sm" onClick={() => setIsDeleteConfirmOpen(false)}>
                           {t('accountPool.upstreamAccounts.actions.cancel')}
                         </Button>
-                        <Button type="button" variant="destructive" size="sm" onClick={() => void handleDelete(selected)}>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          disabled={busyAction === 'delete' || !writesEnabled}
+                          onClick={() => void handleDelete(selected)}
+                        >
                           {t('accountPool.upstreamAccounts.actions.confirmDelete')}
                         </Button>
                       </div>
@@ -1080,14 +1087,15 @@ export default function UpstreamAccountsPage() {
               </div>
             </div>
 
-            {detail ? (
-              <div className="grid gap-5">
-                {detailActionError ? (
-                  <Alert variant="error">
-                    <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                    <div>{detailActionError}</div>
-                  </Alert>
-                ) : null}
+            <div className="grid gap-5">
+              {detailActionError ? (
+                <Alert variant="error">
+                  <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <div>{detailActionError}</div>
+                </Alert>
+              ) : null}
+              {detail ? (
+                <>
                 {detail.duplicateInfo ? (
                   <Alert variant="warning">
                     <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
@@ -1367,8 +1375,9 @@ export default function UpstreamAccountsPage() {
                     </div>
                   </CardContent>
                 </Card>
-              </div>
-            ) : null}
+                </>
+              ) : null}
+            </div>
           </>
         )}
       </AccountDetailDrawer>
