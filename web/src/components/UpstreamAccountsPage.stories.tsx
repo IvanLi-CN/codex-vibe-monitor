@@ -58,15 +58,14 @@ export const DeleteConfirmation: Story = {
         state: {
           selectedAccountId: 101,
           openDetail: true,
+          openDeleteConfirm: true,
         },
       }}
     />
   ),
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
-    const dialog = await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
-    const deleteButton = within(dialog).getByRole('button', { name: /删除|delete/i })
-    await userEvent.click(deleteButton)
+    await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
     await expect(documentScope.getByRole('alertdialog')).toBeInTheDocument()
     await expect(documentScope.getByText(/删除这个上游账号|delete this upstream account/i)).toBeInTheDocument()
     await expect(documentScope.getByText(/不会保留恢复副本|does not keep a recovery copy/i)).toBeInTheDocument()

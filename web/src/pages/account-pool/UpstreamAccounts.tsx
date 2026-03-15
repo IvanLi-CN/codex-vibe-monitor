@@ -67,6 +67,7 @@ const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
 type UpstreamAccountsLocationState = {
   selectedAccountId?: number
   openDetail?: boolean
+  openDeleteConfirm?: boolean
   duplicateWarning?: {
     accountId: number
     displayName: string
@@ -509,6 +510,7 @@ export default function UpstreamAccountsPage() {
 
     selectAccount(state.selectedAccountId)
     setIsDetailDrawerOpen(Boolean(state.openDetail))
+    setIsDeleteConfirmOpen(Boolean(state.openDeleteConfirm))
     setDuplicateWarning(state.duplicateWarning ?? null)
     navigate(location.pathname, { replace: true, state: null })
   }, [location.pathname, location.state, navigate, selectAccount])
