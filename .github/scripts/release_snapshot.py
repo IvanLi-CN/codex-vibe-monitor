@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
@@ -9,14 +10,19 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-from datetime import datetime
 from urllib import error, parse, request
 
 SNAPSHOT_SCHEMA_VERSION = 1
+RELEASE_INTENT_SCHEMA_VERSION = 1
 DEFAULT_NOTES_REF = "refs/notes/release-snapshots"
+LEGACY_LABEL_FALLBACK_MAX_PR_NUMBER = 130
+RELEASE_INTENT_ARTIFACT_PREFIX = "release-intent-pr-"
+ALLOWED_SNAPSHOT_SOURCES = {"ci-main", "pr-intent-artifact", "legacy-pr-labels"}
 ALLOWED_TYPE_LABELS = {
     "type:patch",
     "type:minor",
@@ -144,6 +150,7 @@ def validate_snapshot(payload: Any, *, expected_sha: str | None = None) -> dict[
         "release_bump",
         "release_channel",
         "image_name_lower",
+        "snapshot_source",
     ]
     for key in required_strings:
         value = payload.get(key)
@@ -161,6 +168,15 @@ def validate_snapshot(payload: Any, *, expected_sha: str | None = None) -> dict[
     pr_title = payload.get("pr_title")
     if pr_title is not None and not isinstance(pr_title, str):
         raise SnapshotError("Release snapshot pr_title must be a string or null")
+    pr_head_sha = payload.get("pr_head_sha")
+    if pr_head_sha not in (None, "") and (
+        not isinstance(pr_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head_sha)
+    ):
+        raise SnapshotError("Release snapshot pr_head_sha must be a 40-char commit SHA when present")
+    if payload.get("snapshot_source") not in ALLOWED_SNAPSHOT_SOURCES:
+        raise SnapshotError(
+            f"Release snapshot snapshot_source must be one of {', '.join(sorted(ALLOWED_SNAPSHOT_SOURCES))}"
+        )
 
     if payload["release_enabled"]:
         for key in ("base_stable_version", "next_stable_version", "app_effective_version", "release_tag", "tags_csv"):
@@ -215,6 +231,24 @@ def github_request_json(api_root: str, token: str, path: str, query: dict[str, A
         raise SnapshotError(f"GitHub API request failed on {path}: {exc}") from exc
 
 
+def github_request_bytes(url: str, token: str) -> bytes:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/octet-stream",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "codex-vibe-monitor-release-snapshot",
+    }
+    req = request.Request(url, headers=headers)
+    try:
+        with request.urlopen(req) as resp:
+            return resp.read()
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise SnapshotError(f"GitHub artifact download failed on {url}: {exc.code} {body}") from exc
+    except error.URLError as exc:
+        raise SnapshotError(f"GitHub artifact download failed on {url}: {exc}") from exc
+
+
 def github_paginate(api_root: str, token: str, path: str) -> list[dict[str, Any]]:
     page = 1
     items: list[dict[str, Any]] = []
@@ -257,37 +291,97 @@ def load_pr_for_commit(
     return pr
 
 
-def labels_at_merge_time(api_root: str, repository: str, token: str, pr: dict[str, Any]) -> list[str]:
-    owner, repo = repository.split("/", 1)
-    pr_number = pr.get("number")
-    merged_at = pr.get("merged_at")
+def artifact_name_for_pr(pr_number: int, pr_head_sha: str) -> str:
+    return f"{RELEASE_INTENT_ARTIFACT_PREFIX}{pr_number}-{pr_head_sha}"
+
+
+def validate_release_intent(
+    payload: Any, *, expected_pr_number: int | None = None, expected_head_sha: str | None = None
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise SnapshotError("Release intent artifact must decode to an object")
+    if payload.get("schema_version") != RELEASE_INTENT_SCHEMA_VERSION:
+        raise SnapshotError(f"Unsupported release intent schema: {payload.get('schema_version')!r}")
+
+    pr_number = payload.get("pr_number")
     if not isinstance(pr_number, int):
-        raise SnapshotError("Pull request payload is missing a numeric PR number")
-    if not isinstance(merged_at, str) or not merged_at:
-        raise SnapshotError(f"Pull request #{pr_number} is missing merged_at; cannot freeze release labels")
+        raise SnapshotError("Release intent pr_number must be an integer")
+    if expected_pr_number is not None and pr_number != expected_pr_number:
+        raise SnapshotError(f"Release intent pr_number mismatch: expected {expected_pr_number}, got {pr_number}")
 
-    merge_moment = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
-    timeline = github_paginate(api_root, token, f"/repos/{owner}/{repo}/issues/{pr_number}/timeline")
+    pr_head_sha = payload.get("pr_head_sha")
+    if not isinstance(pr_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head_sha):
+        raise SnapshotError("Release intent pr_head_sha must be a 40-char commit SHA")
+    if expected_head_sha is not None and pr_head_sha != expected_head_sha:
+        raise SnapshotError(f"Release intent pr_head_sha mismatch: expected {expected_head_sha}, got {pr_head_sha}")
 
-    labels: set[str] = set()
-    for event in sorted(timeline, key=lambda item: str(item.get("created_at", ""))):
-        created_at = event.get("created_at")
-        if not isinstance(created_at, str):
-            continue
-        event_moment = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        if event_moment > merge_moment:
-            continue
-        event_name = event.get("event")
-        label = event.get("label")
-        label_name = label.get("name") if isinstance(label, dict) else None
-        if not isinstance(label_name, str) or not label_name:
-            continue
-        if event_name == "labeled":
-            labels.add(label_name)
-        elif event_name == "unlabeled":
-            labels.discard(label_name)
+    for key, allowed in (("type_label", ALLOWED_TYPE_LABELS), ("channel_label", ALLOWED_CHANNEL_LABELS)):
+        value = payload.get(key)
+        if not isinstance(value, str) or value not in allowed:
+            raise SnapshotError(f"Release intent {key} must be one of {', '.join(sorted(allowed))}")
 
-    return sorted(labels)
+    created_at = payload.get("created_at")
+    if not isinstance(created_at, str) or not created_at:
+        raise SnapshotError("Release intent created_at must be a non-empty string")
+
+    return payload
+
+
+def current_labels_for_pr(api_root: str, repository: str, token: str, pr_number: int) -> list[str]:
+    owner, repo = repository.split("/", 1)
+    payload = github_request_json(api_root, token, f"/repos/{owner}/{repo}/issues/{pr_number}")
+    if not isinstance(payload, dict):
+        raise SnapshotError(f"GitHub API returned a malformed issue payload for PR #{pr_number}")
+    labels = payload.get("labels") or []
+    if not isinstance(labels, list):
+        raise SnapshotError(f"GitHub API returned malformed labels for PR #{pr_number}")
+    names = [str(label.get("name")) for label in labels if isinstance(label, dict) and label.get("name")]
+    return sorted(set(names))
+
+
+def load_release_intent_artifact(
+    api_root: str, repository: str, token: str, pr_number: int, pr_head_sha: str
+) -> dict[str, Any] | None:
+    owner, repo = repository.split("/", 1)
+    artifact_name = artifact_name_for_pr(pr_number, pr_head_sha)
+    payload = github_request_json(
+        api_root,
+        token,
+        f"/repos/{owner}/{repo}/actions/artifacts",
+        {"per_page": 100, "name": artifact_name},
+    )
+    if not isinstance(payload, dict):
+        raise SnapshotError("GitHub API returned an unexpected artifact listing payload")
+    artifacts = payload.get("artifacts") or []
+    if not isinstance(artifacts, list):
+        raise SnapshotError("GitHub API returned malformed artifacts data")
+
+    candidates = [
+        artifact
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+        and artifact.get("name") == artifact_name
+        and artifact.get("expired") is False
+    ]
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda artifact: str(artifact.get("created_at") or ""), reverse=True)
+    artifact = candidates[0]
+    archive_url = artifact.get("archive_download_url")
+    if not isinstance(archive_url, str) or not archive_url:
+        raise SnapshotError(f"Artifact {artifact_name} is missing archive_download_url")
+
+    raw_bytes = github_request_bytes(archive_url, token)
+    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as archive:
+        members = [name for name in archive.namelist() if name.endswith(".json")]
+        if len(members) != 1:
+            raise SnapshotError(f"Artifact {artifact_name} must contain exactly one JSON file")
+        try:
+            payload = json.loads(archive.read(members[0]).decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise SnapshotError(f"Artifact {artifact_name} does not contain valid JSON") from exc
+    return validate_release_intent(payload, expected_pr_number=pr_number, expected_head_sha=pr_head_sha)
 
 
 def parse_release_labels(labels: list[str]) -> tuple[str, str]:
@@ -310,6 +404,37 @@ def parse_release_labels(labels: list[str]) -> tuple[str, str]:
     if channel_label not in ALLOWED_CHANNEL_LABELS:
         raise SnapshotError(f"Unknown channel label: {channel_label}")
     return type_label, channel_label
+
+
+def resolve_release_intent_for_pr(
+    api_root: str, repository: str, token: str, pr: dict[str, Any]
+) -> tuple[str, str, str, str]:
+    pr_number = pr.get("number")
+    if not isinstance(pr_number, int):
+        raise SnapshotError("Pull request payload is missing a numeric PR number")
+    head = pr.get("head") or {}
+    pr_head_sha = head.get("sha") if isinstance(head, dict) else None
+    if not isinstance(pr_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head_sha):
+        raise SnapshotError(f"Pull request #{pr_number} is missing a valid head.sha")
+
+    release_intent = load_release_intent_artifact(api_root, repository, token, pr_number, pr_head_sha)
+    if release_intent is not None:
+        return (
+            str(release_intent["type_label"]),
+            str(release_intent["channel_label"]),
+            "pr-intent-artifact",
+            pr_head_sha,
+        )
+
+    if pr_number <= LEGACY_LABEL_FALLBACK_MAX_PR_NUMBER:
+        type_label, channel_label = parse_release_labels(current_labels_for_pr(api_root, repository, token, pr_number))
+        return (type_label, channel_label, "legacy-pr-labels", pr_head_sha)
+
+    artifact_name = artifact_name_for_pr(pr_number, pr_head_sha)
+    raise SnapshotError(
+        f"Missing pre-frozen release intent artifact {artifact_name} for PR #{pr_number}; "
+        "legacy label fallback is only allowed for historical releases"
+    )
 
 
 def cargo_base_version(target_sha: str) -> StableVersion:
@@ -399,8 +524,9 @@ def build_snapshot(
         pr = load_pr_for_commit(api_root, repository, token, target_sha)
     if pr is None:
         raise SnapshotError(f"Commit {target_sha} is not associated with a merged pull request")
-    release_labels = labels_at_merge_time(api_root, repository, token, pr)
-    type_label, channel_label = parse_release_labels(release_labels)
+    type_label, channel_label, snapshot_source, pr_head_sha = resolve_release_intent_for_pr(
+        api_root, repository, token, pr
+    )
     release_bump = type_label.split(":", 1)[1]
     release_channel = channel_label.split(":", 1)[1]
     image_name_lower = repository.lower()
@@ -410,6 +536,7 @@ def build_snapshot(
         "pr_number": pr.get("number"),
         "pr_title": pr.get("title") or "",
         "registry": registry,
+        "pr_head_sha": pr_head_sha,
         "type_label": type_label,
         "channel_label": channel_label,
         "release_bump": release_bump,
@@ -423,7 +550,7 @@ def build_snapshot(
         "release_tag": "",
         "tags_csv": "",
         "notes_ref": notes_ref,
-        "snapshot_source": "ci-main",
+        "snapshot_source": snapshot_source,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 

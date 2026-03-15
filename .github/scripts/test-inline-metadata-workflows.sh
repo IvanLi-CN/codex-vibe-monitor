@@ -6,6 +6,7 @@ python3 - <<'PY' "$repo_root/.github/scripts/metadata_gate.py"
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -126,12 +127,12 @@ def make_context(gate: str, event_name: str, pull_number: int) -> object:
     )
 
 
-def run_with_summary(fn, *args):
+def run_with_summary(fn, *args, **kwargs):
     with tempfile.NamedTemporaryFile(delete=False) as handle:
         summary_path = handle.name
     try:
         os.environ["GITHUB_STEP_SUMMARY"] = summary_path
-        exit_code = fn(*args)
+        exit_code = fn(*args, **kwargs)
         summary = Path(summary_path).read_text()
         return exit_code, summary
     finally:
@@ -141,9 +142,24 @@ def run_with_summary(fn, *args):
 
 client = FakeClient()
 
-exit_code, summary = run_with_summary(module.run_label_gate, make_context("label", "pull_request_target", 57), client)
+with tempfile.NamedTemporaryFile(delete=False) as handle:
+    release_intent_path = handle.name
+Path(release_intent_path).unlink(missing_ok=True)
+exit_code, summary = run_with_summary(
+    module.run_label_gate,
+    make_context("label", "pull_request_target", 57),
+    client,
+    write_intent_path=release_intent_path,
+)
 assert exit_code == 0, f"expected label gate success, got {exit_code}"
 assert "PR #57: pass - Labels OK: type:minor + channel:rc" in summary
+release_intent = json.loads(Path(release_intent_path).read_text())
+assert release_intent["schema_version"] == module.RELEASE_INTENT_SCHEMA_VERSION
+assert release_intent["pr_number"] == 57
+assert release_intent["pr_head_sha"] == "sha-57"
+assert release_intent["type_label"] == "type:minor"
+assert release_intent["channel_label"] == "channel:rc"
+Path(release_intent_path).unlink(missing_ok=True)
 
 for pull_number in (58, 59):
     exit_code, summary = run_with_summary(

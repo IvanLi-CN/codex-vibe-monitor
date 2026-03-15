@@ -624,7 +624,39 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
         "label-gate.yml.jobs.validate-pr-labels.steps['Evaluate PR labels']",
         "label-gate.yml: Evaluate PR labels must execute the trusted metadata gate in label mode",
     )
-    require(label_command == ["python3", "trusted/.github/scripts/metadata_gate.py", "label"], "label-gate.yml: label gate command drifted")
+    require(
+        label_command[:3] == ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
+        "label-gate.yml: label gate command drifted",
+    )
+    label_options = command_option_map(label_command[3:], "label-gate.yml: label gate command options")
+    require(
+        label_options.get("--write-intent") == "$RUNNER_TEMP/release-intent.json",
+        "label-gate.yml: label gate must write release intent to the runner temp artifact path",
+    )
+
+    upload_step = step_config(job, "Upload release intent artifact", "label-gate.yml.jobs.validate-pr-labels")
+    uses_value = str(upload_step.get("uses") or "")
+    require(
+        uses_value == "actions/upload-artifact@v4",
+        "label-gate.yml: release intent artifact step must use actions/upload-artifact@v4",
+    )
+    upload_with = require_mapping(upload_step.get("with"), "label-gate.yml.jobs.validate-pr-labels.steps['Upload release intent artifact'].with")
+    require(
+        upload_with.get("name") == "release-intent-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
+        "label-gate.yml: release intent artifact name drifted",
+    )
+    require(
+        upload_with.get("path") == "${{ runner.temp }}/release-intent.json",
+        "label-gate.yml: release intent artifact path drifted",
+    )
+    require(
+        upload_with.get("retention-days") == 30,
+        "label-gate.yml: release intent artifact retention must stay 30 days",
+    )
+    require(
+        upload_with.get("if-no-files-found") == "error",
+        "label-gate.yml: release intent artifact must fail when the JSON is missing",
+    )
 
 
 def validate_review_policy(path: Path, contract: ContractModel) -> None:
