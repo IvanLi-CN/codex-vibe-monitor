@@ -809,6 +809,7 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require(ensure_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "release.yml.jobs.release-meta: manual snapshot ensure must use GITHUB_TOKEN")
     ensure_run = str(ensure_step.get("run", ""))
     require("release_snapshot.py ensure" in ensure_run, "release.yml.jobs.release-meta: manual snapshot ensure must use release_snapshot.py ensure")
+    require("--allow-current-pr-label-fallback" in ensure_run, "release.yml.jobs.release-meta: manual snapshot ensure must allow current PR label fallback")
     snapshot_step = step_config(release_meta, "Load immutable release snapshot", "release.yml.jobs.release-meta")
     snapshot_env = require_mapping(snapshot_step.get("env"), "release.yml.jobs.release-meta.steps['Load immutable release snapshot'].env")
     require(

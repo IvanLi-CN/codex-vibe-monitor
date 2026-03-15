@@ -160,7 +160,8 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             130, "Historical stable release", target_sha
         )
         module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, **kwargs: None
-        module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
+        module.current_pr_labels = lambda pr: ["type:patch", "channel:stable"]
+        module.labels_at_merge_time = lambda api_root, repository, token, pr: []
         module.legacy_fallback_allowed_for_target = lambda *args, **kwargs: True
         legacy_snapshot = module.build_snapshot(
             target_sha=sha1,
@@ -169,6 +170,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             notes_ref=module.DEFAULT_NOTES_REF,
             registry="ghcr.io",
             api_root="https://api.github.com",
+            allow_current_pr_label_fallback=True,
         )
         assert legacy_snapshot["snapshot_source"] == "legacy-pr-labels"
 
@@ -260,6 +262,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
                 api_root="https://api.github.com",
                 output=str(snapshot_b_path),
                 max_attempts=3,
+                allow_current_pr_label_fallback=False,
             )
         )
         assert exit_code == 0
@@ -314,6 +317,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
                 api_root="https://api.github.com",
                 output=str(snapshot_b_path),
                 max_attempts=3,
+                allow_current_pr_label_fallback=False,
             )
         )
         assert exit_code == 0
