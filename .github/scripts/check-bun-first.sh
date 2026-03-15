@@ -24,10 +24,18 @@ patterns=(
 )
 
 failures=()
+search_tool=()
+
+if command -v rg >/dev/null 2>&1; then
+  search_tool=(rg -n -e)
+else
+  search_tool=(grep -En)
+fi
 
 for file in "${files[@]}"; do
+  [[ -f "$file" ]] || continue
   for pattern in "${patterns[@]}"; do
-    if match="$(rg -n -e "$pattern" "$file" || true)"; then
+    if match="$("${search_tool[@]}" "$pattern" "$file" || true)"; then
       if [[ -n "$match" ]]; then
         failures+=("$match")
       fi

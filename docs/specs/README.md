@@ -7,7 +7,7 @@
 ## Index
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                                                          |
-| f6f6e | GH Actions 防取消发布链路全面对齐                                              | 部分完成（3/4） | `f6f6e-gh-actions-release-anti-cancel/SPEC.md`           | 2026-03-14 | strict anti-cancel / split workflows / final quality-gates / local contract tests green        |
+| f6f6e | GH Actions 防取消发布链路全面对齐                                              | 部分完成（3/4） | `f6f6e-gh-actions-release-anti-cancel/SPEC.md`           | 2026-03-15 | strict anti-cancel / release-intent artifact freeze / legacy backfill gate / contract refresh |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
 | v6epa | API Key 账号上游地址支持                                                      | 已完成          | `v6epa-api-key-upstream-base-url/SPEC.md`                | 2026-03-15 | fast-track / account-pool api-key upstream base url / local validation green                   |
 | k7kpk | 前端运行时图标内置打包                                                        | 部分完成（3/4） | `k7kpk-bundle-icons-locally/SPEC.md`                     | 2026-03-15 | fast-track / PR #130 / merge conflict convergence in progress                                  |
