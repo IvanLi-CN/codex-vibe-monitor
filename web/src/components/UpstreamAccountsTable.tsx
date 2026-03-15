@@ -22,7 +22,8 @@ interface UpstreamAccountsTableProps {
     apiKey: string;
     mother: string;
     duplicate: string;
-    status: (value: string) => string;
+    status: (item: UpstreamAccountSummary) => string;
+    statusValue: (item: UpstreamAccountSummary) => string;
   };
 }
 
@@ -173,6 +174,7 @@ export function UpstreamAccountsTable({
                 ? `${labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
                 : undefined;
               const selected = item.id === selectedId;
+              const displayStatus = labels.statusValue(item);
               return (
                 <tr
                   key={item.id}
@@ -215,8 +217,8 @@ export function UpstreamAccountsTable({
                     </div>
                   </td>
                   <td className="px-4 py-4">
-                    <Badge variant={badgeVariant(item.status)}>
-                      {labels.status(item.status)}
+                    <Badge variant={badgeVariant(displayStatus)}>
+                      {labels.status(item)}
                     </Badge>
                   </td>
                   <td className="px-4 py-4">

@@ -6470,13 +6470,16 @@ async fn send_pool_request_with_failover(
                             ),
                         ),
                     };
+                let route_error_message = upstream_error_code
+                    .as_deref()
+                    .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
                 if let Err(route_err) = record_pool_route_http_failure(
                     &state.pool,
                     account.account_id,
                     &account.kind,
                     sticky_key,
                     status,
-                    &message,
+                    &route_error_message,
                 )
                 .await
                 {
@@ -8771,6 +8774,12 @@ fn extract_upstream_error_code(value: &Value) -> Option<String> {
         .and_then(|entry| entry.get("code"))
         .and_then(|entry| entry.as_str())
         .map(|entry| entry.to_string())
+        .or_else(|| {
+            value
+                .get("code")
+                .and_then(|entry| entry.as_str())
+                .map(|entry| entry.to_string())
+        })
 }
 
 fn extract_upstream_error_message(value: &Value) -> Option<String> {
@@ -8778,6 +8787,12 @@ fn extract_upstream_error_message(value: &Value) -> Option<String> {
         .and_then(|entry| entry.get("message"))
         .and_then(|entry| entry.as_str())
         .map(|entry| entry.to_string())
+        .or_else(|| {
+            value
+                .get("message")
+                .and_then(|entry| entry.as_str())
+                .map(|entry| entry.to_string())
+        })
 }
 
 fn extract_upstream_request_id(value: &Value) -> Option<String> {
@@ -8789,6 +8804,13 @@ fn extract_upstream_request_id(value: &Value) -> Option<String> {
                 .and_then(|value| value.as_str())
         })
         .map(|entry| entry.to_string())
+        .or_else(|| {
+            value
+                .get("request_id")
+                .or_else(|| value.get("requestId"))
+                .and_then(|entry| entry.as_str())
+                .map(|entry| entry.to_string())
+        })
         .or_else(|| {
             extract_upstream_error_message(value)
                 .and_then(|message| extract_request_id_from_message(&message))

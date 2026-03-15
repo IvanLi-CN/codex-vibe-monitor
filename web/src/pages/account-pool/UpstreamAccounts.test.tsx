@@ -522,9 +522,11 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     expect(document.body.textContent).toContain(
       "This OAuth token is missing API scopes",
     );
+    expect(document.body.textContent).toContain("Error");
     expect(document.body.textContent).not.toContain(
       "This OAuth account needs a fresh sign-in",
     );
+    expect(document.body.textContent).not.toContain("Needs re-auth");
   });
 });
 

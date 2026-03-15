@@ -9373,6 +9373,45 @@ async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
     upstream_handle.abort();
 }
 
+#[tokio::test]
+async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
+    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+        StatusCode::UNAUTHORIZED,
+        Some("invalid_grant"),
+        "Unauthorized",
+    )
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Grant OAuth", "oauth-invalid-grant").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(r#"{"model":"gpt-5","input":"hello"}"#.as_bytes().to_vec()),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load oauth account status");
+    assert_eq!(status, "needs_reauth");
+
+    upstream_handle.abort();
+}
+
 #[test]
 fn summarize_pool_upstream_http_failure_ignores_html_bodies() {
     let (code, message, request_id, summary) = summarize_pool_upstream_http_failure(
@@ -9431,6 +9470,18 @@ fn summarize_pool_upstream_http_failure_reads_nested_request_id() {
     assert_eq!(message.as_deref(), Some("Request failed"));
     assert_eq!(request_id.as_deref(), Some("req_nested_123"));
     assert_eq!(summary, "pool upstream responded with 400: Request failed");
+}
+
+#[test]
+fn summarize_pool_upstream_http_failure_reads_top_level_error_fields() {
+    let body =
+        br#"{"message":"Gateway says no","code":"gateway_forbidden","request_id":"req_top_456"}"#;
+    let (code, message, request_id, summary) =
+        summarize_pool_upstream_http_failure(StatusCode::FORBIDDEN, None, body);
+    assert_eq!(code.as_deref(), Some("gateway_forbidden"));
+    assert_eq!(message.as_deref(), Some("Gateway says no"));
+    assert_eq!(request_id.as_deref(), Some("req_top_456"));
+    assert_eq!(summary, "pool upstream responded with 403: Gateway says no");
 }
 
 #[tokio::test]

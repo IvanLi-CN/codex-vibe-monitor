@@ -206,6 +206,13 @@ function resolveOauthRecoveryHint(
   return null
 }
 
+function resolveDisplayedStatus(status: string, lastError?: string | null) {
+  if (status === 'needs_reauth' && (isMissingApiScopeError(lastError) || isPermissionError(lastError))) {
+    return 'error'
+  }
+  return status
+}
+
 
 function poolCardMetric(value: number, label: string, icon: AppIconName, accent: string) {
   return { value, label, icon, accent }
@@ -528,10 +535,11 @@ export default function UpstreamAccountsPage() {
   }
 
   const metrics = useMemo(() => {
+    const displayedStatuses = items.map((item) => resolveDisplayedStatus(item.status, item.lastError))
     const oauthCount = items.filter((item) => item.kind === 'oauth_codex').length
     const apiKeyCount = items.filter((item) => item.kind === 'api_key_codex').length
-    const needsReauthCount = items.filter((item) => item.status === 'needs_reauth').length
-    const syncingCount = items.filter((item) => item.status === 'syncing').length
+    const needsReauthCount = displayedStatuses.filter((status) => status === 'needs_reauth').length
+    const syncingCount = displayedStatuses.filter((status) => status === 'syncing').length
     return [
       poolCardMetric(items.length, t('accountPool.upstreamAccounts.metrics.total'), 'database-outline', 'text-primary'),
       poolCardMetric(oauthCount, t('accountPool.upstreamAccounts.metrics.oauth'), 'badge-account-horizontal-outline', 'text-success'),
@@ -686,6 +694,8 @@ export default function UpstreamAccountsPage() {
       .join(' / ')
   }
   const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
+  const accountSummaryStatusLabel = (item: UpstreamAccountSummary) =>
+    accountStatusLabel(resolveDisplayedStatus(item.status, item.lastError))
   const accountKindLabel = (kind: string) =>
     kind === 'oauth_codex'
       ? t('accountPool.upstreamAccounts.kind.oauth')
@@ -993,7 +1003,8 @@ export default function UpstreamAccountsPage() {
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 mother: t('accountPool.upstreamAccounts.mother.badge'),
                 duplicate: t('accountPool.upstreamAccounts.duplicate.badge'),
-                status: accountStatusLabel,
+                status: accountSummaryStatusLabel,
+                statusValue: (item) => resolveDisplayedStatus(item.status, item.lastError),
               }}
             />
           </div>
@@ -1046,7 +1057,15 @@ export default function UpstreamAccountsPage() {
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant={statusVariant(selected.status)}>{accountStatusLabel(selected.status)}</Badge>
+                  <Badge
+                    variant={statusVariant(
+                      resolveDisplayedStatus(selected.status, detail?.lastError ?? selected.lastError),
+                    )}
+                  >
+                    {accountStatusLabel(
+                      resolveDisplayedStatus(selected.status, detail?.lastError ?? selected.lastError),
+                    )}
+                  </Badge>
                   <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
                   {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}
                   {selected.duplicateInfo ? (
