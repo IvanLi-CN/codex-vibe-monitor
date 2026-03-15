@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.10.1",
+  "base_stable_version": "1.10.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-15T20:22:07Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.10.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6501707cd9e72b27dea2aacf2e10d1917f021c1d",
+  "pr_number": 148,
+  "pr_title": "fix: ignore duplicate warnings for team-shared account ids",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.10.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.10.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "43542f92e4fcbce1c0aa401b40b26c3666c0272a",
+  "type_label": "type:patch"
+}
