@@ -525,6 +525,34 @@ finally:
     module.load_release_intent_artifact = real_load_release_intent_artifact
     module.legacy_fallback_allowed_for_target = real_legacy_fallback_allowed_for_target
 
+real_merged_pr_head_sha = module.merged_pr_head_sha
+real_load_release_intent_artifact = module.load_release_intent_artifact
+try:
+    captured_expected_head_sha = {"value": None}
+
+    def fake_load_release_intent_artifact(api_root, repository, token, pr_number, *, merged_at, expected_head_sha=None):
+        captured_expected_head_sha["value"] = expected_head_sha
+        return make_release_intent(pr_number, "d" * 40, type_label="type:skip")
+
+    module.merged_pr_head_sha = lambda target_sha: None
+    module.load_release_intent_artifact = fake_load_release_intent_artifact
+
+    type_label, channel_label, snapshot_source, pr_head_sha = module.resolve_release_intent_for_pr(
+        "https://api.github.com",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        make_pr(141, "Squash merged PR", "d" * 40),
+        target_sha="e" * 40,
+    )
+    assert captured_expected_head_sha["value"] == "d" * 40
+    assert type_label == "type:skip"
+    assert channel_label == "channel:stable"
+    assert snapshot_source == "pr-intent-artifact"
+    assert pr_head_sha == "d" * 40
+finally:
+    module.merged_pr_head_sha = real_merged_pr_head_sha
+    module.load_release_intent_artifact = real_load_release_intent_artifact
+
 with tempfile.TemporaryDirectory(prefix="release-snapshot-target-only-") as tmp:
     repo = Path(tmp)
     run("init", cwd=repo)
