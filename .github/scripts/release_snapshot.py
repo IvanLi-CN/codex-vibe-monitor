@@ -95,6 +95,11 @@ def parse_args() -> argparse.Namespace:
     ensure.add_argument("--api-root", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
     ensure.add_argument("--output", required=True)
     ensure.add_argument("--max-attempts", type=int, default=6)
+    ensure.add_argument(
+        "--allow-current-pr-label-fallback",
+        action="store_true",
+        help="Allow historical backfill to fall back to the merged PR's current labels when no frozen intent artifact exists.",
+    )
 
     export_cmd = subparsers.add_parser("export", help="Export a stored release snapshot into GitHub outputs.")
     export_cmd.add_argument("--target-sha", required=True)
@@ -399,6 +404,22 @@ def labels_at_merge_time(api_root: str, repository: str, token: str, pr: dict[st
     return sorted(labels)
 
 
+def current_pr_labels(pr: dict[str, Any]) -> list[str]:
+    labels = pr.get("labels")
+    if not isinstance(labels, list):
+        raise SnapshotError("Pull request payload is missing labels")
+    names: list[str] = []
+    for label in labels:
+        if isinstance(label, str):
+            names.append(label)
+            continue
+        if isinstance(label, dict):
+            name = label.get("name")
+            if isinstance(name, str):
+                names.append(name)
+    return sorted(names)
+
+
 def repo_root_supports_release_intent_artifact(repo_root: Path) -> bool:
     contract_script = repo_root / ".github/scripts/check_quality_gates_contract.py"
     metadata_script = repo_root / ".github/scripts/metadata_gate.py"
@@ -602,7 +623,13 @@ def parse_release_labels(labels: list[str]) -> tuple[str, str]:
 
 
 def resolve_release_intent_for_pr(
-    api_root: str, repository: str, token: str, pr: dict[str, Any], *, target_sha: str
+    api_root: str,
+    repository: str,
+    token: str,
+    pr: dict[str, Any],
+    *,
+    target_sha: str,
+    allow_current_pr_label_fallback: bool = False,
 ) -> tuple[str, str, str, str]:
     pr_number = pr.get("number")
     if not isinstance(pr_number, int):
@@ -636,7 +663,12 @@ def resolve_release_intent_for_pr(
             raise SnapshotError(f"Pull request #{pr_number} is missing a valid head.sha")
         pr_head_sha = expected_head_sha
     if legacy_fallback_allowed_for_target(api_root, repository, token, pr, target_sha=target_sha):
-        type_label, channel_label = parse_release_labels(labels_at_merge_time(api_root, repository, token, pr))
+        labels = (
+            current_pr_labels(pr)
+            if allow_current_pr_label_fallback
+            else labels_at_merge_time(api_root, repository, token, pr)
+        )
+        type_label, channel_label = parse_release_labels(labels)
         return (type_label, channel_label, "legacy-pr-labels", pr_head_sha)
 
     raise SnapshotError(
@@ -727,13 +759,19 @@ def build_snapshot(
     registry: str,
     api_root: str,
     pr: dict[str, Any] | None = None,
+    allow_current_pr_label_fallback: bool = False,
 ) -> dict[str, Any]:
     if pr is None:
         pr = load_pr_for_commit(api_root, repository, token, target_sha)
     if pr is None:
         raise SnapshotError(f"Commit {target_sha} is not associated with a merged pull request")
     type_label, channel_label, snapshot_source, pr_head_sha = resolve_release_intent_for_pr(
-        api_root, repository, token, pr, target_sha=target_sha
+        api_root,
+        repository,
+        token,
+        pr,
+        target_sha=target_sha,
+        allow_current_pr_label_fallback=allow_current_pr_label_fallback,
     )
     release_bump = type_label.split(":", 1)[1]
     release_channel = channel_label.split(":", 1)[1]
@@ -874,6 +912,7 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
                     registry=args.registry,
                     api_root=args.api_root,
                     pr=pr,
+                    allow_current_pr_label_fallback=args.allow_current_pr_label_fallback,
                 )
                 write_json(temp_note, snapshot)
                 git("notes", f"--ref={args.notes_ref}", "add", "-f", "-F", str(temp_note), commit)
