@@ -160,6 +160,7 @@ jobs:
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
             --registry "${REGISTRY}" \
             --allow-current-pr-label-fallback \
+            --target-only \
             --output "$RUNNER_TEMP/release-snapshot.json"
 
       - name: Load immutable release snapshot

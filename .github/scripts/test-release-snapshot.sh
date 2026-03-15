@@ -263,6 +263,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
                 output=str(snapshot_b_path),
                 max_attempts=3,
                 allow_current_pr_label_fallback=False,
+                target_only=False,
             )
         )
         assert exit_code == 0
@@ -318,6 +319,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
                 output=str(snapshot_b_path),
                 max_attempts=3,
                 allow_current_pr_label_fallback=False,
+                target_only=False,
             )
         )
         assert exit_code == 0
@@ -522,6 +524,108 @@ finally:
     module.github_request_bytes = real_request_bytes
     module.load_release_intent_artifact = real_load_release_intent_artifact
     module.legacy_fallback_allowed_for_target = real_legacy_fallback_allowed_for_target
+
+with tempfile.TemporaryDirectory(prefix="release-snapshot-target-only-") as tmp:
+    repo = Path(tmp)
+    run("init", cwd=repo)
+    run("config", "user.name", "Test User", cwd=repo)
+    run("config", "user.email", "test@example.com", cwd=repo)
+    run("checkout", "-b", "main", cwd=repo)
+    (repo / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+    (repo / "README.md").write_text("base\n")
+    run("add", "Cargo.toml", "README.md", cwd=repo)
+    run("commit", "-m", "base", cwd=repo)
+    run("tag", "v0.1.0", cwd=repo)
+
+    (repo / "README.md").write_text("old merge\n")
+    run("add", "README.md", cwd=repo)
+    run("commit", "-m", "old merge", cwd=repo)
+    old_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    (repo / "README.md").write_text("target merge\n")
+    run("add", "README.md", cwd=repo)
+    run("commit", "-m", "target merge", cwd=repo)
+    target_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    original_cwd = Path.cwd()
+    original_load_pr = module.load_pr_for_commit
+    original_build_snapshot = module.build_snapshot
+    original_git = module.git
+    calls = []
+
+    def fake_build_snapshot(*, target_sha: str, **kwargs: object):
+        calls.append(target_sha)
+        if target_sha == old_sha:
+            raise AssertionError("manual backfill should not materialize older missing snapshots")
+        return {
+            "schema_version": module.SNAPSHOT_SCHEMA_VERSION,
+            "target_sha": target_sha,
+            "pr_number": 402,
+            "pr_title": "Target labeled merge",
+            "registry": "ghcr.io",
+            "pr_head_sha": "6" * 40,
+            "type_label": "type:patch",
+            "channel_label": "channel:stable",
+            "release_bump": "patch",
+            "release_channel": "stable",
+            "release_enabled": True,
+            "release_prerelease": False,
+            "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+            "base_stable_version": "0.1.0",
+            "next_stable_version": "0.1.1",
+            "app_effective_version": "0.1.1",
+            "release_tag": "v0.1.1",
+            "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+            "notes_ref": module.DEFAULT_NOTES_REF,
+            "snapshot_source": "legacy-pr-labels",
+            "created_at": "2026-03-15T00:00:00Z",
+        }
+
+    os.chdir(repo)
+    try:
+        def fake_git(*args: str, **kwargs: object):
+            if args == ("push", "origin", module.DEFAULT_NOTES_REF):
+                return subprocess.CompletedProcess(["git", *args], 0, "", "")
+            return original_git(*args, **kwargs)
+
+        module.load_pr_for_commit = (
+            lambda api_root, repository, token, commit_sha, **kwargs: {
+                old_sha: make_pr(401, "Old unlabeled merge", old_sha),
+                target_sha: make_pr(402, "Target labeled merge", target_sha),
+            }.get(commit_sha)
+            if kwargs.get("allow_zero")
+            else {
+                old_sha: make_pr(401, "Old unlabeled merge", old_sha),
+                target_sha: make_pr(402, "Target labeled merge", target_sha),
+            }[commit_sha]
+        )
+        module.build_snapshot = fake_build_snapshot
+        module.git = fake_git
+        exit_code = module.ensure_snapshot(
+            argparse.Namespace(
+                target_sha=target_sha,
+                github_repository="IvanLi-CN/codex-vibe-monitor",
+                github_token="token",
+                notes_ref=module.DEFAULT_NOTES_REF,
+                registry="ghcr.io",
+                api_root="https://api.github.com",
+                output=str(repo / "target-only.json"),
+                max_attempts=1,
+                allow_current_pr_label_fallback=True,
+                target_only=True,
+            )
+        )
+        assert exit_code == 0
+        assert calls == [target_sha]
+        assert module.read_snapshot(module.DEFAULT_NOTES_REF, old_sha) is None
+        stored = module.read_snapshot(module.DEFAULT_NOTES_REF, target_sha)
+        assert stored is not None
+        assert stored["release_tag"] == "v0.1.1"
+    finally:
+        module.load_pr_for_commit = original_load_pr
+        module.build_snapshot = original_build_snapshot
+        module.git = original_git
+        os.chdir(original_cwd)
 
 print("test-release-snapshot: all checks passed")
 PY

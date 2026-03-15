@@ -18,7 +18,7 @@
 
 - 拆分为 `CI PR`、`CI Main`、`Release` 三段式链路，明确并发语义与职责边界。
 - 保留现有 PR label 驱动的 release intent、版本/tag 规则、多架构 smoke 与发布幂等行为。
-- 为 release 增加 `workflow_dispatch(commit_sha)` 手动补发入口，作为 pending release run 被替换或需要显式重放历史 commit 时的人工 backfill 通道；入口接受已经成功通过 `CI Main` 的 `main` commit，以及仅在 `Release Snapshot` 失败、其余 `CI Main` 校验均成功的历史 commit；手动 backfill 必须使用当前主干脚本补齐 immutable release snapshot，且仅在这个手动恢复路径里允许对缺失 artifact 的历史 PR 回退到 merged PR 当前 labels。
+- 为 release 增加 `workflow_dispatch(commit_sha)` 手动补发入口，作为 pending release run 被替换或需要显式重放历史 commit 时的人工 backfill 通道；入口接受已经成功通过 `CI Main` 的 `main` commit，以及仅在 `Release Snapshot` 失败、其余 `CI Main` 校验均成功的历史 commit；手动 backfill 必须使用当前主干脚本只补齐目标 commit 的 immutable release snapshot，且仅在这个手动恢复路径里允许对缺失 artifact 的历史 PR 回退到 merged PR 当前 labels。
 - 将 `quality-gates`、trusted metadata gate、contract fixtures/self-tests 升级到 `final` profile。
 
 ### Non-goals
