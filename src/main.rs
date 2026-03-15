@@ -25,7 +25,7 @@ use axum::{
     extract::{ConnectInfo, OriginalUri, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
     response::{IntoResponse, Json, Response, Sse},
-    routing::{any, get, post, put},
+    routing::{any, delete, get, post, put},
 };
 use base64::Engine;
 use chrono::{
@@ -3936,6 +3936,18 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
         .route(
             "/api/pool/upstream-accounts/oauth/login-sessions",
             post(create_oauth_login_session),
+        )
+        .route(
+            "/api/pool/upstream-accounts/oauth/mailbox-sessions",
+            post(create_oauth_mailbox_session),
+        )
+        .route(
+            "/api/pool/upstream-accounts/oauth/mailbox-sessions/status",
+            post(get_oauth_mailbox_session_status),
+        )
+        .route(
+            "/api/pool/upstream-accounts/oauth/mailbox-sessions/:sessionId",
+            delete(delete_oauth_mailbox_session),
         )
         .route(
             "/api/pool/upstream-accounts/oauth/login-sessions/:loginId",
@@ -13003,6 +13015,7 @@ struct AppConfig {
     upstream_accounts_sync_interval: Duration,
     upstream_accounts_refresh_lead_time: Duration,
     upstream_accounts_history_retention_days: u64,
+    upstream_accounts_moemail: Option<UpstreamAccountsMoeMailConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -13012,6 +13025,15 @@ struct CrsStatsConfig {
     api_id: String,
     period: String,
     poll_interval: Duration,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpstreamAccountsMoeMailConfig {
+    base_url: Url,
+    #[serde(skip_serializing)]
+    api_key: String,
+    default_domain: String,
 }
 
 impl AppConfig {
@@ -13236,6 +13258,41 @@ impl AppConfig {
             ENV_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
             DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
         )?;
+        let moemail_base_url_raw = env::var(ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let moemail_api_key = env::var(ENV_UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let moemail_default_domain = env::var(ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let upstream_accounts_moemail = match (
+            moemail_base_url_raw,
+            moemail_api_key,
+            moemail_default_domain,
+        ) {
+            (None, None, None) => None,
+            (Some(base_url), Some(api_key), Some(default_domain)) => {
+                Some(UpstreamAccountsMoeMailConfig {
+                    base_url: Url::parse(&base_url)
+                        .context("invalid UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL")?,
+                    api_key,
+                    default_domain,
+                })
+            }
+            _ => {
+                return Err(anyhow!(
+                    "{} , {}, and {} must be set together",
+                    ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL,
+                    ENV_UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY,
+                    ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN
+                ));
+            }
+        };
 
         let crs_stats_base_url = env::var("CRS_STATS_BASE_URL").ok();
         let crs_stats_api_id = env::var("CRS_STATS_API_ID").ok();
@@ -13311,6 +13368,7 @@ impl AppConfig {
             upstream_accounts_sync_interval,
             upstream_accounts_refresh_lead_time,
             upstream_accounts_history_retention_days,
+            upstream_accounts_moemail,
         })
     }
 

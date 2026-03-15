@@ -304,6 +304,7 @@ function mockUpstreamAccounts(
         enabled: true,
       },
     ],
+    groups: [],
     writesEnabled: true,
     isLoading: false,
     error: null,
@@ -328,7 +329,15 @@ function mockUpstreamAccounts(
     completeOauthLogin: vi
       .fn()
       .mockResolvedValue({ id: 41, displayName: "Row One" }),
+    beginOauthMailboxSession: vi.fn().mockResolvedValue({
+      sessionId: "mailbox-1",
+      emailAddress: "mailbox-1@example.com",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+    }),
+    getOauthMailboxStatuses: vi.fn().mockResolvedValue([]),
+    removeOauthMailboxSession: vi.fn().mockResolvedValue(undefined),
     createApiKeyAccount: vi.fn(),
+    saveGroupNote: vi.fn().mockResolvedValue({ groupName: "prod", note: "Saved note" }),
     ...overrides,
   });
 }
@@ -1019,6 +1028,48 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(document.body.textContent).toContain(
       "Matched: shared ChatGPT user id. Related account ids: 5.",
     );
+  });
+});
+
+describe("UpstreamAccountCreatePage oauth mailbox", () => {
+  it("fills the generated mailbox into both fields and locks regeneration until cleared", async () => {
+    const beginOauthMailboxSession = vi.fn().mockResolvedValue({
+      sessionId: "mailbox-1",
+      emailAddress: "temp-user@example.com",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+    });
+    mockUpstreamAccounts({ beginOauthMailboxSession });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    const mailboxInput = host?.querySelector(
+      'input[name="oauthMailbox"]',
+    ) as HTMLInputElement | null;
+    const displayNameInput = host?.querySelector(
+      'input[name="oauthDisplayName"]',
+    ) as HTMLInputElement | null;
+    expect(mailboxInput).toBeInstanceOf(HTMLInputElement);
+    expect(displayNameInput).toBeInstanceOf(HTMLInputElement);
+
+    const generateButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate) =>
+        candidate instanceof HTMLButtonElement &&
+        /Generate/.test(candidate.textContent || ""),
+    ) as HTMLButtonElement | undefined;
+    expect(generateButton).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => {
+      generateButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(beginOauthMailboxSession).toHaveBeenCalledTimes(1);
+    expect(mailboxInput?.value).toBe("temp-user@example.com");
+    expect(displayNameInput?.value).toBe("temp-user@example.com");
+    expect(generateButton?.disabled).toBe(true);
+
+    setFieldValue(mailboxInput as HTMLInputElement, "");
+    await flushAsync();
+    expect(generateButton?.disabled).toBe(false);
   });
 });
 

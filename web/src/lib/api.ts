@@ -1152,6 +1152,34 @@ export interface LoginSessionStatusResponse {
   error?: string | null;
 }
 
+export interface OauthMailboxSession {
+  sessionId: string;
+  emailAddress: string;
+  expiresAt: string;
+}
+
+export interface OauthMailboxCodeSummary {
+  value: string;
+  source: string;
+  updatedAt: string;
+}
+
+export interface OauthInviteSummary {
+  subject: string;
+  copyValue: string;
+  copyLabel: string;
+  updatedAt: string;
+}
+
+export interface OauthMailboxStatus {
+  sessionId: string;
+  emailAddress: string;
+  expiresAt: string;
+  latestCode?: OauthMailboxCodeSummary | null;
+  invite?: OauthInviteSummary | null;
+  invited: boolean;
+}
+
 export interface CreateOauthLoginSessionPayload {
   displayName?: string;
   groupName?: string;
@@ -1160,10 +1188,18 @@ export interface CreateOauthLoginSessionPayload {
   accountId?: number;
   tagIds?: number[];
   isMother?: boolean;
+  mailboxSessionId?: string;
+  generatedMailboxAddress?: string;
 }
 
 export interface CompleteOauthLoginSessionPayload {
   callbackUrl: string;
+  mailboxSessionId?: string;
+  generatedMailboxAddress?: string;
+}
+
+export interface OauthMailboxStatusRequestPayload {
+  sessionIds: string[];
 }
 
 export interface CreateApiKeyAccountPayload {
@@ -1511,6 +1547,61 @@ function normalizeLoginSessionStatusResponse(raw: unknown): LoginSessionStatusRe
   };
 }
 
+function normalizeOauthMailboxSession(raw: unknown): OauthMailboxSession {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+  const emailAddress = typeof payload.emailAddress === 'string' ? payload.emailAddress : ''
+  const expiresAt = typeof payload.expiresAt === 'string' ? payload.expiresAt : ''
+  if (!sessionId || !emailAddress || !expiresAt) {
+    throw new Error('Request failed: invalid OAuth mailbox session payload')
+  }
+  return {
+    sessionId,
+    emailAddress,
+    expiresAt,
+  }
+}
+
+function normalizeOauthMailboxCodeSummary(raw: unknown): OauthMailboxCodeSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const value = typeof payload.value === 'string' ? payload.value : ''
+  const source = typeof payload.source === 'string' ? payload.source : ''
+  const updatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt : ''
+  if (!value || !source || !updatedAt) return null
+  return { value, source, updatedAt }
+}
+
+function normalizeOauthInviteSummary(raw: unknown): OauthInviteSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const subject = typeof payload.subject === 'string' ? payload.subject : ''
+  const copyValue = typeof payload.copyValue === 'string' ? payload.copyValue : ''
+  const copyLabel = typeof payload.copyLabel === 'string' ? payload.copyLabel : ''
+  const updatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt : ''
+  if (!subject || !copyValue || !copyLabel || !updatedAt) return null
+  return {
+    subject,
+    copyValue,
+    copyLabel,
+    updatedAt,
+  }
+}
+
+function normalizeOauthMailboxStatus(raw: unknown): OauthMailboxStatus | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+  const emailAddress = typeof payload.emailAddress === 'string' ? payload.emailAddress : ''
+  const expiresAt = typeof payload.expiresAt === 'string' ? payload.expiresAt : ''
+  if (!sessionId || !emailAddress || !expiresAt) return null
+  return {
+    sessionId,
+    emailAddress,
+    expiresAt,
+    latestCode: normalizeOauthMailboxCodeSummary(payload.latestCode),
+    invite: normalizeOauthInviteSummary(payload.invite),
+    invited: payload.invited === true,
+  }
+}
+
 export async function fetchVersion(): Promise<VersionResponse> {
   return fetchJson<VersionResponse>("/api/version");
 }
@@ -1773,6 +1864,44 @@ export async function createOauthLoginSession(
     },
   );
   return normalizeLoginSessionStatusResponse(response);
+}
+
+export async function createOauthMailboxSession(): Promise<OauthMailboxSession> {
+  const response = await fetchJson<unknown>(
+    "/api/pool/upstream-accounts/oauth/mailbox-sessions",
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+  return normalizeOauthMailboxSession(response);
+}
+
+export async function fetchOauthMailboxStatuses(
+  payload: OauthMailboxStatusRequestPayload,
+): Promise<OauthMailboxStatus[]> {
+  const response = await fetchJson<unknown>(
+    "/api/pool/upstream-accounts/oauth/mailbox-sessions/status",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  const items = Array.isArray((response as Record<string, unknown> | null)?.items)
+    ? ((response as Record<string, unknown>).items as unknown[])
+    : [];
+  return items
+    .map(normalizeOauthMailboxStatus)
+    .filter((item): item is OauthMailboxStatus => item != null);
+}
+
+export async function deleteOauthMailboxSession(sessionId: string): Promise<void> {
+  await fetchJson(
+    `/api/pool/upstream-accounts/oauth/mailbox-sessions/${encodeURIComponent(sessionId)}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export async function fetchOauthLoginSession(
