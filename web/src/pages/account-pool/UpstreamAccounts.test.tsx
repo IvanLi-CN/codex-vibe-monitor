@@ -107,6 +107,10 @@ function render(initialEntry: InitialEntry = "/account-pool/upstream-accounts") 
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
+  rerender(initialEntry);
+}
+
+function rerender(initialEntry: InitialEntry = "/account-pool/upstream-accounts") {
   act(() => {
     root?.render(
       <I18nProvider>
@@ -304,6 +308,170 @@ describe("UpstreamAccountsPage duplicates", () => {
     ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
     expect(saveButton).toBeInstanceOf(HTMLButtonElement);
     expect((saveButton as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("UpstreamAccountsPage sync state isolation", () => {
+  it("keeps another account's sync button idle while the previous account sync is still pending", async () => {
+    const runSync = vi.fn().mockImplementation(
+      () => new Promise(() => {}),
+    );
+    const selectAccount = vi.fn();
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+    const baseState = {
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+        {
+          id: 9,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Another OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount,
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+
+    render();
+    clickButton(/Open details/i);
+    clickButton(/Sync now/i);
+    expect(runSync).toHaveBeenCalledWith(5);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 9,
+      selectedSummary: baseState.items[1],
+      detail: {
+        ...baseState.items[1],
+        history: [],
+      },
+    });
+    rerender();
+    await flushAsync();
+
+    const syncButton = document.body.querySelector(
+      '[data-testid="account-sync-button"]',
+    );
+    expect(syncButton?.querySelector(".animate-spin")).toBeNull();
+    expect(
+      syncButton?.querySelector('[data-icon-name="timer-refresh-outline"]'),
+    ).not.toBeNull();
+  });
+
+  it("does not render stale detail content when the selected summary changed", async () => {
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+    const staleDetail = {
+      id: 5,
+      kind: "oauth_codex",
+      provider: "codex",
+      displayName: "Existing OAuth",
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      email: "stale@example.com",
+      tags: [],
+      effectiveRoutingRule,
+      history: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [staleDetail, { ...staleDetail, id: 9, displayName: "Another OAuth" }],
+      writesEnabled: true,
+      selectedId: 9,
+      selectedSummary: {
+        ...staleDetail,
+        id: 9,
+        displayName: "Another OAuth",
+        email: "fresh@example.com",
+      },
+      detail: staleDetail,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+
+    render();
+    clickButton(/Open details/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Another OAuth");
+    expect(document.body.textContent).not.toContain("stale@example.com");
   });
 });
 

@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-11
-- Last: 2026-03-14
+- Last: 2026-03-16
 
 ## 背景 / 问题陈述
 
@@ -64,6 +64,7 @@
 - 批量 OAuth 行操作区必须在“完成 OAuth 登录”与状态 badge 之间提供母号皇冠按钮，使用 Iconify `mdi:crown` / `mdi:crown-outline`。
 - 账号状态至少支持 `active`、`syncing`、`needs_reauth`、`error` 与 `disabled`；授权失效只能转 `needs_reauth`，不得静默删除账号或清空最后一次成功快照。
 - 任何导致组内母号归属变化的写操作，都必须触发系统级通知，并提供 10 秒可撤销窗口；同组后续切换应覆盖旧撤销上下文。
+- 账号详情页的操作忙碌态必须按账号隔离：当账号 A 正在同步/保存/删除/启停时，切到账号 B 的详情不得继承 A 的 loading/spinning 状态。
 
 ### SHOULD
 
@@ -83,6 +84,7 @@
 - 服务启动时会扫描所有启用中的 OAuth 账号：对即将过期的账号先 refresh，对到达同步周期的账号拉取 usage 快照并写入样本。
 - 用户点击 `重新登录` 会创建绑定到现有账号的登录会话；callback 成功后覆盖旧 token，但账号主键、历史样本和本地备注保持不变。
 - 用户点击 `立即同步` 时，OAuth 账号执行 refresh + usage 拉取；API Key 账号仅刷新本地展示状态。
+- 用户在账号 A 的异步操作未完成前切换到账号 B 时，晚到的 A 详情响应、同步响应或列表刷新都不得覆盖 B 的 detail 区块，也不得把当前选中账号强行切回 A。
 
 ### Edge cases / errors
 
@@ -118,6 +120,8 @@
 - Given API Key 账号录入了本地 `5 小时 / 7 天` 限额，When 打开列表或详情，Then 两个窗口都能显示本地限额与 `0` 使用量，并明确标记为占位统计。
 - Given OAuth 账号已有 usage 样本，When 打开详情页，Then `5 小时` 与 `7 天` 卡片都能展示最新百分比、重置时间和最近 7 天趋势线。
 - Given 用户打开号池路由密钥弹窗，When 点击“生成密钥”后关闭且未保存，Then 新生成的 key 只停留在当前草稿中，再次打开弹窗时输入框恢复为已保存状态。
+- Given 账号 A 正在执行手动同步，When 用户切换并打开账号 B 的详情，Then B 的“立即同步”按钮保持空闲 outline 图标，且不会显示 A 的 spinner。
+- Given 账号 A 的详情请求或同步响应晚于账号 B 返回，When 当前选中账号已经是 B，Then 页面只接受 B 的 detail 结果，A 的晚到响应不会覆盖详情内容，也不会把选中项切回 A。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -148,6 +152,10 @@
 - [x] M3: `号池 -> 上游账号` 前端页面、列表、详情、图表与交互完成。
 - [x] M4: Rust + Web 自动化验证补齐，并完成本地浏览器 smoke。
 - [ ] M5: spec sync、PR、checks、review-loop 收敛。
+
+## Change log
+
+- 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 隔离、晚到 detail/sync 响应丢弃，以及同步按钮 idle 态改用 outline 图标。
 
 ## Visual Evidence (PR)
 

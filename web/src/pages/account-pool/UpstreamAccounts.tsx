@@ -82,6 +82,24 @@ type GroupNoteEditorState = {
   existing: boolean
 }
 
+type AccountBusyActionType = 'save' | 'sync' | 'toggle' | 'relogin' | 'delete'
+
+type BusyActionState =
+  | { type: AccountBusyActionType; accountId: number }
+  | { type: 'routing' }
+  | null
+
+function isBusyAction(
+  busyAction: BusyActionState,
+  type: AccountBusyActionType | 'routing',
+  accountId?: number,
+) {
+  if (!busyAction || busyAction.type !== type) return false
+  if (type === 'routing') return true
+  if (busyAction.type === 'routing') return false
+  return busyAction.accountId === accountId
+}
+
 function formatDateTime(value?: string | null) {
   if (!value) return '—'
   const date = new Date(value)
@@ -394,7 +412,7 @@ export default function UpstreamAccountsPage() {
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
   const [actionError, setActionError] = useState<string | null>(null)
-  const [busyAction, setBusyAction] = useState<string | null>(null)
+  const [busyAction, setBusyAction] = useState<BusyActionState>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
@@ -612,7 +630,8 @@ export default function UpstreamAccountsPage() {
     error: stickyConversationError,
   } = useUpstreamStickyConversations(selectedId, stickyConversationLimit, Boolean(selectedId && isDetailDrawerOpen))
 
-  const selected = detail ?? selectedSummary
+  const selectedDetail = detail?.id === selectedId ? detail : null
+  const selected = selectedDetail ?? selectedSummary
   const selectedVisible = filteredItems.some((item) => item.id === selectedId)
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
@@ -640,8 +659,8 @@ export default function UpstreamAccountsPage() {
       ? t('accountPool.upstreamAccounts.kind.oauth')
       : t('accountPool.upstreamAccounts.kind.apiKey')
   const detailDisplayNameConflict = useMemo(
-    () => findDisplayNameConflict(items, draft.displayName, detail?.id ?? null),
-    [detail?.id, draft.displayName, items],
+    () => findDisplayNameConflict(items, draft.displayName, selectedDetail?.id ?? null),
+    [draft.displayName, items, selectedDetail?.id],
   )
   const tagFieldLabels = {
     label: t('accountPool.tags.field.label'),
@@ -688,7 +707,7 @@ export default function UpstreamAccountsPage() {
   const handleSave = async (source: UpstreamAccountDetail) => {
     if (source.kind === 'api_key_codex' && draftUpstreamBaseUrlError) return
     setActionError(null)
-    setBusyAction('save')
+    setBusyAction({ type: 'save', accountId: source.id })
     try {
       const response = await saveAccount(source.id, {
         displayName: draft.displayName.trim() || undefined,
@@ -709,38 +728,38 @@ export default function UpstreamAccountsPage() {
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyAction(null)
+      setBusyAction((current) => (isBusyAction(current, 'save', source.id) ? null : current))
     }
   }
 
   const handleSync = async (source: UpstreamAccountSummary) => {
     setActionError(null)
-    setBusyAction('sync')
+    setBusyAction({ type: 'sync', accountId: source.id })
     try {
       await runSync(source.id)
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyAction(null)
+      setBusyAction((current) => (isBusyAction(current, 'sync', source.id) ? null : current))
     }
   }
 
   const handleToggleEnabled = async (source: UpstreamAccountSummary, enabled: boolean) => {
     setActionError(null)
-    setBusyAction('toggle')
+    setBusyAction({ type: 'toggle', accountId: source.id })
     try {
       await saveAccount(source.id, { enabled })
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyAction(null)
+      setBusyAction((current) => (isBusyAction(current, 'toggle', source.id) ? null : current))
     }
   }
 
 
   const handleSaveRouting = async () => {
     setActionError(null)
-    setBusyAction('routing')
+    setBusyAction({ type: 'routing' })
     try {
       await saveRouting({ apiKey: routingDraft.apiKey.trim() })
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
@@ -748,7 +767,7 @@ export default function UpstreamAccountsPage() {
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyAction(null)
+      setBusyAction((current) => (isBusyAction(current, 'routing') ? null : current))
     }
   }
 
@@ -757,13 +776,13 @@ export default function UpstreamAccountsPage() {
       return
     }
     setActionError(null)
-    setBusyAction('delete')
+    setBusyAction({ type: 'delete', accountId: source.id })
     try {
       await removeAccount(source.id)
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyAction(null)
+      setBusyAction((current) => (isBusyAction(current, 'delete', source.id) ? null : current))
     }
   }
 
@@ -960,7 +979,7 @@ export default function UpstreamAccountsPage() {
         cancelLabel={t('accountPool.upstreamAccounts.actions.cancel')}
         saveLabel={t('accountPool.upstreamAccounts.routing.save')}
         apiKey={routingDraft.apiKey}
-        busy={busyAction === 'routing'}
+        busy={isBusyAction(busyAction, 'routing')}
         writesEnabled={writesEnabled}
         onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}
         onGenerate={() => setRoutingDraft((current) => ({ ...current, apiKey: generatePoolRoutingKey() }))}
@@ -988,7 +1007,7 @@ export default function UpstreamAccountsPage() {
               {t('accountPool.upstreamAccounts.detailEmptyDescription')}
             </p>
           </div>
-        ) : isDetailLoading && !detail ? (
+        ) : isDetailLoading && !selectedDetail ? (
           <AccountDetailSkeleton />
         ) : (
           <>
@@ -1023,30 +1042,55 @@ export default function UpstreamAccountsPage() {
                   <Switch
                     checked={selected.enabled}
                     onCheckedChange={(checked) => void handleToggleEnabled(selected, checked)}
-                    disabled={busyAction === 'toggle' || !writesEnabled}
+                    disabled={isBusyAction(busyAction, 'toggle', selected.id) || !writesEnabled}
                     aria-label={t('accountPool.upstreamAccounts.actions.enable')}
                   />
                 </div>
-                <Button type="button" variant="secondary" onClick={() => void handleSync(selected)} disabled={busyAction === 'sync'}>
-                  {busyAction === 'sync' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="refresh-circle" className="mr-2 h-4 w-4" aria-hidden />}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void handleSync(selected)}
+                  disabled={isBusyAction(busyAction, 'sync', selected.id)}
+                  data-testid="account-sync-button"
+                >
+                  {isBusyAction(busyAction, 'sync', selected.id) ? (
+                    <Spinner size="sm" className="mr-2" />
+                  ) : (
+                    <AppIcon
+                      name="timer-refresh-outline"
+                      className="mr-2 h-4 w-4"
+                      aria-hidden
+                      data-icon-name="timer-refresh-outline"
+                    />
+                  )}
                   {t('accountPool.upstreamAccounts.actions.syncNow')}
                 </Button>
                 {selected.kind === 'oauth_codex' ? (
-                  <Button type="button" variant="outline" onClick={() => void handleOauthLogin(selected.id)} disabled={busyAction === 'relogin' || !writesEnabled}>
-                    {busyAction === 'relogin' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void handleOauthLogin(selected.id)}
+                    disabled={isBusyAction(busyAction, 'relogin', selected.id) || !writesEnabled}
+                  >
+                    {isBusyAction(busyAction, 'relogin', selected.id) ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />}
                     {t('accountPool.upstreamAccounts.actions.relogin')}
                   </Button>
                 ) : null}
-                <Button type="button" variant="destructive" onClick={() => void handleDelete(selected)} disabled={busyAction === 'delete' || !writesEnabled}>
-                  {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={() => void handleDelete(selected)}
+                  disabled={isBusyAction(busyAction, 'delete', selected.id) || !writesEnabled}
+                >
+                  {isBusyAction(busyAction, 'delete', selected.id) ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
                   {t('accountPool.upstreamAccounts.actions.delete')}
                 </Button>
               </div>
             </div>
 
-            {detail ? (
+            {selectedDetail ? (
               <div className="grid gap-5">
-                {detail.duplicateInfo ? (
+                {selectedDetail.duplicateInfo ? (
                   <Alert variant="warning">
                     <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                     <div>
@@ -1055,23 +1099,23 @@ export default function UpstreamAccountsPage() {
                       </p>
                       <p className="mt-1 text-sm text-warning/90">
                         {t('accountPool.upstreamAccounts.duplicate.warningBody', {
-                          reasons: formatDuplicateReasons(detail.duplicateInfo),
-                          peers: detail.duplicateInfo.peerAccountIds.join(', '),
+                          reasons: formatDuplicateReasons(selectedDetail.duplicateInfo),
+                          peers: selectedDetail.duplicateInfo.peerAccountIds.join(', '),
                         })}
                       </p>
                     </div>
                   </Alert>
                 ) : null}
                 <div className="metric-grid">
-                  <DetailField label={t('accountPool.upstreamAccounts.fields.groupName')} value={detail.groupName ?? ''} />
+                  <DetailField label={t('accountPool.upstreamAccounts.fields.groupName')} value={selectedDetail.groupName ?? ''} />
                   <DetailField
                     label={t('accountPool.upstreamAccounts.mother.fieldLabel')}
-                    value={detail.isMother ? t('accountPool.upstreamAccounts.mother.badge') : t('accountPool.upstreamAccounts.mother.notMother')}
+                    value={selectedDetail.isMother ? t('accountPool.upstreamAccounts.mother.badge') : t('accountPool.upstreamAccounts.mother.notMother')}
                   />
-                  <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={detail.email ?? ''} />
-                  <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={detail.chatgptAccountId ?? detail.maskedApiKey ?? ''} />
-                  <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={detail.chatgptUserId ?? ''} />
-                  <DetailField label={t('accountPool.upstreamAccounts.fields.lastSuccessSync')} value={formatDateTime(detail.lastSuccessfulSyncAt)} />
+                  <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={selectedDetail.email ?? ''} />
+                  <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={selectedDetail.chatgptAccountId ?? selectedDetail.maskedApiKey ?? ''} />
+                  <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={selectedDetail.chatgptUserId ?? ''} />
+                  <DetailField label={t('accountPool.upstreamAccounts.fields.lastSuccessSync')} value={formatDateTime(selectedDetail.lastSuccessfulSyncAt)} />
                 </div>
 
                 <Card className="border-base-300/80 bg-base-100/72">
@@ -1162,7 +1206,7 @@ export default function UpstreamAccountsPage() {
                         onDeleteTag={handleDeleteTag}
                       />
                     </div>
-                    {detail.kind === 'api_key_codex' ? (
+                    {selectedDetail.kind === 'api_key_codex' ? (
                       <>
                         <label className="field">
                           <span className="field-label">{t('accountPool.upstreamAccounts.fields.primaryLimit')}</span>
@@ -1219,15 +1263,15 @@ export default function UpstreamAccountsPage() {
                     <div className="md:col-span-2 flex justify-end">
                       <Button
                         type="button"
-                        onClick={() => void handleSave(detail)}
+                        onClick={() => void handleSave(selectedDetail)}
                         disabled={
-                          busyAction === 'save' ||
+                          isBusyAction(busyAction, 'save', selectedDetail.id) ||
                           !writesEnabled ||
                           detailDisplayNameConflict != null ||
-                          (detail.kind === 'api_key_codex' && Boolean(draftUpstreamBaseUrlError))
+                          (selectedDetail.kind === 'api_key_codex' && Boolean(draftUpstreamBaseUrlError))
                         }
                       >
-                        {busyAction === 'save' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="content-save-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                        {isBusyAction(busyAction, 'save', selectedDetail.id) ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="content-save-outline" className="mr-2 h-4 w-4" aria-hidden />}
                         {t('accountPool.upstreamAccounts.actions.save')}
                       </Button>
                     </div>
@@ -1238,26 +1282,26 @@ export default function UpstreamAccountsPage() {
                   <UpstreamAccountUsageCard
                     title={t('accountPool.upstreamAccounts.primaryWindowLabel')}
                     description={t('accountPool.upstreamAccounts.usage.primaryDescription')}
-                    window={detail.primaryWindow}
-                    history={detail.history}
+                    window={selectedDetail.primaryWindow}
+                    history={selectedDetail.history}
                     historyKey="primaryUsedPercent"
                     emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
-                    noteLabel={detail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
+                    noteLabel={selectedDetail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
                   />
                   <UpstreamAccountUsageCard
                     title={t('accountPool.upstreamAccounts.secondaryWindowLabel')}
                     description={t('accountPool.upstreamAccounts.usage.secondaryDescription')}
-                    window={detail.secondaryWindow}
-                    history={detail.history}
+                    window={selectedDetail.secondaryWindow}
+                    history={selectedDetail.history}
                     historyKey="secondaryUsedPercent"
                     emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
-                    noteLabel={detail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
+                    noteLabel={selectedDetail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
                     accentClassName="text-secondary"
                   />
                 </div>
 
                 <EffectiveRoutingRuleCard
-                  rule={detail.effectiveRoutingRule}
+                  rule={selectedDetail.effectiveRoutingRule}
                   labels={{
                     title: t('accountPool.upstreamAccounts.effectiveRule.title'),
                     description: t('accountPool.upstreamAccounts.effectiveRule.description'),
@@ -1311,17 +1355,17 @@ export default function UpstreamAccountsPage() {
                     <CardDescription>{t('accountPool.upstreamAccounts.healthDescription')}</CardDescription>
                   </CardHeader>
                   <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                    <DetailField label={t('accountPool.upstreamAccounts.fields.lastSyncedAt')} value={formatDateTime(detail.lastSyncedAt)} />
-                    <DetailField label={t('accountPool.upstreamAccounts.fields.lastRefreshedAt')} value={formatDateTime(detail.lastRefreshedAt)} />
-                    <DetailField label={t('accountPool.upstreamAccounts.fields.tokenExpiresAt')} value={formatDateTime(detail.tokenExpiresAt)} />
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.lastSyncedAt')} value={formatDateTime(selectedDetail.lastSyncedAt)} />
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.lastRefreshedAt')} value={formatDateTime(selectedDetail.lastRefreshedAt)} />
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.tokenExpiresAt')} value={formatDateTime(selectedDetail.tokenExpiresAt)} />
                     <DetailField
                       label={t('accountPool.upstreamAccounts.fields.credits')}
-                      value={detail.credits?.balance ? `${detail.credits.balance}` : detail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
+                      value={selectedDetail.credits?.balance ? `${selectedDetail.credits.balance}` : selectedDetail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
                     />
                     <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
                       <p className="metric-label">{t('accountPool.upstreamAccounts.fields.lastError')}</p>
-                      <p className="mt-2 text-sm leading-6 text-base-content/75">{detail.lastError ?? t('accountPool.upstreamAccounts.noError')}</p>
-                      <p className="mt-2 text-xs text-base-content/55">{formatDateTime(detail.lastErrorAt)}</p>
+                      <p className="mt-2 text-sm leading-6 text-base-content/75">{selectedDetail.lastError ?? t('accountPool.upstreamAccounts.noError')}</p>
+                      <p className="mt-2 text-xs text-base-content/55">{formatDateTime(selectedDetail.lastErrorAt)}</p>
                     </div>
                   </CardContent>
                 </Card>

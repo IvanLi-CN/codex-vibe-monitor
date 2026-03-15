@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createApiKeyUpstreamAccount,
   completeOauthLoginSession,
@@ -37,9 +37,19 @@ export function useUpstreamAccounts() {
   const [isLoading, setIsLoading] = useState(true)
   const [isDetailLoading, setIsDetailLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const selectedIdRef = useRef<number | null>(null)
+  const detailRequestSeqRef = useRef(0)
+  const detailAbortControllerRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId
+  }, [selectedId])
 
   const loadList = useCallback(
-    async (preferredId?: number | null) => {
+    async (
+      preferredId?: number | null,
+      options?: { respectCurrentSelection?: boolean; selectionAnchorId?: number | null },
+    ) => {
       setIsLoading(true)
       try {
         const response = await fetchUpstreamAccounts()
@@ -49,7 +59,11 @@ export function useUpstreamAccounts() {
         setRouting(response.routing ?? null)
         setError(null)
         setSelectedId((current) => {
-          const nextId = preferredId ?? current
+          const selectionAnchorId = options?.selectionAnchorId ?? preferredId ?? null
+          const shouldPreferRequestedId =
+            preferredId != null &&
+            (!options?.respectCurrentSelection || current === selectionAnchorId)
+          const nextId = shouldPreferRequestedId ? preferredId : current
           if (nextId != null && response.items.some((item) => item.id === nextId)) {
             return nextId
           }
@@ -67,21 +81,42 @@ export function useUpstreamAccounts() {
   )
 
   const loadDetail = useCallback(async (accountId: number | null) => {
+    detailRequestSeqRef.current += 1
+    const requestSeq = detailRequestSeqRef.current
+    detailAbortControllerRef.current?.abort()
+
     if (accountId == null) {
       setDetail(null)
+      setIsDetailLoading(false)
       return null
     }
+
+    setDetail((current) => (current?.id === accountId ? current : null))
     setIsDetailLoading(true)
+    const controller = new AbortController()
+    detailAbortControllerRef.current = controller
     try {
-      const response = await fetchUpstreamAccountDetail(accountId)
+      const response = await fetchUpstreamAccountDetail(accountId, controller.signal)
+      if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
+        return null
+      }
       setDetail(response)
       setError(null)
       return response
     } catch (err) {
+      if (controller.signal.aborted) {
+        return null
+      }
+      if (requestSeq !== detailRequestSeqRef.current) {
+        return null
+      }
       setError(err instanceof Error ? err.message : String(err))
       return null
     } finally {
-      setIsDetailLoading(false)
+      if (requestSeq === detailRequestSeqRef.current) {
+        detailAbortControllerRef.current = null
+        setIsDetailLoading(false)
+      }
     }
   }, [])
 
@@ -99,9 +134,13 @@ export function useUpstreamAccounts() {
   )
 
   const refresh = useCallback(async () => {
-    await loadList(selectedId)
-    await loadDetail(selectedId)
-  }, [loadDetail, loadList, selectedId])
+    const currentSelectedId = selectedIdRef.current
+    await loadList(currentSelectedId, {
+      respectCurrentSelection: true,
+      selectionAnchorId: currentSelectedId,
+    })
+    await loadDetail(selectedIdRef.current)
+  }, [loadDetail, loadList])
 
   useEffect(() => {
     const handleChanged = () => {
@@ -170,9 +209,10 @@ export function useUpstreamAccounts() {
   const saveAccount = useCallback(
     async (accountId: number, payload: UpdateUpstreamAccountPayload) => {
       const response = await updateUpstreamAccount(accountId, payload)
-      await loadList(accountId)
-      setDetail(response)
-      setSelectedId(accountId)
+      await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
+      if (selectedIdRef.current === accountId) {
+        setDetail(response)
+      }
       setError(null)
       emitUpstreamAccountsChanged()
       return response
@@ -191,19 +231,23 @@ export function useUpstreamAccounts() {
     async (groupName: string, payload: UpdateUpstreamAccountGroupPayload) => {
       const response = await updateUpstreamAccountGroup(groupName, payload)
       setGroups((current) => upsertGroupSummary(current, response))
-      await loadList(selectedId)
+      await loadList(selectedIdRef.current, {
+        respectCurrentSelection: true,
+        selectionAnchorId: selectedIdRef.current,
+      })
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadList, selectedId],
+    [loadList],
   )
 
   const runSync = useCallback(
     async (accountId: number) => {
       const response = await syncUpstreamAccount(accountId)
-      await loadList(accountId)
-      setDetail(response)
-      setSelectedId(accountId)
+      await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
+      if (selectedIdRef.current === accountId) {
+        setDetail(response)
+      }
       setError(null)
       emitUpstreamAccountsChanged()
       return response
@@ -222,6 +266,15 @@ export function useUpstreamAccounts() {
       emitUpstreamAccountsChanged()
     },
     [items, loadDetail, loadList],
+  )
+
+  useEffect(
+    () => () => {
+      detailRequestSeqRef.current += 1
+      detailAbortControllerRef.current?.abort()
+      detailAbortControllerRef.current = null
+    },
+    [],
   )
 
   return {
