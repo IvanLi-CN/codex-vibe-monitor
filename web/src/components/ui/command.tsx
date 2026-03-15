@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Icon } from '@iconify/react'
+import { AppIcon } from '../AppIcon'
 import { Command as CommandPrimitive } from 'cmdk'
 import { cn } from '../../lib/utils'
 
@@ -23,7 +23,7 @@ const CommandInput = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
 >(({ className, ...props }, ref) => (
   <div className="flex items-center border-b border-base-300/80 px-3" cmdk-input-wrapper="">
-    <Icon icon="mdi:magnify" className="mr-2 h-4 w-4 shrink-0 text-base-content/45" aria-hidden />
+    <AppIcon name="magnify" className="mr-2 h-4 w-4 shrink-0 text-base-content/45" aria-hidden />
     <CommandPrimitive.Input
       ref={ref}
       className={cn(

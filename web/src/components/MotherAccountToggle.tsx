@@ -1,11 +1,11 @@
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
 
 export function MotherAccountBadge({ label }: { label: string }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/35 bg-amber-300/12 px-2 py-0.5 text-[11px] font-semibold text-amber-200">
-      <Icon icon="mdi:crown" className="h-3.5 w-3.5" aria-hidden />
+      <AppIcon name="crown" className="h-3.5 w-3.5" aria-hidden />
       {label}
     </span>
   )
@@ -46,7 +46,7 @@ export function MotherAccountToggle({
           : 'border-base-300/80 bg-base-100/72 text-base-content/68 hover:border-base-300 hover:bg-base-100',
       )}
     >
-      <Icon icon={checked ? 'mdi:crown' : 'mdi:crown-outline'} className={cn(iconOnly ? 'h-4 w-4' : 'h-5 w-5 shrink-0')} aria-hidden />
+      <AppIcon name={checked ? 'crown' : 'crown-outline'} className={cn(iconOnly ? 'h-4 w-4' : 'h-5 w-5 shrink-0')} aria-hidden />
       {iconOnly ? null : (
         <span className="min-w-0 space-y-0.5">
           <span className="block text-sm font-semibold text-current">{label}</span>

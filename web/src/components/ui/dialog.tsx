@@ -1,6 +1,6 @@
 import * as React from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
-import { Icon } from '@iconify/react'
+import { AppIcon } from '../AppIcon'
 import { cn } from '../../lib/utils'
 
 const Dialog = DialogPrimitive.Root
@@ -95,7 +95,7 @@ function DialogCloseIcon({ className, ...props }: React.ComponentPropsWithoutRef
       )}
       {...props}
     >
-      <Icon icon="mdi:close" className="h-5 w-5" aria-hidden />
+      <AppIcon name="close" className="h-5 w-5" aria-hidden />
       <span className="sr-only">Close</span>
     </DialogClose>
   )

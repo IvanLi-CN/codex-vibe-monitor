@@ -1,5 +1,5 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import type { ApiInvocation } from '../lib/api'
 import {
   formatProxyWeightDelta,
@@ -125,7 +125,7 @@ function renderFastIndicator(state: FastIndicatorState, t: (key: TranslationKey)
       data-fast-state={state}
       role="img"
     >
-      <Icon icon="mdi:lightning-bolt" className="h-3.5 w-3.5" aria-hidden />
+      <AppIcon name="lightning-bolt" className="h-3.5 w-3.5" aria-hidden />
     </span>
   )
 }
@@ -341,13 +341,13 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     : t('table.details.proxyWeightDeltaA11yUnchanged', { value: proxyWeightDeltaView.value })
               }
             >
-              <Icon
-                icon={
+              <AppIcon
+                name={
                   proxyWeightDeltaView.direction === 'up'
-                    ? 'mdi:arrow-up-bold'
+                    ? 'arrow-up-bold'
                     : proxyWeightDeltaView.direction === 'down'
-                      ? 'mdi:arrow-down-bold'
-                      : 'mdi:arrow-right-bold'
+                      ? 'arrow-down-bold'
+                      : 'arrow-right-bold'
                 }
                 className="h-3.5 w-3.5"
                 aria-hidden
@@ -548,8 +548,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                   aria-controls={listDetailId}
                   aria-label={isExpanded ? toggleLabels.hide : toggleLabels.show}
                 >
-                  <Icon
-                    icon={isExpanded ? 'mdi:chevron-down' : 'mdi:chevron-right'}
+                  <AppIcon
+                    name={isExpanded ? 'chevron-down' : 'chevron-right'}
                     className="h-5 w-5"
                     aria-hidden
                   />
@@ -787,8 +787,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                           aria-controls={tableDetailId}
                           aria-label={isExpanded ? toggleLabels.hide : toggleLabels.show}
                         >
-                          <Icon
-                            icon={isExpanded ? 'mdi:chevron-down' : 'mdi:chevron-right'}
+                          <AppIcon
+                            name={isExpanded ? 'chevron-down' : 'chevron-right'}
                             className="h-4 w-4"
                             aria-hidden
                           />

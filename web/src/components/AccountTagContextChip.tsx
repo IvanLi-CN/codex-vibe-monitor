@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { AppIcon } from './AppIcon'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
@@ -104,7 +104,7 @@ export function AccountTagContextChip({
         onPointerCancel={clearLongPress}
       >
         <Badge variant="secondary" className="gap-2 px-3 py-1.5">
-          <Icon icon="mdi:tag-outline" className="h-3.5 w-3.5" aria-hidden />
+          <AppIcon name="tag-outline" className="h-3.5 w-3.5" aria-hidden />
           <span>{name}</span>
           {currentPageCreated ? (
             <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">
@@ -132,7 +132,7 @@ export function AccountTagContextChip({
           setMenuOpen((current) => !current)
         }}
       >
-        <Icon icon="mdi:dots-horizontal" className="h-3.5 w-3.5" aria-hidden />
+        <AppIcon name="dots-horizontal" className="h-3.5 w-3.5" aria-hidden />
       </button>
 
       {menuOpen ? (
@@ -151,8 +151,8 @@ export function AccountTagContextChip({
               disabled={busyAction === 'remove'}
               onClick={() => void handleRemove()}
             >
-              <Icon
-                icon={currentPageCreated ? 'mdi:delete-outline' : 'mdi:link-variant-off'}
+              <AppIcon
+                name={currentPageCreated ? 'delete-outline' : 'link-variant-off'}
                 className="mr-2 h-[0.9rem] w-[0.9rem]"
                 aria-hidden
               />
@@ -167,7 +167,7 @@ export function AccountTagContextChip({
                 onEdit()
               }}
             >
-              <Icon icon="mdi:pencil-outline" className="mr-2 h-[0.9rem] w-[0.9rem]" aria-hidden />
+              <AppIcon name="pencil-outline" className="mr-2 h-[0.9rem] w-[0.9rem]" aria-hidden />
               {labels.edit}
             </Button>
           </div>
