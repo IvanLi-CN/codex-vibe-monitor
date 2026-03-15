@@ -8781,9 +8781,13 @@ fn extract_upstream_error_message(value: &Value) -> Option<String> {
 }
 
 fn extract_upstream_request_id(value: &Value) -> Option<String> {
-    value
-        .pointer("/error/request_id")
-        .and_then(|entry| entry.as_str())
+    extract_upstream_error_object(value)
+        .and_then(|entry| {
+            entry
+                .get("request_id")
+                .or_else(|| entry.get("requestId"))
+                .and_then(|value| value.as_str())
+        })
         .map(|entry| entry.to_string())
         .or_else(|| {
             extract_upstream_error_message(value)
@@ -9041,17 +9045,44 @@ fn extract_error_message_from_response(bytes: &[u8]) -> Option<String> {
         })
 }
 
+fn summarize_plaintext_upstream_error(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let lower = text.to_ascii_lowercase();
+    if text.starts_with('<')
+        || lower.starts_with("<!doctype")
+        || lower.starts_with("<html")
+        || lower.starts_with("<body")
+    {
+        return None;
+    }
+    Some(text.chars().take(240).collect())
+}
+
 fn summarize_pool_upstream_http_failure(
     status: StatusCode,
     upstream_request_id_header: Option<&str>,
     bytes: &[u8],
 ) -> (Option<String>, Option<String>, Option<String>, String) {
     let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        let detail = summarize_plaintext_upstream_error(bytes);
+        let message = detail.as_deref().map_or_else(
+            || format!("pool upstream responded with {}", status.as_u16()),
+            |detail| {
+                format!(
+                    "pool upstream responded with {}: {}",
+                    status.as_u16(),
+                    detail
+                )
+            },
+        );
         return (
             None,
-            None,
+            detail,
             upstream_request_id_header.map(|value| value.to_string()),
-            format!("pool upstream responded with {}", status.as_u16()),
+            message,
         );
     };
     let upstream_error_code = extract_upstream_error_code(&value);

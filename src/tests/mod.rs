@@ -9403,6 +9403,36 @@ fn summarize_pool_upstream_http_failure_prefers_request_id_header() {
     );
 }
 
+#[test]
+fn summarize_pool_upstream_http_failure_keeps_plaintext_reauth_signal() {
+    let (code, message, request_id, summary) = summarize_pool_upstream_http_failure(
+        StatusCode::UNAUTHORIZED,
+        None,
+        b"invalid_grant: please sign in again",
+    );
+    assert_eq!(code, None);
+    assert_eq!(
+        message.as_deref(),
+        Some("invalid_grant: please sign in again")
+    );
+    assert_eq!(request_id, None);
+    assert_eq!(
+        summary,
+        "pool upstream responded with 401: invalid_grant: please sign in again"
+    );
+}
+
+#[test]
+fn summarize_pool_upstream_http_failure_reads_nested_request_id() {
+    let body = br#"{"response":{"error":{"message":"Request failed","code":"bad_request","request_id":"req_nested_123"}}}"#;
+    let (code, message, request_id, summary) =
+        summarize_pool_upstream_http_failure(StatusCode::BAD_REQUEST, None, body);
+    assert_eq!(code.as_deref(), Some("bad_request"));
+    assert_eq!(message.as_deref(), Some("Request failed"));
+    assert_eq!(request_id.as_deref(), Some("req_nested_123"));
+    assert_eq!(summary, "pool upstream responded with 400: Request failed");
+}
+
 #[tokio::test]
 async fn pool_route_uses_account_specific_upstream_base_url() {
     let (global_upstream_base, global_upstream_handle) = spawn_test_upstream().await;
