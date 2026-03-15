@@ -175,7 +175,9 @@ jobs:
           TARGET_SHA: ${{ steps.target.outputs.target_sha }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}"
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}"
+          fi
           python3 .github/scripts/release_snapshot.py export \
             --target-sha "${TARGET_SHA}" \
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
