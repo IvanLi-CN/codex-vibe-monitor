@@ -100,6 +100,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow historical backfill to fall back to the merged PR's current labels when no frozen intent artifact exists.",
     )
+    ensure.add_argument(
+        "--target-only",
+        action="store_true",
+        help="Only materialize the requested target commit instead of filling every missing first-parent snapshot on the path.",
+    )
 
     export_cmd = subparsers.add_parser("export", help="Export a stored release snapshot into GitHub outputs.")
     export_cmd.add_argument("--target-sha", required=True)
@@ -875,6 +880,7 @@ def export_snapshot(snapshot: dict[str, Any], github_output: str) -> None:
 def ensure_snapshot(args: argparse.Namespace) -> int:
     target_sha = normalize_sha(args.target_sha)
     output_path = Path(args.output)
+    commits_to_materialize = [target_sha] if args.target_only else first_parent_commits(target_sha)
 
     for attempt in range(1, args.max_attempts + 1):
         fetch_notes_ref(args.notes_ref)
@@ -886,7 +892,7 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
         target_snapshot: dict[str, Any] | None = None
         with tempfile.TemporaryDirectory(prefix="release-snapshot-notes-") as tmp:
             temp_note = Path(tmp) / "snapshot.json"
-            for commit in first_parent_commits(target_sha):
+            for commit in commits_to_materialize:
                 snapshot = read_snapshot(args.notes_ref, commit)
                 if snapshot is not None:
                     if commit == target_sha:
