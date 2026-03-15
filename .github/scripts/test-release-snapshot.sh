@@ -712,5 +712,30 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-target-only-") as tmp:
         module.git = original_git
         os.chdir(original_cwd)
 
+captured_headers: dict[str, str] = {}
+original_urlopen = module.request.urlopen
+
+class FakeResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self) -> bytes:
+        return b"artifact-bytes"
+
+try:
+    def fake_urlopen(req):
+        captured_headers.update({key.lower(): value for key, value in req.header_items()})
+        return FakeResponse()
+
+    module.request.urlopen = fake_urlopen
+    payload = module.github_request_bytes("https://api.github.com/repos/demo/actions/artifacts/1/zip", "token")
+    assert payload == b"artifact-bytes"
+    assert captured_headers["accept"] == "application/vnd.github+json"
+finally:
+    module.request.urlopen = original_urlopen
+
 print("test-release-snapshot: all checks passed")
 PY
