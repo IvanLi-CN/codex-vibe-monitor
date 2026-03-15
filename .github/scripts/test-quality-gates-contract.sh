@@ -34,6 +34,14 @@ done
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 
+simplified_topology_repo="$tmp_dir/simplified-topology-repo"
+cp -R "$baseline_repo/." "$simplified_topology_repo"
+for workflow in ci-main.yml release.yml label-gate.yml; do
+  cp "$fixtures_root/simplified/$workflow" "$simplified_topology_repo/.github/workflows/$workflow"
+done
+
+python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$simplified_topology_repo" --profile final
+
 label_concurrency_repo="$tmp_dir/label-concurrency-repo"
 cp -R "$baseline_repo/." "$label_concurrency_repo"
 python3 - <<'PY' "$label_concurrency_repo"

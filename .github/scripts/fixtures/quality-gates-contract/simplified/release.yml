@@ -1,0 +1,567 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows:
+      - CI Main
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Commit SHA on main to release or backfill
+        required: true
+        type: string
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PLATFORM_AMD64: linux/amd64
+  PLATFORM_ARM64: linux/arm64
+  PLATFORMS: linux/amd64,linux/arm64
+  RELEASE_SNAPSHOT_NOTES_REF: refs/notes/release-snapshots
+
+jobs:
+  release-meta:
+    name: Release Meta (snapshot + tags)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      target_sha: ${{ steps.pending-target.outputs.target_sha }}
+      release_enabled: ${{ steps.snapshot.outputs.release_enabled }}
+      release_bump: ${{ steps.snapshot.outputs.release_bump }}
+      release_channel: ${{ steps.snapshot.outputs.release_channel }}
+      pr_number: ${{ steps.snapshot.outputs.pr_number }}
+      pr_title: ${{ steps.snapshot.outputs.pr_title }}
+      image_name_lower: ${{ steps.snapshot.outputs.image_name_lower }}
+      app_effective_version: ${{ steps.snapshot.outputs.app_effective_version }}
+      release_tag: ${{ steps.snapshot.outputs.release_tag }}
+      release_prerelease: ${{ steps.snapshot.outputs.release_prerelease }}
+      tags_csv: ${{ steps.snapshot.outputs.tags_csv }}
+      candidate_suffix: ${{ steps.candidate.outputs.candidate_suffix }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for release notes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve requested commit
+        id: requested-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            target_sha="${{ inputs.commit_sha }}"
+          else
+            target_sha="${{ github.event.workflow_run.head_sha }}"
+          fi
+
+          if [[ ! "${target_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid commit_sha: ${target_sha}" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          if ! git cat-file -e "${target_sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "${target_sha}"
+          fi
+          git cat-file -e "${target_sha}^{commit}"
+
+          if ! git merge-base --is-ancestor "${target_sha}" origin/main; then
+            echo "Commit ${target_sha} is not contained in origin/main" >&2
+            exit 1
+          fi
+
+          echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate manual backfill target passed CI Main
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ steps.requested-target.outputs.target_sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const sha = process.env.TARGET_SHA
+            if (!sha) {
+              core.setFailed('Missing TARGET_SHA')
+              return
+            }
+
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: 'ci-main.yml',
+              branch: 'main',
+              event: 'push',
+              head_sha: sha,
+              status: 'completed',
+              per_page: 100,
+            })
+
+            const matchingRuns = (runs.data.workflow_runs || []).filter(run => run.head_sha === sha)
+            const passed = matchingRuns.some(run => run.conclusion === 'success')
+            if (!passed) {
+              for (const run of matchingRuns) {
+                if (run.conclusion !== 'failure') {
+                  continue
+                }
+
+                const jobs = await github.rest.actions.listJobsForWorkflowRun({
+                  owner,
+                  repo,
+                  run_id: run.id,
+                  per_page: 100,
+                })
+
+                const entries = jobs.data.jobs || []
+                const snapshotJob = entries.find(job => job.name === 'Release Snapshot')
+                const blockingJobs = entries.filter(
+                  job => job.name !== 'Release Snapshot' && job.conclusion !== 'success'
+                )
+
+                if (snapshotJob && snapshotJob.conclusion === 'failure' && blockingJobs.length === 0) {
+                  core.notice(`Accepted snapshot-only CI Main failure for ${sha} via run ${run.id}`)
+                  return
+                }
+              }
+
+              core.setFailed(`Manual backfill requires either a successful CI Main run or a snapshot-only CI Main failure for ${sha}`)
+              return
+            }
+
+            core.notice(`Verified successful CI Main history for ${sha}`)
+
+      - name: Ensure immutable release snapshot for manual backfill
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ steps.requested-target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_snapshot.py ensure \
+            --target-sha "${TARGET_SHA}" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --registry "${REGISTRY}" \
+            --target-only \
+            --output "$RUNNER_TEMP/release-snapshot.json"
+
+      - name: Select pending release target
+        id: pending-target
+        shell: bash
+        env:
+          REQUESTED_SHA: ${{ steps.requested-target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "target_sha=${REQUESTED_SHA}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --no-tags origin main
+          git fetch --tags origin
+          git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}" || true
+          python3 .github/scripts/release_snapshot.py next-pending \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --main-ref "origin/main" \
+            --upper-bound "${REQUESTED_SHA}" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Load immutable release snapshot
+        if: steps.pending-target.outputs.target_sha != ''
+        id: snapshot
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.pending-target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}"
+          fi
+          python3 .github/scripts/release_snapshot.py export \
+            --target-sha "${TARGET_SHA}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --main-ref "origin/main" \
+            --resolve-publication-tags \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Compute candidate suffix
+        if: steps.pending-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'
+        id: candidate
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.pending-target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          echo "candidate_suffix=${TARGET_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate platforms for smoke gate
+        if: steps.pending-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_platforms=("${PLATFORM_AMD64}" "${PLATFORM_ARM64}")
+          normalized=",${PLATFORMS// /},"
+          for platform in "${required_platforms[@]}"; do
+            if [[ "${normalized}" != *",${platform},"* ]]; then
+              echo "Missing required platform in PLATFORMS=${PLATFORMS}: ${platform}" >&2
+              exit 1
+            fi
+          done
+
+  docker-amd64:
+    name: Build + Smoke + Push Candidate (linux/amd64)
+    runs-on: ubuntu-latest
+    needs: [release-meta]
+    if: needs.release-meta.outputs.release_enabled == 'true'
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-meta.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build smoke image (linux/amd64, load)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ env.PLATFORM_AMD64 }}
+          push: false
+          load: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
+          build-args: |
+            APP_EFFECTIVE_VERSION=${{ needs.release-meta.outputs.app_effective_version }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-amd64
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-amd64,mode=max
+
+      - name: Smoke test image (linux/amd64)
+        shell: bash
+        env:
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-amd64-${{ needs.release-meta.outputs.candidate_suffix }}
+          SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
+        run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+      - name: Push candidate image (linux/amd64)
+        shell: bash
+        env:
+          IMAGE_NAME_LOWER: ${{ needs.release-meta.outputs.image_name_lower }}
+        run: |
+          set -euo pipefail
+          image="${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}"
+          suffix="${{ needs.release-meta.outputs.candidate_suffix }}"
+          candidate_amd64="${image}:candidate-${suffix}-amd64"
+          echo "[push] ${candidate_amd64}"
+          docker push "${candidate_amd64}"
+
+  docker-arm64:
+    name: Build + Smoke + Push Candidate (linux/arm64)
+    runs-on: ubuntu-24.04-arm
+    needs: [release-meta]
+    if: needs.release-meta.outputs.release_enabled == 'true'
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-meta.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build smoke image (linux/arm64, load)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ env.PLATFORM_ARM64 }}
+          push: false
+          load: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
+            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
+          build-args: |
+            APP_EFFECTIVE_VERSION=${{ needs.release-meta.outputs.app_effective_version }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64,mode=max
+
+      - name: Smoke test image (linux/arm64)
+        shell: bash
+        env:
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-arm64-${{ needs.release-meta.outputs.candidate_suffix }}
+          SMOKE_PLATFORM: ${{ env.PLATFORM_ARM64 }}
+          SMOKE_TIMEOUT_SECS: "120"
+        run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+      - name: Push candidate image (linux/arm64)
+        shell: bash
+        env:
+          IMAGE_NAME_LOWER: ${{ needs.release-meta.outputs.image_name_lower }}
+        run: |
+          set -euo pipefail
+          image="${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}"
+          suffix="${{ needs.release-meta.outputs.candidate_suffix }}"
+          candidate_arm64="${image}:candidate-${suffix}-arm64"
+          echo "[push] ${candidate_arm64}"
+          docker push "${candidate_arm64}"
+
+  release-publish:
+    name: Release Publish (manifest + tag + GitHub Release)
+    runs-on: ubuntu-latest
+    needs: [release-meta, docker-amd64, docker-arm64]
+    if: needs.release-meta.outputs.release_enabled == 'true'
+    permissions:
+      actions: write
+      contents: write
+      packages: write
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-meta.outputs.target_sha }}
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release manifest tags from smoke-verified images
+        shell: bash
+        env:
+          TAGS_CSV: ${{ needs.release-meta.outputs.tags_csv }}
+          IMAGE_NAME_LOWER: ${{ needs.release-meta.outputs.image_name_lower }}
+        run: |
+          set -euo pipefail
+          image="${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}"
+          suffix="${{ needs.release-meta.outputs.candidate_suffix }}"
+          candidate_amd64="${image}:candidate-${suffix}-amd64"
+          candidate_arm64="${image}:candidate-${suffix}-arm64"
+
+          IFS=',' read -r -a tags <<< "${TAGS_CSV}"
+          for tag in "${tags[@]}"; do
+            [[ -z "${tag}" ]] && continue
+            echo "[manifest] ${tag} <= ${candidate_amd64}, ${candidate_arm64}"
+            for attempt in 1 2 3 4 5; do
+              if docker buildx imagetools create --tag "${tag}" "${candidate_amd64}" "${candidate_arm64}" 2>"/tmp/imagetools-create-${attempt}.err"; then
+                break
+              fi
+              if [[ "${attempt}" == "5" ]]; then
+                echo "[manifest] failed after ${attempt} attempts for ${tag}" >&2
+                if [[ -s "/tmp/imagetools-create-${attempt}.err" ]]; then
+                  cat "/tmp/imagetools-create-${attempt}.err" >&2
+                fi
+                exit 1
+              fi
+              sleep_secs=$((attempt * 3))
+              echo "[manifest] retry in ${sleep_secs}s (${attempt}/5): ${tag}" >&2
+              sleep "${sleep_secs}"
+            done
+          done
+
+      - name: Verify pushed manifest platforms
+        shell: bash
+        env:
+          TAGS_CSV: ${{ needs.release-meta.outputs.tags_csv }}
+          REQUIRED_PLATFORMS: ${{ env.PLATFORMS }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -r -a tags <<< "${TAGS_CSV}"
+          for tag in "${tags[@]}"; do
+            [[ -z "${tag}" ]] && continue
+            echo "[verify] ${tag}"
+            for attempt in 1 2 3 4 5; do
+              if raw_json="$(docker buildx imagetools inspect "${tag}" --raw 2>"/tmp/imagetools-${attempt}.err")"; then
+                if RAW_JSON="${raw_json}" python3 ./.github/scripts/verify_manifest_platforms.py "${tag}"; then
+                  break
+                fi
+              fi
+
+              if [[ "${attempt}" == "5" ]]; then
+                echo "[verify] failed after ${attempt} attempts for ${tag}" >&2
+                if [[ -s "/tmp/imagetools-${attempt}.err" ]]; then
+                  cat "/tmp/imagetools-${attempt}.err" >&2
+                fi
+                exit 1
+              fi
+
+              sleep_secs=$((attempt * 3))
+              echo "[verify] retry in ${sleep_secs}s (${attempt}/5): ${tag}" >&2
+              sleep "${sleep_secs}"
+            done
+          done
+
+      - name: Create and push git tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-meta.outputs.release_tag }}
+          APP_EFFECTIVE_VERSION: ${{ needs.release-meta.outputs.app_effective_version }}
+          TARGET_SHA: ${{ needs.release-meta.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          tag="${RELEASE_TAG}"
+          sha="${TARGET_SHA}"
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            existing="$(git rev-list -n 1 "${tag}")"
+            if [[ "${existing}" != "${sha}" ]]; then
+              echo "Tag ${tag} already exists but points to ${existing} (expected ${sha})" >&2
+              exit 1
+            fi
+            echo "Tag ${tag} already exists and points to ${sha}."
+          else
+            git tag -a "${tag}" "${sha}" -m "release ${APP_EFFECTIVE_VERSION}"
+          fi
+
+          git push origin "${tag}"
+
+      - name: Create GitHub Release
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ needs.release-meta.outputs.target_sha }}
+          RELEASE_TAG: ${{ needs.release-meta.outputs.release_tag }}
+          RELEASE_PRERELEASE: ${{ needs.release-meta.outputs.release_prerelease }}
+          RELEASE_PR_NUMBER: ${{ needs.release-meta.outputs.pr_number }}
+          RELEASE_PR_TITLE: ${{ needs.release-meta.outputs.pr_title }}
+          RELEASE_BUMP: ${{ needs.release-meta.outputs.release_bump }}
+          RELEASE_CHANNEL: ${{ needs.release-meta.outputs.release_channel }}
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const tag = process.env.RELEASE_TAG
+            const prerelease = process.env.RELEASE_PRERELEASE === 'true'
+            const prNumber = process.env.RELEASE_PR_NUMBER
+            const prTitle = process.env.RELEASE_PR_TITLE
+            const bump = process.env.RELEASE_BUMP
+            const channel = process.env.RELEASE_CHANNEL
+            const targetSha = process.env.TARGET_SHA
+
+            if (!tag) {
+              core.setFailed('Missing RELEASE_TAG')
+              return
+            }
+
+            let existing = null
+            try {
+              existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag })
+            } catch (err) {
+              if (err.status !== 404) throw err
+            }
+
+            if (existing) {
+              core.notice(`GitHub Release already exists for tag ${tag}, skipping.`)
+              return
+            }
+
+            const bodyLines = [
+              prNumber ? `PR: #${prNumber} ${prTitle || ''}`.trim() : 'PR: (unknown)',
+              `Channel: ${channel || '(unknown)'}`,
+              `Bump: ${bump || '(unknown)'}`,
+              `Commit: ${targetSha || '(unknown)'}`,
+            ]
+
+            await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              name: tag,
+              prerelease,
+              body: bodyLines.join('\n'),
+            })
+
+            core.notice(`Created GitHub Release for tag ${tag}`)
+
+      - name: Resolve next pending release target
+        if: github.event_name != 'workflow_dispatch'
+        id: next-pending
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git fetch --tags origin
+          git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}" || true
+          python3 .github/scripts/release_snapshot.py next-pending \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --main-ref "origin/main" \
+            --upper-bound "$(git rev-parse origin/main)" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Continue release queue
+        if: github.event_name != 'workflow_dispatch' && steps.next-pending.outputs.target_sha != ''
+        uses: actions/github-script@v7
+        env:
+          NEXT_TARGET_SHA: ${{ steps.next-pending.outputs.target_sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const nextSha = process.env.NEXT_TARGET_SHA
+            if (!nextSha) {
+              core.notice('Release queue is empty.')
+              return
+            }
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner,
+              repo,
+              workflow_id: 'release.yml',
+              ref: 'main',
+              inputs: { commit_sha: nextSha },
+            })
+            core.notice(`Queued next release target ${nextSha}`)
