@@ -559,6 +559,7 @@ struct UpstreamAccountRow {
     chatgpt_account_id: Option<String>,
     chatgpt_user_id: Option<String>,
     plan_type: Option<String>,
+    plan_type_observed_at: Option<String>,
     masked_api_key: Option<String>,
     encrypted_credentials: Option<String>,
     token_expires_at: Option<String>,
@@ -738,6 +739,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             chatgpt_account_id TEXT,
             chatgpt_user_id TEXT,
             plan_type TEXT,
+            plan_type_observed_at TEXT,
             masked_api_key TEXT,
             encrypted_credentials TEXT,
             token_expires_at TEXT,
@@ -781,6 +783,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "upstream_base_url")
         .await
         .context("failed to ensure pool_upstream_accounts.upstream_base_url")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "plan_type_observed_at")
+        .await
+        .context("failed to ensure pool_upstream_accounts.plan_type_observed_at")?;
 
     if let Err(err) = sqlx::query(
         r#"
@@ -1581,12 +1586,12 @@ pub(crate) async fn create_api_key_account(
         r#"
         INSERT INTO pool_upstream_accounts (
             kind, provider, display_name, group_name, is_mother, note, status, enabled, email, chatgpt_account_id,
-            chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
+            chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key, encrypted_credentials, token_expires_at,
             last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
             local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url, created_at, updated_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, NULL, NULL,
-            NULL, NULL, ?8, ?9, NULL,
+            NULL, NULL, NULL, ?8, ?9, NULL,
             NULL, NULL, NULL, NULL, NULL,
             ?10, ?11, ?12, ?13, ?14, ?14
         ) RETURNING id
@@ -2503,6 +2508,10 @@ async fn persist_oauth_credentials(
             chatgpt_account_id = COALESCE(?6, chatgpt_account_id),
             chatgpt_user_id = COALESCE(?7, chatgpt_user_id),
             plan_type = COALESCE(?8, plan_type),
+            plan_type_observed_at = CASE
+                WHEN NULLIF(TRIM(?8), '') IS NOT NULL THEN ?4
+                ELSE plan_type_observed_at
+            END,
             updated_at = ?4
         WHERE id = ?1
         "#,
@@ -2705,6 +2714,10 @@ async fn upsert_oauth_account(
                 chatgpt_account_id = ?10,
                 chatgpt_user_id = ?11,
                 plan_type = ?12,
+                plan_type_observed_at = CASE
+                    WHEN NULLIF(TRIM(?12), '') IS NOT NULL THEN ?15
+                    ELSE plan_type_observed_at
+                END,
                 encrypted_credentials = ?13,
                 token_expires_at = ?14,
                 last_refreshed_at = ?15,
@@ -2750,18 +2763,18 @@ async fn upsert_oauth_account(
             r#"
             INSERT INTO pool_upstream_accounts (
                 kind, provider, display_name, group_name, is_mother, note, status, enabled,
-                email, chatgpt_account_id, chatgpt_user_id, plan_type,
+                email, chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at,
                 masked_api_key, encrypted_credentials, token_expires_at,
                 last_refreshed_at, last_synced_at, last_successful_sync_at,
                 last_error, last_error_at, local_primary_limit, local_secondary_limit,
                 local_limit_unit, created_at, updated_at
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1,
-                ?8, ?9, ?10, ?11,
-                NULL, ?12, ?13,
-                ?14, NULL, NULL,
+                ?8, ?9, ?10, ?11, ?12,
+                NULL, ?13, ?14,
+                ?15, NULL, NULL,
                 NULL, NULL, NULL, NULL,
-                NULL, ?14, ?14
+                NULL, ?15, ?15
             ) RETURNING id
             "#,
         )
@@ -2776,6 +2789,12 @@ async fn upsert_oauth_account(
         .bind(claims.chatgpt_account_id.clone())
         .bind(claims.chatgpt_user_id.clone())
         .bind(claims.chatgpt_plan_type.clone())
+        .bind(
+            claims
+                .chatgpt_plan_type
+                .as_deref()
+                .and_then(|value| (!value.trim().is_empty()).then_some(now_iso.clone())),
+        )
         .bind(encrypted_credentials)
         .bind(token_expires_at)
         .bind(&now_iso)
@@ -2856,8 +2875,8 @@ async fn load_duplicate_info_map(
             COALESCE(
                 CASE
                     WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
-                         AND account.last_refreshed_at IS NOT NULL
-                         AND account.last_refreshed_at > (
+                         AND account.plan_type_observed_at IS NOT NULL
+                         AND julianday(account.plan_type_observed_at) >= julianday((
                             SELECT previous_sample.captured_at
                             FROM pool_upstream_account_limit_samples previous_sample
                             WHERE previous_sample.account_id = account.id
@@ -2865,7 +2884,7 @@ async fn load_duplicate_info_map(
                               AND TRIM(previous_sample.plan_type) <> ''
                             ORDER BY previous_sample.captured_at DESC
                             LIMIT 1
-                         )
+                         ))
                         THEN NULLIF(TRIM(account.plan_type), '')
                     ELSE (
                         SELECT NULLIF(TRIM(previous_sample.plan_type), '')
@@ -3366,7 +3385,7 @@ async fn load_upstream_account_summaries(
         r#"
         SELECT
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key,
+            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
@@ -3466,7 +3485,7 @@ async fn load_upstream_account_row_conn(
         r#"
         SELECT
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key,
+            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
@@ -3496,8 +3515,8 @@ async fn load_latest_usage_sample(
             COALESCE(
                 CASE
                     WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
-                         AND account.last_refreshed_at IS NOT NULL
-                         AND account.last_refreshed_at > (
+                         AND account.plan_type_observed_at IS NOT NULL
+                         AND julianday(account.plan_type_observed_at) >= julianday((
                             SELECT previous_sample.captured_at
                             FROM pool_upstream_account_limit_samples previous_sample
                             WHERE previous_sample.account_id = sample.account_id
@@ -3505,7 +3524,7 @@ async fn load_latest_usage_sample(
                               AND TRIM(previous_sample.plan_type) <> ''
                             ORDER BY previous_sample.captured_at DESC
                             LIMIT 1
-                         )
+                         ))
                         THEN NULLIF(TRIM(account.plan_type), '')
                     ELSE (
                         SELECT NULLIF(TRIM(previous_sample.plan_type), '')
@@ -5697,6 +5716,7 @@ mod tests {
                 chatgpt_account_id: None,
                 chatgpt_user_id: None,
                 plan_type: None,
+                plan_type_observed_at: None,
                 masked_api_key: None,
                 encrypted_credentials: None,
                 token_expires_at: None,
@@ -6146,7 +6166,8 @@ mod tests {
             sqlx::query(
                 r#"
                 UPDATE pool_upstream_accounts
-                SET last_refreshed_at = '2026-03-14T00:00:00Z',
+                SET plan_type_observed_at = '2026-03-14T00:00:00Z',
+                    last_refreshed_at = '2026-03-14T00:00:00Z',
                     updated_at = '2026-03-14T00:00:00Z'
                 WHERE id = ?1
                 "#,
@@ -6329,6 +6350,7 @@ mod tests {
             r#"
             UPDATE pool_upstream_accounts
             SET plan_type = 'team',
+                plan_type_observed_at = '2026-03-15T00:00:01Z',
                 last_refreshed_at = '2026-03-15T00:00:01Z'
             WHERE id = ?1
             "#,
@@ -6395,6 +6417,7 @@ mod tests {
             r#"
             UPDATE pool_upstream_accounts
             SET plan_type = 'pro',
+                plan_type_observed_at = '2026-03-15T00:00:02Z',
                 last_refreshed_at = '2026-03-15T00:00:02Z'
             WHERE id = ?1
             "#,
@@ -6469,6 +6492,7 @@ mod tests {
                 r#"
                 UPDATE pool_upstream_accounts
                 SET plan_type = 'pro',
+                    plan_type_observed_at = '2026-03-15T00:00:03Z',
                     last_refreshed_at = '2026-03-15T00:00:03Z',
                     updated_at = '2026-03-15T00:00:03Z'
                 WHERE id = ?1
@@ -6553,6 +6577,7 @@ mod tests {
                 r#"
                 UPDATE pool_upstream_accounts
                 SET plan_type = 'pro',
+                    plan_type_observed_at = '2026-03-15T00:00:02Z',
                     last_refreshed_at = '2026-03-15T00:00:02Z',
                     updated_at = '2026-03-15T00:00:03Z'
                 WHERE id = ?1
@@ -6628,6 +6653,7 @@ mod tests {
                 r#"
                 UPDATE pool_upstream_accounts
                 SET plan_type = 'team',
+                    plan_type_observed_at = '2026-03-15T00:00:01Z',
                     last_refreshed_at = '2026-03-15T00:00:01Z',
                     updated_at = '2026-03-15T00:00:01Z'
                 WHERE id = ?1
