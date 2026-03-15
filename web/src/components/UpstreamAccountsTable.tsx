@@ -17,7 +17,9 @@ interface UpstreamAccountsTableProps {
     group: string
     windows: string
     primary: string
+    primaryShort: string
     secondary: string
+    secondaryShort: string
     nextReset: string
     oauth: string
     apiKey: string
@@ -105,11 +107,11 @@ function CompactWindowLine({
   const summary = resetText ? `${text} · ${resetText}` : text
 
   return (
-    <div className="grid grid-cols-[2.9rem,minmax(0,1fr),4.75rem,2.75rem] items-center gap-2">
-      <span className="truncate text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/48">
+    <div className="grid grid-cols-[2.1rem,minmax(0,1fr),5.5rem,2.75rem] items-center gap-1.5">
+      <span className="truncate whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/48">
         {label}
       </span>
-      <span className="truncate whitespace-nowrap text-xs text-base-content/68" title={summary}>
+      <span className="truncate whitespace-nowrap text-[11px] text-base-content/68" title={summary}>
         {summary}
       </span>
       <div className="h-1.5 overflow-hidden rounded-full bg-base-300/60">
@@ -164,10 +166,10 @@ export function UpstreamAccountsTable({
     <div className="overflow-hidden rounded-[1.35rem] border border-base-300/80 bg-base-100/72">
       <table className="w-full table-fixed border-collapse">
         <colgroup>
-          <col className="w-[47%]" />
-          <col className="w-[16%]" />
-          <col className="w-[31%]" />
-          <col className="w-[6%]" />
+          <col className="w-[41%]" />
+          <col className="w-[13%]" />
+          <col className="w-[42%]" />
+          <col className="w-[4%]" />
         </colgroup>
         <thead>
           <tr className="border-b border-base-300/80 bg-base-100/86 text-left">
@@ -255,13 +257,13 @@ export function UpstreamAccountsTable({
                 <td className="px-4 py-4">
                   <div className="space-y-2">
                     <CompactWindowLine
-                      label={labels.primary}
+                      label={labels.primaryShort}
                       percent={primary}
                       text={item.primaryWindow?.usedText ?? '—'}
                       resetText={primaryResetText}
                     />
                     <CompactWindowLine
-                      label={labels.secondary}
+                      label={labels.secondaryShort}
                       percent={secondary}
                       text={item.secondaryWindow?.usedText ?? '—'}
                       resetText={secondaryResetText}
