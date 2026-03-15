@@ -502,6 +502,21 @@ def first_parent_commits(target_sha: str) -> list[str]:
     return [commit for commit in commits.splitlines() if commit]
 
 
+def commits_to_materialize(notes_ref: str, target_sha: str, *, target_only: bool) -> list[str]:
+    if target_only:
+        return [target_sha]
+
+    commits = first_parent_commits(target_sha)
+    latest_existing_index = -1
+    for index, commit in enumerate(commits):
+        if read_snapshot(notes_ref, commit) is not None:
+            latest_existing_index = index
+
+    if latest_existing_index < 0:
+        return [target_sha]
+    return commits[latest_existing_index + 1 :]
+
+
 def export_key_values(values: dict[str, Any], github_output: str) -> None:
     lines = []
     for key, value in values.items():
@@ -564,7 +579,6 @@ def export_snapshot(snapshot: dict[str, Any], github_output: str) -> None:
 def ensure_snapshot(args: argparse.Namespace) -> int:
     target_sha = normalize_sha(args.target_sha)
     output_path = Path(args.output)
-    commits_to_materialize = [target_sha] if args.target_only else first_parent_commits(target_sha)
 
     for attempt in range(1, args.max_attempts + 1):
         fetch_notes_ref(args.notes_ref)
@@ -573,10 +587,11 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
             write_json(output_path, existing)
             return 0
 
+        commits_to_fill = commits_to_materialize(args.notes_ref, target_sha, target_only=args.target_only)
         target_snapshot: dict[str, Any] | None = None
         with tempfile.TemporaryDirectory(prefix="release-snapshot-notes-") as tmp:
             temp_note = Path(tmp) / "snapshot.json"
-            for commit in commits_to_materialize:
+            for commit in commits_to_fill:
                 snapshot = read_snapshot(args.notes_ref, commit)
                 if snapshot is not None:
                     if commit == target_sha:
