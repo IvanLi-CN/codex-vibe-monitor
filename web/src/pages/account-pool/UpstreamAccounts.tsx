@@ -185,22 +185,22 @@ function resolveOauthRecoveryHint(
   lastError?: string | null,
 ): OauthRecoveryHint | null {
   if (kind !== 'oauth_codex') return null
-  if (status === 'needs_reauth') {
-    return {
-      titleKey: 'accountPool.upstreamAccounts.hints.reauthTitle',
-      bodyKey: 'accountPool.upstreamAccounts.hints.reauthBody',
-    }
-  }
   if (isMissingApiScopeError(lastError)) {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.scopeTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.scopeBody',
     }
   }
-  if (status === 'error' && isPermissionError(lastError)) {
+  if (isPermissionError(lastError)) {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.permissionTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.permissionBody',
+    }
+  }
+  if (status === 'needs_reauth') {
+    return {
+      titleKey: 'accountPool.upstreamAccounts.hints.reauthTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.reauthBody',
     }
   }
   return null

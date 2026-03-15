@@ -453,6 +453,79 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     );
     expect(document.body.textContent).toContain("Needs re-auth");
   });
+
+  it("prefers the scope hint over stale needs-reauth status when lastError says scopes are missing", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 7,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Legacy Scope OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "needs_reauth",
+          enabled: true,
+          lastError:
+            "pool upstream responded with 403: Missing scopes: api.model.read",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 7,
+      selectedSummary: {
+        id: 7,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Legacy Scope OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "needs_reauth",
+        enabled: true,
+        lastError:
+          "pool upstream responded with 403: Missing scopes: api.model.read",
+      },
+      detail: {
+        id: 7,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Legacy Scope OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "needs_reauth",
+        enabled: true,
+        lastError:
+          "pool upstream responded with 403: Missing scopes: api.model.read",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Open details/i);
+    expect(document.body.textContent).toContain(
+      "This OAuth token is missing API scopes",
+    );
+    expect(document.body.textContent).not.toContain(
+      "This OAuth account needs a fresh sign-in",
+    );
+  });
 });
 
 describe("UpstreamAccountsPage api key details", () => {

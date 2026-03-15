@@ -6446,13 +6446,24 @@ async fn send_pool_request_with_failover(
                     sleep(retry_delay).await;
                     continue;
                 }
+                let upstream_request_id_header = response
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string());
                 let (upstream_error_code, upstream_error_message, upstream_request_id, message) =
                     match response.bytes().await {
-                        Ok(body_bytes) => summarize_pool_upstream_http_failure(status, &body_bytes),
+                        Ok(body_bytes) => summarize_pool_upstream_http_failure(
+                            status,
+                            upstream_request_id_header.as_deref(),
+                            &body_bytes,
+                        ),
                         Err(err) => (
                             None,
                             None,
-                            None,
+                            upstream_request_id_header,
                             format!(
                                 "pool upstream responded with {} (failed to read error body: {err})",
                                 status.as_u16()
@@ -8770,17 +8781,35 @@ fn extract_upstream_error_message(value: &Value) -> Option<String> {
 }
 
 fn extract_upstream_request_id(value: &Value) -> Option<String> {
-    extract_upstream_error_message(value)
-        .and_then(|message| extract_request_id_from_message(&message))
+    value
+        .pointer("/error/request_id")
+        .and_then(|entry| entry.as_str())
+        .map(|entry| entry.to_string())
+        .or_else(|| {
+            extract_upstream_error_message(value)
+                .and_then(|message| extract_request_id_from_message(&message))
+        })
 }
 
 fn extract_request_id_from_message(message: &str) -> Option<String> {
-    let needle = "request ID ";
-    let start = message.find(needle)? + needle.len();
+    let lower_message = message.to_ascii_lowercase();
+    let start = lower_message
+        .find("request id ")
+        .map(|index| index + "request id ".len())
+        .or_else(|| {
+            lower_message
+                .find("request_id=")
+                .map(|index| index + "request_id=".len())
+        })
+        .or_else(|| {
+            lower_message
+                .find("x-request-id: ")
+                .map(|index| index + "x-request-id: ".len())
+        })?;
     let tail = &message[start..];
     let request_id: String = tail
         .chars()
-        .take_while(|ch| ch.is_ascii_hexdigit() || *ch == '-')
+        .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(*ch, '-' | '_'))
         .collect();
     if request_id.is_empty() {
         None
@@ -9014,19 +9043,22 @@ fn extract_error_message_from_response(bytes: &[u8]) -> Option<String> {
 
 fn summarize_pool_upstream_http_failure(
     status: StatusCode,
+    upstream_request_id_header: Option<&str>,
     bytes: &[u8],
 ) -> (Option<String>, Option<String>, Option<String>, String) {
     let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
         return (
             None,
             None,
-            None,
+            upstream_request_id_header.map(|value| value.to_string()),
             format!("pool upstream responded with {}", status.as_u16()),
         );
     };
     let upstream_error_code = extract_upstream_error_code(&value);
     let upstream_error_message = extract_upstream_error_message(&value);
-    let upstream_request_id = extract_upstream_request_id(&value);
+    let upstream_request_id = upstream_request_id_header
+        .map(|value| value.to_string())
+        .or_else(|| extract_upstream_request_id(&value));
 
     let detail = upstream_error_message
         .as_deref()

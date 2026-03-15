@@ -2758,6 +2758,7 @@ async fn insert_test_pool_oauth_account(
     let encrypted_credentials = encrypt_test_oauth_credentials(access_token);
     let now_iso = format_utc_iso(Utc::now());
 
+    let token_expires_at = format_utc_iso(Utc::now() + ChronoDuration::days(30));
     sqlx::query_scalar(
         r#"
         INSERT INTO pool_upstream_accounts (
@@ -2782,7 +2783,7 @@ async fn insert_test_pool_oauth_account(
     .bind("user_test")
     .bind("team")
     .bind(encrypted_credentials)
-    .bind("2026-03-26T00:00:00Z")
+    .bind(&token_expires_at)
     .bind(&now_iso)
     .fetch_one(&state.pool)
     .await
@@ -9374,12 +9375,32 @@ async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
 
 #[test]
 fn summarize_pool_upstream_http_failure_ignores_html_bodies() {
-    let (code, message, request_id, summary) =
-        summarize_pool_upstream_http_failure(StatusCode::UNAUTHORIZED, b"<html>blocked</html>");
+    let (code, message, request_id, summary) = summarize_pool_upstream_http_failure(
+        StatusCode::UNAUTHORIZED,
+        None,
+        b"<html>blocked</html>",
+    );
     assert_eq!(code, None);
     assert_eq!(message, None);
     assert_eq!(request_id, None);
     assert_eq!(summary, "pool upstream responded with 401");
+}
+
+#[test]
+fn summarize_pool_upstream_http_failure_prefers_request_id_header() {
+    let body = br#"{"error":{"message":"Missing scopes: api.responses.write","code":"insufficient_permissions"}}"#;
+    let (code, message, request_id, summary) =
+        summarize_pool_upstream_http_failure(StatusCode::FORBIDDEN, Some("req_123abc"), body);
+    assert_eq!(code.as_deref(), Some("insufficient_permissions"));
+    assert_eq!(
+        message.as_deref(),
+        Some("Missing scopes: api.responses.write")
+    );
+    assert_eq!(request_id.as_deref(), Some("req_123abc"));
+    assert_eq!(
+        summary,
+        "pool upstream responded with 403: Missing scopes: api.responses.write"
+    );
 }
 
 #[tokio::test]

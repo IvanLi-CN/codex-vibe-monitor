@@ -5841,6 +5841,7 @@ mod tests {
 
     async fn insert_oauth_account(pool: &SqlitePool, display_name: &str) -> i64 {
         let now_iso = format_utc_iso(Utc::now());
+        let token_expires_at = format_utc_iso(Utc::now() + ChronoDuration::days(30));
         sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO pool_upstream_accounts (
@@ -5865,7 +5866,7 @@ mod tests {
         .bind("user_test")
         .bind("team")
         .bind("encrypted")
-        .bind("2026-03-26T00:00:00Z")
+        .bind(&token_expires_at)
         .bind(&now_iso)
         .fetch_one(pool)
         .await
