@@ -505,16 +505,7 @@ def first_parent_commits(target_sha: str) -> list[str]:
 def commits_to_materialize(notes_ref: str, target_sha: str, *, target_only: bool) -> list[str]:
     if target_only:
         return [target_sha]
-
-    commits = first_parent_commits(target_sha)
-    latest_existing_index = -1
-    for index, commit in enumerate(commits):
-        if read_snapshot(notes_ref, commit) is not None:
-            latest_existing_index = index
-
-    if latest_existing_index < 0:
-        return commits
-    return commits[latest_existing_index + 1 :]
+    return first_parent_commits(target_sha)
 
 
 def export_key_values(values: dict[str, Any], github_output: str) -> None:

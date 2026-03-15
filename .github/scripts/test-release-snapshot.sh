@@ -198,12 +198,13 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-target-only-") as tmp:
     calls: list[str] = []
 
     def fake_build_snapshot(*, target_sha: str, **kwargs: object):
-        calls.append(target_sha)
-        if target_sha == old_sha:
+        snapshot_sha = target_sha
+        calls.append(snapshot_sha)
+        if snapshot_sha == old_sha:
             raise AssertionError("target-only mode should not materialize older snapshots")
         return {
             "schema_version": module.SNAPSHOT_SCHEMA_VERSION,
-            "target_sha": target_sha,
+            "target_sha": snapshot_sha,
             "pr_number": 202,
             "pr_title": "Target labeled merge",
             "registry": "ghcr.io",
@@ -370,6 +371,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-catch-up-") as tmp:
     run("add", "README.md", cwd=repo)
     run("commit", "-m", "target pending", cwd=repo)
     target_sha = run("rev-parse", "HEAD", cwd=repo)
+    target_commit_sha = target_sha
 
     existing_snapshot = {
         "schema_version": module.SNAPSHOT_SCHEMA_VERSION,
@@ -403,21 +405,22 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-catch-up-") as tmp:
     calls: list[str] = []
 
     def fake_build_snapshot(*, target_sha: str, **kwargs: object):
-        calls.append(target_sha)
+        snapshot_sha = target_sha
+        calls.append(snapshot_sha)
         version_map = {
             mid_sha: ("0.1.1", "0.1.2", "v0.1.2"),
-            target_sha: ("0.1.2", "0.1.3", "v0.1.3"),
+            target_commit_sha: ("0.1.2", "0.1.3", "v0.1.3"),
         }
-        if target_sha not in version_map:
-            raise AssertionError(f"unexpected snapshot build for {target_sha}")
-        base_version, next_version, release_tag = version_map[target_sha]
+        if snapshot_sha not in version_map:
+            raise AssertionError(f"unexpected snapshot build for {snapshot_sha}")
+        base_version, next_version, release_tag = version_map[snapshot_sha]
         return {
             "schema_version": module.SNAPSHOT_SCHEMA_VERSION,
-            "target_sha": target_sha,
-            "pr_number": 302 if target_sha == mid_sha else 303,
+            "target_sha": snapshot_sha,
+            "pr_number": 302 if snapshot_sha == mid_sha else 303,
             "pr_title": "Pending snapshot",
             "registry": "ghcr.io",
-            "pr_head_sha": target_sha,
+            "pr_head_sha": snapshot_sha,
             "type_label": "type:patch",
             "channel_label": "channel:stable",
             "release_bump": "patch",
@@ -443,8 +446,6 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-catch-up-") as tmp:
             return original_git(*args, **kwargs)
 
         def fake_load_pr(api_root, repository, token, commit_sha, **kwargs):
-            if commit_sha == legacy_sha:
-                raise AssertionError("catch-up must not walk older unlabeled history once a snapshot ancestor exists")
             return {
                 mid_sha: make_pr(302, "Mid pending", mid_sha, ["type:patch", "channel:stable"]),
                 target_sha: make_pr(303, "Target pending", target_sha, ["type:patch", "channel:stable"]),
@@ -474,6 +475,161 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-catch-up-") as tmp:
         stored = module.read_snapshot(module.DEFAULT_NOTES_REF, target_sha)
         assert stored is not None
         assert stored["release_tag"] == "v0.1.3"
+    finally:
+        module.load_pr_for_commit = original_load_pr
+        module.build_snapshot = original_build_snapshot
+        module.git = original_git
+        os.chdir(original_cwd)
+
+with tempfile.TemporaryDirectory(prefix="release-snapshot-sparse-history-") as tmp:
+    repo = Path(tmp)
+    run("init", cwd=repo)
+    run("config", "user.name", "Test User", cwd=repo)
+    run("config", "user.email", "test@example.com", cwd=repo)
+    run("checkout", "-b", "main", cwd=repo)
+    (repo / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+    (repo / "README.md").write_text("base\n")
+    run("add", "Cargo.toml", "README.md", cwd=repo)
+    run("commit", "-m", "base", cwd=repo)
+    run("tag", "v0.1.0", cwd=repo)
+
+    (repo / "README.md").write_text("existing snapshot\n")
+    run("add", "README.md", cwd=repo)
+    run("commit", "-m", "existing snapshot", cwd=repo)
+    existing_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    (repo / "README.md").write_text("missing snapshot\n")
+    run("add", "README.md", cwd=repo)
+    run("commit", "-m", "missing snapshot", cwd=repo)
+    missing_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    (repo / "README.md").write_text("later snapshot\n")
+    run("add", "README.md", cwd=repo)
+    run("commit", "-m", "later snapshot", cwd=repo)
+    later_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    (repo / "README.md").write_text("target pending\n")
+    run("add", "README.md", cwd=repo)
+    run("commit", "-m", "target pending", cwd=repo)
+    target_sha = run("rev-parse", "HEAD", cwd=repo)
+    target_commit_sha = target_sha
+
+    original_cwd = Path.cwd()
+    original_load_pr = module.load_pr_for_commit
+    original_build_snapshot = module.build_snapshot
+    original_git = module.git
+    calls: list[str] = []
+
+    def fake_build_snapshot(*, target_sha: str, **kwargs: object):
+        snapshot_sha = target_sha
+        calls.append(snapshot_sha)
+        version_map = {
+            missing_sha: ("0.1.1", "0.1.2", "v0.1.2"),
+            target_commit_sha: ("0.1.3", "0.1.4", "v0.1.4"),
+        }
+        if snapshot_sha not in version_map:
+            raise AssertionError(f"unexpected snapshot build for {snapshot_sha}")
+        base_version, next_version, release_tag = version_map[snapshot_sha]
+        return {
+            "schema_version": module.SNAPSHOT_SCHEMA_VERSION,
+            "target_sha": snapshot_sha,
+            "pr_number": 501 if snapshot_sha == missing_sha else 502,
+            "pr_title": "Sparse catch-up",
+            "registry": "ghcr.io",
+            "pr_head_sha": snapshot_sha,
+            "type_label": "type:patch",
+            "channel_label": "channel:stable",
+            "release_bump": "patch",
+            "release_channel": "stable",
+            "release_enabled": True,
+            "release_prerelease": False,
+            "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+            "base_stable_version": base_version,
+            "next_stable_version": next_version,
+            "app_effective_version": next_version,
+            "release_tag": release_tag,
+            "tags_csv": f"ghcr.io/ivanli-cn/codex-vibe-monitor:{release_tag},ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+            "notes_ref": module.DEFAULT_NOTES_REF,
+            "snapshot_source": "ci-main",
+            "created_at": "2026-03-15T00:00:00Z",
+        }
+
+    existing_snapshot = {
+        "schema_version": module.SNAPSHOT_SCHEMA_VERSION,
+        "target_sha": existing_sha,
+        "pr_number": 500,
+        "pr_title": "Existing snapshot",
+        "registry": "ghcr.io",
+        "pr_head_sha": existing_sha,
+        "type_label": "type:patch",
+        "channel_label": "channel:stable",
+        "release_bump": "patch",
+        "release_channel": "stable",
+        "release_enabled": True,
+        "release_prerelease": False,
+        "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+        "base_stable_version": "0.1.0",
+        "next_stable_version": "0.1.1",
+        "app_effective_version": "0.1.1",
+        "release_tag": "v0.1.1",
+        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+        "notes_ref": module.DEFAULT_NOTES_REF,
+        "snapshot_source": "ci-main",
+        "created_at": "2026-03-15T00:00:00Z",
+    }
+    later_snapshot = {
+        **existing_snapshot,
+        "target_sha": later_sha,
+        "pr_number": 503,
+        "pr_head_sha": later_sha,
+        "base_stable_version": "0.1.2",
+        "next_stable_version": "0.1.3",
+        "app_effective_version": "0.1.3",
+        "release_tag": "v0.1.3",
+        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.3,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+    }
+
+    run("notes", f"--ref={module.DEFAULT_NOTES_REF}", "add", "-f", "-m", json.dumps(existing_snapshot), existing_sha, cwd=repo)
+    run("notes", f"--ref={module.DEFAULT_NOTES_REF}", "add", "-f", "-m", json.dumps(later_snapshot), later_sha, cwd=repo)
+
+    os.chdir(repo)
+    try:
+        def fake_git(*args: str, **kwargs: object):
+            if args == ("push", "origin", module.DEFAULT_NOTES_REF):
+                return subprocess.CompletedProcess(["git", *args], 0, "", "")
+            return original_git(*args, **kwargs)
+
+        def fake_load_pr(api_root, repository, token, commit_sha, **kwargs):
+            return {
+                missing_sha: make_pr(501, "Missing snapshot", missing_sha, ["type:patch", "channel:stable"]),
+                target_sha: make_pr(502, "Target pending", target_sha, ["type:patch", "channel:stable"]),
+            }.get(commit_sha)
+
+        module.load_pr_for_commit = fake_load_pr
+        module.build_snapshot = fake_build_snapshot
+        module.git = fake_git
+        exit_code = module.ensure_snapshot(
+            argparse.Namespace(
+                target_sha=target_sha,
+                github_repository="IvanLi-CN/codex-vibe-monitor",
+                github_token="token",
+                notes_ref=module.DEFAULT_NOTES_REF,
+                registry="ghcr.io",
+                api_root="https://api.github.com",
+                output=str(repo / "sparse-history.json"),
+                max_attempts=1,
+                target_only=False,
+            )
+        )
+        assert exit_code == 0
+        assert calls == [missing_sha, target_sha]
+        missing_snapshot = module.read_snapshot(module.DEFAULT_NOTES_REF, missing_sha)
+        assert missing_snapshot is not None
+        assert missing_snapshot["next_stable_version"] == "0.1.2"
+        target_snapshot = module.read_snapshot(module.DEFAULT_NOTES_REF, target_sha)
+        assert target_snapshot is not None
+        assert target_snapshot["base_stable_version"] == "0.1.3"
+        assert target_snapshot["next_stable_version"] == "0.1.4"
     finally:
         module.load_pr_for_commit = original_load_pr
         module.build_snapshot = original_build_snapshot
