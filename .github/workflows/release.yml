@@ -112,13 +112,54 @@ jobs:
               per_page: 100,
             })
 
-            const passed = (runs.data.workflow_runs || []).some(run => run.head_sha === sha && run.conclusion === 'success')
+            const matchingRuns = (runs.data.workflow_runs || []).filter(run => run.head_sha === sha)
+            const passed = matchingRuns.some(run => run.conclusion === 'success')
             if (!passed) {
-              core.setFailed(`Manual backfill requires a successful CI Main run for ${sha}`)
+              for (const run of matchingRuns) {
+                if (run.conclusion !== 'failure') {
+                  continue
+                }
+
+                const jobs = await github.rest.actions.listJobsForWorkflowRun({
+                  owner,
+                  repo,
+                  run_id: run.id,
+                  per_page: 100,
+                })
+
+                const entries = jobs.data.jobs || []
+                const snapshotJob = entries.find(job => job.name === 'Release Snapshot')
+                const blockingJobs = entries.filter(
+                  job => job.name !== 'Release Snapshot' && job.conclusion !== 'success'
+                )
+
+                if (snapshotJob && snapshotJob.conclusion === 'failure' && blockingJobs.length === 0) {
+                  core.notice(`Accepted snapshot-only CI Main failure for ${sha} via run ${run.id}`)
+                  return
+                }
+              }
+
+              core.setFailed(`Manual backfill requires either a successful CI Main run or a snapshot-only CI Main failure for ${sha}`)
               return
             }
 
             core.notice(`Verified successful CI Main history for ${sha}`)
+
+      - name: Ensure immutable release snapshot for manual backfill
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_snapshot.py ensure \
+            --target-sha "${TARGET_SHA}" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --registry "${REGISTRY}" \
+            --output "$RUNNER_TEMP/release-snapshot.json"
 
       - name: Load immutable release snapshot
         id: snapshot
