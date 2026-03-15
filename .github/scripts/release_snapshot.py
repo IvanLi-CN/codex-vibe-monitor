@@ -445,16 +445,64 @@ def commit_supports_release_intent_artifact(commit_sha: str) -> bool:
         return repo_root_supports_release_intent_artifact(repo_root)
 
 
-def legacy_fallback_allowed_for_target(target_sha: str) -> bool:
+def support_rollout_moment_for_target(target_sha: str) -> datetime | None:
     parents = git_output("rev-list", "--parents", "-n", "1", target_sha).split()
     if len(parents) <= 1:
-        return True
+        return None
     previous_main_sha = parents[1]
-    return not commit_supports_release_intent_artifact(previous_main_sha)
+    if not commit_supports_release_intent_artifact(previous_main_sha):
+        return None
+
+    for commit_sha in git_output("rev-list", "--first-parent", "--reverse", previous_main_sha).splitlines():
+        if commit_supports_release_intent_artifact(commit_sha):
+            committed_at = git_output("show", "-s", "--format=%cI", commit_sha)
+            return parse_github_timestamp(committed_at, where=f"Mainline support commit {commit_sha} committed_at")
+    raise SnapshotError("Failed to locate the first mainline commit that introduced release-intent artifact support")
+
+
+def pr_had_rollout_trigger_after(
+    api_root: str, repository: str, token: str, pr: dict[str, Any], rollout_moment: datetime
+) -> bool:
+    pr_number = pr.get("number")
+    created_at = pr.get("created_at")
+    if not isinstance(pr_number, int):
+        raise SnapshotError("Pull request payload is missing a numeric PR number")
+    if isinstance(created_at, str) and parse_github_timestamp(created_at, where=f"Pull request #{pr_number} created_at") >= rollout_moment:
+        return True
+
+    owner, repo = repository.split("/", 1)
+    rollout_events = {"reopened", "synchronize", "labeled", "unlabeled", "ready_for_review", "edited"}
+    timeline = github_paginate(api_root, token, f"/repos/{owner}/{repo}/issues/{pr_number}/timeline")
+    for event in timeline:
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("event")
+        created_at = event.get("created_at")
+        if event_type not in rollout_events or not isinstance(created_at, str):
+            continue
+        if parse_github_timestamp(created_at, where=f"Pull request #{pr_number} timeline created_at") >= rollout_moment:
+            return True
+    return False
+
+
+def legacy_fallback_allowed_for_target(
+    api_root: str, repository: str, token: str, pr: dict[str, Any], *, target_sha: str
+) -> bool:
+    rollout_moment = support_rollout_moment_for_target(target_sha)
+    if rollout_moment is None:
+        return True
+    return not pr_had_rollout_trigger_after(api_root, repository, token, pr, rollout_moment)
+
+
+def merged_pr_head_sha(target_sha: str) -> str | None:
+    parents = git_output("rev-list", "--parents", "-n", "1", target_sha).split()
+    if len(parents) >= 3 and re.fullmatch(r"[0-9a-f]{40}", parents[2]):
+        return parents[2]
+    return None
 
 
 def load_release_intent_artifact(
-    api_root: str, repository: str, token: str, pr_number: int, *, merged_at: str
+    api_root: str, repository: str, token: str, pr_number: int, *, merged_at: str, expected_head_sha: str | None = None
 ) -> dict[str, Any] | None:
     owner, repo = repository.split("/", 1)
     artifact_prefix = f"{RELEASE_INTENT_ARTIFACT_PREFIX}{pr_number}-"
@@ -502,6 +550,10 @@ def load_release_intent_artifact(
         if not any(
             isinstance(item, dict)
             and item.get("number") == pr_number
+            and (
+                expected_head_sha is None
+                or (isinstance(item.get("head"), dict) and item["head"].get("sha") == expected_head_sha)
+            )
             for item in pull_requests
         ):
             continue
@@ -524,7 +576,7 @@ def load_release_intent_artifact(
             payload = json.loads(archive.read(members[0]).decode("utf-8"))
         except json.JSONDecodeError as exc:
             raise SnapshotError(f"Artifact {artifact_name} does not contain valid JSON") from exc
-    return validate_release_intent(payload, expected_pr_number=pr_number)
+    return validate_release_intent(payload, expected_pr_number=pr_number, expected_head_sha=expected_head_sha)
 
 
 def parse_release_labels(labels: list[str]) -> tuple[str, str]:
@@ -558,8 +610,16 @@ def resolve_release_intent_for_pr(
     merged_at = pr.get("merged_at")
     if not isinstance(merged_at, str) or not merged_at:
         raise SnapshotError(f"Pull request #{pr_number} is missing merged_at")
+    expected_head_sha = merged_pr_head_sha(target_sha)
 
-    release_intent = load_release_intent_artifact(api_root, repository, token, pr_number, merged_at=merged_at)
+    release_intent = load_release_intent_artifact(
+        api_root,
+        repository,
+        token,
+        pr_number,
+        merged_at=merged_at,
+        expected_head_sha=expected_head_sha,
+    )
     if release_intent is not None:
         pr_head_sha = str(release_intent["pr_head_sha"])
         return (
@@ -572,8 +632,10 @@ def resolve_release_intent_for_pr(
     head = pr.get("head") or {}
     pr_head_sha = head.get("sha") if isinstance(head, dict) else None
     if not isinstance(pr_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", pr_head_sha):
-        raise SnapshotError(f"Pull request #{pr_number} is missing a valid head.sha")
-    if legacy_fallback_allowed_for_target(target_sha):
+        if expected_head_sha is None:
+            raise SnapshotError(f"Pull request #{pr_number} is missing a valid head.sha")
+        pr_head_sha = expected_head_sha
+    if legacy_fallback_allowed_for_target(api_root, repository, token, pr, target_sha=target_sha):
         type_label, channel_label = parse_release_labels(labels_at_merge_time(api_root, repository, token, pr))
         return (type_label, channel_label, "legacy-pr-labels", pr_head_sha)
 

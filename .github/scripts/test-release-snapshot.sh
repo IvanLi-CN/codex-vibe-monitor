@@ -23,6 +23,7 @@ assert spec is not None and spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 real_load_release_intent_artifact = module.load_release_intent_artifact
+real_legacy_fallback_allowed_for_target = module.legacy_fallback_allowed_for_target
 
 
 def run(*args: str, cwd: Path) -> str:
@@ -93,7 +94,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             lambda api_root, repository, token, pr_number, **kwargs: make_release_intent(pr_number, "1" * 40)
         )
         module.labels_at_merge_time = lambda api_root, repository, token, pr: []
-        module.legacy_fallback_allowed_for_target = lambda target_sha: False
+        module.legacy_fallback_allowed_for_target = lambda *args, **kwargs: False
         snapshot1 = module.build_snapshot(
             target_sha=sha1,
             repository="IvanLi-CN/codex-vibe-monitor",
@@ -160,7 +161,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         )
         module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, **kwargs: None
         module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
-        module.legacy_fallback_allowed_for_target = lambda target_sha: True
+        module.legacy_fallback_allowed_for_target = lambda *args, **kwargs: True
         legacy_snapshot = module.build_snapshot(
             target_sha=sha1,
             repository="IvanLi-CN/codex-vibe-monitor",
@@ -175,7 +176,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             140, "Future release without artifact", target_sha, merged_at="2026-03-16T00:00:01Z"
         )
         module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, **kwargs: None
-        module.legacy_fallback_allowed_for_target = lambda target_sha: False
+        module.legacy_fallback_allowed_for_target = lambda *args, **kwargs: False
         try:
             module.build_snapshot(
                 target_sha=sha2,
@@ -402,12 +403,46 @@ with tempfile.TemporaryDirectory(prefix="release-intent-support-") as tmp:
     finally:
         os.chdir(original_cwd)
 
-payload = make_release_intent(140, "a" * 40)
-buffer = io.BytesIO()
-with zipfile.ZipFile(buffer, "w") as archive:
-    archive.writestr("release-intent.json", json.dumps(payload))
+real_support_rollout_moment_for_target = module.support_rollout_moment_for_target
+real_pr_had_rollout_trigger_after = module.pr_had_rollout_trigger_after
+try:
+    module.legacy_fallback_allowed_for_target = real_legacy_fallback_allowed_for_target
+    module.support_rollout_moment_for_target = (
+        lambda target_sha: module.parse_github_timestamp("2026-03-15T00:00:00Z", where="test rollout")
+    )
+    module.pr_had_rollout_trigger_after = lambda api_root, repository, token, pr, rollout_moment: False
+    assert module.legacy_fallback_allowed_for_target(
+        "https://api.github.com",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        make_pr(150, "Old PR without rerun", "5" * 40),
+        target_sha="6" * 40,
+    ) is True
+    module.pr_had_rollout_trigger_after = lambda api_root, repository, token, pr, rollout_moment: True
+    assert module.legacy_fallback_allowed_for_target(
+        "https://api.github.com",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        make_pr(151, "New PR with rerun", "7" * 40),
+        target_sha="8" * 40,
+    ) is False
+finally:
+    module.support_rollout_moment_for_target = real_support_rollout_moment_for_target
+    module.pr_had_rollout_trigger_after = real_pr_had_rollout_trigger_after
+    module.legacy_fallback_allowed_for_target = real_legacy_fallback_allowed_for_target
 
-artifact_bytes = buffer.getvalue()
+artifact_payloads = {
+    "https://example.test/artifacts/1/zip": make_release_intent(140, "a" * 40),
+    "https://example.test/artifacts/2/zip": make_release_intent(140, "b" * 40),
+    "https://example.test/artifacts/3/zip": make_release_intent(140, "c" * 40),
+}
+artifact_bytes = {}
+for url, artifact_payload in artifact_payloads.items():
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("release-intent.json", json.dumps(artifact_payload))
+    artifact_bytes[url] = buffer.getvalue()
+
 real_request_json = module.github_request_json
 real_request_bytes = module.github_request_bytes
 try:
@@ -417,16 +452,23 @@ try:
             return {
                 "artifacts": [
                     {
-                        "name": module.artifact_name_for_pr(140, "b" * 40),
+                        "name": module.artifact_name_for_pr(140, "c" * 40),
                         "expired": False,
                         "created_at": "2026-03-15T00:00:01Z",
+                        "archive_download_url": "https://example.test/artifacts/3/zip",
+                        "workflow_run": {"id": 3},
+                    },
+                    {
+                        "name": module.artifact_name_for_pr(140, "b" * 40),
+                        "expired": False,
+                        "created_at": "2026-03-15T00:00:00Z",
                         "archive_download_url": "https://example.test/artifacts/2/zip",
                         "workflow_run": {"id": 2},
                     },
                     {
                         "name": module.artifact_name_for_pr(140, "a" * 40),
                         "expired": False,
-                        "created_at": "2026-03-15T00:00:00Z",
+                        "created_at": "2026-03-14T23:59:59Z",
                         "archive_download_url": "https://example.test/artifacts/1/zip",
                         "workflow_run": {"id": 1},
                     },
@@ -445,19 +487,28 @@ try:
                 "path": module.TRUSTED_RELEASE_INTENT_WORKFLOW_PATH,
                 "event": "pull_request",
                 "status": "completed",
-                "conclusion": "cancelled",
+                "conclusion": "success",
                 "pull_requests": [{"number": 140, "head": {"sha": "b" * 40}}],
+            }
+        if path.endswith("/actions/runs/3"):
+            return {
+                "path": module.TRUSTED_RELEASE_INTENT_WORKFLOW_PATH,
+                "event": "pull_request",
+                "status": "completed",
+                "conclusion": "cancelled",
+                "pull_requests": [{"number": 140, "head": {"sha": "c" * 40}}],
             }
         raise AssertionError(f"unexpected path: {path}")
 
     module.github_request_json = fake_request_json
-    module.github_request_bytes = lambda url, token: artifact_bytes
+    module.github_request_bytes = lambda url, token: artifact_bytes[url]
     loaded_intent = module.load_release_intent_artifact(
         "https://api.github.com",
         "IvanLi-CN/codex-vibe-monitor",
         "token",
         140,
         merged_at="2026-03-15T00:00:02Z",
+        expected_head_sha="a" * 40,
     )
     assert loaded_intent is not None
     assert loaded_intent["type_label"] == "type:patch"
@@ -466,6 +517,7 @@ finally:
     module.github_request_json = real_request_json
     module.github_request_bytes = real_request_bytes
     module.load_release_intent_artifact = real_load_release_intent_artifact
+    module.legacy_fallback_allowed_for_target = real_legacy_fallback_allowed_for_target
 
 print("test-release-snapshot: all checks passed")
 PY
