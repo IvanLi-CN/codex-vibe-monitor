@@ -66,6 +66,41 @@
 - `cd web && bun run build`
 - 浏览器 / 组件级 smoke：API Key 创建页与详情编辑页的上游地址输入、保存与回显
 
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: UI / FormFieldFeedback / Docs
+  state: docs-default
+  evidence_note: 展示表单字段错误提示组件的独立 Docs 内容区，包含默认错误态、Quiet Field 与双列密集布局，确认该组件能承载标签行保留区方案。
+  image:
+  ![FormFieldFeedback docs](./assets/form-field-feedback-docs.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Create Account Api Key Invalid Upstream Url
+  state: invalid-absolute-url
+  evidence_note: 展示 API Key 创建页输入非法绝对 URL 时的错误气泡位置，证明气泡停留在上游地址字段标签行保留区，同时创建按钮禁用。
+  image:
+  ![Create account invalid upstream URL](./assets/create-api-key-invalid-upstream-url.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Detail Drawer Api Key Invalid Upstream Url
+  state: invalid-query-string
+  evidence_note: 展示详情抽屉里上游地址包含 query 时的错误气泡与禁用保存态，证明详情编辑也复用了同一字段反馈组件和主题错误面板。
+  image:
+  ![Detail drawer invalid upstream URL](./assets/detail-api-key-invalid-upstream-url.png)
+
 ## 变更记录
 
 - 2026-03-15: 创建增量 spec，冻结 API Key 账号级上游地址的数据模型、运行时生效规则与验收口径。
