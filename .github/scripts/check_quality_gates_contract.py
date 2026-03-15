@@ -549,6 +549,10 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         "RELEASE_SNAPSHOT_NOTES_REF" in ensure_run,
         "ci-main.yml.jobs.release-snapshot: notes-ref plumbing drifted",
     )
+    require(
+        "--target-only" in ensure_run,
+        "ci-main.yml.jobs.release-snapshot: automatic snapshot ensure must stay target-only",
+    )
 
 
 def validate_label_gate(path: Path, contract: ContractModel) -> None:
