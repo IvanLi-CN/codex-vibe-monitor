@@ -47,6 +47,14 @@ python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 probe_release_intent_rollout "$baseline_repo"
 
+simplified_topology_repo="$tmp_dir/simplified-topology-repo"
+cp -R "$baseline_repo/." "$simplified_topology_repo"
+for workflow in ci-main.yml release.yml label-gate.yml; do
+  git -C "$repo_root" show th/simplify-serial-release:.github/workflows/$workflow > "$simplified_topology_repo/.github/workflows/$workflow"
+done
+
+python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$simplified_topology_repo" --profile final
+
 rollout_probe_repo="$tmp_dir/rollout-probe-repo"
 cp -R "$baseline_repo/." "$rollout_probe_repo"
 python3 - <<'PY' "$rollout_probe_repo"

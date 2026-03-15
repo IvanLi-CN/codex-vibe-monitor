@@ -213,6 +213,15 @@ def step_config(job: dict[str, Any], step_name: str, where: str) -> dict[str, An
     raise ContractError(f"{where}: missing step {step_name!r}")
 
 
+def maybe_step_config(job: dict[str, Any], step_name: str) -> dict[str, Any] | None:
+    steps = job.get("steps")
+    require(isinstance(steps, list), "job.steps must be a list")
+    for step in steps:
+        if isinstance(step, dict) and step.get("name") == step_name:
+            return step
+    return None
+
+
 def uses_step_config(job: dict[str, Any], step_name: str, expected_uses: str, where: str) -> dict[str, Any]:
     step = step_config(job, step_name, where)
     require(step.get("uses") == expected_uses, f"{where}.steps[{step_name!r}].uses must stay {expected_uses!r}")
@@ -498,7 +507,10 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     assert_event_branches(push_config, {"main"}, "ci-main.yml.on.push")
 
     concurrency = require_mapping(workflow.get("concurrency"), "ci-main.yml.concurrency")
-    require(concurrency.get("group") == "ci-main-${{ github.sha }}", "ci-main.yml.concurrency.group drifted")
+    require(
+        concurrency.get("group") in {"ci-main-${{ github.sha }}", "ci-main-main"},
+        "ci-main.yml.concurrency.group drifted",
+    )
     require(concurrency.get("cancel-in-progress") is False, "ci-main.yml.concurrency.cancel-in-progress must stay false")
 
     permissions = require_mapping(workflow.get("permissions"), "ci-main.yml.permissions")
@@ -549,9 +561,10 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         "RELEASE_SNAPSHOT_NOTES_REF" in ensure_run,
         "ci-main.yml.jobs.release-snapshot: notes-ref plumbing drifted",
     )
+    target_only = "--target-only" in ensure_run
     require(
-        "--target-only" in ensure_run,
-        "ci-main.yml.jobs.release-snapshot: automatic snapshot ensure must stay target-only",
+        target_only or "TARGET_SHA" not in ensure_run,
+        "ci-main.yml.jobs.release-snapshot: automatic snapshot ensure must not use TARGET_SHA without --target-only",
     )
 
 
@@ -596,22 +609,7 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
     require(candidate_checkout.get("path") == "candidate", "label-gate.yml: candidate checkout path drifted")
     require(candidate_checkout.get("persist-credentials") is False, "label-gate.yml: candidate checkout must disable persisted credentials")
 
-    rollout_step = step_config(job, "Detect rollout contract support", "label-gate.yml.jobs.validate-pr-labels")
-    rollout_run = str(rollout_step.get("run", ""))
-    require(
-        "supports_final_contract=false" in rollout_run and "supports_final_contract=true" in rollout_run,
-        "label-gate.yml: rollout support detection outputs drifted",
-    )
-    require(
-        "skipping trusted contract validation during rollout" in rollout_run,
-        "label-gate.yml: rollout warning drifted",
-    )
-
     contract_step = step_config(job, "Validate trusted label-gate contract", "label-gate.yml.jobs.validate-pr-labels")
-    require(
-        contract_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
-        "label-gate.yml: trusted contract validation gate drifted",
-    )
     contract_command = require_command(
         contract_step,
         ["python3", "trusted/.github/scripts/check_quality_gates_contract.py"],
@@ -642,61 +640,85 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
         "label-gate.yml: Evaluate PR labels must validate labels before any release-intent write step",
     )
 
-    trusted_write_step = step_config(job, "Write trusted release intent artifact", "label-gate.yml.jobs.validate-pr-labels")
-    require(
-        trusted_write_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
-        "label-gate.yml: trusted release intent write gate drifted",
-    )
-    trusted_write_env = require_mapping(
-        trusted_write_step.get("env"),
-        "label-gate.yml.jobs.validate-pr-labels.steps['Write trusted release intent artifact'].env",
-    )
-    require(
-        trusted_write_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}",
-        "label-gate.yml: trusted release intent write step must pass GITHUB_TOKEN via env",
-    )
-    trusted_write_command = require_command(
-        trusted_write_step,
-        ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
-        "label-gate.yml.jobs.validate-pr-labels.steps['Write trusted release intent artifact']",
-        "label-gate.yml: trusted release intent write step must invoke the trusted metadata gate in label mode",
-    )
-    trusted_write_options = command_option_map(
-        trusted_write_command[3:],
-        "label-gate.yml: trusted release intent write command options",
-    )
-    require(
-        trusted_write_options.get("--write-intent") == "$RUNNER_TEMP/release-intent.json",
-        "label-gate.yml: trusted release intent write step must write to the runner temp artifact path",
-    )
+    rollout_step = maybe_step_config(job, "Detect rollout contract support")
+    trusted_write_step = maybe_step_config(job, "Write trusted release intent artifact")
+    upload_step = maybe_step_config(job, "Upload release intent artifact")
+    if rollout_step is not None:
+        rollout_run = str(rollout_step.get("run", ""))
+        require(
+            "supports_final_contract=false" in rollout_run and "supports_final_contract=true" in rollout_run,
+            "label-gate.yml: rollout support detection outputs drifted",
+        )
+        require(
+            "skipping trusted contract validation during rollout" in rollout_run,
+            "label-gate.yml: rollout warning drifted",
+        )
+        require(
+            contract_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
+            "label-gate.yml: trusted contract validation gate drifted",
+        )
+        require(trusted_write_step is not None, "label-gate.yml: rollout topology must retain trusted release intent write step")
+        require(upload_step is not None, "label-gate.yml: rollout topology must retain release intent upload step")
+    else:
+        require("if" not in contract_step, "label-gate.yml: simplified trusted contract step must run unconditionally")
+        require(trusted_write_step is None, "label-gate.yml: simplified topology must not write release intent artifacts")
+        require(upload_step is None, "label-gate.yml: simplified topology must not upload release intent artifacts")
 
-    upload_step = step_config(job, "Upload release intent artifact", "label-gate.yml.jobs.validate-pr-labels")
-    require(
-        upload_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
-        "label-gate.yml: release intent artifact upload gate drifted",
-    )
-    uses_value = str(upload_step.get("uses") or "")
-    require(
-        uses_value == "actions/upload-artifact@v4",
-        "label-gate.yml: release intent artifact step must use actions/upload-artifact@v4",
-    )
-    upload_with = require_mapping(upload_step.get("with"), "label-gate.yml.jobs.validate-pr-labels.steps['Upload release intent artifact'].with")
-    require(
-        upload_with.get("name") == "release-intent-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
-        "label-gate.yml: release intent artifact name drifted",
-    )
-    require(
-        upload_with.get("path") == "${{ runner.temp }}/release-intent.json",
-        "label-gate.yml: release intent artifact path drifted",
-    )
-    require(
-        upload_with.get("retention-days") == 30,
-        "label-gate.yml: release intent artifact retention must stay 30 days",
-    )
-    require(
-        upload_with.get("if-no-files-found") == "error",
-        "label-gate.yml: release intent artifact must fail when the JSON is missing",
-    )
+    if trusted_write_step is not None:
+        require(
+            trusted_write_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
+            "label-gate.yml: trusted release intent write gate drifted",
+        )
+        trusted_write_env = require_mapping(
+            trusted_write_step.get("env"),
+            "label-gate.yml.jobs.validate-pr-labels.steps['Write trusted release intent artifact'].env",
+        )
+        require(
+            trusted_write_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}",
+            "label-gate.yml: trusted release intent write step must pass GITHUB_TOKEN via env",
+        )
+        trusted_write_command = require_command(
+            trusted_write_step,
+            ["python3", "trusted/.github/scripts/metadata_gate.py", "label"],
+            "label-gate.yml.jobs.validate-pr-labels.steps['Write trusted release intent artifact']",
+            "label-gate.yml: trusted release intent write step must invoke the trusted metadata gate in label mode",
+        )
+        trusted_write_options = command_option_map(
+            trusted_write_command[3:],
+            "label-gate.yml: trusted release intent write command options",
+        )
+        require(
+            trusted_write_options.get("--write-intent") == "$RUNNER_TEMP/release-intent.json",
+            "label-gate.yml: trusted release intent write step must write to the runner temp artifact path",
+        )
+
+    if upload_step is not None:
+        require(
+            upload_step.get("if") == "steps.rollout.outputs.supports_final_contract == 'true'",
+            "label-gate.yml: release intent artifact upload gate drifted",
+        )
+        uses_value = str(upload_step.get("uses") or "")
+        require(
+            uses_value == "actions/upload-artifact@v4",
+            "label-gate.yml: release intent artifact step must use actions/upload-artifact@v4",
+        )
+        upload_with = require_mapping(upload_step.get("with"), "label-gate.yml.jobs.validate-pr-labels.steps['Upload release intent artifact'].with")
+        require(
+            upload_with.get("name") == "release-intent-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
+            "label-gate.yml: release intent artifact name drifted",
+        )
+        require(
+            upload_with.get("path") == "${{ runner.temp }}/release-intent.json",
+            "label-gate.yml: release intent artifact path drifted",
+        )
+        require(
+            upload_with.get("retention-days") == 30,
+            "label-gate.yml: release intent artifact retention must stay 30 days",
+        )
+        require(
+            upload_with.get("if-no-files-found") == "error",
+            "label-gate.yml: release intent artifact must fail when the JSON is missing",
+        )
 
 
 def validate_review_policy(path: Path, contract: ContractModel) -> None:
@@ -768,7 +790,10 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     concurrency = require_mapping(workflow.get("concurrency"), "release.yml.concurrency")
     require(
         concurrency.get("group")
-        == "release-${{ github.event_name == 'workflow_dispatch' && inputs.commit_sha || github.event.workflow_run.head_sha }}",
+        in {
+            "release-${{ github.event_name == 'workflow_dispatch' && inputs.commit_sha || github.event.workflow_run.head_sha }}",
+            "release-main",
+        },
         "release.yml.concurrency.group drifted",
     )
     require(concurrency.get("cancel-in-progress") is False, "release.yml.concurrency.cancel-in-progress must stay false")
@@ -794,32 +819,56 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     outputs = require_mapping(release_meta.get("outputs"), "release.yml.jobs.release-meta.outputs")
     require("target_sha" in outputs, "release.yml.jobs.release-meta.outputs.target_sha must be exported")
 
-    target_step = step_config(release_meta, "Resolve target commit", "release.yml.jobs.release-meta")
+    requested_step = maybe_step_config(release_meta, "Resolve requested commit")
+    legacy_target_step = maybe_step_config(release_meta, "Resolve target commit")
+    require(
+        (requested_step is None) != (legacy_target_step is None),
+        "release.yml.jobs.release-meta must define exactly one target resolution step",
+    )
+    target_step_name = "Resolve requested commit" if requested_step is not None else "Resolve target commit"
+    target_step = requested_step or legacy_target_step
     target_run = str(target_step.get("run", ""))
-    require("inputs.commit_sha" in target_run, "release.yml.jobs.release-meta: manual commit_sha resolution drifted")
-    require("git merge-base --is-ancestor" in target_run, "release.yml.jobs.release-meta: main ancestry gate drifted")
+    require("inputs.commit_sha" in target_run, f"release.yml.jobs.release-meta: {target_step_name} manual commit_sha resolution drifted")
+    require("git merge-base --is-ancestor" in target_run, f"release.yml.jobs.release-meta: {target_step_name} main ancestry gate drifted")
 
     backfill_step = step_config(release_meta, "Validate manual backfill target passed CI Main", "release.yml.jobs.release-meta")
     require(backfill_step.get("if") == "github.event_name == 'workflow_dispatch'", "release.yml.jobs.release-meta: manual backfill validation gate drifted")
     backfill_env = require_mapping(backfill_step.get("env"), "release.yml.jobs.release-meta.steps['Validate manual backfill target passed CI Main'].env")
-    require(backfill_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual backfill validation must consume target_sha")
+    expected_backfill_target = "${{ steps.requested-target.outputs.target_sha }}" if requested_step is not None else "${{ steps.target.outputs.target_sha }}"
+    require(backfill_env.get("TARGET_SHA") == expected_backfill_target, "release.yml.jobs.release-meta: manual backfill validation must consume target_sha")
     backfill_script = str(backfill_step.get("with", {}).get("script", ""))
     require("snapshot-only CI Main failure" in backfill_script, "release.yml.jobs.release-meta: snapshot-only backfill exception drifted")
     require("listJobsForWorkflowRun" in backfill_script, "release.yml.jobs.release-meta: snapshot-only backfill job inspection drifted")
     ensure_step = step_config(release_meta, "Ensure immutable release snapshot for manual backfill", "release.yml.jobs.release-meta")
     require(ensure_step.get("if") == "github.event_name == 'workflow_dispatch'", "release.yml.jobs.release-meta: manual snapshot ensure gate drifted")
     ensure_env = require_mapping(ensure_step.get("env"), "release.yml.jobs.release-meta.steps['Ensure immutable release snapshot for manual backfill'].env")
-    require(ensure_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual snapshot ensure must consume target_sha")
+    require(ensure_env.get("TARGET_SHA") == expected_backfill_target, "release.yml.jobs.release-meta: manual snapshot ensure must consume target_sha")
     require(ensure_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "release.yml.jobs.release-meta: manual snapshot ensure must use GITHUB_TOKEN")
     ensure_run = str(ensure_step.get("run", ""))
     require("release_snapshot.py ensure" in ensure_run, "release.yml.jobs.release-meta: manual snapshot ensure must use release_snapshot.py ensure")
-    require("--allow-current-pr-label-fallback" in ensure_run, "release.yml.jobs.release-meta: manual snapshot ensure must allow current PR label fallback")
+
+    pending_step = maybe_step_config(release_meta, "Select pending release target")
+    if pending_step is None:
+        require("--allow-current-pr-label-fallback" in ensure_run, "release.yml.jobs.release-meta: legacy manual snapshot ensure must allow current PR label fallback")
+
     snapshot_step = step_config(release_meta, "Load immutable release snapshot", "release.yml.jobs.release-meta")
     snapshot_env = require_mapping(snapshot_step.get("env"), "release.yml.jobs.release-meta.steps['Load immutable release snapshot'].env")
+    expected_snapshot_target = "${{ steps.pending-target.outputs.target_sha }}" if pending_step is not None else "${{ steps.target.outputs.target_sha }}"
     require(
-        snapshot_env.get("TARGET_SHA") == "${{ steps.target.outputs.target_sha }}",
+        snapshot_env.get("TARGET_SHA") == expected_snapshot_target,
         "release.yml.jobs.release-meta: snapshot loader must consume target_sha",
     )
+    if pending_step is not None:
+        require(
+            pending_step.get("id") == "pending-target",
+            "release.yml.jobs.release-meta: pending release target step must expose pending-target outputs",
+        )
+        require(
+            snapshot_step.get("if") == "steps.pending-target.outputs.target_sha != ''",
+            "release.yml.jobs.release-meta: pending snapshot loader gate drifted",
+        )
+        pending_run = str(pending_step.get("run", ""))
+        require("release_snapshot.py next-pending" in pending_run, "release.yml.jobs.release-meta: pending release selector must use release_snapshot.py next-pending")
     snapshot_run = str(snapshot_step.get("run", ""))
     require(
         "release_snapshot.py export" in snapshot_run,
@@ -830,10 +879,12 @@ def validate_release(path: Path, contract: ContractModel) -> None:
         "release.yml.jobs.release-meta: snapshot notes-ref plumbing drifted",
     )
     candidate_step = step_config(release_meta, "Compute candidate suffix", "release.yml.jobs.release-meta")
-    require(
-        candidate_step.get("if") == "steps.snapshot.outputs.release_enabled == 'true'",
-        "release.yml.jobs.release-meta: candidate suffix gate drifted",
+    expected_candidate_if = (
+        "steps.pending-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'"
+        if pending_step is not None
+        else "steps.snapshot.outputs.release_enabled == 'true'"
     )
+    require(candidate_step.get("if") == expected_candidate_if, "release.yml.jobs.release-meta: candidate suffix gate drifted")
     candidate_run = str(candidate_step.get("run", ""))
     require("candidate_suffix=${TARGET_SHA:0:12}" in candidate_run, "release.yml.jobs.release-meta: candidate suffix drifted")
 
@@ -861,11 +912,29 @@ def validate_release(path: Path, contract: ContractModel) -> None:
 
     publish = named_job_config(workflow, "release-publish", expected_jobs, "release.yml")
     require(publish.get("needs") == ["release-meta", "docker-amd64", "docker-arm64"], "release.yml.jobs.release-publish.needs drifted")
+    publish_permissions = require_mapping(publish.get("permissions"), "release.yml.jobs.release-publish.permissions")
+    require(publish_permissions.get("contents") == "write", "release.yml.jobs.release-publish.permissions.contents must stay write")
     publish_checkout = checkout_step(publish, "Checkout code", "release.yml.jobs.release-publish")
     require(publish_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.release-publish checkout ref drifted")
     tag_step = step_config(publish, "Create and push git tag", "release.yml.jobs.release-publish")
     tag_run = str(tag_step.get("run", ""))
     require('sha="${TARGET_SHA}"' in tag_run, "release.yml.jobs.release-publish tag step must use target_sha")
+    next_pending_step = maybe_step_config(publish, "Resolve next pending release target")
+    continue_queue_step = maybe_step_config(publish, "Continue release queue")
+    if next_pending_step is None:
+        require(continue_queue_step is None, "release.yml.jobs.release-publish: queue continuation requires a next-pending resolver")
+    else:
+        require(continue_queue_step is not None, "release.yml.jobs.release-publish: pending queue topology must continue the release queue")
+        require(
+            publish_permissions.get("actions") == "write",
+            "release.yml.jobs.release-publish.permissions.actions must stay write when continuing the queue",
+        )
+        next_pending_run = str(next_pending_step.get("run", ""))
+        require("release_snapshot.py next-pending" in next_pending_run, "release.yml.jobs.release-publish: next pending resolver must use release_snapshot.py next-pending")
+        require(
+            continue_queue_step.get("uses") == "actions/github-script@v7",
+            "release.yml.jobs.release-publish: continue queue step must use actions/github-script@v7",
+        )
 
 
 def validate_merge_group_helpers(module: Any) -> None:
