@@ -570,6 +570,9 @@ def load_release_intent_artifact(
             continue
         if run_payload.get("conclusion") != "success":
             continue
+        if expected_head_sha is not None and artifact_name == artifact_name_for_pr(pr_number, expected_head_sha):
+            candidates.append(artifact)
+            continue
         pull_requests = run_payload.get("pull_requests") or []
         if not isinstance(pull_requests, list):
             raise SnapshotError(f"GitHub API returned malformed workflow run pull_requests for artifact {artifact_name}")

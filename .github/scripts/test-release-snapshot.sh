@@ -486,7 +486,7 @@ try:
                 "event": module.TRUSTED_RELEASE_INTENT_EVENT,
                 "status": "completed",
                 "conclusion": "success",
-                "pull_requests": [{"number": 140, "head": {"sha": "a" * 40}}],
+                "head_sha": "a" * 40,
             }
         if path.endswith("/actions/runs/2"):
             return {
