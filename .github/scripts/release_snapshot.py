@@ -513,7 +513,7 @@ def commits_to_materialize(notes_ref: str, target_sha: str, *, target_only: bool
             latest_existing_index = index
 
     if latest_existing_index < 0:
-        return [target_sha]
+        return commits
     return commits[latest_existing_index + 1 :]
 
 

@@ -271,6 +271,74 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-target-only-") as tmp:
         os.chdir(original_cwd)
 
 
+with tempfile.TemporaryDirectory(prefix="release-snapshot-empty-notes-") as tmp:
+    repo = Path(tmp)
+    run("init", cwd=repo)
+    run("config", "user.name", "Test User", cwd=repo)
+    run("config", "user.email", "test@example.com", cwd=repo)
+    run("checkout", "-b", "main", cwd=repo)
+    (repo / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+    (repo / "README.md").write_text("base\n")
+    run("add", "Cargo.toml", "README.md", cwd=repo)
+    run("commit", "-m", "base", cwd=repo)
+    run("tag", "v0.1.0", cwd=repo)
+
+    (repo / "README.md").write_text("patch one\n")
+    run("add", "README.md", cwd=repo)
+    run("commit", "-m", "patch one", cwd=repo)
+    first_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    (repo / "README.md").write_text("patch two\n")
+    run("add", "README.md", cwd=repo)
+    run("commit", "-m", "patch two", cwd=repo)
+    target_sha = run("rev-parse", "HEAD", cwd=repo)
+
+    original_cwd = Path.cwd()
+    original_load_pr = module.load_pr_for_commit
+    original_git = module.git
+
+    os.chdir(repo)
+    try:
+        def fake_git(*args: str, **kwargs: object):
+            if args == ("push", "origin", module.DEFAULT_NOTES_REF):
+                return subprocess.CompletedProcess(["git", *args], 0, "", "")
+            return original_git(*args, **kwargs)
+
+        def fake_load_pr(api_root, repository, token, commit_sha, **kwargs):
+            return {
+                first_sha: make_pr(401, "First patch", first_sha, ["type:patch", "channel:stable"]),
+                target_sha: make_pr(402, "Second patch", target_sha, ["type:patch", "channel:stable"]),
+            }.get(commit_sha)
+
+        module.load_pr_for_commit = fake_load_pr
+        module.git = fake_git
+        exit_code = module.ensure_snapshot(
+            argparse.Namespace(
+                target_sha=target_sha,
+                github_repository="IvanLi-CN/codex-vibe-monitor",
+                github_token="token",
+                notes_ref=module.DEFAULT_NOTES_REF,
+                registry="ghcr.io",
+                api_root="https://api.github.com",
+                output=str(repo / "empty-notes.json"),
+                max_attempts=1,
+                target_only=False,
+            )
+        )
+        assert exit_code == 0
+        first_snapshot = module.read_snapshot(module.DEFAULT_NOTES_REF, first_sha)
+        target_snapshot = module.read_snapshot(module.DEFAULT_NOTES_REF, target_sha)
+        assert first_snapshot is not None
+        assert first_snapshot["next_stable_version"] == "0.1.1"
+        assert target_snapshot is not None
+        assert target_snapshot["base_stable_version"] == "0.1.1"
+        assert target_snapshot["next_stable_version"] == "0.1.2"
+    finally:
+        module.load_pr_for_commit = original_load_pr
+        module.git = original_git
+        os.chdir(original_cwd)
+
+
 with tempfile.TemporaryDirectory(prefix="release-snapshot-catch-up-") as tmp:
     repo = Path(tmp)
     run("init", cwd=repo)
