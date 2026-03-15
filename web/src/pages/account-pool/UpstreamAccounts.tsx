@@ -393,10 +393,12 @@ export default function UpstreamAccountsPage() {
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [pageActionError, setPageActionError] = useState<string | null>(null)
+  const [detailActionError, setDetailActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
@@ -432,6 +434,11 @@ export default function UpstreamAccountsPage() {
       setIsDetailDrawerOpen(false)
     }
   }, [detail, selectedSummary])
+
+  useEffect(() => {
+    setDetailActionError(null)
+    setIsDeleteConfirmOpen(false)
+  }, [selectedId, isDetailDrawerOpen])
 
   useEffect(() => {
     setRoutingDraft(buildRoutingDraft(routing?.maskedApiKey))
@@ -687,7 +694,7 @@ export default function UpstreamAccountsPage() {
 
   const handleSave = async (source: UpstreamAccountDetail) => {
     if (source.kind === 'api_key_codex' && draftUpstreamBaseUrlError) return
-    setActionError(null)
+    setDetailActionError(null)
     setBusyAction('save')
     try {
       const response = await saveAccount(source.id, {
@@ -707,31 +714,31 @@ export default function UpstreamAccountsPage() {
       notifyMotherChange(response)
       setDraft((current) => ({ ...current, apiKey: '' }))
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
   }
 
   const handleSync = async (source: UpstreamAccountSummary) => {
-    setActionError(null)
+    setDetailActionError(null)
     setBusyAction('sync')
     try {
       await runSync(source.id)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
   }
 
   const handleToggleEnabled = async (source: UpstreamAccountSummary, enabled: boolean) => {
-    setActionError(null)
+    setDetailActionError(null)
     setBusyAction('toggle')
     try {
       await saveAccount(source.id, { enabled })
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
@@ -739,29 +746,27 @@ export default function UpstreamAccountsPage() {
 
 
   const handleSaveRouting = async () => {
-    setActionError(null)
+    setPageActionError(null)
     setBusyAction('routing')
     try {
       await saveRouting({ apiKey: routingDraft.apiKey.trim() })
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
       setIsRoutingDialogOpen(false)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setPageActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
   }
 
   const handleDelete = async (source: UpstreamAccountSummary) => {
-    if (!window.confirm(t('accountPool.upstreamAccounts.deleteConfirm', { name: source.displayName }))) {
-      return
-    }
-    setActionError(null)
+    setDetailActionError(null)
+    setIsDeleteConfirmOpen(false)
     setBusyAction('delete')
     try {
       await removeAccount(source.id)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
@@ -808,10 +813,10 @@ export default function UpstreamAccountsPage() {
               </Alert>
             ) : null}
 
-            {actionError ? (
+            {pageActionError ? (
               <Alert variant="error">
                 <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <div>{actionError}</div>
+                <div>{pageActionError}</div>
               </Alert>
             ) : null}
 
@@ -1037,15 +1042,52 @@ export default function UpstreamAccountsPage() {
                     {t('accountPool.upstreamAccounts.actions.relogin')}
                   </Button>
                 ) : null}
-                <Button type="button" variant="destructive" onClick={() => void handleDelete(selected)} disabled={busyAction === 'delete' || !writesEnabled}>
-                  {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
-                  {t('accountPool.upstreamAccounts.actions.delete')}
-                </Button>
+                <div className="relative">
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    disabled={busyAction === 'delete' || !writesEnabled}
+                    onClick={() => {
+                      if (busyAction === 'delete') return
+                      setDetailActionError(null)
+                      setIsDeleteConfirmOpen(true)
+                    }}
+                  >
+                    {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                    {t('accountPool.upstreamAccounts.actions.delete')}
+                  </Button>
+                  {isDeleteConfirmOpen ? (
+                    <div className="absolute right-0 top-full z-20 mt-2 w-[22rem] space-y-3 rounded-2xl border border-error/30 bg-base-100/98 p-4 shadow-2xl">
+                      <div className="space-y-1">
+                        <p className="text-sm font-semibold text-base-content">
+                          {t('accountPool.upstreamAccounts.deleteConfirmTitle')}
+                        </p>
+                        <p className="text-sm leading-6 text-base-content/70">
+                          {t('accountPool.upstreamAccounts.deleteConfirmBody', { name: selected.displayName })}
+                        </p>
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <Button type="button" variant="ghost" size="sm" onClick={() => setIsDeleteConfirmOpen(false)}>
+                          {t('accountPool.upstreamAccounts.actions.cancel')}
+                        </Button>
+                        <Button type="button" variant="destructive" size="sm" onClick={() => void handleDelete(selected)}>
+                          {t('accountPool.upstreamAccounts.actions.confirmDelete')}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
 
             {detail ? (
               <div className="grid gap-5">
+                {detailActionError ? (
+                  <Alert variant="error">
+                    <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                    <div>{detailActionError}</div>
+                  </Alert>
+                ) : null}
                 {detail.duplicateInfo ? (
                   <Alert variant="warning">
                     <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
