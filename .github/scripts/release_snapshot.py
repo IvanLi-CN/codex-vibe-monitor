@@ -21,6 +21,7 @@ SNAPSHOT_SCHEMA_VERSION = 1
 RELEASE_INTENT_SCHEMA_VERSION = 1
 DEFAULT_NOTES_REF = "refs/notes/release-snapshots"
 LEGACY_LABEL_FALLBACK_PR_ALLOWLIST = frozenset({126, 130, 131, 133})
+LEGACY_LABEL_FALLBACK_ROLLOUT_CUTOFF = "2026-03-16T00:00:00Z"
 RELEASE_INTENT_ARTIFACT_PREFIX = "release-intent-pr-"
 TRUSTED_RELEASE_INTENT_WORKFLOW_PATH = ".github/workflows/label-gate.yml"
 TRUSTED_RELEASE_INTENT_EVENT = "pull_request"
@@ -341,6 +342,40 @@ def current_labels_for_pr(api_root: str, repository: str, token: str, pr_number:
     return sorted(set(names))
 
 
+def labels_at_merge_time(api_root: str, repository: str, token: str, pr: dict[str, Any]) -> list[str]:
+    owner, repo = repository.split("/", 1)
+    pr_number = pr.get("number")
+    merged_at = pr.get("merged_at")
+    if not isinstance(pr_number, int):
+        raise SnapshotError("Pull request payload is missing a numeric PR number")
+    if not isinstance(merged_at, str) or not merged_at:
+        raise SnapshotError(f"Pull request #{pr_number} is missing merged_at; cannot freeze release labels")
+
+    merge_moment = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+    timeline = github_paginate(api_root, token, f"/repos/{owner}/{repo}/issues/{pr_number}/timeline")
+
+    labels: set[str] = set()
+    for event in sorted(timeline, key=lambda item: str(item.get("created_at", ""))):
+        created_at = event.get("created_at")
+        if not isinstance(created_at, str):
+            continue
+        event_moment = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if event_moment > merge_moment:
+            continue
+        event_type = event.get("event")
+        label = event.get("label")
+        if not isinstance(label, dict):
+            continue
+        name = label.get("name")
+        if not isinstance(name, str):
+            continue
+        if event_type == "labeled":
+            labels.add(name)
+        elif event_type == "unlabeled":
+            labels.discard(name)
+    return sorted(labels)
+
+
 def load_release_intent_artifact(
     api_root: str, repository: str, token: str, pr_number: int, pr_head_sha: str
 ) -> dict[str, Any] | None:
@@ -458,14 +493,22 @@ def resolve_release_intent_for_pr(
             pr_head_sha,
         )
 
-    if pr_number in LEGACY_LABEL_FALLBACK_PR_ALLOWLIST:
-        type_label, channel_label = parse_release_labels(current_labels_for_pr(api_root, repository, token, pr_number))
+    merged_at = pr.get("merged_at")
+    rollout_cutoff = datetime.fromisoformat(LEGACY_LABEL_FALLBACK_ROLLOUT_CUTOFF.replace("Z", "+00:00"))
+    merge_moment = None
+    if isinstance(merged_at, str) and merged_at:
+        merge_moment = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+
+    if pr_number in LEGACY_LABEL_FALLBACK_PR_ALLOWLIST or (
+        merge_moment is not None and merge_moment <= rollout_cutoff
+    ):
+        type_label, channel_label = parse_release_labels(labels_at_merge_time(api_root, repository, token, pr))
         return (type_label, channel_label, "legacy-pr-labels", pr_head_sha)
 
     artifact_name = artifact_name_for_pr(pr_number, pr_head_sha)
     raise SnapshotError(
         f"Missing pre-frozen release intent artifact {artifact_name} for PR #{pr_number}; "
-        "legacy label fallback is only allowed for the historical backfill and rollout bridge allowlist"
+        f"legacy label fallback is only allowed for the historical allowlist or PRs merged by {LEGACY_LABEL_FALLBACK_ROLLOUT_CUTOFF}"
     )
 
 

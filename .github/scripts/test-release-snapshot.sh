@@ -29,11 +29,11 @@ def run(*args: str, cwd: Path) -> str:
     return result.stdout.strip()
 
 
-def make_pr(number: int, title: str, head_sha: str) -> dict[str, object]:
+def make_pr(number: int, title: str, head_sha: str, *, merged_at: str = "2026-03-14T00:00:00Z") -> dict[str, object]:
     return {
         "number": number,
         "title": title,
-        "merged_at": "2026-03-14T00:00:00Z",
+        "merged_at": merged_at,
         "head": {"sha": head_sha},
     }
 
@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         module.load_release_intent_artifact = (
             lambda api_root, repository, token, pr_number, pr_head_sha: make_release_intent(pr_number, pr_head_sha)
         )
-        module.current_labels_for_pr = lambda api_root, repository, token, pr_number: []
+        module.labels_at_merge_time = lambda api_root, repository, token, pr: []
         snapshot1 = module.build_snapshot(
             target_sha=sha1,
             repository="IvanLi-CN/codex-vibe-monitor",
@@ -152,9 +152,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             130, "Historical stable release", target_sha
         )
         module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, pr_head_sha: None
-        module.current_labels_for_pr = (
-            lambda api_root, repository, token, pr_number: ["type:patch", "channel:stable"]
-        )
+        module.labels_at_merge_time = lambda api_root, repository, token, pr: ["type:patch", "channel:stable"]
         legacy_snapshot = module.build_snapshot(
             target_sha=sha1,
             repository="IvanLi-CN/codex-vibe-monitor",
@@ -166,7 +164,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         assert legacy_snapshot["snapshot_source"] == "legacy-pr-labels"
 
         module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: make_pr(
-            140, "Future release without artifact", target_sha
+            140, "Future release without artifact", target_sha, merged_at="2026-03-16T00:00:01Z"
         )
         module.load_release_intent_artifact = lambda api_root, repository, token, pr_number, pr_head_sha: None
         try:
@@ -234,7 +232,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-race-") as tmp:
     module.load_release_intent_artifact = (
         lambda api_root, repository, token, pr_number, pr_head_sha: make_release_intent(pr_number, pr_head_sha)
     )
-    module.current_labels_for_pr = lambda api_root, repository, token, pr_number: []
+    module.labels_at_merge_time = lambda api_root, repository, token, pr: []
 
     snapshot_a_path = worker_a / "snapshot-a.json"
     snapshot_b_path = worker_b / "snapshot-b.json"
