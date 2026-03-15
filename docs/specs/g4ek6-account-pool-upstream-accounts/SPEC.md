@@ -161,6 +161,17 @@
 
 - source_type: storybook_canvas
   target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Detail Drawer
+  state: idle-sync-button
+  evidence_note: 验证账号详情抽屉里的 `立即同步` 按钮空闲态为 outline 风格同步图标，而不是 spinner 或实心刷新图标。
+  image:
+  ![Upstream account sync button outline](./assets/upstream-account-sync-button-outline.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
