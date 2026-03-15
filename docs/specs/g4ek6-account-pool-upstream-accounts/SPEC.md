@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-11
-- Last: 2026-03-14
+- Last: 2026-03-16
 
 ## 背景 / 问题陈述
 
@@ -55,6 +55,13 @@
 - OAuth token 与 API key 必须以服务端加密密文落库；若未配置加密密钥，所有账号管理写接口必须拒绝请求并返回明确错误。
 - OAuth 账号持久化后必须保存 `access_token`、`refresh_token`、`id_token`、`token_expires_at`、`chatgpt_account_id`、`chatgpt_user_id`、`email`、`plan_type` 等最小恢复信息；应用重启后必须可以继续刷新与同步。
 - 上游账号身份重复（共享 `chatgpt_account_id` 或 `chatgpt_user_id`）只能告警、不得阻止保存；列表与详情必须持续显示重复标记，且 OAuth 新建完成后要给出一次性 warning。
+- 当同一 `chatgpt_account_id` 的账号簇全部满足 `plan_type=team` 时，共享 account id 视为 Team 合法共享，不得单独标记为重复；若共享 `chatgpt_user_id`，仍必须继续标记为重复身份。
+- Team 共享 account id 的判定必须优先使用账号最新 usage sample 中的 `plan_type`，仅在最新 sample 不可用时才回退到账户表字段，避免 legacy / stale `plan_type` 把整簇 Team 账号误判或漏判。
+- usage sample 持久化在上游未返回 `plan_type` 时不得把账户表旧值回填进最新 sample；列表、详情与重复判定读取到的 `planType` 必须共享同一份“最新非空 sample 优先、账户表兜底”的解析口径。
+- 当 OAuth 刷新拿到更新后的 `id_token plan_type` 而 usage 响应省略 `plan_type` 时，同步流程必须把该次刷新确认过的有效 plan type 一并写入最新 sample；若账户 claims 的观测时间晚于最近一个非空 sample，列表、详情与重复判定必须以更新后的账户 claims 为准。
+- 上述 freshness 比较只允许使用认证身份实际更新产生的时间戳（如 `lastRefreshedAt` / 新 OAuth 落库时刻）；普通状态写入、备注编辑或同步成功导致的通用 `updatedAt` 变化不得改变 `planType` 的优先级。若本次 usage 省略 `plan_type` 且账户 claims 也不比历史 sample 更新，则必须沿用现有有效 sample 值，而不是回退到更旧的账户 claims。
+- freshness 判定所比较的 sample 基线必须是“最近一个非空 `plan_type` sample”，而不是“最新一行 sample”；否则在最新采样缺失 `plan_type` 时，会把更晚刷新得到的 claims 或更晚确认过的有效 sample 错误地压回旧值。
+- 服务端必须为 OAuth 账户单独维护“`plan_type` 实际观测时间”元数据；只有在 JWT claims 中拿到非空 `plan_type` 时才允许推进该时间。Team 判重与列表/详情 `planType` 的 freshness 一律基于该观测时间和“最近一个非空 sample”的时间比较，不能直接复用泛化的 token refresh 时间。若两者落在同一秒，默认以账户 claims 为 tie-break winner。
 - `displayName` 必须全局唯一，按“忽略大小写 + 去首尾空格”判重；单 OAuth、批量 OAuth、API Key 创建与详情编辑命中重复时必须拒绝提交。
 - 服务端必须定期刷新即将过期的 OAuth token，并定期从 Codex / ChatGPT usage 接口采集 `5 小时(primary)` 与 `7 天(secondary)` 窗口，落库为最新快照与历史样本。
 - `5 小时` 与 `7 天` 必须在列表和详情中同时以图形化 + 文字展示：列表展示最新进度，详情展示进度条/图 + 趋势图 + 重置时间 + 状态说明。
@@ -109,7 +116,9 @@
 - Given 用户位于 `dashboard / live / settings` 任意页面，When 点击导航中的 `号池`，Then 页面进入 `号池 -> 上游账号` 且不影响现有四个模块。
 - Given 前端创建 OAuth 登录会话，When 打开 `authUrl` 并完成授权，Then callback 会把账号落库，轮询接口变为 `completed`，列表中出现该账号。
 - Given 用户进入 `Batch OAuth` 模式，When 在多行里分别生成授权链接、粘贴 callback 并完成其中一行，Then 该行显示 `completed` 且页面保持在批量表格，其他行仍可继续生成或完成。
-- Given 两个 OAuth 账号共享相同的 `chatgpt_account_id` 或 `chatgpt_user_id`，When 第二个账号完成入池，Then 系统保留两条账号记录，并在列表/详情中标记为重复身份。
+- Given 两个非 Team OAuth 账号，或同一 `chatgpt_account_id` 簇中混入非 Team 账号，When 它们共享相同的 `chatgpt_account_id`，Then 系统保留多条账号记录，并在列表/详情中标记为重复身份。
+- Given 多个 `plan_type=team` 的 OAuth 账号共享相同的 `chatgpt_account_id` 且 `chatgpt_user_id` 各不相同，When 最后一个账号完成入池，Then 列表与详情不得仅因共享 account id 标记其为重复身份。
+- Given 任意 OAuth 账号共享相同的 `chatgpt_user_id`，When 后一个账号完成入池，Then 系统仍必须在列表/详情中标记为重复身份。
 - Given 用户在任一创建/编辑入口提交重复的 `displayName`，When 后端接收请求，Then 请求返回 `409`，前端展示 inline error，并禁止继续提交。
 - Given 同组已有母号，When 用户把另一账号设为母号，Then 系统自动切换母号归属、弹出系统级通知，并在通知中提供撤销按钮恢复到切换前状态。
 - Given OAuth 登录会话过期、state 错误或重复消费，When callback 被访问，Then 会话标记为 `failed/expired` 且不会创建或覆盖账号。
@@ -263,3 +272,10 @@
 - 2026-03-13: 扩展上游账号创建页为单账号 OAuth / 批量 OAuth / API Key 同页模式，并将批量 OAuth 表格纳入现有手动 OAuth 流程。
 - 2026-03-13: 刷新 Storybook 视觉证据，补充路由设置弹窗、Sticky Key 对话与记录页上游筛选展示。
 - 2026-03-14: 调整 OAuth 新建语义为“重复身份仅告警不合并”，并补充 `displayName` 全局唯一约束与 UI warning/inline error 验收口径。
+- 2026-03-16: 收紧重复身份口径：纯 `plan_type=team` 账号簇共享 `chatgpt_account_id` 不再判重，但共享 `chatgpt_user_id` 与 mixed-plan 簇仍继续告警。
+- 2026-03-16: 明确 Team 判重必须优先使用最新 usage sample 的 `plan_type`，账户表字段只做兜底，避免旧数据让 101 上的 legacy Team 账号继续误报。
+- 2026-03-16: 补充 latest-sample 读写一致性约束：空 `plan_type` sample 不得回填旧账户值，列表/详情展示的 `planType` 也必须与 Team 判重使用同一解析结果。
+- 2026-03-16: 进一步收紧 freshness 语义：同步时若 usage 未返回 `plan_type`，必须落库存活跃账户当前确认过的有效值；若账户 claims 比最近非空 sample 更新，则读取路径必须让更新后的 claims 覆盖旧 sample。
+- 2026-03-16: 明确 freshness 只认认证身份更新时间，不认通用 `updatedAt`；并补充“usage 省略 `plan_type` 时沿用当前有效值”的同步兜底，避免旧 claims 在下一次采样里反向覆盖更新 sample。
+- 2026-03-16: 补充“最近一个非空 sample”基线约束，避免用最新空 sample 参与 freshness 比较，导致刷新后的 claims 或现有有效 sample 被错误回退。
+- 2026-03-16: 引入 `plan_type` 专属观测时间语义：只有拿到非空 claims 才推进 freshness，不能复用通用 refresh 时间；同秒冲突默认让账户 claims 胜出，避免秒级时间戳把最新 Team 口径吞掉。
