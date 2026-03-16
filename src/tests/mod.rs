@@ -1,5 +1,9 @@
 use super::*;
 
+use aes_gcm::{
+    Aes256Gcm,
+    aead::{Aead, KeyInit},
+};
 use axum::{
     Json, Router,
     body::{Body, Bytes, to_bytes},
@@ -8,9 +12,13 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use chrono::Timelike;
 use flate2::{Compression, write::GzEncoder};
+use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::error::{DatabaseError, ErrorKind};
 use sqlx::{Connection, SqliteConnection, SqlitePool};
 use std::{
@@ -2737,6 +2745,73 @@ async fn insert_test_pool_api_key_account_with_options(
         .fetch_one(&state.pool)
         .await
         .expect("load inserted test pool upstream account id")
+}
+
+async fn insert_test_pool_oauth_account(
+    state: &Arc<AppState>,
+    display_name: &str,
+    access_token: &str,
+) -> i64 {
+    ensure_upstream_accounts_schema(&state.pool)
+        .await
+        .expect("ensure upstream account schema");
+    let encrypted_credentials = encrypt_test_oauth_credentials(access_token);
+    let now_iso = format_utc_iso(Utc::now());
+
+    let token_expires_at = format_utc_iso(Utc::now() + ChronoDuration::days(30));
+    sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            kind, provider, display_name, group_name, is_mother, note, status, enabled,
+            email, chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials,
+            token_expires_at, last_refreshed_at, last_synced_at, last_successful_sync_at, last_error,
+            last_error_at, local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
+        ) VALUES (
+            ?1, ?2, ?3, NULL, 0, NULL, ?4, 1,
+            ?5, ?6, ?7, ?8, NULL, ?9,
+            ?10, NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL, ?11, ?11
+        ) RETURNING id
+        "#,
+    )
+    .bind("oauth_codex")
+    .bind("codex")
+    .bind(display_name)
+    .bind("active")
+    .bind("oauth@example.com")
+    .bind("org_test")
+    .bind("user_test")
+    .bind("team")
+    .bind(encrypted_credentials)
+    .bind(&token_expires_at)
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert test oauth account")
+}
+
+fn encrypt_test_oauth_credentials(access_token: &str) -> String {
+    let key = Sha256::digest(b"test-upstream-account-secret");
+    let cipher = Aes256Gcm::new_from_slice(key.as_slice()).expect("valid aes key");
+    let plaintext = serde_json::to_vec(&json!({
+        "kind": "oauth",
+        "accessToken": access_token,
+        "refreshToken": "refresh-token",
+        "idToken": "header.payload.signature",
+        "tokenType": "Bearer",
+    }))
+    .expect("serialize oauth credentials");
+    let mut nonce = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce);
+    let ciphertext = cipher
+        .encrypt(aes_gcm::Nonce::from_slice(&nonce), plaintext.as_ref())
+        .expect("encrypt oauth credentials");
+    json!({
+        "v": 1,
+        "nonce": BASE64_STANDARD.encode(nonce),
+        "ciphertext": BASE64_STANDARD.encode(ciphertext),
+    })
+    .to_string()
 }
 
 #[tokio::test]
@@ -8707,6 +8782,13 @@ struct PoolFirstChunkRetryUpstreamState {
     fail_before_success: Arc<HashMap<String, usize>>,
 }
 
+#[derive(Clone)]
+struct PoolHttpFailureUpstreamState {
+    status: StatusCode,
+    error_code: Option<String>,
+    error_message: String,
+}
+
 async fn pool_retry_upstream(
     State(state): State<PoolRetryUpstreamState>,
     headers: HeaderMap,
@@ -8800,6 +8882,19 @@ async fn pool_first_chunk_retry_upstream(
         .into_response()
 }
 
+async fn pool_http_failure_upstream(State(state): State<PoolHttpFailureUpstreamState>) -> Response {
+    (
+        state.status,
+        Json(json!({
+            "error": {
+                "code": state.error_code,
+                "message": state.error_message,
+            }
+        })),
+    )
+        .into_response()
+}
+
 async fn spawn_pool_retry_upstream(
     fail_before_success: &[(&str, usize)],
 ) -> (
@@ -8864,6 +8959,32 @@ async fn spawn_pool_first_chunk_retry_upstream(
             .expect("pool first chunk retry upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_http_failure_upstream(
+    status: StatusCode,
+    error_code: Option<&str>,
+    error_message: &str,
+) -> (String, JoinHandle<()>) {
+    let app = Router::new()
+        .route("/v1/responses", post(pool_http_failure_upstream))
+        .with_state(PoolHttpFailureUpstreamState {
+            status,
+            error_code: error_code.map(str::to_string),
+            error_message: error_message.to_string(),
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool http failure upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool http failure upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool http failure upstream should run");
+    });
+    (format!("http://{addr}"), handle)
 }
 
 async fn load_test_sticky_route_account_id(pool: &SqlitePool, sticky_key: &str) -> Option<i64> {
@@ -9258,6 +9379,269 @@ async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
     );
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_details() {
+    #[derive(sqlx::FromRow)]
+    struct RouteStateRow {
+        status: String,
+        last_error: Option<String>,
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct PersistedRow {
+        payload: Option<String>,
+    }
+
+    let scope_message = "You have insufficient permissions for this operation. Missing scopes: api.responses.write.";
+    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+        StatusCode::UNAUTHORIZED,
+        Some("missing_scopes"),
+        scope_message,
+    )
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_oauth_account(&state, "Scope OAuth", "oauth-scope").await;
+    record_pool_route_success(&state.pool, account_id, Some("sticky-scope-001"))
+        .await
+        .expect("seed sticky route");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-scope-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure body");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|value| value.contains("Missing scopes: api.responses.write"))
+    );
+
+    let route_state = sqlx::query_as::<_, RouteStateRow>(
+        r#"
+        SELECT status, last_error
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load route state");
+    assert_eq!(route_state.status, "error");
+    assert!(
+        route_state
+            .last_error
+            .as_deref()
+            .is_some_and(|value| value.contains("Missing scopes: api.responses.write"))
+    );
+    assert!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-scope-001")
+            .await
+            .is_none(),
+        "permission failures should detach the sticky binding",
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let row = sqlx::query_as::<_, PersistedRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load invocation payload");
+    let payload_json: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("payload should be persisted for failed capture"),
+    )
+    .expect("decode invocation payload");
+    assert_eq!(payload_json["upstreamAccountId"].as_i64(), Some(account_id));
+    assert_eq!(
+        payload_json["upstreamErrorCode"].as_str(),
+        Some("missing_scopes")
+    );
+    assert!(
+        payload_json["upstreamErrorMessage"]
+            .as_str()
+            .is_some_and(|value| value.contains("Missing scopes: api.responses.write"))
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
+    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+        StatusCode::FORBIDDEN,
+        Some("token_invalidated"),
+        "Authentication token has been invalidated, please sign in again.",
+    )
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Invalidated OAuth", "oauth-invalidated").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(r#"{"model":"gpt-5","input":"hello"}"#.as_bytes().to_vec()),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load oauth account status");
+    assert_eq!(status, "needs_reauth");
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
+    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+        StatusCode::UNAUTHORIZED,
+        Some("invalid_grant"),
+        "Unauthorized",
+    )
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Grant OAuth", "oauth-invalid-grant").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(r#"{"model":"gpt-5","input":"hello"}"#.as_bytes().to_vec()),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load oauth account status");
+    assert_eq!(status, "needs_reauth");
+
+    upstream_handle.abort();
+}
+
+#[test]
+fn summarize_pool_upstream_http_failure_ignores_html_bodies() {
+    let (code, message, request_id, summary) = summarize_pool_upstream_http_failure(
+        StatusCode::UNAUTHORIZED,
+        None,
+        b"<html>blocked</html>",
+    );
+    assert_eq!(code, None);
+    assert_eq!(message, None);
+    assert_eq!(request_id, None);
+    assert_eq!(summary, "pool upstream responded with 401");
+}
+
+#[test]
+fn summarize_pool_upstream_http_failure_prefers_request_id_header() {
+    let body = br#"{"error":{"message":"Missing scopes: api.responses.write","code":"insufficient_permissions"}}"#;
+    let (code, message, request_id, summary) =
+        summarize_pool_upstream_http_failure(StatusCode::FORBIDDEN, Some("req_123abc"), body);
+    assert_eq!(code.as_deref(), Some("insufficient_permissions"));
+    assert_eq!(
+        message.as_deref(),
+        Some("Missing scopes: api.responses.write")
+    );
+    assert_eq!(request_id.as_deref(), Some("req_123abc"));
+    assert_eq!(
+        summary,
+        "pool upstream responded with 403: Missing scopes: api.responses.write"
+    );
+}
+
+#[test]
+fn summarize_pool_upstream_http_failure_keeps_plaintext_reauth_signal() {
+    let (code, message, request_id, summary) = summarize_pool_upstream_http_failure(
+        StatusCode::UNAUTHORIZED,
+        None,
+        b"invalid_grant: please sign in again",
+    );
+    assert_eq!(code, None);
+    assert_eq!(
+        message.as_deref(),
+        Some("invalid_grant: please sign in again")
+    );
+    assert_eq!(request_id, None);
+    assert_eq!(
+        summary,
+        "pool upstream responded with 401: invalid_grant: please sign in again"
+    );
+}
+
+#[test]
+fn summarize_pool_upstream_http_failure_reads_nested_request_id() {
+    let body = br#"{"response":{"error":{"message":"Request failed","code":"bad_request","request_id":"req_nested_123"}}}"#;
+    let (code, message, request_id, summary) =
+        summarize_pool_upstream_http_failure(StatusCode::BAD_REQUEST, None, body);
+    assert_eq!(code.as_deref(), Some("bad_request"));
+    assert_eq!(message.as_deref(), Some("Request failed"));
+    assert_eq!(request_id.as_deref(), Some("req_nested_123"));
+    assert_eq!(summary, "pool upstream responded with 400: Request failed");
+}
+
+#[test]
+fn summarize_pool_upstream_http_failure_reads_top_level_error_fields() {
+    let body =
+        br#"{"message":"Gateway says no","code":"gateway_forbidden","request_id":"req_top_456"}"#;
+    let (code, message, request_id, summary) =
+        summarize_pool_upstream_http_failure(StatusCode::FORBIDDEN, None, body);
+    assert_eq!(code.as_deref(), Some("gateway_forbidden"));
+    assert_eq!(message.as_deref(), Some("Gateway says no"));
+    assert_eq!(request_id.as_deref(), Some("req_top_456"));
+    assert_eq!(summary, "pool upstream responded with 403: Gateway says no");
 }
 
 #[tokio::test]

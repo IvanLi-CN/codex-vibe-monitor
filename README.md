@@ -61,6 +61,8 @@ bun run dev -- --host 127.0.0.1 --port 60080
 
 前端新增 `#/account-pool/upstream-accounts` 模块，用于管理 `Codex OAuth` 与 `Codex API Key` 上游账号；页面会展示归一化后的 `5 小时` / `7 天` 窗口、最近同步状态，以及 OAuth 一次性登录会话进度。
 
+如果你在这次修复之前已经添加过 OAuth 账号，部署新版本后需要对这些旧账号重新授权一次，才能拿到新增的 API scopes 并继续跑 `/v1/responses`。
+
 ## 配置
 
 在仓库根目录创建 `.env.local`（已忽略提交），常用变量如下（括号内为默认值）：

@@ -83,6 +83,11 @@ type GroupNoteEditorState = {
   existing: boolean
 }
 
+type OauthRecoveryHint = {
+  titleKey: string
+  bodyKey: string
+}
+
 function formatDateTime(value?: string | null) {
   if (!value) return '—'
   const date = new Date(value)
@@ -159,6 +164,54 @@ function statusVariant(status: string): 'success' | 'warning' | 'error' | 'secon
 
 function kindVariant(kind: string): 'secondary' | 'success' {
   return kind === 'oauth_codex' ? 'success' : 'secondary'
+}
+
+function isMissingApiScopeError(lastError?: string | null) {
+  const normalized = lastError?.toLocaleLowerCase() ?? ''
+  return (
+    normalized.includes('missing scopes') ||
+    normalized.includes('api.responses.write') ||
+    normalized.includes('api.model.read')
+  )
+}
+
+function isPermissionError(lastError?: string | null) {
+  const normalized = lastError?.toLocaleLowerCase() ?? ''
+  return normalized.includes('insufficient permissions for this operation')
+}
+
+function resolveOauthRecoveryHint(
+  kind: string,
+  status: string,
+  lastError?: string | null,
+): OauthRecoveryHint | null {
+  if (kind !== 'oauth_codex') return null
+  if (isMissingApiScopeError(lastError)) {
+    return {
+      titleKey: 'accountPool.upstreamAccounts.hints.scopeTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.scopeBody',
+    }
+  }
+  if (isPermissionError(lastError)) {
+    return {
+      titleKey: 'accountPool.upstreamAccounts.hints.permissionTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.permissionBody',
+    }
+  }
+  if (status === 'needs_reauth') {
+    return {
+      titleKey: 'accountPool.upstreamAccounts.hints.reauthTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.reauthBody',
+    }
+  }
+  return null
+}
+
+function resolveDisplayedStatus(status: string, lastError?: string | null) {
+  if (status === 'needs_reauth' && (isMissingApiScopeError(lastError) || isPermissionError(lastError))) {
+    return 'error'
+  }
+  return status
 }
 
 
@@ -551,10 +604,11 @@ export default function UpstreamAccountsPage() {
   }
 
   const metrics = useMemo(() => {
+    const displayedStatuses = items.map((item) => resolveDisplayedStatus(item.status, item.lastError))
     const oauthCount = items.filter((item) => item.kind === 'oauth_codex').length
     const apiKeyCount = items.filter((item) => item.kind === 'api_key_codex').length
-    const needsReauthCount = items.filter((item) => item.status === 'needs_reauth').length
-    const syncingCount = items.filter((item) => item.status === 'syncing').length
+    const needsReauthCount = displayedStatuses.filter((status) => status === 'needs_reauth').length
+    const syncingCount = displayedStatuses.filter((status) => status === 'syncing').length
     return [
       poolCardMetric(items.length, t('accountPool.upstreamAccounts.metrics.total'), 'database-outline', 'text-primary'),
       poolCardMetric(oauthCount, t('accountPool.upstreamAccounts.metrics.oauth'), 'badge-account-horizontal-outline', 'text-success'),
@@ -682,6 +736,11 @@ export default function UpstreamAccountsPage() {
   } = useUpstreamStickyConversations(selectedId, stickyConversationLimit, Boolean(selectedId && isDetailDrawerOpen))
 
   const selected = detail ?? selectedSummary
+  const selectedRecoveryHint = resolveOauthRecoveryHint(
+    detail?.kind ?? selected?.kind ?? '',
+    detail?.status ?? selected?.status ?? '',
+    detail?.lastError ?? selected?.lastError,
+  )
   const selectedVisible = filteredItems.some((item) => item.id === selectedId)
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
@@ -704,6 +763,8 @@ export default function UpstreamAccountsPage() {
       .join(' / ')
   }
   const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
+  const accountSummaryStatusLabel = (item: UpstreamAccountSummary) =>
+    accountStatusLabel(resolveDisplayedStatus(item.status, item.lastError))
   const accountKindLabel = (kind: string) =>
     kind === 'oauth_codex'
       ? t('accountPool.upstreamAccounts.kind.oauth')
@@ -1010,7 +1071,8 @@ export default function UpstreamAccountsPage() {
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 mother: t('accountPool.upstreamAccounts.mother.badge'),
                 duplicate: t('accountPool.upstreamAccounts.duplicate.badge'),
-                status: accountStatusLabel,
+                status: accountSummaryStatusLabel,
+                statusValue: (item) => resolveDisplayedStatus(item.status, item.lastError),
               }}
             />
           </div>
@@ -1065,7 +1127,15 @@ export default function UpstreamAccountsPage() {
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant={statusVariant(selected.status)}>{accountStatusLabel(selected.status)}</Badge>
+                  <Badge
+                    variant={statusVariant(
+                      resolveDisplayedStatus(selected.status, detail?.lastError ?? selected.lastError),
+                    )}
+                  >
+                    {accountStatusLabel(
+                      resolveDisplayedStatus(selected.status, detail?.lastError ?? selected.lastError),
+                    )}
+                  </Badge>
                   <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
                   {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}
                   {selected.duplicateInfo ? (
@@ -1462,6 +1532,19 @@ export default function UpstreamAccountsPage() {
                       value={detail.credits?.balance ? `${detail.credits.balance}` : detail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
                     />
                     <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
+                      {selectedRecoveryHint ? (
+                        <Alert variant="warning" className="mb-4">
+                          <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                          <div>
+                            <p className="font-semibold text-warning">
+                              {t(selectedRecoveryHint.titleKey)}
+                            </p>
+                            <p className="mt-1 text-sm text-warning/90">
+                              {t(selectedRecoveryHint.bodyKey)}
+                            </p>
+                          </div>
+                        </Alert>
+                      ) : null}
                       <p className="metric-label">{t('accountPool.upstreamAccounts.fields.lastError')}</p>
                       <p className="mt-2 text-sm leading-6 text-base-content/75">{detail.lastError ?? t('accountPool.upstreamAccounts.noError')}</p>
                       <p className="mt-2 text-xs text-base-content/55">{formatDateTime(detail.lastErrorAt)}</p>
