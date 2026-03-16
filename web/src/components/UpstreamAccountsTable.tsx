@@ -85,7 +85,7 @@ function renderTagBadges(tags?: AccountTagSummary[] | null) {
         <Badge
           key={tag.id}
           variant="secondary"
-          className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
+          className="min-w-0 max-w-[7.5rem] truncate px-2 py-px text-[11px] font-medium leading-4"
           title={tag.name}
         >
           {tag.name}
@@ -275,7 +275,7 @@ export function UpstreamAccountsTable({
                     >
                       {item.displayName}
                     </p>
-                    <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
+                    <div className="mt-2 flex min-w-0 items-center gap-1 overflow-hidden">
                       {item.isMother ? (
                         <div className="shrink-0">
                           <MotherAccountBadge label={labels.mother} />
@@ -292,7 +292,9 @@ export function UpstreamAccountsTable({
                       {item.planType
                         ? compactBadge(item.planType, 'accent')
                         : null}
-                      {renderTagBadges(item.tags)}
+                      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                        {renderTagBadges(item.tags)}
+                      </div>
                     </div>
                   </div>
                 </td>

@@ -55,7 +55,7 @@ const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   guardRules: [],
 }
 
-const defaultTags: AccountTagSummary[] = [
+const compactDefaultTags: AccountTagSummary[] = [
   {
     id: 1,
     name: 'vip',
@@ -163,7 +163,7 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
       secondaryLimit: null,
       limitUnit: 'requests',
     },
-    tags: defaultTags,
+    tags: [],
     effectiveRoutingRule: defaultEffectiveRoutingRule,
     note: 'Primary team account for premium traffic.',
     maskedApiKey: null,
@@ -209,7 +209,7 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
       secondaryLimit,
       limitUnit,
     },
-    tags: defaultTags,
+    tags: [],
     effectiveRoutingRule: defaultEffectiveRoutingRule,
     upstreamBaseUrl: 'https://proxy.example.com/gateway',
     note: 'Fallback API key before router metrics land.',
@@ -278,9 +278,24 @@ function createStore(): StoryStore {
       ? {
           displayName: 'Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title',
           groupName: 'production-apac-primary-operators',
+          tags: [
+            compactDefaultTags[0],
+            compactDefaultTags[1],
+            compactDefaultTags[2],
+            compactDefaultTags[3],
+          ],
         }
     : undefined)
-  const apiKey = createApiKeyAccount(102)
+  const apiKey = createApiKeyAccount(102, compactStory
+    ? {
+        tags: [
+          compactDefaultTags[0],
+          compactDefaultTags[1],
+          compactDefaultTags[2],
+          compactDefaultTags[3],
+        ],
+      }
+    : undefined)
   const duplicateOauth = duplicateStory
     ? createOauthAccount(103, {
         displayName: 'Codex Pro - Seoul',
@@ -308,8 +323,8 @@ function createStore(): StoryStore {
           primaryWindow: buildWindow(71, 300, '71% used', '5h rolling window', '2026-03-11T22:10:00.000Z'),
           secondaryWindow: buildWindow(100, 10080, '100% used', '7d rolling window', '2026-03-18T08:00:00.000Z'),
           tags: [
-            defaultTags[0],
-            defaultTags[1],
+            compactDefaultTags[0],
+            compactDefaultTags[1],
             { id: 7, name: 'weekly-cap', routingRule: defaultEffectiveRoutingRule },
           ],
           note: 'Weekly window is fully exhausted while the 5h window still has room.',
@@ -325,7 +340,7 @@ function createStore(): StoryStore {
           primaryWindow: buildWindow(100, 300, '100% used', '5h rolling window', '2026-03-11T21:42:00.000Z'),
           secondaryWindow: buildWindow(46, 10080, '46% used', '7d rolling window', '2026-03-18T08:00:00.000Z'),
           tags: [
-            defaultTags[0],
+            compactDefaultTags[0],
             { id: 8, name: 'burst-limit', routingRule: defaultEffectiveRoutingRule },
             { id: 9, name: 'warm-spare', routingRule: defaultEffectiveRoutingRule },
           ],
@@ -344,7 +359,7 @@ function createStore(): StoryStore {
           tags: [
             { id: 10, name: 'overflow', routingRule: defaultEffectiveRoutingRule },
             { id: 11, name: 'weekly-redline', routingRule: defaultEffectiveRoutingRule },
-            defaultTags[1],
+            compactDefaultTags[1],
           ],
           note: 'Fallback key with the weekly allowance fully consumed.',
         }),
