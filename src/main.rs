@@ -106,6 +106,8 @@ const STARTUP_BACKFILL_STATUS_IDLE: &str = "idle";
 const STARTUP_BACKFILL_STATUS_RUNNING: &str = "running";
 const STARTUP_BACKFILL_STATUS_OK: &str = "ok";
 const STARTUP_BACKFILL_STATUS_FAILED: &str = "failed";
+const STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES: &str =
+    "upstream_activity_archive_backfill";
 const STARTUP_BACKFILL_TASK_PROXY_USAGE: &str = "proxy_usage_tokens_v1";
 const STARTUP_BACKFILL_TASK_PROXY_COST: &str = "proxy_cost_v1";
 const STARTUP_BACKFILL_TASK_PROMPT_CACHE_KEY: &str = "proxy_prompt_cache_key_v1";
@@ -501,7 +503,9 @@ async fn main() -> Result<()> {
     ensure_schema(&pool).await?;
     log_startup_phase("schema", schema_started_at);
     let upstream_activity_backfill_started_at = Instant::now();
-    backfill_upstream_account_last_activity_from_archives(&pool).await?;
+    if let Err(err) = maybe_backfill_upstream_account_last_activity_from_archives(&pool).await {
+        warn!(error = %err, "failed to schedule upstream activity archive backfill");
+    }
     log_startup_phase("upstream_activity_backfill", upstream_activity_backfill_started_at);
     if cli.retention_run_once {
         let summary =
@@ -2020,6 +2024,12 @@ struct ArchivedAccountLastActivityRow {
 }
 
 #[derive(Debug, Default)]
+struct ArchiveBackfillSummary {
+    scanned_batches: u64,
+    updated_accounts: u64,
+}
+
+#[derive(Debug, Default)]
 struct RawCompressionPassSummary {
     files_considered: usize,
     files_compressed: usize,
@@ -3245,14 +3255,14 @@ async fn compact_old_quota_snapshots(
 
 async fn backfill_upstream_account_last_activity_from_archives(
     pool: &Pool<Sqlite>,
-) -> Result<()> {
+) -> Result<ArchiveBackfillSummary> {
     let pending_account_ids = sqlx::query_scalar::<_, i64>(
         "SELECT id FROM pool_upstream_accounts WHERE last_activity_at IS NULL",
     )
     .fetch_all(pool)
     .await?;
     if pending_account_ids.is_empty() {
-        return Ok(());
+        return Ok(ArchiveBackfillSummary::default());
     }
 
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
@@ -3267,11 +3277,12 @@ async fn backfill_upstream_account_last_activity_from_archives(
     .fetch_all(pool)
     .await?;
     if archive_files.is_empty() {
-        return Ok(());
+        return Ok(ArchiveBackfillSummary::default());
     }
 
     let pending = pending_account_ids.into_iter().collect::<HashSet<_>>();
     let mut recovered = HashMap::<i64, String>::new();
+    let mut scanned_batches = 0_u64;
 
     for archive_file in archive_files {
         if recovered.len() == pending.len() {
@@ -3282,6 +3293,7 @@ async fn backfill_upstream_account_last_activity_from_archives(
         if !archive_path.exists() {
             continue;
         }
+        scanned_batches += 1;
 
         let temp_path = PathBuf::from(format!(
             "{}.{}.sqlite",
@@ -3346,9 +3358,13 @@ async fn backfill_upstream_account_last_activity_from_archives(
     }
 
     if recovered.is_empty() {
-        return Ok(());
+        return Ok(ArchiveBackfillSummary {
+            scanned_batches,
+            updated_accounts: 0,
+        });
     }
 
+    let updated_accounts = recovered.len() as u64;
     let mut tx = pool.begin().await?;
     for (account_id, occurred_at) in recovered {
         sqlx::query(
@@ -3360,6 +3376,66 @@ async fn backfill_upstream_account_last_activity_from_archives(
         .await?;
     }
     tx.commit().await?;
+
+    Ok(ArchiveBackfillSummary {
+        scanned_batches,
+        updated_accounts,
+    })
+}
+
+async fn maybe_backfill_upstream_account_last_activity_from_archives(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let progress = load_startup_backfill_progress(
+        pool,
+        STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
+    )
+    .await?;
+    if progress.last_finished_at.is_some() {
+        return Ok(());
+    }
+
+    mark_startup_backfill_running(pool, STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES, 0).await?;
+    let freeze_until =
+        format_utc_iso(Utc::now() + ChronoDuration::days(365 * 20));
+
+    match backfill_upstream_account_last_activity_from_archives(pool).await {
+        Ok(summary) => {
+            save_startup_backfill_progress(
+                pool,
+                STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
+                StartupBackfillProgressUpdate {
+                    cursor_id: 0,
+                    scanned: summary.scanned_batches,
+                    updated: summary.updated_accounts,
+                    zero_update_streak: 0,
+                    next_run_after: &freeze_until,
+                    status: STARTUP_BACKFILL_STATUS_OK,
+                },
+            )
+            .await?;
+        }
+        Err(err) => {
+            warn!(
+                error = %err,
+                task = STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
+                "upstream activity archive backfill skipped after startup error"
+            );
+            save_startup_backfill_progress(
+                pool,
+                STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
+                StartupBackfillProgressUpdate {
+                    cursor_id: 0,
+                    scanned: 0,
+                    updated: 0,
+                    zero_update_streak: 0,
+                    next_run_after: &freeze_until,
+                    status: STARTUP_BACKFILL_STATUS_FAILED,
+                },
+            )
+            .await?;
+        }
+    }
 
     Ok(())
 }
