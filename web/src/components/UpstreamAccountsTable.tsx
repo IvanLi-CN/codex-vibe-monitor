@@ -106,12 +106,6 @@ function renderTagBadges(
             triggerProps={{
               tabIndex: 0,
               'aria-label': labels.hiddenTagsA11y(overflowCount, hiddenNames),
-              onClick: (event) => event.stopPropagation(),
-              onKeyDown: (event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.stopPropagation()
-                }
-              },
             }}
           >
             <span title={hiddenNames}>

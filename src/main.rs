@@ -3386,18 +3386,20 @@ async fn backfill_upstream_account_last_activity_from_archives(
 async fn maybe_backfill_upstream_account_last_activity_from_archives(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
-    let progress = load_startup_backfill_progress(
-        pool,
-        STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
-    )
-    .await?;
-    if progress.last_finished_at.is_some() {
+    let progress =
+        load_startup_backfill_progress(pool, STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES)
+            .await?;
+    if progress.last_status == STARTUP_BACKFILL_STATUS_OK && progress.last_finished_at.is_some() {
+        return Ok(());
+    }
+    let now = Utc::now();
+    if !progress.is_due(now) {
         return Ok(());
     }
 
-    mark_startup_backfill_running(pool, STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES, 0).await?;
-    let freeze_until =
-        format_utc_iso(Utc::now() + ChronoDuration::days(365 * 20));
+    mark_startup_backfill_running(pool, STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES, 0)
+        .await?;
+    let freeze_until = format_utc_iso(now + ChronoDuration::days(365 * 20));
 
     match backfill_upstream_account_last_activity_from_archives(pool).await {
         Ok(summary) => {
@@ -3416,10 +3418,14 @@ async fn maybe_backfill_upstream_account_last_activity_from_archives(
             .await?;
         }
         Err(err) => {
+            let retry_after = format_utc_iso(
+                now + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+            );
             warn!(
                 error = %err,
                 task = STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
-                "upstream activity archive backfill skipped after startup error"
+                next_run_after = %retry_after,
+                "upstream activity archive backfill failed; will retry later"
             );
             save_startup_backfill_progress(
                 pool,
@@ -3429,7 +3435,7 @@ async fn maybe_backfill_upstream_account_last_activity_from_archives(
                     scanned: 0,
                     updated: 0,
                     zero_update_streak: 0,
-                    next_run_after: &freeze_until,
+                    next_run_after: &retry_after,
                     status: STARTUP_BACKFILL_STATUS_FAILED,
                 },
             )

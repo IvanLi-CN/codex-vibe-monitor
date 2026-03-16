@@ -17128,16 +17128,54 @@ async fn upstream_last_activity_backfill_reads_archived_batches() {
         .await
         .expect("backfill upstream last activity from archives");
 
-    let last_activity_at: Option<String> = sqlx::query_scalar(
-        "SELECT last_activity_at FROM pool_upstream_accounts WHERE id = ?1",
-    )
-    .bind(account_id)
-    .fetch_one(&pool)
-    .await
-    .expect("load persisted last activity");
+    let last_activity_at: Option<String> =
+        sqlx::query_scalar("SELECT last_activity_at FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load persisted last activity");
     assert_eq!(last_activity_at.as_deref(), Some(occurred_at.as_str()));
 
     cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_retries_after_failed_progress() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let task_name = STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES;
+    let retry_due = format_utc_iso(Utc::now() - ChronoDuration::seconds(1));
+    mark_startup_backfill_running(&pool, task_name, 0)
+        .await
+        .expect("seed running startup progress");
+    save_startup_backfill_progress(
+        &pool,
+        task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: 0,
+            scanned: 0,
+            updated: 0,
+            zero_update_streak: 0,
+            next_run_after: &retry_due,
+            status: STARTUP_BACKFILL_STATUS_FAILED,
+        },
+    )
+    .await
+    .expect("seed failed startup progress");
+
+    maybe_backfill_upstream_account_last_activity_from_archives(&pool)
+        .await
+        .expect("retry failed archive backfill progress");
+
+    let progress = load_startup_backfill_progress(&pool, task_name)
+        .await
+        .expect("load startup backfill progress");
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
+    assert!(progress.last_finished_at.is_some());
+    assert!(!progress.is_due(Utc::now()));
 }
 
 #[tokio::test]

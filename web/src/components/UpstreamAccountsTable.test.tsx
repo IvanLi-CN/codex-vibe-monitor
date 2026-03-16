@@ -1,5 +1,8 @@
+/** @vitest-environment jsdom */
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AccountTagSummary, EffectiveRoutingRule, UpstreamAccountSummary } from '../lib/api'
 import { UpstreamAccountsTable } from './UpstreamAccountsTable'
 
@@ -62,6 +65,37 @@ function renderTable(items: UpstreamAccountSummary[]) {
       labels={labels}
     />,
   )
+}
+
+let host: HTMLDivElement | null = null
+let root: Root | null = null
+
+afterEach(() => {
+  act(() => {
+    root?.unmount()
+  })
+  host?.remove()
+  host = null
+  root = null
+})
+
+function renderInteractiveTable(items: UpstreamAccountSummary[], onSelect = vi.fn()) {
+  host = document.createElement('div')
+  document.body.appendChild(host)
+  root = createRoot(host)
+  act(() => {
+    root?.render(
+      <UpstreamAccountsTable
+        items={items}
+        selectedId={items[0]?.id ?? null}
+        onSelect={onSelect}
+        emptyTitle="Empty"
+        emptyDescription="Nothing here"
+        labels={labels}
+      />,
+    )
+  })
+  return onSelect
 }
 
 describe('UpstreamAccountsTable', () => {
@@ -154,5 +188,61 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('Disabled')
     expect(html).toContain('Never')
     expect(html).toContain('truncate whitespace-nowrap')
+  })
+
+  it('keeps the folded tags trigger inside the row click target', () => {
+    const onSelect = renderInteractiveTable([
+      {
+        id: 11,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title',
+        groupName: 'production-apac-primary-operators',
+        isMother: true,
+        status: 'active',
+        enabled: true,
+        planType: 'team',
+        lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
+        lastActivityAt: '2026-03-16T02:05:00.000Z',
+        primaryWindow: {
+          usedPercent: 42,
+          usedText: '42 requests',
+          limitText: '120 requests',
+          resetsAt: '2026-03-16T06:55:00.000Z',
+          windowDurationMins: 300,
+        },
+        secondaryWindow: {
+          usedPercent: 12,
+          usedText: '12 requests',
+          limitText: '500 requests',
+          resetsAt: '2026-03-18T00:00:00.000Z',
+          windowDurationMins: 10080,
+        },
+        credits: null,
+        localLimits: null,
+        duplicateInfo: {
+          peerAccountIds: [27],
+          reasons: ['sharedChatgptUserId'],
+        },
+        tags,
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    const trigger = document.body.querySelector('[aria-label=\"Show 2 hidden tags: sticky-pool, rotating\"]')
+    if (!(trigger instanceof HTMLElement)) {
+      throw new Error('missing folded tags trigger')
+    }
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(onSelect).toHaveBeenCalledWith(11)
+
+    onSelect.mockClear()
+    act(() => {
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }))
+    })
+    expect(onSelect).toHaveBeenCalledWith(11)
   })
 })
