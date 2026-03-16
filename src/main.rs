@@ -6345,6 +6345,7 @@ fn fallback_proxy_429_retry_delay(retry_index: u32) -> Duration {
 }
 
 const POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS: u8 = 3;
+const OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 impl PoolReplayBodyBuffer {
     fn new(proxy_request_id: u64) -> Self {
@@ -6799,6 +6800,24 @@ async fn send_pool_request_with_failover(
                     chatgpt_account_id,
                 } => {
                     let oauth_body = match body.as_ref() {
+                        Some(PoolReplayBodySnapshot::File { size, .. })
+                            if original_uri.path() == "/v1/responses"
+                                && *size > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES =>
+                        {
+                            return Err(PoolUpstreamError {
+                                account: Some(account.clone()),
+                                status: StatusCode::PAYLOAD_TOO_LARGE,
+                                message: format!(
+                                    "oauth /v1/responses request body exceeds {} bytes rewrite limit",
+                                    OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES
+                                ),
+                                failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
+                                connect_latency_ms: 0.0,
+                                upstream_error_code: None,
+                                upstream_error_message: None,
+                                upstream_request_id: None,
+                            });
+                        }
                         Some(snapshot) if original_uri.path() == "/v1/responses" => {
                             oauth_bridge::OauthUpstreamRequestBody::Bytes(
                                 snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
@@ -7177,6 +7196,15 @@ async fn proxy_openai_v1_via_pool(
                     extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
                         .await
                         .or(sticky_key.clone());
+                let preferred_account = if body_sticky_key.as_deref() == sticky_key.as_deref()
+                    && body_sticky_key.is_some()
+                {
+                    Some(initial_account)
+                } else if body_sticky_key.is_some() {
+                    None
+                } else {
+                    Some(initial_account)
+                };
                 (
                     send_pool_request_with_failover(
                         state.clone(),
@@ -7186,7 +7214,7 @@ async fn proxy_openai_v1_via_pool(
                         Some(request_body_snapshot),
                         handshake_timeout,
                         body_sticky_key.as_deref(),
-                        Some(initial_account),
+                        preferred_account,
                         POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
                     )
                     .await

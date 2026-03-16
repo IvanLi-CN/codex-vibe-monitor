@@ -8992,6 +8992,11 @@ async fn spawn_oauth_codex_http_failure(
 
 async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Response {
     let path = request.uri().path().to_string();
+    let authorization = request
+        .headers()
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let body = to_bytes(request.into_body(), usize::MAX)
         .await
         .expect("read oauth codex capture request body");
@@ -8999,6 +9004,7 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         StatusCode::OK,
         Json(json!({
             "path": path,
+            "authorization": authorization,
             "bodyLength": body.len(),
         })),
     )
@@ -9809,7 +9815,153 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         payload["path"].as_str(),
         Some("/backend-api/codex/chat/completions")
     );
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer oauth-large")
+    );
     assert_eq!(payload["bodyLength"].as_u64(), Some(body.len() as u64));
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let _primary_id =
+        insert_test_pool_oauth_account(&state, "Primary OAuth", "oauth-primary").await;
+    let secondary_id =
+        insert_test_pool_oauth_account(&state, "Secondary OAuth", "oauth-secondary").await;
+    record_pool_route_success(&state.pool, secondary_id, Some("sticky-oauth-body"))
+        .await
+        .expect("seed oauth sticky route");
+
+    let request_body = serde_json::to_vec(&json!({
+        "messages": [{
+            "role": "user",
+            "content": "hello",
+        }],
+        "stickyKey": "sticky-oauth-body",
+    }))
+    .expect("serialize oauth sticky body");
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(4);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(request_body))).await;
+    });
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read oauth sticky response"),
+    )
+    .expect("decode oauth sticky response");
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer oauth-secondary")
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Responses OAuth", "oauth-responses").await;
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(515151),
+    });
+    let body = vec![b'x'; OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1];
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write oversized oauth responses body");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Responses OAuth".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-responses".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+    };
+
+    let err = send_pool_request_with_failover(
+        state,
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file,
+            size: body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        Some(account),
+        1,
+    )
+    .await
+    .expect_err("oversized oauth responses body should be rejected");
+
+    assert_eq!(err.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(
+        err.message
+            .contains("oauth /v1/responses request body exceeds"),
+        "unexpected oversized oauth responses error: {}",
+        err.message
+    );
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
