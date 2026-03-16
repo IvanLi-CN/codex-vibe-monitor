@@ -502,10 +502,44 @@ def first_parent_commits(target_sha: str) -> list[str]:
     return [commit for commit in commits.splitlines() if commit]
 
 
+def tagged_release_commits(target_sha: str) -> set[str]:
+    commits: set[str] = set()
+    for tag in git_output("tag", "--merged", target_sha, "-l", "v*").splitlines():
+        tag_name = tag.strip()
+        if not tag_name:
+            continue
+        commit = git_output("rev-list", "-n", "1", tag_name).strip()
+        if commit:
+            commits.add(commit)
+    return commits
+
+
 def commits_to_materialize(notes_ref: str, target_sha: str, *, target_only: bool) -> list[str]:
     if target_only:
         return [target_sha]
-    return first_parent_commits(target_sha)
+
+    commits = first_parent_commits(target_sha)
+    tagged_commits = tagged_release_commits(target_sha)
+    anchor_index = -1
+    for index, commit in enumerate(commits):
+        if commit in tagged_commits:
+            anchor_index = index
+
+    earliest_snapshot_after_anchor = -1
+    for index in range(anchor_index + 1, len(commits)):
+        if read_snapshot(notes_ref, commits[index]) is not None:
+            earliest_snapshot_after_anchor = index
+            break
+
+    if earliest_snapshot_after_anchor >= 0:
+        return commits[earliest_snapshot_after_anchor + 1 :]
+    if anchor_index >= 0:
+        return commits[anchor_index + 1 :]
+
+    for index, commit in enumerate(commits):
+        if read_snapshot(notes_ref, commit) is not None:
+            return commits[index + 1 :]
+    return [target_sha]
 
 
 def export_key_values(values: dict[str, Any], github_output: str) -> None:
