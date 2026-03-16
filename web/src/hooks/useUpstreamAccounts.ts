@@ -42,6 +42,7 @@ export function useUpstreamAccounts() {
   const [detailErrors, setDetailErrors] = useState<Record<number, string>>({})
   const selectedIdRef = useRef<number | null>(null)
   const detailRequestSeqRef = useRef(0)
+  const detailRequestAccountIdRef = useRef<number | null>(null)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
 
   const setSelectedAccount = useCallback((accountId: number | null) => {
@@ -58,8 +59,12 @@ export function useUpstreamAccounts() {
     })
   }, [])
 
-  const invalidateDetailRequest = useCallback(() => {
+  const invalidateDetailRequest = useCallback((accountId?: number | null) => {
+    if (accountId != null && detailRequestAccountIdRef.current !== accountId) {
+      return
+    }
     detailRequestSeqRef.current += 1
+    detailRequestAccountIdRef.current = null
     detailAbortControllerRef.current?.abort()
     detailAbortControllerRef.current = null
     setIsDetailLoading(false)
@@ -105,6 +110,7 @@ export function useUpstreamAccounts() {
     detailRequestSeqRef.current += 1
     const requestSeq = detailRequestSeqRef.current
     detailAbortControllerRef.current?.abort()
+    detailRequestAccountIdRef.current = accountId
 
     if (accountId == null) {
       setDetail(null)
@@ -138,6 +144,7 @@ export function useUpstreamAccounts() {
       return null
     } finally {
       if (requestSeq === detailRequestSeqRef.current) {
+        detailRequestAccountIdRef.current = null
         detailAbortControllerRef.current = null
         setIsDetailLoading(false)
       }
@@ -166,7 +173,7 @@ export function useUpstreamAccounts() {
     if (nextSelectedId === LOAD_LIST_FAILED) {
       return
     }
-    if (nextSelectedId === currentSelectedId) {
+    if (nextSelectedId != null && nextSelectedId === selectedIdRef.current) {
       await loadDetail(nextSelectedId)
     }
   }, [loadDetail, loadList])
@@ -233,10 +240,10 @@ export function useUpstreamAccounts() {
   const saveAccount = useCallback(
     async (accountId: number, payload: UpdateUpstreamAccountPayload) => {
       const response = await updateUpstreamAccount(accountId, payload)
+      invalidateDetailRequest(accountId)
       await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
       clearDetailError(accountId)
       if (selectedIdRef.current === accountId) {
-        invalidateDetailRequest()
         setDetail(response)
       }
       emitUpstreamAccountsChanged()
@@ -268,10 +275,10 @@ export function useUpstreamAccounts() {
   const runSync = useCallback(
     async (accountId: number) => {
       const response = await syncUpstreamAccount(accountId)
+      invalidateDetailRequest(accountId)
       await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
       clearDetailError(accountId)
       if (selectedIdRef.current === accountId) {
-        invalidateDetailRequest()
         setDetail(response)
       }
       emitUpstreamAccountsChanged()
@@ -286,23 +293,26 @@ export function useUpstreamAccounts() {
       const currentSelectedId = selectedIdRef.current
       const shouldReanchorSelection = currentSelectedId === accountId
       const fallbackId = items.find((item) => item.id !== accountId)?.id ?? null
+      if (shouldReanchorSelection) {
+        invalidateDetailRequest(accountId)
+        setSelectedAccount(fallbackId)
+        setDetail((current) => (current?.id === accountId ? null : current))
+      }
       const preferredId = shouldReanchorSelection ? fallbackId : currentSelectedId
-      const nextSelectedId = await loadList(preferredId, {
+      await loadList(preferredId, {
         respectCurrentSelection: !shouldReanchorSelection,
         selectionAnchorId: preferredId,
       })
-      if (nextSelectedId !== LOAD_LIST_FAILED && shouldReanchorSelection) {
-        await loadDetail(nextSelectedId)
-      }
       clearDetailError(accountId)
       emitUpstreamAccountsChanged()
     },
-    [clearDetailError, items, loadDetail, loadList],
+    [clearDetailError, invalidateDetailRequest, items, loadList, setSelectedAccount],
   )
 
   useEffect(
     () => () => {
       detailRequestSeqRef.current += 1
+      detailRequestAccountIdRef.current = null
       detailAbortControllerRef.current?.abort()
       detailAbortControllerRef.current = null
     },

@@ -541,4 +541,98 @@ describe("useUpstreamAccounts", () => {
     expect(text("selected-id")).toBe("2");
     expect(text("selected-name")).toBe("Beta");
   });
+
+  it("reanchors away from a deleted current account even if the list refresh fails", async () => {
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockRejectedValueOnce(new Error("List failed"));
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockResolvedValueOnce(createDetail(2, "Beta"));
+    apiMocks.deleteUpstreamAccount.mockResolvedValueOnce();
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("1");
+    expect(text("detail-id")).toBe("1");
+
+    click("remove-alpha");
+    await flushAsync();
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("2");
+    expect(text("selected-name")).toBe("Beta");
+    expect(text("detail-id")).not.toBe("1");
+    expect(text("detail-name")).not.toBe("Alpha");
+  });
+
+  it("invalidates an older detail reload before sync refreshes the list", async () => {
+    const refreshedDetail = deferred<UpstreamAccountDetail>();
+    const syncedList = deferred<UpstreamAccountListResponse>();
+    const sync = deferred<UpstreamAccountDetail>();
+
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockResolvedValueOnce(createListResponse())
+      .mockImplementationOnce(async () => syncedList.promise);
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockImplementationOnce(async () => refreshedDetail.promise)
+      .mockResolvedValue(createDetail(1, "Alpha Synced"));
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("refresh");
+    await flushAsync();
+    click("sync-alpha");
+    await flushAsync();
+
+    sync.resolve(createDetail(1, "Alpha Synced"));
+    await flushAsync();
+
+    refreshedDetail.resolve(createDetail(1, "Alpha Stale"));
+    await flushAsync();
+    expect(text("detail-name")).toBe("Alpha");
+
+    syncedList.resolve(createListResponse());
+    await flushAsync();
+    await flushAsync();
+    expect(text("detail-name")).toBe("Alpha Synced");
+  });
+
+  it("refreshes the final selected account after switching during refresh", async () => {
+    const refreshedList = deferred<UpstreamAccountListResponse>();
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockImplementationOnce(async () => refreshedList.promise);
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockResolvedValueOnce(createDetail(2, "Beta Stale"))
+      .mockResolvedValueOnce(createDetail(2, "Beta Fresh"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("refresh");
+    click("select-beta");
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("2");
+    expect(text("detail-name")).toBe("Beta Stale");
+
+    refreshedList.resolve(createListResponse());
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenNthCalledWith(
+      3,
+      2,
+      expect.any(AbortSignal),
+    );
+    expect(text("selected-id")).toBe("2");
+    expect(text("detail-id")).toBe("2");
+    expect(text("detail-name")).toBe("Beta Fresh");
+  });
 });
