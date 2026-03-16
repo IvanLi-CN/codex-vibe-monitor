@@ -2311,7 +2311,7 @@ export default function UpstreamAccountCreatePage() {
                                     </label>
                                     <div className="flex items-center gap-3">
                                       <div className="flex flex-wrap items-center gap-2">
-                                        <div className="flex items-center rounded-full border border-base-300/80 bg-base-200/80 p-1 shadow-sm">
+                                        <div className="flex items-center gap-1 rounded-full bg-base-200/80 p-1">
                                           <Tooltip
                                             content={buildActionTooltip(
                                               isPending
