@@ -73,7 +73,7 @@ function compactBadge(content: ReactNode, variant: 'accent' | 'secondary' | 'suc
 
 function renderTagBadges(tags?: AccountTagSummary[] | null) {
   const safeTags = tags ?? []
-  const visible = safeTags.slice(0, 3)
+  const visible = safeTags.slice(0, 2)
   const hidden = safeTags.slice(visible.length)
   const overflowCount = hidden.length
   const hiddenNames = hidden.map((tag) => tag.name).join(', ')
@@ -125,7 +125,7 @@ function CompactWindowLine({
   const summary = resetText ? `${text} · ${resetText}` : text
 
   return (
-    <div className="grid grid-cols-[max-content,5.5rem,8.75rem,minmax(4rem,1fr),2.75rem] items-center gap-1">
+    <div className="grid grid-cols-[max-content,max-content,minmax(0,1fr)] items-center gap-x-2 gap-y-0.5 xl:grid-cols-[max-content,max-content,minmax(0,1fr),minmax(5rem,1fr)]">
       <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums">
         {label}
       </span>
@@ -138,15 +138,17 @@ function CompactWindowLine({
       >
         {resetText ?? '—'}
       </span>
-      <div className="h-1.5 overflow-hidden rounded-full bg-base-300/60">
-        <div
-          className={cn('h-full rounded-full bg-primary', accentClassName)}
-          style={{ width: `${percent}%` }}
-        />
+      <div className="col-start-2 col-span-2 flex min-w-0 items-center gap-2 xl:col-start-4 xl:col-span-1">
+        <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-base-300/60">
+          <div
+            className={cn('h-full rounded-full bg-primary', accentClassName)}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+        <span className="w-[2.75rem] shrink-0 text-right text-[11px] font-semibold leading-4 text-base-content/78 font-mono tabular-nums">
+          {Math.round(percent)}%
+        </span>
       </div>
-      <span className="truncate text-right text-[11px] font-semibold leading-4 text-base-content/78 font-mono tabular-nums">
-        {Math.round(percent)}%
-      </span>
     </div>
   )
 }
@@ -261,7 +263,7 @@ export function UpstreamAccountsTable({
                     >
                       {item.displayName}
                     </p>
-                    <div className="mt-2 flex min-w-0 items-center gap-1 overflow-hidden">
+                    <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
                       {item.isMother ? (
                         <div className="shrink-0">
                           <MotherAccountBadge label={labels.mother} />

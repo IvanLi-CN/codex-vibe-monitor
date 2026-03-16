@@ -363,7 +363,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     );
     expect(headerCells).toEqual(["Account", "Sync / Call", "Windows", ""]);
     expect(document.body.textContent).toContain("vip");
-    expect(document.body.textContent).toContain("+1");
+    expect(document.body.textContent).toContain("+2");
     expect(document.body.textContent).toContain("team");
   });
 

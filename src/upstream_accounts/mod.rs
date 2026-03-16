@@ -3506,7 +3506,11 @@ fn build_summary_from_row(
         masked_api_key: row.masked_api_key.clone(),
         last_synced_at: row.last_synced_at.clone(),
         last_successful_sync_at: row.last_successful_sync_at.clone(),
-        last_activity_at,
+        last_activity_at: last_activity_at
+            .as_deref()
+            .and_then(parse_to_utc_datetime)
+            .map(format_utc_iso)
+            .or(last_activity_at),
         last_error: row.last_error.clone(),
         last_error_at: row.last_error_at.clone(),
         token_expires_at: row.token_expires_at.clone(),

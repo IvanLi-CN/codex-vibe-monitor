@@ -2788,7 +2788,7 @@ async fn list_upstream_accounts_includes_last_activity_at() {
         account
             .get("lastActivityAt")
             .and_then(serde_json::Value::as_str),
-        Some("2026-03-11 20:35:00")
+        Some("2026-03-11T12:35:00Z")
     );
 }
 
