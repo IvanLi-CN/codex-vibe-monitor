@@ -79,6 +79,8 @@ describe('OauthMailboxChip', () => {
         copyAriaLabel="Copy mailbox"
         copyHintLabel="Click to copy"
         copiedLabel="Copied"
+        manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+        manualBadgeLabel="Manual"
         onCopy={() => undefined}
       />,
     )
@@ -101,6 +103,8 @@ describe('OauthMailboxChip', () => {
         copyAriaLabel="Copy mailbox"
         copyHintLabel="Click to copy"
         copiedLabel="Copied"
+        manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+        manualBadgeLabel="Manual"
         onCopy={() => undefined}
       />,
     )
@@ -131,6 +135,8 @@ describe('OauthMailboxChip', () => {
         copyAriaLabel="Copy mailbox"
         copyHintLabel="Click to copy"
         copiedLabel="Copied"
+        manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+        manualBadgeLabel="Manual"
         tone="copied"
         onCopy={() => undefined}
       />,
@@ -138,5 +144,26 @@ describe('OauthMailboxChip', () => {
 
     expect(host?.textContent).toContain('Copied')
     expect(getCopyButton().className).toContain('border-success/55')
+  })
+
+  it('keeps the tooltip open with manual copy guidance after copy failure state', () => {
+    render(
+      <OauthMailboxChip
+        emailAddress="manual-chip@mail-tw.707079.xyz"
+        emptyLabel="No mailbox yet"
+        copyAriaLabel="Copy mailbox"
+        copyHintLabel="Click to copy"
+        copiedLabel="Copied"
+        manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+        manualBadgeLabel="Manual"
+        tone="manual"
+        onCopy={() => undefined}
+      />,
+    )
+
+    expect(getCopyButton().className).toContain('border-warning/45')
+    expect(getTooltip()?.textContent).toContain('Auto copy failed. Please copy the mailbox below manually.')
+    const manualInput = document.body.querySelector('input[readonly]') as HTMLInputElement | null
+    expect(manualInput?.value).toBe('manual-chip@mail-tw.707079.xyz')
   })
 })

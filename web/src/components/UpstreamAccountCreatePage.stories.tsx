@@ -155,6 +155,8 @@ export const OauthMailboxHover: Story = {
             copyAriaLabel="Copy mailbox"
             copyHintLabel="Click to copy"
             copiedLabel="Copied"
+            manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+            manualBadgeLabel="Manual"
             onCopy={() => undefined}
           />
         </div>
@@ -186,6 +188,8 @@ export const OauthMailboxLongPress: Story = {
             copyAriaLabel="Copy mailbox"
             copyHintLabel="Click to copy"
             copiedLabel="Copied"
+            manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+            manualBadgeLabel="Manual"
             onCopy={() => undefined}
           />
         </div>
@@ -221,7 +225,34 @@ export const OauthMailboxCopied: Story = {
             copyAriaLabel="Copy mailbox"
             copyHintLabel="Click to copy"
             copiedLabel="Copied"
+            manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+            manualBadgeLabel="Manual"
             tone="copied"
+            onCopy={() => undefined}
+          />
+        </div>
+      </div>
+    </div>
+  ),
+}
+
+export const OauthMailboxManualCopy: Story = {
+  name: 'OAuth Mailbox Manual Copy',
+  render: () => (
+    <div className="min-h-screen bg-base-200 px-10 py-12">
+      <div className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm">
+        <div className="flex items-center gap-3">
+          <span className="field-label shrink-0">Display Name</span>
+          <OauthMailboxChip
+            className="max-w-[24rem]"
+            emailAddress="manual-copy@mail-tw.707079.xyz"
+            emptyLabel="No mailbox yet"
+            copyAriaLabel="Copy mailbox"
+            copyHintLabel="Click to copy"
+            copiedLabel="Copied"
+            manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+            manualBadgeLabel="Manual"
+            tone="manual"
             onCopy={() => undefined}
           />
         </div>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { AppIcon } from '../AppIcon'
 import { Tooltip } from '../ui/tooltip'
+import { selectAllReadonlyText } from '../../lib/clipboard'
 import { cn } from '../../lib/utils'
 
 const LONG_PRESS_DELAY_MS = 360
@@ -16,13 +17,31 @@ function buildMailboxTooltip(copyLabel: string, emailAddress: string) {
   )
 }
 
+function buildMailboxManualTooltip(manualCopyLabel: string, emailAddress: string, inputRef: React.RefObject<HTMLInputElement | null>) {
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium leading-5 text-base-content/78">{manualCopyLabel}</p>
+      <input
+        ref={inputRef}
+        readOnly
+        value={emailAddress}
+        className="h-9 w-full rounded-lg border border-warning/35 bg-base-100 px-3 font-mono text-xs text-base-content shadow-sm outline-none"
+        onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
+        onClick={(event) => selectAllReadonlyText(event.currentTarget)}
+      />
+    </div>
+  )
+}
+
 interface OauthMailboxChipProps {
   emailAddress: string | null | undefined
   emptyLabel: string
   copyAriaLabel: string
   copyHintLabel: string
   copiedLabel: string
-  tone?: 'idle' | 'copied'
+  manualCopyLabel: string
+  manualBadgeLabel: string
+  tone?: 'idle' | 'copied' | 'manual'
   onCopy: () => void
   className?: string
 }
@@ -33,11 +52,14 @@ export function OauthMailboxChip({
   copyAriaLabel,
   copyHintLabel,
   copiedLabel,
+  manualCopyLabel,
+  manualBadgeLabel,
   tone = 'idle',
   onCopy,
   className,
 }: OauthMailboxChipProps) {
   const longPressTimerRef = useRef<number | null>(null)
+  const manualCopyInputRef = useRef<HTMLInputElement | null>(null)
   const [longPressOpen, setLongPressOpen] = useState(false)
   const [hoverOpen, setHoverOpen] = useState(false)
 
@@ -48,6 +70,16 @@ export function OauthMailboxChip({
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (tone !== 'manual') return
+    const timerId = window.setTimeout(() => {
+      selectAllReadonlyText(manualCopyInputRef.current)
+    }, 0)
+    return () => {
+      window.clearTimeout(timerId)
+    }
+  }, [tone])
 
   const clearLongPressTimer = () => {
     if (longPressTimerRef.current != null) {
@@ -77,9 +109,13 @@ export function OauthMailboxChip({
   return (
     <Tooltip
       className={cn('min-w-0 max-w-full shrink', className)}
-      content={buildMailboxTooltip(copyHintLabel, emailAddress)}
+      content={
+        tone === 'manual'
+          ? buildMailboxManualTooltip(manualCopyLabel, emailAddress, manualCopyInputRef)
+          : buildMailboxTooltip(copyHintLabel, emailAddress)
+      }
       contentClassName="max-w-[min(42rem,calc(100vw-1rem))]"
-      open={hoverOpen || longPressOpen}
+      open={tone === 'manual' || hoverOpen || longPressOpen}
     >
       <button
         type="button"
@@ -89,6 +125,7 @@ export function OauthMailboxChip({
           'hover:-translate-y-px hover:border-primary/70 hover:bg-primary/6 hover:text-primary hover:shadow-md',
           'focus-visible:-translate-y-px focus-visible:border-primary/70 focus-visible:bg-primary/6 focus-visible:text-primary focus-visible:shadow-md focus-visible:outline-none',
           tone === 'copied' && 'border-success/55 bg-success/10 text-success shadow-md',
+          tone === 'manual' && 'border-warning/45 bg-warning/10 text-warning shadow-md',
         )}
         aria-label={copyAriaLabel}
         onBlur={() => setHoverOpen(false)}
@@ -106,6 +143,12 @@ export function OauthMailboxChip({
           <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-success">
             <AppIcon name="check-bold" className="h-3.5 w-3.5" aria-hidden />
             {copiedLabel}
+          </span>
+        ) : null}
+        {tone === 'manual' ? (
+          <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
+            <AppIcon name="alert-circle-outline" className="h-3.5 w-3.5" aria-hidden />
+            {manualBadgeLabel}
           </span>
         ) : null}
       </button>
