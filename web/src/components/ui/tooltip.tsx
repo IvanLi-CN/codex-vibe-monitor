@@ -9,7 +9,6 @@ interface TooltipProps {
   contentClassName?: string
   side?: 'top' | 'right' | 'bottom' | 'left'
   sideOffset?: number
-  defaultOpen?: boolean
   open?: boolean
 }
 
@@ -20,12 +19,11 @@ export function Tooltip({
   contentClassName,
   side = 'top',
   sideOffset = 10,
-  defaultOpen,
   open,
 }: TooltipProps) {
   return (
     <TooltipPrimitive.Provider delayDuration={120}>
-      <TooltipPrimitive.Root defaultOpen={defaultOpen} open={open}>
+      <TooltipPrimitive.Root open={open}>
         <TooltipPrimitive.Trigger asChild>
           <span className={cn('inline-flex', className)}>{children}</span>
         </TooltipPrimitive.Trigger>

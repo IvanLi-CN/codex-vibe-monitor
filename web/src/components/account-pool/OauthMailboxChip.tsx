@@ -1,5 +1,8 @@
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Tooltip } from '../ui/tooltip'
 import { cn } from '../../lib/utils'
+
+const LONG_PRESS_DELAY_MS = 360
 
 function buildMailboxTooltip(copyLabel: string, emailAddress: string) {
   return (
@@ -18,8 +21,6 @@ interface OauthMailboxChipProps {
   copyAriaLabel: string
   copyHintLabel: string
   onCopy: () => void
-  forceHover?: boolean
-  openTooltip?: boolean
   className?: string
 }
 
@@ -29,10 +30,41 @@ export function OauthMailboxChip({
   copyAriaLabel,
   copyHintLabel,
   onCopy,
-  forceHover = false,
-  openTooltip = false,
   className,
 }: OauthMailboxChipProps) {
+  const longPressTimerRef = useRef<number | null>(null)
+  const [longPressOpen, setLongPressOpen] = useState(false)
+  const [hoverOpen, setHoverOpen] = useState(false)
+
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current != null) {
+        window.clearTimeout(longPressTimerRef.current)
+      }
+    }
+  }, [])
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current != null) {
+      window.clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+  }
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return
+    clearLongPressTimer()
+    longPressTimerRef.current = window.setTimeout(() => {
+      setLongPressOpen(true)
+      longPressTimerRef.current = null
+    }, LONG_PRESS_DELAY_MS)
+  }
+
+  const handlePointerRelease = () => {
+    clearLongPressTimer()
+    setLongPressOpen(false)
+  }
+
   if (!emailAddress) {
     return <span className={cn('min-w-0 flex-1 truncate text-right text-xs text-base-content/50', className)}>{emptyLabel}</span>
   }
@@ -42,7 +74,7 @@ export function OauthMailboxChip({
       className={cn('min-w-0 max-w-full shrink', className)}
       content={buildMailboxTooltip(copyHintLabel, emailAddress)}
       contentClassName="max-w-[min(42rem,calc(100vw-1rem))]"
-      open={openTooltip ? true : undefined}
+      open={hoverOpen || longPressOpen}
     >
       <button
         type="button"
@@ -51,9 +83,16 @@ export function OauthMailboxChip({
           'border border-base-300/80 bg-base-100 text-base-content/80 shadow-sm transition-[border-color,background-color,color,box-shadow,transform]',
           'hover:-translate-y-px hover:border-primary/70 hover:bg-primary/6 hover:text-primary hover:shadow-md',
           'focus-visible:-translate-y-px focus-visible:border-primary/70 focus-visible:bg-primary/6 focus-visible:text-primary focus-visible:shadow-md focus-visible:outline-none',
-          forceHover && 'border-primary/70 bg-primary/6 text-primary shadow-md -translate-y-px',
         )}
         aria-label={copyAriaLabel}
+        onBlur={() => setHoverOpen(false)}
+        onFocus={() => setHoverOpen(true)}
+        onMouseEnter={() => setHoverOpen(true)}
+        onMouseLeave={() => setHoverOpen(false)}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerRelease}
+        onPointerCancel={handlePointerRelease}
+        onPointerLeave={handlePointerRelease}
         onClick={onCopy}
       >
         <span className="truncate text-left">{emailAddress}</span>
