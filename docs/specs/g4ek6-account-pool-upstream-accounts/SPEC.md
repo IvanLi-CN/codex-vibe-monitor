@@ -129,6 +129,8 @@
 - Given 已持久化 OAuth 账号且 access token 到期，When 后台维护任务或手动同步运行，Then 系统会自动 refresh 并继续同步 usage，无需用户重新登录。
 - Given refresh token 已失效，When 后台维护任务运行，Then 账号进入 `needs_reauth`，但账号记录、历史样本和最后成功同步时间仍然保留。
 - Given 用户在账号详情里点击 `删除`，When 首次点击危险按钮，Then 页面只展开应用内确认气泡，不会触发浏览器原生确认框，也不会立即发起删除请求。
+- Given 删除确认气泡由详情抽屉内按钮触发，When 详情区本身可滚动或处于窄屏布局，Then 确认层仍必须完整可见，且保持在详情抽屉 dialog 子树内，不得被滚动容器裁切或跑到抽屉外层。
+- Given 删除确认气泡已打开，When 用户按下 `Escape`，Then 只关闭确认气泡并把焦点还给详情抽屉里的 `删除` 按钮，不关闭整个详情抽屉。
 - Given 用户在账号详情气泡里确认删除但后端返回错误，When 请求失败，Then 错误仅显示在详情抽屉内部，不显示在号池主页公共错误位。
 - Given API Key 账号录入了本地 `5 小时 / 7 天` 限额，When 打开列表或详情，Then 两个窗口都能显示本地限额与 `0` 使用量，并明确标记为占位统计。
 - Given OAuth 账号已有 usage 样本，When 打开详情页，Then `5 小时` 与 `7 天` 卡片都能展示最新百分比、重置时间和最近 7 天趋势线。
@@ -162,7 +164,7 @@
 - [x] M2: OAuth login session / callback / token refresh / usage sync 落地。
 - [x] M3: `号池 -> 上游账号` 前端页面、列表、详情、图表与交互完成。
 - [x] M4: Rust + Web 自动化验证补齐，并完成本地浏览器 smoke。
-- [ ] M5: spec sync、PR、checks、review-loop 收敛。
+- [x] M5: spec sync、PR、checks、review-loop 收敛。
 
 ## Visual Evidence (PR)
 
@@ -285,3 +287,4 @@
 - 2026-03-16: 明确 freshness 只认认证身份更新时间，不认通用 `updatedAt`；并补充“usage 省略 `plan_type` 时沿用当前有效值”的同步兜底，避免旧 claims 在下一次采样里反向覆盖更新 sample。
 - 2026-03-16: 补充“最近一个非空 sample”基线约束，避免用最新空 sample 参与 freshness 比较，导致刷新后的 claims 或现有有效 sample 被错误回退。
 - 2026-03-16: 引入 `plan_type` 专属观测时间语义：只有拿到非空 claims 才推进 freshness，不能复用通用 refresh 时间；同秒冲突默认让账户 claims 胜出，避免秒级时间戳把最新 Team 口径吞掉。
+- 2026-03-16: 删除确认气泡改为挂载到详情抽屉 dialog 子树内的 portal popover，避免被抽屉滚动容器裁切，并补充焦点回落与 `Escape` 只关闭确认层的回归约束。
