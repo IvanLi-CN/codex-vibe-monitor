@@ -1130,32 +1130,32 @@ export default function UpstreamAccountsPage() {
                       role="alertdialog"
                       aria-modal="false"
                       aria-labelledby={deleteConfirmTitleId}
-                      className="absolute bottom-full right-0 z-20 mb-3 w-[min(19rem,calc(100vw-2rem))]"
+                      className="absolute bottom-full right-0 z-20 mb-3 w-[min(22rem,calc(100vw-1.5rem))] origin-bottom-right animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 duration-150 motion-reduce:animate-none"
                     >
-                      <div className="relative rounded-2xl border border-error/40 bg-base-100/98 p-3.5 shadow-[0_18px_44px_rgba(15,23,42,0.24)]">
+                      <div className="relative rounded-2xl border border-base-300 bg-base-100 p-4 shadow-[0_20px_48px_rgba(15,23,42,0.24)] ring-1 ring-base-100/90">
                         <div
                           aria-hidden
-                          className="absolute -bottom-2 right-5 h-4 w-4 rotate-45 border-b border-r border-error/40 bg-base-100/98"
+                          className="absolute -bottom-2 right-5 h-4 w-4 rotate-45 border-b border-r border-base-300 bg-base-100"
                         />
                         <div className="space-y-3">
                           <div className="flex items-start gap-2.5">
-                            <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-error/12 text-error">
+                            <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-error text-error-content shadow-sm animate-in fade-in-0 zoom-in-75 duration-200 delay-75 motion-reduce:animate-none">
                               <AppIcon name="trash-can-outline" className="h-3.5 w-3.5" aria-hidden />
                             </div>
                             <p
                               id={deleteConfirmTitleId}
-                              className="min-w-0 break-words pr-2 text-sm font-semibold leading-5 text-base-content"
+                              className="min-w-0 break-words pr-2 text-[15px] font-semibold leading-6 text-base-content animate-in fade-in-0 slide-in-from-bottom-1 duration-200 delay-75 motion-reduce:animate-none"
                             >
                               {t('accountPool.upstreamAccounts.deleteConfirmTitle', { name: selected.displayName })}
                             </p>
                           </div>
-                          <div className="flex justify-end gap-2">
+                          <div className="flex justify-end gap-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-200 delay-100 motion-reduce:animate-none">
                             <Button
                               ref={deleteConfirmCancelRef}
                               type="button"
                               variant="secondary"
                               size="sm"
-                              className="rounded-full px-3.5"
+                              className="rounded-full px-3.5 font-semibold"
                               onClick={() => setIsDeleteConfirmOpen(false)}
                             >
                               {t('accountPool.upstreamAccounts.actions.cancel')}
@@ -1164,7 +1164,7 @@ export default function UpstreamAccountsPage() {
                               type="button"
                               variant="destructive"
                               size="sm"
-                              className="rounded-full px-3.5"
+                              className="rounded-full px-3.5 font-semibold shadow-sm"
                               disabled={busyAction === 'delete' || !writesEnabled}
                               onClick={() => void handleDelete(selected)}
                             >
