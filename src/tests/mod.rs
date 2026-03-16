@@ -14,8 +14,12 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use brotli::CompressorWriter;
 use chrono::Timelike;
-use flate2::{Compression, write::GzEncoder};
+use flate2::{
+    Compression,
+    write::{DeflateEncoder, GzEncoder, ZlibEncoder},
+};
 use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -27,6 +31,7 @@ use std::{
     env,
     ffi::OsString,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, atomic::AtomicUsize},
     time::Duration,
@@ -3911,6 +3916,11 @@ async fn test_upstream_echo(
         headers.contains_key(http_header::HeaderName::from_static("x-forwarded-for"));
     let forwarded_seen = headers.contains_key(http_header::HeaderName::from_static("forwarded"));
     let via_seen = headers.contains_key(http_header::HeaderName::from_static("via"));
+    let accept_encoding = headers
+        .get(http_header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         http_header::HeaderName::from_static("x-upstream"),
@@ -3947,6 +3957,7 @@ async fn test_upstream_echo(
             "xForwardedForSeen": x_forwarded_for_seen,
             "forwardedSeen": forwarded_seen,
             "viaSeen": via_seen,
+            "acceptEncoding": accept_encoding,
             "body": body,
         })),
     )
@@ -4551,28 +4562,36 @@ fn has_invalid_percent_encoding_detects_malformed_sequences() {
 }
 
 #[test]
-fn should_proxy_header_filters_hop_by_hop_headers() {
-    assert!(should_proxy_header(&http_header::AUTHORIZATION));
-    assert!(should_proxy_header(&http_header::CONTENT_LENGTH));
-    assert!(!should_proxy_header(&http_header::HOST));
-    assert!(!should_proxy_header(&http_header::CONNECTION));
-    assert!(!should_proxy_header(&http_header::TRANSFER_ENCODING));
-    assert!(!should_proxy_header(&http_header::ACCEPT_ENCODING));
-    assert!(!should_proxy_header(&HeaderName::from_static("forwarded")));
-    assert!(!should_proxy_header(&HeaderName::from_static("via")));
-    assert!(!should_proxy_header(&HeaderName::from_static(
+fn should_transport_proxy_header_filters_only_transport_hop_by_hop_headers() {
+    assert!(should_transport_proxy_header(&http_header::AUTHORIZATION));
+    assert!(should_transport_proxy_header(&http_header::CONTENT_LENGTH));
+    assert!(should_transport_proxy_header(&http_header::ACCEPT_ENCODING));
+    assert!(!should_transport_proxy_header(&http_header::HOST));
+    assert!(!should_transport_proxy_header(&http_header::CONNECTION));
+    assert!(!should_transport_proxy_header(
+        &http_header::TRANSFER_ENCODING
+    ));
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
+        "forwarded"
+    )));
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
+        "via"
+    )));
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
         "x-forwarded-for"
     )));
-    assert!(!should_proxy_header(&HeaderName::from_static(
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
         "x-forwarded-host"
     )));
-    assert!(!should_proxy_header(&HeaderName::from_static(
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
         "x-forwarded-proto"
     )));
-    assert!(!should_proxy_header(&HeaderName::from_static(
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
         "x-forwarded-port"
     )));
-    assert!(!should_proxy_header(&HeaderName::from_static("x-real-ip")));
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
+        "x-real-ip"
+    )));
 }
 
 #[test]
@@ -4876,6 +4895,10 @@ async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
         http_header::HeaderName::from_static("via"),
         HeaderValue::from_static("1.1 browser-proxy"),
     );
+    headers.insert(
+        http_header::ACCEPT_ENCODING,
+        HeaderValue::from_static("gzip, br"),
+    );
 
     let uri: Uri = "/v1/echo?foo=bar".parse().expect("valid uri");
     let response = proxy_openai_v1(
@@ -4923,6 +4946,7 @@ async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
     assert_eq!(payload["xForwardedForSeen"], false);
     assert_eq!(payload["forwardedSeen"], false);
     assert_eq!(payload["viaSeen"], false);
+    assert_eq!(payload["acceptEncoding"], "gzip, br");
     assert_eq!(payload["body"], "hello-proxy");
 
     upstream_handle.abort();
@@ -5095,6 +5119,49 @@ async fn proxy_openai_v1_streams_request_body_when_429_retry_is_disabled() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_streams_non_capture_request_body_without_eager_prebuffering() {
+    let (upstream_base, _attempts, _seen_bodies, upstream_handle) =
+        spawn_retrying_echo_upstream(0, None).await;
+    let state = test_state_with_openai_base_body_limit_and_read_timeout(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        Duration::from_millis(50),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from_static(b"hello"))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"-pool"))).await;
+    });
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/echo?mode=pool-stream".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+    assert_eq!(payload["attempt"], 1);
+    assert_eq!(payload["body"], "hello-pool");
 
     upstream_handle.abort();
 }
@@ -9668,10 +9735,16 @@ async fn pool_route_uses_account_specific_upstream_base_url() {
         State(state.clone()),
         OriginalUri("/v1/echo?from=pool".parse().expect("valid uri")),
         Method::POST,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::ACCEPT_ENCODING,
+                HeaderValue::from_static("gzip, br"),
+            ),
+        ]),
         Body::from(br#"{"model":"gpt-5","input":"hello"}"#.to_vec()),
     )
     .await;
@@ -9690,6 +9763,7 @@ async fn pool_route_uses_account_specific_upstream_base_url() {
         echo_payload["authorization"].as_str(),
         Some("Bearer upstream-primary")
     );
+    assert_eq!(echo_payload["acceptEncoding"].as_str(), Some("gzip, br"));
 
     global_upstream_handle.abort();
     account_upstream_handle.abort();
@@ -13632,6 +13706,65 @@ fn decode_response_payload_for_usage_decompresses_gzip_stream() {
     assert_eq!(parsed.usage.total_tokens, Some(168));
     assert_eq!(parsed.usage.cache_input_tokens, Some(7));
     assert_eq!(parsed.usage.reasoning_tokens, Some(4));
+}
+
+fn encode_brotli_payload(bytes: &[u8]) -> Vec<u8> {
+    let mut output = Vec::new();
+    {
+        let mut writer = CompressorWriter::new(&mut output, 4096, 5, 22);
+        writer.write_all(bytes).expect("write brotli payload");
+    }
+    output
+}
+
+#[test]
+fn decode_response_payload_for_usage_decompresses_brotli_stream() {
+    let raw = br#"{"usage":{"input_tokens":9,"output_tokens":4,"total_tokens":13}}"#;
+    let compressed = encode_brotli_payload(raw);
+
+    let (decoded, decode_error) = decode_response_payload_for_usage(&compressed, Some("br"));
+    assert!(decode_error.is_none());
+    assert_eq!(decoded.as_ref(), raw);
+}
+
+#[test]
+fn decode_response_payload_for_usage_decompresses_deflate_streams() {
+    let raw = br#"{"usage":{"input_tokens":11,"output_tokens":5,"total_tokens":16}}"#;
+
+    let mut zlib_encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    zlib_encoder.write_all(raw).expect("write zlib payload");
+    let zlib_compressed = zlib_encoder.finish().expect("finish zlib payload");
+
+    let (decoded_zlib, decode_error_zlib) =
+        decode_response_payload_for_usage(&zlib_compressed, Some("deflate"));
+    assert!(decode_error_zlib.is_none());
+    assert_eq!(decoded_zlib.as_ref(), raw);
+
+    let mut raw_encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+    raw_encoder
+        .write_all(raw)
+        .expect("write raw deflate payload");
+    let raw_compressed = raw_encoder.finish().expect("finish raw deflate payload");
+
+    let (decoded_raw, decode_error_raw) =
+        decode_response_payload_for_usage(&raw_compressed, Some("deflate"));
+    assert!(decode_error_raw.is_none());
+    assert_eq!(decoded_raw.as_ref(), raw);
+}
+
+#[test]
+fn decode_response_payload_for_usage_decompresses_stacked_content_encodings() {
+    let raw = br#"{"usage":{"input_tokens":21,"output_tokens":8,"total_tokens":29}}"#;
+    let mut gzip_encoder = GzEncoder::new(Vec::new(), Compression::default());
+    gzip_encoder
+        .write_all(raw)
+        .expect("write stacked gzip payload");
+    let gzip_compressed = gzip_encoder.finish().expect("finish stacked gzip payload");
+    let stacked = encode_brotli_payload(&gzip_compressed);
+
+    let (decoded, decode_error) = decode_response_payload_for_usage(&stacked, Some("gzip, br"));
+    assert!(decode_error.is_none());
+    assert_eq!(decoded.as_ref(), raw);
 }
 
 #[tokio::test]
