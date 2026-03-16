@@ -18,6 +18,7 @@ import {
 import { FloatingFieldError } from '../../components/ui/floating-field-error'
 import { FormFieldFeedback } from '../../components/ui/form-field-feedback'
 import { Input } from '../../components/ui/input'
+import { Popover, PopoverArrow, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
@@ -260,6 +261,7 @@ function AccountDetailDrawer({
   closeLabel,
   closeDisabled = false,
   autoFocusCloseButton = true,
+  onPortalContainerChange,
   onClose,
   children,
 }: {
@@ -269,6 +271,7 @@ function AccountDetailDrawer({
   closeLabel: string
   closeDisabled?: boolean
   autoFocusCloseButton?: boolean
+  onPortalContainerChange?: (node: HTMLElement | null) => void
   onClose: () => void
   children: ReactNode
 }) {
@@ -311,6 +314,7 @@ function AccountDetailDrawer({
       />
       <div className="absolute inset-y-0 right-0 flex w-full justify-end pl-4 sm:pl-8">
         <section
+          ref={onPortalContainerChange}
           role="dialog"
           aria-modal="true"
           aria-labelledby="upstream-account-detail-title"
@@ -498,9 +502,8 @@ export default function UpstreamAccountsPage() {
   })
   const [groupNoteBusy, setGroupNoteBusy] = useState(false)
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
-  const deleteConfirmTriggerRef = useRef<HTMLButtonElement | null>(null)
-  const deleteConfirmPanelRef = useRef<HTMLDivElement | null>(null)
   const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
+  const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] = useState<HTMLElement | null>(null)
   const skipNextDeleteConfirmResetRef = useRef(false)
   const deleteConfirmTitleId = useId()
 
@@ -544,39 +547,6 @@ export default function UpstreamAccountsPage() {
       setIsDeleteConfirmOpen(false)
     }
   }, [writesEnabled])
-
-  useEffect(() => {
-    if (!isDeleteConfirmOpen) return undefined
-
-    let rafId = 0
-    const focusTimer = window.setTimeout(() => {
-      rafId = window.requestAnimationFrame(() => deleteConfirmCancelRef.current?.focus())
-    }, 80)
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target
-      if (!(target instanceof Node)) return
-      if (deleteConfirmPanelRef.current?.contains(target)) return
-      if (deleteConfirmTriggerRef.current?.contains(target)) return
-      setIsDeleteConfirmOpen(false)
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopPropagation()
-      setIsDeleteConfirmOpen(false)
-    }
-
-    document.addEventListener('mousedown', handlePointerDown, true)
-    document.addEventListener('keydown', handleKeyDown, true)
-    return () => {
-      window.clearTimeout(focusTimer)
-      if (rafId) {
-        window.cancelAnimationFrame(rafId)
-      }
-      document.removeEventListener('mousedown', handlePointerDown, true)
-      document.removeEventListener('keydown', handleKeyDown, true)
-    }
-  }, [isDeleteConfirmOpen])
 
   useEffect(() => {
     setGroupDraftNotes((current) => {
@@ -1123,6 +1093,7 @@ export default function UpstreamAccountsPage() {
         closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
         closeDisabled={busyAction != null}
         autoFocusCloseButton={!isDeleteConfirmOpen}
+        onPortalContainerChange={setDetailDrawerPortalContainer}
         onClose={handleCloseDetailDrawer}
       >
         {!selected ? (
@@ -1192,76 +1163,83 @@ export default function UpstreamAccountsPage() {
                     {t('accountPool.upstreamAccounts.actions.relogin')}
                   </Button>
                 ) : null}
-                <div className="relative overflow-visible">
-                  <Button
-                    ref={deleteConfirmTriggerRef}
-                    type="button"
-                    variant="destructive"
-                    disabled={busyAction === 'delete' || !writesEnabled}
-                    aria-haspopup="dialog"
-                    aria-expanded={isDeleteConfirmOpen}
-                    aria-controls={isDeleteConfirmOpen ? deleteConfirmTitleId : undefined}
-                    onClick={() => {
-                      if (busyAction === 'delete' || isDeleteConfirmOpen) return
+                <Popover
+                  open={isDeleteConfirmOpen}
+                  onOpenChange={(nextOpen) => {
+                    if (busyAction === 'delete' && !nextOpen) return
+                    if (nextOpen) {
                       setDetailActionError(null)
-                      setIsDeleteConfirmOpen(true)
-                    }}
-                  >
-                    {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
-                    {t('accountPool.upstreamAccounts.actions.delete')}
-                  </Button>
-                  {isDeleteConfirmOpen ? (
-                    <div
-                      ref={deleteConfirmPanelRef}
+                    }
+                    setIsDeleteConfirmOpen(nextOpen)
+                  }}
+                >
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      disabled={busyAction === 'delete' || !writesEnabled}
+                      aria-haspopup="dialog"
+                      aria-expanded={isDeleteConfirmOpen}
+                      aria-controls={isDeleteConfirmOpen ? deleteConfirmTitleId : undefined}
+                    >
+                      {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                      {t('accountPool.upstreamAccounts.actions.delete')}
+                    </Button>
+                  </PopoverTrigger>
+                  {detailDrawerPortalContainer ? (
+                    <PopoverContent
+                      container={detailDrawerPortalContainer}
                       role="alertdialog"
                       aria-modal="false"
                       aria-labelledby={deleteConfirmTitleId}
-                      className="absolute bottom-full right-0 z-20 mb-3 w-[min(22rem,calc(100vw-1.5rem))] origin-bottom-right animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 duration-150 motion-reduce:animate-none"
+                      align="end"
+                      side="top"
+                      sideOffset={12}
+                      className="z-[80] w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl border border-base-300 bg-base-100 p-4 shadow-[0_20px_48px_rgba(15,23,42,0.24)] ring-1 ring-base-100/90"
+                      onOpenAutoFocus={(event) => {
+                        event.preventDefault()
+                        deleteConfirmCancelRef.current?.focus()
+                      }}
+                      onEscapeKeyDown={(event) => {
+                        event.stopPropagation()
+                      }}
                     >
-                      <div className="relative rounded-2xl border border-base-300 bg-base-100 p-4 shadow-[0_20px_48px_rgba(15,23,42,0.24)] ring-1 ring-base-100/90">
-                        <div
-                          aria-hidden
-                          className="absolute -bottom-2 right-5 h-4 w-4 rotate-45 border-b border-r border-base-300 bg-base-100"
-                        />
-                        <div className="space-y-3">
-                          <div className="flex items-start gap-2.5">
-                            <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-error text-error-content shadow-sm animate-in fade-in-0 zoom-in-75 duration-200 delay-75 motion-reduce:animate-none">
-                              <AppIcon name="trash-can-outline" className="h-3.5 w-3.5" aria-hidden />
-                            </div>
-                            <p
-                              id={deleteConfirmTitleId}
-                              className="min-w-0 break-words pr-2 text-[15px] font-semibold leading-6 text-base-content animate-in fade-in-0 slide-in-from-bottom-1 duration-200 delay-75 motion-reduce:animate-none"
-                            >
-                              {t('accountPool.upstreamAccounts.deleteConfirmTitle', { name: selected.displayName })}
-                            </p>
+                      <div className="space-y-3">
+                        <div className="flex items-start gap-2.5">
+                          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-error text-error-content shadow-sm">
+                            <AppIcon name="trash-can-outline" className="h-3.5 w-3.5" aria-hidden />
                           </div>
-                          <div className="flex justify-end gap-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-200 delay-100 motion-reduce:animate-none">
-                            <Button
-                              ref={deleteConfirmCancelRef}
-                              type="button"
-                              variant="secondary"
-                              size="sm"
-                              className="rounded-full px-3.5 font-semibold"
-                              onClick={() => setIsDeleteConfirmOpen(false)}
-                            >
-                              {t('accountPool.upstreamAccounts.actions.cancel')}
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="destructive"
-                              size="sm"
-                              className="rounded-full px-3.5 font-semibold shadow-sm"
-                              disabled={busyAction === 'delete' || !writesEnabled}
-                              onClick={() => void handleDelete(selected)}
-                            >
-                              {t('accountPool.upstreamAccounts.actions.confirmDelete')}
-                            </Button>
-                          </div>
+                          <p id={deleteConfirmTitleId} className="min-w-0 break-words pr-2 text-[15px] font-semibold leading-6 text-base-content">
+                            {t('accountPool.upstreamAccounts.deleteConfirmTitle', { name: selected.displayName })}
+                          </p>
+                        </div>
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            ref={deleteConfirmCancelRef}
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            className="rounded-full px-3.5 font-semibold"
+                            onClick={() => setIsDeleteConfirmOpen(false)}
+                          >
+                            {t('accountPool.upstreamAccounts.actions.cancel')}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            className="rounded-full px-3.5 font-semibold shadow-sm"
+                            disabled={busyAction === 'delete' || !writesEnabled}
+                            onClick={() => void handleDelete(selected)}
+                          >
+                            {t('accountPool.upstreamAccounts.actions.confirmDelete')}
+                          </Button>
                         </div>
                       </div>
-                    </div>
+                      <PopoverArrow className="fill-base-100 stroke-base-300 stroke-[1px]" width={18} height={10} />
+                    </PopoverContent>
                   ) : null}
-                </div>
+                </Popover>
               </div>
             </div>
 
