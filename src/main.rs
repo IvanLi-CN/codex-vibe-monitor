@@ -107,7 +107,7 @@ const STARTUP_BACKFILL_STATUS_RUNNING: &str = "running";
 const STARTUP_BACKFILL_STATUS_OK: &str = "ok";
 const STARTUP_BACKFILL_STATUS_FAILED: &str = "failed";
 const STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES: &str =
-    "upstream_activity_archive_backfill";
+    "upstream_activity_archive_backfill_v1";
 const STARTUP_BACKFILL_TASK_PROXY_USAGE: &str = "proxy_usage_tokens_v1";
 const STARTUP_BACKFILL_TASK_PROXY_COST: &str = "proxy_cost_v1";
 const STARTUP_BACKFILL_TASK_PROMPT_CACHE_KEY: &str = "proxy_prompt_cache_key_v1";
@@ -502,11 +502,6 @@ async fn main() -> Result<()> {
     let schema_started_at = Instant::now();
     ensure_schema(&pool).await?;
     log_startup_phase("schema", schema_started_at);
-    let upstream_activity_backfill_started_at = Instant::now();
-    if let Err(err) = maybe_backfill_upstream_account_last_activity_from_archives(&pool).await {
-        warn!(error = %err, "failed to schedule upstream activity archive backfill");
-    }
-    log_startup_phase("upstream_activity_backfill", upstream_activity_backfill_started_at);
     if cli.retention_run_once {
         let summary =
             run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run), None)
@@ -1187,6 +1182,7 @@ enum StartupBackfillTask {
     InvocationServiceTier,
     ReasoningEffort,
     FailureClassification,
+    UpstreamActivityArchives,
 }
 
 impl StartupBackfillTask {
@@ -1199,6 +1195,7 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier,
             Self::ReasoningEffort,
             Self::FailureClassification,
+            Self::UpstreamActivityArchives,
         ]
     }
 
@@ -1211,6 +1208,7 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier => STARTUP_BACKFILL_TASK_INVOCATION_SERVICE_TIER,
             Self::ReasoningEffort => STARTUP_BACKFILL_TASK_REASONING_EFFORT,
             Self::FailureClassification => STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION,
+            Self::UpstreamActivityArchives => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
         }
     }
 
@@ -1223,6 +1221,7 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier => "invocation service tier",
             Self::ReasoningEffort => "proxy reasoning effort",
             Self::FailureClassification => "invocation failure classification",
+            Self::UpstreamActivityArchives => "upstream activity archives",
         }
     }
 }
@@ -1805,6 +1804,20 @@ async fn run_startup_backfill_task(
                     samples: outcome.samples,
                 },
                 "failure classification recalculated".to_string(),
+            ))
+        }
+        StartupBackfillTask::UpstreamActivityArchives => {
+            let summary = backfill_upstream_account_last_activity_from_archives(&state.pool).await?;
+            let pending_accounts = count_upstream_accounts_missing_last_activity(&state.pool).await?;
+            Ok((
+                StartupBackfillRunState {
+                    next_cursor_id: cursor_id,
+                    scanned: summary.scanned_batches,
+                    updated: summary.updated_accounts,
+                    hit_scan_limit: pending_accounts > 0 && summary.updated_accounts > 0,
+                    samples: Vec::new(),
+                },
+                format!("pending_accounts={pending_accounts}"),
             ))
         }
     }
@@ -3383,67 +3396,17 @@ async fn backfill_upstream_account_last_activity_from_archives(
     })
 }
 
-async fn maybe_backfill_upstream_account_last_activity_from_archives(
+async fn count_upstream_accounts_missing_last_activity(
     pool: &Pool<Sqlite>,
-) -> Result<()> {
-    let progress =
-        load_startup_backfill_progress(pool, STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES)
-            .await?;
-    if progress.last_status == STARTUP_BACKFILL_STATUS_OK && progress.last_finished_at.is_some() {
-        return Ok(());
-    }
-    let now = Utc::now();
-    if !progress.is_due(now) {
-        return Ok(());
-    }
-
-    mark_startup_backfill_running(pool, STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES, 0)
-        .await?;
-    let freeze_until = format_utc_iso(now + ChronoDuration::days(365 * 20));
-
-    match backfill_upstream_account_last_activity_from_archives(pool).await {
-        Ok(summary) => {
-            save_startup_backfill_progress(
-                pool,
-                STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
-                StartupBackfillProgressUpdate {
-                    cursor_id: 0,
-                    scanned: summary.scanned_batches,
-                    updated: summary.updated_accounts,
-                    zero_update_streak: 0,
-                    next_run_after: &freeze_until,
-                    status: STARTUP_BACKFILL_STATUS_OK,
-                },
-            )
-            .await?;
-        }
-        Err(err) => {
-            let retry_after = format_utc_iso(
-                now + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
-            );
-            warn!(
-                error = %err,
-                task = STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
-                next_run_after = %retry_after,
-                "upstream activity archive backfill failed; will retry later"
-            );
-            save_startup_backfill_progress(
-                pool,
-                STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
-                StartupBackfillProgressUpdate {
-                    cursor_id: 0,
-                    scanned: 0,
-                    updated: 0,
-                    zero_update_streak: 0,
-                    next_run_after: &retry_after,
-                    status: STARTUP_BACKFILL_STATUS_FAILED,
-                },
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
+) -> Result<u64> {
+    Ok(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pool_upstream_accounts WHERE last_activity_at IS NULL",
+        )
+        .fetch_one(pool)
+        .await?
+        .max(0) as u64,
+    )
 }
 
 async fn ensure_sqlite_file_initialized(path: &Path) -> Result<()> {

@@ -73,16 +73,18 @@ function compactBadge(content: ReactNode, variant: 'accent' | 'secondary' | 'suc
   )
 }
 
-function renderTagBadges(
-  labels: UpstreamAccountsTableProps['labels'],
-  tags?: AccountTagSummary[] | null,
-) {
+function splitVisibleAndHiddenTags(tags?: AccountTagSummary[] | null) {
   const safeTags = tags ?? []
   const visible = safeTags.slice(0, 3)
   const hidden = safeTags.slice(visible.length)
-  const overflowCount = hidden.length
-  const hiddenNames = hidden.map((tag) => tag.name).join(', ')
+  return {
+    visible,
+    hidden,
+  }
+}
 
+function renderTagBadges(tags?: AccountTagSummary[] | null) {
+  const { visible } = splitVisibleAndHiddenTags(tags)
   return (
     <>
       {visible.map((tag) => (
@@ -95,26 +97,35 @@ function renderTagBadges(
           {tag.name}
         </Badge>
       ))}
-      {overflowCount > 0
-        ? (
-          <Tooltip
-            content={
-              <div className="max-w-56 text-xs leading-5 text-base-content/80">
-                {hiddenNames}
-              </div>
-            }
-            triggerProps={{
-              tabIndex: 0,
-              'aria-label': labels.hiddenTagsA11y(overflowCount, hiddenNames),
-            }}
-          >
-            <span title={hiddenNames}>
-              {compactBadge(`+${overflowCount}`, 'secondary')}
-            </span>
-          </Tooltip>
-        )
-        : null}
     </>
+  )
+}
+
+function renderTagOverflowBadge(
+  labels: UpstreamAccountsTableProps['labels'],
+  tags?: AccountTagSummary[] | null,
+) {
+  const { hidden } = splitVisibleAndHiddenTags(tags)
+  const overflowCount = hidden.length
+  const hiddenNames = hidden.map((tag) => tag.name).join(', ')
+  if (overflowCount === 0) return null
+
+  return (
+    <Tooltip
+      content={
+        <div className="max-w-56 text-xs leading-5 text-base-content/80">
+          {hiddenNames}
+        </div>
+      }
+      triggerProps={{
+        tabIndex: 0,
+        'aria-label': labels.hiddenTagsA11y(overflowCount, hiddenNames),
+      }}
+    >
+      <span title={hiddenNames}>
+        {compactBadge(`+${overflowCount}`, 'secondary')}
+      </span>
+    </Tooltip>
   )
 }
 
@@ -273,25 +284,32 @@ export function UpstreamAccountsTable({
                     >
                       {item.displayName}
                     </p>
-                    <div className="mt-2 flex min-w-0 items-center gap-1 overflow-hidden">
-                      {item.isMother ? (
-                        <div className="shrink-0">
-                          <MotherAccountBadge label={labels.mother} />
+                    <div className="mt-2 grid min-w-0 grid-cols-[minmax(0,max-content),minmax(3rem,1fr)] items-center gap-1">
+                      <div className="flex min-w-0 items-center gap-1 overflow-hidden">
+                        {item.isMother ? (
+                          <div className="shrink-0">
+                            <MotherAccountBadge label={labels.mother} />
+                          </div>
+                        ) : null}
+                        {item.duplicateInfo
+                          ? compactBadge(labels.duplicate, 'warning')
+                          : null}
+                        {compactBadge(labels.status(item), badgeVariant(displayStatus))}
+                        {!item.enabled
+                          ? compactBadge(labels.off, 'secondary')
+                          : null}
+                        {compactBadge(kindLabel(item, labels), 'secondary')}
+                        {item.planType
+                          ? compactBadge(item.planType, 'accent')
+                          : null}
+                      </div>
+                      <div className="flex min-w-[3rem] items-center justify-end gap-1">
+                        <div className="flex min-w-0 flex-1 justify-end gap-1 overflow-hidden">
+                          {renderTagBadges(item.tags)}
                         </div>
-                      ) : null}
-                      {item.duplicateInfo
-                        ? compactBadge(labels.duplicate, 'warning')
-                        : null}
-                      {compactBadge(labels.status(item), badgeVariant(displayStatus))}
-                      {!item.enabled
-                        ? compactBadge(labels.off, 'secondary')
-                        : null}
-                      {compactBadge(kindLabel(item, labels), 'secondary')}
-                      {item.planType
-                        ? compactBadge(item.planType, 'accent')
-                        : null}
-                      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-                        {renderTagBadges(labels, item.tags)}
+                        <div className="shrink-0">
+                          {renderTagOverflowBadge(labels, item.tags)}
+                        </div>
                       </div>
                     </div>
                   </div>

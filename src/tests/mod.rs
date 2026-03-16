@@ -17141,10 +17141,11 @@ async fn upstream_last_activity_backfill_reads_archived_batches() {
 
 #[tokio::test]
 async fn upstream_last_activity_archive_backfill_retries_after_failed_progress() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let pool = state.pool.clone();
 
     let task_name = STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES;
     let retry_due = format_utc_iso(Utc::now() - ChronoDuration::seconds(1));
@@ -17166,7 +17167,7 @@ async fn upstream_last_activity_archive_backfill_retries_after_failed_progress()
     .await
     .expect("seed failed startup progress");
 
-    maybe_backfill_upstream_account_last_activity_from_archives(&pool)
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
         .await
         .expect("retry failed archive backfill progress");
 
