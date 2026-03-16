@@ -810,6 +810,8 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require("codex-release-version-comment" in comment_script, "release.yml.jobs.release-publish: PR release comment marker drifted")
     require("issues.listComments" in comment_script, "release.yml.jobs.release-publish: PR release comment must inspect existing comments")
     require("issues.updateComment" in comment_script, "release.yml.jobs.release-publish: PR release comment must support updates")
+    require("github-actions[bot]" in comment_script, "release.yml.jobs.release-publish: PR release comment must only update github-actions[bot] comments")
+    require("leaving PR comment unchanged" in comment_script, "release.yml.jobs.release-publish: PR release comment must warn on foreign marker comments")
     next_step = step_config(publish, "Resolve next pending release target", "release.yml.jobs.release-publish")
     require(next_step.get("if") == "github.event_name != 'workflow_dispatch'", "release.yml.jobs.release-publish: next pending target gate drifted")
     next_run = str(next_step.get("run", ""))

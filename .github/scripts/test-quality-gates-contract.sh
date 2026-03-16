@@ -7,6 +7,23 @@ fixtures_root="$repo_root/.github/scripts/fixtures/quality-gates-contract"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
+copy_repo_snapshot() {
+  local source_root="$1"
+  local dest_root="$2"
+  mkdir -p "$dest_root"
+  tar \
+    --exclude='.git' \
+    --exclude='target' \
+    --exclude='node_modules' \
+    --exclude='web/node_modules' \
+    --exclude='web/dist' \
+    --exclude='coverage' \
+    --exclude='playwright-report' \
+    -C "$source_root" \
+    -cf - \
+    . | tar -C "$dest_root" -xf -
+}
+
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
   --repo-root "$repo_root" \
   --declaration "$repo_root/.github/quality-gates.json" \
@@ -25,7 +42,7 @@ fi
 grep -q "implementation_profile='final' does not match workflow profile 'bootstrap'" "$tmp_dir/profile-mismatch.log"
 
 baseline_repo="$tmp_dir/baseline-repo"
-cp -R "$repo_root/." "$baseline_repo"
+copy_repo_snapshot "$repo_root" "$baseline_repo"
 cp "$fixtures_root/quality-gates.json" "$baseline_repo/.github/quality-gates.json"
 for workflow in ci-pr.yml ci-main.yml release.yml label-gate.yml review-policy.yml; do
   cp "$fixtures_root/$workflow" "$baseline_repo/.github/workflows/$workflow"
@@ -35,7 +52,7 @@ python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 
 simplified_topology_repo="$tmp_dir/simplified-topology-repo"
-cp -R "$baseline_repo/." "$simplified_topology_repo"
+copy_repo_snapshot "$baseline_repo" "$simplified_topology_repo"
 for workflow in ci-main.yml release.yml label-gate.yml; do
   cp "$fixtures_root/simplified/$workflow" "$simplified_topology_repo/.github/workflows/$workflow"
 done
@@ -43,7 +60,7 @@ done
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$simplified_topology_repo" --profile final
 
 label_concurrency_repo="$tmp_dir/label-concurrency-repo"
-cp -R "$baseline_repo/." "$label_concurrency_repo"
+copy_repo_snapshot "$baseline_repo" "$label_concurrency_repo"
 python3 - <<'PY' "$label_concurrency_repo"
 from pathlib import Path
 import sys
@@ -65,7 +82,7 @@ fi
 grep -q "label-gate.yml.concurrency.group drifted" "$tmp_dir/label-concurrency.log"
 
 coverage_repo="$tmp_dir/coverage-repo"
-cp -R "$baseline_repo/." "$coverage_repo"
+copy_repo_snapshot "$baseline_repo" "$coverage_repo"
 python3 - <<'PY' "$coverage_repo"
 from pathlib import Path
 import json
@@ -87,7 +104,7 @@ fi
 grep -q "expected_pr_workflows jobs must exactly cover required_checks + informational_checks" "$tmp_dir/coverage.log"
 
 release_dispatch_repo="$tmp_dir/release-dispatch-repo"
-cp -R "$baseline_repo/." "$release_dispatch_repo"
+copy_repo_snapshot "$baseline_repo" "$release_dispatch_repo"
 python3 - <<'PY' "$release_dispatch_repo"
 from pathlib import Path
 import sys
@@ -109,7 +126,7 @@ fi
 grep -q "workflow_dispatch.inputs.commit_sha" "$tmp_dir/release-dispatch.log"
 
 release_workflow_repo="$tmp_dir/release-workflow-repo"
-cp -R "$baseline_repo/." "$release_workflow_repo"
+copy_repo_snapshot "$baseline_repo" "$release_workflow_repo"
 python3 - <<'PY' "$release_workflow_repo"
 from pathlib import Path
 import sys
@@ -134,7 +151,7 @@ fi
 grep -q "workflow_run.workflows drifted" "$tmp_dir/release-workflow.log"
 
 ci_main_repo="$tmp_dir/ci-main-repo"
-cp -R "$baseline_repo/." "$ci_main_repo"
+copy_repo_snapshot "$baseline_repo" "$ci_main_repo"
 python3 - <<'PY' "$ci_main_repo"
 from pathlib import Path
 import sys
@@ -161,7 +178,7 @@ fi
 grep -Eq "ci-main.yml.concurrency.(group drifted|cancel-in-progress must stay false)" "$tmp_dir/ci-main.log"
 
 release_concurrency_repo="$tmp_dir/release-concurrency-repo"
-cp -R "$baseline_repo/." "$release_concurrency_repo"
+copy_repo_snapshot "$baseline_repo" "$release_concurrency_repo"
 python3 - <<'PY' "$release_concurrency_repo"
 from pathlib import Path
 import sys
@@ -183,7 +200,7 @@ fi
 grep -q "release.yml.concurrency.group drifted" "$tmp_dir/release-concurrency.log"
 
 metadata_policy_repo="$tmp_dir/metadata-policy-repo"
-cp -R "$baseline_repo/." "$metadata_policy_repo"
+copy_repo_snapshot "$baseline_repo" "$metadata_policy_repo"
 python3 - <<'PY' "$metadata_policy_repo"
 from pathlib import Path
 import sys

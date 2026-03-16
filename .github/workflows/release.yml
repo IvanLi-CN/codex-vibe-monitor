@@ -573,8 +573,22 @@ jobs:
                 issue_number: issueNumber,
                 per_page: 100,
               })
+              const foreignMarkerComment = comments.find(comment =>
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker) &&
+                (comment.user?.type !== 'Bot' || comment.user?.login !== 'github-actions[bot]')
+              )
+              if (foreignMarkerComment) {
+                core.warning(
+                  `Found marker comment ${foreignMarkerComment.id} owned by ${foreignMarkerComment.user?.login || 'unknown'}; leaving PR comment unchanged`
+                )
+                return
+              }
               const existing = comments.find(comment =>
-                typeof comment.body === 'string' && comment.body.includes(marker)
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker) &&
+                comment.user?.type === 'Bot' &&
+                comment.user?.login === 'github-actions[bot]'
               )
 
               if (existing) {
