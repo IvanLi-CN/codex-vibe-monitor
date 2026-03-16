@@ -2932,6 +2932,166 @@ async fn update_upstream_account_can_clear_upstream_base_url_with_null_payload()
 }
 
 #[tokio::test]
+async fn delete_upstream_account_removes_related_rows_in_one_transaction() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Delete Target",
+        "sk-delete-target",
+        Some("prod"),
+        Some(false),
+        None,
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    let tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, guard_enabled, lookback_hours, max_conversations,
+            allow_cut_out, allow_cut_in, created_at, updated_at
+        ) VALUES (?1, 0, NULL, NULL, 1, 1, ?2, ?2)
+        RETURNING id
+        "#,
+    )
+    .bind("delete-tag")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert tag");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (
+            account_id, tag_id, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind(account_id)
+    .bind(tag_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert account tag link");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_login_sessions (
+            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note,
+            state, pkce_verifier, redirect_uri, status, auth_url, error_message, expires_at, consumed_at,
+            created_at, updated_at
+        ) VALUES (
+            ?1, ?2, ?3, ?4, 0, NULL, NULL, NULL,
+            ?5, ?6, ?7, ?8, ?9, NULL, ?10, NULL,
+            ?11, ?11
+        )
+        "#,
+    )
+    .bind("login-delete-target")
+    .bind(account_id)
+    .bind("Delete Target")
+    .bind("prod")
+    .bind("state-delete-target")
+    .bind("pkce-delete-target")
+    .bind("https://example.com/callback")
+    .bind("completed")
+    .bind("https://example.com/auth")
+    .bind(&now_iso)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert oauth login session");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_group_notes (
+            group_name, note, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind("prod")
+    .bind("cleanup me")
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert group note");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_limit_samples (
+            account_id, captured_at, limit_id, limit_name, plan_type,
+            primary_used_percent, primary_window_minutes, primary_resets_at,
+            secondary_used_percent, secondary_window_minutes, secondary_resets_at,
+            credits_has_credits, credits_unlimited, credits_balance
+        ) VALUES (
+            ?1, ?2, 'primary', 'Primary', 'team',
+            12.5, 300, ?2,
+            25.0, 10080, ?2,
+            1, 0, '42'
+        )
+        "#,
+    )
+    .bind(account_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert limit sample");
+
+    let status = delete_upstream_account(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path(account_id),
+    )
+    .await
+    .expect("delete upstream account");
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let remaining_accounts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count remaining accounts");
+    assert_eq!(remaining_accounts, 0);
+
+    let remaining_tag_links: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_tags WHERE account_id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count remaining tag links");
+    assert_eq!(remaining_tag_links, 0);
+
+    let remaining_sessions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_oauth_login_sessions WHERE account_id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count remaining login sessions");
+    assert_eq!(remaining_sessions, 0);
+
+    let remaining_samples: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_limit_samples WHERE account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count remaining limit samples");
+    assert_eq!(remaining_samples, 0);
+
+    let remaining_group_notes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_group_notes WHERE group_name = ?1",
+    )
+    .bind("prod")
+    .fetch_one(&state.pool)
+    .await
+    .expect("count remaining group notes");
+    assert_eq!(remaining_group_notes, 0);
+}
+
+#[tokio::test]
 async fn create_api_key_account_rejects_invalid_upstream_base_url() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

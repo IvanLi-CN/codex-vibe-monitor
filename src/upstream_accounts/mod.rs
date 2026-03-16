@@ -1807,11 +1807,16 @@ pub(crate) async fn delete_upstream_account(
         ));
     }
     state.upstream_accounts.require_crypto_key()?;
-    let group_name = load_upstream_account_row(&state.pool, id)
+    let _guard = state.upstream_accounts.sync_lock.lock().await;
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    let group_name = load_upstream_account_row_conn(tx.as_mut(), id)
         .await
         .map_err(internal_error_tuple)?
         .map(|row| row.group_name);
-    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_upstream_account_limit_samples WHERE account_id = ?1")
         .bind(id)
         .execute(tx.as_mut())
@@ -1819,7 +1824,7 @@ pub(crate) async fn delete_upstream_account(
         .map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_upstream_account_tags WHERE account_id = ?1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(tx.as_mut())
         .await
         .map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_oauth_login_sessions WHERE account_id = ?1")

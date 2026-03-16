@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { AppIcon, type AppIconName } from '../../components/AppIcon'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
@@ -67,6 +67,7 @@ const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
 type UpstreamAccountsLocationState = {
   selectedAccountId?: number
   openDetail?: boolean
+  openDeleteConfirm?: boolean
   duplicateWarning?: {
     accountId: number
     displayName: string
@@ -242,6 +243,8 @@ function AccountDetailDrawer({
   title,
   subtitle,
   closeLabel,
+  closeDisabled = false,
+  autoFocusCloseButton = true,
   onClose,
   children,
 }: {
@@ -249,6 +252,8 @@ function AccountDetailDrawer({
   title: string
   subtitle?: string
   closeLabel: string
+  closeDisabled?: boolean
+  autoFocusCloseButton?: boolean
   onClose: () => void
   children: ReactNode
 }) {
@@ -260,20 +265,25 @@ function AccountDetailDrawer({
     const previousOverflow = document.body.style.overflow
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (closeDisabled) return
         onClose()
       }
     }
 
     document.body.style.overflow = 'hidden'
     document.addEventListener('keydown', handleKeyDown)
-    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+    const focusTimer = autoFocusCloseButton
+      ? window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+      : null
 
     return () => {
-      window.clearTimeout(focusTimer)
+      if (focusTimer != null) {
+        window.clearTimeout(focusTimer)
+      }
       document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [onClose, open])
+  }, [autoFocusCloseButton, closeDisabled, onClose, open])
 
   if (!open || typeof document === 'undefined') return null
 
@@ -282,7 +292,7 @@ function AccountDetailDrawer({
       <div
         aria-hidden="true"
         className="absolute inset-0 bg-neutral/50 backdrop-blur-sm"
-        onClick={onClose}
+        onClick={closeDisabled ? undefined : onClose}
       />
       <div className="absolute inset-y-0 right-0 flex w-full justify-end pl-4 sm:pl-8">
         <section
@@ -301,7 +311,14 @@ function AccountDetailDrawer({
                   {title}
                 </h2>
               </div>
-              <Button ref={closeButtonRef} type="button" variant="ghost" size="icon" onClick={onClose}>
+              <Button
+                ref={closeButtonRef}
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={onClose}
+                disabled={closeDisabled}
+              >
                 <AppIcon name="close" className="h-5 w-5" aria-hidden />
                 <span className="sr-only">{closeLabel}</span>
               </Button>
@@ -446,10 +463,12 @@ export default function UpstreamAccountsPage() {
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [pageActionError, setPageActionError] = useState<string | null>(null)
+  const [detailActionError, setDetailActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
@@ -464,6 +483,11 @@ export default function UpstreamAccountsPage() {
   })
   const [groupNoteBusy, setGroupNoteBusy] = useState(false)
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
+  const deleteConfirmTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const deleteConfirmPanelRef = useRef<HTMLDivElement | null>(null)
+  const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
+  const skipNextDeleteConfirmResetRef = useRef(false)
+  const deleteConfirmTitleId = useId()
 
   const draftUpstreamBaseUrlError = useMemo(() => {
     const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl)
@@ -487,14 +511,57 @@ export default function UpstreamAccountsPage() {
   }, [detail, selectedSummary])
 
   useEffect(() => {
+    setDetailActionError(null)
+    if (skipNextDeleteConfirmResetRef.current) {
+      skipNextDeleteConfirmResetRef.current = false
+      return
+    }
+    setIsDeleteConfirmOpen(false)
+  }, [selectedId, isDetailDrawerOpen])
+
+  useEffect(() => {
     setRoutingDraft(buildRoutingDraft(routing?.maskedApiKey))
   }, [routing?.maskedApiKey])
 
   useEffect(() => {
     if (!writesEnabled) {
       setIsRoutingDialogOpen(false)
+      setIsDeleteConfirmOpen(false)
     }
   }, [writesEnabled])
+
+  useEffect(() => {
+    if (!isDeleteConfirmOpen) return undefined
+
+    let rafId = 0
+    const focusTimer = window.setTimeout(() => {
+      rafId = window.requestAnimationFrame(() => deleteConfirmCancelRef.current?.focus())
+    }, 80)
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (deleteConfirmPanelRef.current?.contains(target)) return
+      if (deleteConfirmTriggerRef.current?.contains(target)) return
+      setIsDeleteConfirmOpen(false)
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setIsDeleteConfirmOpen(false)
+    }
+
+    document.addEventListener('mousedown', handlePointerDown, true)
+    document.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      window.clearTimeout(focusTimer)
+      if (rafId) {
+        window.cancelAnimationFrame(rafId)
+      }
+      document.removeEventListener('mousedown', handlePointerDown, true)
+      document.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [isDeleteConfirmOpen])
 
   useEffect(() => {
     setGroupDraftNotes((current) => {
@@ -510,8 +577,10 @@ export default function UpstreamAccountsPage() {
     const state = location.state as UpstreamAccountsLocationState | null
     if (!state?.selectedAccountId) return
 
+    skipNextDeleteConfirmResetRef.current = Boolean(state.openDeleteConfirm)
     selectAccount(state.selectedAccountId)
     setIsDetailDrawerOpen(Boolean(state.openDetail))
+    setIsDeleteConfirmOpen(Boolean(state.openDeleteConfirm))
     setDuplicateWarning(state.duplicateWarning ?? null)
     navigate(location.pathname, { replace: true, state: null })
   }, [location.pathname, location.state, navigate, selectAccount])
@@ -748,7 +817,7 @@ export default function UpstreamAccountsPage() {
 
   const handleSave = async (source: UpstreamAccountDetail) => {
     if (source.kind === 'api_key_codex' && draftUpstreamBaseUrlError) return
-    setActionError(null)
+    setDetailActionError(null)
     setBusyAction('save')
     try {
       const response = await saveAccount(source.id, {
@@ -768,31 +837,31 @@ export default function UpstreamAccountsPage() {
       notifyMotherChange(response)
       setDraft((current) => ({ ...current, apiKey: '' }))
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
   }
 
   const handleSync = async (source: UpstreamAccountSummary) => {
-    setActionError(null)
+    setDetailActionError(null)
     setBusyAction('sync')
     try {
       await runSync(source.id)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
   }
 
   const handleToggleEnabled = async (source: UpstreamAccountSummary, enabled: boolean) => {
-    setActionError(null)
+    setDetailActionError(null)
     setBusyAction('toggle')
     try {
       await saveAccount(source.id, { enabled })
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
@@ -800,29 +869,28 @@ export default function UpstreamAccountsPage() {
 
 
   const handleSaveRouting = async () => {
-    setActionError(null)
+    setPageActionError(null)
     setBusyAction('routing')
     try {
       await saveRouting({ apiKey: routingDraft.apiKey.trim() })
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
       setIsRoutingDialogOpen(false)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setPageActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
   }
 
   const handleDelete = async (source: UpstreamAccountSummary) => {
-    if (!window.confirm(t('accountPool.upstreamAccounts.deleteConfirm', { name: source.displayName }))) {
-      return
-    }
-    setActionError(null)
+    setDetailActionError(null)
+    setIsDeleteConfirmOpen(false)
     setBusyAction('delete')
     try {
       await removeAccount(source.id)
+      setIsDetailDrawerOpen(false)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
@@ -869,10 +937,10 @@ export default function UpstreamAccountsPage() {
               </Alert>
             ) : null}
 
-            {actionError ? (
+            {pageActionError ? (
               <Alert variant="error">
                 <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <div>{actionError}</div>
+                <div>{pageActionError}</div>
               </Alert>
             ) : null}
 
@@ -1038,6 +1106,8 @@ export default function UpstreamAccountsPage() {
         title={selected?.displayName ?? t('accountPool.upstreamAccounts.detailTitle')}
         subtitle={t('accountPool.upstreamAccounts.detailTitle')}
         closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
+        closeDisabled={busyAction != null}
+        autoFocusCloseButton={!isDeleteConfirmOpen}
         onClose={handleCloseDetailDrawer}
       >
         {!selected ? (
@@ -1107,15 +1177,88 @@ export default function UpstreamAccountsPage() {
                     {t('accountPool.upstreamAccounts.actions.relogin')}
                   </Button>
                 ) : null}
-                <Button type="button" variant="destructive" onClick={() => void handleDelete(selected)} disabled={busyAction === 'delete' || !writesEnabled}>
-                  {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
-                  {t('accountPool.upstreamAccounts.actions.delete')}
-                </Button>
+                <div className="relative overflow-visible">
+                  <Button
+                    ref={deleteConfirmTriggerRef}
+                    type="button"
+                    variant="destructive"
+                    disabled={busyAction === 'delete' || !writesEnabled}
+                    aria-haspopup="dialog"
+                    aria-expanded={isDeleteConfirmOpen}
+                    aria-controls={isDeleteConfirmOpen ? deleteConfirmTitleId : undefined}
+                    onClick={() => {
+                      if (busyAction === 'delete' || isDeleteConfirmOpen) return
+                      setDetailActionError(null)
+                      setIsDeleteConfirmOpen(true)
+                    }}
+                  >
+                    {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                    {t('accountPool.upstreamAccounts.actions.delete')}
+                  </Button>
+                  {isDeleteConfirmOpen ? (
+                    <div
+                      ref={deleteConfirmPanelRef}
+                      role="alertdialog"
+                      aria-modal="false"
+                      aria-labelledby={deleteConfirmTitleId}
+                      className="absolute bottom-full right-0 z-20 mb-3 w-[min(22rem,calc(100vw-1.5rem))] origin-bottom-right animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 duration-150 motion-reduce:animate-none"
+                    >
+                      <div className="relative rounded-2xl border border-base-300 bg-base-100 p-4 shadow-[0_20px_48px_rgba(15,23,42,0.24)] ring-1 ring-base-100/90">
+                        <div
+                          aria-hidden
+                          className="absolute -bottom-2 right-5 h-4 w-4 rotate-45 border-b border-r border-base-300 bg-base-100"
+                        />
+                        <div className="space-y-3">
+                          <div className="flex items-start gap-2.5">
+                            <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-error text-error-content shadow-sm animate-in fade-in-0 zoom-in-75 duration-200 delay-75 motion-reduce:animate-none">
+                              <AppIcon name="trash-can-outline" className="h-3.5 w-3.5" aria-hidden />
+                            </div>
+                            <p
+                              id={deleteConfirmTitleId}
+                              className="min-w-0 break-words pr-2 text-[15px] font-semibold leading-6 text-base-content animate-in fade-in-0 slide-in-from-bottom-1 duration-200 delay-75 motion-reduce:animate-none"
+                            >
+                              {t('accountPool.upstreamAccounts.deleteConfirmTitle', { name: selected.displayName })}
+                            </p>
+                          </div>
+                          <div className="flex justify-end gap-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-200 delay-100 motion-reduce:animate-none">
+                            <Button
+                              ref={deleteConfirmCancelRef}
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              className="rounded-full px-3.5 font-semibold"
+                              onClick={() => setIsDeleteConfirmOpen(false)}
+                            >
+                              {t('accountPool.upstreamAccounts.actions.cancel')}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              className="rounded-full px-3.5 font-semibold shadow-sm"
+                              disabled={busyAction === 'delete' || !writesEnabled}
+                              onClick={() => void handleDelete(selected)}
+                            >
+                              {t('accountPool.upstreamAccounts.actions.confirmDelete')}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
 
-            {detail ? (
-              <div className="grid gap-5">
+            <div className="grid gap-5">
+              {detailActionError ? (
+                <Alert variant="error">
+                  <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <div>{detailActionError}</div>
+                </Alert>
+              ) : null}
+              {detail ? (
+                <>
                 {detail.duplicateInfo ? (
                   <Alert variant="warning">
                     <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
@@ -1408,8 +1551,9 @@ export default function UpstreamAccountsPage() {
                     </div>
                   </CardContent>
                 </Card>
-              </div>
-            ) : null}
+                </>
+              ) : null}
+            </div>
           </>
         )}
       </AccountDetailDrawer>
