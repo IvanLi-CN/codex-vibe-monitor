@@ -500,6 +500,9 @@ async fn main() -> Result<()> {
     let schema_started_at = Instant::now();
     ensure_schema(&pool).await?;
     log_startup_phase("schema", schema_started_at);
+    let upstream_activity_backfill_started_at = Instant::now();
+    backfill_upstream_account_last_activity_from_archives(&pool).await?;
+    log_startup_phase("upstream_activity_backfill", upstream_activity_backfill_started_at);
     if cli.retention_run_once {
         let summary =
             run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run), None)
@@ -2005,6 +2008,17 @@ struct InvocationRawCompressionCandidate {
     response_raw_path: Option<String>,
 }
 
+#[derive(Debug, FromRow)]
+struct ArchiveBatchFileRow {
+    file_path: String,
+}
+
+#[derive(Debug, FromRow)]
+struct ArchivedAccountLastActivityRow {
+    account_id: i64,
+    last_activity_at: String,
+}
+
 #[derive(Debug, Default)]
 struct RawCompressionPassSummary {
     files_considered: usize,
@@ -3227,6 +3241,127 @@ async fn compact_old_quota_snapshots(
     }
 
     Ok((rows_archived, archive_batches))
+}
+
+async fn backfill_upstream_account_last_activity_from_archives(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let pending_account_ids = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM pool_upstream_accounts WHERE last_activity_at IS NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+    if pending_account_ids.is_empty() {
+        return Ok(());
+    }
+
+    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+        r#"
+        SELECT file_path
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations' AND status = ?1
+        ORDER BY month_key DESC, created_at DESC, id DESC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
+    .await?;
+    if archive_files.is_empty() {
+        return Ok(());
+    }
+
+    let pending = pending_account_ids.into_iter().collect::<HashSet<_>>();
+    let mut recovered = HashMap::<i64, String>::new();
+
+    for archive_file in archive_files {
+        if recovered.len() == pending.len() {
+            break;
+        }
+
+        let archive_path = PathBuf::from(archive_file.file_path);
+        if !archive_path.exists() {
+            continue;
+        }
+
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+
+        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        let database_url = format!("sqlite://{}", temp_path.to_string_lossy());
+        let connect_opts = build_sqlite_connect_options(
+            &database_url,
+            Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+        )?;
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect_opts)
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+
+        let rows = {
+            const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT ",
+            );
+            query
+                .push(ACCOUNT_EXPR)
+                .push(" AS account_id, occurred_at FROM codex_invocations WHERE ")
+                .push(ACCOUNT_EXPR)
+                .push(" IN (");
+            {
+                let mut separated = query.separated(", ");
+                for account_id in &pending {
+                    if recovered.contains_key(account_id) {
+                        continue;
+                    }
+                    separated.push_bind(account_id);
+                }
+            }
+            query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
+            query
+                .build_query_as::<ArchivedAccountLastActivityRow>()
+                .fetch_all(&archive_pool)
+                .await?
+        };
+
+        archive_pool.close().await;
+        let _ = fs::remove_file(&temp_path);
+
+        for row in rows {
+            recovered
+                .entry(row.account_id)
+                .and_modify(|current| {
+                    if *current < row.last_activity_at {
+                        *current = row.last_activity_at.clone();
+                    }
+                })
+                .or_insert(row.last_activity_at);
+        }
+    }
+
+    if recovered.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    for (account_id, occurred_at) in recovered {
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET last_activity_at = ?1 WHERE id = ?2 AND last_activity_at IS NULL",
+        )
+        .bind(occurred_at)
+        .bind(account_id)
+        .execute(tx.as_mut())
+        .await?;
+    }
+    tx.commit().await?;
+
+    Ok(())
 }
 
 async fn ensure_sqlite_file_initialized(path: &Path) -> Result<()> {
@@ -10563,16 +10698,11 @@ async fn persist_proxy_capture_record(
             SET last_activity_at = CASE
                 WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
                 ELSE last_activity_at
-            END,
-                updated_at = CASE
-                WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?2
-                ELSE updated_at
             END
-            WHERE id = ?3
+            WHERE id = ?2
             "#,
         )
         .bind(&record.occurred_at)
-        .bind(format_utc_iso(Utc::now()))
         .bind(upstream_account_id)
         .execute(pool)
         .await?;
