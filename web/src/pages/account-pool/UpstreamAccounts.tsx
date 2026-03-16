@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { AppIcon, type AppIconName } from '../../components/AppIcon'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
@@ -18,6 +18,7 @@ import {
 import { FloatingFieldError } from '../../components/ui/floating-field-error'
 import { FormFieldFeedback } from '../../components/ui/form-field-feedback'
 import { Input } from '../../components/ui/input'
+import { Popover, PopoverArrow, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
@@ -67,6 +68,7 @@ const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
 type UpstreamAccountsLocationState = {
   selectedAccountId?: number
   openDetail?: boolean
+  openDeleteConfirm?: boolean
   duplicateWarning?: {
     accountId: number
     displayName: string
@@ -80,6 +82,11 @@ type GroupNoteEditorState = {
   groupName: string
   note: string
   existing: boolean
+}
+
+type OauthRecoveryHint = {
+  titleKey: string
+  bodyKey: string
 }
 
 function formatDateTime(value?: string | null) {
@@ -160,6 +167,69 @@ function kindVariant(kind: string): 'secondary' | 'success' {
   return kind === 'oauth_codex' ? 'success' : 'secondary'
 }
 
+function isOauthBridgeUnavailableError(lastError?: string | null) {
+  const normalized = lastError?.toLocaleLowerCase() ?? ''
+  return (
+    normalized.includes('oauth bridge') &&
+    (normalized.includes('unavailable') || normalized.includes('connection refused'))
+  )
+}
+
+function isOauthBridgeExchangeError(lastError?: string | null) {
+  const normalized = lastError?.toLocaleLowerCase() ?? ''
+  return normalized.includes('oauth bridge token exchange failed')
+}
+
+function isOauthBridgeUpstreamRejectedError(lastError?: string | null) {
+  const normalized = lastError?.toLocaleLowerCase() ?? ''
+  return normalized.includes('oauth bridge upstream') || normalized.includes('upstream rejected request')
+}
+
+function resolveOauthRecoveryHint(
+  kind: string,
+  status: string,
+  lastError?: string | null,
+): OauthRecoveryHint | null {
+  if (kind !== 'oauth_codex') return null
+  if (isOauthBridgeUnavailableError(lastError)) {
+    return {
+      titleKey: 'accountPool.upstreamAccounts.hints.bridgeUnavailableTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.bridgeUnavailableBody',
+    }
+  }
+  if (isOauthBridgeExchangeError(lastError)) {
+    return {
+      titleKey: 'accountPool.upstreamAccounts.hints.bridgeExchangeTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.bridgeExchangeBody',
+    }
+  }
+  if (isOauthBridgeUpstreamRejectedError(lastError)) {
+    return {
+      titleKey: 'accountPool.upstreamAccounts.hints.bridgeUpstreamTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.bridgeUpstreamBody',
+    }
+  }
+  if (status === 'needs_reauth') {
+    return {
+      titleKey: 'accountPool.upstreamAccounts.hints.reauthTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.reauthBody',
+    }
+  }
+  return null
+}
+
+function resolveDisplayedStatus(status: string, lastError?: string | null) {
+  if (
+    status === 'needs_reauth' &&
+    (isOauthBridgeUnavailableError(lastError) ||
+      isOauthBridgeExchangeError(lastError) ||
+      isOauthBridgeUpstreamRejectedError(lastError))
+  ) {
+    return 'error'
+  }
+  return status
+}
+
 
 function poolCardMetric(value: number, label: string, icon: AppIconName, accent: string) {
   return { value, label, icon, accent }
@@ -189,6 +259,9 @@ function AccountDetailDrawer({
   title,
   subtitle,
   closeLabel,
+  closeDisabled = false,
+  autoFocusCloseButton = true,
+  onPortalContainerChange,
   onClose,
   children,
 }: {
@@ -196,6 +269,9 @@ function AccountDetailDrawer({
   title: string
   subtitle?: string
   closeLabel: string
+  closeDisabled?: boolean
+  autoFocusCloseButton?: boolean
+  onPortalContainerChange?: (node: HTMLElement | null) => void
   onClose: () => void
   children: ReactNode
 }) {
@@ -207,20 +283,25 @@ function AccountDetailDrawer({
     const previousOverflow = document.body.style.overflow
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (closeDisabled) return
         onClose()
       }
     }
 
     document.body.style.overflow = 'hidden'
     document.addEventListener('keydown', handleKeyDown)
-    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+    const focusTimer = autoFocusCloseButton
+      ? window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+      : null
 
     return () => {
-      window.clearTimeout(focusTimer)
+      if (focusTimer != null) {
+        window.clearTimeout(focusTimer)
+      }
       document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [onClose, open])
+  }, [autoFocusCloseButton, closeDisabled, onClose, open])
 
   if (!open || typeof document === 'undefined') return null
 
@@ -229,10 +310,11 @@ function AccountDetailDrawer({
       <div
         aria-hidden="true"
         className="absolute inset-0 bg-neutral/50 backdrop-blur-sm"
-        onClick={onClose}
+        onClick={closeDisabled ? undefined : onClose}
       />
       <div className="absolute inset-y-0 right-0 flex w-full justify-end pl-4 sm:pl-8">
         <section
+          ref={onPortalContainerChange}
           role="dialog"
           aria-modal="true"
           aria-labelledby="upstream-account-detail-title"
@@ -248,7 +330,14 @@ function AccountDetailDrawer({
                   {title}
                 </h2>
               </div>
-              <Button ref={closeButtonRef} type="button" variant="ghost" size="icon" onClick={onClose}>
+              <Button
+                ref={closeButtonRef}
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={onClose}
+                disabled={closeDisabled}
+              >
                 <AppIcon name="close" className="h-5 w-5" aria-hidden />
                 <span className="sr-only">{closeLabel}</span>
               </Button>
@@ -393,10 +482,12 @@ export default function UpstreamAccountsPage() {
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [pageActionError, setPageActionError] = useState<string | null>(null)
+  const [detailActionError, setDetailActionError] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
@@ -411,6 +502,10 @@ export default function UpstreamAccountsPage() {
   })
   const [groupNoteBusy, setGroupNoteBusy] = useState(false)
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
+  const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
+  const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] = useState<HTMLElement | null>(null)
+  const skipNextDeleteConfirmResetRef = useRef(false)
+  const deleteConfirmTitleId = useId()
 
   const draftUpstreamBaseUrlError = useMemo(() => {
     const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl)
@@ -434,12 +529,22 @@ export default function UpstreamAccountsPage() {
   }, [detail, selectedSummary])
 
   useEffect(() => {
+    setDetailActionError(null)
+    if (skipNextDeleteConfirmResetRef.current) {
+      skipNextDeleteConfirmResetRef.current = false
+      return
+    }
+    setIsDeleteConfirmOpen(false)
+  }, [selectedId, isDetailDrawerOpen])
+
+  useEffect(() => {
     setRoutingDraft(buildRoutingDraft(routing?.maskedApiKey))
   }, [routing?.maskedApiKey])
 
   useEffect(() => {
     if (!writesEnabled) {
       setIsRoutingDialogOpen(false)
+      setIsDeleteConfirmOpen(false)
     }
   }, [writesEnabled])
 
@@ -457,8 +562,10 @@ export default function UpstreamAccountsPage() {
     const state = location.state as UpstreamAccountsLocationState | null
     if (!state?.selectedAccountId) return
 
+    skipNextDeleteConfirmResetRef.current = Boolean(state.openDeleteConfirm)
     selectAccount(state.selectedAccountId)
     setIsDetailDrawerOpen(Boolean(state.openDetail))
+    setIsDeleteConfirmOpen(Boolean(state.openDeleteConfirm))
     setDuplicateWarning(state.duplicateWarning ?? null)
     navigate(location.pathname, { replace: true, state: null })
   }, [location.pathname, location.state, navigate, selectAccount])
@@ -482,10 +589,11 @@ export default function UpstreamAccountsPage() {
   }
 
   const metrics = useMemo(() => {
+    const displayedStatuses = items.map((item) => resolveDisplayedStatus(item.status, item.lastError))
     const oauthCount = items.filter((item) => item.kind === 'oauth_codex').length
     const apiKeyCount = items.filter((item) => item.kind === 'api_key_codex').length
-    const needsReauthCount = items.filter((item) => item.status === 'needs_reauth').length
-    const syncingCount = items.filter((item) => item.status === 'syncing').length
+    const needsReauthCount = displayedStatuses.filter((status) => status === 'needs_reauth').length
+    const syncingCount = displayedStatuses.filter((status) => status === 'syncing').length
     return [
       poolCardMetric(items.length, t('accountPool.upstreamAccounts.metrics.total'), 'database-outline', 'text-primary'),
       poolCardMetric(oauthCount, t('accountPool.upstreamAccounts.metrics.oauth'), 'badge-account-horizontal-outline', 'text-success'),
@@ -613,6 +721,11 @@ export default function UpstreamAccountsPage() {
   } = useUpstreamStickyConversations(selectedId, stickyConversationLimit, Boolean(selectedId && isDetailDrawerOpen))
 
   const selected = detail ?? selectedSummary
+  const selectedRecoveryHint = resolveOauthRecoveryHint(
+    detail?.kind ?? selected?.kind ?? '',
+    detail?.status ?? selected?.status ?? '',
+    detail?.lastError ?? selected?.lastError,
+  )
   const selectedVisible = filteredItems.some((item) => item.id === selectedId)
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
@@ -635,6 +748,8 @@ export default function UpstreamAccountsPage() {
       .join(' / ')
   }
   const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
+  const accountSummaryStatusLabel = (item: UpstreamAccountSummary) =>
+    accountStatusLabel(resolveDisplayedStatus(item.status, item.lastError))
   const accountKindLabel = (kind: string) =>
     kind === 'oauth_codex'
       ? t('accountPool.upstreamAccounts.kind.oauth')
@@ -687,7 +802,7 @@ export default function UpstreamAccountsPage() {
 
   const handleSave = async (source: UpstreamAccountDetail) => {
     if (source.kind === 'api_key_codex' && draftUpstreamBaseUrlError) return
-    setActionError(null)
+    setDetailActionError(null)
     setBusyAction('save')
     try {
       const response = await saveAccount(source.id, {
@@ -707,31 +822,31 @@ export default function UpstreamAccountsPage() {
       notifyMotherChange(response)
       setDraft((current) => ({ ...current, apiKey: '' }))
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
   }
 
   const handleSync = async (source: UpstreamAccountSummary) => {
-    setActionError(null)
+    setDetailActionError(null)
     setBusyAction('sync')
     try {
       await runSync(source.id)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
   }
 
   const handleToggleEnabled = async (source: UpstreamAccountSummary, enabled: boolean) => {
-    setActionError(null)
+    setDetailActionError(null)
     setBusyAction('toggle')
     try {
       await saveAccount(source.id, { enabled })
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
@@ -739,29 +854,28 @@ export default function UpstreamAccountsPage() {
 
 
   const handleSaveRouting = async () => {
-    setActionError(null)
+    setPageActionError(null)
     setBusyAction('routing')
     try {
       await saveRouting({ apiKey: routingDraft.apiKey.trim() })
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
       setIsRoutingDialogOpen(false)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setPageActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
   }
 
   const handleDelete = async (source: UpstreamAccountSummary) => {
-    if (!window.confirm(t('accountPool.upstreamAccounts.deleteConfirm', { name: source.displayName }))) {
-      return
-    }
-    setActionError(null)
+    setDetailActionError(null)
+    setIsDeleteConfirmOpen(false)
     setBusyAction('delete')
     try {
       await removeAccount(source.id)
+      setIsDetailDrawerOpen(false)
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err))
+      setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusyAction(null)
     }
@@ -808,10 +922,10 @@ export default function UpstreamAccountsPage() {
               </Alert>
             ) : null}
 
-            {actionError ? (
+            {pageActionError ? (
               <Alert variant="error">
                 <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <div>{actionError}</div>
+                <div>{pageActionError}</div>
               </Alert>
             ) : null}
 
@@ -942,7 +1056,8 @@ export default function UpstreamAccountsPage() {
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 mother: t('accountPool.upstreamAccounts.mother.badge'),
                 duplicate: t('accountPool.upstreamAccounts.duplicate.badge'),
-                status: accountStatusLabel,
+                status: accountSummaryStatusLabel,
+                statusValue: (item) => resolveDisplayedStatus(item.status, item.lastError),
               }}
             />
           </div>
@@ -976,6 +1091,9 @@ export default function UpstreamAccountsPage() {
         title={selected?.displayName ?? t('accountPool.upstreamAccounts.detailTitle')}
         subtitle={t('accountPool.upstreamAccounts.detailTitle')}
         closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
+        closeDisabled={busyAction != null}
+        autoFocusCloseButton={!isDeleteConfirmOpen}
+        onPortalContainerChange={setDetailDrawerPortalContainer}
         onClose={handleCloseDetailDrawer}
       >
         {!selected ? (
@@ -995,7 +1113,15 @@ export default function UpstreamAccountsPage() {
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant={statusVariant(selected.status)}>{accountStatusLabel(selected.status)}</Badge>
+                  <Badge
+                    variant={statusVariant(
+                      resolveDisplayedStatus(selected.status, detail?.lastError ?? selected.lastError),
+                    )}
+                  >
+                    {accountStatusLabel(
+                      resolveDisplayedStatus(selected.status, detail?.lastError ?? selected.lastError),
+                    )}
+                  </Badge>
                   <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
                   {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}
                   {selected.duplicateInfo ? (
@@ -1037,15 +1163,95 @@ export default function UpstreamAccountsPage() {
                     {t('accountPool.upstreamAccounts.actions.relogin')}
                   </Button>
                 ) : null}
-                <Button type="button" variant="destructive" onClick={() => void handleDelete(selected)} disabled={busyAction === 'delete' || !writesEnabled}>
-                  {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
-                  {t('accountPool.upstreamAccounts.actions.delete')}
-                </Button>
+                <Popover
+                  open={isDeleteConfirmOpen}
+                  onOpenChange={(nextOpen) => {
+                    if (busyAction === 'delete' && !nextOpen) return
+                    if (nextOpen) {
+                      setDetailActionError(null)
+                    }
+                    setIsDeleteConfirmOpen(nextOpen)
+                  }}
+                >
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      disabled={busyAction === 'delete' || !writesEnabled}
+                      aria-haspopup="dialog"
+                      aria-expanded={isDeleteConfirmOpen}
+                      aria-controls={isDeleteConfirmOpen ? deleteConfirmTitleId : undefined}
+                    >
+                      {busyAction === 'delete' ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                      {t('accountPool.upstreamAccounts.actions.delete')}
+                    </Button>
+                  </PopoverTrigger>
+                  {detailDrawerPortalContainer ? (
+                    <PopoverContent
+                      container={detailDrawerPortalContainer}
+                      role="alertdialog"
+                      aria-modal="false"
+                      aria-labelledby={deleteConfirmTitleId}
+                      align="end"
+                      side="top"
+                      sideOffset={12}
+                      className="z-[80] w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl border border-base-300 bg-base-100 p-4 shadow-[0_20px_48px_rgba(15,23,42,0.24)] ring-1 ring-base-100/90"
+                      onOpenAutoFocus={(event) => {
+                        event.preventDefault()
+                        deleteConfirmCancelRef.current?.focus()
+                      }}
+                      onEscapeKeyDown={(event) => {
+                        event.stopPropagation()
+                      }}
+                    >
+                      <div className="space-y-3">
+                        <div className="flex items-start gap-2.5">
+                          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-error text-error-content shadow-sm">
+                            <AppIcon name="trash-can-outline" className="h-3.5 w-3.5" aria-hidden />
+                          </div>
+                          <p id={deleteConfirmTitleId} className="min-w-0 break-words pr-2 text-[15px] font-semibold leading-6 text-base-content">
+                            {t('accountPool.upstreamAccounts.deleteConfirmTitle', { name: selected.displayName })}
+                          </p>
+                        </div>
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            ref={deleteConfirmCancelRef}
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            className="rounded-full px-3.5 font-semibold"
+                            onClick={() => setIsDeleteConfirmOpen(false)}
+                          >
+                            {t('accountPool.upstreamAccounts.actions.cancel')}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            className="rounded-full px-3.5 font-semibold shadow-sm"
+                            disabled={busyAction === 'delete' || !writesEnabled}
+                            onClick={() => void handleDelete(selected)}
+                          >
+                            {t('accountPool.upstreamAccounts.actions.confirmDelete')}
+                          </Button>
+                        </div>
+                      </div>
+                      <PopoverArrow className="fill-base-100 stroke-base-300 stroke-[1px]" width={18} height={10} />
+                    </PopoverContent>
+                  ) : null}
+                </Popover>
               </div>
             </div>
 
-            {detail ? (
-              <div className="grid gap-5">
+            <div className="grid gap-5">
+              {detailActionError ? (
+                <Alert variant="error">
+                  <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <div>{detailActionError}</div>
+                </Alert>
+              ) : null}
+              {detail ? (
+                <>
                 {detail.duplicateInfo ? (
                   <Alert variant="warning">
                     <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
@@ -1319,14 +1525,28 @@ export default function UpstreamAccountsPage() {
                       value={detail.credits?.balance ? `${detail.credits.balance}` : detail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
                     />
                     <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
+                      {selectedRecoveryHint ? (
+                        <Alert variant="warning" className="mb-4">
+                          <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                          <div>
+                            <p className="font-semibold text-warning">
+                              {t(selectedRecoveryHint.titleKey)}
+                            </p>
+                            <p className="mt-1 text-sm text-warning/90">
+                              {t(selectedRecoveryHint.bodyKey)}
+                            </p>
+                          </div>
+                        </Alert>
+                      ) : null}
                       <p className="metric-label">{t('accountPool.upstreamAccounts.fields.lastError')}</p>
                       <p className="mt-2 text-sm leading-6 text-base-content/75">{detail.lastError ?? t('accountPool.upstreamAccounts.noError')}</p>
                       <p className="mt-2 text-xs text-base-content/55">{formatDateTime(detail.lastErrorAt)}</p>
                     </div>
                   </CardContent>
                 </Card>
-              </div>
-            ) : null}
+                </>
+              ) : null}
+            </div>
           </>
         )}
       </AccountDetailDrawer>

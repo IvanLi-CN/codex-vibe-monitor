@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-11
-- Last: 2026-03-14
+- Last: 2026-03-16
 
 ## 背景 / 问题陈述
 
@@ -55,10 +55,19 @@
 - OAuth token 与 API key 必须以服务端加密密文落库；若未配置加密密钥，所有账号管理写接口必须拒绝请求并返回明确错误。
 - OAuth 账号持久化后必须保存 `access_token`、`refresh_token`、`id_token`、`token_expires_at`、`chatgpt_account_id`、`chatgpt_user_id`、`email`、`plan_type` 等最小恢复信息；应用重启后必须可以继续刷新与同步。
 - 上游账号身份重复（共享 `chatgpt_account_id` 或 `chatgpt_user_id`）只能告警、不得阻止保存；列表与详情必须持续显示重复标记，且 OAuth 新建完成后要给出一次性 warning。
+- 当同一 `chatgpt_account_id` 的账号簇全部满足 `plan_type=team` 时，共享 account id 视为 Team 合法共享，不得单独标记为重复；若共享 `chatgpt_user_id`，仍必须继续标记为重复身份。
+- Team 共享 account id 的判定必须优先使用账号最新 usage sample 中的 `plan_type`，仅在最新 sample 不可用时才回退到账户表字段，避免 legacy / stale `plan_type` 把整簇 Team 账号误判或漏判。
+- usage sample 持久化在上游未返回 `plan_type` 时不得把账户表旧值回填进最新 sample；列表、详情与重复判定读取到的 `planType` 必须共享同一份“最新非空 sample 优先、账户表兜底”的解析口径。
+- 当 OAuth 刷新拿到更新后的 `id_token plan_type` 而 usage 响应省略 `plan_type` 时，同步流程必须把该次刷新确认过的有效 plan type 一并写入最新 sample；若账户 claims 的观测时间晚于最近一个非空 sample，列表、详情与重复判定必须以更新后的账户 claims 为准。
+- 上述 freshness 比较只允许使用认证身份实际更新产生的时间戳（如 `lastRefreshedAt` / 新 OAuth 落库时刻）；普通状态写入、备注编辑或同步成功导致的通用 `updatedAt` 变化不得改变 `planType` 的优先级。若本次 usage 省略 `plan_type` 且账户 claims 也不比历史 sample 更新，则必须沿用现有有效 sample 值，而不是回退到更旧的账户 claims。
+- freshness 判定所比较的 sample 基线必须是“最近一个非空 `plan_type` sample”，而不是“最新一行 sample”；否则在最新采样缺失 `plan_type` 时，会把更晚刷新得到的 claims 或更晚确认过的有效 sample 错误地压回旧值。
+- 服务端必须为 OAuth 账户单独维护“`plan_type` 实际观测时间”元数据；只有在 JWT claims 中拿到非空 `plan_type` 时才允许推进该时间。Team 判重与列表/详情 `planType` 的 freshness 一律基于该观测时间和“最近一个非空 sample”的时间比较，不能直接复用泛化的 token refresh 时间。若两者落在同一秒，默认以账户 claims 为 tie-break winner。
 - `displayName` 必须全局唯一，按“忽略大小写 + 去首尾空格”判重；单 OAuth、批量 OAuth、API Key 创建与详情编辑命中重复时必须拒绝提交。
 - 服务端必须定期刷新即将过期的 OAuth token，并定期从 Codex / ChatGPT usage 接口采集 `5 小时(primary)` 与 `7 天(secondary)` 窗口，落库为最新快照与历史样本。
 - `5 小时` 与 `7 天` 必须在列表和详情中同时以图形化 + 文字展示：列表展示最新进度，详情展示进度条/图 + 趋势图 + 重置时间 + 状态说明。
 - API Key 账号必须支持新增、编辑、启停、删除；其 `5 小时` 与 `7 天` 限额来自本地配置，默认 `used=0`，并在 UI 中显式标注“本地占位统计”。
+- 账号详情里的删除操作必须使用应用内锚定按钮的气泡式二次确认，禁止依赖浏览器原生确认对话框。
+- 从账号详情触发的删除失败必须留在详情抽屉内展示，不得泄漏到号池主页公共错误区域。
 - 号池路由密钥弹窗必须提供“生成密钥”次级动作：前端本地生成 `cvm-` 前缀的高熵 key 并填入输入框，只有用户点击保存后才真正替换当前生效 key。
 - 批量 OAuth 模式必须以表格呈现，允许“一个逻辑账号占两行视觉布局”，但每个字段控件都必须保持单行输入，不得在单元格内自动换行；每行 OAuth 生成/完成状态独立，失败不得阻塞其他行。
 - 批量 OAuth 行操作区必须在“完成 OAuth 登录”与状态 badge 之间提供母号皇冠按钮，使用 Iconify `mdi:crown` / `mdi:crown-outline`。
@@ -83,11 +92,13 @@
 - 服务启动时会扫描所有启用中的 OAuth 账号：对即将过期的账号先 refresh，对到达同步周期的账号拉取 usage 快照并写入样本。
 - 用户点击 `重新登录` 会创建绑定到现有账号的登录会话；callback 成功后覆盖旧 token，但账号主键、历史样本和本地备注保持不变。
 - 用户点击 `立即同步` 时，OAuth 账号执行 refresh + usage 拉取；API Key 账号仅刷新本地展示状态。
+- 用户在账号详情里点击 `删除` 时，前端只打开锚定删除按钮的确认气泡；只有在气泡中二次确认后才真正发送删除请求。
 
 ### Edge cases / errors
 
 - 登录会话 TTL 默认 10 分钟；过期后轮询接口返回 `expired`，callback 页面也必须提示会话已过期。
 - 若 callback 的 `state` 不匹配、会话已消费、code exchange 失败或 token 缺失 `refresh_token`，则会话进入 `failed`，前端展示错误并允许重新发起登录。
+- 若账号详情里的删除请求失败，错误必须保留在详情抽屉内部，不能显示到号池主页公共错误区域。
 - 若 refresh 返回 `400/401` 或明确 `invalid_grant`，账号转 `needs_reauth`；若只是网络超时或 5xx，账号转 `error`，下个周期继续重试。
 - 若 usage 接口返回 401，服务端应先尝试一次 refresh，再重试 usage；仍失败时按授权失效处理。
 
@@ -109,12 +120,18 @@
 - Given 用户位于 `dashboard / live / settings` 任意页面，When 点击导航中的 `号池`，Then 页面进入 `号池 -> 上游账号` 且不影响现有四个模块。
 - Given 前端创建 OAuth 登录会话，When 打开 `authUrl` 并完成授权，Then callback 会把账号落库，轮询接口变为 `completed`，列表中出现该账号。
 - Given 用户进入 `Batch OAuth` 模式，When 在多行里分别生成授权链接、粘贴 callback 并完成其中一行，Then 该行显示 `completed` 且页面保持在批量表格，其他行仍可继续生成或完成。
-- Given 两个 OAuth 账号共享相同的 `chatgpt_account_id` 或 `chatgpt_user_id`，When 第二个账号完成入池，Then 系统保留两条账号记录，并在列表/详情中标记为重复身份。
+- Given 两个非 Team OAuth 账号，或同一 `chatgpt_account_id` 簇中混入非 Team 账号，When 它们共享相同的 `chatgpt_account_id`，Then 系统保留多条账号记录，并在列表/详情中标记为重复身份。
+- Given 多个 `plan_type=team` 的 OAuth 账号共享相同的 `chatgpt_account_id` 且 `chatgpt_user_id` 各不相同，When 最后一个账号完成入池，Then 列表与详情不得仅因共享 account id 标记其为重复身份。
+- Given 任意 OAuth 账号共享相同的 `chatgpt_user_id`，When 后一个账号完成入池，Then 系统仍必须在列表/详情中标记为重复身份。
 - Given 用户在任一创建/编辑入口提交重复的 `displayName`，When 后端接收请求，Then 请求返回 `409`，前端展示 inline error，并禁止继续提交。
 - Given 同组已有母号，When 用户把另一账号设为母号，Then 系统自动切换母号归属、弹出系统级通知，并在通知中提供撤销按钮恢复到切换前状态。
 - Given OAuth 登录会话过期、state 错误或重复消费，When callback 被访问，Then 会话标记为 `failed/expired` 且不会创建或覆盖账号。
 - Given 已持久化 OAuth 账号且 access token 到期，When 后台维护任务或手动同步运行，Then 系统会自动 refresh 并继续同步 usage，无需用户重新登录。
 - Given refresh token 已失效，When 后台维护任务运行，Then 账号进入 `needs_reauth`，但账号记录、历史样本和最后成功同步时间仍然保留。
+- Given 用户在账号详情里点击 `删除`，When 首次点击危险按钮，Then 页面只展开应用内确认气泡，不会触发浏览器原生确认框，也不会立即发起删除请求。
+- Given 删除确认气泡由详情抽屉内按钮触发，When 详情区本身可滚动或处于窄屏布局，Then 确认层仍必须完整可见，且保持在详情抽屉 dialog 子树内，不得被滚动容器裁切或跑到抽屉外层。
+- Given 删除确认气泡已打开，When 用户按下 `Escape`，Then 只关闭确认气泡并把焦点还给详情抽屉里的 `删除` 按钮，不关闭整个详情抽屉。
+- Given 用户在账号详情气泡里确认删除但后端返回错误，When 请求失败，Then 错误仅显示在详情抽屉内部，不显示在号池主页公共错误位。
 - Given API Key 账号录入了本地 `5 小时 / 7 天` 限额，When 打开列表或详情，Then 两个窗口都能显示本地限额与 `0` 使用量，并明确标记为占位统计。
 - Given OAuth 账号已有 usage 样本，When 打开详情页，Then `5 小时` 与 `7 天` 卡片都能展示最新百分比、重置时间和最近 7 天趋势线。
 - Given 用户打开号池路由密钥弹窗，When 点击“生成密钥”后关闭且未保存，Then 新生成的 key 只停留在当前草稿中，再次打开弹窗时输入框恢复为已保存状态。
@@ -147,7 +164,7 @@
 - [x] M2: OAuth login session / callback / token refresh / usage sync 落地。
 - [x] M3: `号池 -> 上游账号` 前端页面、列表、详情、图表与交互完成。
 - [x] M4: Rust + Web 自动化验证补齐，并完成本地浏览器 smoke。
-- [ ] M5: spec sync、PR、checks、review-loop 收敛。
+- [x] M5: spec sync、PR、checks、review-loop 收敛。
 
 ## Visual Evidence (PR)
 
@@ -263,3 +280,11 @@
 - 2026-03-13: 扩展上游账号创建页为单账号 OAuth / 批量 OAuth / API Key 同页模式，并将批量 OAuth 表格纳入现有手动 OAuth 流程。
 - 2026-03-13: 刷新 Storybook 视觉证据，补充路由设置弹窗、Sticky Key 对话与记录页上游筛选展示。
 - 2026-03-14: 调整 OAuth 新建语义为“重复身份仅告警不合并”，并补充 `displayName` 全局唯一约束与 UI warning/inline error 验收口径。
+- 2026-03-16: 收紧重复身份口径：纯 `plan_type=team` 账号簇共享 `chatgpt_account_id` 不再判重，但共享 `chatgpt_user_id` 与 mixed-plan 簇仍继续告警。
+- 2026-03-16: 明确 Team 判重必须优先使用最新 usage sample 的 `plan_type`，账户表字段只做兜底，避免旧数据让 101 上的 legacy Team 账号继续误报。
+- 2026-03-16: 补充 latest-sample 读写一致性约束：空 `plan_type` sample 不得回填旧账户值，列表/详情展示的 `planType` 也必须与 Team 判重使用同一解析结果。
+- 2026-03-16: 进一步收紧 freshness 语义：同步时若 usage 未返回 `plan_type`，必须落库存活跃账户当前确认过的有效值；若账户 claims 比最近非空 sample 更新，则读取路径必须让更新后的 claims 覆盖旧 sample。
+- 2026-03-16: 明确 freshness 只认认证身份更新时间，不认通用 `updatedAt`；并补充“usage 省略 `plan_type` 时沿用当前有效值”的同步兜底，避免旧 claims 在下一次采样里反向覆盖更新 sample。
+- 2026-03-16: 补充“最近一个非空 sample”基线约束，避免用最新空 sample 参与 freshness 比较，导致刷新后的 claims 或现有有效 sample 被错误回退。
+- 2026-03-16: 引入 `plan_type` 专属观测时间语义：只有拿到非空 claims 才推进 freshness，不能复用通用 refresh 时间；同秒冲突默认让账户 claims 胜出，避免秒级时间戳把最新 Team 口径吞掉。
+- 2026-03-16: 删除确认气泡改为挂载到详情抽屉 dialog 子树内的 portal popover，避免被抽屉滚动容器裁切，并补充焦点回落与 `Escape` 只关闭确认层的回归约束。

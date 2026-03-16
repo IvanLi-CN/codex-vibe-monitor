@@ -493,6 +493,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
       const parsedUrl = new URL(inputUrl, window.location.origin)
       const path = parsedUrl.pathname
+      const storyId = currentStoryId()
       const store = storeRef.current
 
       if (path === '/api/pool/upstream-accounts' && method === 'GET') {
@@ -746,6 +747,14 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
 
       if (detailMatch && method === 'DELETE') {
         const accountId = Number(detailMatch[1])
+        if (storyId === 'account-pool-pages-upstream-accounts--delete-failure') {
+          return Promise.resolve(
+            new Response('error returned from database: (code: 5) database is locked', {
+              status: 500,
+              headers: { 'Content-Type': 'text/plain' },
+            }),
+          )
+        }
         delete store.details[accountId]
         store.accounts = store.accounts.filter((item) => item.id !== accountId)
         return noContent()

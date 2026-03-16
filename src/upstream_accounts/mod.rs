@@ -1,4 +1,8 @@
 use super::*;
+use crate::oauth_bridge::{
+    OauthBridgeRegisterResult, fixed_oauth_bridge_openai_base_url,
+    register_oauth_bridge_access_token,
+};
 use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, KeyInit},
@@ -54,8 +58,9 @@ const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
 const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
 const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
 const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
-const DEFAULT_OAUTH_SCOPE: &str =
-    "openid profile email offline_access api.connectors.read api.connectors.invoke";
+const DEFAULT_OAUTH_SCOPE: &str = "openid profile email offline_access";
+const DEFAULT_OAUTH_AUDIENCE: &str = "https://api.openai.com/v1";
+const DEFAULT_OAUTH_PROMPT: &str = "login";
 const OAUTH_ORIGINATOR: &str = "Codex Desktop";
 const DEFAULT_USAGE_LIMIT_ID: &str = "codex";
 const DEFAULT_API_KEY_LIMIT_UNIT: &str = "requests";
@@ -68,6 +73,14 @@ const USAGE_PATH_STYLE_CODEX_API: &str = "/api/codex/usage";
 pub(crate) struct UpstreamAccountsRuntime {
     pub(crate) crypto_key: Option<[u8; 32]>,
     sync_lock: Arc<Mutex<()>>,
+    oauth_bridge_tokens: Arc<Mutex<HashMap<i64, CachedOauthBridgeToken>>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedOauthBridgeToken {
+    token_key: String,
+    expire_at: Option<DateTime<Utc>>,
+    access_token_fingerprint: String,
 }
 
 impl UpstreamAccountsRuntime {
@@ -92,6 +105,7 @@ impl UpstreamAccountsRuntime {
         Ok(Self {
             crypto_key,
             sync_lock: Arc::new(Mutex::new(())),
+            oauth_bridge_tokens: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -116,6 +130,7 @@ impl UpstreamAccountsRuntime {
         Self {
             crypto_key: Some(derive_secret_key("test-upstream-account-secret")),
             sync_lock: Arc::new(Mutex::new(())),
+            oauth_bridge_tokens: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -624,6 +639,7 @@ struct UpstreamAccountRow {
     chatgpt_account_id: Option<String>,
     chatgpt_user_id: Option<String>,
     plan_type: Option<String>,
+    plan_type_observed_at: Option<String>,
     masked_api_key: Option<String>,
     encrypted_credentials: Option<String>,
     token_expires_at: Option<String>,
@@ -826,6 +842,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             chatgpt_account_id TEXT,
             chatgpt_user_id TEXT,
             plan_type TEXT,
+            plan_type_observed_at TEXT,
             masked_api_key TEXT,
             encrypted_credentials TEXT,
             token_expires_at TEXT,
@@ -869,6 +886,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "upstream_base_url")
         .await
         .context("failed to ensure pool_upstream_accounts.upstream_base_url")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "plan_type_observed_at")
+        .await
+        .context("failed to ensure pool_upstream_accounts.plan_type_observed_at")?;
 
     if let Err(err) = sqlx::query(
         r#"
@@ -1877,12 +1897,12 @@ pub(crate) async fn create_api_key_account(
         r#"
         INSERT INTO pool_upstream_accounts (
             kind, provider, display_name, group_name, is_mother, note, status, enabled, email, chatgpt_account_id,
-            chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
+            chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key, encrypted_credentials, token_expires_at,
             last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
             local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url, created_at, updated_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, NULL, NULL,
-            NULL, NULL, ?8, ?9, NULL,
+            NULL, NULL, NULL, ?8, ?9, NULL,
             NULL, NULL, NULL, NULL, NULL,
             ?10, ?11, ?12, ?13, ?14, ?14
         ) RETURNING id
@@ -2097,11 +2117,16 @@ pub(crate) async fn delete_upstream_account(
         ));
     }
     state.upstream_accounts.require_crypto_key()?;
-    let group_name = load_upstream_account_row(&state.pool, id)
+    let _guard = state.upstream_accounts.sync_lock.lock().await;
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    let group_name = load_upstream_account_row_conn(tx.as_mut(), id)
         .await
         .map_err(internal_error_tuple)?
         .map(|row| row.group_name);
-    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_upstream_account_limit_samples WHERE account_id = ?1")
         .bind(id)
         .execute(tx.as_mut())
@@ -2109,7 +2134,7 @@ pub(crate) async fn delete_upstream_account(
         .map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_upstream_account_tags WHERE account_id = ?1")
         .bind(id)
-        .execute(&state.pool)
+        .execute(tx.as_mut())
         .await
         .map_err(internal_error_tuple)?;
     sqlx::query("DELETE FROM pool_oauth_login_sessions WHERE account_id = ?1")
@@ -2667,7 +2692,7 @@ async fn sync_oauth_account(state: &AppState, row: &UpstreamAccountRow) -> Resul
         }
     }
 
-    let latest_row = load_upstream_account_row(&state.pool, row.id)
+    let mut latest_row = load_upstream_account_row(&state.pool, row.id)
         .await?
         .ok_or_else(|| anyhow!("account disappeared during sync"))?;
     let decrypted = decrypt_credentials(
@@ -2720,6 +2745,9 @@ async fn sync_oauth_account(state: &AppState, row: &UpstreamAccountRow) -> Resul
                         &token_expires_at,
                     )
                     .await?;
+                    latest_row = load_upstream_account_row(&state.pool, row.id)
+                        .await?
+                        .ok_or_else(|| anyhow!("account disappeared during retry refresh"))?;
                     fetch_usage_snapshot(
                         &state.http_clients.shared,
                         &state.config,
@@ -2762,9 +2790,12 @@ async fn sync_oauth_account(state: &AppState, row: &UpstreamAccountRow) -> Resul
         }
     };
 
+    let effective_snapshot_plan_type =
+        resolve_snapshot_plan_type(&state.pool, &latest_row, &snapshot).await?;
     persist_usage_snapshot(
         &state.pool,
-        &latest_row,
+        latest_row.id,
+        effective_snapshot_plan_type.as_deref(),
         &snapshot,
         state.config.upstream_accounts_history_retention_days,
     )
@@ -2794,6 +2825,10 @@ async fn persist_oauth_credentials(
             chatgpt_account_id = COALESCE(?6, chatgpt_account_id),
             chatgpt_user_id = COALESCE(?7, chatgpt_user_id),
             plan_type = COALESCE(?8, plan_type),
+            plan_type_observed_at = CASE
+                WHEN NULLIF(TRIM(?8), '') IS NOT NULL THEN ?4
+                ELSE plan_type_observed_at
+            END,
             updated_at = ?4
         WHERE id = ?1
         "#,
@@ -2813,7 +2848,8 @@ async fn persist_oauth_credentials(
 
 async fn persist_usage_snapshot(
     pool: &Pool<Sqlite>,
-    row: &UpstreamAccountRow,
+    account_id: i64,
+    effective_plan_type: Option<&str>,
     snapshot: &NormalizedUsageSnapshot,
     retention_days: u64,
 ) -> Result<()> {
@@ -2828,11 +2864,16 @@ async fn persist_usage_snapshot(
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
         "#,
     )
-    .bind(row.id)
+    .bind(account_id)
     .bind(&now_iso)
     .bind(&snapshot.limit_id)
     .bind(&snapshot.limit_name)
-    .bind(snapshot.plan_type.clone().or_else(|| row.plan_type.clone()))
+    .bind(
+        snapshot
+            .plan_type
+            .clone()
+            .or_else(|| effective_plan_type.map(str::to_string)),
+    )
     .bind(snapshot.primary.as_ref().map(|value| value.used_percent))
     .bind(
         snapshot
@@ -2887,7 +2928,7 @@ async fn persist_usage_snapshot(
         WHERE account_id = ?1 AND captured_at < ?2
         "#,
     )
-    .bind(row.id)
+    .bind(account_id)
     .bind(retention_cutoff)
     .execute(pool)
     .await?;
@@ -2990,6 +3031,10 @@ async fn upsert_oauth_account(
                 chatgpt_account_id = ?10,
                 chatgpt_user_id = ?11,
                 plan_type = ?12,
+                plan_type_observed_at = CASE
+                    WHEN NULLIF(TRIM(?12), '') IS NOT NULL THEN ?15
+                    ELSE plan_type_observed_at
+                END,
                 encrypted_credentials = ?13,
                 token_expires_at = ?14,
                 last_refreshed_at = ?15,
@@ -3035,18 +3080,18 @@ async fn upsert_oauth_account(
             r#"
             INSERT INTO pool_upstream_accounts (
                 kind, provider, display_name, group_name, is_mother, note, status, enabled,
-                email, chatgpt_account_id, chatgpt_user_id, plan_type,
+                email, chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at,
                 masked_api_key, encrypted_credentials, token_expires_at,
                 last_refreshed_at, last_synced_at, last_successful_sync_at,
                 last_error, last_error_at, local_primary_limit, local_secondary_limit,
                 local_limit_unit, created_at, updated_at
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1,
-                ?8, ?9, ?10, ?11,
-                NULL, ?12, ?13,
-                ?14, NULL, NULL,
+                ?8, ?9, ?10, ?11, ?12,
+                NULL, ?13, ?14,
+                ?15, NULL, NULL,
                 NULL, NULL, NULL, NULL,
-                NULL, ?14, ?14
+                NULL, ?15, ?15
             ) RETURNING id
             "#,
         )
@@ -3061,6 +3106,12 @@ async fn upsert_oauth_account(
         .bind(claims.chatgpt_account_id.clone())
         .bind(claims.chatgpt_user_id.clone())
         .bind(claims.chatgpt_plan_type.clone())
+        .bind(
+            claims
+                .chatgpt_plan_type
+                .as_deref()
+                .and_then(|value| (!value.trim().is_empty()).then_some(now_iso.clone())),
+        )
         .bind(encrypted_credentials)
         .bind(token_expires_at)
         .bind(&now_iso)
@@ -3085,6 +3136,48 @@ struct UpstreamAccountIdentityRow {
     id: i64,
     chatgpt_account_id: Option<String>,
     chatgpt_user_id: Option<String>,
+    plan_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct UpstreamAccountIdentityClusterMember {
+    id: i64,
+    plan_type: Option<String>,
+}
+
+fn is_team_plan_type(plan_type: Option<&str>) -> bool {
+    plan_type
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("team"))
+}
+
+fn normalize_plan_type(plan_type: Option<&str>) -> Option<String> {
+    plan_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn resolve_effective_plan_type(
+    account_plan_type: Option<&str>,
+    sample_plan_type: Option<&str>,
+) -> Option<String> {
+    normalize_plan_type(sample_plan_type).or_else(|| normalize_plan_type(account_plan_type))
+}
+
+async fn resolve_snapshot_plan_type(
+    pool: &Pool<Sqlite>,
+    row: &UpstreamAccountRow,
+    snapshot: &NormalizedUsageSnapshot,
+) -> Result<Option<String>> {
+    if let Some(plan_type) = normalize_plan_type(snapshot.plan_type.as_deref()) {
+        return Ok(Some(plan_type));
+    }
+
+    let latest_sample_plan_type = load_latest_usage_sample(pool, row.id)
+        .await?
+        .and_then(|sample| sample.plan_type);
+    Ok(latest_sample_plan_type.or_else(|| normalize_plan_type(row.plan_type.as_deref())))
 }
 
 async fn load_duplicate_info_map(
@@ -3092,9 +3185,38 @@ async fn load_duplicate_info_map(
 ) -> Result<std::collections::HashMap<i64, DuplicateInfo>> {
     let rows = sqlx::query_as::<_, UpstreamAccountIdentityRow>(
         r#"
-        SELECT id, chatgpt_account_id, chatgpt_user_id
-        FROM pool_upstream_accounts
-        WHERE kind = ?1
+        SELECT
+            account.id,
+            account.chatgpt_account_id,
+            account.chatgpt_user_id,
+            COALESCE(
+                CASE
+                    WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
+                         AND account.plan_type_observed_at IS NOT NULL
+                         AND julianday(account.plan_type_observed_at) >= julianday((
+                            SELECT previous_sample.captured_at
+                            FROM pool_upstream_account_limit_samples previous_sample
+                            WHERE previous_sample.account_id = account.id
+                              AND previous_sample.plan_type IS NOT NULL
+                              AND TRIM(previous_sample.plan_type) <> ''
+                            ORDER BY previous_sample.captured_at DESC
+                            LIMIT 1
+                         ))
+                        THEN NULLIF(TRIM(account.plan_type), '')
+                    ELSE (
+                        SELECT NULLIF(TRIM(previous_sample.plan_type), '')
+                        FROM pool_upstream_account_limit_samples previous_sample
+                        WHERE previous_sample.account_id = account.id
+                          AND previous_sample.plan_type IS NOT NULL
+                          AND TRIM(previous_sample.plan_type) <> ''
+                        ORDER BY previous_sample.captured_at DESC
+                        LIMIT 1
+                    )
+                END,
+                NULLIF(TRIM(account.plan_type), '')
+            ) AS plan_type
+        FROM pool_upstream_accounts account
+        WHERE account.kind = ?1
         ORDER BY id ASC
         "#,
     )
@@ -3102,14 +3224,17 @@ async fn load_duplicate_info_map(
     .fetch_all(pool)
     .await?;
 
-    let mut by_account_id = std::collections::HashMap::<String, Vec<i64>>::new();
+    let mut by_account_id =
+        std::collections::HashMap::<String, Vec<UpstreamAccountIdentityClusterMember>>::new();
     let mut by_user_id = std::collections::HashMap::<String, Vec<i64>>::new();
     for row in &rows {
         if let Some(chatgpt_account_id) = row.chatgpt_account_id.as_ref().cloned() {
-            by_account_id
-                .entry(chatgpt_account_id)
-                .or_default()
-                .push(row.id);
+            by_account_id.entry(chatgpt_account_id).or_default().push(
+                UpstreamAccountIdentityClusterMember {
+                    id: row.id,
+                    plan_type: row.plan_type.clone(),
+                },
+            );
         }
         if let Some(chatgpt_user_id) = row.chatgpt_user_id.as_ref().cloned() {
             by_user_id.entry(chatgpt_user_id).or_default().push(row.id);
@@ -3122,17 +3247,22 @@ async fn load_duplicate_info_map(
         let mut reasons = Vec::new();
 
         if let Some(chatgpt_account_id) = row.chatgpt_account_id.as_ref()
-            && let Some(ids) = by_account_id
+            && let Some(cluster) = by_account_id
                 .get(chatgpt_account_id)
-                .filter(|ids| ids.len() > 1)
+                .filter(|members| members.len() > 1)
         {
-            for peer_id in ids {
-                if *peer_id != row.id {
-                    peer_ids.insert(*peer_id);
+            let is_all_team_cluster = cluster
+                .iter()
+                .all(|member| is_team_plan_type(member.plan_type.as_deref()));
+            if !is_all_team_cluster {
+                for member in cluster {
+                    if member.id != row.id {
+                        peer_ids.insert(member.id);
+                    }
                 }
-            }
-            if !peer_ids.is_empty() {
-                reasons.push(DuplicateReason::SharedChatgptAccountId);
+                if !peer_ids.is_empty() {
+                    reasons.push(DuplicateReason::SharedChatgptAccountId);
+                }
             }
         }
 
@@ -3572,7 +3702,7 @@ async fn load_upstream_account_summaries(
         r#"
         SELECT
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key,
+            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
@@ -3672,7 +3802,7 @@ async fn load_upstream_account_row_conn(
         r#"
         SELECT
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, masked_api_key,
+            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
@@ -3696,13 +3826,42 @@ async fn load_latest_usage_sample(
     sqlx::query_as::<_, UpstreamAccountSampleRow>(
         r#"
         SELECT
-            captured_at, limit_id, limit_name, plan_type,
+            sample.captured_at,
+            sample.limit_id,
+            sample.limit_name,
+            COALESCE(
+                CASE
+                    WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
+                         AND account.plan_type_observed_at IS NOT NULL
+                         AND julianday(account.plan_type_observed_at) >= julianday((
+                            SELECT previous_sample.captured_at
+                            FROM pool_upstream_account_limit_samples previous_sample
+                            WHERE previous_sample.account_id = sample.account_id
+                              AND previous_sample.plan_type IS NOT NULL
+                              AND TRIM(previous_sample.plan_type) <> ''
+                            ORDER BY previous_sample.captured_at DESC
+                            LIMIT 1
+                         ))
+                        THEN NULLIF(TRIM(account.plan_type), '')
+                    ELSE (
+                        SELECT NULLIF(TRIM(previous_sample.plan_type), '')
+                        FROM pool_upstream_account_limit_samples previous_sample
+                        WHERE previous_sample.account_id = sample.account_id
+                          AND previous_sample.plan_type IS NOT NULL
+                          AND TRIM(previous_sample.plan_type) <> ''
+                        ORDER BY previous_sample.captured_at DESC
+                        LIMIT 1
+                    )
+                END,
+                NULLIF(TRIM(account.plan_type), '')
+            ) AS plan_type,
             primary_used_percent, primary_window_minutes, primary_resets_at,
             secondary_used_percent, secondary_window_minutes, secondary_resets_at,
             credits_has_credits, credits_unlimited, credits_balance
-        FROM pool_upstream_account_limit_samples
-        WHERE account_id = ?1
-        ORDER BY captured_at DESC
+        FROM pool_upstream_account_limit_samples sample
+        INNER JOIN pool_upstream_accounts account ON account.id = sample.account_id
+        WHERE sample.account_id = ?1
+        ORDER BY sample.captured_at DESC
         LIMIT 1
         "#,
     )
@@ -3782,10 +3941,10 @@ fn build_summary_from_row(
         enabled: row.enabled != 0,
         email: row.email.clone(),
         chatgpt_account_id: row.chatgpt_account_id.clone(),
-        plan_type: row
-            .plan_type
-            .clone()
-            .or_else(|| sample.and_then(|value| value.plan_type.clone())),
+        plan_type: resolve_effective_plan_type(
+            row.plan_type.as_deref(),
+            sample.and_then(|value| value.plan_type.as_deref()),
+        ),
         masked_api_key: row.masked_api_key.clone(),
         last_synced_at: row.last_synced_at.clone(),
         last_successful_sync_at: row.last_successful_sync_at.clone(),
@@ -5102,7 +5261,9 @@ fn build_oauth_authorize_url(
         .append_pair("response_type", "code")
         .append_pair("client_id", client_id)
         .append_pair("redirect_uri", redirect_uri)
+        .append_pair("audience", DEFAULT_OAUTH_AUDIENCE)
         .append_pair("scope", DEFAULT_OAUTH_SCOPE)
+        .append_pair("prompt", DEFAULT_OAUTH_PROMPT)
         .append_pair("code_challenge", code_challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("id_token_add_organizations", "true")
@@ -5343,6 +5504,9 @@ fn resolve_pool_account_upstream_base_url(
     row: &UpstreamAccountRow,
     global_upstream_base_url: &Url,
 ) -> Result<Url> {
+    if row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
+        return fixed_oauth_bridge_openai_base_url();
+    }
     if row.kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
         return Ok(global_upstream_base_url.clone());
     }
@@ -5607,13 +5771,70 @@ fn extract_error_message(body: &str) -> String {
     body.trim().chars().take(240).collect()
 }
 
+fn is_scope_permission_error_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("missing scopes")
+        || msg.contains("insufficient permissions for this operation")
+        || msg.contains("api.responses.write")
+        || msg.contains("api.model.read")
+}
+
+fn is_bridge_error_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("oauth bridge")
+        || msg.contains("token exchange failed")
+        || msg.contains("bridge upstream")
+        || msg.contains("bridge token")
+}
+
+fn is_bridge_token_rejected_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("oauth bridge token is unknown or was not registered")
+        || msg.contains("oauth bridge token expired; register again")
+}
+
+pub(crate) fn should_retry_same_account_after_bridge_token_rejection(
+    account_kind: &str,
+    status: StatusCode,
+    upstream_error_code: Option<&str>,
+    upstream_error_message: Option<&str>,
+    summary_message: &str,
+) -> bool {
+    if account_kind != UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+        || !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+    {
+        return false;
+    }
+    let code = upstream_error_code
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if code == "invalid_api_key" || code == "token_expired" {
+        return true;
+    }
+    upstream_error_message
+        .map(is_bridge_token_rejected_message)
+        .unwrap_or(false)
+        || is_bridge_token_rejected_message(summary_message)
+}
+
+fn is_explicit_reauth_error_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("invalid_grant")
+        || msg.contains("token has been invalidated")
+        || msg.contains("token was invalidated")
+        || msg.contains("invalidated oauth token")
+        || msg.contains("refresh token expired")
+        || msg.contains("refresh token revoked")
+        || msg.contains("refresh token is invalid")
+        || msg.contains("session expired")
+        || msg.contains("please sign in again")
+        || msg.contains("must sign in again")
+        || msg.contains("re-authorize")
+        || msg.contains("reauthorize")
+}
+
 fn is_reauth_error(err: &anyhow::Error) -> bool {
-    let msg = err.to_string().to_ascii_lowercase();
-    msg.contains("400")
-        || msg.contains("401")
-        || msg.contains("403")
-        || msg.contains("invalid_grant")
-        || msg.contains("refresh token")
+    is_explicit_reauth_error_message(&err.to_string())
 }
 
 fn internal_error_tuple(err: impl ToString) -> (StatusCode, String) {
@@ -5806,6 +6027,19 @@ pub(crate) async fn resolve_pool_account_for_request(
     Ok(PoolAccountResolution::NoCandidate)
 }
 
+pub(crate) async fn refresh_pool_account_for_retry(
+    state: &AppState,
+    account_id: i64,
+) -> Result<Option<PoolResolvedAccount>> {
+    let Some(row) = load_upstream_account_row(&state.pool, account_id).await? else {
+        return Ok(None);
+    };
+    if !is_account_selectable_for_routing(&row) {
+        return Ok(None);
+    }
+    prepare_pool_account(state, &row).await
+}
+
 pub(crate) async fn record_pool_route_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -5849,7 +6083,11 @@ pub(crate) async fn record_pool_route_http_failure(
         if let Some(sticky_key) = sticky_key {
             delete_sticky_route(pool, sticky_key).await?;
         }
-        let next_status = if account_kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
+        let next_status = if account_kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+            && is_explicit_reauth_error_message(error_message)
+            && !is_scope_permission_error_message(error_message)
+            && !is_bridge_error_message(error_message)
+        {
             UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
         } else {
             UPSTREAM_ACCOUNT_STATUS_ERROR
@@ -6183,15 +6421,99 @@ async fn prepare_pool_account(
                 }
             }
 
+            let bridge =
+                match resolve_oauth_bridge_registration(state, row.id, &value.access_token).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        update_account_error(
+                            &state.pool,
+                            row.id,
+                            UPSTREAM_ACCOUNT_STATUS_ERROR,
+                            &err.to_string(),
+                        )
+                        .await?;
+                        return Ok(None);
+                    }
+                };
+
             Ok(Some(PoolResolvedAccount {
                 account_id: row.id,
                 display_name: row.display_name.clone(),
                 kind: row.kind.clone(),
-                authorization: format!("Bearer {}", value.access_token),
+                authorization: format!("Bearer {}", bridge.token_key),
                 upstream_base_url,
             }))
         }
     }
+}
+
+fn fingerprint_access_token(access_token: &str) -> String {
+    format!("{:x}", Sha256::digest(access_token.as_bytes()))
+}
+
+fn cached_bridge_token_is_usable(
+    cached: &CachedOauthBridgeToken,
+    access_token_fingerprint: &str,
+) -> bool {
+    if cached.access_token_fingerprint != access_token_fingerprint {
+        return false;
+    }
+    cached
+        .expire_at
+        .map(|value| value > Utc::now() + ChronoDuration::seconds(30))
+        .unwrap_or(true)
+}
+
+async fn resolve_oauth_bridge_registration(
+    state: &AppState,
+    account_id: i64,
+    access_token: &str,
+) -> Result<OauthBridgeRegisterResult> {
+    let access_token_fingerprint = fingerprint_access_token(access_token);
+    if let Some(cached) = state
+        .upstream_accounts
+        .oauth_bridge_tokens
+        .lock()
+        .await
+        .get(&account_id)
+        .cloned()
+        .filter(|cached| cached_bridge_token_is_usable(cached, &access_token_fingerprint))
+    {
+        return Ok(OauthBridgeRegisterResult {
+            token_key: cached.token_key,
+            expire_at: cached.expire_at,
+        });
+    }
+
+    let registered = register_oauth_bridge_access_token(
+        &state.http_clients.shared,
+        &account_id.to_string(),
+        access_token,
+    )
+    .await?;
+    state
+        .upstream_accounts
+        .oauth_bridge_tokens
+        .lock()
+        .await
+        .insert(
+            account_id,
+            CachedOauthBridgeToken {
+                token_key: registered.token_key.clone(),
+                expire_at: registered.expire_at,
+                access_token_fingerprint,
+            },
+        );
+    Ok(registered)
+}
+
+pub(crate) async fn clear_cached_oauth_bridge_token(state: &AppState, account_id: i64) {
+    state
+        .upstream_accounts
+        .oauth_bridge_tokens
+        .lock()
+        .await
+        .remove(&account_id);
 }
 
 fn is_account_selectable_for_routing(row: &UpstreamAccountRow) -> bool {
@@ -6435,6 +6757,7 @@ fn decrypt_secret_value(key: &[u8; 32], payload: &str) -> Result<String> {
 mod tests {
     use super::*;
     use sqlx::SqlitePool;
+    use std::collections::HashMap;
 
     #[test]
     fn derive_secret_key_is_stable() {
@@ -6486,8 +6809,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts() {
+    #[tokio::test]
+    async fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts() {
+        let _bridge_lock = crate::oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+        crate::oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
+
         fn build_row(kind: &str, upstream_base_url: Option<&str>) -> UpstreamAccountRow {
             UpstreamAccountRow {
                 id: 1,
@@ -6503,6 +6829,7 @@ mod tests {
                 chatgpt_account_id: None,
                 chatgpt_user_id: None,
                 plan_type: None,
+                plan_type_observed_at: None,
                 masked_api_key: None,
                 encrypted_credentials: None,
                 token_expires_at: None,
@@ -6530,7 +6857,10 @@ mod tests {
         let oauth_row = build_row(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX, Some(override_url));
         let oauth_resolved = resolve_pool_account_upstream_base_url(&oauth_row, &global)
             .expect("resolve oauth upstream base url");
-        assert_eq!(oauth_resolved, global);
+        assert_eq!(
+            oauth_resolved.as_str(),
+            "http://ai-openai-oauth-bridge:3000/openai"
+        );
 
         let api_key_row = build_row(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX, Some(override_url));
         let api_key_resolved = resolve_pool_account_upstream_base_url(&api_key_row, &global)
@@ -6640,6 +6970,55 @@ mod tests {
         assert_eq!(query.state.as_deref(), Some("test-state"));
     }
 
+    #[test]
+    fn build_oauth_authorize_url_requests_official_scopes_and_audience() {
+        let url = build_oauth_authorize_url(
+            &Url::parse("https://auth.openai.com").expect("issuer"),
+            "client-id",
+            "http://localhost:1455/auth/callback",
+            "state-token",
+            "challenge",
+        )
+        .expect("build authorize url");
+        let parsed = Url::parse(&url).expect("parse authorize url");
+        let query = parsed.query_pairs().into_owned().collect::<HashMap<_, _>>();
+        let scope = query
+            .get("scope")
+            .cloned()
+            .expect("scope should be present");
+        let scope_parts = scope.split_whitespace().collect::<Vec<_>>();
+
+        assert_eq!(
+            query.get("audience").map(String::as_str),
+            Some(DEFAULT_OAUTH_AUDIENCE)
+        );
+        assert_eq!(
+            query.get("prompt").map(String::as_str),
+            Some(DEFAULT_OAUTH_PROMPT)
+        );
+        assert!(scope_parts.contains(&"openid"));
+        assert!(scope_parts.contains(&"profile"));
+        assert!(scope_parts.contains(&"email"));
+        assert!(scope_parts.contains(&"offline_access"));
+        assert_eq!(scope_parts.len(), 4);
+    }
+
+    #[test]
+    fn is_reauth_error_requires_explicit_invalidated_signal() {
+        assert!(is_reauth_error(&anyhow!(
+            "OAuth token endpoint returned 400: invalid_grant"
+        )));
+        assert!(is_reauth_error(&anyhow!(
+            "Authentication token has been invalidated, please sign in again"
+        )));
+        assert!(!is_reauth_error(&anyhow!(
+            "usage endpoint returned 401: Missing scopes: api.responses.write"
+        )));
+        assert!(!is_reauth_error(&anyhow!(
+            "pool upstream responded with 403: You have insufficient permissions for this operation."
+        )));
+    }
+
     async fn test_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
@@ -6650,17 +7029,45 @@ mod tests {
         pool
     }
 
+    fn test_claims_with_plan_type(
+        email: &str,
+        chatgpt_account_id: Option<&str>,
+        chatgpt_user_id: Option<&str>,
+        plan_type: Option<&str>,
+    ) -> ChatgptJwtClaims {
+        ChatgptJwtClaims {
+            email: Some(email.to_string()),
+            chatgpt_plan_type: plan_type.map(str::to_string),
+            chatgpt_user_id: chatgpt_user_id.map(str::to_string),
+            chatgpt_account_id: chatgpt_account_id.map(str::to_string),
+        }
+    }
+
     fn test_claims(
         email: &str,
         chatgpt_account_id: Option<&str>,
         chatgpt_user_id: Option<&str>,
     ) -> ChatgptJwtClaims {
-        ChatgptJwtClaims {
-            email: Some(email.to_string()),
-            chatgpt_plan_type: Some("team".to_string()),
-            chatgpt_user_id: chatgpt_user_id.map(str::to_string),
-            chatgpt_account_id: chatgpt_account_id.map(str::to_string),
-        }
+        test_claims_with_plan_type(email, chatgpt_account_id, chatgpt_user_id, Some("team"))
+    }
+
+    fn test_id_token(
+        email: &str,
+        chatgpt_account_id: Option<&str>,
+        chatgpt_user_id: Option<&str>,
+        plan_type: Option<&str>,
+    ) -> String {
+        let payload = json!({
+            "email": email,
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": plan_type,
+                "chatgpt_user_id": chatgpt_user_id,
+                "chatgpt_account_id": chatgpt_account_id,
+            }
+        });
+        let encoded = URL_SAFE_NO_PAD.encode(b"{}");
+        let body = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
+        format!("{encoded}.{body}.{encoded}")
     }
 
     async fn insert_api_key_account(pool: &SqlitePool, display_name: &str) -> i64 {
@@ -6692,8 +7099,178 @@ mod tests {
         .expect("insert api key account")
     }
 
+    async fn insert_oauth_account(pool: &SqlitePool, display_name: &str) -> i64 {
+        let now_iso = format_utc_iso(Utc::now());
+        let token_expires_at = format_utc_iso(Utc::now() + ChronoDuration::days(30));
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                kind, provider, display_name, group_name, note, status, enabled, email, chatgpt_account_id,
+                chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
+                last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
+                local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
+            ) VALUES (
+                ?1, ?2, ?3, NULL, NULL, ?4, 1, ?5, ?6,
+                ?7, ?8, NULL, ?9, ?10,
+                NULL, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, ?11, ?11
+            ) RETURNING id
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
+        .bind(display_name)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind("oauth@example.com")
+        .bind("org_test")
+        .bind("user_test")
+        .bind("team")
+        .bind("encrypted")
+        .bind(&token_expires_at)
+        .bind(&now_iso)
+        .fetch_one(pool)
+        .await
+        .expect("insert oauth account")
+    }
+
     #[tokio::test]
-    async fn new_oauth_accounts_with_shared_account_id_are_preserved_and_flagged() {
+    async fn record_pool_route_http_failure_keeps_missing_scope_oauth_as_error() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Scope OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-scope"),
+            StatusCode::UNAUTHORIZED,
+            "pool upstream responded with 401: Missing scopes: api.responses.write",
+        )
+        .await
+        .expect("record route failure");
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+                .bind(account_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load account status");
+        assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_marks_explicit_invalidated_oauth_for_reauth() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Invalidated OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-invalidated"),
+            StatusCode::FORBIDDEN,
+            "pool upstream responded with 403: Authentication token has been invalidated, please sign in again",
+        )
+        .await
+        .expect("record route failure");
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+                .bind(account_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load account status");
+        assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_keeps_bridge_exchange_oauth_as_error() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Bridge OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-bridge"),
+            StatusCode::UNAUTHORIZED,
+            "oauth bridge token exchange failed: oauth bridge responded with 502",
+        )
+        .await
+        .expect("record route failure");
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+                .bind(account_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load account status");
+        assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+    }
+
+    #[test]
+    fn should_retry_same_account_after_bridge_token_rejection_only_for_oauth_bridge_rejections() {
+        assert!(should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::UNAUTHORIZED,
+            Some("invalid_api_key"),
+            Some("oauth bridge token is unknown or was not registered"),
+            "pool upstream responded with 401",
+        ));
+        assert!(should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::FORBIDDEN,
+            Some("token_expired"),
+            Some("oauth bridge token expired; register again"),
+            "pool upstream responded with 403",
+        ));
+        assert!(!should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            StatusCode::UNAUTHORIZED,
+            Some("invalid_api_key"),
+            Some("oauth bridge token is unknown or was not registered"),
+            "pool upstream responded with 401",
+        ));
+        assert!(!should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::UNAUTHORIZED,
+            Some("missing_scopes"),
+            Some("Missing scopes: api.responses.write"),
+            "pool upstream responded with 401: Missing scopes: api.responses.write",
+        ));
+    }
+
+    async fn insert_limit_sample(
+        pool: &SqlitePool,
+        account_id: i64,
+        captured_at: &str,
+        plan_type: Option<&str>,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_limit_samples (
+                account_id, captured_at, limit_id, limit_name, plan_type,
+                primary_used_percent, primary_window_minutes, primary_resets_at,
+                secondary_used_percent, secondary_window_minutes, secondary_resets_at,
+                credits_has_credits, credits_unlimited, credits_balance
+            ) VALUES (
+                ?1, ?2, NULL, NULL, ?3,
+                NULL, NULL, NULL,
+                NULL, NULL, NULL,
+                NULL, NULL, NULL
+            )
+            "#,
+        )
+        .bind(account_id)
+        .bind(captured_at)
+        .bind(plan_type)
+        .execute(pool)
+        .await
+        .expect("insert limit sample");
+    }
+
+    #[tokio::test]
+    async fn team_oauth_accounts_with_shared_account_id_are_not_flagged_as_duplicates() {
         let pool = test_pool().await;
 
         let mut tx = pool.begin().await.expect("begin tx 1");
@@ -6755,18 +7332,29 @@ mod tests {
         let duplicate_info = load_duplicate_info_map(&pool)
             .await
             .expect("load duplicate info");
-        assert_eq!(
-            duplicate_info
-                .get(&first_id)
-                .map(|value| value.reasons.clone()),
-            Some(vec![DuplicateReason::SharedChatgptAccountId])
+        assert!(duplicate_info.get(&first_id).is_none());
+        assert!(duplicate_info.get(&second_id).is_none());
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| summary.id == first_id || summary.id == second_id)
+                .all(|summary| summary.duplicate_info.is_none())
         );
-        assert_eq!(
-            duplicate_info
-                .get(&second_id)
-                .map(|value| value.reasons.clone()),
-            Some(vec![DuplicateReason::SharedChatgptAccountId])
-        );
+
+        let first_detail = load_upstream_account_detail(&pool, first_id)
+            .await
+            .expect("load first detail")
+            .expect("first detail exists");
+        let second_detail = load_upstream_account_detail(&pool, second_id)
+            .await
+            .expect("load second detail")
+            .expect("second detail exists");
+        assert!(first_detail.summary.duplicate_info.is_none());
+        assert!(second_detail.summary.duplicate_info.is_none());
     }
 
     #[tokio::test]
@@ -6808,6 +7396,851 @@ mod tests {
             duplicate_info
                 .values()
                 .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptUserId])
+        );
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(summaries.iter().all(|summary| matches!(
+                    summary.duplicate_info.as_ref().map(|info| info.reasons.as_slice()),
+                    Some([DuplicateReason::SharedChatgptUserId])
+                )));
+
+        for summary in summaries {
+            let detail = load_upstream_account_detail(&pool, summary.id)
+                .await
+                .expect("load detail")
+                .expect("detail exists");
+            assert!(matches!(
+                detail
+                    .summary
+                    .duplicate_info
+                    .as_ref()
+                    .map(|info| info.reasons.as_slice()),
+                Some([DuplicateReason::SharedChatgptUserId])
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_plan_type_accounts_with_shared_account_id_remain_flagged() {
+        let pool = test_pool().await;
+
+        for (display_name, email, plan_type) in [
+            ("Team OAuth", "team@example.com", Some("team")),
+            ("Personal OAuth", "personal@example.com", Some("pro")),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(email, Some("org_shared"), None, plan_type),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+        );
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(summaries.iter().all(|summary| matches!(
+                    summary.duplicate_info.as_ref().map(|info| info.reasons.as_slice()),
+                    Some([DuplicateReason::SharedChatgptAccountId])
+                )));
+
+        for summary in summaries {
+            let detail = load_upstream_account_detail(&pool, summary.id)
+                .await
+                .expect("load detail")
+                .expect("detail exists");
+            assert!(matches!(
+                detail
+                    .summary
+                    .duplicate_info
+                    .as_ref()
+                    .map(|info| info.reasons.as_slice()),
+                Some([DuplicateReason::SharedChatgptAccountId])
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn latest_usage_sample_plan_type_clears_legacy_team_duplicate_flags() {
+        let pool = test_pool().await;
+
+        let mut inserted_ids = Vec::new();
+        for (display_name, email, plan_type) in [
+            ("Legacy Team One", "legacy-team-1@example.com", None),
+            ("Legacy Team Two", "legacy-team-2@example.com", Some("pro")),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some("legacy_shared_org"),
+                        None,
+                        plan_type,
+                    ),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        for (index, account_id) in inserted_ids.iter().enumerate() {
+            insert_limit_sample(
+                &pool,
+                *account_id,
+                &format!("2026-03-15T00:00:0{}Z", index + 1),
+                Some("team"),
+            )
+            .await;
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type_observed_at = '2026-03-14T00:00:00Z',
+                    last_refreshed_at = '2026-03-14T00:00:00Z',
+                    updated_at = '2026-03-14T00:00:00Z'
+                WHERE id = ?1
+                "#,
+            )
+            .bind(*account_id)
+            .execute(&pool)
+            .await
+            .expect("age account claims");
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(duplicate_info.is_empty());
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| inserted_ids.contains(&summary.id))
+                .all(|summary| summary.plan_type.as_deref() == Some("team"))
+        );
+
+        for account_id in inserted_ids {
+            let detail = load_upstream_account_detail(&pool, account_id)
+                .await
+                .expect("load detail")
+                .expect("detail exists");
+            assert_eq!(detail.summary.plan_type.as_deref(), Some("team"));
+        }
+    }
+
+    #[tokio::test]
+    async fn latest_usage_sample_plan_type_restores_non_team_duplicate_flags() {
+        let pool = test_pool().await;
+
+        let mut inserted_ids = Vec::new();
+        for (display_name, email) in [
+            ("Stale Team One", "stale-team-1@example.com"),
+            ("Stale Team Two", "stale-team-2@example.com"),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some("stale_shared_org"),
+                        None,
+                        Some("team"),
+                    ),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        insert_limit_sample(&pool, inserted_ids[0], "2026-03-15T00:00:01Z", Some("team")).await;
+        insert_limit_sample(&pool, inserted_ids[1], "2026-03-15T00:00:02Z", Some("pro")).await;
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_usage_snapshot_uses_explicit_effective_plan_type() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, "Snapshot OAuth", None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Snapshot OAuth",
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims_with_plan_type(
+                    "snapshot@example.com",
+                    Some("snapshot_org"),
+                    Some("snapshot_user"),
+                    Some("team"),
+                ),
+                encrypted_credentials: "encrypted-snapshot".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+
+        let snapshot = NormalizedUsageSnapshot {
+            plan_type: None,
+            limit_id: "gpt-4".to_string(),
+            limit_name: Some("GPT-4".to_string()),
+            primary: None,
+            secondary: None,
+            credits: None,
+        };
+        persist_usage_snapshot(&pool, account_id, Some("pro"), &snapshot, 30)
+            .await
+            .expect("persist snapshot");
+
+        let stored_plan_type = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT plan_type
+            FROM pool_upstream_account_limit_samples
+            WHERE account_id = ?1
+            ORDER BY captured_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(account_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load sample plan type");
+        assert_eq!(stored_plan_type.as_deref(), Some("pro"));
+    }
+
+    #[tokio::test]
+    async fn refresh_without_plan_type_keeps_existing_plan_type_observed_at() {
+        let pool = test_pool().await;
+        let crypto_key = derive_secret_key("refresh-without-plan-type");
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, "Refresh OAuth", None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Refresh OAuth",
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims_with_plan_type(
+                    "refresh@example.com",
+                    Some("refresh_org"),
+                    Some("refresh_user"),
+                    Some("team"),
+                ),
+                encrypted_credentials: encrypt_credentials(
+                    &crypto_key,
+                    &StoredCredentials::Oauth(StoredOauthCredentials {
+                        access_token: "access-1".to_string(),
+                        refresh_token: "refresh-1".to_string(),
+                        id_token: test_id_token(
+                            "refresh@example.com",
+                            Some("refresh_org"),
+                            Some("refresh_user"),
+                            Some("team"),
+                        ),
+                        token_type: Some("Bearer".to_string()),
+                    }),
+                )
+                .expect("encrypt oauth credentials"),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type_observed_at = '2026-03-15T00:00:01Z',
+                last_refreshed_at = '2026-03-15T00:00:01Z',
+                updated_at = '2026-03-15T00:00:01Z'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .expect("seed observed_at");
+
+        persist_oauth_credentials(
+            &pool,
+            account_id,
+            &crypto_key,
+            &StoredOauthCredentials {
+                access_token: "access-2".to_string(),
+                refresh_token: "refresh-2".to_string(),
+                id_token: test_id_token(
+                    "refresh@example.com",
+                    Some("refresh_org"),
+                    Some("refresh_user"),
+                    None,
+                ),
+                token_type: Some("Bearer".to_string()),
+            },
+            "2026-03-16T00:00:00Z",
+        )
+        .await
+        .expect("persist refreshed credentials");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row")
+            .expect("row exists");
+        assert_eq!(row.plan_type.as_deref(), Some("team"));
+        assert_eq!(
+            row.plan_type_observed_at.as_deref(),
+            Some("2026-03-15T00:00:01Z")
+        );
+        assert!(row.last_refreshed_at.is_some());
+        assert_ne!(
+            row.last_refreshed_at.as_deref(),
+            Some("2026-03-15T00:00:01Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_plan_type_fallback_prefers_latest_effective_sample() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, "Fallback OAuth", None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Fallback OAuth",
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims_with_plan_type(
+                    "fallback@example.com",
+                    Some("fallback_org"),
+                    Some("fallback_user"),
+                    Some("team"),
+                ),
+                encrypted_credentials: "encrypted-fallback".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type = 'team',
+                plan_type_observed_at = '2026-03-15T00:00:01Z',
+                last_refreshed_at = '2026-03-15T00:00:01Z'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .expect("age account claims");
+        insert_limit_sample(&pool, account_id, "2026-03-15T00:00:02Z", Some("pro")).await;
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row")
+            .expect("row exists");
+        let snapshot = NormalizedUsageSnapshot {
+            plan_type: None,
+            limit_id: "gpt-4".to_string(),
+            limit_name: Some("GPT-4".to_string()),
+            primary: None,
+            secondary: None,
+            credits: None,
+        };
+
+        let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
+            .await
+            .expect("resolve snapshot plan type");
+        assert_eq!(effective_plan_type.as_deref(), Some("pro"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_plan_type_fallback_prefers_refreshed_claims_over_stale_non_empty_sample() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, "Refreshed Fallback OAuth", None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Refreshed Fallback OAuth",
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims_with_plan_type(
+                    "refreshed-fallback@example.com",
+                    Some("refreshed_fallback_org"),
+                    Some("refreshed_fallback_user"),
+                    Some("team"),
+                ),
+                encrypted_credentials: "encrypted-refreshed-fallback".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+
+        insert_limit_sample(&pool, account_id, "2026-03-15T00:00:01Z", Some("team")).await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type = 'pro',
+                plan_type_observed_at = '2026-03-15T00:00:02Z',
+                last_refreshed_at = '2026-03-15T00:00:02Z'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .expect("refresh account claims");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row")
+            .expect("row exists");
+        let snapshot = NormalizedUsageSnapshot {
+            plan_type: None,
+            limit_id: "gpt-4".to_string(),
+            limit_name: Some("GPT-4".to_string()),
+            primary: None,
+            secondary: None,
+            credits: None,
+        };
+
+        let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
+            .await
+            .expect("resolve snapshot plan type");
+        assert_eq!(effective_plan_type.as_deref(), Some("pro"));
+    }
+
+    #[tokio::test]
+    async fn fresher_account_claims_override_stale_non_empty_samples() {
+        let pool = test_pool().await;
+
+        let mut inserted_ids = Vec::new();
+        for (display_name, email) in [
+            ("Refreshed Team One", "refreshed-team-1@example.com"),
+            ("Refreshed Team Two", "refreshed-team-2@example.com"),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some("refreshed_shared_org"),
+                        None,
+                        Some("team"),
+                    ),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        for account_id in &inserted_ids {
+            insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:01Z", Some("team")).await;
+            insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:02Z", None).await;
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type = 'pro',
+                    plan_type_observed_at = '2026-03-15T00:00:03Z',
+                    last_refreshed_at = '2026-03-15T00:00:03Z',
+                    updated_at = '2026-03-15T00:00:03Z'
+                WHERE id = ?1
+                "#,
+            )
+            .bind(*account_id)
+            .execute(&pool)
+            .await
+            .expect("refresh account claims");
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+        );
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| inserted_ids.contains(&summary.id))
+                .all(|summary| summary.plan_type.as_deref() == Some("pro"))
+        );
+
+        for account_id in inserted_ids {
+            let detail = load_upstream_account_detail(&pool, account_id)
+                .await
+                .expect("load detail")
+                .expect("detail exists");
+            assert_eq!(detail.summary.plan_type.as_deref(), Some("pro"));
+        }
+    }
+
+    #[tokio::test]
+    async fn refreshed_claims_override_older_non_empty_samples_without_newer_plan_samples() {
+        let pool = test_pool().await;
+
+        let mut inserted_ids = Vec::new();
+        for (display_name, email) in [
+            ("Claims Fresh One", "claims-fresh-1@example.com"),
+            ("Claims Fresh Two", "claims-fresh-2@example.com"),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some("claims_fresh_shared_org"),
+                        None,
+                        Some("team"),
+                    ),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        for account_id in &inserted_ids {
+            insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:01Z", Some("team")).await;
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type = 'pro',
+                    plan_type_observed_at = '2026-03-15T00:00:02Z',
+                    last_refreshed_at = '2026-03-15T00:00:02Z',
+                    updated_at = '2026-03-15T00:00:03Z'
+                WHERE id = ?1
+                "#,
+            )
+            .bind(*account_id)
+            .execute(&pool)
+            .await
+            .expect("refresh account claims");
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+        );
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| inserted_ids.contains(&summary.id))
+                .all(|summary| summary.plan_type.as_deref() == Some("pro"))
+        );
+    }
+
+    #[tokio::test]
+    async fn same_second_refreshed_claims_win_against_latest_non_empty_sample() {
+        let pool = test_pool().await;
+
+        let mut inserted_ids = Vec::new();
+        for (display_name, email) in [
+            ("Same Second One", "same-second-1@example.com"),
+            ("Same Second Two", "same-second-2@example.com"),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some("same_second_org"),
+                        None,
+                        Some("team"),
+                    ),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        for account_id in &inserted_ids {
+            insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:02Z", Some("team")).await;
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type = 'pro',
+                    plan_type_observed_at = '2026-03-15T00:00:02Z',
+                    last_refreshed_at = '2026-03-15T00:00:02Z',
+                    updated_at = '2026-03-15T00:00:02Z'
+                WHERE id = ?1
+                "#,
+            )
+            .bind(*account_id)
+            .execute(&pool)
+            .await
+            .expect("seed same-second claims");
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+        );
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| inserted_ids.contains(&summary.id))
+                .all(|summary| summary.plan_type.as_deref() == Some("pro"))
+        );
+    }
+
+    #[tokio::test]
+    async fn metadata_updates_do_not_override_newer_usage_sample_plan_type() {
+        let pool = test_pool().await;
+
+        let mut inserted_ids = Vec::new();
+        for (display_name, email) in [
+            ("Sample Fresh One", "sample-fresh-1@example.com"),
+            ("Sample Fresh Two", "sample-fresh-2@example.com"),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available(&mut *tx, display_name, None)
+                .await
+                .expect("name available");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    group_note: None,
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some("sample_fresh_shared_org"),
+                        None,
+                        Some("team"),
+                    ),
+                    encrypted_credentials: format!("encrypted-{display_name}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        for account_id in &inserted_ids {
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type = 'team',
+                    plan_type_observed_at = '2026-03-15T00:00:01Z',
+                    last_refreshed_at = '2026-03-15T00:00:01Z',
+                    updated_at = '2026-03-15T00:00:01Z'
+                WHERE id = ?1
+                "#,
+            )
+            .bind(*account_id)
+            .execute(&pool)
+            .await
+            .expect("seed account claims");
+            insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:02Z", Some("pro")).await;
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET status = ?2,
+                    updated_at = '2026-03-15T00:00:03Z'
+                WHERE id = ?1
+                "#,
+            )
+            .bind(*account_id)
+            .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+            .execute(&pool)
+            .await
+            .expect("simulate metadata update");
+        }
+
+        let duplicate_info = load_duplicate_info_map(&pool)
+            .await
+            .expect("load duplicate info");
+        assert!(
+            duplicate_info
+                .values()
+                .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+        );
+
+        let summaries = load_upstream_account_summaries(&pool)
+            .await
+            .expect("load summaries");
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| inserted_ids.contains(&summary.id))
+                .all(|summary| summary.plan_type.as_deref() == Some("pro"))
         );
     }
 
