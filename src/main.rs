@@ -6818,69 +6818,19 @@ async fn send_pool_request_with_failover(
                         ),
                         None => oauth_bridge::OauthUpstreamRequestBody::Empty,
                     };
-                    match timeout(
-                        handshake_timeout,
+                    ProxyUpstreamResponseBody::Axum(
                         oauth_bridge::send_oauth_upstream_request(
                             &client,
                             method.clone(),
                             original_uri,
                             headers,
                             oauth_body,
+                            handshake_timeout,
                             access_token,
                             chatgpt_account_id.as_deref(),
-                        ),
+                        )
+                        .await,
                     )
-                    .await
-                    {
-                        Ok(response) => ProxyUpstreamResponseBody::Axum(response),
-                        Err(_) => {
-                            let message = format!(
-                                "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
-                                handshake_timeout.as_millis()
-                            );
-                            let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
-                            if has_retry_budget {
-                                let retry_delay = fallback_proxy_429_retry_delay(
-                                    u32::from(same_account_attempt) + 1,
-                                );
-                                info!(
-                                    account_id = account.account_id,
-                                    retry_index = same_account_attempt + 1,
-                                    max_same_account_attempts = same_account_attempts,
-                                    retry_after_ms = retry_delay.as_millis(),
-                                    "pool oauth upstream handshake timeout; retrying same account"
-                                );
-                                sleep(retry_delay).await;
-                                continue;
-                            }
-                            if let Err(route_err) = record_pool_route_transport_failure(
-                                &state.pool,
-                                account.account_id,
-                                sticky_key,
-                                &message,
-                            )
-                            .await
-                            {
-                                warn!(account_id = account.account_id, error = %route_err, "failed to record pool handshake timeout");
-                            }
-                            last_error = Some(PoolUpstreamError {
-                                account: Some(account.clone()),
-                                status: StatusCode::BAD_GATEWAY,
-                                message: message.clone(),
-                                failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                                connect_latency_ms: elapsed_ms(connect_started),
-                                upstream_error_code: None,
-                                upstream_error_message: None,
-                                upstream_request_id: None,
-                            });
-                            if excluded_ids.len() >= 64 {
-                                return Err(
-                                    last_error.expect("pool handshake failure should be recorded")
-                                );
-                            }
-                            continue 'account_loop;
-                        }
-                    }
                 }
             };
 

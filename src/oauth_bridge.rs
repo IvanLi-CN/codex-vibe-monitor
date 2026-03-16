@@ -8,6 +8,8 @@ use axum::{
 use futures_util::TryStreamExt;
 use reqwest::{Body as ReqwestBody, Client, Url};
 use serde_json::{Value, json};
+use std::time::Duration;
+use tokio::time::timeout;
 
 #[cfg(test)]
 use once_cell::sync::Lazy;
@@ -65,14 +67,18 @@ pub(crate) async fn send_oauth_upstream_request(
     original_uri: &Uri,
     headers: &HeaderMap,
     body: OauthUpstreamRequestBody,
+    handshake_timeout: Duration,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Response {
     match original_uri.path() {
-        "/v1/models" => oauth_models(client, access_token, chatgpt_account_id).await,
+        "/v1/models" => {
+            oauth_models(client, handshake_timeout, access_token, chatgpt_account_id).await
+        }
         "/v1/responses" => {
             oauth_responses(
                 client,
+                handshake_timeout,
                 access_token,
                 chatgpt_account_id,
                 match body {
@@ -100,6 +106,7 @@ pub(crate) async fn send_oauth_upstream_request(
                     OauthUpstreamRequestBody::Bytes(bytes) => ReqwestBody::from(bytes),
                     OauthUpstreamRequestBody::Stream(body) => body,
                 },
+                handshake_timeout,
                 access_token,
                 chatgpt_account_id,
             )
@@ -122,6 +129,7 @@ fn is_supported_oauth_passthrough_route(path: &str) -> bool {
 
 async fn oauth_models(
     client: &Client,
+    handshake_timeout: Duration,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Response {
@@ -148,13 +156,23 @@ async fn oauth_models(
         .bearer_auth(access_token)
         .header("OpenAI-Beta", "responses=experimental");
     let request = attach_account_header(request, chatgpt_account_id);
-    let upstream = match request.send().await {
-        Ok(response) => response,
-        Err(err) => {
+    let upstream = match timeout(handshake_timeout, request.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => {
             return error_response(
                 StatusCode::BAD_GATEWAY,
                 &format!("failed to contact oauth codex upstream: {err}"),
                 "oauth_upstream_unavailable",
+            );
+        }
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!(
+                    "oauth codex upstream handshake timed out after {}ms",
+                    handshake_timeout.as_millis()
+                ),
+                "oauth_upstream_handshake_timeout",
             );
         }
     };
@@ -184,6 +202,7 @@ async fn oauth_models(
 
 async fn oauth_responses(
     client: &Client,
+    handshake_timeout: Duration,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
     body: Bytes,
@@ -215,13 +234,23 @@ async fn oauth_responses(
         .header("OpenAI-Beta", "responses=experimental")
         .body(upstream_body);
     let request = attach_account_header(request, chatgpt_account_id);
-    let upstream = match request.send().await {
-        Ok(response) => response,
-        Err(err) => {
+    let upstream = match timeout(handshake_timeout, request.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => {
             return error_response(
                 StatusCode::BAD_GATEWAY,
                 &format!("failed to contact oauth codex upstream: {err}"),
                 "oauth_upstream_unavailable",
+            );
+        }
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!(
+                    "oauth codex upstream handshake timed out after {}ms",
+                    handshake_timeout.as_millis()
+                ),
+                "oauth_upstream_handshake_timeout",
             );
         }
     };
@@ -268,6 +297,7 @@ async fn oauth_passthrough(
     original_uri: &Uri,
     headers: &HeaderMap,
     body: ReqwestBody,
+    handshake_timeout: Duration,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Response {
@@ -291,13 +321,23 @@ async fn oauth_passthrough(
         .header("OpenAI-Beta", "responses=experimental");
     builder = attach_account_header(builder, chatgpt_account_id);
     builder = copy_forwardable_headers(builder, headers);
-    let upstream = match builder.body(body).send().await {
-        Ok(response) => response,
-        Err(err) => {
+    let upstream = match timeout(handshake_timeout, builder.body(body).send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => {
             return error_response(
                 StatusCode::BAD_GATEWAY,
                 &format!("failed to contact oauth codex upstream: {err}"),
                 "oauth_upstream_unavailable",
+            );
+        }
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!(
+                    "oauth codex upstream handshake timed out after {}ms",
+                    handshake_timeout.as_millis()
+                ),
+                "oauth_upstream_handshake_timeout",
             );
         }
     };
