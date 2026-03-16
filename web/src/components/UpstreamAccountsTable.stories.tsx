@@ -130,6 +130,7 @@ const items: UpstreamAccountSummary[] = [
 ]
 
 const labels = {
+  account: 'Account',
   sync: 'Sync / Call',
   lastSuccess: 'Sync',
   lastCall: 'Call',

@@ -932,6 +932,7 @@ export default function UpstreamAccountsPage() {
               emptyTitle={t('accountPool.upstreamAccounts.emptyTitle')}
               emptyDescription={t('accountPool.upstreamAccounts.emptyDescription')}
               labels={{
+                account: t('accountPool.upstreamAccounts.table.account'),
                 sync: t('accountPool.upstreamAccounts.table.syncAndCall'),
                 lastSuccess: t('accountPool.upstreamAccounts.table.lastSuccessShort'),
                 lastCall: t('accountPool.upstreamAccounts.table.lastCallShort'),

@@ -4752,6 +4752,19 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_requester_ip_occurred_at")?;
 
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_upstream_account_occurred_at
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_upstream_account_occurred_at")?;
+
     // The records analytics page compares trimmed lowercase text for exact-match filters.
     // Mirror those expressions in dedicated indexes so high-volume searches avoid full index scans.
     sqlx::query(

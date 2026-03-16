@@ -13,6 +13,7 @@ interface UpstreamAccountsTableProps {
   emptyTitle: string
   emptyDescription: string
   labels: {
+    account: string
     sync: string
     lastSuccess: string
     lastCall: string
@@ -216,7 +217,7 @@ export function UpstreamAccountsTable({
         <thead>
           <tr className="border-b border-base-300/80 bg-base-100/86 text-left">
             <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-              Account
+              {labels.account}
             </th>
             <th className="pl-1 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               {labels.sync}

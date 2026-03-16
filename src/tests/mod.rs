@@ -15251,6 +15251,20 @@ async fn ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_re
     assert!(tables.contains("archive_batches"));
     assert!(tables.contains("invocation_rollup_daily"));
     assert!(tables.contains("startup_backfill_progress"));
+
+    let upstream_account_index_sql = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND name = 'idx_codex_invocations_upstream_account_occurred_at'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load upstream account invocation index");
+    assert!(upstream_account_index_sql.contains("$.upstreamAccountId"));
+    assert!(upstream_account_index_sql.contains("occurred_at"));
 }
 
 #[tokio::test]
