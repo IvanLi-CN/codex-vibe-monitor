@@ -827,6 +827,7 @@ export default function UpstreamAccountsPage() {
     setBusyAction('delete')
     try {
       await removeAccount(source.id)
+      setIsDetailDrawerOpen(false)
     } catch (err) {
       setDetailActionError(err instanceof Error ? err.message : String(err))
     } finally {

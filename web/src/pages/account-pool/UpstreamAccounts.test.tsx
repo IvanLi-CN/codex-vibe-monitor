@@ -739,6 +739,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     await flushAsync();
 
     expect(removeAccount).toHaveBeenCalledWith(8);
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     confirmSpy.mockRestore();
   });
 
