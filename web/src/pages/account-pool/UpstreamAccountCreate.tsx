@@ -1769,7 +1769,7 @@ export default function UpstreamAccountCreatePage() {
                       <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
                         {oauthMailboxAddress ? (
                           <Tooltip
-                            className="min-w-0 flex-1"
+                            className="min-w-0 max-w-full shrink"
                             content={buildMailboxTooltip(
                               t('accountPool.upstreamAccounts.actions.copyMailboxHint'),
                               oauthMailboxAddress,
@@ -1778,7 +1778,7 @@ export default function UpstreamAccountCreatePage() {
                           >
                             <button
                               type="button"
-                              className="inline-flex h-7 w-full min-w-0 items-center justify-start rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
+                              className="inline-flex h-7 min-w-0 max-w-full items-center justify-start rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
                               aria-label={t('accountPool.upstreamAccounts.actions.copyMailbox')}
                               onClick={() => void handleCopySingleMailbox()}
                             >
@@ -2160,7 +2160,7 @@ export default function UpstreamAccountCreatePage() {
                                         <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
                                           {rowMailboxAddress ? (
                                             <Tooltip
-                                              className="min-w-0 flex-1"
+                                              className="min-w-0 max-w-full shrink"
                                               content={buildMailboxTooltip(
                                                 t('accountPool.upstreamAccounts.actions.copyMailboxHint'),
                                                 rowMailboxAddress,
@@ -2169,7 +2169,7 @@ export default function UpstreamAccountCreatePage() {
                                             >
                                               <button
                                                 type="button"
-                                                className="inline-flex h-7 w-full min-w-0 items-center justify-start rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
+                                                className="inline-flex h-7 min-w-0 max-w-full items-center justify-start rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
                                                 aria-label={t('accountPool.upstreamAccounts.actions.copyMailbox')}
                                                 onClick={() => void handleBatchCopyMailbox(row.id)}
                                               >
