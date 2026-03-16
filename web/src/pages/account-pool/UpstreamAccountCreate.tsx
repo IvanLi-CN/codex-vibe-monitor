@@ -2311,34 +2311,87 @@ export default function UpstreamAccountCreatePage() {
                                     </label>
                                     <div className="flex items-center gap-3">
                                       <div className="flex flex-wrap items-center gap-2">
-                                        <Tooltip
-                                          content={buildActionTooltip(
-                                            isPending
-                                              ? t('accountPool.upstreamAccounts.batchOauth.tooltip.regenerateTitle')
-                                              : t('accountPool.upstreamAccounts.batchOauth.tooltip.generateTitle'),
-                                            isPending
-                                              ? t('accountPool.upstreamAccounts.batchOauth.tooltip.regenerateBody')
-                                              : t('accountPool.upstreamAccounts.batchOauth.tooltip.generateBody'),
-                                          )}
-                                        >
-                                          <Button
-                                            type="button"
-                                            size="icon"
-                                            variant={isPending ? 'destructive' : 'default'}
-                                            className="h-9 w-9 shrink-0 rounded-full"
-                                            aria-label={isPending
-                                              ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
-                                              : t('accountPool.upstreamAccounts.actions.generateOauthUrl')}
-                                            onClick={() => void handleBatchGenerateOauthUrl(row.id)}
-                                            disabled={isBusy || isCompleted || isRecoveredNeedsRefresh || !writesEnabled}
-                                          >
-                                            {row.busyAction === 'generate' ? (
-                                              <Spinner size="sm" />
-                                            ) : (
-                                              <AppIcon name={isPending ? 'refresh' : 'link-variant-plus'} className="h-4 w-4" aria-hidden />
+                                        <div className="flex items-center rounded-full border border-base-300/80 bg-base-200/80 p-1 shadow-sm">
+                                          <Tooltip
+                                            content={buildActionTooltip(
+                                              isPending
+                                                ? t('accountPool.upstreamAccounts.batchOauth.tooltip.regenerateTitle')
+                                                : t('accountPool.upstreamAccounts.batchOauth.tooltip.generateTitle'),
+                                              isPending
+                                                ? t('accountPool.upstreamAccounts.batchOauth.tooltip.regenerateBody')
+                                                : t('accountPool.upstreamAccounts.batchOauth.tooltip.generateBody'),
                                             )}
-                                          </Button>
-                                        </Tooltip>
+                                          >
+                                            <Button
+                                              type="button"
+                                              size="icon"
+                                              variant={isPending ? 'destructive' : 'default'}
+                                              className="h-9 w-9 shrink-0 rounded-full"
+                                              aria-label={isPending
+                                                ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
+                                                : t('accountPool.upstreamAccounts.actions.generateOauthUrl')}
+                                              onClick={() => void handleBatchGenerateOauthUrl(row.id)}
+                                              disabled={isBusy || isCompleted || isRecoveredNeedsRefresh || !writesEnabled}
+                                            >
+                                              {row.busyAction === 'generate' ? (
+                                                <Spinner size="sm" />
+                                              ) : (
+                                                <AppIcon name={isPending ? 'refresh' : 'link-variant-plus'} className="h-4 w-4" aria-hidden />
+                                              )}
+                                            </Button>
+                                          </Tooltip>
+                                          <Tooltip
+                                            content={buildActionTooltip(
+                                              t('accountPool.upstreamAccounts.batchOauth.tooltip.copyTitle'),
+                                              t('accountPool.upstreamAccounts.batchOauth.tooltip.copyBody'),
+                                            )}
+                                          >
+                                            <Popover
+                                              open={batchManualCopyRowId === row.id}
+                                              onOpenChange={(nextOpen) => {
+                                                setBatchManualCopyRowId(nextOpen ? row.id : null)
+                                              }}
+                                            >
+                                              <PopoverAnchor asChild>
+                                                <Button
+                                                  type="button"
+                                                  size="icon"
+                                                  variant={authUrl ? 'default' : 'secondary'}
+                                                  className="h-9 w-9 shrink-0 rounded-full"
+                                                  aria-label={t('accountPool.upstreamAccounts.actions.copyOauthUrl')}
+                                                  onClick={() => void handleBatchCopyOauthUrl(row.id)}
+                                                  disabled={!authUrl || isBusy}
+                                                >
+                                                  <AppIcon name="content-copy" className="h-4 w-4" aria-hidden />
+                                                </Button>
+                                              </PopoverAnchor>
+                                              <PopoverContent
+                                                align="start"
+                                                sideOffset={10}
+                                                className="w-[min(32rem,calc(100vw-2rem))] rounded-2xl border-base-300 bg-base-100 p-4 shadow-xl"
+                                              >
+                                                <div className="space-y-3">
+                                                  <div className="space-y-1">
+                                                    <p className="text-sm font-semibold text-base-content">
+                                                      {t('accountPool.upstreamAccounts.oauth.manualCopyTitle')}
+                                                    </p>
+                                                    <p className="text-sm text-base-content/65">
+                                                      {t('accountPool.upstreamAccounts.oauth.manualCopyDescription')}
+                                                    </p>
+                                                  </div>
+                                                  <textarea
+                                                    ref={batchManualCopyRowId === row.id ? batchManualCopyFieldRef : undefined}
+                                                    readOnly
+                                                    value={authUrl}
+                                                    className="min-h-28 w-full rounded-xl border border-base-300 bg-base-100 px-3 py-2 font-mono text-xs text-base-content shadow-sm focus-visible:outline-none"
+                                                    onClick={(event) => selectAllReadonlyText(event.currentTarget)}
+                                                    onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
+                                                  />
+                                                </div>
+                                              </PopoverContent>
+                                            </Popover>
+                                          </Tooltip>
+                                        </div>
                                         {row.mailboxSession ? (
                                           <Tooltip
                                             content={buildActionTooltip(
@@ -2361,57 +2414,6 @@ export default function UpstreamAccountCreatePage() {
                                             </Button>
                                           </Tooltip>
                                         ) : null}
-                                        <Tooltip
-                                          content={buildActionTooltip(
-                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.copyTitle'),
-                                            t('accountPool.upstreamAccounts.batchOauth.tooltip.copyBody'),
-                                          )}
-                                        >
-                                          <Popover
-                                            open={batchManualCopyRowId === row.id}
-                                            onOpenChange={(nextOpen) => {
-                                              setBatchManualCopyRowId(nextOpen ? row.id : null)
-                                            }}
-                                          >
-                                            <PopoverAnchor asChild>
-                                              <Button
-                                                type="button"
-                                                size="icon"
-                                                variant={authUrl ? 'default' : 'secondary'}
-                                                className="h-9 w-9 shrink-0 rounded-full"
-                                                aria-label={t('accountPool.upstreamAccounts.actions.copyOauthUrl')}
-                                                onClick={() => void handleBatchCopyOauthUrl(row.id)}
-                                                disabled={!authUrl || isBusy}
-                                              >
-                                                <AppIcon name="content-copy" className="h-4 w-4" aria-hidden />
-                                              </Button>
-                                            </PopoverAnchor>
-                                            <PopoverContent
-                                              align="start"
-                                              sideOffset={10}
-                                              className="w-[min(32rem,calc(100vw-2rem))] rounded-2xl border-base-300 bg-base-100 p-4 shadow-xl"
-                                            >
-                                              <div className="space-y-3">
-                                                <div className="space-y-1">
-                                                  <p className="text-sm font-semibold text-base-content">
-                                                    {t('accountPool.upstreamAccounts.oauth.manualCopyTitle')}
-                                                  </p>
-                                                  <p className="text-sm text-base-content/65">
-                                                    {t('accountPool.upstreamAccounts.oauth.manualCopyDescription')}
-                                                  </p>
-                                                </div>
-                                                <textarea
-                                                  ref={batchManualCopyRowId === row.id ? batchManualCopyFieldRef : undefined}
-                                                  readOnly
-                                                  value={authUrl}
-                                                  className="min-h-28 w-full rounded-xl border border-base-300 bg-base-100 px-3 py-2 font-mono text-xs text-base-content shadow-sm focus-visible:outline-none"
-                                                  onClick={(event) => selectAllReadonlyText(event.currentTarget)}
-                                                  onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
-                                                />
-                                              </div>
-                                            </PopoverContent>
-                                          </Popover>
-                                        </Tooltip>
                                         <Tooltip
                                           content={buildActionTooltip(
                                             t('accountPool.upstreamAccounts.batchOauth.tooltip.noteTitle'),
