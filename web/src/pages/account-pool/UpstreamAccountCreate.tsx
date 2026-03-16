@@ -317,6 +317,10 @@ function batchMailboxCodeVariant(row: BatchOauthRow): 'default' | 'secondary' | 
   return row.mailboxCodeTone === 'copied' ? 'outline' : 'default'
 }
 
+function batchMailboxCodeLabel(row: BatchOauthRow) {
+  return row.mailboxStatus?.latestCode?.value ?? '------'
+}
+
 function buildActionTooltip(title: string, description: string) {
   return (
     <div className="space-y-1">
@@ -2338,20 +2342,22 @@ export default function UpstreamAccountCreatePage() {
                                         {row.mailboxSession ? (
                                           <Tooltip
                                             content={buildActionTooltip(
-                                              t('accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle'),
+                                              row.mailboxCodeTone === 'copied'
+                                                ? t('accountPool.upstreamAccounts.actions.copied')
+                                                : t('accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle'),
                                               row.mailboxStatus?.latestCode?.value ?? t('accountPool.upstreamAccounts.batchOauth.codeMissing'),
                                             )}
                                           >
                                             <Button
                                               type="button"
-                                              size="icon"
+                                              size="sm"
                                               variant={batchMailboxCodeVariant(row)}
-                                              className="h-9 w-9 shrink-0 rounded-full"
+                                              className="h-9 shrink-0 rounded-full px-3 font-mono text-xs tracking-[0.22em]"
                                               aria-label={t('accountPool.upstreamAccounts.actions.copyCode')}
                                               onClick={() => void handleBatchCopyMailboxCode(row.id)}
                                               disabled={!row.mailboxStatus?.latestCode?.value}
                                             >
-                                              <AppIcon name="content-copy" className="h-4 w-4" aria-hidden />
+                                              {batchMailboxCodeLabel(row)}
                                             </Button>
                                           </Tooltip>
                                         ) : null}

@@ -260,6 +260,7 @@ export const BatchOauthMailboxReady: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('button', { name: /copy verification code/i })).toBeEnabled()
+    await expect(canvas.getByRole('button', { name: /copy verification code/i })).toHaveTextContent('556677')
   },
 }
 
@@ -308,6 +309,7 @@ export const BatchOauthMailboxDetachedName: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('button', { name: /copy verification code/i })).toBeEnabled()
+    await expect(canvas.getByRole('button', { name: /copy verification code/i })).toHaveTextContent('334455')
   },
 }
 
