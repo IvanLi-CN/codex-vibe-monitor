@@ -3480,7 +3480,7 @@ pub(crate) struct ProxyCaptureRecord {
     pub(crate) timings: StageTimings,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct RequestBodyReadError {
     pub(crate) status: StatusCode,
     pub(crate) message: String,
