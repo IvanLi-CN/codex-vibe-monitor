@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { AppIcon } from '../AppIcon'
 import { Tooltip } from '../ui/tooltip'
 import { cn } from '../../lib/utils'
 
@@ -20,6 +21,8 @@ interface OauthMailboxChipProps {
   emptyLabel: string
   copyAriaLabel: string
   copyHintLabel: string
+  copiedLabel: string
+  tone?: 'idle' | 'copied'
   onCopy: () => void
   className?: string
 }
@@ -29,6 +32,8 @@ export function OauthMailboxChip({
   emptyLabel,
   copyAriaLabel,
   copyHintLabel,
+  copiedLabel,
+  tone = 'idle',
   onCopy,
   className,
 }: OauthMailboxChipProps) {
@@ -83,6 +88,7 @@ export function OauthMailboxChip({
           'border border-base-300/80 bg-base-100 text-base-content/80 shadow-sm transition-[border-color,background-color,color,box-shadow,transform]',
           'hover:-translate-y-px hover:border-primary/70 hover:bg-primary/6 hover:text-primary hover:shadow-md',
           'focus-visible:-translate-y-px focus-visible:border-primary/70 focus-visible:bg-primary/6 focus-visible:text-primary focus-visible:shadow-md focus-visible:outline-none',
+          tone === 'copied' && 'border-success/55 bg-success/10 text-success shadow-md',
         )}
         aria-label={copyAriaLabel}
         onBlur={() => setHoverOpen(false)}
@@ -96,6 +102,12 @@ export function OauthMailboxChip({
         onClick={onCopy}
       >
         <span className="truncate text-left">{emailAddress}</span>
+        {tone === 'copied' ? (
+          <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-success">
+            <AppIcon name="check-bold" className="h-3.5 w-3.5" aria-hidden />
+            {copiedLabel}
+          </span>
+        ) : null}
       </button>
     </Tooltip>
   )

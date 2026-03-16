@@ -78,6 +78,7 @@ describe('OauthMailboxChip', () => {
         emptyLabel="No mailbox yet"
         copyAriaLabel="Copy mailbox"
         copyHintLabel="Click to copy"
+        copiedLabel="Copied"
         onCopy={() => undefined}
       />,
     )
@@ -99,6 +100,7 @@ describe('OauthMailboxChip', () => {
         emptyLabel="No mailbox yet"
         copyAriaLabel="Copy mailbox"
         copyHintLabel="Click to copy"
+        copiedLabel="Copied"
         onCopy={() => undefined}
       />,
     )
@@ -119,5 +121,22 @@ describe('OauthMailboxChip', () => {
     })
 
     expect(getTooltip()).toBeNull()
+  })
+
+  it('renders a copied success badge when the chip is in copied tone', () => {
+    render(
+      <OauthMailboxChip
+        emailAddress="copied-chip@mail-tw.707079.xyz"
+        emptyLabel="No mailbox yet"
+        copyAriaLabel="Copy mailbox"
+        copyHintLabel="Click to copy"
+        copiedLabel="Copied"
+        tone="copied"
+        onCopy={() => undefined}
+      />,
+    )
+
+    expect(host?.textContent).toContain('Copied')
+    expect(getCopyButton().className).toContain('border-success/55')
   })
 })

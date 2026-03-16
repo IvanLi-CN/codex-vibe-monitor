@@ -154,6 +154,7 @@ export const OauthMailboxHover: Story = {
             emptyLabel="No mailbox yet"
             copyAriaLabel="Copy mailbox"
             copyHintLabel="Click to copy"
+            copiedLabel="Copied"
             onCopy={() => undefined}
           />
         </div>
@@ -184,6 +185,7 @@ export const OauthMailboxLongPress: Story = {
             emptyLabel="No mailbox yet"
             copyAriaLabel="Copy mailbox"
             copyHintLabel="Click to copy"
+            copiedLabel="Copied"
             onCopy={() => undefined}
           />
         </div>
@@ -203,6 +205,29 @@ export const OauthMailboxLongPress: Story = {
 
     copyMailboxButton.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch', button: 0 }))
   },
+}
+
+export const OauthMailboxCopied: Story = {
+  name: 'OAuth Mailbox Copied',
+  render: () => (
+    <div className="min-h-screen bg-base-200 px-10 py-12">
+      <div className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm">
+        <div className="flex items-center gap-3">
+          <span className="field-label shrink-0">Display Name</span>
+          <OauthMailboxChip
+            className="max-w-[24rem]"
+            emailAddress="copied-preview@mail-tw.707079.xyz"
+            emptyLabel="No mailbox yet"
+            copyAriaLabel="Copy mailbox"
+            copyHintLabel="Click to copy"
+            copiedLabel="Copied"
+            tone="copied"
+            onCopy={() => undefined}
+          />
+        </div>
+      </div>
+    </div>
+  ),
 }
 
 export const OauthMailboxDetachedName: Story = {

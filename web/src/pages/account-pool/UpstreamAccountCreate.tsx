@@ -88,6 +88,7 @@ type BatchOauthRow = {
   mailboxSession: OauthMailboxSession | null
   mailboxInput: string
   mailboxStatus: OauthMailboxStatus | null
+  mailboxTone: MailboxCopyTone
   mailboxCodeTone: MailboxCopyTone
   mailboxBusy: boolean
 }
@@ -107,6 +108,7 @@ type CreatePageDraft = {
     mailboxSession?: OauthMailboxSession | null
     mailboxInput?: string
     mailboxStatus?: OauthMailboxStatus | null
+    mailboxTone?: MailboxCopyTone
     mailboxCodeTone?: MailboxCopyTone
   }
   batchOauth?: {
@@ -186,6 +188,7 @@ function createBatchOauthRow(id: string, groupName = ''): BatchOauthRow {
     mailboxSession: null,
     mailboxInput: '',
     mailboxStatus: null,
+    mailboxTone: 'idle',
     mailboxCodeTone: 'idle',
     mailboxBusy: false,
   }
@@ -210,6 +213,7 @@ function hydrateBatchOauthRow(
         ? seed.mailboxInput
         : seed.mailboxSession?.emailAddress ?? '',
     mailboxStatus: seed.mailboxStatus ?? null,
+    mailboxTone: seed.mailboxTone === 'copied' ? 'copied' : 'idle',
     mailboxCodeTone: seed.mailboxCodeTone === 'copied' ? 'copied' : 'idle',
     mailboxBusy: seed.mailboxBusy === true,
   }
@@ -565,6 +569,9 @@ export default function UpstreamAccountCreatePage() {
   const [oauthMailboxStatus, setOauthMailboxStatus] = useState<OauthMailboxStatus | null>(
     () => draft?.oauth?.mailboxStatus ?? null,
   )
+  const [oauthMailboxTone, setOauthMailboxTone] = useState<MailboxCopyTone>(
+    () => draft?.oauth?.mailboxTone ?? 'idle',
+  )
   const [oauthMailboxCodeTone, setOauthMailboxCodeTone] = useState<MailboxCopyTone>(
     () => draft?.oauth?.mailboxCodeTone ?? 'idle',
   )
@@ -604,6 +611,19 @@ export default function UpstreamAccountCreatePage() {
   })
   const [groupNoteBusy, setGroupNoteBusy] = useState(false)
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
+  const oauthMailboxToneResetRef = useRef<number | null>(null)
+  const batchMailboxToneResetRef = useRef<Record<string, number>>({})
+
+  useEffect(() => {
+    return () => {
+      if (oauthMailboxToneResetRef.current != null) {
+        window.clearTimeout(oauthMailboxToneResetRef.current)
+      }
+      Object.values(batchMailboxToneResetRef.current).forEach((timerId) => {
+        window.clearTimeout(timerId)
+      })
+    }
+  }, [])
   const batchRowIdRef = useRef(getNextBatchRowIndex(initialBatchRows))
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
   const batchManualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
@@ -897,6 +917,16 @@ export default function UpstreamAccountCreatePage() {
     setBatchRows((current) => [...current, createBatchOauthRow(nextId, batchDefaultGroupName.trim())])
   }
 
+  const scheduleSingleMailboxToneReset = useCallback(() => {
+    if (oauthMailboxToneResetRef.current != null) {
+      window.clearTimeout(oauthMailboxToneResetRef.current)
+    }
+    oauthMailboxToneResetRef.current = window.setTimeout(() => {
+      setOauthMailboxTone('idle')
+      oauthMailboxToneResetRef.current = null
+    }, 1600)
+  }, [])
+
   const updateBatchRow = (rowId: string, updater: (row: BatchOauthRow) => BatchOauthRow) => {
     setBatchRows((current) =>
       enforceBatchMotherDraftUniqueness(
@@ -907,6 +937,20 @@ export default function UpstreamAccountCreatePage() {
       ),
     )
   }
+
+  const scheduleBatchMailboxToneReset = useCallback((rowId: string) => {
+    const currentTimer = batchMailboxToneResetRef.current[rowId]
+    if (currentTimer != null) {
+      window.clearTimeout(currentTimer)
+    }
+    batchMailboxToneResetRef.current[rowId] = window.setTimeout(() => {
+      updateBatchRow(rowId, (current) => ({
+        ...current,
+        mailboxTone: 'idle',
+      }))
+      delete batchMailboxToneResetRef.current[rowId]
+    }, 1600)
+  }, [updateBatchRow])
 
   const invalidatePendingOauthSessionsForDraftGroup = useCallback(
     (groupName: string) => {
@@ -1069,6 +1113,7 @@ export default function UpstreamAccountCreatePage() {
       setOauthMailboxSession(response)
       setOauthMailboxInput(response.emailAddress)
       setOauthMailboxStatus(null)
+      setOauthMailboxTone('idle')
       setOauthMailboxCodeTone('idle')
       invalidatePendingSingleOauthSession(
         session,
@@ -1092,7 +1137,10 @@ export default function UpstreamAccountCreatePage() {
 
   const handleCopySingleMailbox = async () => {
     if (!oauthMailboxAddress) return
-    await copyText(oauthMailboxAddress, { preferExecCommand: true })
+    const result = await copyText(oauthMailboxAddress, { preferExecCommand: true })
+    if (!result.ok) return
+    setOauthMailboxTone('copied')
+    scheduleSingleMailboxToneReset()
   }
 
   const handleCopySingleMailboxCode = async () => {
@@ -1268,6 +1316,7 @@ export default function UpstreamAccountCreatePage() {
         mailboxSession: response,
         mailboxInput: response.emailAddress,
         mailboxStatus: null,
+        mailboxTone: 'idle',
         mailboxCodeTone: 'idle',
         callbackUrl: '',
         session: null,
@@ -1290,7 +1339,13 @@ export default function UpstreamAccountCreatePage() {
     const row = batchRows.find((item) => item.id === rowId)
     const value = row?.mailboxSession?.emailAddress ?? row?.mailboxInput ?? ''
     if (!value) return
-    await copyText(value, { preferExecCommand: true })
+    const result = await copyText(value, { preferExecCommand: true })
+    if (!result.ok) return
+    updateBatchRow(rowId, (current) => ({
+      ...current,
+      mailboxTone: 'copied',
+    }))
+    scheduleBatchMailboxToneReset(rowId)
   }
 
   const handleBatchCopyMailboxCode = async (rowId: string) => {
@@ -1764,6 +1819,8 @@ export default function UpstreamAccountCreatePage() {
                           emptyLabel={t('accountPool.upstreamAccounts.oauth.mailboxEmpty')}
                           copyAriaLabel={t('accountPool.upstreamAccounts.actions.copyMailbox')}
                           copyHintLabel={t('accountPool.upstreamAccounts.actions.copyMailboxHint')}
+                          copiedLabel={t('accountPool.upstreamAccounts.actions.copied')}
+                          tone={oauthMailboxTone}
                           onCopy={() => void handleCopySingleMailbox()}
                         />
                         <Button
@@ -2145,6 +2202,8 @@ export default function UpstreamAccountCreatePage() {
                                             emptyLabel={t('accountPool.upstreamAccounts.oauth.mailboxEmpty')}
                                             copyAriaLabel={t('accountPool.upstreamAccounts.actions.copyMailbox')}
                                             copyHintLabel={t('accountPool.upstreamAccounts.actions.copyMailboxHint')}
+                                            copiedLabel={t('accountPool.upstreamAccounts.actions.copied')}
+                                            tone={row.mailboxTone}
                                             onCopy={() => void handleBatchCopyMailbox(row.id)}
                                           />
                                           <Button
