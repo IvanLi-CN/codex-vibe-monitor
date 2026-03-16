@@ -468,6 +468,83 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("List failed");
     expect(document.body.textContent).toContain("Detail failed");
   });
+
+  it("shows routing and account errors at the same time", async () => {
+    const runSync = vi.fn().mockRejectedValue(new Error("Sync failed"));
+    const saveRouting = vi.fn().mockRejectedValue(new Error("Routing failed"));
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          status: "active",
+          enabled: true,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+        email: "dup@example.com",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting,
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Edit pool key/i);
+    clickButton(/Save pool key/i);
+    await flushAsync();
+    clickButton(/Open details/i);
+    clickButton(/Sync now/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Routing failed");
+    expect(document.body.textContent).toContain("Sync failed");
+  });
 });
 
 describe("UpstreamAccountsPage sync state isolation", () => {
@@ -567,6 +644,97 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     expect(
       syncButton?.querySelector('[data-icon-name="timer-refresh-outline"]'),
     ).not.toBeNull();
+  });
+
+  it("keeps refresh enabled while an account action is pending", () => {
+    const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const refresh = vi.fn();
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule,
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule,
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh,
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+    clickButton(/Open details/i);
+    clickButton(/Sync now/i);
+
+    const refreshButton = findButton(/Refresh/i);
+    expect(refreshButton).toBeInstanceOf(HTMLButtonElement);
+    expect(refreshButton?.disabled).toBe(false);
   });
 
   it("preserves the original account sync spinner after another account starts syncing", async () => {

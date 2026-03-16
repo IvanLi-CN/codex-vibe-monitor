@@ -108,10 +108,6 @@ function isBusyAction(
   return busyAction.accountActions.has(createBusyActionKey(type, accountId))
 }
 
-function hasBusyAction(busyAction: BusyActionState) {
-  return busyAction.routing || busyAction.accountActions.size > 0
-}
-
 function hasBusyAccountAction(busyAction: BusyActionState, accountId?: number | null) {
   if (typeof accountId !== 'number') return false
   const suffix = `:${accountId}`
@@ -660,9 +656,9 @@ export default function UpstreamAccountsPage() {
 
   const selectedDetail = detail?.id === selectedId ? detail : null
   const selected = selectedDetail ?? selectedSummary
-  const visibleActionError =
-    (typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null) ??
-    actionError.routing
+  const visibleAccountActionError =
+    typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null
+  const visibleRoutingError = actionError.routing
   const selectedVisible = filteredItems.some((item) => item.id === selectedId)
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
@@ -907,7 +903,12 @@ export default function UpstreamAccountsPage() {
                 <p className="section-description">{t('accountPool.upstreamAccounts.description')}</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" variant="secondary" onClick={() => void refresh()} disabled={hasBusyAction(busyAction)}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void refresh()}
+                  disabled={isBusyAction(busyAction, 'routing')}
+                >
                   <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
                   {t('accountPool.upstreamAccounts.actions.refresh')}
                 </Button>
@@ -937,10 +938,17 @@ export default function UpstreamAccountsPage() {
               </Alert>
             ) : null}
 
-            {visibleActionError ? (
+            {visibleRoutingError ? (
               <Alert variant="error">
                 <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <div>{visibleActionError}</div>
+                <div>{visibleRoutingError}</div>
+              </Alert>
+            ) : null}
+
+            {visibleAccountActionError ? (
+              <Alert variant="error">
+                <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <div>{visibleAccountActionError}</div>
               </Alert>
             ) : null}
 
