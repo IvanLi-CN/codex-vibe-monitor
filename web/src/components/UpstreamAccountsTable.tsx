@@ -218,13 +218,13 @@ export function UpstreamAccountsTable({
             <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               Account
             </th>
-            <th className="pl-2 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+            <th className="pl-1 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               {labels.sync}
             </th>
-            <th className="pl-2 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+            <th className="pl-1 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               {labels.windows}
             </th>
-            <th className="w-12 pl-2 pr-3 py-2.5" aria-hidden />
+            <th className="w-12 pl-1 pr-3 py-2.5" aria-hidden />
           </tr>
         </thead>
         <tbody>
@@ -281,7 +281,7 @@ export function UpstreamAccountsTable({
                     </div>
                   </div>
                 </td>
-                <td className="pl-2 pr-3 py-3 align-middle">
+                <td className="pl-1 pr-3 py-3 align-middle">
                   <div className="space-y-1">
                     <CompactTimestampLine
                       label={labels.lastSuccess}
@@ -293,7 +293,7 @@ export function UpstreamAccountsTable({
                     />
                   </div>
                 </td>
-                <td className="pl-2 pr-3 py-3">
+                <td className="pl-1 pr-3 py-3">
                   <div className="space-y-1.5">
                     <CompactWindowLine
                       label={labels.primaryShort}
@@ -310,7 +310,7 @@ export function UpstreamAccountsTable({
                     />
                   </div>
                 </td>
-                <td className="pl-2 pr-3 py-3 text-right align-middle">
+                <td className="pl-1 pr-3 py-3 text-right align-middle">
                   <AppIcon
                     name={selected ? 'chevron-right-circle' : 'chevron-right'}
                     className={cn('h-5 w-5', selected ? 'text-primary' : 'text-base-content/35')}
