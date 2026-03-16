@@ -148,6 +148,39 @@
 
 ## Visual Evidence (PR)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Monitoring / InvocationTable / Default
+  state: summary
+  evidence_note: 验证列表摘要区已经拆分为“账号 / 代理”与独立“时延”列，并在时延列展示总耗时、首字耗时和 HTTP 压缩算法。
+  image:
+  ![InvocationTable summary state](./assets/invocation-table-summary.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Monitoring / InvocationTable / Expanded Details
+  state: expanded request details
+  evidence_note: 验证展开详情已经补齐账号、代理、总耗时、首字耗时、HTTP 压缩算法等请求上下文，并保留阶段耗时分区。
+  image:
+  ![InvocationTable expanded details](./assets/invocation-table-expanded-details.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Monitoring / InvocationTable / Account Pool Destination
+  state: destination page with selected account detail
+  evidence_note: 验证从 InvocationTable 账号抽屉点击“去号池查看完整详情”后，会进入号池页并打开对应账号的完整详情视图。
+  image:
+  ![InvocationTable account pool destination](./assets/invocation-table-account-pool-destination.png)
+
 ## 资产晋升（Asset promotion）
 
 - None
