@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { AppIcon } from '../AppIcon'
 import { Tooltip } from '../ui/tooltip'
-import { selectAllReadonlyText } from '../../lib/clipboard'
 import { cn } from '../../lib/utils'
 
 const LONG_PRESS_DELAY_MS = 360
@@ -26,18 +25,41 @@ function buildMailboxCopiedTooltip(copiedLabel: string) {
   )
 }
 
-function buildMailboxManualTooltip(manualCopyLabel: string, emailAddress: string, inputRef: React.RefObject<HTMLInputElement | null>) {
+function selectManualCopyText(target: HTMLDivElement | null) {
+  if (!target) return
+  target.focus()
+  const selection = target.ownerDocument.getSelection?.()
+  if (!selection) return
+  const range = target.ownerDocument.createRange()
+  range.selectNodeContents(target)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
+function buildMailboxManualTooltip(
+  manualCopyLabel: string,
+  emailAddress: string,
+  valueRef: React.RefObject<HTMLDivElement | null>,
+) {
   return (
     <div className="space-y-2">
       <p className="text-xs font-medium leading-5 text-base-content/78">{manualCopyLabel}</p>
-      <input
-        ref={inputRef}
-        readOnly
-        value={emailAddress}
-        className="h-9 w-full rounded-lg border border-warning/35 bg-base-100 px-3 font-mono text-xs text-base-content shadow-sm outline-none"
-        onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
-        onClick={(event) => selectAllReadonlyText(event.currentTarget)}
-      />
+      <div
+        ref={valueRef}
+        role="textbox"
+        aria-readonly="true"
+        tabIndex={0}
+        translate="no"
+        spellCheck={false}
+        data-lpignore="true"
+        data-1p-ignore="true"
+        data-form-type="other"
+        className="h-9 w-full overflow-x-auto rounded-lg border border-warning/35 bg-base-100 px-3 py-2 font-mono text-xs text-base-content shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-warning/40"
+        onFocus={(event) => selectManualCopyText(event.currentTarget)}
+        onClick={(event) => selectManualCopyText(event.currentTarget)}
+      >
+        <span className="whitespace-nowrap">{emailAddress}</span>
+      </div>
     </div>
   )
 }
@@ -68,7 +90,7 @@ export function OauthMailboxChip({
   className,
 }: OauthMailboxChipProps) {
   const longPressTimerRef = useRef<number | null>(null)
-  const manualCopyInputRef = useRef<HTMLInputElement | null>(null)
+  const manualCopyValueRef = useRef<HTMLDivElement | null>(null)
   const [longPressOpen, setLongPressOpen] = useState(false)
   const [hoverOpen, setHoverOpen] = useState(false)
 
@@ -83,7 +105,7 @@ export function OauthMailboxChip({
   useEffect(() => {
     if (tone !== 'manual') return
     const timerId = window.setTimeout(() => {
-      selectAllReadonlyText(manualCopyInputRef.current)
+      selectManualCopyText(manualCopyValueRef.current)
     }, 0)
     return () => {
       window.clearTimeout(timerId)
@@ -120,7 +142,7 @@ export function OauthMailboxChip({
       className={cn('min-w-0 max-w-full shrink', className)}
       content={
         tone === 'manual'
-          ? buildMailboxManualTooltip(manualCopyLabel, emailAddress, manualCopyInputRef)
+          ? buildMailboxManualTooltip(manualCopyLabel, emailAddress, manualCopyValueRef)
           : tone === 'copied'
             ? buildMailboxCopiedTooltip(copiedLabel)
             : buildMailboxTooltip(copyHintLabel, emailAddress)

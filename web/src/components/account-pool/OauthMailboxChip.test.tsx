@@ -163,7 +163,8 @@ describe('OauthMailboxChip', () => {
 
     expect(getCopyButton().className).toContain('border-warning/45')
     expect(getTooltip()?.textContent).toContain('Auto copy failed. Please copy the mailbox below manually.')
-    const manualInput = document.body.querySelector('input[readonly]') as HTMLInputElement | null
-    expect(manualInput?.value).toBe('manual-chip@mail-tw.707079.xyz')
+    const manualValue = document.body.querySelector('[role="textbox"][aria-readonly="true"]') as HTMLDivElement | null
+    expect(manualValue?.textContent).toContain('manual-chip@mail-tw.707079.xyz')
+    expect(manualValue?.getAttribute('data-lpignore')).toBe('true')
   })
 })
