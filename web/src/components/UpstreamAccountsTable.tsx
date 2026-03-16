@@ -63,7 +63,7 @@ function badgeVariant(status: string): 'success' | 'warning' | 'error' | 'second
 
 function compactBadge(content: ReactNode, variant: 'accent' | 'secondary' | 'success' | 'warning' | 'error' | 'info') {
   return (
-    <Badge variant={variant} className="shrink-0 whitespace-nowrap px-2 py-0 text-[11px] font-medium">
+    <Badge variant={variant} className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4">
       {content}
     </Badge>
   )
@@ -82,7 +82,7 @@ function renderTagBadges(tags?: AccountTagSummary[] | null) {
         <Badge
           key={tag.id}
           variant="secondary"
-          className="shrink-0 whitespace-nowrap px-2 py-0 text-[11px] font-medium"
+          className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
           title={tag.name}
         >
           {tag.name}
@@ -123,11 +123,11 @@ function CompactWindowLine({
   const summary = resetText ? `${text} · ${resetText}` : text
 
   return (
-    <div className="grid grid-cols-[2.1rem,minmax(0,1fr),5.5rem,2.75rem] items-center gap-1.5">
-      <span className="truncate whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/48">
+    <div className="grid grid-cols-[2.1rem,minmax(0,1fr),5.25rem,2.75rem] items-center gap-1">
+      <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.08em] leading-4 text-base-content/48">
         {label}
       </span>
-      <span className="truncate whitespace-nowrap text-[11px] text-base-content/68" title={summary}>
+      <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68" title={summary}>
         {summary}
       </span>
       <div className="h-1.5 overflow-hidden rounded-full bg-base-300/60">
@@ -136,7 +136,7 @@ function CompactWindowLine({
           style={{ width: `${percent}%` }}
         />
       </div>
-      <span className="truncate text-right text-xs font-semibold text-base-content/78">
+      <span className="truncate text-right text-[11px] font-semibold leading-4 text-base-content/78">
         {Math.round(percent)}%
       </span>
     </div>
@@ -151,11 +151,11 @@ function CompactTimestampLine({
   value: string
 }) {
   return (
-    <div className="grid grid-cols-[2.6rem,minmax(0,1fr)] items-center gap-1.5">
-      <span className="truncate whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/48">
+    <div className="grid grid-cols-[2.35rem,minmax(0,1fr)] items-center gap-1">
+      <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.08em] leading-4 text-base-content/48">
         {label}
       </span>
-      <span className="truncate whitespace-nowrap text-sm text-base-content/72" title={value}>
+      <span className="truncate whitespace-nowrap text-[13px] leading-4 text-base-content/72" title={value}>
         {value}
       </span>
     </div>
@@ -208,16 +208,16 @@ export function UpstreamAccountsTable({
         </colgroup>
         <thead>
           <tr className="border-b border-base-300/80 bg-base-100/86 text-left">
-            <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+            <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               Account
             </th>
-            <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+            <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               {labels.sync}
             </th>
-            <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+            <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               {labels.windows}
             </th>
-            <th className="w-12 px-4 py-3" aria-hidden />
+            <th className="w-12 px-4 py-2.5" aria-hidden />
           </tr>
         </thead>
         <tbody>
@@ -245,15 +245,15 @@ export function UpstreamAccountsTable({
                   index % 2 === 1 && !selected && 'bg-base-100/32',
                 )}
               >
-                <td className="px-4 py-4">
+                <td className="px-4 py-3">
                   <div className="min-w-0">
                     <p
-                      className="truncate whitespace-nowrap text-base font-semibold text-base-content"
+                      className="truncate whitespace-nowrap text-[15px] font-semibold leading-5 text-base-content"
                       title={item.displayName}
                     >
                       {item.displayName}
                     </p>
-                    <div className="mt-3 flex min-w-0 items-center gap-1.5 overflow-hidden">
+                    <div className="mt-2 flex min-w-0 items-center gap-1 overflow-hidden">
                       {item.isMother ? (
                         <div className="shrink-0">
                           <MotherAccountBadge label={labels.mother} />
@@ -274,8 +274,8 @@ export function UpstreamAccountsTable({
                     </div>
                   </div>
                 </td>
-                <td className="px-4 py-4 align-middle">
-                  <div className="space-y-1.5">
+                <td className="px-4 py-3 align-middle">
+                  <div className="space-y-1">
                     <CompactTimestampLine
                       label={labels.lastSuccess}
                       value={formatDateTime(item.lastSuccessfulSyncAt, labels.never)}
@@ -286,8 +286,8 @@ export function UpstreamAccountsTable({
                     />
                   </div>
                 </td>
-                <td className="px-4 py-4">
-                  <div className="space-y-2">
+                <td className="px-4 py-3">
+                  <div className="space-y-1.5">
                     <CompactWindowLine
                       label={labels.primaryShort}
                       percent={primary}
@@ -303,7 +303,7 @@ export function UpstreamAccountsTable({
                     />
                   </div>
                 </td>
-                <td className="px-4 py-4 text-right align-middle">
+                <td className="px-4 py-3 text-right align-middle">
                   <AppIcon
                     name={selected ? 'chevron-right-circle' : 'chevron-right'}
                     className={cn('h-5 w-5', selected ? 'text-primary' : 'text-base-content/35')}
