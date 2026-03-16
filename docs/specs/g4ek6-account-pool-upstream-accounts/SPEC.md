@@ -156,6 +156,8 @@
 - Given 账号 A 存在更早发出的 detail reload，When A 的保存或同步先成功返回但后续列表刷新仍未完成，Then 那个旧 reload 仍必须被视为过期，不能在等待列表期间把详情短暂写回旧快照。
 - Given 用户在 refresh 进行中从账号 A 切到账号 B，When refresh 的列表响应稍后返回并把最终选中账号收口到 B，Then 页面仍必须补拉 B 的 detail，而不是停留在切换前或切换时的旧 detail。
 - Given 用户先手动触发一次 refresh，随后同一账号的保存/同步/删除又触发了更新的列表刷新，When 较早那次 refresh 更晚返回，Then 页面只能保留较新的列表状态，旧 refresh 不得把 `items/groups/routing/selectedId` 回写成旧快照。
+- Given 账号 A 的保存/同步/删除在后台完成时用户已经切到账号 B，When 动作成功后的列表刷新完成，Then 页面仍必须补拉 B 的最新 detail，避免右侧继续停留在 B 的旧 detail 快照。
+- 新建账号页顶部的全局错误提示只允许承载创建流程自己的错误或 list 级错误；详情页背景 detail 错误不得冒泡成创建页的通用错误横幅。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 

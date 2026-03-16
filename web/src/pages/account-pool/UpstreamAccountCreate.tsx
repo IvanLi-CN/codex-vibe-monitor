@@ -488,7 +488,7 @@ export default function UpstreamAccountCreatePage() {
     groups = [],
     writesEnabled,
     isLoading,
-    error,
+    listError,
     beginOauthLogin,
     getLoginSession,
     completeOauthLogin,
@@ -1375,10 +1375,10 @@ export default function UpstreamAccountCreatePage() {
             </Alert>
           ) : null}
 
-          {error || actionError ? (
+          {listError || actionError ? (
             <Alert variant="error">
               <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-              <div>{actionError ?? error}</div>
+              <div>{actionError ?? listError}</div>
             </Alert>
           ) : null}
 

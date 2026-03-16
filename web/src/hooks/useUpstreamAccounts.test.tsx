@@ -299,6 +299,37 @@ describe("useUpstreamAccounts", () => {
     expect(text("detail-name")).not.toBe("Alpha");
   });
 
+  it("reloads the currently selected account detail after another account sync finishes", async () => {
+    const sync = deferred<UpstreamAccountDetail>();
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockResolvedValueOnce(createListResponse());
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockResolvedValueOnce(createDetail(2, "Beta Stale"))
+      .mockResolvedValueOnce(createDetail(2, "Beta Fresh"));
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("sync-alpha");
+    click("select-beta");
+    await flushAsync();
+    expect(text("selected-id")).toBe("2");
+    expect(text("detail-name")).toBe("Beta Stale");
+
+    sync.resolve(createDetail(1, "Alpha Synced"));
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenNthCalledWith(
+      3,
+      2,
+      expect.any(AbortSignal),
+    );
+    expect(text("selected-id")).toBe("2");
+  });
+
   it("keeps synced detail when an older detail refresh resolves afterwards", async () => {
     const refreshedDetail = deferred<UpstreamAccountDetail>();
     const sync = deferred<UpstreamAccountDetail>();

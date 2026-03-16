@@ -180,6 +180,17 @@ export function useUpstreamAccounts() {
     [items, selectedId],
   )
 
+  const refreshCurrentSelectedDetail = useCallback(
+    async (skipAccountId?: number | null) => {
+      const currentSelectedId = selectedIdRef.current
+      if (currentSelectedId == null || currentSelectedId === skipAccountId) {
+        return
+      }
+      await loadDetail(currentSelectedId)
+    },
+    [loadDetail],
+  )
+
   const refresh = useCallback(async () => {
     const currentSelectedId = selectedIdRef.current
     const nextSelectedId = await loadList(currentSelectedId, {
@@ -264,11 +275,13 @@ export function useUpstreamAccounts() {
       clearDetailError(accountId)
       if (selectedIdRef.current === accountId) {
         setDetail(response)
+      } else {
+        await refreshCurrentSelectedDetail(accountId)
       }
       emitUpstreamAccountsChanged()
       return response
     },
-    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList],
+    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, refreshCurrentSelectedDetail],
   )
 
   const saveRouting = useCallback(async (payload: UpdatePoolRoutingSettingsPayload) => {
@@ -301,11 +314,13 @@ export function useUpstreamAccounts() {
       clearDetailError(accountId)
       if (selectedIdRef.current === accountId) {
         setDetail(response)
+      } else {
+        await refreshCurrentSelectedDetail(accountId)
       }
       emitUpstreamAccountsChanged()
       return response
     },
-    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList],
+    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, refreshCurrentSelectedDetail],
   )
 
   const removeAccount = useCallback(
@@ -326,9 +341,10 @@ export function useUpstreamAccounts() {
         selectionAnchorId: preferredId,
       })
       clearDetailError(accountId)
+      await refreshCurrentSelectedDetail(accountId)
       emitUpstreamAccountsChanged()
     },
-    [clearDetailError, invalidateDetailRequest, invalidateListRequest, items, loadList, setSelectedAccount],
+    [clearDetailError, invalidateDetailRequest, invalidateListRequest, items, loadList, refreshCurrentSelectedDetail, setSelectedAccount],
   )
 
   useEffect(
