@@ -5420,31 +5420,39 @@ fn random_base36(size: usize) -> Result<String, (StatusCode, String)> {
         let idx = rng.gen_range(0..ALPHABET.len());
         output.push(ALPHABET[idx]);
     }
+    let mut digit_pos = None;
     if size > 0 {
-        let digit_pos = rng.gen_range(0..size);
-        output[digit_pos] = DIGITS[rng.gen_range(0..DIGITS.len())];
+        let pos = rng.gen_range(0..size);
+        output[pos] = DIGITS[rng.gen_range(0..DIGITS.len())];
+        digit_pos = Some(pos);
     }
     if size > 1 {
         let mut letter_pos = rng.gen_range(0..size);
-        if letter_pos == 0 && output[letter_pos].is_ascii_digit() && size > 1 {
-            letter_pos = 1;
+        if Some(letter_pos) == digit_pos {
+            letter_pos = (letter_pos + 1) % size;
         }
         output[letter_pos] = LETTERS[rng.gen_range(0..LETTERS.len())];
     }
-    String::from_utf8(output)
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+    String::from_utf8(output).map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
 }
 
 fn generate_mailbox_local_name() -> Result<String, (StatusCode, String)> {
     const GIVEN_NAMES: &[&str] = &[
-        "alex", "emma", "olivia", "liam", "sophia", "noah", "ava", "mia", "ethan", "nora",
-        "lucas", "zoe",
+        "alex", "emma", "olivia", "liam", "sophia", "noah", "ava", "mia", "ethan", "nora", "lucas",
+        "zoe",
     ];
     const FAMILY_NAMES: &[&str] = &[
         "carter", "ng", "morgan", "patel", "reed", "young", "kim", "bennett", "wong", "brooks",
     ];
     const ORG_NAMES: &[&str] = &[
-        "northstar", "acorn", "harbor", "summit", "evergreen", "lattice", "brightpath", "aurora",
+        "northstar",
+        "acorn",
+        "harbor",
+        "summit",
+        "evergreen",
+        "lattice",
+        "brightpath",
+        "aurora",
     ];
     const TEAM_NAMES: &[&str] = &[
         "ops", "research", "growth", "support", "finance", "design", "legal", "success",
@@ -6949,7 +6957,11 @@ mod tests {
     fn generate_mailbox_local_name_looks_like_human_or_org_style() {
         let local = generate_mailbox_local_name().expect("mailbox local part");
         assert!(local.len() >= 10);
-        assert!(local.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.' || ch == '-'));
+        assert!(
+            local
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.' || ch == '-')
+        );
         assert!(local.chars().any(|ch| ch.is_ascii_digit()));
         assert!(!local.starts_with('-'));
         assert!(!local.ends_with('-'));
@@ -6959,7 +6971,11 @@ mod tests {
     fn random_base36_uses_letters_and_digits() {
         let token = random_base36(24).expect("base36 token");
         assert_eq!(token.len(), 24);
-        assert!(token.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit()));
+        assert!(
+            token
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        );
         assert!(token.chars().any(|ch| ch.is_ascii_lowercase()));
         assert!(token.chars().any(|ch| ch.is_ascii_digit()));
     }
