@@ -10,7 +10,7 @@
 
 - 当前上游账号 OAuth 创建流已经支持单个与批量登录，但邮箱输入、验证码提取与被邀请状态仍需要人工切到第三方邮箱服务查看，流程割裂且容易漏看。
 - 本次对接的临时邮箱服务固定为 MoeMail，且实际项目已验证可通过 `X-API-Key` 读取已创建邮箱、邮件与 webhook 能力，因此适合作为 OAuth 创建流内的服务端代理来源。
-- 用户要求把“生成邮箱 -> 使用邮箱登录 -> 在创建页直接读验证码/邀请态”的闭环直接集成进现有 OAuth 页面，并明确约束：生成后名称必须与生成邮箱完整地址严格一致，否则单个模式新增能力整体置灰、批量模式对应行不挂接这些增强能力。
+- 用户要求把“生成邮箱 -> 使用邮箱登录 -> 在创建页直接读验证码/邀请态”的闭环直接集成进现有 OAuth 页面，并把邮箱 UI 收拢到“显示名称”标签右侧：点击生成后显示邮箱地址，点击邮箱地址即可复制，名称本身允许和生成邮箱不同。
 
 ## 目标 / 非目标
 
@@ -18,7 +18,7 @@
 
 - 在现有单个 OAuth 与批量 OAuth 创建页中新增服务端驱动的 MoeMail 临时邮箱会话，支持一键生成邮箱、轮询最新状态、删除会话与过期清理。
 - 在创建流内解析 OpenAI/ChatGPT 验证码邮件与 workspace/business 邀请邮件，并以适合单个/批量场景的 UI 呈现出来。
-- 强化邮箱绑定语义：生成邮箱后，名称必须与生成邮箱完整地址严格相等；失配时单个模式整体置灰，批量模式该行不使用本次新增的邮箱增强能力。
+- 为单个与批量 OAuth 页面提供紧凑邮箱 UI：在“显示名称”标签右侧直接展示生成按钮与可复制邮箱地址，同时保持验证码 / 邀请能力与名称字段解耦。
 - 扩展前后端契约与测试，确保内部 API、轮询状态机、复制交互和失效状态可稳定回归。
 
 ### Non-goals
@@ -26,7 +26,7 @@
 - 不把 MoeMail 暴露给浏览器，也不在前端持有或显示 MoeMail API Key。
 - 不扩展到 API Key 账号创建流，不支持非 MoeMail 供应商。
 - 不做完整邮件历史页，只处理 OAuth 创建流中所需的最新验证码 / 邀请摘要。
-- 不放宽名称绑定规则，不支持前缀、大小写宽松匹配或“自定义别名仍保留增强能力”。
+- 不新增额外的邮箱管理页，也不把生成邮箱暴露成需要单独编辑的表单字段。
 
 ## 功能规格
 
@@ -48,11 +48,10 @@
 
 ### 前端 / 交互
 
-- 单个 OAuth 页面新增独立邮箱输入框，生成按钮集成在输入框右内侧；生成成功后立即把完整邮箱写入输入框并选中文本；只有当输入框被清空后才允许重新生成。
-- 生成邮箱后，单个模式的“名称”输入必须与生成邮箱完整地址严格一致；一旦不一致，验证码卡片、邀请卡片、复制按钮与 invited 指示全部置灰，并停止把轮询结果作为可用增强能力展示；恢复一致后重新启用。
+- 单个 OAuth 页面把邮箱地址与生成按钮集成到“显示名称”标签右侧；点击生成后直接显示最新邮箱地址，点击邮箱地址即可复制，重复点击生成会替换为新的邮箱会话。
 - 单个模式新增专门区域展示：最新验证码、邀请码/邀请链接、复制按钮，以及完整尺寸 invited 状态指示。
 - 批量 OAuth 每行新增邮箱增强状态：操作区提供验证码复制按钮；无验证码时置灰，有新验证码时高亮，复制成功后切换为更弱主题色但仍可再次点击；hover 需展示验证码内容。
-- 批量 OAuth 的 invited 状态放在左侧序号区域，用主题色表示被邀请；若该行名称与生成邮箱不一致，则该行不挂接本次新增邮箱增强能力。
+- 批量 OAuth 每行把生成按钮与可复制邮箱地址集成到“显示名称”标签右侧；名称允许自由编辑，不影响该行继续读取验证码、邀请态或左侧 invited 主题态。
 - 批量与单个轮询默认每 5 秒执行一次；批量模式必须通过单次批量状态查询请求合并读取活跃邮箱会话。
 
 ## 接口契约
@@ -64,10 +63,9 @@
 ## 验收标准
 
 - Given MoeMail env 缺失，When 调用邮箱会话接口，Then 返回明确禁用错误，且原有 OAuth 登录流仍可正常使用。
-- Given 单个 OAuth 页面生成邮箱成功，When 输入框写入新邮箱，Then 该邮箱文本立即被全选，且未清空前生成按钮不可再次生成。
-- Given 单个模式名称与生成邮箱不一致，When 邮箱状态轮询仍返回验证码或邀请，Then 页面新增的验证码/邀请能力整体置灰；恢复一致后重新启用。
+- Given 单个 OAuth 页面生成邮箱成功，When 点击“显示名称”标签右侧的生成按钮，Then 页面显示最新邮箱地址，点击该地址即可复制，且名称输入保持可自由编辑。
 - Given 批量 OAuth 某行已生成邮箱且收到验证码，When 用户悬浮并点击复制按钮，Then 可看到验证码内容、按钮可复制；复制成功后样式变弱，但仍可点击；当收到新验证码时按钮重新高亮。
-- Given 批量 OAuth 某行名称与生成邮箱不一致，When 行状态更新，Then 该行不显示或不启用本次新增邮箱增强能力，左侧 invited 主题态也不生效。
+- Given 批量 OAuth 某行名称与生成邮箱不同，When 行状态更新，Then 该行仍继续显示邮箱地址、验证码复制按钮与 invited 主题态，不因为名称差异而降级。
 - Given 邀请邮件缺少独立邀请码，When 单个模式展示邀请摘要，Then 复制按钮复制邀请 CTA 链接本身。
 
 ## 质量门槛
@@ -76,13 +74,13 @@
 - `cargo test`
 - `cd web && bun run test`
 - `cd web && bun run build`
-- 浏览器 smoke：本地验证单个 OAuth 与批量 OAuth 的生成邮箱、名称绑定门禁、验证码复制与 invited 状态。
+- 浏览器 smoke：本地验证单个 OAuth 与批量 OAuth 的紧凑邮箱 UI、邮箱地址复制、验证码复制与 invited 状态。
 
 ## 实现备注
 
 - Rust 侧在 `src/upstream_accounts/mod.rs` 中落地 MoeMail client、邮箱会话表、状态聚合与过期清理，并把 OAuth login session 扩展为可记录 `mailboxSessionId` / `generatedMailboxAddress` 绑定信息。
 - `src/main.rs` 已挂载 `POST /api/pool/upstream-accounts/oauth/mailbox-sessions`、`POST /api/pool/upstream-accounts/oauth/mailbox-sessions/status`、`DELETE /api/pool/upstream-accounts/oauth/mailbox-sessions/:sessionId` 三个内部接口。
-- 前端在 `web/src/lib/api.ts`、`web/src/hooks/useUpstreamAccounts.ts` 与 `web/src/pages/account-pool/UpstreamAccountCreate.tsx` 对齐邮箱会话契约，并在单个 / 批量 OAuth 页面分别落地严格名称绑定门禁、5 秒轮询、复制状态机与邀请态呈现。
+- 前端在 `web/src/lib/api.ts`、`web/src/hooks/useUpstreamAccounts.ts` 与 `web/src/pages/account-pool/UpstreamAccountCreate.tsx` 对齐邮箱会话契约，并在单个 / 批量 OAuth 页面分别落地紧凑邮箱 UI、5 秒轮询、复制状态机与邀请态呈现。
 - 文案、测试与 Storybook 场景已同步到 `web/src/i18n/translations.ts`、`web/src/pages/account-pool/UpstreamAccountCreate.test.tsx`、`web/src/components/UpstreamAccountCreatePage.stories.tsx`。
 
 ## 验证结果
@@ -93,11 +91,12 @@
 - 2026-03-16：`cd /Users/ivan/.codex/worktrees/9b13/codex-vibe-monitor/web && bun run build`
 - 2026-03-16：`cd /Users/ivan/.codex/worktrees/9b13/codex-vibe-monitor/web && bun run build-storybook`
 - 2026-03-16：浏览器 smoke（`http://127.0.0.1:60080/#/account-pool/upstream-accounts/new?mode=oauth` 与 `?mode=batchOauth`）确认：
-  - 单个 OAuth 生成邮箱后会立即写入邮箱框与显示名称，且邮箱框内容被完整选中。
-  - 未清空邮箱框前“生成”按钮保持禁用；当显示名称改成与生成邮箱不一致时，验证码 / 邀请区域整体进入置灰状态。
-  - 批量 OAuth 第一行生成邮箱后会同步写入显示名称与邮箱框，且在名称严格匹配时出现验证码复制按钮；当名称改为不一致时，该行邮箱增强按钮会直接移除。
+  - 单个 OAuth 会把生成按钮与邮箱地址收拢到“显示名称”标签右侧，点击邮箱地址即可复制，且名称字段可独立编辑。
+  - 批量 OAuth 每行也采用同样的紧凑邮箱 UI，名称与邮箱不同不会关闭验证码 / invited 增强能力。
+  - Storybook 已补充 single / batch 的生成态、独立命名态与验证码 / 邀请展示态。
 
 ## 变更记录
 
 - 2026-03-16: 创建增量 spec，冻结 MoeMail env 契约、邮箱绑定规则、验证码/邀请解析语义，以及单个/批量 UI 门禁与轮询行为。
 - 2026-03-16: 完成前后端实现、文案与测试，并补充本地浏览器 smoke 结果。
+- 2026-03-16: 根据最新反馈改为紧凑邮箱 UI，允许名称与邮箱不同，并补齐相应 Storybook 场景。

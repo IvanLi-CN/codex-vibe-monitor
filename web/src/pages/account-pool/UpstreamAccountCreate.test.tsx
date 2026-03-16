@@ -48,6 +48,14 @@ vi.mock("../../lib/api", async () => {
   };
 });
 
+type RenderEntry =
+  | string
+  | {
+      pathname: string;
+      search?: string;
+      state?: unknown;
+    };
+
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -107,7 +115,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(initialEntry = "/account-pool/upstream-accounts/new") {
+function render(initialEntry: RenderEntry = "/account-pool/upstream-accounts/new") {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -1032,7 +1040,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 });
 
 describe("UpstreamAccountCreatePage oauth mailbox", () => {
-  it("fills the generated mailbox into both fields and locks regeneration until cleared", async () => {
+  it("generates a mailbox without overwriting the display name", async () => {
     const beginOauthMailboxSession = vi.fn().mockResolvedValue({
       sessionId: "mailbox-1",
       emailAddress: "temp-user@example.com",
@@ -1041,13 +1049,9 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     mockUpstreamAccounts({ beginOauthMailboxSession });
     render("/account-pool/upstream-accounts/new?mode=oauth");
 
-    const mailboxInput = host?.querySelector(
-      'input[name="oauthMailbox"]',
-    ) as HTMLInputElement | null;
     const displayNameInput = host?.querySelector(
       'input[name="oauthDisplayName"]',
     ) as HTMLInputElement | null;
-    expect(mailboxInput).toBeInstanceOf(HTMLInputElement);
     expect(displayNameInput).toBeInstanceOf(HTMLInputElement);
 
     const generateButton = Array.from(host?.querySelectorAll("button") ?? []).find(
@@ -1063,13 +1067,17 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     await flushAsync();
 
     expect(beginOauthMailboxSession).toHaveBeenCalledTimes(1);
-    expect(mailboxInput?.value).toBe("temp-user@example.com");
-    expect(displayNameInput?.value).toBe("temp-user@example.com");
-    expect(generateButton?.disabled).toBe(true);
-
-    setFieldValue(mailboxInput as HTMLInputElement, "");
-    await flushAsync();
-    expect(generateButton?.disabled).toBe(false);
+    expect(displayNameInput?.value).toBe("");
+    expect(host?.textContent).toContain("temp-user@example.com");
+    expect(
+      Array.from(host?.querySelectorAll("button") ?? []).some(
+        (candidate) =>
+          candidate instanceof HTMLButtonElement &&
+          /Copy mailbox/i.test(
+            candidate.getAttribute("aria-label") || candidate.textContent || "",
+          ),
+      ),
+    ).toBe(true);
   });
 });
 

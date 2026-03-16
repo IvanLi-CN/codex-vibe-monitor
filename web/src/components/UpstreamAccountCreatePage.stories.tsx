@@ -92,12 +92,10 @@ export const OauthMailboxGenerated: Story = {
     await userEvent.click(canvas.getByRole('button', { name: /^generate$/i }))
 
     const displayName = canvas.getByLabelText(/display name/i) as HTMLInputElement
-    const mailbox = canvas.getByLabelText(/generated mailbox/i) as HTMLInputElement
 
-    await expect(displayName.value).toBe(mailbox.value)
-    await expect(mailbox.selectionStart).toBe(0)
-    await expect(mailbox.selectionEnd).toBe(mailbox.value.length)
-    await expect(canvas.getByRole('button', { name: /^generate$/i })).toBeDisabled()
+    await expect(displayName.value).toBe('')
+    await expect(canvas.getByRole('button', { name: /copy mailbox/i })).toBeInTheDocument()
+    await expect(canvas.getByText(/storybook-oauth-\d+@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
   },
 }
 
@@ -112,7 +110,7 @@ export const OauthMailboxReady: Story = {
           state: {
             draft: {
               oauth: {
-                displayName: mailboxSession.emailAddress,
+                displayName: 'Codex Pro - Manual',
                 groupName: 'production',
                 mailboxSession,
                 mailboxInput: mailboxSession.emailAddress,
@@ -139,8 +137,8 @@ export const OauthMailboxReady: Story = {
   },
 }
 
-export const OauthMailboxMismatchDisabled: Story = {
-  name: 'OAuth Mailbox Mismatch Disabled',
+export const OauthMailboxDetachedName: Story = {
+  name: 'OAuth Mailbox Detached Name',
   render: () => {
     const mailboxSession = createMailboxSession('story-mailbox-oauth-mismatch', 'oauth-lock@mail-tw.707079.xyz')
     return (
@@ -177,8 +175,8 @@ export const OauthMailboxMismatchDisabled: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(canvas.getByRole('button', { name: /copy verification code/i })).toBeDisabled()
-    await expect(canvas.getByRole('button', { name: /copy invite/i })).toBeDisabled()
+    await expect(canvas.getByRole('button', { name: /copy verification code/i })).toBeEnabled()
+    await expect(canvas.getByRole('button', { name: /copy invite/i })).toBeEnabled()
   },
 }
 
@@ -200,12 +198,10 @@ export const BatchOauthMailboxGenerated: Story = {
     await userEvent.click(canvas.getAllByRole('button', { name: /^generate$/i })[0])
 
     const displayName = canvas.getAllByLabelText(/display name/i)[0] as HTMLInputElement
-    const mailbox = canvas.getAllByLabelText(/generated mailbox/i)[0] as HTMLInputElement
 
-    await expect(displayName.value).toBe(mailbox.value)
-    await expect(mailbox.selectionStart).toBe(0)
-    await expect(mailbox.selectionEnd).toBe(mailbox.value.length)
-    await expect(canvas.getAllByRole('button', { name: /^generate$/i })[0]).toBeDisabled()
+    await expect(displayName.value).toBe('')
+    await expect(canvas.getAllByRole('button', { name: /copy mailbox/i })[0]).toBeInTheDocument()
+    await expect(canvas.getByText(/storybook-oauth-\d+@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
   },
 }
 
@@ -225,7 +221,7 @@ export const BatchOauthMailboxReady: Story = {
                 rows: [
                   {
                     id: 'row-1',
-                    displayName: mailboxSession.emailAddress,
+                    displayName: 'Batch Row One',
                     groupName: 'production',
                     mailboxSession,
                     mailboxInput: mailboxSession.emailAddress,
@@ -264,8 +260,8 @@ export const BatchOauthMailboxReady: Story = {
   },
 }
 
-export const BatchOauthMailboxMismatch: Story = {
-  name: 'Batch OAuth Mailbox Mismatch',
+export const BatchOauthMailboxDetachedName: Story = {
+  name: 'Batch OAuth Mailbox Detached Name',
   render: () => {
     const mailboxSession = createMailboxSession('story-mailbox-batch-mismatch', 'batch-locked@mail-tw.707079.xyz')
     return (
@@ -308,7 +304,7 @@ export const BatchOauthMailboxMismatch: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(canvas.queryByRole('button', { name: /copy verification code/i })).toBeNull()
+    await expect(canvas.getByRole('button', { name: /copy verification code/i })).toBeEnabled()
   },
 }
 

@@ -214,11 +214,6 @@ function hydrateBatchOauthRow(
   }
 }
 
-function isMailboxFeatureEnabled(displayName: string, mailboxSession: OauthMailboxSession | null) {
-  if (!mailboxSession?.emailAddress) return false
-  return displayName === mailboxSession.emailAddress
-}
-
 function getNextBatchRowIndex(rows: BatchOauthRow[]) {
   return rows.reduce((max, row) => {
     const matched = /^row-(\d+)$/.exec(row.id)
@@ -611,7 +606,6 @@ export default function UpstreamAccountCreatePage() {
   const batchRowIdRef = useRef(getNextBatchRowIndex(initialBatchRows))
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
   const batchManualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
-  const oauthMailboxInputRef = useRef<HTMLInputElement | null>(null)
 
   const groupSuggestions = useMemo(
     () => buildGroupNameSuggestions(items.map((item) => item.groupName), groups, groupDraftNotes),
@@ -692,7 +686,7 @@ export default function UpstreamAccountCreatePage() {
     }
     return null
   }, [apiKeyUpstreamBaseUrl, t])
-  const oauthMailboxFeatureEnabled = isMailboxFeatureEnabled(oauthDisplayName, oauthMailboxSession)
+  const oauthMailboxAddress = oauthMailboxSession?.emailAddress ?? oauthMailboxInput
 
   const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
     const detail = await createTag(payload)
@@ -742,16 +736,7 @@ export default function UpstreamAccountCreatePage() {
   }, [batchManualCopyRowId])
 
   useEffect(() => {
-    if (!oauthMailboxInput || !oauthMailboxSession?.emailAddress) return
-    if (oauthMailboxInput !== oauthMailboxSession.emailAddress) return
-    const frame = window.requestAnimationFrame(() => {
-      selectAllReadonlyText(oauthMailboxInputRef.current)
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [oauthMailboxInput, oauthMailboxSession])
-
-  useEffect(() => {
-    if (!oauthMailboxSession || !oauthMailboxFeatureEnabled) return
+    if (!oauthMailboxSession) return
     let cancelled = false
     const poll = async () => {
       try {
@@ -775,15 +760,12 @@ export default function UpstreamAccountCreatePage() {
     }
   }, [
     getOauthMailboxStatuses,
-    oauthMailboxFeatureEnabled,
     oauthMailboxSession,
     oauthMailboxStatus?.latestCode?.value,
   ])
 
   useEffect(() => {
-    const activeRows = batchRows.filter((row) =>
-      row.mailboxSession && isMailboxFeatureEnabled(row.displayName, row.mailboxSession),
-    )
+    const activeRows = batchRows.filter((row) => row.mailboxSession)
     if (activeRows.length === 0) return
     let cancelled = false
     const previousCodeMap = new Map(
@@ -801,7 +783,7 @@ export default function UpstreamAccountCreatePage() {
         setBatchRows((current) =>
           current.map((row) => {
             const sessionId = row.mailboxSession?.sessionId
-            if (!sessionId || !isMailboxFeatureEnabled(row.displayName, row.mailboxSession)) {
+            if (!sessionId) {
               return row
             }
             const nextStatus = bySessionId.get(sessionId) ?? row.mailboxStatus
@@ -969,34 +951,6 @@ export default function UpstreamAccountCreatePage() {
     [batchRows, oauthGroupName, session, t],
   )
 
-  const clearSingleMailboxState = useCallback(() => {
-    setOauthMailboxSession(null)
-    setOauthMailboxInput('')
-    setOauthMailboxStatus(null)
-    setOauthMailboxCodeTone('idle')
-    invalidatePendingSingleOauthSession(
-      session,
-      setSession,
-      setSessionHint,
-      setOauthCallbackUrl,
-      setManualCopyOpen,
-      setActionError,
-      setOauthDuplicateWarning,
-      t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
-    )
-  }, [session, t])
-
-  const handleClearSingleMailboxSession = useCallback(async () => {
-    const sessionId = oauthMailboxSession?.sessionId
-    clearSingleMailboxState()
-    if (!sessionId) return
-    try {
-      await removeOauthMailboxSession(sessionId)
-    } catch {
-      // Ignore cleanup errors; the local draft should still unlock regeneration.
-    }
-  }, [clearSingleMailboxState, oauthMailboxSession, removeOauthMailboxSession])
-
   const removeBatchRow = (rowId: string) => {
     const mailboxSessionId = batchRows.find((row) => row.id === rowId)?.mailboxSession?.sessionId
     setBatchRows((current) => {
@@ -1045,39 +999,6 @@ export default function UpstreamAccountCreatePage() {
       }
     })
   }
-
-  const handleSingleMailboxInputChange = (value: string) => {
-    setOauthMailboxInput(value)
-    if (!value.trim() && oauthMailboxSession) {
-      void handleClearSingleMailboxSession()
-    }
-  }
-
-  const handleBatchMailboxInputChange = (rowId: string, value: string) => {
-    const row = batchRows.find((item) => item.id === rowId)
-    if (!row) return
-    updateBatchRow(rowId, (current) => ({
-      ...current,
-      mailboxInput: value,
-    }))
-    if (!value.trim() && row.mailboxSession) {
-      const sessionId = row.mailboxSession.sessionId
-      updateBatchRow(rowId, (current) => ({
-        ...current,
-        mailboxSession: null,
-        mailboxInput: '',
-        mailboxStatus: null,
-        mailboxCodeTone: 'idle',
-        mailboxBusy: false,
-        callbackUrl: '',
-        session: null,
-        sessionHint: t('accountPool.upstreamAccounts.batchOauth.regenerateRequired'),
-        actionError: null,
-      }))
-      void removeOauthMailboxSession(sessionId).catch(() => undefined)
-    }
-  }
-
 
   const handleBatchDefaultGroupChange = (value: string) => {
     setBatchDefaultGroupName((previousDefault) => {
@@ -1139,7 +1060,7 @@ export default function UpstreamAccountCreatePage() {
   }
 
   const handleGenerateOauthMailbox = async () => {
-    if (oauthMailboxInput.trim()) return
+    const previousSessionId = oauthMailboxSession?.sessionId
     setOauthMailboxBusy(true)
     setActionError(null)
     try {
@@ -1148,12 +1069,29 @@ export default function UpstreamAccountCreatePage() {
       setOauthMailboxInput(response.emailAddress)
       setOauthMailboxStatus(null)
       setOauthMailboxCodeTone('idle')
-      setOauthDisplayName(response.emailAddress)
+      invalidatePendingSingleOauthSession(
+        session,
+        setSession,
+        setSessionHint,
+        setOauthCallbackUrl,
+        setManualCopyOpen,
+        setActionError,
+        setOauthDuplicateWarning,
+        t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
+      )
+      if (previousSessionId && previousSessionId !== response.sessionId) {
+        void removeOauthMailboxSession(previousSessionId).catch(() => undefined)
+      }
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setOauthMailboxBusy(false)
     }
+  }
+
+  const handleCopySingleMailbox = async () => {
+    if (!oauthMailboxAddress) return
+    await copyText(oauthMailboxAddress, { preferExecCommand: true })
   }
 
   const handleCopySingleMailboxCode = async () => {
@@ -1312,7 +1250,7 @@ export default function UpstreamAccountCreatePage() {
 
   const handleBatchGenerateMailbox = async (rowId: string) => {
     const row = batchRows.find((item) => item.id === rowId)
-    if (!row || row.mailboxInput.trim()) return
+    if (!row) return
 
     updateBatchRow(rowId, (current) => ({
       ...current,
@@ -1322,19 +1260,22 @@ export default function UpstreamAccountCreatePage() {
 
     try {
       const response = await beginOauthMailboxSession()
+      const previousSessionId = row.mailboxSession?.sessionId
       updateBatchRow(rowId, (current) => ({
         ...current,
-        displayName: response.emailAddress,
         mailboxBusy: false,
         mailboxSession: response,
         mailboxInput: response.emailAddress,
         mailboxStatus: null,
         mailboxCodeTone: 'idle',
+        callbackUrl: '',
+        session: null,
+        sessionHint: null,
+        actionError: null,
       }))
-      window.requestAnimationFrame(() => {
-        const input = document.querySelector<HTMLInputElement>(`input[name="batchOauthMailbox-${rowId}"]`)
-        selectAllReadonlyText(input)
-      })
+      if (previousSessionId && previousSessionId !== response.sessionId) {
+        void removeOauthMailboxSession(previousSessionId).catch(() => undefined)
+      }
     } catch (err) {
       updateBatchRow(rowId, (current) => ({
         ...current,
@@ -1342,6 +1283,13 @@ export default function UpstreamAccountCreatePage() {
         actionError: err instanceof Error ? err.message : String(err),
       }))
     }
+  }
+
+  const handleBatchCopyMailbox = async (rowId: string) => {
+    const row = batchRows.find((item) => item.id === rowId)
+    const value = row?.mailboxSession?.emailAddress ?? row?.mailboxInput ?? ''
+    if (!value) return
+    await copyText(value, { preferExecCommand: true })
   }
 
   const handleBatchCopyMailboxCode = async (rowId: string) => {
@@ -1805,7 +1753,36 @@ export default function UpstreamAccountCreatePage() {
               {activeTab === 'oauth' ? (
                 <>
                   <label className="field">
-                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                      <div className="flex min-w-0 items-center justify-end gap-2">
+                        {oauthMailboxAddress ? (
+                          <button
+                            type="button"
+                            className="inline-flex h-7 max-w-[18rem] items-center rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
+                            aria-label={t('accountPool.upstreamAccounts.actions.copyMailbox')}
+                            title={t('accountPool.upstreamAccounts.actions.copyMailbox')}
+                            onClick={() => void handleCopySingleMailbox()}
+                          >
+                            <span className="truncate">{oauthMailboxAddress}</span>
+                          </button>
+                        ) : (
+                          <span className="truncate text-xs text-base-content/50">
+                            {t('accountPool.upstreamAccounts.oauth.mailboxEmpty')}
+                          </span>
+                        )}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          className="h-7 shrink-0 rounded-full px-3"
+                          onClick={() => void handleGenerateOauthMailbox()}
+                          disabled={!writesEnabled || oauthMailboxBusy || session?.status === 'completed'}
+                        >
+                          {oauthMailboxBusy ? <Spinner size="sm" /> : t('accountPool.upstreamAccounts.actions.generateMailbox')}
+                        </Button>
+                      </div>
+                    </div>
                     <div className="relative">
                       <Input
                         name="oauthDisplayName"
@@ -1822,47 +1799,6 @@ export default function UpstreamAccountCreatePage() {
                         />
                       ) : null}
                     </div>
-                  </label>
-                  <label className="field">
-                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.generatedMailbox')}</span>
-                    <div className="relative">
-                      <Input
-                        ref={oauthMailboxInputRef}
-                        name="oauthMailbox"
-                        value={oauthMailboxInput}
-                        className="pr-32 font-mono"
-                        disabled={!writesEnabled || session?.status === 'completed'}
-                        placeholder={t('accountPool.upstreamAccounts.fields.generatedMailboxPlaceholder')}
-                        onChange={(event) => handleSingleMailboxInputChange(event.target.value)}
-                        onClick={(event) => selectAllReadonlyText(event.currentTarget)}
-                        onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
-                      />
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        className="absolute right-1 top-1 h-8 rounded-md px-3"
-                        onClick={() => void handleGenerateOauthMailbox()}
-                        disabled={
-                          !writesEnabled ||
-                          oauthMailboxBusy ||
-                          session?.status === 'completed' ||
-                          oauthMailboxInput.trim().length > 0
-                        }
-                      >
-                        {oauthMailboxBusy ? (
-                          <Spinner size="sm" />
-                        ) : (
-                          <>
-                            <AppIcon name="plus-circle-outline" className="mr-1.5 h-4 w-4" aria-hidden />
-                            {t('accountPool.upstreamAccounts.actions.generateMailbox')}
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                    <span className="text-xs text-base-content/60">
-                      {t('accountPool.upstreamAccounts.oauth.mailboxHint')}
-                    </span>
                   </label>
                   <label className="field">
                     <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
@@ -1929,12 +1865,7 @@ export default function UpstreamAccountCreatePage() {
                     onDeleteTag={handleDeleteTag}
                   />
 
-                  <div
-                    className={cn(
-                      'grid gap-4 rounded-2xl border border-base-300/80 bg-base-100/72 p-4 sm:grid-cols-2',
-                      oauthMailboxSession && !oauthMailboxFeatureEnabled && 'opacity-50',
-                    )}
-                  >
+                  <div className="grid gap-4 rounded-2xl border border-base-300/80 bg-base-100/72 p-4 sm:grid-cols-2">
                     <div className="rounded-2xl border border-base-300/70 bg-base-200/40 p-4">
                       <div className="flex items-center justify-between gap-3">
                         <div>
@@ -1951,7 +1882,7 @@ export default function UpstreamAccountCreatePage() {
                           type="button"
                           variant={oauthMailboxCodeTone === 'copied' ? 'outline' : 'default'}
                           size="sm"
-                          disabled={!oauthMailboxFeatureEnabled || !oauthMailboxStatus?.latestCode?.value}
+                          disabled={!oauthMailboxStatus?.latestCode?.value}
                           onClick={() => void handleCopySingleMailboxCode()}
                         >
                           <AppIcon name="content-copy" className="mr-1.5 h-4 w-4" aria-hidden />
@@ -1976,7 +1907,7 @@ export default function UpstreamAccountCreatePage() {
                           type="button"
                           variant="secondary"
                           size="sm"
-                          disabled={!oauthMailboxFeatureEnabled || !oauthMailboxStatus?.invite?.copyValue}
+                          disabled={!oauthMailboxStatus?.invite?.copyValue}
                           onClick={() => void handleCopySingleInvite()}
                         >
                           <AppIcon name="content-copy" className="mr-1.5 h-4 w-4" aria-hidden />
@@ -1985,10 +1916,10 @@ export default function UpstreamAccountCreatePage() {
                       </div>
                       <div className="mt-4 flex items-center gap-3">
                         <Badge
-                          variant={oauthMailboxStatus?.invited && oauthMailboxFeatureEnabled ? 'success' : 'secondary'}
+                          variant={oauthMailboxStatus?.invited ? 'success' : 'secondary'}
                           className="rounded-full px-3 py-1 text-sm"
                         >
-                          {oauthMailboxStatus?.invited && oauthMailboxFeatureEnabled
+                          {oauthMailboxStatus?.invited
                             ? t('accountPool.upstreamAccounts.oauth.invitedState')
                             : t('accountPool.upstreamAccounts.oauth.notInvitedState')}
                         </Badge>
@@ -2182,8 +2113,8 @@ export default function UpstreamAccountCreatePage() {
                             const isBusy = row.busyAction != null
                             const rowLocked = isBusy || isCompleted || isRecoveredNeedsRefresh
                             const authUrl = row.session?.authUrl ?? ''
-                            const rowMailboxFeatureEnabled = isMailboxFeatureEnabled(row.displayName, row.mailboxSession)
-                            const rowInvited = rowMailboxFeatureEnabled && row.mailboxStatus?.invited
+                            const rowMailboxAddress = row.mailboxSession?.emailAddress ?? row.mailboxInput
+                            const rowInvited = row.mailboxStatus?.invited
                             return (
                               <tr
                                 key={row.id}
@@ -2205,7 +2136,36 @@ export default function UpstreamAccountCreatePage() {
                                 <td className="px-3 py-4">
                                   <div className="grid gap-3">
                                     <label className="field min-w-0 gap-2 whitespace-nowrap">
-                                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                                      <div className="flex items-center justify-between gap-3">
+                                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                                        <div className="flex min-w-0 items-center justify-end gap-2">
+                                          {rowMailboxAddress ? (
+                                            <button
+                                              type="button"
+                                              className="inline-flex h-7 max-w-[14rem] items-center rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
+                                              aria-label={t('accountPool.upstreamAccounts.actions.copyMailbox')}
+                                              title={t('accountPool.upstreamAccounts.actions.copyMailbox')}
+                                              onClick={() => void handleBatchCopyMailbox(row.id)}
+                                            >
+                                              <span className="truncate">{rowMailboxAddress}</span>
+                                            </button>
+                                          ) : (
+                                            <span className="truncate text-xs text-base-content/50">
+                                              {t('accountPool.upstreamAccounts.oauth.mailboxEmpty')}
+                                            </span>
+                                          )}
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="secondary"
+                                            className="h-7 shrink-0 rounded-full px-3"
+                                            onClick={() => void handleBatchGenerateMailbox(row.id)}
+                                            disabled={!writesEnabled || rowLocked || row.mailboxBusy}
+                                          >
+                                            {row.mailboxBusy ? <Spinner size="sm" /> : t('accountPool.upstreamAccounts.actions.generateMailbox')}
+                                          </Button>
+                                        </div>
+                                      </div>
                                       <div className="relative">
                                         <Input
                                           name={`batchOauthDisplayName-${row.id}`}
@@ -2218,36 +2178,6 @@ export default function UpstreamAccountCreatePage() {
                                         {duplicateNameError ? (
                                           <FloatingFieldError message={duplicateNameError} />
                                         ) : null}
-                                      </div>
-                                    </label>
-                                    <label className="field min-w-0 gap-2 whitespace-nowrap">
-                                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.generatedMailbox')}</span>
-                                      <div className="relative">
-                                        <Input
-                                          name={`batchOauthMailbox-${row.id}`}
-                                          value={row.mailboxInput}
-                                          disabled={rowLocked || row.mailboxBusy}
-                                          className="min-w-0 pr-24 font-mono"
-                                          placeholder={t('accountPool.upstreamAccounts.fields.generatedMailboxPlaceholder')}
-                                          onChange={(event) => handleBatchMailboxInputChange(row.id, event.target.value)}
-                                          onClick={(event) => selectAllReadonlyText(event.currentTarget)}
-                                          onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
-                                        />
-                                        <Button
-                                          type="button"
-                                          size="sm"
-                                          variant="secondary"
-                                          className="absolute right-1 top-1 h-8 rounded-md px-2.5"
-                                          onClick={() => void handleBatchGenerateMailbox(row.id)}
-                                          disabled={
-                                            !writesEnabled ||
-                                            rowLocked ||
-                                            row.mailboxBusy ||
-                                            row.mailboxInput.trim().length > 0
-                                          }
-                                        >
-                                          {row.mailboxBusy ? <Spinner size="sm" /> : t('accountPool.upstreamAccounts.actions.generateMailbox')}
-                                        </Button>
                                       </div>
                                     </label>
                                     <label className="field min-w-0 gap-2 whitespace-nowrap">
@@ -2337,7 +2267,7 @@ export default function UpstreamAccountCreatePage() {
                                             )}
                                           </Button>
                                         </Tooltip>
-                                        {rowMailboxFeatureEnabled ? (
+                                        {row.mailboxSession ? (
                                           <Tooltip
                                             content={buildActionTooltip(
                                               t('accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle'),
