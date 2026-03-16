@@ -7,6 +7,7 @@
 ## Index
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                                                          |
+| 3n287 | OAuth 临时邮箱自动化与验证码/邀请态集成                                   | 进行中         | `3n287-oauth-temp-mail-automation/SPEC.md`           | 2026-03-16 | fast-track / MoeMail mailbox sessions / oauth mailbox gating / parsing pending |
 | f6f6e | GH Actions 防取消发布链路全面对齐                                              | 部分完成（3/4） | `f6f6e-gh-actions-release-anti-cancel/SPEC.md`           | 2026-03-15 | strict anti-cancel / global serial CI Main+Release / current PR labels / contract refresh |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
 | u8j4n | 固定 OAuth bridge sidecar                                                       | 已完成          | `u8j4n-fixed-oauth-bridge-sidecar/SPEC.md`               | 2026-03-16 | fast-track / fixed sidecar / oauth bridge / no user config / restart recovery covered          |

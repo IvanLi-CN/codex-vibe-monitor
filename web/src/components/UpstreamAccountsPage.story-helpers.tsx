@@ -7,6 +7,7 @@ import type {
   CompleteOauthLoginSessionPayload,
   EffectiveRoutingRule,
   LoginSessionStatusResponse,
+  OauthMailboxStatus,
   UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
@@ -39,6 +40,8 @@ type StoryStore = {
       state?: string
     }
   >
+  mailboxStatuses: Record<string, OauthMailboxStatus>
+  nextMailboxId: number
 }
 
 const defaultTags: AccountTagSummary[] = []
@@ -279,6 +282,8 @@ function createStore(): StoryStore {
     },
     nextId: duplicateOauth ? 104 : 103,
     sessions: {},
+    mailboxStatuses: {},
+    nextMailboxId: 1,
   }
 }
 
@@ -533,6 +538,45 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         }
         store.sessions[loginId] = session
         return jsonResponse(clone(session), 201)
+      }
+
+      if (path === '/api/pool/upstream-accounts/oauth/mailbox-sessions' && method === 'POST') {
+        const nextMailboxId = store.nextMailboxId++
+        const sessionId = `mailbox_${nextMailboxId}`
+        const emailAddress = `storybook-oauth-${nextMailboxId}@mail-tw.707079.xyz`
+        const expiresAt = '2026-03-11T12:50:00.000Z'
+        store.mailboxStatuses[sessionId] = {
+          sessionId,
+          emailAddress,
+          expiresAt,
+          latestCode: null,
+          invite: null,
+          invited: false,
+        }
+        return jsonResponse(
+          {
+            sessionId,
+            emailAddress,
+            expiresAt,
+          },
+          201,
+        )
+      }
+
+      if (path === '/api/pool/upstream-accounts/oauth/mailbox-sessions/status' && method === 'POST') {
+        const body = parseBody<{ sessionIds?: string[] }>(init?.body, {})
+        const sessionIds = Array.isArray(body.sessionIds) ? body.sessionIds : []
+        const items = sessionIds
+          .map((sessionId) => store.mailboxStatuses[sessionId])
+          .filter((item): item is OauthMailboxStatus => item != null)
+        return jsonResponse({ items })
+      }
+
+      const mailboxSessionMatch = path.match(/^\/api\/pool\/upstream-accounts\/oauth\/mailbox-sessions\/([^/]+)$/)
+      if (mailboxSessionMatch && method === 'DELETE') {
+        const sessionId = decodeURIComponent(mailboxSessionMatch[1])
+        delete store.mailboxStatuses[sessionId]
+        return noContent()
       }
 
       const loginSessionMatch = path.match(/^\/api\/pool\/upstream-accounts\/oauth\/login-sessions\/([^/]+)$/)

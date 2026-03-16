@@ -48,6 +48,14 @@ vi.mock("../../lib/api", async () => {
   };
 });
 
+type RenderEntry =
+  | string
+  | {
+      pathname: string;
+      search?: string;
+      state?: unknown;
+    };
+
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -107,7 +115,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(initialEntry = "/account-pool/upstream-accounts/new") {
+function render(initialEntry: RenderEntry = "/account-pool/upstream-accounts/new") {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -304,6 +312,7 @@ function mockUpstreamAccounts(
         enabled: true,
       },
     ],
+    groups: [],
     writesEnabled: true,
     isLoading: false,
     error: null,
@@ -328,7 +337,15 @@ function mockUpstreamAccounts(
     completeOauthLogin: vi
       .fn()
       .mockResolvedValue({ id: 41, displayName: "Row One" }),
+    beginOauthMailboxSession: vi.fn().mockResolvedValue({
+      sessionId: "mailbox-1",
+      emailAddress: "mailbox-1@example.com",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+    }),
+    getOauthMailboxStatuses: vi.fn().mockResolvedValue([]),
+    removeOauthMailboxSession: vi.fn().mockResolvedValue(undefined),
     createApiKeyAccount: vi.fn(),
+    saveGroupNote: vi.fn().mockResolvedValue({ groupName: "prod", note: "Saved note" }),
     ...overrides,
   });
 }
@@ -1018,6 +1035,130 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     );
     expect(document.body.textContent).toContain(
       "Matched: shared ChatGPT user id. Related account ids: 5.",
+    );
+  });
+});
+
+describe("UpstreamAccountCreatePage oauth mailbox", () => {
+  it("fills the display name with the mailbox when it is blank", async () => {
+    const beginOauthMailboxSession = vi.fn().mockResolvedValue({
+      sessionId: "mailbox-1",
+      emailAddress: "temp-user@example.com",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+    });
+    mockUpstreamAccounts({ beginOauthMailboxSession });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    const displayNameInput = host?.querySelector(
+      'input[name="oauthDisplayName"]',
+    ) as HTMLInputElement | null;
+    expect(displayNameInput).toBeInstanceOf(HTMLInputElement);
+
+    const generateButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate) =>
+        candidate instanceof HTMLButtonElement &&
+        /Generate/.test(candidate.textContent || ""),
+    ) as HTMLButtonElement | undefined;
+    expect(generateButton).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => {
+      generateButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(beginOauthMailboxSession).toHaveBeenCalledTimes(1);
+    expect(displayNameInput?.value).toBe("temp-user@example.com");
+    expect(host?.textContent).toContain("temp-user@example.com");
+    expect(
+      Array.from(host?.querySelectorAll("button") ?? []).some(
+        (candidate) =>
+          candidate instanceof HTMLButtonElement &&
+          /Copy mailbox/i.test(
+            candidate.getAttribute("aria-label") || candidate.textContent || "",
+          ),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps the display name when it already has visible characters", async () => {
+    const beginOauthMailboxSession = vi.fn().mockResolvedValue({
+      sessionId: "mailbox-2",
+      emailAddress: "temp-user-2@example.com",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+    });
+    mockUpstreamAccounts({ beginOauthMailboxSession });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    const displayNameInput = setInputValue('input[name="oauthDisplayName"]', "Manual Alias");
+
+    const generateButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate) =>
+        candidate instanceof HTMLButtonElement &&
+        /Generate/.test(candidate.textContent || ""),
+    ) as HTMLButtonElement | undefined;
+    expect(generateButton).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => {
+      generateButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(beginOauthMailboxSession).toHaveBeenCalledTimes(1);
+    expect(displayNameInput.value).toBe("Manual Alias");
+    expect(host?.textContent).toContain("temp-user-2@example.com");
+  });
+
+  it("shows an explicit expired mailbox warning for single oauth", async () => {
+    mockUpstreamAccounts();
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Expired Mailbox",
+            mailboxSession: {
+              sessionId: "mailbox-expired",
+              emailAddress: "expired@example.com",
+              expiresAt: "2026-03-13T09:00:00.000Z",
+            },
+            mailboxInput: "expired@example.com",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+
+    expect(host?.textContent).toContain(
+      "This temp mailbox has expired. Generate a fresh mailbox before waiting for new mail.",
+    );
+  });
+
+  it("shows mailbox refresh failures instead of silently looking empty", async () => {
+    mockUpstreamAccounts({
+      getOauthMailboxStatuses: vi.fn().mockRejectedValue(new Error("boom")),
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Refresh Failure Mailbox",
+            mailboxSession: {
+              sessionId: "mailbox-refresh-failure",
+              emailAddress: "failed@example.com",
+              expiresAt: "2026-03-17T10:00:00.000Z",
+            },
+            mailboxInput: "failed@example.com",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+
+    expect(host?.textContent).toContain(
+      "Mailbox refresh failed. We could not confirm the latest code or invite state.",
     );
   });
 });

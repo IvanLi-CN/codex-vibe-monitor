@@ -2,6 +2,8 @@ import * as React from 'react'
 import * as TooltipPrimitive from '@radix-ui/react-tooltip'
 import { cn } from '../../lib/utils'
 
+const LONG_PRESS_DELAY_MS = 360
+
 interface TooltipProps {
   content: React.ReactNode
   children: React.ReactNode
@@ -9,6 +11,7 @@ interface TooltipProps {
   contentClassName?: string
   side?: 'top' | 'right' | 'bottom' | 'left'
   sideOffset?: number
+  open?: boolean
 }
 
 export function Tooltip({
@@ -18,12 +21,58 @@ export function Tooltip({
   contentClassName,
   side = 'top',
   sideOffset = 10,
+  open,
 }: TooltipProps) {
+  const longPressTimerRef = React.useRef<number | null>(null)
+  const [hoverOpen, setHoverOpen] = React.useState(false)
+  const [longPressOpen, setLongPressOpen] = React.useState(false)
+
+  const clearLongPressTimer = React.useCallback(() => {
+    if (longPressTimerRef.current != null) {
+      window.clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+  }, [])
+
+  React.useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer])
+
+  const handlePointerDown = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
+    if (open !== undefined || event.button !== 0) return
+    clearLongPressTimer()
+    longPressTimerRef.current = window.setTimeout(() => {
+      setLongPressOpen(true)
+      longPressTimerRef.current = null
+    }, LONG_PRESS_DELAY_MS)
+  }, [clearLongPressTimer, open])
+
+  const handlePointerRelease = React.useCallback(() => {
+    if (open !== undefined) return
+    clearLongPressTimer()
+    setLongPressOpen(false)
+  }, [clearLongPressTimer, open])
+
+  const resolvedOpen = open ?? (hoverOpen || longPressOpen)
+
   return (
     <TooltipPrimitive.Provider delayDuration={120}>
-      <TooltipPrimitive.Root>
+      <TooltipPrimitive.Root open={resolvedOpen}>
         <TooltipPrimitive.Trigger asChild>
-          <span className={cn('inline-flex', className)}>{children}</span>
+          <span
+            className={cn('inline-flex', className)}
+            onBlur={open === undefined ? () => setHoverOpen(false) : undefined}
+            onFocus={open === undefined ? () => setHoverOpen(true) : undefined}
+            onMouseEnter={open === undefined ? () => setHoverOpen(true) : undefined}
+            onMouseLeave={open === undefined ? () => setHoverOpen(false) : undefined}
+            onPointerDownCapture={handlePointerDown}
+            onPointerDown={handlePointerDown}
+            onPointerUpCapture={handlePointerRelease}
+            onPointerUp={handlePointerRelease}
+            onPointerCancelCapture={handlePointerRelease}
+            onPointerCancel={handlePointerRelease}
+            onPointerLeave={handlePointerRelease}
+          >
+            {children}
+          </span>
         </TooltipPrimitive.Trigger>
         <TooltipPrimitive.Portal>
           <TooltipPrimitive.Content

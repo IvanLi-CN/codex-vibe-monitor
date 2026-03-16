@@ -13,7 +13,7 @@ use axum::{
     response::Html,
 };
 use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
-use rand::{RngCore, rngs::OsRng};
+use rand::{Rng, RngCore, rngs::OsRng};
 use sqlx::Transaction;
 
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
@@ -29,6 +29,11 @@ pub(crate) const ENV_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS: &str =
     "UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS";
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: &str =
     "UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS";
+pub(crate) const ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL: &str =
+    "UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL";
+pub(crate) const ENV_UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY: &str = "UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY";
+pub(crate) const ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN: &str =
+    "UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN";
 
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_ISSUER: &str = "https://auth.openai.com";
@@ -37,6 +42,8 @@ pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS: u64 = 10 * 60
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS: u64 = 5 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS: u64 = 15 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: u64 = 30;
+const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS: u64 = 60 * 60;
+const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_STATUS_FETCH_LIMIT: i64 = 12;
 const DEFAULT_MANUAL_OAUTH_CALLBACK_PORT: u16 = 1455;
 
 const UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX: &str = "oauth_codex";
@@ -358,6 +365,49 @@ pub(crate) struct LoginSessionStatusResponse {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OauthMailboxSessionResponse {
+    session_id: String,
+    email_address: String,
+    expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OauthMailboxCodeSummary {
+    value: String,
+    source: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OauthInviteSummary {
+    subject: String,
+    copy_value: String,
+    copy_label: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OauthMailboxStatus {
+    session_id: String,
+    email_address: String,
+    expires_at: String,
+    latest_code: Option<OauthMailboxCodeSummary>,
+    invite: Option<OauthInviteSummary>,
+    invited: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OauthMailboxStatusBatchResponse {
+    items: Vec<OauthMailboxStatus>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateOauthLoginSessionRequest {
@@ -369,12 +419,27 @@ pub(crate) struct CreateOauthLoginSessionRequest {
     #[serde(default)]
     tag_ids: Vec<i64>,
     is_mother: Option<bool>,
+    mailbox_session_id: Option<String>,
+    generated_mailbox_address: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompleteOauthLoginSessionRequest {
     callback_url: String,
+    mailbox_session_id: Option<String>,
+    generated_mailbox_address: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateOauthMailboxSessionRequest {}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OauthMailboxStatusRequest {
+    #[serde(default)]
+    session_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -725,6 +790,8 @@ struct OauthLoginSessionRow {
     note: Option<String>,
     tag_ids_json: Option<String>,
     group_note: Option<String>,
+    mailbox_session_id: Option<String>,
+    generated_mailbox_address: Option<String>,
     state: String,
     pkce_verifier: String,
     redirect_uri: String,
@@ -735,6 +802,27 @@ struct OauthLoginSessionRow {
     consumed_at: Option<String>,
     created_at: String,
     updated_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, FromRow)]
+struct OauthMailboxSessionRow {
+    session_id: String,
+    remote_email_id: String,
+    email_address: String,
+    email_domain: String,
+    latest_code_value: Option<String>,
+    latest_code_source: Option<String>,
+    latest_code_updated_at: Option<String>,
+    invite_subject: Option<String>,
+    invite_copy_value: Option<String>,
+    invite_copy_label: Option<String>,
+    invite_updated_at: Option<String>,
+    invited: i64,
+    last_message_id: Option<String>,
+    created_at: String,
+    updated_at: String,
+    expires_at: String,
 }
 
 pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Result<()> {
@@ -847,6 +935,8 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             note TEXT,
             tag_ids_json TEXT,
             group_note TEXT,
+            mailbox_session_id TEXT,
+            generated_mailbox_address TEXT,
             state TEXT NOT NULL UNIQUE,
             pkce_verifier TEXT NOT NULL,
             redirect_uri TEXT NOT NULL,
@@ -870,6 +960,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_note")
         .await
         .context("failed to ensure pool_oauth_login_sessions.group_note")?;
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "mailbox_session_id")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.mailbox_session_id")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_oauth_login_sessions",
+        "generated_mailbox_address",
+    )
+    .await
+    .context("failed to ensure pool_oauth_login_sessions.generated_mailbox_address")?;
     ensure_integer_column_with_default(pool, "pool_oauth_login_sessions", "is_mother", "0")
         .await
         .context("failed to ensure pool_oauth_login_sessions.is_mother")?;
@@ -920,6 +1020,42 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure idx_pool_upstream_account_tags_tag_id")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_oauth_mailbox_sessions (
+            session_id TEXT PRIMARY KEY,
+            remote_email_id TEXT NOT NULL,
+            email_address TEXT NOT NULL,
+            email_domain TEXT NOT NULL,
+            latest_code_value TEXT,
+            latest_code_source TEXT,
+            latest_code_updated_at TEXT,
+            invite_subject TEXT,
+            invite_copy_value TEXT,
+            invite_copy_label TEXT,
+            invite_updated_at TEXT,
+            invited INTEGER NOT NULL DEFAULT 0,
+            last_message_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_oauth_mailbox_sessions table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_oauth_mailbox_sessions_expires_at
+        ON pool_oauth_mailbox_sessions (expires_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_oauth_mailbox_sessions_expires_at")?;
 
     sqlx::query(
         r#"
@@ -1307,6 +1443,137 @@ pub(crate) async fn get_upstream_account_sticky_keys(
     Ok(Json(response))
 }
 
+pub(crate) async fn create_oauth_mailbox_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(_payload): Json<CreateOauthMailboxSessionRequest>,
+) -> Result<Json<OauthMailboxSessionResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    cleanup_expired_oauth_mailbox_sessions(state.as_ref())
+        .await
+        .map_err(internal_error_tuple)?;
+    let config = upstream_mailbox_config(&state.config)?;
+    let generated = moemail_create_email(&state.http_clients.shared, config)
+        .await
+        .map_err(internal_error_tuple)?;
+    let email_address = generated.email.trim().to_string();
+    let email_domain = email_address
+        .split('@')
+        .nth(1)
+        .unwrap_or(config.default_domain.as_str())
+        .to_string();
+    let session_id = random_hex(16)?;
+    let now = Utc::now();
+    let expires_at =
+        now + ChronoDuration::seconds(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS as i64);
+    let now_iso = format_utc_iso(now);
+    let expires_at_iso = format_utc_iso(expires_at);
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_mailbox_sessions (
+            session_id, remote_email_id, email_address, email_domain, latest_code_value,
+            latest_code_source, latest_code_updated_at, invite_subject, invite_copy_value,
+            invite_copy_label, invite_updated_at, invited, last_message_id, created_at, updated_at,
+            expires_at
+        ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?5, ?5, ?6)
+        "#,
+    )
+    .bind(&session_id)
+    .bind(&generated.id)
+    .bind(&email_address)
+    .bind(&email_domain)
+    .bind(&now_iso)
+    .bind(&expires_at_iso)
+    .execute(&state.pool)
+    .await
+    .map_err(internal_error_tuple)?;
+
+    Ok(Json(OauthMailboxSessionResponse {
+        session_id,
+        email_address,
+        expires_at: expires_at_iso,
+    }))
+}
+
+pub(crate) async fn get_oauth_mailbox_session_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<OauthMailboxStatusRequest>,
+) -> Result<Json<OauthMailboxStatusBatchResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    cleanup_expired_oauth_mailbox_sessions(state.as_ref())
+        .await
+        .map_err(internal_error_tuple)?;
+    let session_ids = payload
+        .session_ids
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let rows = load_oauth_mailbox_sessions(&state.pool, &session_ids)
+        .await
+        .map_err(internal_error_tuple)?;
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        match refresh_oauth_mailbox_session_status(state.as_ref(), &row).await {
+            Ok(refreshed) => items.push(oauth_mailbox_status_from_row(&refreshed)),
+            Err(error) => {
+                let mut status = oauth_mailbox_status_from_row(&row);
+                status.error = Some(error.to_string());
+                items.push(status);
+            }
+        }
+    }
+    Ok(Json(OauthMailboxStatusBatchResponse { items }))
+}
+
+pub(crate) async fn delete_oauth_mailbox_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    let Some(row) = load_oauth_mailbox_session(&state.pool, &session_id)
+        .await
+        .map_err(internal_error_tuple)?
+    else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    if let Some(config) = state.config.upstream_accounts_moemail.as_ref()
+        && let Err(err) =
+            moemail_delete_email(&state.http_clients.shared, config, &row.remote_email_id).await
+    {
+        debug!(
+            mailbox_session_id = %row.session_id,
+            remote_email_id = %row.remote_email_id,
+            error = %err,
+            "failed to delete moemail mailbox during explicit cleanup"
+        );
+    }
+    delete_oauth_mailbox_session_with_executor(&state.pool, &session_id)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn create_oauth_login_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1319,6 +1586,12 @@ pub(crate) async fn create_oauth_login_session(
         ));
     }
     state.upstream_accounts.require_crypto_key()?;
+    validate_mailbox_binding(
+        &state.pool,
+        payload.mailbox_session_id.as_deref(),
+        payload.generated_mailbox_address.as_deref(),
+    )
+    .await?;
     let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
     let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
 
@@ -1397,10 +1670,10 @@ pub(crate) async fn create_oauth_login_session(
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
-            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note, state,
-            pkce_verifier, redirect_uri, status, auth_url, error_message, expires_at, consumed_at, created_at,
-            updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, ?14, NULL, ?15, ?15)
+            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note,
+            mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
+            error_message, expires_at, consumed_at, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL, ?16, NULL, ?17, ?17)
         "#,
     )
     .bind(&login_id)
@@ -1411,6 +1684,8 @@ pub(crate) async fn create_oauth_login_session(
     .bind(note)
     .bind(tag_ids_json)
     .bind(stored_group_note)
+    .bind(normalize_optional_text(payload.mailbox_session_id.clone()))
+    .bind(normalize_optional_text(payload.generated_mailbox_address.clone()))
     .bind(&state_token)
     .bind(&pkce_verifier)
     .bind(&redirect_uri)
@@ -1479,6 +1754,25 @@ pub(crate) async fn complete_oauth_login_session(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    validate_mailbox_binding_fields(
+        payload.mailbox_session_id.as_deref(),
+        payload.generated_mailbox_address.as_deref(),
+    )?;
+    if session.mailbox_session_id.as_deref() != payload.mailbox_session_id.as_deref()
+        || session.generated_mailbox_address.as_deref()
+            != payload.generated_mailbox_address.as_deref()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "mailbox binding no longer matches this OAuth login session".to_string(),
+        ));
+    }
+    validate_mailbox_binding(
+        &state.pool,
+        session.mailbox_session_id.as_deref(),
+        session.generated_mailbox_address.as_deref(),
+    )
+    .await?;
     let query = parse_manual_oauth_callback(&payload.callback_url, &session.redirect_uri)
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let account_id =
@@ -1516,6 +1810,8 @@ pub(crate) async fn relogin_upstream_account(
         account_id: Some(id),
         tag_ids,
         is_mother: None,
+        mailbox_session_id: None,
+        generated_mailbox_address: None,
     };
     create_oauth_login_session(State(state), headers, Json(payload)).await
 }
@@ -2174,6 +2470,7 @@ fn parse_manual_oauth_callback(
 
 async fn run_upstream_account_maintenance_once(state: &AppState) -> Result<()> {
     expire_pending_login_sessions(&state.pool).await?;
+    cleanup_expired_oauth_mailbox_sessions(state).await?;
     let Some(_) = state.upstream_accounts.crypto_key else {
         return Ok(());
     };
@@ -3687,7 +3984,7 @@ async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) 
     Ok(group_account_count_conn(conn, group_name).await? > 0)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 async fn save_group_note_record(
     pool: &Pool<Sqlite>,
     group_name: &str,
@@ -3783,9 +4080,9 @@ async fn load_login_session_by_login_id_with_executor(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note, state,
-            pkce_verifier, redirect_uri, status, auth_url, error_message, expires_at, consumed_at, created_at,
-            updated_at
+            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note,
+            mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
+            error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
         WHERE login_id = ?1
         LIMIT 1
@@ -3811,9 +4108,9 @@ async fn load_login_session_by_state(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note, state,
-            pkce_verifier, redirect_uri, status, auth_url, error_message, expires_at, consumed_at, created_at,
-            updated_at
+            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note,
+            mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
+            error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
         WHERE state = ?1
         LIMIT 1
@@ -3839,6 +4136,113 @@ async fn expire_pending_login_sessions(pool: &Pool<Sqlite>) -> Result<()> {
     .bind(LOGIN_SESSION_STATUS_PENDING)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+async fn load_oauth_mailbox_session(
+    pool: &Pool<Sqlite>,
+    session_id: &str,
+) -> Result<Option<OauthMailboxSessionRow>> {
+    sqlx::query_as::<_, OauthMailboxSessionRow>(
+        r#"
+        SELECT
+            session_id, remote_email_id, email_address, email_domain, latest_code_value,
+            latest_code_source, latest_code_updated_at, invite_subject, invite_copy_value,
+            invite_copy_label, invite_updated_at, invited, last_message_id, created_at, updated_at,
+            expires_at
+        FROM pool_oauth_mailbox_sessions
+        WHERE session_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn load_oauth_mailbox_sessions(
+    pool: &Pool<Sqlite>,
+    session_ids: &[String],
+) -> Result<Vec<OauthMailboxSessionRow>> {
+    if session_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            session_id, remote_email_id, email_address, email_domain, latest_code_value,
+            latest_code_source, latest_code_updated_at, invite_subject, invite_copy_value,
+            invite_copy_label, invite_updated_at, invited, last_message_id, created_at, updated_at,
+            expires_at
+        FROM pool_oauth_mailbox_sessions
+        WHERE session_id IN (
+        "#,
+    );
+    let mut separated = builder.separated(", ");
+    for session_id in session_ids {
+        separated.push_bind(session_id);
+    }
+    separated.push_unseparated(")");
+    builder.push(" ORDER BY created_at ASC");
+    builder
+        .build_query_as::<OauthMailboxSessionRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn delete_oauth_mailbox_session_with_executor(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    session_id: &str,
+) -> Result<u64> {
+    let affected = sqlx::query(
+        r#"
+        DELETE FROM pool_oauth_mailbox_sessions
+        WHERE session_id = ?1
+        "#,
+    )
+    .bind(session_id)
+    .execute(executor)
+    .await?
+    .rows_affected();
+    Ok(affected)
+}
+
+async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> {
+    let Some(config) = state.config.upstream_accounts_moemail.as_ref() else {
+        return Ok(());
+    };
+    let now_iso = format_utc_iso(Utc::now());
+    let expired_rows = sqlx::query_as::<_, OauthMailboxSessionRow>(
+        r#"
+        SELECT
+            session_id, remote_email_id, email_address, email_domain, latest_code_value,
+            latest_code_source, latest_code_updated_at, invite_subject, invite_copy_value,
+            invite_copy_label, invite_updated_at, invited, last_message_id, created_at, updated_at,
+            expires_at
+        FROM pool_oauth_mailbox_sessions
+        WHERE expires_at <= ?1
+        ORDER BY expires_at ASC
+        "#,
+    )
+    .bind(&now_iso)
+    .fetch_all(&state.pool)
+    .await?;
+
+    for row in expired_rows {
+        if let Err(err) =
+            moemail_delete_email(&state.http_clients.shared, config, &row.remote_email_id).await
+        {
+            debug!(
+                mailbox_session_id = %row.session_id,
+                remote_email_id = %row.remote_email_id,
+                error = %err,
+                "failed to delete expired moemail mailbox"
+            );
+        }
+        delete_oauth_mailbox_session_with_executor(&state.pool, &row.session_id).await?;
+    }
     Ok(())
 }
 
@@ -3936,6 +4340,440 @@ fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusRe
         account_id: row.account_id,
         error: row.error_message.clone(),
     }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedMailboxCode {
+    value: String,
+    source: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedMailboxInvite {
+    subject: String,
+    copy_value: String,
+    copy_label: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoeMailGenerateEmailPayload {
+    id: String,
+    email: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoeMailMessageListPayload {
+    messages: Vec<MoeMailMessageSummary>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoeMailMessageSummary {
+    id: String,
+    subject: Option<String>,
+    received_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoeMailMessageDetailPayload {
+    message: MoeMailMessageDetail,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoeMailMessageDetail {
+    id: String,
+    subject: Option<String>,
+    content: Option<String>,
+    html: Option<String>,
+    received_at: Option<String>,
+}
+
+static OAUTH_SUBJECT_CODE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)your\s+(?:chatgpt|openai)\s+code\s+is\s+(\d{4,8})")
+        .expect("valid oauth subject code regex")
+});
+static OAUTH_BODY_CODE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(?:verification\s+code|code\s+is)[^0-9]{0,24}(\d{4,8})")
+        .expect("valid oauth body code regex")
+});
+static URL_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("valid url regex"));
+static HTML_TAG_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"<[^>]+>").expect("valid html tag regex"));
+
+fn oauth_mailbox_status_from_row(row: &OauthMailboxSessionRow) -> OauthMailboxStatus {
+    OauthMailboxStatus {
+        session_id: row.session_id.clone(),
+        email_address: row.email_address.clone(),
+        expires_at: row.expires_at.clone(),
+        latest_code: match (
+            row.latest_code_value.clone(),
+            row.latest_code_source.clone(),
+            row.latest_code_updated_at.clone(),
+        ) {
+            (Some(value), Some(source), Some(updated_at)) => Some(OauthMailboxCodeSummary {
+                value,
+                source,
+                updated_at,
+            }),
+            _ => None,
+        },
+        invite: match (
+            row.invite_subject.clone(),
+            row.invite_copy_value.clone(),
+            row.invite_copy_label.clone(),
+            row.invite_updated_at.clone(),
+        ) {
+            (Some(subject), Some(copy_value), Some(copy_label), Some(updated_at)) => {
+                Some(OauthInviteSummary {
+                    subject,
+                    copy_value,
+                    copy_label,
+                    updated_at,
+                })
+            }
+            _ => None,
+        },
+        invited: row.invited != 0,
+        error: None,
+    }
+}
+
+fn upstream_mailbox_config(
+    config: &AppConfig,
+) -> Result<&UpstreamAccountsMoeMailConfig, (StatusCode, String)> {
+    config.upstream_accounts_moemail.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "oauth temp mail requires {}, {}, and {}",
+                ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL,
+                ENV_UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY,
+                ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN
+            ),
+        )
+    })
+}
+
+fn validate_mailbox_binding_fields(
+    mailbox_session_id: Option<&str>,
+    generated_mailbox_address: Option<&str>,
+) -> Result<(), (StatusCode, String)> {
+    match (mailbox_session_id, generated_mailbox_address) {
+        (Some(_), Some(_)) | (None, None) => Ok(()),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "mailboxSessionId and generatedMailboxAddress must be provided together".to_string(),
+        )),
+    }
+}
+
+async fn validate_mailbox_binding(
+    pool: &Pool<Sqlite>,
+    mailbox_session_id: Option<&str>,
+    generated_mailbox_address: Option<&str>,
+) -> Result<(), (StatusCode, String)> {
+    validate_mailbox_binding_fields(mailbox_session_id, generated_mailbox_address)?;
+    let Some(session_id) = mailbox_session_id else {
+        return Ok(());
+    };
+    let Some(expected_address) = generated_mailbox_address else {
+        return Ok(());
+    };
+    let row = load_oauth_mailbox_session(pool, session_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "mailbox session is missing or expired".to_string(),
+            )
+        })?;
+    if row.email_address != expected_address.trim() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "generatedMailboxAddress no longer matches the mailbox session".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn strip_html_tags(raw: &str) -> String {
+    HTML_TAG_REGEX.replace_all(raw, " ").into_owned()
+}
+
+fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode> {
+    let subject = detail.subject.as_deref().unwrap_or_default();
+    if let Some(captures) = OAUTH_SUBJECT_CODE_REGEX.captures(subject) {
+        let value = captures.get(1)?.as_str().to_string();
+        return Some(ParsedMailboxCode {
+            value,
+            source: "subject".to_string(),
+            updated_at: detail
+                .received_at
+                .clone()
+                .unwrap_or_else(|| format_utc_iso(Utc::now())),
+        });
+    }
+
+    for (source, raw) in [
+        ("content", detail.content.as_deref().unwrap_or_default()),
+        ("html", detail.html.as_deref().unwrap_or_default()),
+    ] {
+        let normalized = if source == "html" {
+            strip_html_tags(raw)
+        } else {
+            raw.to_string()
+        };
+        if let Some(captures) = OAUTH_BODY_CODE_REGEX.captures(&normalized) {
+            let value = captures.get(1)?.as_str().to_string();
+            return Some(ParsedMailboxCode {
+                value,
+                source: source.to_string(),
+                updated_at: detail
+                    .received_at
+                    .clone()
+                    .unwrap_or_else(|| format_utc_iso(Utc::now())),
+            });
+        }
+    }
+
+    None
+}
+
+fn parse_mailbox_invite(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxInvite> {
+    let subject = detail.subject.as_deref().unwrap_or_default().trim();
+    if subject.is_empty() || !subject.to_ascii_lowercase().contains("has invited you") {
+        return None;
+    }
+
+    let text_candidates = [
+        detail.content.as_deref().unwrap_or_default().to_string(),
+        strip_html_tags(detail.html.as_deref().unwrap_or_default()),
+    ];
+    let body = text_candidates.join("\n");
+    let normalized = body.to_ascii_lowercase();
+    if !normalized.contains("join workspace") && !normalized.contains("accept invitation") {
+        return None;
+    }
+
+    let copy_value = URL_REGEX
+        .find_iter(&body)
+        .map(|value| value.as_str().trim_end_matches('.').to_string())
+        .find(|value| {
+            let lower = value.to_ascii_lowercase();
+            lower.contains("workspace") || lower.contains("invite") || lower.contains("accept")
+        })?;
+
+    Some(ParsedMailboxInvite {
+        subject: subject.to_string(),
+        copy_label: "invite-link".to_string(),
+        copy_value,
+        updated_at: detail
+            .received_at
+            .clone()
+            .unwrap_or_else(|| format_utc_iso(Utc::now())),
+    })
+}
+
+fn parsed_code_from_mailbox_row(row: &OauthMailboxSessionRow) -> Option<ParsedMailboxCode> {
+    Some(ParsedMailboxCode {
+        value: row.latest_code_value.clone()?,
+        source: row.latest_code_source.clone()?,
+        updated_at: row.latest_code_updated_at.clone()?,
+    })
+}
+
+fn parsed_invite_from_mailbox_row(row: &OauthMailboxSessionRow) -> Option<ParsedMailboxInvite> {
+    Some(ParsedMailboxInvite {
+        subject: row.invite_subject.clone()?,
+        copy_value: row.invite_copy_value.clone()?,
+        copy_label: row.invite_copy_label.clone()?,
+        updated_at: row.invite_updated_at.clone()?,
+    })
+}
+
+async fn moemail_create_email(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+) -> Result<MoeMailGenerateEmailPayload> {
+    let local_name = generate_mailbox_local_name().map_err(|(_, message)| anyhow!(message))?;
+    let response = client
+        .post(
+            config
+                .base_url
+                .join("/api/emails/generate")
+                .context("invalid moemail generate endpoint")?,
+        )
+        .header("X-API-Key", config.api_key.as_str())
+        .json(&json!({
+            "name": local_name,
+            "expiryTime": DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS * 1000,
+            "domain": config.default_domain,
+        }))
+        .send()
+        .await
+        .context("failed to create moemail mailbox")?
+        .error_for_status()
+        .context("moemail mailbox creation request failed")?;
+
+    response
+        .json::<MoeMailGenerateEmailPayload>()
+        .await
+        .context("failed to decode moemail create mailbox response")
+}
+
+async fn moemail_list_messages(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+    remote_email_id: &str,
+) -> Result<Vec<MoeMailMessageSummary>> {
+    let response = client
+        .get(
+            config
+                .base_url
+                .join(&format!("/api/emails/{remote_email_id}"))
+                .context("invalid moemail email detail endpoint")?,
+        )
+        .header("X-API-Key", config.api_key.as_str())
+        .send()
+        .await
+        .with_context(|| format!("failed to list moemail messages for {remote_email_id}"))?
+        .error_for_status()
+        .with_context(|| format!("moemail list messages request failed for {remote_email_id}"))?;
+
+    let payload = response
+        .json::<MoeMailMessageListPayload>()
+        .await
+        .context("failed to decode moemail message list response")?;
+    Ok(payload.messages)
+}
+
+async fn moemail_get_message(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+    remote_email_id: &str,
+    message_id: &str,
+) -> Result<MoeMailMessageDetail> {
+    let response = client
+        .get(
+            config
+                .base_url
+                .join(&format!("/api/emails/{remote_email_id}/{message_id}"))
+                .context("invalid moemail message detail endpoint")?,
+        )
+        .header("X-API-Key", config.api_key.as_str())
+        .send()
+        .await
+        .with_context(|| format!("failed to load moemail message {message_id}"))?
+        .error_for_status()
+        .with_context(|| format!("moemail message request failed for {message_id}"))?;
+
+    let payload = response
+        .json::<MoeMailMessageDetailPayload>()
+        .await
+        .context("failed to decode moemail message detail response")?;
+    Ok(payload.message)
+}
+
+async fn moemail_delete_email(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+    remote_email_id: &str,
+) -> Result<()> {
+    client
+        .delete(
+            config
+                .base_url
+                .join(&format!("/api/emails/{remote_email_id}"))
+                .context("invalid moemail delete endpoint")?,
+        )
+        .header("X-API-Key", config.api_key.as_str())
+        .send()
+        .await
+        .with_context(|| format!("failed to delete moemail mailbox {remote_email_id}"))?
+        .error_for_status()
+        .with_context(|| format!("moemail delete request failed for {remote_email_id}"))?;
+    Ok(())
+}
+
+async fn refresh_oauth_mailbox_session_status(
+    state: &AppState,
+    row: &OauthMailboxSessionRow,
+) -> Result<OauthMailboxSessionRow> {
+    let config = upstream_mailbox_config(&state.config).map_err(|(_, message)| anyhow!(message))?;
+    let mut messages =
+        moemail_list_messages(&state.http_clients.shared, config, &row.remote_email_id).await?;
+    messages.sort_by(|left, right| right.received_at.cmp(&left.received_at));
+
+    let mut latest_code = parsed_code_from_mailbox_row(row);
+    let mut latest_invite = parsed_invite_from_mailbox_row(row);
+    let latest_message_id = messages.first().map(|message| message.id.clone());
+
+    for summary in messages
+        .into_iter()
+        .take(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_STATUS_FETCH_LIMIT as usize)
+    {
+        if latest_code.is_some() && latest_invite.is_some() {
+            break;
+        }
+        let detail = moemail_get_message(
+            &state.http_clients.shared,
+            config,
+            &row.remote_email_id,
+            &summary.id,
+        )
+        .await?;
+        if latest_code.is_none() {
+            latest_code = parse_mailbox_code(&detail);
+        }
+        if latest_invite.is_none() {
+            latest_invite = parse_mailbox_invite(&detail);
+        }
+    }
+
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_oauth_mailbox_sessions
+        SET latest_code_value = ?2,
+            latest_code_source = ?3,
+            latest_code_updated_at = ?4,
+            invite_subject = ?5,
+            invite_copy_value = ?6,
+            invite_copy_label = ?7,
+            invite_updated_at = ?8,
+            invited = ?9,
+            last_message_id = ?10,
+            updated_at = ?11
+        WHERE session_id = ?1
+        "#,
+    )
+    .bind(&row.session_id)
+    .bind(latest_code.as_ref().map(|value| value.value.clone()))
+    .bind(latest_code.as_ref().map(|value| value.source.clone()))
+    .bind(latest_code.as_ref().map(|value| value.updated_at.clone()))
+    .bind(latest_invite.as_ref().map(|value| value.subject.clone()))
+    .bind(latest_invite.as_ref().map(|value| value.copy_value.clone()))
+    .bind(latest_invite.as_ref().map(|value| value.copy_label.clone()))
+    .bind(latest_invite.as_ref().map(|value| value.updated_at.clone()))
+    .bind(if latest_invite.is_some() { 1 } else { 0 })
+    .bind(latest_message_id.or_else(|| row.last_message_id.clone()))
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await?;
+
+    load_oauth_mailbox_session(&state.pool, &row.session_id)
+        .await?
+        .ok_or_else(|| anyhow!("mailbox session disappeared after status refresh"))
 }
 
 fn normalize_tag_name(value: &str) -> Result<String, (StatusCode, String)> {
@@ -4734,6 +5572,94 @@ fn random_hex(size: usize) -> Result<String, (StatusCode, String)> {
             .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     }
     Ok(output)
+}
+
+fn random_base36(size: usize) -> Result<String, (StatusCode, String)> {
+    const ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    const LETTERS: &[u8; 26] = b"abcdefghijklmnopqrstuvwxyz";
+    const DIGITS: &[u8; 10] = b"0123456789";
+    let mut rng = OsRng;
+    let mut output = Vec::with_capacity(size);
+    for _ in 0..size {
+        let idx = rng.gen_range(0..ALPHABET.len());
+        output.push(ALPHABET[idx]);
+    }
+    let mut digit_pos = None;
+    if size > 0 {
+        let pos = rng.gen_range(0..size);
+        output[pos] = DIGITS[rng.gen_range(0..DIGITS.len())];
+        digit_pos = Some(pos);
+    }
+    if size > 1 {
+        let mut letter_pos = rng.gen_range(0..size);
+        if Some(letter_pos) == digit_pos {
+            letter_pos = (letter_pos + 1) % size;
+        }
+        output[letter_pos] = LETTERS[rng.gen_range(0..LETTERS.len())];
+    }
+    String::from_utf8(output).map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+}
+
+fn generate_mailbox_local_name() -> Result<String, (StatusCode, String)> {
+    const GIVEN_NAMES: &[&str] = &[
+        "alex", "emma", "olivia", "liam", "sophia", "noah", "ava", "mia", "ethan", "nora", "lucas",
+        "zoe",
+    ];
+    const FAMILY_NAMES: &[&str] = &[
+        "carter", "ng", "morgan", "patel", "reed", "young", "kim", "bennett", "wong", "brooks",
+    ];
+    const ORG_NAMES: &[&str] = &[
+        "northstar",
+        "acorn",
+        "harbor",
+        "summit",
+        "evergreen",
+        "lattice",
+        "brightpath",
+        "aurora",
+    ];
+    const TEAM_NAMES: &[&str] = &[
+        "ops", "research", "growth", "support", "finance", "design", "legal", "success",
+    ];
+    const UNIT_NAMES: &[&str] = &[
+        "team", "desk", "hub", "group", "office", "lab", "studio", "center",
+    ];
+
+    let mut rng = OsRng;
+    let suffix_len = rng.gen_range(3..=5);
+    let suffix = random_base36(suffix_len)?;
+    let maybe_join = |left: &str, right: &str, rng: &mut OsRng| match rng.gen_range(0..4) {
+        0 => format!("{left}{right}"),
+        1 => format!("{left}.{right}"),
+        _ => format!("{left}-{right}"),
+    };
+    let local = match rng.gen_range(0..3) {
+        0 => {
+            let base = maybe_join(
+                GIVEN_NAMES[rng.gen_range(0..GIVEN_NAMES.len())],
+                FAMILY_NAMES[rng.gen_range(0..FAMILY_NAMES.len())],
+                &mut rng,
+            );
+            maybe_join(&base, &suffix, &mut rng)
+        }
+        1 => {
+            let base = maybe_join(
+                ORG_NAMES[rng.gen_range(0..ORG_NAMES.len())],
+                TEAM_NAMES[rng.gen_range(0..TEAM_NAMES.len())],
+                &mut rng,
+            );
+            maybe_join(&base, &suffix, &mut rng)
+        }
+        _ => {
+            let base = maybe_join(
+                TEAM_NAMES[rng.gen_range(0..TEAM_NAMES.len())],
+                UNIT_NAMES[rng.gen_range(0..UNIT_NAMES.len())],
+                &mut rng,
+            );
+            maybe_join(&base, &suffix, &mut rng)
+        }
+    };
+    Ok(local)
 }
 
 fn format_window_label(window_duration_mins: i64) -> String {
@@ -7397,5 +8323,93 @@ mod tests {
 
         let allowed = ensure_display_name_available(&mut *tx, " alpha ", Some(account_id)).await;
         assert!(allowed.is_ok());
+    }
+
+    #[test]
+    fn parse_mailbox_code_prefers_subject_match() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_1".to_string(),
+            subject: Some("Your ChatGPT code is 612345".to_string()),
+            content: Some("Ignore body 000000".to_string()),
+            html: None,
+            received_at: Some("2026-03-16T00:00:00Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("subject code");
+        assert_eq!(parsed.value, "612345");
+        assert_eq!(parsed.source, "subject");
+    }
+
+    #[test]
+    fn parse_mailbox_code_falls_back_to_body_match() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_2".to_string(),
+            subject: Some("Security notice".to_string()),
+            content: Some("Use this verification code: 481122 to continue.".to_string()),
+            html: None,
+            received_at: Some("2026-03-16T00:00:00Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("body code");
+        assert_eq!(parsed.value, "481122");
+        assert_eq!(parsed.source, "content");
+    }
+
+    #[test]
+    fn parse_mailbox_invite_extracts_workspace_link() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_3".to_string(),
+            subject: Some("Alex has invited you to a workspace".to_string()),
+            content: Some(
+                "Join workspace: https://chatgpt.com/workspace/invite/abc123".to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-16T00:00:00Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("invite summary");
+        assert_eq!(parsed.subject, "Alex has invited you to a workspace");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/abc123"
+        );
+        assert_eq!(parsed.copy_label, "invite-link");
+    }
+
+    #[test]
+    fn validate_mailbox_binding_fields_requires_complete_pair() {
+        assert!(validate_mailbox_binding_fields(None, None).is_ok());
+        assert!(
+            validate_mailbox_binding_fields(Some("session_1"), Some("mail@example.com")).is_ok()
+        );
+        assert!(validate_mailbox_binding_fields(Some("session_1"), None).is_err());
+        assert!(validate_mailbox_binding_fields(None, Some("mail@example.com")).is_err());
+    }
+
+    #[test]
+    fn generate_mailbox_local_name_looks_like_human_or_org_style() {
+        let local = generate_mailbox_local_name().expect("mailbox local part");
+        assert!(local.len() >= 10);
+        assert!(
+            local
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.' || ch == '-')
+        );
+        assert!(local.chars().any(|ch| ch.is_ascii_digit()));
+        assert!(!local.starts_with('-'));
+        assert!(!local.ends_with('-'));
+    }
+
+    #[test]
+    fn random_base36_uses_letters_and_digits() {
+        let token = random_base36(24).expect("base36 token");
+        assert_eq!(token.len(), 24);
+        assert!(
+            token
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        );
+        assert!(token.chars().any(|ch| ch.is_ascii_lowercase()));
+        assert!(token.chars().any(|ch| ch.is_ascii_digit()));
     }
 }
