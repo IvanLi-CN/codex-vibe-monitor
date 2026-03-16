@@ -166,18 +166,22 @@ function kindVariant(kind: string): 'secondary' | 'success' {
   return kind === 'oauth_codex' ? 'success' : 'secondary'
 }
 
-function isMissingApiScopeError(lastError?: string | null) {
+function isOauthBridgeUnavailableError(lastError?: string | null) {
   const normalized = lastError?.toLocaleLowerCase() ?? ''
   return (
-    normalized.includes('missing scopes') ||
-    normalized.includes('api.responses.write') ||
-    normalized.includes('api.model.read')
+    normalized.includes('oauth bridge') &&
+    (normalized.includes('unavailable') || normalized.includes('connection refused'))
   )
 }
 
-function isPermissionError(lastError?: string | null) {
+function isOauthBridgeExchangeError(lastError?: string | null) {
   const normalized = lastError?.toLocaleLowerCase() ?? ''
-  return normalized.includes('insufficient permissions for this operation')
+  return normalized.includes('oauth bridge token exchange failed')
+}
+
+function isOauthBridgeUpstreamRejectedError(lastError?: string | null) {
+  const normalized = lastError?.toLocaleLowerCase() ?? ''
+  return normalized.includes('oauth bridge upstream') || normalized.includes('upstream rejected request')
 }
 
 function resolveOauthRecoveryHint(
@@ -186,16 +190,22 @@ function resolveOauthRecoveryHint(
   lastError?: string | null,
 ): OauthRecoveryHint | null {
   if (kind !== 'oauth_codex') return null
-  if (isMissingApiScopeError(lastError)) {
+  if (isOauthBridgeUnavailableError(lastError)) {
     return {
-      titleKey: 'accountPool.upstreamAccounts.hints.scopeTitle',
-      bodyKey: 'accountPool.upstreamAccounts.hints.scopeBody',
+      titleKey: 'accountPool.upstreamAccounts.hints.bridgeUnavailableTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.bridgeUnavailableBody',
     }
   }
-  if (isPermissionError(lastError)) {
+  if (isOauthBridgeExchangeError(lastError)) {
     return {
-      titleKey: 'accountPool.upstreamAccounts.hints.permissionTitle',
-      bodyKey: 'accountPool.upstreamAccounts.hints.permissionBody',
+      titleKey: 'accountPool.upstreamAccounts.hints.bridgeExchangeTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.bridgeExchangeBody',
+    }
+  }
+  if (isOauthBridgeUpstreamRejectedError(lastError)) {
+    return {
+      titleKey: 'accountPool.upstreamAccounts.hints.bridgeUpstreamTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.bridgeUpstreamBody',
     }
   }
   if (status === 'needs_reauth') {
@@ -208,7 +218,12 @@ function resolveOauthRecoveryHint(
 }
 
 function resolveDisplayedStatus(status: string, lastError?: string | null) {
-  if (status === 'needs_reauth' && (isMissingApiScopeError(lastError) || isPermissionError(lastError))) {
+  if (
+    status === 'needs_reauth' &&
+    (isOauthBridgeUnavailableError(lastError) ||
+      isOauthBridgeExchangeError(lastError) ||
+      isOauthBridgeUpstreamRejectedError(lastError))
+  ) {
     return 'error'
   }
   return status

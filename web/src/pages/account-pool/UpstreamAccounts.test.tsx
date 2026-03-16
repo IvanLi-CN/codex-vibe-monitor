@@ -324,7 +324,7 @@ describe("UpstreamAccountsPage duplicates", () => {
 });
 
 describe("UpstreamAccountsPage oauth recovery hints", () => {
-  it("shows the scope rollout hint for oauth accounts that fail with missing scopes", () => {
+  it("shows the bridge exchange hint for oauth accounts whose bridge token registration fails", () => {
     hookMocks.useUpstreamAccounts.mockReturnValue({
       items: [
         {
@@ -337,7 +337,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
           status: "error",
           enabled: true,
           lastError:
-            "pool upstream responded with 401: Missing scopes: api.responses.write",
+            "oauth bridge token exchange failed: oauth bridge responded with 502",
         },
       ],
       writesEnabled: true,
@@ -352,7 +352,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "error",
         enabled: true,
         lastError:
-          "pool upstream responded with 401: Missing scopes: api.responses.write",
+          "oauth bridge token exchange failed: oauth bridge responded with 502",
       },
       detail: {
         id: 5,
@@ -364,7 +364,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "error",
         enabled: true,
         lastError:
-          "pool upstream responded with 401: Missing scopes: api.responses.write",
+          "oauth bridge token exchange failed: oauth bridge responded with 502",
         history: [],
       },
       isLoading: false,
@@ -390,10 +390,10 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 
     clickButton(/Open details/i);
     expect(document.body.textContent).toContain(
-      "This OAuth token is missing API scopes",
+      "This OAuth account could not register with the fixed bridge",
     );
     expect(document.body.textContent).toContain(
-      "Re-authorize this account once after deploying the scope fix",
+      "The built-in OAuth bridge rejected the refreshed access token exchange",
     );
     expect(document.body.textContent).toContain("Error");
     expect(document.body.textContent).not.toContain("Needs re-auth");
@@ -470,7 +470,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     expect(document.body.textContent).toContain("Needs re-auth");
   });
 
-  it("prefers the scope hint over stale needs-reauth status when lastError says scopes are missing", () => {
+  it("prefers the bridge upstream hint over stale needs-reauth status when the last error is from the bridge data plane", () => {
     hookMocks.useUpstreamAccounts.mockReturnValue({
       items: [
         {
@@ -483,7 +483,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
           status: "needs_reauth",
           enabled: true,
           lastError:
-            "pool upstream responded with 403: Missing scopes: api.model.read",
+            "oauth bridge upstream rejected request: 403 forbidden",
         },
       ],
       writesEnabled: true,
@@ -498,7 +498,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "needs_reauth",
         enabled: true,
         lastError:
-          "pool upstream responded with 403: Missing scopes: api.model.read",
+          "oauth bridge upstream rejected request: 403 forbidden",
       },
       detail: {
         id: 7,
@@ -510,7 +510,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "needs_reauth",
         enabled: true,
         lastError:
-          "pool upstream responded with 403: Missing scopes: api.model.read",
+          "oauth bridge upstream rejected request: 403 forbidden",
         history: [],
       },
       isLoading: false,
@@ -536,7 +536,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 
     clickButton(/Open details/i);
     expect(document.body.textContent).toContain(
-      "This OAuth token is missing API scopes",
+      "The OAuth bridge upstream rejected this request",
     );
     expect(document.body.textContent).toContain("Error");
     expect(document.body.textContent).not.toContain(

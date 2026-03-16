@@ -8789,6 +8789,12 @@ struct PoolHttpFailureUpstreamState {
     error_message: String,
 }
 
+#[derive(Clone)]
+struct FixedOauthBridgeFailureState {
+    register_hits: Arc<AtomicUsize>,
+    failure: PoolHttpFailureUpstreamState,
+}
+
 async fn pool_retry_upstream(
     State(state): State<PoolRetryUpstreamState>,
     headers: HeaderMap,
@@ -8893,6 +8899,64 @@ async fn pool_http_failure_upstream(State(state): State<PoolHttpFailureUpstreamS
         })),
     )
         .into_response()
+}
+
+async fn fixed_oauth_bridge_register(
+    State(state): State<FixedOauthBridgeFailureState>,
+) -> Response {
+    state
+        .register_hits
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "token_key": "bridge-test-token",
+            "expire_at": (Utc::now() + chrono::Duration::minutes(10)).timestamp(),
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_fixed_oauth_bridge_http_failure(
+    status: StatusCode,
+    error_code: Option<&str>,
+    error_message: &str,
+) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+    let register_hits = Arc::new(AtomicUsize::new(0));
+    let state = FixedOauthBridgeFailureState {
+        register_hits: register_hits.clone(),
+        failure: PoolHttpFailureUpstreamState {
+            status,
+            error_code: error_code.map(str::to_string),
+            error_message: error_message.to_string(),
+        },
+    };
+    let app = Router::new()
+        .route(
+            "/internal/token/register",
+            post(fixed_oauth_bridge_register),
+        )
+        .route(
+            "/openai/v1/responses",
+            post(
+                |State(state): State<FixedOauthBridgeFailureState>| async move {
+                    pool_http_failure_upstream(State(state.failure)).await
+                },
+            ),
+        )
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fixed oauth bridge upstream");
+    let addr = listener
+        .local_addr()
+        .expect("fixed oauth bridge upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("fixed oauth bridge upstream should run");
+    });
+    (format!("http://{addr}"), register_hits, handle)
 }
 
 async fn spawn_pool_retry_upstream(
@@ -9383,6 +9447,8 @@ async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
 
 #[tokio::test]
 async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_details() {
+    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+
     #[derive(sqlx::FromRow)]
     struct RouteStateRow {
         status: String,
@@ -9395,15 +9461,22 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
     }
 
     let scope_message = "You have insufficient permissions for this operation. Missing scopes: api.responses.write.";
-    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+    let (bridge_base, register_hits, upstream_handle) = spawn_fixed_oauth_bridge_http_failure(
         StatusCode::UNAUTHORIZED,
         Some("missing_scopes"),
         scope_message,
     )
     .await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
+    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
+        Url::parse(&format!("{bridge_base}/internal/token/register"))
+            .expect("valid bridge register url"),
+        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
+    )
+    .await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id = insert_test_pool_oauth_account(&state, "Scope OAuth", "oauth-scope").await;
     record_pool_route_success(&state.pool, account_id, Some("sticky-scope-001"))
@@ -9490,21 +9563,32 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
             .as_str()
             .is_some_and(|value| value.contains("Missing scopes: api.responses.write"))
     );
+    assert_eq!(register_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
 
     upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
 }
 
 #[tokio::test]
 async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
-    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+
+    let (bridge_base, _register_hits, upstream_handle) = spawn_fixed_oauth_bridge_http_failure(
         StatusCode::FORBIDDEN,
         Some("token_invalidated"),
         "Authentication token has been invalidated, please sign in again.",
     )
     .await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
+    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
+        Url::parse(&format!("{bridge_base}/internal/token/register"))
+            .expect("valid bridge register url"),
+        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
+    )
+    .await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id =
         insert_test_pool_oauth_account(&state, "Invalidated OAuth", "oauth-invalidated").await;
@@ -9531,19 +9615,29 @@ async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
     assert_eq!(status, "needs_reauth");
 
     upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
 }
 
 #[tokio::test]
 async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
-    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+
+    let (bridge_base, _register_hits, upstream_handle) = spawn_fixed_oauth_bridge_http_failure(
         StatusCode::UNAUTHORIZED,
         Some("invalid_grant"),
         "Unauthorized",
     )
     .await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
+    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
+        Url::parse(&format!("{bridge_base}/internal/token/register"))
+            .expect("valid bridge register url"),
+        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
+    )
+    .await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id =
         insert_test_pool_oauth_account(&state, "Grant OAuth", "oauth-invalid-grant").await;
@@ -9570,6 +9664,7 @@ async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
     assert_eq!(status, "needs_reauth");
 
     upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
 }
 
 #[test]

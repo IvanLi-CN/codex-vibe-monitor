@@ -68,6 +68,7 @@ use tracing::{debug, error, info, warn};
 
 mod api;
 mod forward_proxy;
+mod oauth_bridge;
 mod stats;
 #[cfg(test)]
 mod tests;
