@@ -8515,12 +8515,15 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
-                    Some(summarize_response_content_encoding(
-                        upstream_response
-                            .headers()
-                            .get(header::CONTENT_ENCODING)
-                            .and_then(|value| value.to_str().ok()),
-                    ).as_str()),
+                    Some(
+                        summarize_response_content_encoding(
+                            upstream_response
+                                .headers()
+                                .get(header::CONTENT_ENCODING)
+                                .and_then(|value| value.to_str().ok()),
+                        )
+                        .as_str(),
+                    ),
                     selected_proxy
                         .as_ref()
                         .map(|proxy| proxy.display_name.as_str()),
@@ -8559,9 +8562,8 @@ async fn proxy_openai_v1_capture_target(
         .get(header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let response_content_encoding = summarize_response_content_encoding(
-        upstream_content_encoding.as_deref(),
-    );
+    let response_content_encoding =
+        summarize_response_content_encoding(upstream_content_encoding.as_deref());
     let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
         if should_forward_proxy_header(name, &upstream_connection_scoped) {
