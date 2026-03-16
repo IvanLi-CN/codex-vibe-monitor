@@ -61,19 +61,15 @@ bun run dev -- --host 127.0.0.1 --port 60080
 
 前端新增 `#/account-pool/upstream-accounts` 模块，用于管理 `Codex OAuth` 与 `Codex API Key` 上游账号；页面会展示归一化后的 `5 小时` / `7 天` 窗口、最近同步状态，以及 OAuth 一次性登录会话进度。
 
-OAuth 登录只申请官方允许的基础 scopes：`openid profile email offline_access`。OAuth 账号真正承载 `/v1/*` 路由依赖项目内固定 sidecar `ai-openai-oauth-bridge`；它和主服务一起交付，不暴露额外配置项。
+OAuth 登录只申请官方允许的基础 scopes：`openid profile email offline_access`。OAuth 账号的 `/v1/*` 数据面现在直接内联在主服务里，不再依赖额外 sidecar，也不需要 bridge 专属配置项。
 
-如果你用 Docker / Compose 部署，需要基于同一个镜像再启动一个固定服务名的 sidecar，并把命令切到 `openai-oauth-bridge`：
+Docker / Compose 部署保持单服务即可：
 
 ```yaml
 services:
   ai-codex-vibe-monitor:
     image: ghcr.io/ivanli-cn/codex-vibe-monitor:latest
     command: ["codex-vibe-monitor"]
-
-  ai-openai-oauth-bridge:
-    image: ghcr.io/ivanli-cn/codex-vibe-monitor:latest
-    command: ["openai-oauth-bridge"]
 ```
 
 ## 配置
