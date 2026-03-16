@@ -8997,6 +8997,21 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         .get(http_header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let sticky_key_header = request
+        .headers()
+        .get("x-sticky-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let prompt_cache_key_header = request
+        .headers()
+        .get("x-prompt-cache-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let forwarded_for = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let body = to_bytes(request.into_body(), usize::MAX)
         .await
         .expect("read oauth codex capture request body");
@@ -9005,6 +9020,9 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         Json(json!({
             "path": path,
             "authorization": authorization,
+            "stickyKeyHeader": sticky_key_header,
+            "promptCacheKeyHeader": prompt_cache_key_header,
+            "forwardedFor": forwarded_for,
             "bodyLength": body.len(),
         })),
     )
@@ -9873,6 +9891,14 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
                 HeaderValue::from_static("sticky-oauth-stream"),
             ),
             (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static("prompt-cache-oauth-stream"),
+            ),
+            (
+                HeaderName::from_static("x-forwarded-for"),
+                HeaderValue::from_static("203.0.113.8"),
+            ),
+            (
                 http_header::CONTENT_TYPE,
                 HeaderValue::from_static("application/json"),
             ),
@@ -9898,6 +9924,9 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
         payload["authorization"].as_str(),
         Some("Bearer oauth-streaming")
     );
+    assert!(payload["stickyKeyHeader"].is_null());
+    assert!(payload["promptCacheKeyHeader"].is_null());
+    assert!(payload["forwardedFor"].is_null());
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
@@ -9993,6 +10022,66 @@ async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
 }
 
 #[tokio::test]
+async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let oauth_id =
+        insert_test_pool_oauth_account(&state, "Oversized Responses OAuth", "oauth-oversized")
+            .await;
+    let api_key_id =
+        insert_test_pool_api_key_account(&state, "Fallback API Key", "upstream-fallback").await;
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(626262),
+    });
+    let body = vec![b'x'; OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1];
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write oversized oauth responses body");
+
+    let upstream = send_pool_request_with_failover(
+        state.clone(),
+        Method::POST,
+        &"/v1/responses?mode=delay".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file,
+            size: body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        None,
+        1,
+    )
+    .await
+    .expect("api key account should handle oversized oauth responses body");
+
+    assert_eq!(upstream.account.account_id, api_key_id);
+    let selected_at: Vec<(i64, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, last_selected_at
+        FROM pool_upstream_accounts
+        WHERE id IN (?1, ?2)
+        ORDER BY id
+        "#,
+    )
+    .bind(oauth_id)
+    .bind(api_key_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load selected timestamps");
+    assert_eq!(selected_at.len(), 2);
+    assert_eq!(selected_at[0], (oauth_id, None));
+    assert!(selected_at[1].1.is_some());
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
@@ -10060,6 +10149,32 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn extract_sticky_key_from_large_file_backed_replay_snapshot() {
+    let sticky_body = serde_json::to_vec(&json!({
+        "stickyKey": "sticky-large-file",
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
+    }))
+    .expect("serialize sticky replay body");
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(737373),
+    });
+    tokio::fs::write(&temp_file.path, &sticky_body)
+        .await
+        .expect("write sticky replay temp file");
+    let snapshot = PoolReplayBodySnapshot::File {
+        temp_file,
+        size: sticky_body.len(),
+    };
+
+    assert_eq!(
+        extract_sticky_key_from_replay_snapshot(&snapshot)
+            .await
+            .as_deref(),
+        Some("sticky-large-file")
+    );
 }
 
 #[test]

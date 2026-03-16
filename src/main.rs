@@ -6640,14 +6640,6 @@ async fn send_pool_request_with_failover(
             }
         };
 
-        if let Err(route_err) = record_account_selected(&state.pool, account.account_id).await {
-            warn!(
-                account_id = account.account_id,
-                error = %route_err,
-                "failed to record selected pool account"
-            );
-        }
-
         excluded_ids.push(account.account_id);
         let api_key_target_url = match &account.auth {
             PoolResolvedAuth::ApiKey { .. } => {
@@ -6706,6 +6698,15 @@ async fn send_pool_request_with_failover(
                     request = request.header(header::AUTHORIZATION, authorization.clone());
                     if let Some(body_snapshot) = body.as_ref() {
                         request = request.body(body_snapshot.to_reqwest_body());
+                    }
+                    if let Err(route_err) =
+                        record_account_selected(&state.pool, account.account_id).await
+                    {
+                        warn!(
+                            account_id = account.account_id,
+                            error = %route_err,
+                            "failed to record selected pool account"
+                        );
                     }
 
                     match timeout(handshake_timeout, request.send()).await {
@@ -6812,7 +6813,7 @@ async fn send_pool_request_with_failover(
                             if original_uri.path() == "/v1/responses"
                                 && *size > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES =>
                         {
-                            return Err(PoolUpstreamError {
+                            last_error = Some(PoolUpstreamError {
                                 account: Some(account.clone()),
                                 status: StatusCode::PAYLOAD_TOO_LARGE,
                                 message: format!(
@@ -6825,6 +6826,11 @@ async fn send_pool_request_with_failover(
                                 upstream_error_message: None,
                                 upstream_request_id: None,
                             });
+                            if excluded_ids.len() >= 64 {
+                                return Err(last_error
+                                    .expect("pool oversized oauth body failure should exist"));
+                            }
+                            continue 'account_loop;
                         }
                         Some(snapshot) if original_uri.path() == "/v1/responses" => {
                             oauth_bridge::OauthUpstreamRequestBody::Bytes(
@@ -6845,6 +6851,15 @@ async fn send_pool_request_with_failover(
                         ),
                         None => oauth_bridge::OauthUpstreamRequestBody::Empty,
                     };
+                    if let Err(route_err) =
+                        record_account_selected(&state.pool, account.account_id).await
+                    {
+                        warn!(
+                            account_id = account.account_id,
+                            error = %route_err,
+                            "failed to record selected pool account"
+                        );
+                    }
                     ProxyUpstreamResponseBody::Axum(
                         oauth_bridge::send_oauth_upstream_request(
                             &client,
@@ -7039,10 +7054,7 @@ async fn extract_sticky_key_from_replay_snapshot(
     let bytes = match snapshot {
         PoolReplayBodySnapshot::Empty => return None,
         PoolReplayBodySnapshot::Memory(bytes) => bytes.to_vec(),
-        PoolReplayBodySnapshot::File { temp_file, size } => {
-            if *size > POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES {
-                return None;
-            }
+        PoolReplayBodySnapshot::File { temp_file, .. } => {
             tokio::fs::read(&temp_file.path).await.ok()?
         }
     };
@@ -12742,7 +12754,7 @@ fn decode_hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
-fn connection_scoped_header_names(headers: &HeaderMap) -> HashSet<HeaderName> {
+pub(crate) fn connection_scoped_header_names(headers: &HeaderMap) -> HashSet<HeaderName> {
     let mut names = HashSet::new();
     for value in headers.get_all(header::CONNECTION).iter() {
         let Ok(raw) = value.to_str() else {
@@ -12761,7 +12773,10 @@ fn connection_scoped_header_names(headers: &HeaderMap) -> HashSet<HeaderName> {
     names
 }
 
-fn should_forward_proxy_header(name: &HeaderName, connection_scoped: &HashSet<HeaderName>) -> bool {
+pub(crate) fn should_forward_proxy_header(
+    name: &HeaderName,
+    connection_scoped: &HashSet<HeaderName>,
+) -> bool {
     should_transport_proxy_header(name) && !connection_scoped.contains(name)
 }
 

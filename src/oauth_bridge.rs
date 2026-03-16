@@ -362,16 +362,28 @@ fn copy_forwardable_headers(
     mut builder: reqwest::RequestBuilder,
     headers: &HeaderMap,
 ) -> reqwest::RequestBuilder {
+    let connection_scoped = crate::connection_scoped_header_names(headers);
     for (name, value) in headers {
-        if matches!(
-            name.as_str(),
-            "authorization" | "host" | "content-length" | "connection"
-        ) {
+        if *name == header::AUTHORIZATION
+            || !crate::should_forward_proxy_header(name, &connection_scoped)
+            || is_internal_proxy_metadata_header(name)
+        {
             continue;
         }
         builder = builder.header(name, value);
     }
     builder
+}
+
+fn is_internal_proxy_metadata_header(name: &header::HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "x-sticky-key"
+            | "sticky-key"
+            | "x-prompt-cache-key"
+            | "prompt-cache-key"
+            | "x-openai-prompt-cache-key"
+    )
 }
 
 fn attach_account_header(
