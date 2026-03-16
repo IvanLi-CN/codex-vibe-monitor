@@ -153,6 +153,7 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('aria-label="Show 2 hidden tags: sticky-pool, rotating"')
     expect(html).toContain('5h')
     expect(html).toContain('7d')
+    expect(html).toContain('grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr)]')
     expect(html).not.toContain('production-apac-primary-operators')
     expect(html).toContain('overflow-x-auto')
     expect(html).toContain('md:overflow-x-visible')

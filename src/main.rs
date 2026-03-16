@@ -2042,6 +2042,15 @@ struct ArchiveBackfillSummary {
     updated_accounts: u64,
 }
 
+#[derive(Debug)]
+struct TempSqliteCleanup(PathBuf);
+
+impl Drop for TempSqliteCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 #[derive(Debug, Default)]
 struct RawCompressionPassSummary {
     files_considered: usize,
@@ -3316,6 +3325,7 @@ async fn backfill_upstream_account_last_activity_from_archives(
         if temp_path.exists() {
             let _ = fs::remove_file(&temp_path);
         }
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
 
         inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
         let database_url = format!("sqlite://{}", temp_path.to_string_lossy());
@@ -3356,7 +3366,7 @@ async fn backfill_upstream_account_last_activity_from_archives(
         };
 
         archive_pool.close().await;
-        let _ = fs::remove_file(&temp_path);
+        drop(temp_cleanup);
 
         for row in rows {
             recovered

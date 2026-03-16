@@ -145,7 +145,7 @@ function CompactWindowLine({
   const summary = resetText ? `${text} · ${resetText}` : text
 
   return (
-    <div className="grid grid-cols-[max-content,max-content,minmax(0,1fr)] items-center gap-x-2 gap-y-0.5 xl:grid-cols-[max-content,max-content,minmax(0,1fr),minmax(5rem,1fr)]">
+    <div className="grid grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr)] items-center gap-x-2 gap-y-0.5 xl:grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr),minmax(5rem,1fr)]">
       <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums">
         {label}
       </span>

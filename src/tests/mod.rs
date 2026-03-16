@@ -2852,6 +2852,14 @@ async fn list_upstream_accounts_includes_last_activity_at() {
     .execute(&state.pool)
     .await
     .expect("insert account invocation");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET last_activity_at = ?1 WHERE id = ?2",
+    )
+    .bind("2026-03-11 20:35:00")
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("persist account last activity");
 
     let Json(response) = list_upstream_accounts(State(state))
         .await

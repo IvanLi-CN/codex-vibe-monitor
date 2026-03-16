@@ -647,6 +647,7 @@ struct UpstreamAccountRow {
     last_refreshed_at: Option<String>,
     last_synced_at: Option<String>,
     last_successful_sync_at: Option<String>,
+    last_activity_at: Option<String>,
     last_error: Option<String>,
     last_error_at: Option<String>,
     last_selected_at: Option<String>,
@@ -3749,7 +3750,7 @@ async fn load_upstream_account_summaries(
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_error, last_error_at,
+            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
             local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
             created_at, updated_at
@@ -3760,7 +3761,6 @@ async fn load_upstream_account_summaries(
     .fetch_all(pool)
     .await?;
     let account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
-    let last_activity_map = load_account_last_activity_map(pool, &account_ids).await?;
     let tag_map = load_account_tag_map(pool, &account_ids).await?;
 
     let mut items = Vec::with_capacity(rows.len());
@@ -3770,7 +3770,7 @@ async fn load_upstream_account_summaries(
         items.push(build_summary_from_row(
             &row,
             latest.as_ref(),
-            last_activity_map.get(&row.id).cloned(),
+            row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
         ));
@@ -3786,9 +3786,6 @@ async fn load_upstream_account_detail(
         return Ok(None);
     };
     let latest = load_latest_usage_sample(pool, row.id).await?;
-    let last_activity_at = load_account_last_activity_map(pool, &[row.id])
-        .await?
-        .remove(&row.id);
     let tags = load_account_tag_map(pool, &[row.id])
         .await?
         .remove(&row.id)
@@ -3825,7 +3822,7 @@ async fn load_upstream_account_detail(
         summary: build_summary_from_row(
             &row,
             latest.as_ref(),
-            last_activity_at,
+            row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
         ),
@@ -3855,7 +3852,7 @@ async fn load_upstream_account_row_conn(
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_error, last_error_at,
+            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
             local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
             created_at, updated_at
@@ -4026,27 +4023,16 @@ pub(crate) async fn load_account_last_activity_map(
         return Ok(HashMap::new());
     }
 
-    const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT id AS account_id, last_activity_at AS occurred_at FROM pool_upstream_accounts WHERE id IN (");
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id AS account_id, last_activity_at FROM pool_upstream_accounts WHERE last_activity_at IS NOT NULL AND id IN (",
+    );
     {
         let mut separated = query.separated(", ");
         for account_id in account_ids {
             separated.push_bind(account_id);
         }
     }
-    query.push(") AND last_activity_at IS NOT NULL UNION ALL SELECT ");
-    query
-        .push(ACCOUNT_EXPR)
-        .push(" AS account_id, occurred_at FROM codex_invocations WHERE ")
-        .push(ACCOUNT_EXPR)
-        .push(" IN (");
-    {
-        let mut separated = query.separated(", ");
-        for account_id in account_ids {
-            separated.push_bind(account_id);
-        }
-    }
-    query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
+    query.push(")");
 
     let rows = query
         .build_query_as::<AccountLastActivityRow>()
@@ -6934,6 +6920,7 @@ mod tests {
                 last_refreshed_at: None,
                 last_synced_at: None,
                 last_successful_sync_at: None,
+                last_activity_at: None,
                 last_error: None,
                 last_error_at: None,
                 last_selected_at: None,
