@@ -8990,6 +8990,40 @@ async fn spawn_oauth_codex_http_failure(
     (format!("http://{addr}"), handle)
 }
 
+async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Response {
+    let path = request.uri().path().to_string();
+    let body = to_bytes(request.into_body(), usize::MAX)
+        .await
+        .expect("read oauth codex capture request body");
+    (
+        StatusCode::OK,
+        Json(json!({
+            "path": path,
+            "bodyLength": body.len(),
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
+    let app = Router::new().route(
+        "/backend-api/codex/*path",
+        any(oauth_codex_capture_upstream),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind oauth codex capture upstream");
+    let addr = listener
+        .local_addr()
+        .expect("oauth codex capture upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("oauth codex capture upstream should run");
+    });
+    (format!("http://{addr}"), handle)
+}
+
 async fn spawn_pool_retry_upstream(
     fail_before_success: &[(&str, usize)],
 ) -> (
@@ -9691,6 +9725,91 @@ async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
             .await
             .expect("load oauth account status");
     assert_eq!(status, "needs_reauth");
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_oauth_account(&state, "Large OAuth", "oauth-large").await;
+
+    let body = serde_json::to_vec(&json!({
+        "messages": [{
+            "role": "user",
+            "content": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 4096),
+        }],
+    }))
+    .expect("serialize large oauth passthrough body");
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(424242),
+    });
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write replay temp file");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Large OAuth".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-large".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+    };
+
+    let upstream = send_pool_request_with_failover(
+        state,
+        Method::POST,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file: temp_file.clone(),
+            size: body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        Some(account),
+        1,
+    )
+    .await
+    .expect("oauth passthrough should succeed");
+
+    assert_eq!(upstream.response.status(), StatusCode::OK);
+    let mut response_body = upstream.first_chunk.clone().unwrap_or_default().to_vec();
+    response_body.extend_from_slice(
+        &upstream
+            .response
+            .into_bytes()
+            .await
+            .expect("read oauth passthrough response"),
+    );
+    let payload =
+        serde_json::from_slice::<Value>(&response_body).expect("decode oauth passthrough response");
+    assert_eq!(
+        payload["path"].as_str(),
+        Some("/backend-api/codex/chat/completions")
+    );
+    assert_eq!(payload["bodyLength"].as_u64(), Some(body.len() as u64));
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;

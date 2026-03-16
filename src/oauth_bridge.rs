@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::TryStreamExt;
-use reqwest::{Client, Url};
+use reqwest::{Body as ReqwestBody, Client, Url};
 use serde_json::{Value, json};
 
 #[cfg(test)]
@@ -53,12 +53,18 @@ pub(crate) async fn reset_test_oauth_codex_upstream_base_url() {
         .expect("lock test oauth codex upstream base url") = None;
 }
 
+pub(crate) enum OauthUpstreamRequestBody {
+    Empty,
+    Bytes(Bytes),
+    Stream(ReqwestBody),
+}
+
 pub(crate) async fn send_oauth_upstream_request(
     client: &Client,
     method: Method,
     original_uri: &Uri,
     headers: &HeaderMap,
-    body: Option<Bytes>,
+    body: OauthUpstreamRequestBody,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Response {
@@ -69,23 +75,49 @@ pub(crate) async fn send_oauth_upstream_request(
                 client,
                 access_token,
                 chatgpt_account_id,
-                body.unwrap_or_default(),
+                match body {
+                    OauthUpstreamRequestBody::Empty => Bytes::new(),
+                    OauthUpstreamRequestBody::Bytes(bytes) => bytes,
+                    OauthUpstreamRequestBody::Stream(_) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "streamed request bodies are not supported for /v1/responses",
+                            "server_error",
+                        );
+                    }
+                },
             )
             .await
         }
-        _ => {
+        path if is_supported_oauth_passthrough_route(path) => {
             oauth_passthrough(
                 client,
                 method,
                 original_uri,
                 headers,
-                body.unwrap_or_default(),
+                match body {
+                    OauthUpstreamRequestBody::Empty => ReqwestBody::from(Bytes::new()),
+                    OauthUpstreamRequestBody::Bytes(bytes) => ReqwestBody::from(bytes),
+                    OauthUpstreamRequestBody::Stream(body) => body,
+                },
                 access_token,
                 chatgpt_account_id,
             )
             .await
         }
+        _ => error_response(
+            StatusCode::NOT_FOUND,
+            &format!(
+                "oauth upstream route is not supported: {}",
+                original_uri.path()
+            ),
+            "oauth_unsupported_route",
+        ),
     }
+}
+
+fn is_supported_oauth_passthrough_route(path: &str) -> bool {
+    matches!(path, "/v1/responses/compact" | "/v1/chat/completions")
 }
 
 async fn oauth_models(
@@ -235,7 +267,7 @@ async fn oauth_passthrough(
     method: Method,
     original_uri: &Uri,
     headers: &HeaderMap,
-    body: Bytes,
+    body: ReqwestBody,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Response {
@@ -516,5 +548,14 @@ mod tests {
             override_url.as_str()
         );
         reset_test_oauth_codex_upstream_base_url().await;
+    }
+
+    #[test]
+    fn unsupported_oauth_route_returns_explicit_error() {
+        assert!(!is_supported_oauth_passthrough_route("/v1/embeddings"));
+        assert!(is_supported_oauth_passthrough_route(
+            "/v1/responses/compact"
+        ));
+        assert!(is_supported_oauth_passthrough_route("/v1/chat/completions"));
     }
 }

@@ -6798,20 +6798,25 @@ async fn send_pool_request_with_failover(
                     access_token,
                     chatgpt_account_id,
                 } => {
-                    let body_bytes = match body.as_ref() {
-                        Some(snapshot) => {
-                            Some(snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
-                                account: Some(account.clone()),
-                                status: StatusCode::BAD_GATEWAY,
-                                message: format!("failed to replay oauth request body: {err}"),
-                                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                                connect_latency_ms: 0.0,
-                                upstream_error_code: None,
-                                upstream_error_message: None,
-                                upstream_request_id: None,
-                            })?)
+                    let oauth_body = match body.as_ref() {
+                        Some(snapshot) if original_uri.path() == "/v1/responses" => {
+                            oauth_bridge::OauthUpstreamRequestBody::Bytes(
+                                snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
+                                    account: Some(account.clone()),
+                                    status: StatusCode::BAD_GATEWAY,
+                                    message: format!("failed to replay oauth request body: {err}"),
+                                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                    connect_latency_ms: 0.0,
+                                    upstream_error_code: None,
+                                    upstream_error_message: None,
+                                    upstream_request_id: None,
+                                })?,
+                            )
                         }
-                        None => None,
+                        Some(snapshot) => oauth_bridge::OauthUpstreamRequestBody::Stream(
+                            snapshot.to_reqwest_body(),
+                        ),
+                        None => oauth_bridge::OauthUpstreamRequestBody::Empty,
                     };
                     match timeout(
                         handshake_timeout,
@@ -6820,7 +6825,7 @@ async fn send_pool_request_with_failover(
                             method.clone(),
                             original_uri,
                             headers,
-                            body_bytes,
+                            oauth_body,
                             access_token,
                             chatgpt_account_id.as_deref(),
                         ),
@@ -7057,7 +7062,10 @@ async fn extract_sticky_key_from_replay_snapshot(
     let bytes = match snapshot {
         PoolReplayBodySnapshot::Empty => return None,
         PoolReplayBodySnapshot::Memory(bytes) => bytes.to_vec(),
-        PoolReplayBodySnapshot::File { temp_file, .. } => {
+        PoolReplayBodySnapshot::File { temp_file, size } => {
+            if *size > POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES {
+                return None;
+            }
             tokio::fs::read(&temp_file.path).await.ok()?
         }
     };
@@ -7207,7 +7215,7 @@ async fn proxy_openai_v1_via_pool(
                 };
 
             if initial_account.auth.is_oauth() {
-                let request_body_bytes = read_request_body_with_limit(
+                let request_body_snapshot = read_request_body_snapshot_with_limit(
                     body,
                     body_limit,
                     state.config.openai_proxy_request_read_timeout,
@@ -7215,18 +7223,17 @@ async fn proxy_openai_v1_via_pool(
                 )
                 .await
                 .map_err(|err| (err.status, err.message))?;
-                let request_body_bytes = Bytes::from(request_body_bytes);
-                let body_sticky_key = serde_json::from_slice::<Value>(&request_body_bytes)
-                    .ok()
-                    .and_then(|value| extract_sticky_key_from_request_body(&value))
-                    .or(sticky_key.clone());
+                let body_sticky_key =
+                    extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
+                        .await
+                        .or(sticky_key.clone());
                 (
                     send_pool_request_with_failover(
                         state.clone(),
                         method,
                         original_uri,
                         &headers,
-                        Some(PoolReplayBodySnapshot::Memory(request_body_bytes)),
+                        Some(request_body_snapshot),
                         handshake_timeout,
                         body_sticky_key.as_deref(),
                         Some(initial_account),
@@ -9165,6 +9172,107 @@ async fn read_request_body_with_limit(
     }
 
     Ok(data)
+}
+
+async fn read_request_body_snapshot_with_limit(
+    body: Body,
+    body_limit: usize,
+    request_read_timeout: Duration,
+    proxy_request_id: u64,
+) -> Result<PoolReplayBodySnapshot, RequestBodyReadError> {
+    let mut buffer = PoolReplayBodyBuffer::new(proxy_request_id);
+    let mut stream = body.into_data_stream();
+    let read_deadline = Instant::now() + request_read_timeout;
+    let mut data_len = 0usize;
+
+    loop {
+        let remaining = read_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            warn!(
+                proxy_request_id,
+                timeout_ms = request_read_timeout.as_millis(),
+                read_bytes = data_len,
+                "openai proxy request body read timed out"
+            );
+            return Err(RequestBodyReadError {
+                status: StatusCode::REQUEST_TIMEOUT,
+                message: format!(
+                    "request body read timed out after {}ms",
+                    request_read_timeout.as_millis()
+                ),
+                failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                partial_body: Vec::new(),
+            });
+        }
+
+        let next_chunk = match timeout(remaining, stream.next()).await {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                warn!(
+                    proxy_request_id,
+                    timeout_ms = request_read_timeout.as_millis(),
+                    read_bytes = data_len,
+                    "openai proxy request body read timed out"
+                );
+                return Err(RequestBodyReadError {
+                    status: StatusCode::REQUEST_TIMEOUT,
+                    message: format!(
+                        "request body read timed out after {}ms",
+                        request_read_timeout.as_millis()
+                    ),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    partial_body: Vec::new(),
+                });
+            }
+        };
+
+        let Some(chunk) = next_chunk else {
+            return buffer.finish().await.map_err(|err| RequestBodyReadError {
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("failed to cache request body for oauth replay: {err}"),
+                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                partial_body: Vec::new(),
+            });
+        };
+
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    read_bytes = data_len,
+                    "openai proxy request body stream error"
+                );
+                return Err(RequestBodyReadError {
+                    status: StatusCode::BAD_REQUEST,
+                    message: format!("failed to read request body stream: {err}"),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
+                    partial_body: Vec::new(),
+                });
+            }
+        };
+
+        if data_len.saturating_add(chunk.len()) > body_limit {
+            return Err(RequestBodyReadError {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                message: format!("request body exceeds {body_limit} bytes"),
+                failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
+                partial_body: Vec::new(),
+            });
+        }
+        data_len = data_len.saturating_add(chunk.len());
+
+        buffer
+            .append(&chunk)
+            .await
+            .map_err(|err| RequestBodyReadError {
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("failed to cache request body for oauth replay: {err}"),
+                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                partial_body: Vec::new(),
+            })?;
+    }
 }
 
 fn prepare_target_request_body(
