@@ -4861,6 +4861,36 @@ fn is_bridge_error_message(message: &str) -> bool {
         || msg.contains("bridge token")
 }
 
+fn is_bridge_token_rejected_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("oauth bridge token is unknown or was not registered")
+        || msg.contains("oauth bridge token expired; register again")
+}
+
+pub(crate) fn should_retry_same_account_after_bridge_token_rejection(
+    account_kind: &str,
+    status: StatusCode,
+    upstream_error_code: Option<&str>,
+    upstream_error_message: Option<&str>,
+    summary_message: &str,
+) -> bool {
+    if account_kind != UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+        || !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+    {
+        return false;
+    }
+    let code = upstream_error_code
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if code == "invalid_api_key" || code == "token_expired" {
+        return true;
+    }
+    upstream_error_message
+        .map(is_bridge_token_rejected_message)
+        .unwrap_or(false)
+        || is_bridge_token_rejected_message(summary_message)
+}
+
 fn is_explicit_reauth_error_message(message: &str) -> bool {
     let msg = message.to_ascii_lowercase();
     msg.contains("invalid_grant")
@@ -5069,6 +5099,19 @@ pub(crate) async fn resolve_pool_account_for_request(
     }
 
     Ok(PoolAccountResolution::NoCandidate)
+}
+
+pub(crate) async fn refresh_pool_account_for_retry(
+    state: &AppState,
+    account_id: i64,
+) -> Result<Option<PoolResolvedAccount>> {
+    let Some(row) = load_upstream_account_row(&state.pool, account_id).await? else {
+        return Ok(None);
+    };
+    if !is_account_selectable_for_routing(&row) {
+        return Ok(None);
+    }
+    prepare_pool_account(state, &row).await
 }
 
 pub(crate) async fn record_pool_route_success(
@@ -5536,6 +5579,15 @@ async fn resolve_oauth_bridge_registration(
             },
         );
     Ok(registered)
+}
+
+pub(crate) async fn clear_cached_oauth_bridge_token(state: &AppState, account_id: i64) {
+    state
+        .upstream_accounts
+        .oauth_bridge_tokens
+        .lock()
+        .await
+        .remove(&account_id);
 }
 
 fn is_account_selectable_for_routing(row: &UpstreamAccountRow) -> bool {
@@ -6228,6 +6280,38 @@ mod tests {
                 .await
                 .expect("load account status");
         assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+    }
+
+    #[test]
+    fn should_retry_same_account_after_bridge_token_rejection_only_for_oauth_bridge_rejections() {
+        assert!(should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::UNAUTHORIZED,
+            Some("invalid_api_key"),
+            Some("oauth bridge token is unknown or was not registered"),
+            "pool upstream responded with 401",
+        ));
+        assert!(should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::FORBIDDEN,
+            Some("token_expired"),
+            Some("oauth bridge token expired; register again"),
+            "pool upstream responded with 403",
+        ));
+        assert!(!should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            StatusCode::UNAUTHORIZED,
+            Some("invalid_api_key"),
+            Some("oauth bridge token is unknown or was not registered"),
+            "pool upstream responded with 401",
+        ));
+        assert!(!should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::UNAUTHORIZED,
+            Some("missing_scopes"),
+            Some("Missing scopes: api.responses.write"),
+            "pool upstream responded with 401: Missing scopes: api.responses.write",
+        ));
     }
 
     async fn insert_limit_sample(
