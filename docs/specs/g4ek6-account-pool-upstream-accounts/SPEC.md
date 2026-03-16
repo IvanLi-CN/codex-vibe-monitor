@@ -99,6 +99,7 @@
 - 账号自己的保存/同步成功必须清掉该账号自己的 detail 错误缓存，即使成功返回时用户已经切到别的账号。
 - 保存/同步成功一旦落地，就必须立即使该账号更早发出的 in-flight detail reload 失效；即使后续列表刷新仍在进行，旧 reload 也不得趁机把 detail 回写成旧快照。
 - refresh 进行中若用户切换到别的账号，refresh 在列表返回后仍必须按最终收口后的当前选中账号补拉 detail；不得因为 refresh 启动时捕获的是旧 `selectedId` 就跳过这次 detail 刷新。
+- 多个 list/refresh 请求并发时，只有最新仍有效的那一次允许回写 `items/groups/routing/selectedId/listError`；较早发出的旧列表成功/失败结果一律视为过期，不得覆盖较新的列表状态。
 
 ### Edge cases / errors
 
@@ -154,6 +155,7 @@
 - Given 账号 A 曾显示 detail 错误，When A 的保存或同步稍后成功返回且这时用户已切到账号 B，Then A 的旧 detail 错误缓存必须被清掉，之后再切回 A 时不再显示那条过期错误。
 - Given 账号 A 存在更早发出的 detail reload，When A 的保存或同步先成功返回但后续列表刷新仍未完成，Then 那个旧 reload 仍必须被视为过期，不能在等待列表期间把详情短暂写回旧快照。
 - Given 用户在 refresh 进行中从账号 A 切到账号 B，When refresh 的列表响应稍后返回并把最终选中账号收口到 B，Then 页面仍必须补拉 B 的 detail，而不是停留在切换前或切换时的旧 detail。
+- Given 用户先手动触发一次 refresh，随后同一账号的保存/同步/删除又触发了更新的列表刷新，When 较早那次 refresh 更晚返回，Then 页面只能保留较新的列表状态，旧 refresh 不得把 `items/groups/routing/selectedId` 回写成旧快照。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 

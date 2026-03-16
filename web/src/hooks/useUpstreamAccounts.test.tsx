@@ -635,4 +635,60 @@ describe("useUpstreamAccounts", () => {
     expect(text("detail-id")).toBe("2");
     expect(text("detail-name")).toBe("Beta Fresh");
   });
+
+  it("ignores an older list refresh after sync starts a newer list reload", async () => {
+    const staleRefreshList = deferred<UpstreamAccountListResponse>();
+    const syncedList = deferred<UpstreamAccountListResponse>();
+    const sync = deferred<UpstreamAccountDetail>();
+
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockImplementationOnce(async () => staleRefreshList.promise)
+      .mockImplementationOnce(async () => syncedList.promise)
+      .mockResolvedValue({
+        writesEnabled: true,
+        items: [createSummary(1, "Alpha Synced"), createSummary(2, "Beta")],
+        groups: [],
+        routing: { apiKeyConfigured: false, maskedApiKey: null },
+      });
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockResolvedValue(createDetail(1, "Alpha Synced"));
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("refresh");
+    await flushAsync();
+    click("sync-alpha");
+    await flushAsync();
+
+    sync.resolve(createDetail(1, "Alpha Synced"));
+    await flushAsync();
+
+    syncedList.resolve({
+      writesEnabled: true,
+      items: [createSummary(1, "Alpha Synced"), createSummary(2, "Beta")],
+      groups: [],
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(text("selected-name")).toBe("Alpha Synced");
+    expect(text("detail-name")).toBe("Alpha Synced");
+
+    staleRefreshList.resolve({
+      writesEnabled: true,
+      items: [createSummary(1, "Alpha Stale"), createSummary(2, "Beta")],
+      groups: [],
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+    });
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("1");
+    expect(text("selected-name")).toBe("Alpha Synced");
+    expect(text("detail-name")).toBe("Alpha Synced");
+  });
 });
