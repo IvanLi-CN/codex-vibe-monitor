@@ -73,7 +73,7 @@ function compactBadge(content: ReactNode, variant: 'accent' | 'secondary' | 'suc
 
 function renderTagBadges(tags?: AccountTagSummary[] | null) {
   const safeTags = tags ?? []
-  const visible = safeTags.slice(0, 2)
+  const visible = safeTags.slice(0, 3)
   const hidden = safeTags.slice(visible.length)
   const overflowCount = hidden.length
   const hiddenNames = hidden.map((tag) => tag.name).join(', ')
@@ -98,6 +98,16 @@ function renderTagBadges(tags?: AccountTagSummary[] | null) {
                 {hiddenNames}
               </div>
             }
+            triggerProps={{
+              tabIndex: 0,
+              'aria-label': `Show ${overflowCount} hidden tags: ${hiddenNames}`,
+              onClick: (event) => event.stopPropagation(),
+              onKeyDown: (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.stopPropagation()
+                }
+              },
+            }}
           >
             <span title={hiddenNames}>
               {compactBadge(`+${overflowCount}`, 'secondary')}

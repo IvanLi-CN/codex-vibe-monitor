@@ -9,6 +9,7 @@ interface TooltipProps {
   contentClassName?: string
   side?: 'top' | 'right' | 'bottom' | 'left'
   sideOffset?: number
+  triggerProps?: React.HTMLAttributes<HTMLSpanElement>
 }
 
 export function Tooltip({
@@ -18,12 +19,13 @@ export function Tooltip({
   contentClassName,
   side = 'top',
   sideOffset = 10,
+  triggerProps,
 }: TooltipProps) {
   return (
     <TooltipPrimitive.Provider delayDuration={120}>
       <TooltipPrimitive.Root>
         <TooltipPrimitive.Trigger asChild>
-          <span className={cn('inline-flex', className)}>{children}</span>
+          <span className={cn('inline-flex', className)} {...triggerProps}>{children}</span>
         </TooltipPrimitive.Trigger>
         <TooltipPrimitive.Portal>
           <TooltipPrimitive.Content
