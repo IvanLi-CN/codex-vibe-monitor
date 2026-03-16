@@ -1178,6 +1178,7 @@ export interface OauthMailboxStatus {
   latestCode?: OauthMailboxCodeSummary | null;
   invite?: OauthInviteSummary | null;
   invited: boolean;
+  error?: string | null;
 }
 
 export interface CreateOauthLoginSessionPayload {
@@ -1599,6 +1600,7 @@ function normalizeOauthMailboxStatus(raw: unknown): OauthMailboxStatus | null {
     latestCode: normalizeOauthMailboxCodeSummary(payload.latestCode),
     invite: normalizeOauthInviteSummary(payload.invite),
     invited: payload.invited === true,
+    error: typeof payload.error === 'string' && payload.error.trim() ? payload.error : null,
   }
 }
 

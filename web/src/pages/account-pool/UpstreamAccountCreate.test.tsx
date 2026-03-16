@@ -1107,6 +1107,60 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(displayNameInput.value).toBe("Manual Alias");
     expect(host?.textContent).toContain("temp-user-2@example.com");
   });
+
+  it("shows an explicit expired mailbox warning for single oauth", async () => {
+    mockUpstreamAccounts();
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Expired Mailbox",
+            mailboxSession: {
+              sessionId: "mailbox-expired",
+              emailAddress: "expired@example.com",
+              expiresAt: "2026-03-13T09:00:00.000Z",
+            },
+            mailboxInput: "expired@example.com",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+
+    expect(host?.textContent).toContain(
+      "This temp mailbox has expired. Generate a fresh mailbox before waiting for new mail.",
+    );
+  });
+
+  it("shows mailbox refresh failures instead of silently looking empty", async () => {
+    mockUpstreamAccounts({
+      getOauthMailboxStatuses: vi.fn().mockRejectedValue(new Error("boom")),
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Refresh Failure Mailbox",
+            mailboxSession: {
+              sessionId: "mailbox-refresh-failure",
+              emailAddress: "failed@example.com",
+              expiresAt: "2026-03-17T10:00:00.000Z",
+            },
+            mailboxInput: "failed@example.com",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+
+    expect(host?.textContent).toContain(
+      "Mailbox refresh failed. We could not confirm the latest code or invite state.",
+    );
+  });
 });
 
 describe("UpstreamAccountCreatePage api key", () => {

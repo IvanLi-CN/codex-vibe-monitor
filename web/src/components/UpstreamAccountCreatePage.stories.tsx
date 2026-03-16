@@ -26,7 +26,7 @@ function createMailboxSession(sessionId: string, emailAddress: string): OauthMai
   return {
     sessionId,
     emailAddress,
-    expiresAt: '2026-03-11T12:50:00.000Z',
+    expiresAt: '2026-03-20T12:50:00.000Z',
   }
 }
 
@@ -140,6 +140,69 @@ export const OauthMailboxReady: Story = {
   },
 }
 
+export const OauthMailboxExpired: Story = {
+  name: 'OAuth Mailbox Expired',
+  render: () => {
+    const mailboxSession: OauthMailboxSession = {
+      sessionId: 'story-mailbox-oauth-expired',
+      emailAddress: 'expired-oauth@mail-tw.707079.xyz',
+      expiresAt: '2026-03-11T10:00:00.000Z',
+    }
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          state: {
+            draft: {
+              oauth: {
+                displayName: 'Expired OAuth Mailbox',
+                groupName: 'production',
+                mailboxSession,
+                mailboxInput: mailboxSession.emailAddress,
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/temp mailbox has expired/i)).toBeInTheDocument()
+  },
+}
+
+export const OauthMailboxRefreshFailed: Story = {
+  name: 'OAuth Mailbox Refresh Failed',
+  render: () => {
+    const mailboxSession = createMailboxSession('story-mailbox-oauth-failed', 'failed-oauth@mail-tw.707079.xyz')
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          state: {
+            draft: {
+              oauth: {
+                displayName: 'Failed OAuth Mailbox',
+                groupName: 'production',
+                mailboxSession,
+                mailboxInput: mailboxSession.emailAddress,
+                mailboxStatus: createMailboxStatus(mailboxSession, {
+                  error: 'Mailbox refresh failed. We could not confirm the latest code or invite state.',
+                }),
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/mailbox refresh failed/i)).toBeInTheDocument()
+  },
+}
+
 export const OauthMailboxDetachedName: Story = {
   name: 'OAuth Mailbox Detached Name',
   render: () => {
@@ -208,6 +271,27 @@ export const BatchOauthMailboxGenerated: Story = {
   },
 }
 
+export const BatchOauthActionTooltips: Story = {
+  name: 'Batch OAuth Action Tooltips',
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+
+    const generateButton = canvas.getByRole('button', { name: /generate oauth url/i })
+    await userEvent.hover(generateButton)
+    await expect(within(document.body).getByText(/generate a fresh oauth url for this row/i)).toBeInTheDocument()
+
+    const copyCodeButton = canvas.getByRole('button', { name: /copy verification code/i })
+    const tooltipTrigger = copyCodeButton.parentElement
+    if (!(tooltipTrigger instanceof HTMLElement)) {
+      throw new Error('missing tooltip trigger for copy verification code button')
+    }
+
+    await userEvent.hover(tooltipTrigger)
+    await expect(within(document.body).getByText(/no verification code yet/i)).toBeInTheDocument()
+  },
+}
+
 export const BatchOauthMailboxReady: Story = {
   name: 'Batch OAuth Mailbox Ready',
   render: () => {
@@ -261,6 +345,125 @@ export const BatchOauthMailboxReady: Story = {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('button', { name: /copy verification code/i })).toBeEnabled()
     await expect(canvas.getByRole('button', { name: /copy verification code/i })).toHaveTextContent('556677')
+  },
+}
+
+export const BatchOauthInvitedBadgeTooltip: Story = {
+  name: 'Batch OAuth Invited Badge Tooltip',
+  render: () => {
+    const mailboxSession = createMailboxSession('story-mailbox-batch-invited', 'batch-invited@mail-tw.707079.xyz')
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          search: '?mode=batchOauth',
+          state: {
+            draft: {
+              batchOauth: {
+                defaultGroupName: 'production',
+                rows: [
+                  {
+                    id: 'row-1',
+                    displayName: 'Invited Batch Mailbox',
+                    groupName: 'production',
+                    mailboxSession,
+                    mailboxInput: mailboxSession.emailAddress,
+                    mailboxStatus: createMailboxStatus(mailboxSession, {
+                      invited: true,
+                    }),
+                  },
+                ],
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const invitedBadge = canvas.getByRole('button', { name: /invite received/i })
+    await userEvent.hover(invitedBadge)
+    await expect(within(document.body).getByText(/this mailbox already received a workspace invite email/i)).toBeInTheDocument()
+  },
+}
+
+export const BatchOauthMailboxExpired: Story = {
+  name: 'Batch OAuth Mailbox Expired',
+  render: () => {
+    const mailboxSession: OauthMailboxSession = {
+      sessionId: 'story-mailbox-batch-expired',
+      emailAddress: 'expired-batch@mail-tw.707079.xyz',
+      expiresAt: '2026-03-11T10:00:00.000Z',
+    }
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          search: '?mode=batchOauth',
+          state: {
+            draft: {
+              batchOauth: {
+                defaultGroupName: 'production',
+                rows: [
+                  {
+                    id: 'row-1',
+                    displayName: 'Expired Batch Mailbox',
+                    groupName: 'production',
+                    mailboxSession,
+                    mailboxInput: mailboxSession.emailAddress,
+                    mailboxError: 'This temp mailbox has expired. Generate a fresh mailbox before waiting for new mail.',
+                  },
+                ],
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/temp mailbox has expired/i)).toBeInTheDocument()
+  },
+}
+
+export const BatchOauthMailboxRefreshFailed: Story = {
+  name: 'Batch OAuth Mailbox Refresh Failed',
+  render: () => {
+    const mailboxSession = createMailboxSession('story-mailbox-batch-failed', 'failed-batch@mail-tw.707079.xyz')
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          search: '?mode=batchOauth',
+          state: {
+            draft: {
+              batchOauth: {
+                defaultGroupName: 'production',
+                rows: [
+                  {
+                    id: 'row-1',
+                    displayName: 'Failed Batch Mailbox',
+                    groupName: 'production',
+                    mailboxSession,
+                    mailboxInput: mailboxSession.emailAddress,
+                    mailboxStatus: createMailboxStatus(mailboxSession, {
+                      error: 'Mailbox refresh failed. We could not confirm the latest code or invite state.',
+                    }),
+                    mailboxError: 'Mailbox refresh failed. We could not confirm the latest code or invite state.',
+                  },
+                ],
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/mailbox refresh failed/i)).toBeInTheDocument()
   },
 }
 

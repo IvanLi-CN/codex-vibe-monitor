@@ -384,6 +384,7 @@ pub(crate) struct OauthMailboxStatus {
     latest_code: Option<OauthMailboxCodeSummary>,
     invite: Option<OauthInviteSummary>,
     invited: bool,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1506,10 +1507,14 @@ pub(crate) async fn get_oauth_mailbox_session_status(
         .map_err(internal_error_tuple)?;
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
-        let refreshed = refresh_oauth_mailbox_session_status(state.as_ref(), &row)
-            .await
-            .map_err(internal_error_tuple)?;
-        items.push(oauth_mailbox_status_from_row(&refreshed));
+        match refresh_oauth_mailbox_session_status(state.as_ref(), &row).await {
+            Ok(refreshed) => items.push(oauth_mailbox_status_from_row(&refreshed)),
+            Err(error) => {
+                let mut status = oauth_mailbox_status_from_row(&row);
+                status.error = Some(error.to_string());
+                items.push(status);
+            }
+        }
     }
     Ok(Json(OauthMailboxStatusBatchResponse { items }))
 }
@@ -4279,6 +4284,7 @@ fn oauth_mailbox_status_from_row(row: &OauthMailboxSessionRow) -> OauthMailboxSt
             _ => None,
         },
         invited: row.invited != 0,
+        error: None,
     }
 }
 
