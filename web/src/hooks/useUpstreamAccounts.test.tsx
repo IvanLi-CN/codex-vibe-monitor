@@ -15,6 +15,7 @@ const apiMocks = vi.hoisted(() => ({
     (accountId: number, signal?: AbortSignal) => Promise<UpstreamAccountDetail>
   >(),
   syncUpstreamAccount: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
+  reloginUpstreamAccount: vi.fn<(accountId: number) => Promise<{ loginId: string }>>(),
 }));
 
 vi.mock("../lib/api", async () => {
@@ -24,6 +25,7 @@ vi.mock("../lib/api", async () => {
     fetchUpstreamAccounts: apiMocks.fetchUpstreamAccounts,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
     syncUpstreamAccount: apiMocks.syncUpstreamAccount,
+    reloginUpstreamAccount: apiMocks.reloginUpstreamAccount,
   };
 });
 
@@ -152,6 +154,7 @@ function Probe() {
     selectAccount,
     runSync,
     refresh,
+    beginRelogin,
   } =
     useUpstreamAccounts();
 
@@ -168,11 +171,17 @@ function Probe() {
       <button data-testid="select-beta" onClick={() => selectAccount(2)}>
         select beta
       </button>
+      <button data-testid="select-alpha" onClick={() => selectAccount(1)}>
+        select alpha
+      </button>
       <button data-testid="sync-alpha" onClick={() => void runSync(1)}>
         sync alpha
       </button>
       <button data-testid="refresh" onClick={() => void refresh()}>
         refresh
+      </button>
+      <button data-testid="relogin-alpha" onClick={() => void beginRelogin(1)}>
+        relogin alpha
       </button>
     </div>
   );
@@ -417,6 +426,49 @@ describe("useUpstreamAccounts", () => {
     await flushAsync();
 
     expect(text("detail-error")).toBe("Beta failed");
+    expect(text("list-error")).toBe("List failed");
+  });
+
+  it("keeps account detail errors scoped per account", async () => {
+    apiMocks.fetchUpstreamAccountDetail
+      .mockRejectedValueOnce(new Error("Alpha failed"))
+      .mockRejectedValueOnce(new Error("Beta failed"))
+      .mockRejectedValueOnce(new Error("Alpha failed"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("1");
+    expect(text("detail-error")).toBe("Alpha failed");
+
+    click("select-beta");
+    await flushAsync();
+    expect(text("selected-id")).toBe("2");
+    expect(text("detail-error")).toBe("Beta failed");
+
+    click("select-alpha");
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("1");
+    expect(text("detail-error")).toBe("Alpha failed");
+  });
+
+  it("does not clear list errors after a non-list success", async () => {
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockRejectedValueOnce(new Error("List failed"));
+    apiMocks.reloginUpstreamAccount.mockResolvedValueOnce({ loginId: "relogin-1" });
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("refresh");
+    await flushAsync();
+    expect(text("list-error")).toBe("List failed");
+
+    click("relogin-alpha");
+    await flushAsync();
     expect(text("list-error")).toBe("List failed");
   });
 });

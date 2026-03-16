@@ -90,6 +90,7 @@
 - 当详情抽屉处于打开状态时，外部 refresh/list 刷新若失败，不得清空当前账号 detail；只有成功拿到新列表并完成选中账号收口后，才允许切换 detail 内容。
 - refresh/list 刷新在决定详情补拉目标时，必须先用最新列表数据与当前选中账号纯计算出最终 `selectedId`，再据此决定是否补拉 detail；不得依赖 `setSelectedId(updater)` 的执行时机来推导返回值。
 - hook 级错误态必须按来源隔离：list/routing 级错误只能由对应 list/routing 请求清空，账号 detail 错误只能由同一账号、同一来源链路的成功结果清空；其它账号的成功不得把当前账号的错误提示抹掉。
+- 多个账号的 detail 错误必须并存保存：账号 A 与账号 B 先后失败后，切回任一账号时仍需看到它自己的 detail 错误，直到该账号自己的后续结果替换它。
 - 账号操作在清理自己的错误提示时，不得顺带清空 routing 级错误；routing 保存失败后，后续任意账号的保存/同步/启停/删除成功都不得吞掉该 routing 错误。
 
 ### Edge cases / errors

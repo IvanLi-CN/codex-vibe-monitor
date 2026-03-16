@@ -39,7 +39,7 @@ export function useUpstreamAccounts() {
   const [isLoading, setIsLoading] = useState(true)
   const [isDetailLoading, setIsDetailLoading] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
-  const [detailError, setDetailError] = useState<{ accountId: number; message: string } | null>(null)
+  const [detailErrors, setDetailErrors] = useState<Record<number, string>>({})
   const selectedIdRef = useRef<number | null>(null)
   const detailRequestSeqRef = useRef(0)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
@@ -50,7 +50,12 @@ export function useUpstreamAccounts() {
   }, [])
 
   const clearDetailError = useCallback((accountId: number) => {
-    setDetailError((current) => (current?.accountId === accountId ? null : current))
+    setDetailErrors((current) => {
+      if (!(accountId in current)) return current
+      const next = { ...current }
+      delete next[accountId]
+      return next
+    })
   }, [])
 
   const invalidateDetailRequest = useCallback(() => {
@@ -126,10 +131,10 @@ export function useUpstreamAccounts() {
       if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
         return null
       }
-      setDetailError({
-        accountId,
-        message: err instanceof Error ? err.message : String(err),
-      })
+      setDetailErrors((current) => ({
+        ...current,
+        [accountId]: err instanceof Error ? err.message : String(err),
+      }))
       return null
     } finally {
       if (requestSeq === detailRequestSeqRef.current) {
@@ -182,26 +187,20 @@ export function useUpstreamAccounts() {
 
   const beginOauthLogin = useCallback(
     async (payload: CreateOauthLoginSessionPayload) => {
-      const session = await createOauthLoginSession(payload)
-      setListError(null)
-      return session
+      return createOauthLoginSession(payload)
     },
     [],
   )
 
   const beginRelogin = useCallback(
     async (accountId: number) => {
-      const session = await reloginUpstreamAccount(accountId)
-      setListError(null)
-      return session
+      return reloginUpstreamAccount(accountId)
     },
     [],
   )
 
   const getLoginSession = useCallback(async (loginId: string): Promise<LoginSessionStatusResponse> => {
-    const response = await fetchOauthLoginSession(loginId)
-    setListError(null)
-    return response
+    return fetchOauthLoginSession(loginId)
   }, [])
 
   const completeOauthLogin = useCallback(
@@ -212,7 +211,6 @@ export function useUpstreamAccounts() {
       setDetail(response)
       setSelectedAccount(response.id)
       clearDetailError(response.id)
-      setListError(null)
       emitUpstreamAccountsChanged()
       return response
     },
@@ -226,7 +224,6 @@ export function useUpstreamAccounts() {
       await loadDetail(response.id)
       setSelectedAccount(response.id)
       clearDetailError(response.id)
-      setListError(null)
       emitUpstreamAccountsChanged()
       return response
     },
@@ -251,7 +248,6 @@ export function useUpstreamAccounts() {
   const saveRouting = useCallback(async (payload: UpdatePoolRoutingSettingsPayload) => {
     const response = await updatePoolRoutingSettings(payload)
     setRouting(response)
-    setListError(null)
     return response
   }, [])
 
@@ -291,7 +287,6 @@ export function useUpstreamAccounts() {
       setSelectedAccount(fallbackId)
       await loadList(fallbackId)
       await loadDetail(fallbackId)
-      setListError(null)
       emitUpstreamAccountsChanged()
     },
     [items, loadDetail, loadList, setSelectedAccount],
@@ -306,7 +301,7 @@ export function useUpstreamAccounts() {
     [],
   )
 
-  const selectedDetailError = detailError?.accountId === selectedId ? detailError.message : null
+  const selectedDetailError = selectedId == null ? null : detailErrors[selectedId] ?? null
 
   return {
     items,
