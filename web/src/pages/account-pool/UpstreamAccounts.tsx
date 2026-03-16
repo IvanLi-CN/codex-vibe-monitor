@@ -942,6 +942,7 @@ export default function UpstreamAccountsPage() {
                 secondary: t('accountPool.upstreamAccounts.secondaryWindowLabel'),
                 secondaryShort: t('accountPool.upstreamAccounts.secondaryWindowShortLabel'),
                 nextReset: t('accountPool.upstreamAccounts.table.nextReset'),
+                nextResetCompact: t('accountPool.upstreamAccounts.table.nextResetCompact'),
                 oauth: t('accountPool.upstreamAccounts.kind.oauth'),
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 mother: t('accountPool.upstreamAccounts.mother.badge'),

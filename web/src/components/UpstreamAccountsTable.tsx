@@ -23,6 +23,7 @@ interface UpstreamAccountsTableProps {
     secondary: string
     secondaryShort: string
     nextReset: string
+    nextResetCompact?: string
     oauth: string
     apiKey: string
     mother: string
@@ -123,7 +124,7 @@ function CompactWindowLine({
   const summary = resetText ? `${text} · ${resetText}` : text
 
   return (
-    <div className="grid grid-cols-[2.5rem,6.75rem,minmax(0,1fr),5.25rem,3rem] items-center gap-1.5">
+    <div className="grid grid-cols-[2.5rem,5.75rem,9.5rem,4.5rem,2.75rem] items-center gap-1.5">
       <span className="truncate whitespace-nowrap pr-1 text-right text-[10px] font-semibold uppercase tracking-[0.08em] leading-4 text-base-content/48 font-mono tabular-nums">
         {label}
       </span>
@@ -134,7 +135,7 @@ function CompactWindowLine({
         className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums"
         title={summary}
       >
-        {resetText ? `· ${resetText}` : '—'}
+        {resetText ?? '—'}
       </span>
       <div className="h-1.5 overflow-hidden rounded-full bg-base-300/60">
         <div
@@ -231,10 +232,10 @@ export function UpstreamAccountsTable({
             const primary = windowPercent(item.primaryWindow?.usedPercent)
             const secondary = windowPercent(item.secondaryWindow?.usedPercent)
             const primaryResetText = item.primaryWindow?.resetsAt
-              ? `${labels.nextReset} ${formatDateTime(item.primaryWindow.resetsAt)}`
+              ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.primaryWindow.resetsAt)}`
               : undefined
             const secondaryResetText = item.secondaryWindow?.resetsAt
-              ? `${labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
+              ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
               : undefined
             const selected = item.id === selectedId
             return (
