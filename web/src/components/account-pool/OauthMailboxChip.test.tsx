@@ -142,7 +142,7 @@ describe('OauthMailboxChip', () => {
       />,
     )
 
-    expect(host?.textContent).toContain('Copied')
+    expect(getTooltip()?.textContent).toContain('Copied')
     expect(getCopyButton().className).toContain('border-success/55')
   })
 

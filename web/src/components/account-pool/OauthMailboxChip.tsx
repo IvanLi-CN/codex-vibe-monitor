@@ -17,6 +17,15 @@ function buildMailboxTooltip(copyLabel: string, emailAddress: string) {
   )
 }
 
+function buildMailboxCopiedTooltip(copiedLabel: string) {
+  return (
+    <div className="inline-flex items-center gap-1.5 text-success">
+      <AppIcon name="check-bold" className="h-3.5 w-3.5" aria-hidden />
+      <span className="text-xs font-semibold uppercase tracking-[0.08em]">{copiedLabel}</span>
+    </div>
+  )
+}
+
 function buildMailboxManualTooltip(manualCopyLabel: string, emailAddress: string, inputRef: React.RefObject<HTMLInputElement | null>) {
   return (
     <div className="space-y-2">
@@ -112,10 +121,16 @@ export function OauthMailboxChip({
       content={
         tone === 'manual'
           ? buildMailboxManualTooltip(manualCopyLabel, emailAddress, manualCopyInputRef)
-          : buildMailboxTooltip(copyHintLabel, emailAddress)
+          : tone === 'copied'
+            ? buildMailboxCopiedTooltip(copiedLabel)
+            : buildMailboxTooltip(copyHintLabel, emailAddress)
       }
-      contentClassName="max-w-[min(42rem,calc(100vw-1rem))]"
-      open={tone === 'manual' || hoverOpen || longPressOpen}
+      contentClassName={cn(
+        'max-w-[min(42rem,calc(100vw-1rem))]',
+        tone === 'copied' && 'border-success/35 bg-success/10 text-success',
+        tone === 'manual' && 'border-warning/35 bg-warning/8',
+      )}
+      open={tone === 'copied' || tone === 'manual' || hoverOpen || longPressOpen}
     >
       <button
         type="button"
@@ -139,12 +154,6 @@ export function OauthMailboxChip({
         onClick={onCopy}
       >
         <span className="truncate text-left">{emailAddress}</span>
-        {tone === 'copied' ? (
-          <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-success">
-            <AppIcon name="check-bold" className="h-3.5 w-3.5" aria-hidden />
-            {copiedLabel}
-          </span>
-        ) : null}
         {tone === 'manual' ? (
           <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
             <AppIcon name="alert-circle-outline" className="h-3.5 w-3.5" aria-hidden />
