@@ -21,7 +21,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
-    body::{Body, Bytes},
+    body::{Body, Bytes, HttpBody},
     extract::{ConnectInfo, OriginalUri, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
     response::{IntoResponse, Json, Response, Sse},
@@ -6928,88 +6928,137 @@ async fn proxy_openai_v1_via_pool(
 ) -> Result<Response, (StatusCode, String)> {
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let handshake_timeout = state.config.proxy_upstream_handshake_timeout(None);
-    let sticky_key = extract_sticky_key_from_headers(&headers);
-    let upstream = if request_may_have_body(&method, &headers) {
-        let initial_account = match resolve_pool_account_for_request(
-            state.as_ref(),
-            sticky_key.as_deref(),
-            &[],
-        )
-        .await
-        {
-            Ok(PoolAccountResolution::Resolved(account)) => account,
-            Ok(PoolAccountResolution::NoCandidate) => {
-                return Err((
-                    StatusCode::BAD_GATEWAY,
-                    "no healthy pool account is available".to_string(),
-                ));
-            }
-            Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
-                return Err((StatusCode::BAD_GATEWAY, message));
-            }
-            Err(err) => {
-                return Err((
-                    StatusCode::BAD_GATEWAY,
-                    format!("failed to resolve pool account: {err}"),
-                ));
-            }
-        };
-        let target_url = build_proxy_upstream_url(&initial_account.upstream_base_url, original_uri)
-            .map_err(|err| {
-                (
-                    StatusCode::BAD_GATEWAY,
-                    format!("failed to build pool upstream url: {err}"),
-                )
-            })?;
-        let client = state
-            .http_clients
-            .client_for_parallelism(false)
-            .map_err(|err| {
-                (
-                    StatusCode::BAD_GATEWAY,
-                    format!("failed to initialize upstream client: {err}"),
-                )
-            })?;
-        let request_connection_scoped = connection_scoped_header_names(&headers);
-        let replayable = spawn_pool_replayable_request_body(
-            body,
-            body_limit,
-            state.config.openai_proxy_request_read_timeout,
-            proxy_request_id,
-        );
-        let replay_status_rx = replayable.status_rx.clone();
-        let replay_cancel = replayable.cancel.clone();
-        let mut request = client
-            .request(method.clone(), target_url)
-            .body(replayable.body);
-        for (name, value) in &headers {
-            if *name == header::AUTHORIZATION {
-                continue;
-            }
-            if should_forward_proxy_header(name, &request_connection_scoped) {
-                request = request.header(name, value);
-            }
-        }
-        request = request.header(header::AUTHORIZATION, initial_account.authorization.clone());
+    let header_sticky_key = extract_sticky_key_from_headers(&headers);
+    let body_size_hint_exact = body
+        .size_hint()
+        .exact()
+        .and_then(|value| usize::try_from(value).ok());
+    let (upstream, sticky_key) = if request_may_have_body(&method, &headers) {
+        let should_prebuffer_for_body_sticky = header_sticky_key.is_none()
+            && headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
+            && headers
+                .get(header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<usize>().ok())
+                .or(body_size_hint_exact)
+                .is_some_and(|value| value <= body_limit);
 
-        let connect_started = Instant::now();
-        match timeout(handshake_timeout, request.send()).await {
-            Ok(Ok(mut response)) => {
-                let connect_latency_ms = elapsed_ms(connect_started);
-                let status = response.status();
-                if status == StatusCode::TOO_MANY_REQUESTS
-                    || status.is_server_error()
-                    || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+        if should_prebuffer_for_body_sticky {
+            let request_body_bytes = read_request_body_with_limit(
+                body,
+                body_limit,
+                state.config.openai_proxy_request_read_timeout,
+                proxy_request_id,
+            )
+            .await
+            .map_err(|err| (err.status, err.message))?;
+            let request_body_bytes = Bytes::from(request_body_bytes);
+            let body_sticky_key = serde_json::from_slice::<Value>(&request_body_bytes)
+                .ok()
+                .and_then(|value| extract_sticky_key_from_request_body(&value));
+            (
+                send_pool_request_with_failover(
+                    state.clone(),
+                    method,
+                    original_uri,
+                    &headers,
+                    Some(PoolReplayBodySnapshot::Memory(request_body_bytes)),
+                    handshake_timeout,
+                    body_sticky_key.as_deref(),
+                    None,
+                    POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                )
+                .await
+                .map_err(|err| (err.status, err.message))?,
+                body_sticky_key,
+            )
+        } else {
+            let sticky_key = header_sticky_key;
+            let initial_account =
+                match resolve_pool_account_for_request(state.as_ref(), sticky_key.as_deref(), &[])
+                    .await
                 {
-                    let upstream_request_id_header = response
-                        .headers()
-                        .get("x-request-id")
-                        .and_then(|value| value.to_str().ok())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(|value| value.to_string());
-                    let (upstream_error_code, upstream_error_message, upstream_request_id, message) =
-                        match response.bytes().await {
+                    Ok(PoolAccountResolution::Resolved(account)) => account,
+                    Ok(PoolAccountResolution::NoCandidate) => {
+                        return Err((
+                            StatusCode::BAD_GATEWAY,
+                            "no healthy pool account is available".to_string(),
+                        ));
+                    }
+                    Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                        return Err((StatusCode::BAD_GATEWAY, message));
+                    }
+                    Err(err) => {
+                        return Err((
+                            StatusCode::BAD_GATEWAY,
+                            format!("failed to resolve pool account: {err}"),
+                        ));
+                    }
+                };
+            let target_url =
+                build_proxy_upstream_url(&initial_account.upstream_base_url, original_uri)
+                    .map_err(|err| {
+                        (
+                            StatusCode::BAD_GATEWAY,
+                            format!("failed to build pool upstream url: {err}"),
+                        )
+                    })?;
+            let client = state
+                .http_clients
+                .client_for_parallelism(false)
+                .map_err(|err| {
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        format!("failed to initialize upstream client: {err}"),
+                    )
+                })?;
+            let request_connection_scoped = connection_scoped_header_names(&headers);
+            let replayable = spawn_pool_replayable_request_body(
+                body,
+                body_limit,
+                state.config.openai_proxy_request_read_timeout,
+                proxy_request_id,
+            );
+            let replay_status_rx = replayable.status_rx.clone();
+            let replay_cancel = replayable.cancel.clone();
+            let mut request = client
+                .request(method.clone(), target_url)
+                .body(replayable.body);
+            for (name, value) in &headers {
+                if *name == header::AUTHORIZATION {
+                    continue;
+                }
+                if should_forward_proxy_header(name, &request_connection_scoped) {
+                    request = request.header(name, value);
+                }
+            }
+            request = request.header(header::AUTHORIZATION, initial_account.authorization.clone());
+
+            let connect_started = Instant::now();
+            let upstream = match timeout(handshake_timeout, request.send()).await {
+                Ok(Ok(mut response)) => {
+                    let connect_latency_ms = elapsed_ms(connect_started);
+                    let status = response.status();
+                    if status == StatusCode::TOO_MANY_REQUESTS
+                        || status.is_server_error()
+                        || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+                    {
+                        let upstream_request_id_header = response
+                            .headers()
+                            .get("x-request-id")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(|value| value.to_string());
+                        let (
+                            upstream_error_code,
+                            upstream_error_message,
+                            upstream_request_id,
+                            message,
+                        ) = match response.bytes().await {
                             Ok(body_bytes) => summarize_pool_upstream_http_failure(
                                 status,
                                 upstream_request_id_header.as_deref(),
@@ -7025,22 +7074,88 @@ async fn proxy_openai_v1_via_pool(
                                 ),
                             ),
                         };
-                    let failure_kind = if status == StatusCode::TOO_MANY_REQUESTS {
-                        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
-                    } else if status.is_server_error() {
-                        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+                        let failure_kind = if status == StatusCode::TOO_MANY_REQUESTS {
+                            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                        } else if status.is_server_error() {
+                            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+                        } else {
+                            PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+                        };
+                        let first_error = PoolUpstreamError {
+                            account: Some(initial_account.clone()),
+                            status,
+                            message,
+                            failure_kind,
+                            connect_latency_ms,
+                            upstream_error_code,
+                            upstream_error_message,
+                            upstream_request_id,
+                        };
+                        continue_or_retry_pool_live_request(
+                            state.clone(),
+                            method,
+                            original_uri,
+                            &headers,
+                            handshake_timeout,
+                            initial_account,
+                            sticky_key.clone(),
+                            &replay_status_rx,
+                            &replay_cancel,
+                            first_error,
+                        )
+                        .await
+                        .map_err(|err| (err.status, err.message))?
                     } else {
-                        PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-                    };
+                        let first_byte_started = Instant::now();
+                        match response.chunk().await {
+                            Ok(first_chunk) => PoolUpstreamResponse {
+                                account: initial_account,
+                                response,
+                                connect_latency_ms,
+                                first_byte_latency_ms: elapsed_ms(first_byte_started),
+                                first_chunk,
+                            },
+                            Err(err) => {
+                                let first_error = PoolUpstreamError {
+                                    account: Some(initial_account.clone()),
+                                    status: StatusCode::BAD_GATEWAY,
+                                    message: format!(
+                                        "upstream stream error before first chunk: {err}"
+                                    ),
+                                    failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                                    connect_latency_ms,
+                                    upstream_error_code: None,
+                                    upstream_error_message: None,
+                                    upstream_request_id: None,
+                                };
+                                continue_or_retry_pool_live_request(
+                                    state.clone(),
+                                    method,
+                                    original_uri,
+                                    &headers,
+                                    handshake_timeout,
+                                    initial_account,
+                                    sticky_key.clone(),
+                                    &replay_status_rx,
+                                    &replay_cancel,
+                                    first_error,
+                                )
+                                .await
+                                .map_err(|err| (err.status, err.message))?
+                            }
+                        }
+                    }
+                }
+                Ok(Err(err)) => {
                     let first_error = PoolUpstreamError {
                         account: Some(initial_account.clone()),
-                        status,
-                        message,
-                        failure_kind,
-                        connect_latency_ms,
-                        upstream_error_code,
-                        upstream_error_message,
-                        upstream_request_id,
+                        status: StatusCode::BAD_GATEWAY,
+                        message: format!("failed to contact upstream: {err}"),
+                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                        connect_latency_ms: elapsed_ms(connect_started),
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
                     };
                     continue_or_retry_pool_live_request(
                         state.clone(),
@@ -7056,115 +7171,56 @@ async fn proxy_openai_v1_via_pool(
                     )
                     .await
                     .map_err(|err| (err.status, err.message))?
-                } else {
-                    let first_byte_started = Instant::now();
-                    match response.chunk().await {
-                        Ok(first_chunk) => PoolUpstreamResponse {
-                            account: initial_account,
-                            response,
-                            connect_latency_ms,
-                            first_byte_latency_ms: elapsed_ms(first_byte_started),
-                            first_chunk,
-                        },
-                        Err(err) => {
-                            let first_error = PoolUpstreamError {
-                                account: Some(initial_account.clone()),
-                                status: StatusCode::BAD_GATEWAY,
-                                message: format!("upstream stream error before first chunk: {err}"),
-                                failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                                connect_latency_ms,
-                                upstream_error_code: None,
-                                upstream_error_message: None,
-                                upstream_request_id: None,
-                            };
-                            continue_or_retry_pool_live_request(
-                                state.clone(),
-                                method,
-                                original_uri,
-                                &headers,
-                                handshake_timeout,
-                                initial_account,
-                                sticky_key.clone(),
-                                &replay_status_rx,
-                                &replay_cancel,
-                                first_error,
-                            )
-                            .await
-                            .map_err(|err| (err.status, err.message))?
-                        }
-                    }
                 }
-            }
-            Ok(Err(err)) => {
-                let first_error = PoolUpstreamError {
-                    account: Some(initial_account.clone()),
-                    status: StatusCode::BAD_GATEWAY,
-                    message: format!("failed to contact upstream: {err}"),
-                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                    connect_latency_ms: elapsed_ms(connect_started),
-                    upstream_error_code: None,
-                    upstream_error_message: None,
-                    upstream_request_id: None,
-                };
-                continue_or_retry_pool_live_request(
-                    state.clone(),
-                    method,
-                    original_uri,
-                    &headers,
-                    handshake_timeout,
-                    initial_account,
-                    sticky_key.clone(),
-                    &replay_status_rx,
-                    &replay_cancel,
-                    first_error,
-                )
-                .await
-                .map_err(|err| (err.status, err.message))?
-            }
-            Err(_) => {
-                let first_error = PoolUpstreamError {
-                    account: Some(initial_account.clone()),
-                    status: StatusCode::BAD_GATEWAY,
-                    message: format!(
-                        "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
-                        handshake_timeout.as_millis()
-                    ),
-                    failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                    connect_latency_ms: elapsed_ms(connect_started),
-                    upstream_error_code: None,
-                    upstream_error_message: None,
-                    upstream_request_id: None,
-                };
-                continue_or_retry_pool_live_request(
-                    state.clone(),
-                    method,
-                    original_uri,
-                    &headers,
-                    handshake_timeout,
-                    initial_account,
-                    sticky_key.clone(),
-                    &replay_status_rx,
-                    &replay_cancel,
-                    first_error,
-                )
-                .await
-                .map_err(|err| (err.status, err.message))?
-            }
+                Err(_) => {
+                    let first_error = PoolUpstreamError {
+                        account: Some(initial_account.clone()),
+                        status: StatusCode::BAD_GATEWAY,
+                        message: format!(
+                            "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
+                            handshake_timeout.as_millis()
+                        ),
+                        failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                        connect_latency_ms: elapsed_ms(connect_started),
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
+                    };
+                    continue_or_retry_pool_live_request(
+                        state.clone(),
+                        method,
+                        original_uri,
+                        &headers,
+                        handshake_timeout,
+                        initial_account,
+                        sticky_key.clone(),
+                        &replay_status_rx,
+                        &replay_cancel,
+                        first_error,
+                    )
+                    .await
+                    .map_err(|err| (err.status, err.message))?
+                }
+            };
+            (upstream, sticky_key)
         }
     } else {
-        send_pool_request_with_failover(
-            state.clone(),
-            method,
-            original_uri,
-            &headers,
-            None,
-            handshake_timeout,
-            sticky_key.as_deref(),
-            None,
-            POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+        (
+            send_pool_request_with_failover(
+                state.clone(),
+                method,
+                original_uri,
+                &headers,
+                None,
+                handshake_timeout,
+                header_sticky_key.as_deref(),
+                None,
+                POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+            )
+            .await
+            .map_err(|err| (err.status, err.message))?,
+            header_sticky_key,
         )
-        .await
-        .map_err(|err| (err.status, err.message))?
     };
 
     let account = upstream.account;

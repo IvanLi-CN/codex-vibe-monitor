@@ -9769,6 +9769,58 @@ async fn pool_route_uses_account_specific_upstream_base_url() {
     account_upstream_handle.abort();
 }
 
+#[tokio::test]
+async fn pool_route_honors_existing_body_sticky_binding_for_non_capture_requests() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let _primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    record_pool_route_success(&state.pool, secondary_id, Some("sticky-body-001"))
+        .await
+        .expect("seed sticky route");
+    let request_body =
+        br#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-body-001"}"#.to_vec();
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/echo?sticky=body".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (
+                http_header::CONTENT_LENGTH,
+                HeaderValue::from_str(&request_body.len().to_string())
+                    .expect("valid content length"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer upstream-secondary")
+    );
+
+    upstream_handle.abort();
+}
+
 #[test]
 fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite() {
     let global = Url::parse("https://api.openai.com/").expect("global upstream base url");
