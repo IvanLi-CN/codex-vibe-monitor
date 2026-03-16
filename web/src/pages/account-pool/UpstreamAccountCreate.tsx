@@ -2311,7 +2311,7 @@ export default function UpstreamAccountCreatePage() {
                                     </label>
                                     <div className="flex items-center gap-3">
                                       <div className="flex flex-wrap items-center gap-2">
-                                        <div className="flex items-center rounded-full border border-base-300/80 bg-base-200/80 p-1 shadow-sm">
+                                        <div className="inline-flex items-center overflow-hidden rounded-full border border-base-300/80 bg-base-100 shadow-sm">
                                           <Tooltip
                                             content={buildActionTooltip(
                                               isPending
@@ -2326,7 +2326,7 @@ export default function UpstreamAccountCreatePage() {
                                               type="button"
                                               size="icon"
                                               variant={isPending ? 'destructive' : 'default'}
-                                              className="h-9 w-9 shrink-0 rounded-full"
+                                              className="h-9 w-10 shrink-0 rounded-none rounded-l-full border-r border-base-100/25 shadow-none"
                                               aria-label={isPending
                                                 ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
                                                 : t('accountPool.upstreamAccounts.actions.generateOauthUrl')}
@@ -2357,7 +2357,7 @@ export default function UpstreamAccountCreatePage() {
                                                   type="button"
                                                   size="icon"
                                                   variant={authUrl ? 'default' : 'secondary'}
-                                                  className="h-9 w-9 shrink-0 rounded-full"
+                                                  className="h-9 w-10 shrink-0 rounded-none rounded-r-full shadow-none"
                                                   aria-label={t('accountPool.upstreamAccounts.actions.copyOauthUrl')}
                                                   onClick={() => void handleBatchCopyOauthUrl(row.id)}
                                                   disabled={!authUrl || isBusy}
