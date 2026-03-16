@@ -38,7 +38,8 @@ export function useUpstreamAccounts() {
   const [detail, setDetail] = useState<UpstreamAccountDetail | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isDetailLoading, setIsDetailLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
+  const [detailError, setDetailError] = useState<{ accountId: number; message: string } | null>(null)
   const selectedIdRef = useRef<number | null>(null)
   const detailRequestSeqRef = useRef(0)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
@@ -46,6 +47,17 @@ export function useUpstreamAccounts() {
   const setSelectedAccount = useCallback((accountId: number | null) => {
     selectedIdRef.current = accountId
     setSelectedId(accountId)
+  }, [])
+
+  const clearDetailError = useCallback((accountId: number) => {
+    setDetailError((current) => (current?.accountId === accountId ? null : current))
+  }, [])
+
+  const invalidateDetailRequest = useCallback(() => {
+    detailRequestSeqRef.current += 1
+    detailAbortControllerRef.current?.abort()
+    detailAbortControllerRef.current = null
+    setIsDetailLoading(false)
   }, [])
 
   const loadList = useCallback(
@@ -71,11 +83,11 @@ export function useUpstreamAccounts() {
         setGroups(response.groups)
         setWritesEnabled(response.writesEnabled)
         setRouting(response.routing ?? null)
-        setError(null)
+        setListError(null)
         setSelectedAccount(nextSelectedId)
         return nextSelectedId
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setListError(err instanceof Error ? err.message : String(err))
         return LOAD_LIST_FAILED
       } finally {
         setIsLoading(false)
@@ -105,7 +117,7 @@ export function useUpstreamAccounts() {
         return null
       }
       setDetail(response)
-      setError(null)
+      clearDetailError(accountId)
       return response
     } catch (err) {
       if (controller.signal.aborted) {
@@ -114,7 +126,10 @@ export function useUpstreamAccounts() {
       if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
         return null
       }
-      setError(err instanceof Error ? err.message : String(err))
+      setDetailError({
+        accountId,
+        message: err instanceof Error ? err.message : String(err),
+      })
       return null
     } finally {
       if (requestSeq === detailRequestSeqRef.current) {
@@ -122,7 +137,7 @@ export function useUpstreamAccounts() {
         setIsDetailLoading(false)
       }
     }
-  }, [])
+  }, [clearDetailError])
 
   useEffect(() => {
     void loadList()
@@ -168,7 +183,7 @@ export function useUpstreamAccounts() {
   const beginOauthLogin = useCallback(
     async (payload: CreateOauthLoginSessionPayload) => {
       const session = await createOauthLoginSession(payload)
-      setError(null)
+      setListError(null)
       return session
     },
     [],
@@ -177,7 +192,7 @@ export function useUpstreamAccounts() {
   const beginRelogin = useCallback(
     async (accountId: number) => {
       const session = await reloginUpstreamAccount(accountId)
-      setError(null)
+      setListError(null)
       return session
     },
     [],
@@ -185,7 +200,7 @@ export function useUpstreamAccounts() {
 
   const getLoginSession = useCallback(async (loginId: string): Promise<LoginSessionStatusResponse> => {
     const response = await fetchOauthLoginSession(loginId)
-    setError(null)
+    setListError(null)
     return response
   }, [])
 
@@ -193,13 +208,15 @@ export function useUpstreamAccounts() {
     async (loginId: string, payload: CompleteOauthLoginSessionPayload) => {
       const response = await completeOauthLoginSession(loginId, payload)
       await loadList(response.id)
+      invalidateDetailRequest()
       setDetail(response)
       setSelectedAccount(response.id)
-      setError(null)
+      clearDetailError(response.id)
+      setListError(null)
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadList, setSelectedAccount],
+    [clearDetailError, invalidateDetailRequest, loadList, setSelectedAccount],
   )
 
   const createApiKeyAccount = useCallback(
@@ -208,11 +225,12 @@ export function useUpstreamAccounts() {
       await loadList(response.id)
       await loadDetail(response.id)
       setSelectedAccount(response.id)
-      setError(null)
+      clearDetailError(response.id)
+      setListError(null)
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadDetail, loadList, setSelectedAccount],
+    [clearDetailError, loadDetail, loadList, setSelectedAccount],
   )
 
   const saveAccount = useCallback(
@@ -220,19 +238,20 @@ export function useUpstreamAccounts() {
       const response = await updateUpstreamAccount(accountId, payload)
       await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
       if (selectedIdRef.current === accountId) {
+        invalidateDetailRequest()
         setDetail(response)
+        clearDetailError(accountId)
       }
-      setError(null)
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadList],
+    [clearDetailError, invalidateDetailRequest, loadList],
   )
 
   const saveRouting = useCallback(async (payload: UpdatePoolRoutingSettingsPayload) => {
     const response = await updatePoolRoutingSettings(payload)
     setRouting(response)
-    setError(null)
+    setListError(null)
     return response
   }, [])
 
@@ -255,13 +274,14 @@ export function useUpstreamAccounts() {
       const response = await syncUpstreamAccount(accountId)
       await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
       if (selectedIdRef.current === accountId) {
+        invalidateDetailRequest()
         setDetail(response)
+        clearDetailError(accountId)
       }
-      setError(null)
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadList],
+    [clearDetailError, invalidateDetailRequest, loadList],
   )
 
   const removeAccount = useCallback(
@@ -271,7 +291,7 @@ export function useUpstreamAccounts() {
       setSelectedAccount(fallbackId)
       await loadList(fallbackId)
       await loadDetail(fallbackId)
-      setError(null)
+      setListError(null)
       emitUpstreamAccountsChanged()
     },
     [items, loadDetail, loadList, setSelectedAccount],
@@ -296,7 +316,7 @@ export function useUpstreamAccounts() {
     detail,
     isLoading,
     isDetailLoading,
-    error,
+    error: (detailError?.accountId === selectedId ? detailError.message : null) ?? listError,
     selectAccount,
     refresh,
     loadDetail,

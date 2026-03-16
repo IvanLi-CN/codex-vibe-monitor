@@ -39,6 +39,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  vi.resetAllMocks();
   apiMocks.fetchUpstreamAccounts.mockResolvedValue(createListResponse());
 });
 
@@ -49,7 +50,6 @@ afterEach(() => {
   host?.remove();
   host = null;
   root = null;
-  vi.clearAllMocks();
 });
 
 function render(ui: React.ReactNode) {
@@ -266,6 +266,58 @@ describe("useUpstreamAccounts", () => {
     expect(text("selected-name")).toBe("Beta");
     expect(text("detail-id")).not.toBe("1");
     expect(text("detail-name")).not.toBe("Alpha");
+  });
+
+  it("keeps synced detail when an older detail refresh resolves afterwards", async () => {
+    const refreshedDetail = deferred<UpstreamAccountDetail>();
+    const sync = deferred<UpstreamAccountDetail>();
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockImplementationOnce(async () => refreshedDetail.promise)
+      .mockResolvedValue(createDetail(1, "Alpha Synced"));
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("refresh");
+    await flushAsync();
+    click("sync-alpha");
+    await flushAsync();
+
+    sync.resolve(createDetail(1, "Alpha Synced"));
+    await flushAsync();
+    expect(text("detail-name")).toBe("Alpha Synced");
+
+    refreshedDetail.resolve(createDetail(1, "Alpha Stale"));
+    await flushAsync();
+    expect(text("detail-name")).toBe("Alpha Synced");
+  });
+
+  it("does not clear the current account error when another account sync succeeds", async () => {
+    const betaFailure = deferred<UpstreamAccountDetail>();
+    const betaRefresh = deferred<UpstreamAccountDetail>();
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockImplementationOnce(async () => betaFailure.promise)
+      .mockImplementationOnce(async () => betaRefresh.promise);
+    apiMocks.syncUpstreamAccount.mockResolvedValueOnce(createDetail(1, "Alpha Synced"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("select-beta");
+    await flushAsync();
+    betaFailure.reject(new Error("Beta failed"));
+    await flushAsync();
+    expect(text("selected-id")).toBe("2");
+    expect(text("error")).toBe("Beta failed");
+
+    click("sync-alpha");
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("2");
+    expect(text("error")).toBe("Beta failed");
   });
 
   it("refreshes detail using the list's final selection", async () => {
