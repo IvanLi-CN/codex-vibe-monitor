@@ -307,6 +307,229 @@ describe("UpstreamAccountsPage duplicates", () => {
   });
 });
 
+describe("UpstreamAccountsPage oauth recovery hints", () => {
+  it("shows the scope rollout hint for oauth accounts that fail with missing scopes", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Scope OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "error",
+          enabled: true,
+          lastError:
+            "pool upstream responded with 401: Missing scopes: api.responses.write",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Scope OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "error",
+        enabled: true,
+        lastError:
+          "pool upstream responded with 401: Missing scopes: api.responses.write",
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Scope OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "error",
+        enabled: true,
+        lastError:
+          "pool upstream responded with 401: Missing scopes: api.responses.write",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Open details/i);
+    expect(document.body.textContent).toContain(
+      "This OAuth token is missing API scopes",
+    );
+    expect(document.body.textContent).toContain(
+      "Re-authorize this account once after deploying the scope fix",
+    );
+    expect(document.body.textContent).toContain("Error");
+    expect(document.body.textContent).not.toContain("Needs re-auth");
+  });
+
+  it("shows the re-auth hint only for explicit oauth invalidation", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 6,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Expired OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "needs_reauth",
+          enabled: true,
+          lastError:
+            "OAuth token endpoint returned 400: invalid_grant",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 6,
+      selectedSummary: {
+        id: 6,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Expired OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "needs_reauth",
+        enabled: true,
+        lastError:
+          "OAuth token endpoint returned 400: invalid_grant",
+      },
+      detail: {
+        id: 6,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Expired OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "needs_reauth",
+        enabled: true,
+        lastError:
+          "OAuth token endpoint returned 400: invalid_grant",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Open details/i);
+    expect(document.body.textContent).toContain(
+      "This OAuth account needs a fresh sign-in",
+    );
+    expect(document.body.textContent).toContain("Needs re-auth");
+  });
+
+  it("prefers the scope hint over stale needs-reauth status when lastError says scopes are missing", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 7,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Legacy Scope OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "needs_reauth",
+          enabled: true,
+          lastError:
+            "pool upstream responded with 403: Missing scopes: api.model.read",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 7,
+      selectedSummary: {
+        id: 7,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Legacy Scope OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "needs_reauth",
+        enabled: true,
+        lastError:
+          "pool upstream responded with 403: Missing scopes: api.model.read",
+      },
+      detail: {
+        id: 7,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Legacy Scope OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "needs_reauth",
+        enabled: true,
+        lastError:
+          "pool upstream responded with 403: Missing scopes: api.model.read",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Open details/i);
+    expect(document.body.textContent).toContain(
+      "This OAuth token is missing API scopes",
+    );
+    expect(document.body.textContent).toContain("Error");
+    expect(document.body.textContent).not.toContain(
+      "This OAuth account needs a fresh sign-in",
+    );
+    expect(document.body.textContent).not.toContain("Needs re-auth");
+  });
+});
+
 describe("UpstreamAccountsPage api key details", () => {
   it("saves api key upstreamBaseUrl from the detail drawer", async () => {
     const saveAccount = vi.fn().mockResolvedValue({
