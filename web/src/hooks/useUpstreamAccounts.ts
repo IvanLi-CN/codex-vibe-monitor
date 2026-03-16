@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createApiKeyUpstreamAccount,
   createOauthMailboxSession,
@@ -32,6 +32,8 @@ import {
 import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
 
+const LOAD_LIST_FAILED = Symbol('load-list-failed')
+
 export function useUpstreamAccounts() {
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
@@ -41,54 +43,134 @@ export function useUpstreamAccounts() {
   const [detail, setDetail] = useState<UpstreamAccountDetail | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isDetailLoading, setIsDetailLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
+  const [detailErrors, setDetailErrors] = useState<Record<number, string>>({})
+  const selectedIdRef = useRef<number | null>(null)
+  const listRequestSeqRef = useRef(0)
+  const detailRequestSeqRef = useRef(0)
+  const detailRequestAccountIdRef = useRef<number | null>(null)
+  const detailAbortControllerRef = useRef<AbortController | null>(null)
+
+  const setSelectedAccount = useCallback((accountId: number | null) => {
+    selectedIdRef.current = accountId
+    setSelectedId(accountId)
+  }, [])
+
+  const clearDetailError = useCallback((accountId: number) => {
+    setDetailErrors((current) => {
+      if (!(accountId in current)) return current
+      const next = { ...current }
+      delete next[accountId]
+      return next
+    })
+  }, [])
+
+  const invalidateDetailRequest = useCallback((accountId?: number | null) => {
+    if (accountId != null && detailRequestAccountIdRef.current !== accountId) {
+      return
+    }
+    detailRequestSeqRef.current += 1
+    detailRequestAccountIdRef.current = null
+    detailAbortControllerRef.current?.abort()
+    detailAbortControllerRef.current = null
+    setIsDetailLoading(false)
+  }, [])
+
+  const invalidateListRequest = useCallback(() => {
+    listRequestSeqRef.current += 1
+    setIsLoading(false)
+  }, [])
 
   const loadList = useCallback(
-    async (preferredId?: number | null) => {
+    async (
+      preferredId?: number | null,
+      options?: { respectCurrentSelection?: boolean; selectionAnchorId?: number | null },
+    ): Promise<number | null | typeof LOAD_LIST_FAILED> => {
+      listRequestSeqRef.current += 1
+      const requestSeq = listRequestSeqRef.current
       setIsLoading(true)
       try {
         const response = await fetchUpstreamAccounts()
+        if (requestSeq !== listRequestSeqRef.current) {
+          return LOAD_LIST_FAILED
+        }
+        const currentSelectedId = selectedIdRef.current
+        const selectionAnchorId = options?.selectionAnchorId ?? preferredId ?? null
+        const shouldPreferRequestedId =
+          preferredId != null &&
+          (!options?.respectCurrentSelection || currentSelectedId === selectionAnchorId)
+        const candidateId = shouldPreferRequestedId ? preferredId : currentSelectedId
+        const nextSelectedId =
+          candidateId != null && response.items.some((item) => item.id === candidateId)
+            ? candidateId
+            : response.items[0]?.id ?? null
+
         setItems(response.items)
         setGroups(response.groups)
         setWritesEnabled(response.writesEnabled)
         setRouting(response.routing ?? null)
-        setError(null)
-        setSelectedId((current) => {
-          const nextId = preferredId ?? current
-          if (nextId != null && response.items.some((item) => item.id === nextId)) {
-            return nextId
-          }
-          return response.items[0]?.id ?? null
-        })
-        return true
+        setListError(null)
+        setSelectedAccount(nextSelectedId)
+        return nextSelectedId
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
-        return false
+        if (requestSeq !== listRequestSeqRef.current) {
+          return LOAD_LIST_FAILED
+        }
+        setListError(err instanceof Error ? err.message : String(err))
+        return LOAD_LIST_FAILED
       } finally {
-        setIsLoading(false)
+        if (requestSeq === listRequestSeqRef.current) {
+          setIsLoading(false)
+        }
       }
     },
-    [],
+    [setSelectedAccount],
   )
 
   const loadDetail = useCallback(async (accountId: number | null) => {
+    detailRequestSeqRef.current += 1
+    const requestSeq = detailRequestSeqRef.current
+    detailAbortControllerRef.current?.abort()
+    detailRequestAccountIdRef.current = accountId
+
     if (accountId == null) {
       setDetail(null)
+      setIsDetailLoading(false)
       return null
     }
+
+    setDetail((current) => (current?.id === accountId ? current : null))
     setIsDetailLoading(true)
+    const controller = new AbortController()
+    detailAbortControllerRef.current = controller
     try {
-      const response = await fetchUpstreamAccountDetail(accountId)
+      const response = await fetchUpstreamAccountDetail(accountId, controller.signal)
+      if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
+        return null
+      }
       setDetail(response)
-      setError(null)
+      clearDetailError(accountId)
       return response
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (controller.signal.aborted) {
+        return null
+      }
+      if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
+        return null
+      }
+      setDetailErrors((current) => ({
+        ...current,
+        [accountId]: err instanceof Error ? err.message : String(err),
+      }))
       return null
     } finally {
-      setIsDetailLoading(false)
+      if (requestSeq === detailRequestSeqRef.current) {
+        detailRequestAccountIdRef.current = null
+        detailAbortControllerRef.current = null
+        setIsDetailLoading(false)
+      }
     }
-  }, [])
+  }, [clearDetailError])
 
   useEffect(() => {
     void loadList()
@@ -103,10 +185,30 @@ export function useUpstreamAccounts() {
     [items, selectedId],
   )
 
+  const refreshCurrentSelectedDetail = useCallback(
+    async (skipAccountId?: number | null) => {
+      const currentSelectedId = selectedIdRef.current
+      if (currentSelectedId == null || currentSelectedId === skipAccountId) {
+        return
+      }
+      await loadDetail(currentSelectedId)
+    },
+    [loadDetail],
+  )
+
   const refresh = useCallback(async () => {
-    await loadList(selectedId)
-    await loadDetail(selectedId)
-  }, [loadDetail, loadList, selectedId])
+    const currentSelectedId = selectedIdRef.current
+    const nextSelectedId = await loadList(currentSelectedId, {
+      respectCurrentSelection: true,
+      selectionAnchorId: currentSelectedId,
+    })
+    if (nextSelectedId === LOAD_LIST_FAILED) {
+      return
+    }
+    if (nextSelectedId != null && nextSelectedId === selectedIdRef.current) {
+      await loadDetail(nextSelectedId)
+    }
+  }, [loadDetail, loadList])
 
   useEffect(() => {
     const handleChanged = () => {
@@ -119,93 +221,94 @@ export function useUpstreamAccounts() {
   }, [refresh])
 
   const selectAccount = useCallback((accountId: number) => {
-    setSelectedId(accountId)
-  }, [])
+    setSelectedAccount(accountId)
+  }, [setSelectedAccount])
 
   const beginOauthLogin = useCallback(
     async (payload: CreateOauthLoginSessionPayload) => {
-      const session = await createOauthLoginSession(payload)
-      setError(null)
-      return session
+      return createOauthLoginSession(payload)
     },
     [],
   )
 
   const beginRelogin = useCallback(
     async (accountId: number) => {
-      const session = await reloginUpstreamAccount(accountId)
-      setError(null)
-      return session
+      return reloginUpstreamAccount(accountId)
     },
     [],
   )
 
   const getLoginSession = useCallback(async (loginId: string): Promise<LoginSessionStatusResponse> => {
-    const response = await fetchOauthLoginSession(loginId)
-    setError(null)
-    return response
+    return fetchOauthLoginSession(loginId)
   }, [])
 
   const beginOauthMailboxSession = useCallback(async (): Promise<OauthMailboxSession> => {
     const response = await createOauthMailboxSession()
-    setError(null)
+    setListError(null)
     return response
   }, [])
 
   const getOauthMailboxStatuses = useCallback(async (sessionIds: string[]): Promise<OauthMailboxStatus[]> => {
     const response = await fetchOauthMailboxStatuses({ sessionIds })
-    setError(null)
+    setListError(null)
     return response
   }, [])
 
   const removeOauthMailboxSession = useCallback(async (sessionId: string) => {
     await deleteOauthMailboxSession(sessionId)
-    setError(null)
+    setListError(null)
   }, [])
 
   const completeOauthLogin = useCallback(
     async (loginId: string, payload: CompleteOauthLoginSessionPayload) => {
       const response = await completeOauthLoginSession(loginId, payload)
+      invalidateListRequest()
       await loadList(response.id)
+      invalidateDetailRequest()
       setDetail(response)
-      setSelectedId(response.id)
-      setError(null)
+      setSelectedAccount(response.id)
+      clearDetailError(response.id)
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadList],
+    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, setSelectedAccount],
   )
 
   const createApiKeyAccount = useCallback(
     async (payload: CreateApiKeyAccountPayload) => {
       const response = await createApiKeyUpstreamAccount(payload)
+      invalidateListRequest()
       await loadList(response.id)
       await loadDetail(response.id)
-      setSelectedId(response.id)
-      setError(null)
+      setSelectedAccount(response.id)
+      clearDetailError(response.id)
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadDetail, loadList],
+    [clearDetailError, invalidateListRequest, loadDetail, loadList, setSelectedAccount],
   )
 
   const saveAccount = useCallback(
     async (accountId: number, payload: UpdateUpstreamAccountPayload) => {
       const response = await updateUpstreamAccount(accountId, payload)
-      await loadList(accountId)
-      setDetail(response)
-      setSelectedId(accountId)
-      setError(null)
+      invalidateListRequest()
+      invalidateDetailRequest(accountId)
+      await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
+      clearDetailError(accountId)
+      if (selectedIdRef.current === accountId) {
+        setDetail(response)
+      } else {
+        await refreshCurrentSelectedDetail(accountId)
+      }
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadList],
+    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, refreshCurrentSelectedDetail],
   )
 
   const saveRouting = useCallback(async (payload: UpdatePoolRoutingSettingsPayload) => {
     const response = await updatePoolRoutingSettings(payload)
     setRouting(response)
-    setError(null)
     return response
   }, [])
 
@@ -213,38 +316,71 @@ export function useUpstreamAccounts() {
     async (groupName: string, payload: UpdateUpstreamAccountGroupPayload) => {
       const response = await updateUpstreamAccountGroup(groupName, payload)
       setGroups((current) => upsertGroupSummary(current, response))
-      await loadList(selectedId)
+      invalidateListRequest()
+      await loadList(selectedIdRef.current, {
+        respectCurrentSelection: true,
+        selectionAnchorId: selectedIdRef.current,
+      })
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadList, selectedId],
+    [invalidateListRequest, loadList],
   )
 
   const runSync = useCallback(
     async (accountId: number) => {
       const response = await syncUpstreamAccount(accountId)
-      await loadList(accountId)
-      setDetail(response)
-      setSelectedId(accountId)
-      setError(null)
+      invalidateListRequest()
+      invalidateDetailRequest(accountId)
+      await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
+      clearDetailError(accountId)
+      if (selectedIdRef.current === accountId) {
+        setDetail(response)
+      } else {
+        await refreshCurrentSelectedDetail(accountId)
+      }
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadList],
+    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, refreshCurrentSelectedDetail],
   )
 
   const removeAccount = useCallback(
     async (accountId: number) => {
       await deleteUpstreamAccount(accountId)
+      const currentSelectedId = selectedIdRef.current
+      const shouldReanchorSelection = currentSelectedId === accountId
       const fallbackId = items.find((item) => item.id !== accountId)?.id ?? null
-      setSelectedId(fallbackId)
-      await loadList(fallbackId)
-      await loadDetail(fallbackId)
-      setError(null)
+      invalidateListRequest()
+      if (shouldReanchorSelection) {
+        invalidateDetailRequest(accountId)
+        setSelectedAccount(fallbackId)
+        setDetail((current) => (current?.id === accountId ? null : current))
+      }
+      const preferredId = shouldReanchorSelection ? fallbackId : currentSelectedId
+      await loadList(preferredId, {
+        respectCurrentSelection: !shouldReanchorSelection,
+        selectionAnchorId: preferredId,
+      })
+      clearDetailError(accountId)
+      await refreshCurrentSelectedDetail(accountId)
       emitUpstreamAccountsChanged()
     },
-    [items, loadDetail, loadList],
+    [clearDetailError, invalidateDetailRequest, invalidateListRequest, items, loadList, refreshCurrentSelectedDetail, setSelectedAccount],
   )
+
+  useEffect(
+    () => () => {
+      listRequestSeqRef.current += 1
+      detailRequestSeqRef.current += 1
+      detailRequestAccountIdRef.current = null
+      detailAbortControllerRef.current?.abort()
+      detailAbortControllerRef.current = null
+    },
+    [],
+  )
+
+  const selectedDetailError = selectedId == null ? null : detailErrors[selectedId] ?? null
 
   return {
     items,
@@ -256,7 +392,9 @@ export function useUpstreamAccounts() {
     detail,
     isLoading,
     isDetailLoading,
-    error,
+    listError,
+    detailError: selectedDetailError,
+    error: selectedDetailError ?? listError,
     selectAccount,
     refresh,
     loadDetail,
