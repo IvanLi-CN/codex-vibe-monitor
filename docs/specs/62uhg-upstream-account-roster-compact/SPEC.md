@@ -88,6 +88,19 @@
 - [x] M4: 完成本地验证与浏览器 smoke。
 - [ ] M5: 快车道收敛（spec sync、push、PR、checks、review-loop）。
 
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool/Pages/Upstream Accounts — CompactLongLabels
+  state: compact-long-labels-focused
+  evidence_note: 验证账号列表卡片内的等宽数值、对齐后的同步/调用与窗口列，以及 5 小时 / 7 天限额边界状态。
+  image:
+  ![上游账号列表卡片细节](./assets/upstream-roster-card.png)
+
 ## 风险 / 假设
 
 - 假设：账号下方的标记带不计入“两行字段值”限制，但自身仍保持单行紧凑展示。
