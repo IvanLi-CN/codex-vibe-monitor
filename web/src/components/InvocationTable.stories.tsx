@@ -1,7 +1,10 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, userEvent, within } from 'storybook/test'
+import { useEffect, useRef, type ReactNode } from 'react'
+import { MemoryRouter } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
 import { InvocationTable } from './InvocationTable'
-import type { ApiInvocation } from '../lib/api'
+import type { ApiInvocation, UpstreamAccountDetail } from '../lib/api'
 
 const baseOccurredAt = '2026-02-25T10:15:30Z'
 const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
@@ -367,6 +370,168 @@ const reasoningEffortRecords: ApiInvocation[] = [
   },
 ]
 
+const accountDetails = new Map<number, UpstreamAccountDetail>([
+  [
+    21,
+    {
+      id: 21,
+      kind: 'oauth_codex',
+      provider: 'openai',
+      displayName: 'Codex Team Alpha',
+      groupName: 'team-alpha',
+      isMother: true,
+      status: 'active',
+      enabled: true,
+      email: 'alpha@example.com',
+      chatgptAccountId: 'org_alpha',
+      chatgptUserId: 'user_alpha',
+      planType: 'team',
+      maskedApiKey: null,
+      lastSyncedAt: '2026-03-16T09:10:00Z',
+      lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
+      lastError: null,
+      lastErrorAt: null,
+      tokenExpiresAt: '2026-03-16T12:00:00Z',
+      lastRefreshedAt: '2026-03-16T09:09:00Z',
+      primaryWindow: {
+        usedPercent: 22,
+        usedText: '22 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-16T10:00:00Z',
+        windowDurationMins: 300,
+      },
+      secondaryWindow: {
+        usedPercent: 36,
+        usedText: '36 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-17T00:00:00Z',
+        windowDurationMins: 10080,
+      },
+      credits: null,
+      localLimits: null,
+      duplicateInfo: null,
+      tags: [],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+      note: null,
+      upstreamBaseUrl: null,
+      history: [],
+    },
+  ],
+  [
+    22,
+    {
+      id: 22,
+      kind: 'oauth_codex',
+      provider: 'openai',
+      displayName: 'Codex Team Beta',
+      groupName: 'team-beta',
+      isMother: false,
+      status: 'active',
+      enabled: true,
+      email: 'beta@example.com',
+      chatgptAccountId: 'org_beta',
+      chatgptUserId: 'user_beta',
+      planType: 'pro',
+      maskedApiKey: null,
+      lastSyncedAt: '2026-03-16T08:20:00Z',
+      lastSuccessfulSyncAt: '2026-03-16T08:19:00Z',
+      lastError: null,
+      lastErrorAt: null,
+      tokenExpiresAt: '2026-03-16T11:50:00Z',
+      lastRefreshedAt: '2026-03-16T08:19:30Z',
+      primaryWindow: {
+        usedPercent: 48,
+        usedText: '48 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-16T10:00:00Z',
+        windowDurationMins: 300,
+      },
+      secondaryWindow: {
+        usedPercent: 52,
+        usedText: '52 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-17T00:00:00Z',
+        windowDurationMins: 10080,
+      },
+      credits: null,
+      localLimits: null,
+      duplicateInfo: null,
+      tags: [],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+      note: null,
+      upstreamBaseUrl: null,
+      history: [],
+    },
+  ],
+])
+
+function jsonResponse(body: unknown, status = 200) {
+  return Promise.resolve(
+    new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    }),
+  )
+}
+
+function StorybookInvocationTableMock({ children }: { children: ReactNode }) {
+  const originalFetchRef = useRef<typeof window.fetch | null>(null)
+
+  if (typeof window !== 'undefined' && originalFetchRef.current == null) {
+    originalFetchRef.current = window.fetch.bind(window)
+    window.fetch = async (input, init) => {
+      const request = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      const method =
+        init?.method ??
+        (typeof input === 'string' || input instanceof URL ? 'GET' : input.method)
+
+      if (method.toUpperCase() === 'GET') {
+        const url = new URL(request, window.location.origin)
+        const match = url.pathname.match(/^\/api\/pool\/upstream-accounts\/(\d+)$/)
+        if (match) {
+          const detail = accountDetails.get(Number(match[1]))
+          if (detail) return jsonResponse(detail)
+          return jsonResponse({ message: 'Not found' }, 404)
+        }
+      }
+
+      return originalFetchRef.current
+        ? originalFetchRef.current(input as Parameters<typeof fetch>[0], init)
+        : fetch(input as Parameters<typeof fetch>[0], init)
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (originalFetchRef.current) {
+        window.fetch = originalFetchRef.current
+      }
+    }
+  }, [])
+
+  return <>{children}</>
+}
+
 const meta = {
   title: 'Monitoring/InvocationTable',
   component: InvocationTable,
@@ -409,15 +574,19 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div className="bg-base-200 px-6 py-6 text-base-content">
-          <div className="mx-auto w-full max-w-6xl p-6">
-            <section className="card bg-base-100 shadow-sm">
-              <div className="card-body gap-4">
-                <Story />
+        <MemoryRouter initialEntries={['/dashboard']}>
+          <StorybookInvocationTableMock>
+            <div className="bg-base-200 px-6 py-6 text-base-content">
+              <div className="mx-auto w-full max-w-6xl p-6">
+                <section className="card bg-base-100 shadow-sm">
+                  <div className="card-body gap-4">
+                    <Story />
+                  </div>
+                </section>
               </div>
-            </section>
-          </div>
-        </div>
+            </div>
+          </StorybookInvocationTableMock>
+        </MemoryRouter>
       </I18nProvider>
     ),
   ],
@@ -442,6 +611,44 @@ export const Default: Story = {
           'Reference state with pool-routed and reverse-proxy invocations. Verify the `账号 / 代理` split, the dedicated latency/compression column, and the reasoning-token breakdown in the output summary.',
       },
     },
+  },
+}
+
+export const ExpandedDetails: Story = {
+  args: defaultArgs,
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Auto-expands the first invocation so you can review the default open detail layout, including account attribution, latency fields, and timing-stage breakdown without needing manual interaction.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const toggleButtons = await canvas.findAllByRole('button', { name: /展开详情|show details/i })
+    await userEvent.click(toggleButtons[0])
+    await expect(canvas.getByText(/请求详情|request details/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/HTTP 压缩算法|http compression/i)).toBeInTheDocument()
+  },
+}
+
+export const AccountDrawer: Story = {
+  args: defaultArgs,
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Clicks the first pool account badge and verifies that the current-page read-only account drawer opens with mocked account detail data.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+    await userEvent.click(await canvas.findByRole('button', { name: 'Codex Team Alpha' }))
+    await expect(documentScope.getByRole('dialog', { name: /Codex Team Alpha/i })).toBeInTheDocument()
+    await expect(documentScope.getByText(/去号池查看完整详情|Open in account pool/i)).toBeInTheDocument()
   },
 }
 
