@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中
+- Status: 已完成
 - Created: 2026-03-16
 - Last: 2026-03-16
 
@@ -45,7 +45,7 @@
 - OAuth 账号的池路由不再复用 `OPENAI_UPSTREAM_BASE_URL`，而是固定走 `ai-openai-oauth-bridge:3000/openai`。
 - bridge token register 失败或 bridge 数据面拒绝请求时，账号会进入 `error` 并保留 bridge 相关错误摘要，而不是误标成 `needs_reauth`。
 - refresh/token 明确失效时，账号仍会进入 `needs_reauth`。
-- Rust / Web 测试覆盖 authorize URL 回退、固定 bridge 路由、bridge 故障归类、以及 UI bridge 恢复提示。
+- Rust / Web 测试覆盖 authorize URL 回退、固定 bridge 路由、bridge 故障归类、UI bridge 恢复提示，以及 bridge sidecar 丢注册后的自动重注册恢复。
 
 ## 实现备注
 
