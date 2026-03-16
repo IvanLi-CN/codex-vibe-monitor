@@ -2423,8 +2423,13 @@ export default function UpstreamAccountCreatePage() {
                                           <Button
                                             type="button"
                                             size="icon"
-                                            variant={row.noteExpanded || row.note.trim() ? 'secondary' : 'ghost'}
-                                            className="h-9 w-9 shrink-0 rounded-full"
+                                            variant="ghost"
+                                            className={cn(
+                                              'h-9 w-9 shrink-0 rounded-full border shadow-sm',
+                                              row.noteExpanded || row.note.trim()
+                                                ? 'border-base-300 bg-base-100 text-base-content hover:bg-base-100'
+                                                : 'border-base-300/80 bg-base-100/72 text-base-content/68 hover:border-base-300 hover:bg-base-100',
+                                            )}
                                             aria-label={row.noteExpanded
                                               ? t('accountPool.upstreamAccounts.batchOauth.actions.collapseNote')
                                               : t('accountPool.upstreamAccounts.batchOauth.actions.expandNote')}
