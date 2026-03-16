@@ -321,6 +321,17 @@ function buildActionTooltip(title: string, description: string) {
   )
 }
 
+function buildMailboxTooltip(copyLabel: string, emailAddress: string) {
+  return (
+    <div className="flex max-w-full items-center gap-1.5">
+      <span className="text-base-content/78">{copyLabel}</span>
+      <code className="min-w-0 rounded-md bg-base-200/80 px-1.5 py-0.5 font-mono text-[11px] text-base-content">
+        {emailAddress}
+      </code>
+    </div>
+  )
+}
+
 function DuplicateWarningPopover({
   duplicateWarning,
   summaryTitle,
@@ -1753,21 +1764,29 @@ export default function UpstreamAccountCreatePage() {
               {activeTab === 'oauth' ? (
                 <>
                   <label className="field">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                      <div className="flex min-w-0 items-center justify-end gap-2">
+                    <div className="flex items-center gap-3">
+                      <span className="field-label shrink-0">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                      <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
                         {oauthMailboxAddress ? (
-                          <button
-                            type="button"
-                            className="inline-flex h-7 max-w-[18rem] items-center rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
-                            aria-label={t('accountPool.upstreamAccounts.actions.copyMailbox')}
-                            title={t('accountPool.upstreamAccounts.actions.copyMailbox')}
-                            onClick={() => void handleCopySingleMailbox()}
+                          <Tooltip
+                            className="min-w-0 flex-1"
+                            content={buildMailboxTooltip(
+                              t('accountPool.upstreamAccounts.actions.copyMailboxHint'),
+                              oauthMailboxAddress,
+                            )}
+                            contentClassName="max-w-[min(42rem,calc(100vw-1rem))]"
                           >
-                            <span className="truncate">{oauthMailboxAddress}</span>
-                          </button>
+                            <button
+                              type="button"
+                              className="inline-flex h-7 w-full min-w-0 items-center justify-start rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
+                              aria-label={t('accountPool.upstreamAccounts.actions.copyMailbox')}
+                              onClick={() => void handleCopySingleMailbox()}
+                            >
+                              <span className="truncate text-left">{oauthMailboxAddress}</span>
+                            </button>
+                          </Tooltip>
                         ) : (
-                          <span className="truncate text-xs text-base-content/50">
+                          <span className="min-w-0 flex-1 truncate text-right text-xs text-base-content/50">
                             {t('accountPool.upstreamAccounts.oauth.mailboxEmpty')}
                           </span>
                         )}
@@ -2136,21 +2155,29 @@ export default function UpstreamAccountCreatePage() {
                                 <td className="px-3 py-4">
                                   <div className="grid gap-3">
                                     <label className="field min-w-0 gap-2 whitespace-nowrap">
-                                      <div className="flex items-center justify-between gap-3">
-                                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                                        <div className="flex min-w-0 items-center justify-end gap-2">
+                                      <div className="flex items-center gap-3">
+                                        <span className="field-label shrink-0">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                                        <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
                                           {rowMailboxAddress ? (
-                                            <button
-                                              type="button"
-                                              className="inline-flex h-7 max-w-[14rem] items-center rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
-                                              aria-label={t('accountPool.upstreamAccounts.actions.copyMailbox')}
-                                              title={t('accountPool.upstreamAccounts.actions.copyMailbox')}
-                                              onClick={() => void handleBatchCopyMailbox(row.id)}
+                                            <Tooltip
+                                              className="min-w-0 flex-1"
+                                              content={buildMailboxTooltip(
+                                                t('accountPool.upstreamAccounts.actions.copyMailboxHint'),
+                                                rowMailboxAddress,
+                                              )}
+                                              contentClassName="max-w-[min(42rem,calc(100vw-1rem))]"
                                             >
-                                              <span className="truncate">{rowMailboxAddress}</span>
-                                            </button>
+                                              <button
+                                                type="button"
+                                                className="inline-flex h-7 w-full min-w-0 items-center justify-start rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
+                                                aria-label={t('accountPool.upstreamAccounts.actions.copyMailbox')}
+                                                onClick={() => void handleBatchCopyMailbox(row.id)}
+                                              >
+                                                <span className="truncate text-left">{rowMailboxAddress}</span>
+                                              </button>
+                                            </Tooltip>
                                           ) : (
-                                            <span className="truncate text-xs text-base-content/50">
+                                            <span className="min-w-0 flex-1 truncate text-right text-xs text-base-content/50">
                                               {t('accountPool.upstreamAccounts.oauth.mailboxEmpty')}
                                             </span>
                                           )}

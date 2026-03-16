@@ -92,10 +92,13 @@ export const OauthMailboxGenerated: Story = {
     await userEvent.click(canvas.getByRole('button', { name: /^generate$/i }))
 
     const displayName = canvas.getByLabelText(/display name/i) as HTMLInputElement
+    const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
 
     await expect(displayName.value).toBe('')
-    await expect(canvas.getByRole('button', { name: /copy mailbox/i })).toBeInTheDocument()
+    await expect(copyMailboxButton).toBeInTheDocument()
     await expect(canvas.getByText(/storybook-oauth-\d+@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
+    await userEvent.hover(copyMailboxButton)
+    await expect(within(document.body).getByText(/click to copy/i)).toBeInTheDocument()
   },
 }
 
