@@ -8857,17 +8857,6 @@ struct PoolHttpFailureUpstreamState {
     error_message: String,
 }
 
-#[derive(Clone)]
-struct FixedOauthBridgeFailureState {
-    register_hits: Arc<AtomicUsize>,
-    failure: PoolHttpFailureUpstreamState,
-}
-
-#[derive(Clone)]
-struct FixedOauthBridgeRecoveryState {
-    register_hits: Arc<AtomicUsize>,
-}
-
 async fn pool_retry_upstream(
     State(state): State<PoolRetryUpstreamState>,
     headers: HeaderMap,
@@ -8974,135 +8963,31 @@ async fn pool_http_failure_upstream(State(state): State<PoolHttpFailureUpstreamS
         .into_response()
 }
 
-async fn fixed_oauth_bridge_register(
-    State(state): State<FixedOauthBridgeFailureState>,
-) -> Response {
-    state
-        .register_hits
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    (
-        StatusCode::OK,
-        Json(json!({
-            "token_key": "bridge-test-token",
-            "expire_at": (Utc::now() + chrono::Duration::minutes(10)).timestamp(),
-        })),
-    )
-        .into_response()
-}
-
-async fn fixed_oauth_bridge_register_recovery(
-    State(state): State<FixedOauthBridgeRecoveryState>,
-) -> Response {
-    let hit = state
-        .register_hits
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        + 1;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "token_key": format!("bridge-test-token-{hit}"),
-            "expire_at": (Utc::now() + chrono::Duration::minutes(10)).timestamp(),
-        })),
-    )
-        .into_response()
-}
-
-async fn spawn_fixed_oauth_bridge_http_failure(
+async fn spawn_oauth_codex_http_failure(
     status: StatusCode,
     error_code: Option<&str>,
     error_message: &str,
-) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
-    let register_hits = Arc::new(AtomicUsize::new(0));
-    let state = FixedOauthBridgeFailureState {
-        register_hits: register_hits.clone(),
-        failure: PoolHttpFailureUpstreamState {
+) -> (String, JoinHandle<()>) {
+    let app = Router::new()
+        .route(
+            "/backend-api/codex/responses",
+            post(pool_http_failure_upstream),
+        )
+        .with_state(PoolHttpFailureUpstreamState {
             status,
             error_code: error_code.map(str::to_string),
             error_message: error_message.to_string(),
-        },
-    };
-    let app = Router::new()
-        .route(
-            "/internal/token/register",
-            post(fixed_oauth_bridge_register),
-        )
-        .route(
-            "/openai/v1/responses",
-            post(
-                |State(state): State<FixedOauthBridgeFailureState>| async move {
-                    pool_http_failure_upstream(State(state.failure)).await
-                },
-            ),
-        )
-        .with_state(state);
+        });
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("bind fixed oauth bridge upstream");
-    let addr = listener
-        .local_addr()
-        .expect("fixed oauth bridge upstream addr");
+        .expect("bind oauth codex upstream");
+    let addr = listener.local_addr().expect("oauth codex upstream addr");
     let handle = tokio::spawn(async move {
         axum::serve(listener, app)
             .await
-            .expect("fixed oauth bridge upstream should run");
+            .expect("oauth codex upstream should run");
     });
-    (format!("http://{addr}"), register_hits, handle)
-}
-
-async fn spawn_fixed_oauth_bridge_stale_token_once() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
-    let register_hits = Arc::new(AtomicUsize::new(0));
-    let state = FixedOauthBridgeRecoveryState {
-        register_hits: register_hits.clone(),
-    };
-    let app = Router::new()
-        .route(
-            "/internal/token/register",
-            post(fixed_oauth_bridge_register_recovery),
-        )
-        .route(
-            "/openai/v1/responses",
-            post(|headers: HeaderMap| async move {
-                let authorization = headers
-                    .get(http_header::AUTHORIZATION)
-                    .and_then(|value| value.to_str().ok())
-                    .unwrap_or_default();
-                if authorization == "Bearer bridge-test-token-1" {
-                    return (
-                        StatusCode::UNAUTHORIZED,
-                        Json(json!({
-                            "error": {
-                                "code": "invalid_api_key",
-                                "message": "oauth bridge token is unknown or was not registered",
-                            }
-                        })),
-                    )
-                        .into_response();
-                }
-                (
-                    StatusCode::OK,
-                    Json(json!({
-                        "id": "resp_bridge_recovered",
-                        "object": "response",
-                        "status": "completed",
-                        "output": [],
-                    })),
-                )
-                    .into_response()
-            }),
-        )
-        .with_state(state);
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind fixed oauth bridge recovery upstream");
-    let addr = listener
-        .local_addr()
-        .expect("fixed oauth bridge recovery upstream addr");
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("fixed oauth bridge recovery upstream should run");
-    });
-    (format!("http://{addr}"), register_hits, handle)
+    (format!("http://{addr}"), handle)
 }
 
 async fn spawn_pool_retry_upstream(
@@ -9593,7 +9478,9 @@ async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
 
 #[tokio::test]
 async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_details() {
-    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
 
     #[derive(sqlx::FromRow)]
     struct RouteStateRow {
@@ -9607,16 +9494,14 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
     }
 
     let scope_message = "You have insufficient permissions for this operation. Missing scopes: api.responses.write.";
-    let (bridge_base, register_hits, upstream_handle) = spawn_fixed_oauth_bridge_http_failure(
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_http_failure(
         StatusCode::UNAUTHORIZED,
         Some("missing_scopes"),
         scope_message,
     )
     .await;
-    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
-        Url::parse(&format!("{bridge_base}/internal/token/register"))
-            .expect("valid bridge register url"),
-        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
     )
     .await;
     let state = test_state_with_openai_base(
@@ -9709,90 +9594,24 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
             .as_str()
             .is_some_and(|value| value.contains("Missing scopes: api.responses.write"))
     );
-    assert_eq!(register_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
-
     upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
-}
-
-#[tokio::test]
-async fn pool_route_reregisters_oauth_bridge_token_after_bridge_restart_like_rejection() {
-    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
-
-    #[derive(sqlx::FromRow)]
-    struct RouteStateRow {
-        status: String,
-        last_error: Option<String>,
-    }
-
-    let (bridge_base, register_hits, upstream_handle) =
-        spawn_fixed_oauth_bridge_stale_token_once().await;
-    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
-        Url::parse(&format!("{bridge_base}/internal/token/register"))
-            .expect("valid bridge register url"),
-        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
-    )
-    .await;
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let account_id =
-        insert_test_pool_oauth_account(&state, "Recovery OAuth", "oauth-recover").await;
-
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/responses".parse().expect("valid uri")),
-        Method::POST,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
-        Body::from(r#"{"model":"gpt-5","input":"hello"}"#.as_bytes().to_vec()),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read response body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode response body");
-    assert_eq!(payload["id"].as_str(), Some("resp_bridge_recovered"));
-    assert_eq!(register_hits.load(std::sync::atomic::Ordering::SeqCst), 2);
-
-    let route_state = sqlx::query_as::<_, RouteStateRow>(
-        r#"
-        SELECT status, last_error
-        FROM pool_upstream_accounts
-        WHERE id = ?1
-        "#,
-    )
-    .bind(account_id)
-    .fetch_one(&state.pool)
-    .await
-    .expect("load route state");
-    assert_eq!(route_state.status, "active");
-    assert_eq!(route_state.last_error, None);
-
-    upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]
 async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
-    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
 
-    let (bridge_base, _register_hits, upstream_handle) = spawn_fixed_oauth_bridge_http_failure(
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_http_failure(
         StatusCode::FORBIDDEN,
         Some("token_invalidated"),
         "Authentication token has been invalidated, please sign in again.",
     )
     .await;
-    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
-        Url::parse(&format!("{bridge_base}/internal/token/register"))
-            .expect("valid bridge register url"),
-        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
     )
     .await;
     let state = test_state_with_openai_base(
@@ -9825,23 +9644,23 @@ async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
     assert_eq!(status, "needs_reauth");
 
     upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]
 async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
-    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
 
-    let (bridge_base, _register_hits, upstream_handle) = spawn_fixed_oauth_bridge_http_failure(
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_http_failure(
         StatusCode::UNAUTHORIZED,
         Some("invalid_grant"),
         "Unauthorized",
     )
     .await;
-    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
-        Url::parse(&format!("{bridge_base}/internal/token/register"))
-            .expect("valid bridge register url"),
-        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
     )
     .await;
     let state = test_state_with_openai_base(
@@ -9874,7 +9693,7 @@ async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
     assert_eq!(status, "needs_reauth");
 
     upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[test]
@@ -10066,7 +9885,9 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         account_id: 8,
         display_name: "Gateway Key".to_string(),
         kind: "api_key_codex".to_string(),
-        authorization: "Bearer upstream-primary".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer upstream-primary".to_string(),
+        },
         upstream_base_url: Url::parse("https://proxy.example.com/gateway")
             .expect("account upstream base url"),
     };

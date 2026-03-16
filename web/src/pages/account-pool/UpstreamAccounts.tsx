@@ -167,22 +167,38 @@ function kindVariant(kind: string): 'secondary' | 'success' {
   return kind === 'oauth_codex' ? 'success' : 'secondary'
 }
 
-function isOauthBridgeUnavailableError(lastError?: string | null) {
+function isOauthLegacyBridgeError(lastError?: string | null) {
+  const normalized = lastError?.toLocaleLowerCase() ?? ''
+  return normalized.includes('oauth bridge')
+}
+
+function isOauthDataPlaneUnavailableError(lastError?: string | null) {
   const normalized = lastError?.toLocaleLowerCase() ?? ''
   return (
-    normalized.includes('oauth bridge') &&
-    (normalized.includes('unavailable') || normalized.includes('connection refused'))
+    normalized.includes('failed to contact oauth codex upstream') ||
+    normalized.includes('oauth_upstream_unavailable') ||
+    normalized.includes('connection refused') ||
+    normalized.includes('connection reset') ||
+    (isOauthLegacyBridgeError(lastError) &&
+      (normalized.includes('token exchange failed') || normalized.includes('unavailable')))
   )
 }
 
-function isOauthBridgeExchangeError(lastError?: string | null) {
+function isLegacyOauthBridgeExchangeError(lastError?: string | null) {
   const normalized = lastError?.toLocaleLowerCase() ?? ''
   return normalized.includes('oauth bridge token exchange failed')
 }
 
-function isOauthBridgeUpstreamRejectedError(lastError?: string | null) {
+function isOauthDataPlaneRejectedError(lastError?: string | null) {
   const normalized = lastError?.toLocaleLowerCase() ?? ''
-  return normalized.includes('oauth bridge upstream') || normalized.includes('upstream rejected request')
+  return (
+    normalized.includes('missing scopes') ||
+    normalized.includes('insufficient permissions for this operation') ||
+    normalized.includes('api.responses.write') ||
+    normalized.includes('api.model.read') ||
+    (isOauthLegacyBridgeError(lastError) && normalized.includes('upstream')) ||
+    normalized.includes('oauth_upstream_rejected_request')
+  )
 }
 
 function resolveOauthRecoveryHint(
@@ -191,22 +207,22 @@ function resolveOauthRecoveryHint(
   lastError?: string | null,
 ): OauthRecoveryHint | null {
   if (kind !== 'oauth_codex') return null
-  if (isOauthBridgeUnavailableError(lastError)) {
-    return {
-      titleKey: 'accountPool.upstreamAccounts.hints.bridgeUnavailableTitle',
-      bodyKey: 'accountPool.upstreamAccounts.hints.bridgeUnavailableBody',
-    }
-  }
-  if (isOauthBridgeExchangeError(lastError)) {
+  if (isLegacyOauthBridgeExchangeError(lastError)) {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.bridgeExchangeTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.bridgeExchangeBody',
     }
   }
-  if (isOauthBridgeUpstreamRejectedError(lastError)) {
+  if (isOauthDataPlaneUnavailableError(lastError)) {
     return {
-      titleKey: 'accountPool.upstreamAccounts.hints.bridgeUpstreamTitle',
-      bodyKey: 'accountPool.upstreamAccounts.hints.bridgeUpstreamBody',
+      titleKey: 'accountPool.upstreamAccounts.hints.dataPlaneUnavailableTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.dataPlaneUnavailableBody',
+    }
+  }
+  if (isOauthDataPlaneRejectedError(lastError)) {
+    return {
+      titleKey: 'accountPool.upstreamAccounts.hints.dataPlaneRejectedTitle',
+      bodyKey: 'accountPool.upstreamAccounts.hints.dataPlaneRejectedBody',
     }
   }
   if (status === 'needs_reauth') {
@@ -221,9 +237,9 @@ function resolveOauthRecoveryHint(
 function resolveDisplayedStatus(status: string, lastError?: string | null) {
   if (
     status === 'needs_reauth' &&
-    (isOauthBridgeUnavailableError(lastError) ||
-      isOauthBridgeExchangeError(lastError) ||
-      isOauthBridgeUpstreamRejectedError(lastError))
+    (isLegacyOauthBridgeExchangeError(lastError) ||
+      isOauthDataPlaneUnavailableError(lastError) ||
+      isOauthDataPlaneRejectedError(lastError))
   ) {
     return 'error'
   }

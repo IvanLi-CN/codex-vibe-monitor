@@ -1729,7 +1729,7 @@ pub(crate) async fn fetch_upstream_models_payload(
         );
     }
 
-    let payload = timeout(handshake_timeout, upstream_response.json::<Value>())
+    let payload_bytes = timeout(handshake_timeout, upstream_response.into_bytes())
         .await
         .map_err(|_| {
             anyhow!(
@@ -1737,6 +1737,9 @@ pub(crate) async fn fetch_upstream_models_payload(
                 handshake_timeout.as_millis()
             )
         })?
+        .map_err(anyhow::Error::msg)
+        .context("failed to read upstream /v1/models response body")?;
+    let payload: Value = serde_json::from_slice(&payload_bytes)
         .context("failed to decode upstream /v1/models response as JSON")?;
 
     payload

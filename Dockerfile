@@ -23,9 +23,8 @@ RUN apt-get update \
 
 # Cache dependencies (avoid invalidating the dependency layer when only app sources change).
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src src/bin \
+RUN mkdir -p src \
     && printf '%s\n' 'fn main() {}' > src/main.rs \
-    && printf '%s\n' 'fn main() {}' > src/bin/openai-oauth-bridge.rs \
     && cargo build --release --locked
 
 # Copy app sources and build the real binary.
@@ -33,7 +32,6 @@ COPY src ./src
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
 RUN find src -type f -name '*.rs' -exec touch {} + \
     && rm -f target/release/codex-vibe-monitor \
-    && rm -f target/release/openai-oauth-bridge \
     && cargo build --release --locked
 
 # Stage 3: fetch Xray-core (xray) for forward-proxy subscription validation
@@ -71,7 +69,6 @@ RUN apt-get update \
 WORKDIR /srv/app
 
 COPY --from=rust-builder /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
-COPY --from=rust-builder /app/target/release/openai-oauth-bridge /usr/local/bin/openai-oauth-bridge
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
 COPY scripts/search-raw /usr/local/bin/search-raw

@@ -390,10 +390,10 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 
     clickButton(/Open details/i);
     expect(document.body.textContent).toContain(
-      "This OAuth account could not register with the fixed bridge",
+      "This OAuth account still shows a legacy bridge error",
     );
     expect(document.body.textContent).toContain(
-      "The built-in OAuth bridge rejected the refreshed access token exchange",
+      "The stored last_error came from the removed OAuth bridge path",
     );
     expect(document.body.textContent).toContain("Error");
     expect(document.body.textContent).not.toContain("Needs re-auth");
@@ -536,7 +536,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 
     clickButton(/Open details/i);
     expect(document.body.textContent).toContain(
-      "The OAuth bridge upstream rejected this request",
+      "The OAuth data plane rejected this request",
     );
     expect(document.body.textContent).toContain("Error");
     expect(document.body.textContent).not.toContain(
