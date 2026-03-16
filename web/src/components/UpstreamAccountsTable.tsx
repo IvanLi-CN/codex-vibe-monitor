@@ -293,7 +293,7 @@ export function UpstreamAccountsTable({
                     />
                   </div>
                 </td>
-                <td className="pl-1 pr-3 py-3">
+                <td className="pl-1 pr-3 py-3 align-middle">
                   <div className="space-y-1.5">
                     <CompactWindowLine
                       label={labels.primaryShort}
