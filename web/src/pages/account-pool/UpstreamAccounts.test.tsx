@@ -946,6 +946,11 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     expect(confirmSpy).not.toHaveBeenCalled();
     const confirmDialog = document.body.querySelector('[role="alertdialog"]');
     expect(confirmDialog).not.toBeNull();
+    expect(confirmDialog?.closest('[role="dialog"]')).not.toBeNull();
+    expect(confirmDialog?.closest('.drawer-body')).toBeNull();
+    const cancelButton = findButton(/Cancel/i);
+    expect(cancelButton).toBeInstanceOf(HTMLButtonElement);
+    expect(document.activeElement).toBe(cancelButton);
     const confirmDeleteButton = confirmDialog
       ? Array.from(confirmDialog.querySelectorAll('button')).find((candidate) =>
           /Delete account/i.test(
@@ -1158,6 +1163,97 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     );
     expect(matchingStatuses).toHaveLength(1);
     expect(matchingStatuses[0]?.closest('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("closes only the delete confirmation on escape", async () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex",
+          provider: "codex",
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: null,
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: "requests",
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+      saveGroupNote: vi.fn(),
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Open details/i);
+    clickButton(/^Delete$/i);
+    await flushAsync();
+    await flushTimers();
+
+    expect(document.body.querySelector('[role="alertdialog"]')).not.toBeNull();
+
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
   it("keeps the drawer open until a failing delete request settles", async () => {
