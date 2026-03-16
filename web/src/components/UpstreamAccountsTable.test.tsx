@@ -104,6 +104,7 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('Windows')
     expect(html).toContain('Sync / Call')
     expect(html).toContain('Call')
+    expect(html).toContain('font-mono tabular-nums')
     expect(html).toContain('Duplicate')
     expect(html).toContain('Mother')
     expect(html).toContain('team')

@@ -123,11 +123,11 @@ function CompactWindowLine({
   const summary = resetText ? `${text} · ${resetText}` : text
 
   return (
-    <div className="grid grid-cols-[2.1rem,minmax(0,1fr),5.25rem,2.75rem] items-center gap-1">
-      <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.08em] leading-4 text-base-content/48">
+    <div className="grid grid-cols-[2.5rem,minmax(0,1fr),5.25rem,3rem] items-center gap-1.5">
+      <span className="truncate whitespace-nowrap pr-1 text-right text-[10px] font-semibold uppercase tracking-[0.08em] leading-4 text-base-content/48 font-mono tabular-nums">
         {label}
       </span>
-      <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68" title={summary}>
+      <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums" title={summary}>
         {summary}
       </span>
       <div className="h-1.5 overflow-hidden rounded-full bg-base-300/60">
@@ -136,7 +136,7 @@ function CompactWindowLine({
           style={{ width: `${percent}%` }}
         />
       </div>
-      <span className="truncate text-right text-[11px] font-semibold leading-4 text-base-content/78">
+      <span className="truncate text-right text-[11px] font-semibold leading-4 text-base-content/78 font-mono tabular-nums">
         {Math.round(percent)}%
       </span>
     </div>
@@ -151,11 +151,11 @@ function CompactTimestampLine({
   value: string
 }) {
   return (
-    <div className="grid grid-cols-[2.35rem,minmax(0,1fr)] items-center gap-1">
-      <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.08em] leading-4 text-base-content/48">
+    <div className="grid grid-cols-[2.8rem,minmax(0,1fr)] items-center gap-1.5">
+      <span className="truncate whitespace-nowrap pr-1 text-right text-[10px] font-semibold uppercase tracking-[0.08em] leading-4 text-base-content/48">
         {label}
       </span>
-      <span className="truncate whitespace-nowrap text-[13px] leading-4 text-base-content/72" title={value}>
+      <span className="truncate whitespace-nowrap text-[13px] leading-4 text-base-content/72 font-mono tabular-nums" title={value}>
         {value}
       </span>
     </div>
