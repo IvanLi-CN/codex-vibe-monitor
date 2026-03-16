@@ -27,6 +27,8 @@ import {
 import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
 
+const LOAD_LIST_FAILED = Symbol('load-list-failed')
+
 export function useUpstreamAccounts() {
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
@@ -49,7 +51,7 @@ export function useUpstreamAccounts() {
     async (
       preferredId?: number | null,
       options?: { respectCurrentSelection?: boolean; selectionAnchorId?: number | null },
-    ) => {
+    ): Promise<number | null | typeof LOAD_LIST_FAILED> => {
       setIsLoading(true)
       try {
         const response = await fetchUpstreamAccounts()
@@ -77,7 +79,7 @@ export function useUpstreamAccounts() {
         return nextSelectedId
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
-        return null
+        return LOAD_LIST_FAILED
       } finally {
         setIsLoading(false)
       }
@@ -144,7 +146,12 @@ export function useUpstreamAccounts() {
       respectCurrentSelection: true,
       selectionAnchorId: currentSelectedId,
     })
-    await loadDetail(nextSelectedId)
+    if (nextSelectedId === LOAD_LIST_FAILED) {
+      return
+    }
+    if (nextSelectedId === currentSelectedId) {
+      await loadDetail(nextSelectedId)
+    }
   }, [loadDetail, loadList])
 
   useEffect(() => {

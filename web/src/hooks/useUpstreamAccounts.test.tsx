@@ -285,4 +285,26 @@ describe("useUpstreamAccounts", () => {
     expect(text("detail-name")).toBe("Beta");
     expect(text("error")).toBe("");
   });
+
+  it("keeps the current detail when list refresh fails", async () => {
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockRejectedValueOnce(new Error("List failed"));
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("1");
+    expect(text("detail-id")).toBe("1");
+    expect(text("detail-name")).toBe("Alpha");
+
+    click("refresh");
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("1");
+    expect(text("detail-id")).toBe("1");
+    expect(text("detail-name")).toBe("Alpha");
+    expect(text("error")).toBe("List failed");
+  });
 });
