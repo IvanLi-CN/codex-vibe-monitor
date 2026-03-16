@@ -217,6 +217,29 @@ describe("useUpstreamAccounts", () => {
     expect(text("error")).toBe("");
   });
 
+  it("invalidates the previous detail request in the same turn as a selection change", async () => {
+    const first = deferred<UpstreamAccountDetail>();
+    const second = deferred<UpstreamAccountDetail>();
+    apiMocks.fetchUpstreamAccountDetail
+      .mockImplementationOnce(async () => first.promise)
+      .mockImplementationOnce(async () => second.promise);
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("select-beta");
+    first.reject(new Error("Alpha failed"));
+    await flushAsync();
+
+    second.resolve(createDetail(2, "Beta"));
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("2");
+    expect(text("detail-id")).toBe("2");
+    expect(text("detail-name")).toBe("Beta");
+    expect(text("error")).toBe("");
+  });
+
   it("does not reclaim selection when an older account sync finishes later", async () => {
     const sync = deferred<UpstreamAccountDetail>();
     apiMocks.fetchUpstreamAccountDetail

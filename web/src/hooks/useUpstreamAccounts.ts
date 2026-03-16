@@ -43,9 +43,10 @@ export function useUpstreamAccounts() {
   const detailRequestSeqRef = useRef(0)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
 
-  useEffect(() => {
-    selectedIdRef.current = selectedId
-  }, [selectedId])
+  const setSelectedAccount = useCallback((accountId: number | null) => {
+    selectedIdRef.current = accountId
+    setSelectedId(accountId)
+  }, [])
 
   const loadList = useCallback(
     async (
@@ -55,27 +56,23 @@ export function useUpstreamAccounts() {
       setIsLoading(true)
       try {
         const response = await fetchUpstreamAccounts()
-        let nextSelectedId: number | null = null
+        const currentSelectedId = selectedIdRef.current
+        const selectionAnchorId = options?.selectionAnchorId ?? preferredId ?? null
+        const shouldPreferRequestedId =
+          preferredId != null &&
+          (!options?.respectCurrentSelection || currentSelectedId === selectionAnchorId)
+        const candidateId = shouldPreferRequestedId ? preferredId : currentSelectedId
+        const nextSelectedId =
+          candidateId != null && response.items.some((item) => item.id === candidateId)
+            ? candidateId
+            : response.items[0]?.id ?? null
+
         setItems(response.items)
         setGroups(response.groups)
         setWritesEnabled(response.writesEnabled)
         setRouting(response.routing ?? null)
         setError(null)
-        setSelectedId((current) => {
-          const selectionAnchorId = options?.selectionAnchorId ?? preferredId ?? null
-          const shouldPreferRequestedId =
-            preferredId != null &&
-            (!options?.respectCurrentSelection || current === selectionAnchorId)
-          const nextId = shouldPreferRequestedId ? preferredId : current
-          if (nextId != null && response.items.some((item) => item.id === nextId)) {
-            nextSelectedId = nextId
-            selectedIdRef.current = nextId
-            return nextId
-          }
-          nextSelectedId = response.items[0]?.id ?? null
-          selectedIdRef.current = nextSelectedId
-          return nextSelectedId
-        })
+        setSelectedAccount(nextSelectedId)
         return nextSelectedId
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -84,7 +81,7 @@ export function useUpstreamAccounts() {
         setIsLoading(false)
       }
     },
-    [],
+    [setSelectedAccount],
   )
 
   const loadDetail = useCallback(async (accountId: number | null) => {
@@ -165,8 +162,8 @@ export function useUpstreamAccounts() {
   }, [refresh])
 
   const selectAccount = useCallback((accountId: number) => {
-    setSelectedId(accountId)
-  }, [])
+    setSelectedAccount(accountId)
+  }, [setSelectedAccount])
 
   const beginOauthLogin = useCallback(
     async (payload: CreateOauthLoginSessionPayload) => {
@@ -197,12 +194,12 @@ export function useUpstreamAccounts() {
       const response = await completeOauthLoginSession(loginId, payload)
       await loadList(response.id)
       setDetail(response)
-      setSelectedId(response.id)
+      setSelectedAccount(response.id)
       setError(null)
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadList],
+    [loadList, setSelectedAccount],
   )
 
   const createApiKeyAccount = useCallback(
@@ -210,12 +207,12 @@ export function useUpstreamAccounts() {
       const response = await createApiKeyUpstreamAccount(payload)
       await loadList(response.id)
       await loadDetail(response.id)
-      setSelectedId(response.id)
+      setSelectedAccount(response.id)
       setError(null)
       emitUpstreamAccountsChanged()
       return response
     },
-    [loadDetail, loadList],
+    [loadDetail, loadList, setSelectedAccount],
   )
 
   const saveAccount = useCallback(
@@ -271,13 +268,13 @@ export function useUpstreamAccounts() {
     async (accountId: number) => {
       await deleteUpstreamAccount(accountId)
       const fallbackId = items.find((item) => item.id !== accountId)?.id ?? null
-      setSelectedId(fallbackId)
+      setSelectedAccount(fallbackId)
       await loadList(fallbackId)
       await loadDetail(fallbackId)
       setError(null)
       emitUpstreamAccountsChanged()
     },
-    [items, loadDetail, loadList],
+    [items, loadDetail, loadList, setSelectedAccount],
   )
 
   useEffect(

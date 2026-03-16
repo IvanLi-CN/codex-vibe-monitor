@@ -65,6 +65,7 @@
 - 账号状态至少支持 `active`、`syncing`、`needs_reauth`、`error` 与 `disabled`；授权失效只能转 `needs_reauth`，不得静默删除账号或清空最后一次成功快照。
 - 任何导致组内母号归属变化的写操作，都必须触发系统级通知，并提供 10 秒可撤销窗口；同组后续切换应覆盖旧撤销上下文。
 - 账号详情页的操作忙碌态必须按账号隔离：当账号 A 正在同步/保存/删除/启停时，切到账号 B 的详情不得继承 A 的 loading/spinning 状态；若随后对账号 B 发起同类操作，账号 A 原有的按钮 busy 态也不得被覆盖或提前清除；同一账号存在任一进行中的写操作时，该账号的其它写操作入口必须一并禁用，直到该账号自己的请求结束。
+- 账号切换必须在同一交互拍内使旧 detail 请求失效：用户点击从账号 A 切到账号 B 后，即使 React 尚未提交下一次 effect，A 的晚到 detail 成功/失败响应也不得再写入 detail 或全局错误提示。
 
 ### SHOULD
 
@@ -86,6 +87,7 @@
 - 用户点击 `立即同步` 时，OAuth 账号执行 refresh + usage 拉取；API Key 账号仅刷新本地展示状态。
 - 用户在账号 A 的异步操作未完成前切换到账号 B 时，晚到的 A 详情成功响应、失败响应、同步响应或列表刷新都不得覆盖 B 的 detail 区块，也不得把当前选中账号强行切回 A，且不得把 A 的错误消息串到 B。
 - 当详情抽屉处于打开状态时，外部 refresh/list 刷新若失败，不得清空当前账号 detail；只有成功拿到新列表并完成选中账号收口后，才允许切换 detail 内容。
+- refresh/list 刷新在决定详情补拉目标时，必须先用最新列表数据与当前选中账号纯计算出最终 `selectedId`，再据此决定是否补拉 detail；不得依赖 `setSelectedId(updater)` 的执行时机来推导返回值。
 
 ### Edge cases / errors
 
@@ -126,8 +128,10 @@
 - Given 账号 A 正在执行保存、同步、删除或启停中的任意一种写操作，When 用户仍停留在账号 A 的详情，Then 账号 A 的其它写操作入口必须全部 disabled，避免同账号并发提交互相覆盖。
 - Given 账号 A 的详情请求或同步响应晚于账号 B 返回，When 当前选中账号已经是 B，Then 页面只接受 B 的 detail 结果，A 的晚到响应不会覆盖详情内容，也不会把选中项切回 A。
 - Given 账号 A 的详情请求在切到账号 B 后才失败，When 当前选中账号已经是 B，Then 页面不会向 B 展示 A 的错误消息，错误态仍只属于当前账号自己的请求。
+- Given 用户刚从账号 A 切到账号 B，When A 的旧详情请求在同一轮交互里立刻失败或成功返回，Then 该旧响应仍必须被视为过期，不得写入 detail，也不得在页面底部展示 A 的错误提示。
 - Given 账号 A 曾经失败并留下错误消息，When 用户切到账号 B 发起新的写操作后再回到 A，Then A 自己的错误消息仍应保留，除非 A 自己再次发起操作或被成功覆盖。
 - Given 当前详情抽屉正显示账号 A，When 外部列表 refresh 请求失败，Then 账号 A 的详情内容保持不变，只展示 refresh 自己的错误提示，不会把 detail 清空成空状态。
+- Given refresh 返回的新列表已经把当前有效选中账号收口到 B，When refresh 继续决定是否补拉 detail，Then 它必须按这个最终收口结果刷新 B 的 detail，而不是依赖 React state updater 是否已经执行。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -161,7 +165,7 @@
 
 ## Change log
 
-- 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 与 action error 都要按账号隔离、同一账号任一写操作进行中时其它写入口必须锁住、refresh 必须按列表收口后的最终选中账号刷新 detail 且列表失败时不得清空当前 detail、同类动作跨账号并发时不得互相覆盖 busy/error 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
+- 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 与 action error 都要按账号隔离、同一账号任一写操作进行中时其它写入口必须锁住、账号切换要在同一交互拍内使旧 detail 请求失效、refresh 必须用列表数据纯计算最终选中账号后再刷新 detail 且列表失败时不得清空当前 detail、同类动作跨账号并发时不得互相覆盖 busy/error 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
 
 ## Visual Evidence (PR)
 
