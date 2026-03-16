@@ -39,6 +39,7 @@ const labels = {
   duplicate: 'Duplicate',
   mother: 'Mother',
   off: 'Off',
+  hiddenTagsA11y: (count: number, names: string) => `Show ${count} hidden tags: ${names}`,
   statusValue: (item: { status: string }) => item.status,
   status: (item: { status: string }) =>
     ({
@@ -119,8 +120,8 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('5h')
     expect(html).toContain('7d')
     expect(html).not.toContain('production-apac-primary-operators')
-    expect(html).not.toContain('overflow-x-auto')
-    expect(html).not.toContain('min-w-[940px]')
+    expect(html).toContain('overflow-x-auto')
+    expect(html).toContain('min-w-[54rem]')
   })
 
   it('keeps disabled and placeholder values in the compact layout', () => {

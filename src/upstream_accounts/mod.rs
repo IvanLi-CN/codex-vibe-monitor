@@ -3980,7 +3980,7 @@ fn build_summary_from_row(
     }
 }
 
-async fn load_account_last_activity_map(
+pub(crate) async fn load_account_last_activity_map(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
 ) -> Result<HashMap<i64, String>> {
@@ -3989,20 +3989,42 @@ async fn load_account_last_activity_map(
     }
 
     const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+    let archive_attached = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_database_list WHERE name = 'archive_db'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
+        > 0;
 
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
-    query
-        .push(ACCOUNT_EXPR)
-        .push(" AS account_id, MAX(occurred_at) AS last_activity_at FROM codex_invocations WHERE ")
-        .push(ACCOUNT_EXPR)
-        .push(" IN (");
-    {
-        let mut separated = query.separated(", ");
-        for account_id in account_ids {
-            separated.push_bind(account_id);
-        }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (",
+    );
+    let mut table_names = vec!["codex_invocations"];
+    if archive_attached {
+        table_names.push("archive_db.codex_invocations");
     }
-    query.push(") GROUP BY account_id");
+    for (index, table_name) in table_names.into_iter().enumerate() {
+        if index > 0 {
+            query.push(" UNION ALL ");
+        }
+        query
+            .push("SELECT ")
+            .push(ACCOUNT_EXPR)
+            .push(" AS account_id, occurred_at FROM ")
+            .push(table_name)
+            .push(" WHERE ")
+            .push(ACCOUNT_EXPR)
+            .push(" IN (");
+        {
+            let mut separated = query.separated(", ");
+            for account_id in account_ids {
+                separated.push_bind(account_id);
+            }
+        }
+        query.push(")");
+    }
+    query.push(") WHERE account_id IS NOT NULL GROUP BY account_id");
 
     let rows = query
         .build_query_as::<AccountLastActivityRow>()

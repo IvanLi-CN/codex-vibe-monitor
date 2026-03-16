@@ -30,6 +30,7 @@ interface UpstreamAccountsTableProps {
     mother: string
     duplicate: string
     off: string
+    hiddenTagsA11y: (count: number, names: string) => string
     status: (item: UpstreamAccountSummary) => string
     statusValue: (item: UpstreamAccountSummary) => string
   }
@@ -72,7 +73,10 @@ function compactBadge(content: ReactNode, variant: 'accent' | 'secondary' | 'suc
   )
 }
 
-function renderTagBadges(tags?: AccountTagSummary[] | null) {
+function renderTagBadges(
+  labels: UpstreamAccountsTableProps['labels'],
+  tags?: AccountTagSummary[] | null,
+) {
   const safeTags = tags ?? []
   const visible = safeTags.slice(0, 3)
   const hidden = safeTags.slice(visible.length)
@@ -101,7 +105,7 @@ function renderTagBadges(tags?: AccountTagSummary[] | null) {
             }
             triggerProps={{
               tabIndex: 0,
-              'aria-label': `Show ${overflowCount} hidden tags: ${hiddenNames}`,
+              'aria-label': labels.hiddenTagsA11y(overflowCount, hiddenNames),
               onClick: (event) => event.stopPropagation(),
               onKeyDown: (event) => {
                 if (event.key === 'Enter' || event.key === ' ') {
@@ -219,8 +223,8 @@ export function UpstreamAccountsTable({
   }
 
   return (
-    <div className="overflow-hidden rounded-[1.35rem] border border-base-300/80 bg-base-100/72">
-      <table className="w-full table-fixed border-collapse">
+    <div className="overflow-x-auto rounded-[1.35rem] border border-base-300/80 bg-base-100/72 md:overflow-x-visible">
+      <table className="min-w-[54rem] w-full table-auto border-collapse md:min-w-0 md:table-fixed">
         <colgroup>
           <col className="w-[38%]" />
           <col className="w-[16%]" />
@@ -293,7 +297,7 @@ export function UpstreamAccountsTable({
                         ? compactBadge(item.planType, 'accent')
                         : null}
                       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-                        {renderTagBadges(item.tags)}
+                        {renderTagBadges(labels, item.tags)}
                       </div>
                     </div>
                   </div>

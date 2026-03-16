@@ -24,7 +24,7 @@ use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::error::{DatabaseError, ErrorKind};
-use sqlx::{Connection, SqliteConnection, SqlitePool};
+use sqlx::{Connection, SqliteConnection, SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -2870,6 +2870,57 @@ async fn list_upstream_accounts_includes_last_activity_at() {
             .get("lastActivityAt")
             .and_then(serde_json::Value::as_str),
         Some("2026-03-11T12:35:00Z")
+    );
+}
+
+#[tokio::test]
+async fn list_upstream_accounts_includes_archived_last_activity_at() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("create archive activity pool");
+    let account_id = 17_i64;
+
+    sqlx::query("CREATE TABLE codex_invocations (occurred_at TEXT NOT NULL, payload TEXT)")
+        .execute(&pool)
+        .await
+        .expect("create active invocation table");
+    sqlx::query("ATTACH DATABASE ':memory:' AS archive_db")
+        .execute(&pool)
+        .await
+        .expect("attach archive db");
+    sqlx::query("CREATE TABLE archive_db.codex_invocations (occurred_at TEXT NOT NULL, payload TEXT)")
+        .execute(&pool)
+        .await
+        .expect("create archive invocation table");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_db.codex_invocations (
+            occurred_at, payload
+        )
+        VALUES (?1, ?2)
+        "#,
+    )
+    .bind("2026-03-12 07:05:00")
+    .bind(
+        json!({
+            "upstreamAccountId": account_id,
+        })
+        .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .expect("insert archived account invocation");
+
+    let last_activity = load_account_last_activity_map(&pool, &[account_id])
+        .await
+        .expect("load last activity map");
+
+    assert_eq!(
+        last_activity.get(&account_id).map(String::as_str),
+        Some("2026-03-12 07:05:00")
     );
 }
 

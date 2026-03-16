@@ -146,6 +146,7 @@ const labels = {
   duplicate: 'Duplicate',
   mother: 'Mother',
   off: 'Off',
+  hiddenTagsA11y: (count: number, names: string) => `Show ${count} hidden tags: ${names}`,
   statusValue: (item: { status: string }) => item.status,
   status: (item: { status: string }) =>
     ({

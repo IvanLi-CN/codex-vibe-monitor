@@ -1063,6 +1063,8 @@ export default function UpstreamAccountsPage() {
                 mother: t('accountPool.upstreamAccounts.mother.badge'),
                 duplicate: t('accountPool.upstreamAccounts.duplicate.badge'),
                 off: t('accountPool.upstreamAccounts.table.off'),
+                hiddenTagsA11y: (count, names) =>
+                  t('accountPool.upstreamAccounts.table.hiddenTagsA11y', { count, names }),
                 status: accountSummaryStatusLabel,
                 statusValue: (item) => resolveDisplayedStatus(item.status, item.lastError),
               }}
