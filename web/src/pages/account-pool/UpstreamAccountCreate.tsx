@@ -1112,6 +1112,7 @@ export default function UpstreamAccountCreatePage() {
       const response = await beginOauthMailboxSession()
       setOauthMailboxSession(response)
       setOauthMailboxInput(response.emailAddress)
+      setOauthDisplayName((current) => (current.trim() ? current : response.emailAddress))
       setOauthMailboxStatus(null)
       setOauthMailboxTone('idle')
       setOauthMailboxCodeTone('idle')
@@ -1318,6 +1319,7 @@ export default function UpstreamAccountCreatePage() {
         mailboxBusy: false,
         mailboxSession: response,
         mailboxInput: response.emailAddress,
+        displayName: current.displayName.trim() ? current.displayName : response.emailAddress,
         mailboxStatus: null,
         mailboxTone: 'idle',
         mailboxCodeTone: 'idle',

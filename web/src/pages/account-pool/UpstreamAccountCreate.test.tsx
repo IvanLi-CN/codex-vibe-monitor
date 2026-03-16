@@ -1040,7 +1040,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 });
 
 describe("UpstreamAccountCreatePage oauth mailbox", () => {
-  it("generates a mailbox without overwriting the display name", async () => {
+  it("fills the display name with the mailbox when it is blank", async () => {
     const beginOauthMailboxSession = vi.fn().mockResolvedValue({
       sessionId: "mailbox-1",
       emailAddress: "temp-user@example.com",
@@ -1067,7 +1067,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     await flushAsync();
 
     expect(beginOauthMailboxSession).toHaveBeenCalledTimes(1);
-    expect(displayNameInput?.value).toBe("");
+    expect(displayNameInput?.value).toBe("temp-user@example.com");
     expect(host?.textContent).toContain("temp-user@example.com");
     expect(
       Array.from(host?.querySelectorAll("button") ?? []).some(
@@ -1078,6 +1078,34 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("keeps the display name when it already has visible characters", async () => {
+    const beginOauthMailboxSession = vi.fn().mockResolvedValue({
+      sessionId: "mailbox-2",
+      emailAddress: "temp-user-2@example.com",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+    });
+    mockUpstreamAccounts({ beginOauthMailboxSession });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    const displayNameInput = setInputValue('input[name="oauthDisplayName"]', "Manual Alias");
+
+    const generateButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate) =>
+        candidate instanceof HTMLButtonElement &&
+        /Generate/.test(candidate.textContent || ""),
+    ) as HTMLButtonElement | undefined;
+    expect(generateButton).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => {
+      generateButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(beginOauthMailboxSession).toHaveBeenCalledTimes(1);
+    expect(displayNameInput.value).toBe("Manual Alias");
+    expect(host?.textContent).toContain("temp-user-2@example.com");
   });
 });
 
