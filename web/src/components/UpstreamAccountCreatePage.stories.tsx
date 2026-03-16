@@ -4,7 +4,6 @@ import { SystemNotificationProvider } from './ui/system-notifications'
 import { I18nProvider } from '../i18n'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
 import type { OauthMailboxSession, OauthMailboxStatus } from '../lib/api'
-import { OauthMailboxChip } from './account-pool/OauthMailboxChip'
 import {
   AccountPoolStoryRouter,
   StorybookUpstreamAccountsMock,
@@ -139,126 +138,6 @@ export const OauthMailboxReady: Story = {
       />
     )
   },
-}
-
-export const OauthMailboxHover: Story = {
-  name: 'OAuth Mailbox Hover',
-  render: () => (
-    <div className="min-h-screen bg-base-200 px-10 py-12">
-      <div className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm">
-        <div className="flex items-center gap-3">
-          <span className="field-label shrink-0">Display Name</span>
-          <OauthMailboxChip
-            className="max-w-[24rem]"
-            emailAddress="hover-preview@mail-tw.707079.xyz"
-            emptyLabel="No mailbox yet"
-            copyAriaLabel="Copy mailbox"
-            copyHintLabel="Click to copy"
-            copiedLabel="Copied"
-            manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
-            manualBadgeLabel="Manual"
-            onCopy={() => undefined}
-          />
-        </div>
-      </div>
-    </div>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
-
-    await userEvent.hover(copyMailboxButton)
-    const tooltip = within(document.body)
-    await expect(tooltip.getByText(/click to copy/i)).toBeInTheDocument()
-    await expect(tooltip.getByText(/hover-preview@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
-  },
-}
-
-export const OauthMailboxLongPress: Story = {
-  name: 'OAuth Mailbox Long Press',
-  render: () => (
-    <div className="min-h-screen bg-base-200 px-10 py-12">
-      <div className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm">
-        <div className="flex items-center gap-3">
-          <span className="field-label shrink-0">Display Name</span>
-          <OauthMailboxChip
-            className="max-w-[24rem]"
-            emailAddress="press-preview@mail-tw.707079.xyz"
-            emptyLabel="No mailbox yet"
-            copyAriaLabel="Copy mailbox"
-            copyHintLabel="Click to copy"
-            copiedLabel="Copied"
-            manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
-            manualBadgeLabel="Manual"
-            onCopy={() => undefined}
-          />
-        </div>
-      </div>
-    </div>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
-
-    copyMailboxButton.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', button: 0 }))
-    await new Promise((resolve) => window.setTimeout(resolve, 420))
-
-    const tooltip = within(document.body)
-    await expect(tooltip.getByText(/click to copy/i)).toBeInTheDocument()
-    await expect(tooltip.getByText(/press-preview@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
-
-    copyMailboxButton.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch', button: 0 }))
-  },
-}
-
-export const OauthMailboxCopied: Story = {
-  name: 'OAuth Mailbox Copied',
-  render: () => (
-    <div className="min-h-screen bg-base-200 px-10 py-12">
-      <div className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm">
-        <div className="flex items-center gap-3">
-          <span className="field-label shrink-0">Display Name</span>
-          <OauthMailboxChip
-            className="max-w-[24rem]"
-            emailAddress="copied-preview@mail-tw.707079.xyz"
-            emptyLabel="No mailbox yet"
-            copyAriaLabel="Copy mailbox"
-            copyHintLabel="Click to copy"
-            copiedLabel="Copied"
-            manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
-            manualBadgeLabel="Manual"
-            tone="copied"
-            onCopy={() => undefined}
-          />
-        </div>
-      </div>
-    </div>
-  ),
-}
-
-export const OauthMailboxManualCopy: Story = {
-  name: 'OAuth Mailbox Manual Copy',
-  render: () => (
-    <div className="min-h-screen bg-base-200 px-10 py-12">
-      <div className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm">
-        <div className="flex items-center gap-3">
-          <span className="field-label shrink-0">Display Name</span>
-          <OauthMailboxChip
-            className="max-w-[24rem]"
-            emailAddress="manual-copy@mail-tw.707079.xyz"
-            emptyLabel="No mailbox yet"
-            copyAriaLabel="Copy mailbox"
-            copyHintLabel="Click to copy"
-            copiedLabel="Copied"
-            manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
-            manualBadgeLabel="Manual"
-            tone="manual"
-            onCopy={() => undefined}
-          />
-        </div>
-      </div>
-    </div>
-  ),
 }
 
 export const OauthMailboxDetachedName: Story = {
