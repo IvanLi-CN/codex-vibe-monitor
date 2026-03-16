@@ -5406,13 +5406,27 @@ fn random_hex(size: usize) -> Result<String, (StatusCode, String)> {
 
 fn random_base36(size: usize) -> Result<String, (StatusCode, String)> {
     const ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    const LETTERS: &[u8; 26] = b"abcdefghijklmnopqrstuvwxyz";
+    const DIGITS: &[u8; 10] = b"0123456789";
     let mut rng = OsRng;
-    let mut output = String::with_capacity(size);
+    let mut output = Vec::with_capacity(size);
     for _ in 0..size {
         let idx = rng.gen_range(0..ALPHABET.len());
-        output.push(ALPHABET[idx] as char);
+        output.push(ALPHABET[idx]);
     }
-    Ok(output)
+    if size > 0 {
+        let digit_pos = rng.gen_range(0..size);
+        output[digit_pos] = DIGITS[rng.gen_range(0..DIGITS.len())];
+    }
+    if size > 1 {
+        let mut letter_pos = rng.gen_range(0..size);
+        if letter_pos == 0 && output[letter_pos].is_ascii_digit() && size > 1 {
+            letter_pos = 1;
+        }
+        output[letter_pos] = LETTERS[rng.gen_range(0..LETTERS.len())];
+    }
+    String::from_utf8(output)
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
 }
 
 fn generate_mailbox_local_name() -> Result<String, (StatusCode, String)> {
@@ -5436,25 +5450,36 @@ fn generate_mailbox_local_name() -> Result<String, (StatusCode, String)> {
     let mut rng = OsRng;
     let suffix_len = rng.gen_range(3..=5);
     let suffix = random_base36(suffix_len)?;
+    let maybe_join = |left: &str, right: &str, rng: &mut OsRng| match rng.gen_range(0..4) {
+        0 => format!("{left}{right}"),
+        1 => format!("{left}.{right}"),
+        _ => format!("{left}-{right}"),
+    };
     let local = match rng.gen_range(0..3) {
-        0 => format!(
-            "{}.{}-{}",
-            GIVEN_NAMES[rng.gen_range(0..GIVEN_NAMES.len())],
-            FAMILY_NAMES[rng.gen_range(0..FAMILY_NAMES.len())],
-            suffix
-        ),
-        1 => format!(
-            "{}-{}-{}",
-            ORG_NAMES[rng.gen_range(0..ORG_NAMES.len())],
-            TEAM_NAMES[rng.gen_range(0..TEAM_NAMES.len())],
-            suffix
-        ),
-        _ => format!(
-            "{}-{}-{}",
-            TEAM_NAMES[rng.gen_range(0..TEAM_NAMES.len())],
-            UNIT_NAMES[rng.gen_range(0..UNIT_NAMES.len())],
-            suffix
-        ),
+        0 => {
+            let base = maybe_join(
+                GIVEN_NAMES[rng.gen_range(0..GIVEN_NAMES.len())],
+                FAMILY_NAMES[rng.gen_range(0..FAMILY_NAMES.len())],
+                &mut rng,
+            );
+            maybe_join(&base, &suffix, &mut rng)
+        }
+        1 => {
+            let base = maybe_join(
+                ORG_NAMES[rng.gen_range(0..ORG_NAMES.len())],
+                TEAM_NAMES[rng.gen_range(0..TEAM_NAMES.len())],
+                &mut rng,
+            );
+            maybe_join(&base, &suffix, &mut rng)
+        }
+        _ => {
+            let base = maybe_join(
+                TEAM_NAMES[rng.gen_range(0..TEAM_NAMES.len())],
+                UNIT_NAMES[rng.gen_range(0..UNIT_NAMES.len())],
+                &mut rng,
+            );
+            maybe_join(&base, &suffix, &mut rng)
+        }
     };
     Ok(local)
 }
@@ -6919,7 +6944,7 @@ mod tests {
         let local = generate_mailbox_local_name().expect("mailbox local part");
         assert!(local.len() >= 10);
         assert!(local.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.' || ch == '-'));
-        assert!(local.contains('-'));
+        assert!(local.chars().any(|ch| ch.is_ascii_digit()));
         assert!(!local.starts_with('-'));
         assert!(!local.ends_with('-'));
     }
@@ -6929,5 +6954,7 @@ mod tests {
         let token = random_base36(24).expect("base36 token");
         assert_eq!(token.len(), 24);
         assert!(token.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit()));
+        assert!(token.chars().any(|ch| ch.is_ascii_lowercase()));
+        assert!(token.chars().any(|ch| ch.is_ascii_digit()));
     }
 }
