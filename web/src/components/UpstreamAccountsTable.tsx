@@ -124,8 +124,8 @@ function CompactWindowLine({
   const summary = resetText ? `${text} · ${resetText}` : text
 
   return (
-    <div className="grid grid-cols-[2.5rem,5.75rem,9.5rem,4.5rem,2.75rem] items-center gap-1.5">
-      <span className="truncate whitespace-nowrap pr-1 text-right text-[10px] font-semibold uppercase tracking-[0.08em] leading-4 text-base-content/48 font-mono tabular-nums">
+    <div className="grid grid-cols-[2rem,5.5rem,minmax(0,1fr),4.5rem,2.75rem] items-center gap-1">
+      <span className="truncate whitespace-nowrap text-right text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums">
         {label}
       </span>
       <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums" title={text}>
@@ -158,8 +158,8 @@ function CompactTimestampLine({
   value: string
 }) {
   return (
-    <div className="grid grid-cols-[2.8rem,minmax(0,1fr)] items-center gap-1.5">
-      <span className="truncate whitespace-nowrap pr-1 text-right text-[10px] font-semibold uppercase tracking-[0.08em] leading-4 text-base-content/48">
+    <div className="grid grid-cols-[2.2rem,minmax(0,1fr)] items-center gap-1">
+      <span className="truncate whitespace-nowrap text-right text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48">
         {label}
       </span>
       <span className="truncate whitespace-nowrap text-[13px] leading-4 text-base-content/72 font-mono tabular-nums" title={value}>
@@ -209,8 +209,8 @@ export function UpstreamAccountsTable({
       <table className="w-full table-fixed border-collapse">
         <colgroup>
           <col className="w-[38%]" />
-          <col className="w-[18%]" />
-          <col className="w-[40%]" />
+          <col className="w-[16%]" />
+          <col className="w-[42%]" />
           <col className="w-[4%]" />
         </colgroup>
         <thead>
@@ -218,13 +218,13 @@ export function UpstreamAccountsTable({
             <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               Account
             </th>
-            <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+            <th className="pl-2 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               {labels.sync}
             </th>
-            <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+            <th className="pl-2 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               {labels.windows}
             </th>
-            <th className="w-12 px-4 py-2.5" aria-hidden />
+            <th className="w-12 pl-2 pr-3 py-2.5" aria-hidden />
           </tr>
         </thead>
         <tbody>
@@ -281,7 +281,7 @@ export function UpstreamAccountsTable({
                     </div>
                   </div>
                 </td>
-                <td className="px-4 py-3 align-middle">
+                <td className="pl-2 pr-3 py-3 align-middle">
                   <div className="space-y-1">
                     <CompactTimestampLine
                       label={labels.lastSuccess}
@@ -293,7 +293,7 @@ export function UpstreamAccountsTable({
                     />
                   </div>
                 </td>
-                <td className="px-4 py-3">
+                <td className="pl-2 pr-3 py-3">
                   <div className="space-y-1.5">
                     <CompactWindowLine
                       label={labels.primaryShort}
@@ -310,7 +310,7 @@ export function UpstreamAccountsTable({
                     />
                   </div>
                 </td>
-                <td className="px-4 py-3 text-right align-middle">
+                <td className="pl-2 pr-3 py-3 text-right align-middle">
                   <AppIcon
                     name={selected ? 'chevron-right-circle' : 'chevron-right'}
                     className={cn('h-5 w-5', selected ? 'text-primary' : 'text-base-content/35')}
