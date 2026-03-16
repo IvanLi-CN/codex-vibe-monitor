@@ -306,6 +306,8 @@ export function useUpstreamAccounts() {
     [],
   )
 
+  const selectedDetailError = detailError?.accountId === selectedId ? detailError.message : null
+
   return {
     items,
     groups,
@@ -316,7 +318,9 @@ export function useUpstreamAccounts() {
     detail,
     isLoading,
     isDetailLoading,
-    error: (detailError?.accountId === selectedId ? detailError.message : null) ?? listError,
+    listError,
+    detailError: selectedDetailError,
+    error: selectedDetailError ?? listError,
     selectAccount,
     refresh,
     loadDetail,

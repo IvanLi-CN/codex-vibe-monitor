@@ -417,7 +417,8 @@ export default function UpstreamAccountsPage() {
     detail,
     isLoading,
     isDetailLoading,
-    error,
+    listError = null,
+    detailError = null,
     selectAccount,
     refresh,
     saveAccount,
@@ -740,7 +741,7 @@ export default function UpstreamAccountsPage() {
     setActionError((current) => {
       const nextMessages = { ...current.accountMessages }
       delete nextMessages[source.id]
-      return { routing: null, accountMessages: nextMessages }
+      return { ...current, accountMessages: nextMessages }
     })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
@@ -786,7 +787,7 @@ export default function UpstreamAccountsPage() {
     setActionError((current) => {
       const nextMessages = { ...current.accountMessages }
       delete nextMessages[source.id]
-      return { routing: null, accountMessages: nextMessages }
+      return { ...current, accountMessages: nextMessages }
     })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
@@ -817,7 +818,7 @@ export default function UpstreamAccountsPage() {
     setActionError((current) => {
       const nextMessages = { ...current.accountMessages }
       delete nextMessages[source.id]
-      return { routing: null, accountMessages: nextMessages }
+      return { ...current, accountMessages: nextMessages }
     })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
@@ -869,7 +870,7 @@ export default function UpstreamAccountsPage() {
     setActionError((current) => {
       const nextMessages = { ...current.accountMessages }
       delete nextMessages[source.id]
-      return { routing: null, accountMessages: nextMessages }
+      return { ...current, accountMessages: nextMessages }
     })
     setBusyAction((current) => {
       const nextActions = new Set(current.accountActions)
@@ -1509,10 +1510,17 @@ export default function UpstreamAccountsPage() {
         draftBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.draft')}
       />
 
-      {error ? (
+      {listError ? (
         <Alert variant="warning">
           <AppIcon name="information-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-          <div>{error}</div>
+          <div>{listError}</div>
+        </Alert>
+      ) : null}
+
+      {detailError ? (
+        <Alert variant="warning">
+          <AppIcon name="information-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <div>{detailError}</div>
         </Alert>
       ) : null}
     </div>

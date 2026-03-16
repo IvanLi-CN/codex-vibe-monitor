@@ -90,6 +90,7 @@
 - 当详情抽屉处于打开状态时，外部 refresh/list 刷新若失败，不得清空当前账号 detail；只有成功拿到新列表并完成选中账号收口后，才允许切换 detail 内容。
 - refresh/list 刷新在决定详情补拉目标时，必须先用最新列表数据与当前选中账号纯计算出最终 `selectedId`，再据此决定是否补拉 detail；不得依赖 `setSelectedId(updater)` 的执行时机来推导返回值。
 - hook 级错误态必须按来源隔离：list/routing 级错误只能由对应 list/routing 请求清空，账号 detail 错误只能由同一账号、同一来源链路的成功结果清空；其它账号的成功不得把当前账号的错误提示抹掉。
+- 账号操作在清理自己的错误提示时，不得顺带清空 routing 级错误；routing 保存失败后，后续任意账号的保存/同步/启停/删除成功都不得吞掉该 routing 错误。
 
 ### Edge cases / errors
 
@@ -133,9 +134,11 @@
 - Given 用户刚从账号 A 切到账号 B，When A 的旧详情请求在同一轮交互里立刻失败或成功返回，Then 该旧响应仍必须被视为过期，不得写入 detail，也不得在页面底部展示 A 的错误提示。
 - Given 账号 A 曾经失败并留下错误消息，When 用户切到账号 B 发起新的写操作后再回到 A，Then A 自己的错误消息仍应保留，除非 A 自己再次发起操作或被成功覆盖。
 - Given 当前详情抽屉正显示账号 A，When 外部列表 refresh 请求失败，Then 账号 A 的详情内容保持不变，只展示 refresh 自己的错误提示，不会把 detail 清空成空状态。
+- Given 当前账号已经显示 detail 错误，When 随后外部 refresh/list 刷新再次失败，Then 页面必须同时保留 detail 错误与 refresh 自己的错误提示，不得只显示旧 detail 错误。
 - Given refresh 返回的新列表已经把当前有效选中账号收口到 B，When refresh 继续决定是否补拉 detail，Then 它必须按这个最终收口结果刷新 B 的 detail，而不是依赖 React state updater 是否已经执行。
 - Given 用户先触发账号 A 的 detail reload，再触发账号 A 的手动同步或保存，When 更早的 detail reload 晚于同步/保存返回，Then 页面仍必须保留同步/保存后的最新详情，不得被旧 reload 结果覆盖。
 - Given 账号 B 当前正显示自己的 detail 错误，When 账号 A 的列表刷新、保存或同步成功返回，Then 账号 B 的错误提示必须继续保留，直到 B 自己的请求成功或失败被替换。
+- Given routing 密钥保存失败后页面仍显示 routing 错误，When 用户随后执行任意账号级操作且该操作成功，Then routing 错误提示仍然可见，直到 routing 请求自己成功或被新的 routing 结果替换。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 

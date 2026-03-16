@@ -141,7 +141,18 @@ function createListResponse(): UpstreamAccountListResponse {
 }
 
 function Probe() {
-  const { selectedId, selectedSummary, detail, isDetailLoading, error, selectAccount, runSync, refresh } =
+  const {
+    selectedId,
+    selectedSummary,
+    detail,
+    isDetailLoading,
+    listError,
+    detailError,
+    error,
+    selectAccount,
+    runSync,
+    refresh,
+  } =
     useUpstreamAccounts();
 
   return (
@@ -151,6 +162,8 @@ function Probe() {
       <div data-testid="detail-id">{detail?.id ?? ""}</div>
       <div data-testid="detail-name">{detail?.displayName ?? ""}</div>
       <div data-testid="detail-loading">{isDetailLoading ? "true" : "false"}</div>
+      <div data-testid="list-error">{listError ?? ""}</div>
+      <div data-testid="detail-error">{detailError ?? ""}</div>
       <div data-testid="error">{error ?? ""}</div>
       <button data-testid="select-beta" onClick={() => selectAccount(2)}>
         select beta
@@ -381,5 +394,29 @@ describe("useUpstreamAccounts", () => {
     expect(text("detail-id")).toBe("1");
     expect(text("detail-name")).toBe("Alpha");
     expect(text("error")).toBe("List failed");
+  });
+
+  it("keeps list and detail errors visible independently", async () => {
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockRejectedValueOnce(new Error("Beta failed"));
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockRejectedValueOnce(new Error("List failed"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("select-beta");
+    await flushAsync();
+
+    expect(text("detail-error")).toBe("Beta failed");
+    expect(text("list-error")).toBe("");
+
+    click("refresh");
+    await flushAsync();
+
+    expect(text("detail-error")).toBe("Beta failed");
+    expect(text("list-error")).toBe("List failed");
   });
 });

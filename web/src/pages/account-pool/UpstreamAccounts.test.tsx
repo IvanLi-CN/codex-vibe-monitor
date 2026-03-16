@@ -251,6 +251,8 @@ function mockAccountsPage() {
     },
     isLoading: false,
     isDetailLoading: false,
+    listError: null,
+    detailError: null,
     error: null,
     selectAccount: vi.fn(),
     refresh: vi.fn(),
@@ -318,6 +320,153 @@ describe("UpstreamAccountsPage duplicates", () => {
     ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
     expect(saveButton).toBeInstanceOf(HTMLButtonElement);
     expect((saveButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("keeps routing errors visible after an account action succeeds", async () => {
+    const runSync = vi.fn().mockResolvedValue(undefined);
+    const saveRouting = vi.fn().mockRejectedValue(new Error("Routing failed"));
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          status: "active",
+          enabled: true,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+        email: "dup@example.com",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting,
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Edit pool key/i);
+    clickButton(/Save pool key/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Routing failed");
+
+    clickButton(/Open details/i);
+    clickButton(/Sync now/i);
+    await flushAsync();
+
+    expect(runSync).toHaveBeenCalledWith(5);
+    expect(document.body.textContent).toContain("Routing failed");
+  });
+
+  it("renders list and detail errors independently", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          status: "active",
+          enabled: true,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+        email: "dup@example.com",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      listError: "List failed",
+      detailError: "Detail failed",
+      error: "Detail failed",
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    expect(document.body.textContent).toContain("List failed");
+    expect(document.body.textContent).toContain("Detail failed");
   });
 });
 
