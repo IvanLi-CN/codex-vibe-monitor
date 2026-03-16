@@ -24,7 +24,11 @@ const INVOCATION_FIXTURE = {
       occurredAt: '2026-02-26T02:35:52Z',
       createdAt: '2026-02-26T02:35:52Z',
       source: 'proxy',
+      routeMode: 'pool',
+      upstreamAccountId: 7,
+      upstreamAccountName: 'Pool Alpha',
       proxyDisplayName: 'sg-relay-edge-01',
+      responseContentEncoding: 'gzip, br',
       endpoint: '/v1/responses/compact',
       model: 'gpt-5.3-codex',
       status: 'success',
@@ -45,7 +49,9 @@ const INVOCATION_FIXTURE = {
       occurredAt: '2026-02-26T02:34:52Z',
       createdAt: '2026-02-26T02:34:52Z',
       source: 'proxy',
+      routeMode: 'forward_proxy',
       proxyDisplayName: LONG_PROXY_NAME,
+      responseContentEncoding: 'identity',
       endpoint: '/v1/responses/' + 'very-long-segment-'.repeat(12),
       model: 'gpt-5.3-codex',
       status: 'failed',
@@ -69,7 +75,11 @@ const INVOCATION_FIXTURE = {
       occurredAt: '2026-02-26T02:33:52Z',
       createdAt: '2026-02-26T02:33:52Z',
       source: 'proxy',
+      routeMode: 'pool',
+      upstreamAccountId: 8,
+      upstreamAccountName: 'Pool Beta',
       proxyDisplayName: 'seoul-edge-02',
+      responseContentEncoding: 'br',
       endpoint: '/v1/responses',
       model: 'gpt-5.3-codex',
       status: 'success',
@@ -89,7 +99,9 @@ const INVOCATION_FIXTURE = {
       occurredAt: '2026-02-26T02:32:52Z',
       createdAt: '2026-02-26T02:32:52Z',
       source: 'proxy',
+      routeMode: 'forward_proxy',
       proxyDisplayName: 'iad-relay-edge-04',
+      responseContentEncoding: 'gzip',
       endpoint: '/v1/responses',
       model: 'gpt-5.3-codex',
       status: 'success',
@@ -110,6 +122,7 @@ const INVOCATION_FIXTURE = {
       occurredAt: '2026-02-26T02:31:52Z',
       createdAt: '2026-02-26T02:31:52Z',
       source: 'proxy',
+      routeMode: 'forward_proxy',
       proxyDisplayName: 'la-relay-edge-05',
       endpoint: '/v1/responses',
       model: 'gpt-5.3-codex',
@@ -126,6 +139,59 @@ const INVOCATION_FIXTURE = {
       tTotalMs: 5108.9,
     },
   ],
+}
+
+const ACCOUNT_DETAIL_FIXTURE = {
+  id: 7,
+  kind: 'oauth_codex',
+  provider: 'openai',
+  displayName: 'Pool Alpha',
+  groupName: 'team-a',
+  isMother: true,
+  status: 'active',
+  enabled: true,
+  email: 'pool-alpha@example.com',
+  chatgptAccountId: 'org_pool_alpha',
+  chatgptUserId: 'user_pool_alpha',
+  planType: 'team',
+  maskedApiKey: null,
+  lastSyncedAt: '2026-03-16T09:10:00Z',
+  lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
+  lastError: null,
+  lastErrorAt: null,
+  tokenExpiresAt: '2026-03-16T12:00:00Z',
+  lastRefreshedAt: '2026-03-16T09:09:00Z',
+  primaryWindow: {
+    usedPercent: 22,
+    usedText: '22 / 100',
+    limitText: '100 requests',
+    resetsAt: '2026-03-16T10:00:00Z',
+    windowDurationMins: 300,
+  },
+  secondaryWindow: {
+    usedPercent: 36,
+    usedText: '36 / 100',
+    limitText: '100 requests',
+    resetsAt: '2026-03-17T00:00:00Z',
+    windowDurationMins: 10080,
+  },
+  credits: null,
+  localLimits: null,
+  duplicateInfo: null,
+  tags: [],
+  effectiveRoutingRule: {
+    guardEnabled: false,
+    lookbackHours: null,
+    maxConversations: null,
+    allowCutOut: true,
+    allowCutIn: true,
+    sourceTagIds: [],
+    sourceTagNames: [],
+    guardRules: [],
+  },
+  note: null,
+  upstreamBaseUrl: null,
+  history: [],
 }
 
 interface TableMetrics {
@@ -160,6 +226,15 @@ async function mockInvocations(page: Page) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(INVOCATION_FIXTURE),
+      })
+      return
+    }
+
+    if (pathname === '/api/pool/upstream-accounts/7') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(ACCOUNT_DETAIL_FIXTURE),
       })
       return
     }
@@ -293,7 +368,7 @@ async function readTableMetrics(page: Page): Promise<TableMetrics> {
     const secondProxyBadge = secondDataRow?.querySelector('[data-testid="invocation-proxy-badge"]') as HTMLElement | null
     const secondProxyName = secondDataRow?.querySelector('[data-testid="invocation-proxy-name"]') as HTMLElement | null
     const secondDataCells = secondDataRow ? Array.from(secondDataRow.querySelectorAll('td')) : []
-    const secondModelCell = secondDataCells.length > 2 ? (secondDataCells[2] as HTMLElement) : null
+    const secondModelCell = secondDataCells.length > 3 ? (secondDataCells[3] as HTMLElement) : null
     const containerRect = container.getBoundingClientRect()
     const toggleRect = firstToggle?.getBoundingClientRect()
     const lastDataCellRect = lastDataCell?.getBoundingClientRect()
@@ -356,6 +431,9 @@ test.describe('InvocationTable layout regression', () => {
           await expect(items.nth(2).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'requested_only')
           await expect(items.nth(3).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'effective')
           await expect(items.nth(4).getByTestId('invocation-fast-icon')).toHaveCount(0)
+          await expect(items.nth(0).getByTestId('invocation-account-name')).toContainText('Pool Alpha')
+          await expect(items.nth(0)).toContainText('HTTP gzip, br')
+          await expect(items.nth(1).getByTestId('invocation-account-name')).toContainText(/反向代理|Reverse proxy/)
 
           const listToggle = mobileList.locator('button[aria-expanded]').first()
           await expect(listToggle).toBeVisible()
@@ -384,6 +462,8 @@ test.describe('InvocationTable layout regression', () => {
           await expect(tableScroll.locator('[data-testid="invocation-fast-icon"][data-fast-state="effective"]')).toHaveCount(2)
           await expect(tableScroll.locator('[data-testid="invocation-fast-icon"][data-fast-state="requested_only"]')).toHaveCount(2)
           await expect(tableScroll.locator('[data-testid="invocation-compact-badge"]')).toHaveCount(0)
+          await expect(tableRows.nth(0).getByTestId('invocation-account-name')).toContainText('Pool Alpha')
+          await expect(tableRows.nth(1).getByTestId('invocation-account-name')).toContainText(/反向代理|Reverse proxy/)
           if (viewport.width >= 1280) {
             const compactEndpointPath = tableRows.nth(0).locator('[data-testid="invocation-endpoint-path"]:visible')
             await expect(compactEndpointPath).toHaveCount(1)
@@ -434,6 +514,16 @@ test.describe('InvocationTable layout regression', () => {
             expect(metricsAfterExpand.secondRowProxyNameOverflowPx).toBeGreaterThan(0)
             expect(metricsBeforeExpand.secondRowProxyBadgeVsModelLeftPx).toBeLessThanOrEqual(1)
             expect(metricsAfterExpand.secondRowProxyBadgeVsModelLeftPx).toBeLessThanOrEqual(1)
+          }
+          if (viewport.width === 1280 && target.label === 'dashboard') {
+            await tableRows.nth(0).getByRole('button', { name: 'Pool Alpha' }).click()
+            const drawer = page.getByRole('dialog')
+            await expect(drawer).toBeVisible()
+            await expect(drawer.getByText('Pool Alpha')).toBeVisible()
+            await expect(drawer.getByText('22 / 100')).toBeVisible()
+            await expect(drawer.getByRole('link', { name: /查看完整详情|Open in account pool/ })).toBeVisible()
+            await drawer.getByRole('button', { name: /关闭|Close/ }).click()
+            await expect(drawer).toBeHidden()
           }
         }
       })

@@ -13,7 +13,11 @@ const records: ApiInvocation[] = [
     occurredAt: baseOccurredAt,
     createdAt: baseOccurredAt,
     source: 'proxy',
+    routeMode: 'pool',
+    upstreamAccountId: 21,
+    upstreamAccountName: 'Codex Team Alpha',
     proxyDisplayName: 'Tokyo-Edge-1',
+    responseContentEncoding: 'gzip, br',
     endpoint: '/v1/responses',
     model: 'gpt-5-mini',
     status: 'success',
@@ -45,7 +49,9 @@ const records: ApiInvocation[] = [
     occurredAt: '2026-02-25T10:18:11Z',
     createdAt: '2026-02-25T10:18:11Z',
     source: 'proxy',
+    routeMode: 'forward_proxy',
     proxyDisplayName: LONG_PROXY_NAME,
+    responseContentEncoding: 'identity',
     endpoint: '/v1/chat/completions',
     model: 'gpt-5',
     status: 'failed',
@@ -74,7 +80,11 @@ const records: ApiInvocation[] = [
     occurredAt: '2026-02-25T10:22:48Z',
     createdAt: '2026-02-25T10:22:48Z',
     source: 'proxy',
+    routeMode: 'pool',
+    upstreamAccountId: 22,
+    upstreamAccountName: 'Codex Team Beta',
     proxyDisplayName: 'Seoul-Edge-2',
+    responseContentEncoding: 'br',
     endpoint: '/v1/responses',
     model: 'gpt-5.4',
     status: 'success',
@@ -366,7 +376,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Shows recent invocation records with status, cost, token usage, proxy metadata, and expandable request details. The default story includes both a `/v1/responses` record with `reasoningTokens` and a `/v1/chat/completions` record that falls back to `—` when `reasoningTokens` is absent. The output summary shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, and the expanded detail section for request metadata, timing stages, reasoning effort, and reasoning tokens.',
+          'Shows recent invocation records with status, account attribution, proxy metadata, latency/compression summaries, and expandable request details. The default story includes both pool-routed and reverse-proxy records so you can verify the new `账号 / 代理` split, the dedicated `时延` column, and the current-page account drawer trigger. The output summary still shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, and the expanded detail section for request metadata, timing stages, account attribution, and HTTP compression.',
       },
     },
   },
@@ -429,7 +439,7 @@ export const Default: Story = {
     docs: {
       description: {
         story:
-          'Reference state with two proxy invocations. The output summary shows output tokens with a second-line reasoning-token breakdown; expand a row to inspect the same `reasoningEffort` and `reasoningTokens` in the detail grid.',
+          'Reference state with pool-routed and reverse-proxy invocations. Verify the `账号 / 代理` split, the dedicated latency/compression column, and the reasoning-token breakdown in the output summary.',
       },
     },
   },

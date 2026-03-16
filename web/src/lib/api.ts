@@ -64,6 +64,10 @@ export interface ApiInvocation {
   endpoint?: string;
   requesterIp?: string;
   promptCacheKey?: string;
+  routeMode?: string;
+  upstreamAccountId?: number | null;
+  upstreamAccountName?: string;
+  responseContentEncoding?: string;
   upstreamScope?: string;
   requestedServiceTier?: string;
   serviceTier?: string;
