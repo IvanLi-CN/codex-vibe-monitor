@@ -124,8 +124,8 @@ function CompactWindowLine({
   const summary = resetText ? `${text} · ${resetText}` : text
 
   return (
-    <div className="grid grid-cols-[2rem,5.5rem,minmax(0,1fr),4.5rem,2.75rem] items-center gap-1">
-      <span className="truncate whitespace-nowrap text-right text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums">
+    <div className="grid grid-cols-[max-content,5.5rem,minmax(0,1fr),4.5rem,2.75rem] items-center gap-1">
+      <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums">
         {label}
       </span>
       <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums" title={text}>
@@ -158,8 +158,8 @@ function CompactTimestampLine({
   value: string
 }) {
   return (
-    <div className="grid grid-cols-[2.2rem,minmax(0,1fr)] items-center gap-1">
-      <span className="truncate whitespace-nowrap text-right text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48">
+    <div className="grid grid-cols-[max-content,minmax(0,1fr)] items-center gap-1">
+      <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48">
         {label}
       </span>
       <span className="truncate whitespace-nowrap text-[13px] leading-4 text-base-content/72 font-mono tabular-nums" title={value}>
