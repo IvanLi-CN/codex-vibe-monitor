@@ -121,7 +121,8 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('7d')
     expect(html).not.toContain('production-apac-primary-operators')
     expect(html).toContain('overflow-x-auto')
-    expect(html).toContain('min-w-[54rem]')
+    expect(html).toContain('md:overflow-x-visible')
+    expect(html).toContain('md:min-w-0')
   })
 
   it('keeps disabled and placeholder values in the compact layout', () => {

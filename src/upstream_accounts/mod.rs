@@ -858,6 +858,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             last_successful_sync_at TEXT,
             last_error TEXT,
             last_error_at TEXT,
+            last_activity_at TEXT,
             last_selected_at TEXT,
             last_route_failure_at TEXT,
             cooldown_until TEXT,
@@ -896,6 +897,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "plan_type_observed_at")
         .await
         .context("failed to ensure pool_upstream_accounts.plan_type_observed_at")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_activity_at")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_activity_at")?;
 
     if let Err(err) = sqlx::query(
         r#"
@@ -930,6 +934,23 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure idx_pool_upstream_accounts_chatgpt_account_id")?;
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET last_activity_at = (
+            SELECT MAX(occurred_at)
+            FROM codex_invocations
+            WHERE CASE
+                WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER)
+            END = pool_upstream_accounts.id
+        )
+        WHERE last_activity_at IS NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill pool_upstream_accounts.last_activity_at")?;
 
     sqlx::query(
         r#"
@@ -3989,42 +4010,26 @@ pub(crate) async fn load_account_last_activity_map(
     }
 
     const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
-    let archive_attached = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM pragma_database_list WHERE name = 'archive_db'",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0)
-        > 0;
-
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (",
-    );
-    let mut table_names = vec!["codex_invocations"];
-    if archive_attached {
-        table_names.push("archive_db.codex_invocations");
-    }
-    for (index, table_name) in table_names.into_iter().enumerate() {
-        if index > 0 {
-            query.push(" UNION ALL ");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT id AS account_id, last_activity_at AS occurred_at FROM pool_upstream_accounts WHERE id IN (");
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
         }
-        query
-            .push("SELECT ")
-            .push(ACCOUNT_EXPR)
-            .push(" AS account_id, occurred_at FROM ")
-            .push(table_name)
-            .push(" WHERE ")
-            .push(ACCOUNT_EXPR)
-            .push(" IN (");
-        {
-            let mut separated = query.separated(", ");
-            for account_id in account_ids {
-                separated.push_bind(account_id);
-            }
-        }
-        query.push(")");
     }
-    query.push(") WHERE account_id IS NOT NULL GROUP BY account_id");
+    query.push(") AND last_activity_at IS NOT NULL UNION ALL SELECT ");
+    query
+        .push(ACCOUNT_EXPR)
+        .push(" AS account_id, occurred_at FROM codex_invocations WHERE ")
+        .push(ACCOUNT_EXPR)
+        .push(" IN (");
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
 
     let rows = query
         .build_query_as::<AccountLastActivityRow>()

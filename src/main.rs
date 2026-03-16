@@ -9705,6 +9705,14 @@ fn json_value_to_i64(value: &Value) -> Option<i64> {
     value.as_str().and_then(|v| v.parse::<i64>().ok())
 }
 
+fn upstream_account_id_from_payload(payload: Option<&str>) -> Option<i64> {
+    let payload = payload?;
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    value
+        .get("upstreamAccountId")
+        .and_then(json_value_to_i64)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_proxy_payload_summary(
     target: ProxyCaptureTarget,
@@ -10546,6 +10554,28 @@ async fn persist_proxy_capture_record(
 
     if insert_result.rows_affected() == 0 {
         return Ok(None);
+    }
+
+    if let Some(upstream_account_id) = upstream_account_id_from_payload(record.payload.as_deref()) {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_activity_at = CASE
+                WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
+                ELSE last_activity_at
+            END,
+                updated_at = CASE
+                WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?2
+                ELSE updated_at
+            END
+            WHERE id = ?3
+            "#,
+        )
+        .bind(&record.occurred_at)
+        .bind(format_utc_iso(Utc::now()))
+        .bind(upstream_account_id)
+        .execute(pool)
+        .await?;
     }
 
     let inserted = sqlx::query_as::<_, ApiInvocation>(

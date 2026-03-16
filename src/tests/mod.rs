@@ -2882,37 +2882,22 @@ async fn list_upstream_accounts_includes_archived_last_activity_at() {
         .expect("create archive activity pool");
     let account_id = 17_i64;
 
+    sqlx::query(
+        "CREATE TABLE pool_upstream_accounts (id INTEGER PRIMARY KEY, last_activity_at TEXT)",
+    )
+        .execute(&pool)
+        .await
+        .expect("create accounts table");
     sqlx::query("CREATE TABLE codex_invocations (occurred_at TEXT NOT NULL, payload TEXT)")
         .execute(&pool)
         .await
         .expect("create active invocation table");
-    sqlx::query("ATTACH DATABASE ':memory:' AS archive_db")
+    sqlx::query("INSERT INTO pool_upstream_accounts (id, last_activity_at) VALUES (?1, ?2)")
+        .bind(account_id)
+        .bind("2026-03-12 07:05:00")
         .execute(&pool)
         .await
-        .expect("attach archive db");
-    sqlx::query("CREATE TABLE archive_db.codex_invocations (occurred_at TEXT NOT NULL, payload TEXT)")
-        .execute(&pool)
-        .await
-        .expect("create archive invocation table");
-
-    sqlx::query(
-        r#"
-        INSERT INTO archive_db.codex_invocations (
-            occurred_at, payload
-        )
-        VALUES (?1, ?2)
-        "#,
-    )
-    .bind("2026-03-12 07:05:00")
-    .bind(
-        json!({
-            "upstreamAccountId": account_id,
-        })
-        .to_string(),
-    )
-    .execute(&pool)
-    .await
-    .expect("insert archived account invocation");
+        .expect("seed persisted last activity");
 
     let last_activity = load_account_last_activity_map(&pool, &[account_id])
         .await
