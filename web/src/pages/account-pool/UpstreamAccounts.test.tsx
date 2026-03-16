@@ -1422,6 +1422,110 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 });
 
 describe("UpstreamAccountsPage api key details", () => {
+  it("does not clear another account's pending api key draft when an earlier save resolves", async () => {
+    const saveRequest = deferred();
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise);
+    const baseItems = [
+      {
+        id: 8,
+        kind: "api_key_codex" as const,
+        provider: "codex" as const,
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      {
+        id: 9,
+        kind: "api_key_codex" as const,
+        provider: "codex" as const,
+        displayName: "Backup Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-back••••",
+      },
+    ];
+    const detailFor = (id: number, displayName: string, upstreamBaseUrl: string | null) => ({
+      id,
+      kind: "api_key_codex" as const,
+      provider: "codex" as const,
+      displayName,
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+      note: null,
+      upstreamBaseUrl,
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: "requests",
+      },
+    });
+    let state = {
+      items: baseItems,
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: baseItems[0],
+      detail: detailFor(8, "Gateway Key", "https://proxy.example.com/gateway"),
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+      saveGroupNote: vi.fn(),
+    };
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state);
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Open details/i);
+    clickButton(/Save changes/i);
+    await flushAsync();
+    expect(saveAccount).toHaveBeenCalledWith(8, expect.any(Object));
+
+    state = {
+      ...state,
+      selectedId: 9,
+      selectedSummary: baseItems[1],
+      detail: detailFor(9, "Backup Key", "https://proxy.example.com/backup"),
+    };
+    rerender();
+    await flushAsync();
+
+    setInputValue('input[name="detailRotateApiKey"]', "sk-new-backup");
+    saveRequest.resolve(detailFor(8, "Gateway Key", "https://proxy.example.com/gateway"));
+    await flushAsync();
+
+    const rotateInput = document.body.querySelector('input[name="detailRotateApiKey"]');
+    expect(rotateInput).toBeInstanceOf(HTMLInputElement);
+    expect((rotateInput as HTMLInputElement).value).toBe("sk-new-backup");
+  });
+
   it("saves api key upstreamBaseUrl from the detail drawer", async () => {
     const saveAccount = vi.fn().mockResolvedValue({
       id: 8,
@@ -1722,6 +1826,111 @@ describe("UpstreamAccountsPage api key details", () => {
 });
 
 describe("UpstreamAccountsPage delete confirmation", () => {
+  it("does not close the current drawer when an earlier account delete resolves after switching accounts", async () => {
+    const removeRequest = deferred<void>();
+    const removeAccount = vi.fn().mockImplementation(() => removeRequest.promise);
+    const baseItems = [
+      {
+        id: 8,
+        kind: "api_key_codex" as const,
+        provider: "codex" as const,
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      {
+        id: 9,
+        kind: "api_key_codex" as const,
+        provider: "codex" as const,
+        displayName: "Backup Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-back••••",
+      },
+    ];
+    const detailFor = (id: number, displayName: string) => ({
+      id,
+      kind: "api_key_codex" as const,
+      provider: "codex" as const,
+      displayName,
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+      note: null,
+      upstreamBaseUrl: null,
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: "requests",
+      },
+    });
+    let state = {
+      items: baseItems,
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: baseItems[0],
+      detail: detailFor(8, "Gateway Key"),
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount,
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+      saveGroupNote: vi.fn(),
+    };
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state);
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Open details/i);
+    clickButton(/^Delete$/i);
+    await flushAsync();
+    clickButton(/Delete account/i);
+    await flushAsync();
+    expect(removeAccount).toHaveBeenCalledWith(8);
+
+    state = {
+      ...state,
+      selectedId: 9,
+      selectedSummary: baseItems[1],
+      detail: detailFor(9, "Backup Key"),
+    };
+    rerender();
+    await flushAsync();
+
+    removeRequest.resolve();
+    await flushAsync();
+
+    const dialogTitle = document.body.querySelector("#upstream-account-detail-title");
+    expect(dialogTitle?.textContent).toBe("Backup Key");
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
   it("opens an in-app confirmation bubble before deleting", async () => {
     const removeAccount = vi.fn().mockResolvedValue(undefined);
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);

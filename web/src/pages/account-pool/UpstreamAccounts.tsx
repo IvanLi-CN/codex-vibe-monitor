@@ -547,6 +547,11 @@ export default function UpstreamAccountsPage() {
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] = useState<HTMLElement | null>(null)
   const skipNextDeleteConfirmResetRef = useRef(false)
   const deleteConfirmTitleId = useId()
+  const selectedIdRef = useRef<number | null>(selectedId)
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId
+  }, [selectedId])
 
   const draftUpstreamBaseUrlError = useMemo(() => {
     const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl)
@@ -872,7 +877,9 @@ export default function UpstreamAccountsPage() {
         localLimitUnit: source.kind === 'api_key_codex' ? draft.localLimitUnit.trim() || undefined : undefined,
       })
       notifyMotherChange(response)
-      setDraft((current) => ({ ...current, apiKey: '' }))
+      if (selectedIdRef.current === source.id) {
+        setDraft((current) => ({ ...current, apiKey: '' }))
+      }
     } catch (err) {
       setActionError((current) => ({
         ...current,
@@ -985,7 +992,9 @@ export default function UpstreamAccountsPage() {
     })
     try {
       await removeAccount(source.id)
-      setIsDetailDrawerOpen(false)
+      if (selectedIdRef.current === source.id) {
+        setIsDetailDrawerOpen(false)
+      }
     } catch (err) {
       setActionError((current) => ({
         ...current,
