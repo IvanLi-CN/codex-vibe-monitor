@@ -4903,7 +4903,7 @@ async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
 
     let uri: Uri = "/v1/echo?foo=bar".parse().expect("valid uri");
     let response = proxy_openai_v1(
-        State(state),
+        State(state.clone()),
         OriginalUri(uri),
         Method::POST,
         headers,
@@ -5145,7 +5145,7 @@ async fn pool_route_streams_non_capture_request_body_without_eager_prebuffering(
     });
 
     let response = proxy_openai_v1(
-        State(state),
+        State(state.clone()),
         OriginalUri("/v1/echo?mode=pool-stream".parse().expect("valid uri")),
         Method::POST,
         HeaderMap::from_iter([(
@@ -9826,6 +9826,84 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
 }
 
 #[tokio::test]
+async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base_body_limit_and_read_timeout(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        Duration::from_millis(50),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_oauth_account(&state, "Streaming OAuth", "oauth-streaming").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from_static(b"{\"messages\":["))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                b"{\"role\":\"user\",\"content\":\"hello\"}]}",
+            )))
+            .await;
+    });
+
+    let uri = "/v1/chat/completions".parse().expect("valid uri");
+    let response = proxy_openai_v1_via_pool(
+        state,
+        42,
+        &uri,
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("sticky-oauth-stream"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await
+    .expect("oauth pool passthrough response");
+
+    let status = response.status();
+    let response_body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth passthrough response");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected oauth passthrough response: {}",
+        String::from_utf8_lossy(&response_body)
+    );
+    let payload: Value =
+        serde_json::from_slice(&response_body).expect("decode oauth passthrough response");
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer oauth-streaming")
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
 async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
@@ -9864,7 +9942,7 @@ async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
     });
 
     let response = proxy_openai_v1(
-        State(state),
+        State(state.clone()),
         OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
         Method::POST,
         HeaderMap::from_iter([
@@ -9891,6 +9969,23 @@ async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
     assert_eq!(
         payload["authorization"].as_str(),
         Some("Bearer oauth-secondary")
+    );
+    let selected_at: Vec<(i64, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, last_selected_at
+        FROM pool_upstream_accounts
+        WHERE display_name IN ('Primary OAuth', 'Secondary OAuth')
+        ORDER BY id
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load oauth account selection timestamps");
+    assert_eq!(selected_at.len(), 2);
+    assert_eq!(selected_at[0].1, None);
+    assert!(
+        selected_at[1].1.is_some(),
+        "sticky-selected oauth account should be marked"
     );
 
     upstream_handle.abort();

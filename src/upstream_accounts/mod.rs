@@ -5963,7 +5963,6 @@ pub(crate) async fn resolve_pool_account_for_request(
         {
             tried.insert(route.account_id);
             if let Some(account) = prepare_pool_account(state, &row).await? {
-                record_account_selected(&state.pool, row.id).await?;
                 return Ok(PoolAccountResolution::Resolved(account));
             }
         }
@@ -6000,7 +5999,6 @@ pub(crate) async fn resolve_pool_account_for_request(
             continue;
         }
         if let Some(account) = prepare_pool_account(state, &row).await? {
-            record_account_selected(&state.pool, row.id).await?;
             return Ok(PoolAccountResolution::Resolved(account));
         }
     }
@@ -6492,7 +6490,7 @@ fn compare_routing_candidates(
         .then_with(|| lhs.id.cmp(&rhs.id))
 }
 
-async fn record_account_selected(pool: &Pool<Sqlite>, account_id: i64) -> Result<()> {
+pub(crate) async fn record_account_selected(pool: &Pool<Sqlite>, account_id: i64) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
