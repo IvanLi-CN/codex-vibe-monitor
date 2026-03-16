@@ -292,6 +292,84 @@ function createStore(): StoryStore {
         note: 'Sibling OAuth account kept for duplicate identity review.',
       })
     : null
+  const compactExtraAccounts = compactStory
+    ? [
+        createOauthAccount(104, {
+          displayName: 'Codex Pro - Singapore weekly ceiling watch',
+          groupName: 'production-apac-weekly',
+          isMother: false,
+          status: 'active',
+          planType: 'team',
+          lastSuccessfulSyncAt: '2026-03-11T20:10:00.000Z',
+          lastActivityAt: '2026-03-11T20:08:00.000Z',
+          primaryWindow: buildWindow(71, 300, '71% used', '5h rolling window', '2026-03-11T22:10:00.000Z'),
+          secondaryWindow: buildWindow(100, 10080, '100% used', '7d rolling window', '2026-03-18T08:00:00.000Z'),
+          tags: [
+            defaultTags[0],
+            defaultTags[1],
+            { id: 7, name: 'weekly-cap', routingRule: defaultEffectiveRoutingRule },
+          ],
+          note: 'Weekly window is fully exhausted while the 5h window still has room.',
+        }),
+        createOauthAccount(105, {
+          displayName: 'Codex Pro - Osaka burst limit exhausted',
+          groupName: 'production-apac-burst',
+          isMother: false,
+          status: 'syncing',
+          planType: 'team',
+          lastSuccessfulSyncAt: '2026-03-11T19:58:00.000Z',
+          lastActivityAt: '2026-03-11T19:56:00.000Z',
+          primaryWindow: buildWindow(100, 300, '100% used', '5h rolling window', '2026-03-11T21:42:00.000Z'),
+          secondaryWindow: buildWindow(46, 10080, '46% used', '7d rolling window', '2026-03-18T08:00:00.000Z'),
+          tags: [
+            defaultTags[0],
+            { id: 8, name: 'burst-limit', routingRule: defaultEffectiveRoutingRule },
+            { id: 9, name: 'warm-spare', routingRule: defaultEffectiveRoutingRule },
+          ],
+          note: 'Burst traffic consumed the full 5h budget.',
+        }),
+        createApiKeyAccount(106, {
+          displayName: 'Backup key - weekly redline',
+          groupName: 'staging-overflow',
+          status: 'active',
+          enabled: true,
+          planType: 'local',
+          lastSuccessfulSyncAt: '2026-03-11T19:42:00.000Z',
+          lastActivityAt: '2026-03-11T20:18:00.000Z',
+          primaryWindow: buildWindow(93, 300, '112 requests', '120 requests', '2026-03-11T21:30:00.000Z'),
+          secondaryWindow: buildWindow(100, 10080, '500 requests', '500 requests', '2026-03-18T08:00:00.000Z'),
+          tags: [
+            { id: 10, name: 'overflow', routingRule: defaultEffectiveRoutingRule },
+            { id: 11, name: 'weekly-redline', routingRule: defaultEffectiveRoutingRule },
+            defaultTags[1],
+          ],
+          note: 'Fallback key with the weekly allowance fully consumed.',
+        }),
+        createApiKeyAccount(107, {
+          displayName: 'Emergency key - both windows saturated',
+          groupName: 'rescue',
+          status: 'needs_reauth',
+          enabled: true,
+          planType: 'local',
+          lastSuccessfulSyncAt: '2026-03-11T18:55:00.000Z',
+          lastActivityAt: '2026-03-11T19:14:00.000Z',
+          primaryWindow: buildWindow(100, 300, '120 requests', '120 requests', '2026-03-11T20:40:00.000Z'),
+          secondaryWindow: buildWindow(100, 10080, '500 requests', '500 requests', '2026-03-18T08:00:00.000Z'),
+          tags: [
+            { id: 12, name: 'rescue', routingRule: defaultEffectiveRoutingRule },
+            { id: 13, name: 'manual-drain', routingRule: defaultEffectiveRoutingRule },
+          ],
+          note: 'Emergency key where both local placeholder windows are exhausted.',
+        }),
+      ]
+    : []
+  const accounts = [toSummary(oauth), ...(duplicateOauth ? [toSummary(duplicateOauth)] : []), toSummary(apiKey), ...compactExtraAccounts.map(toSummary)]
+  const details = {
+    [oauth.id]: oauth,
+    ...(duplicateOauth ? { [duplicateOauth.id]: duplicateOauth } : {}),
+    [apiKey.id]: apiKey,
+    ...Object.fromEntries(compactExtraAccounts.map((account) => [account.id, account])),
+  }
   return {
     writesEnabled: true,
     routing: {
@@ -301,14 +379,14 @@ function createStore(): StoryStore {
     groupNotes: {
       production: 'Premium traffic group note.',
       staging: 'Staging fallback group note.',
+      'production-apac-weekly': 'Weekly cap watch list.',
+      'production-apac-burst': 'Burst-heavy rotation group.',
+      'staging-overflow': 'Fallback keys that often ride the weekly edge.',
+      rescue: 'Emergency pool for overflow and incident recovery.',
     },
-    accounts: [toSummary(oauth), ...(duplicateOauth ? [toSummary(duplicateOauth)] : []), toSummary(apiKey)],
-    details: {
-      [oauth.id]: oauth,
-      ...(duplicateOauth ? { [duplicateOauth.id]: duplicateOauth } : {}),
-      [apiKey.id]: apiKey,
-    },
-    nextId: duplicateOauth ? 104 : 103,
+    accounts,
+    details,
+    nextId: compactStory ? 108 : duplicateOauth ? 104 : 103,
     sessions: {},
   }
 }
