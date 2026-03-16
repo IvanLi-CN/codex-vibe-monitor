@@ -11710,7 +11710,7 @@ async fn list_invocations_projects_payload_context_fields() {
     .bind(SOURCE_PROXY)
     .bind("failed")
     .bind(
-        r#"{"endpoint":"/v1/responses","failureKind":"upstream_stream_error","requesterIp":"198.51.100.77","promptCacheKey":"pck-list-1","requestedServiceTier":"priority","serviceTier":null,"service_tier":"priority","proxyDisplayName":"jp-relay-01","proxyWeightDelta":-0.68,"reasoningEffort":"high"}"#,
+        r#"{"endpoint":"/v1/responses","failureKind":"upstream_stream_error","requesterIp":"198.51.100.77","promptCacheKey":"pck-list-1","routeMode":"pool","upstreamAccountId":17,"upstreamAccountName":"pool-account-17","responseContentEncoding":"gzip, br","requestedServiceTier":"priority","serviceTier":null,"service_tier":"priority","proxyDisplayName":"jp-relay-01","proxyWeightDelta":-0.68,"reasoningEffort":"high"}"#,
     )
     .bind("{}")
     .execute(&state.pool)
@@ -11741,6 +11741,16 @@ async fn list_invocations_projects_payload_context_fields() {
     );
     assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
     assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-list-1"));
+    assert_eq!(record.route_mode.as_deref(), Some("pool"));
+    assert_eq!(record.upstream_account_id, Some(17));
+    assert_eq!(
+        record.upstream_account_name.as_deref(),
+        Some("pool-account-17")
+    );
+    assert_eq!(
+        record.response_content_encoding.as_deref(),
+        Some("gzip, br")
+    );
     assert_eq!(record.requested_service_tier.as_deref(), Some("priority"));
     assert_eq!(record.service_tier.as_deref(), Some("priority"));
     assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));

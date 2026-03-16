@@ -8179,6 +8179,7 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
+                    None,
                 )),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -8316,6 +8317,7 @@ async fn proxy_openai_v1_capture_target(
                         err.upstream_request_id.as_deref(),
                         None,
                         None,
+                        None,
                     )),
                     raw_response: "{}".to_string(),
                     req_raw,
@@ -8412,6 +8414,7 @@ async fn proxy_openai_v1_capture_target(
                         INVOCATION_ROUTE_MODE_FORWARD_PROXY,
                         sticky_key.as_deref(),
                         prompt_cache_key.as_deref(),
+                        None,
                         None,
                         None,
                         None,
@@ -8524,6 +8527,15 @@ async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
+                    Some(
+                        summarize_response_content_encoding(
+                            upstream_response
+                                .headers()
+                                .get(header::CONTENT_ENCODING)
+                                .and_then(|value| value.to_str().ok()),
+                        )
+                        .as_str(),
+                    ),
                     selected_proxy
                         .as_ref()
                         .map(|proxy| proxy.display_name.as_str()),
@@ -8562,6 +8574,8 @@ async fn proxy_openai_v1_capture_target(
         .get(header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let response_content_encoding =
+        summarize_response_content_encoding(upstream_content_encoding.as_deref());
     let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
         if should_forward_proxy_header(name, &upstream_connection_scoped) {
@@ -8840,6 +8854,7 @@ async fn proxy_openai_v1_capture_target(
             response_info.upstream_error_code.as_deref(),
             response_info.upstream_error_message.as_deref(),
             response_info.upstream_request_id.as_deref(),
+            Some(response_content_encoding.as_str()),
             selected_proxy_display_name.as_deref(),
             if selected_proxy_display_name.is_some() {
                 proxy_attempt_update.delta()
@@ -9716,6 +9731,7 @@ fn build_proxy_payload_summary(
     upstream_error_code: Option<&str>,
     upstream_error_message: Option<&str>,
     upstream_request_id: Option<&str>,
+    response_content_encoding: Option<&str>,
     proxy_display_name: Option<&str>,
     proxy_weight_delta: Option<f64>,
 ) -> String {
@@ -9742,10 +9758,20 @@ fn build_proxy_payload_summary(
         "upstreamErrorCode": upstream_error_code,
         "upstreamErrorMessage": upstream_error_message,
         "upstreamRequestId": upstream_request_id,
+        "responseContentEncoding": response_content_encoding,
         "proxyDisplayName": proxy_display_name,
         "proxyWeightDelta": proxy_weight_delta,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn summarize_response_content_encoding(content_encoding: Option<&str>) -> String {
+    let encodings = parse_content_encodings(content_encoding);
+    if encodings.is_empty() {
+        "identity".to_string()
+    } else {
+        encodings.join(", ")
+    }
 }
 
 fn build_raw_response_preview(bytes: &[u8]) -> String {
