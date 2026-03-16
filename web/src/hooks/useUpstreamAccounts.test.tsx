@@ -16,6 +16,7 @@ const apiMocks = vi.hoisted(() => ({
   >(),
   syncUpstreamAccount: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   reloginUpstreamAccount: vi.fn<(accountId: number) => Promise<{ loginId: string }>>(),
+  deleteUpstreamAccount: vi.fn<(accountId: number) => Promise<void>>(),
 }));
 
 vi.mock("../lib/api", async () => {
@@ -26,6 +27,7 @@ vi.mock("../lib/api", async () => {
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
     syncUpstreamAccount: apiMocks.syncUpstreamAccount,
     reloginUpstreamAccount: apiMocks.reloginUpstreamAccount,
+    deleteUpstreamAccount: apiMocks.deleteUpstreamAccount,
   };
 });
 
@@ -155,6 +157,7 @@ function Probe() {
     runSync,
     refresh,
     beginRelogin,
+    removeAccount,
   } =
     useUpstreamAccounts();
 
@@ -174,6 +177,9 @@ function Probe() {
       <button data-testid="select-alpha" onClick={() => selectAccount(1)}>
         select alpha
       </button>
+      <button data-testid="select-gamma" onClick={() => selectAccount(3)}>
+        select gamma
+      </button>
       <button data-testid="sync-alpha" onClick={() => void runSync(1)}>
         sync alpha
       </button>
@@ -182,6 +188,9 @@ function Probe() {
       </button>
       <button data-testid="relogin-alpha" onClick={() => void beginRelogin(1)}>
         relogin alpha
+      </button>
+      <button data-testid="remove-alpha" onClick={() => void removeAccount(1)}>
+        remove alpha
       </button>
     </div>
   );
@@ -470,5 +479,66 @@ describe("useUpstreamAccounts", () => {
     click("relogin-alpha");
     await flushAsync();
     expect(text("list-error")).toBe("List failed");
+  });
+
+  it("clears an account error after that account sync succeeds off-selection", async () => {
+    const sync = deferred<UpstreamAccountDetail>();
+    apiMocks.fetchUpstreamAccountDetail
+      .mockRejectedValueOnce(new Error("Alpha failed"))
+      .mockResolvedValueOnce(createDetail(2, "Beta"))
+      .mockResolvedValueOnce(createDetail(2, "Beta"));
+    apiMocks.syncUpstreamAccount.mockImplementationOnce(async () => sync.promise);
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("1");
+    expect(text("detail-error")).toBe("Alpha failed");
+
+    click("sync-alpha");
+    click("select-beta");
+    await flushAsync();
+
+    sync.resolve(createDetail(1, "Alpha synced"));
+    await flushAsync();
+
+    click("select-alpha");
+    await flushAsync();
+    expect(text("selected-id")).toBe("1");
+    expect(text("detail-error")).toBe("");
+  });
+
+  it("does not reclaim selection when a delete finishes after switching away", async () => {
+    const remove = deferred<void>();
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockResolvedValueOnce(createDetail(2, "Beta"));
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce({
+        writesEnabled: true,
+        items: [createSummary(1, "Alpha"), createSummary(3, "Gamma"), createSummary(2, "Beta")],
+        groups: [],
+        routing: { apiKeyConfigured: false, maskedApiKey: null },
+      })
+      .mockResolvedValueOnce({
+        writesEnabled: true,
+        items: [createSummary(2, "Beta"), createSummary(3, "Gamma")],
+        groups: [],
+        routing: { apiKeyConfigured: false, maskedApiKey: null },
+      });
+    apiMocks.deleteUpstreamAccount.mockImplementationOnce(async () => remove.promise);
+
+    render(<Probe />);
+    await flushAsync();
+
+    click("remove-alpha");
+    click("select-beta");
+    await flushAsync();
+
+    remove.resolve();
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("2");
+    expect(text("selected-name")).toBe("Beta");
   });
 });

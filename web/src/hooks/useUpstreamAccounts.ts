@@ -234,10 +234,10 @@ export function useUpstreamAccounts() {
     async (accountId: number, payload: UpdateUpstreamAccountPayload) => {
       const response = await updateUpstreamAccount(accountId, payload)
       await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
+      clearDetailError(accountId)
       if (selectedIdRef.current === accountId) {
         invalidateDetailRequest()
         setDetail(response)
-        clearDetailError(accountId)
       }
       emitUpstreamAccountsChanged()
       return response
@@ -269,10 +269,10 @@ export function useUpstreamAccounts() {
     async (accountId: number) => {
       const response = await syncUpstreamAccount(accountId)
       await loadList(accountId, { respectCurrentSelection: true, selectionAnchorId: accountId })
+      clearDetailError(accountId)
       if (selectedIdRef.current === accountId) {
         invalidateDetailRequest()
         setDetail(response)
-        clearDetailError(accountId)
       }
       emitUpstreamAccountsChanged()
       return response
@@ -283,13 +283,21 @@ export function useUpstreamAccounts() {
   const removeAccount = useCallback(
     async (accountId: number) => {
       await deleteUpstreamAccount(accountId)
+      const currentSelectedId = selectedIdRef.current
+      const shouldReanchorSelection = currentSelectedId === accountId
       const fallbackId = items.find((item) => item.id !== accountId)?.id ?? null
-      setSelectedAccount(fallbackId)
-      await loadList(fallbackId)
-      await loadDetail(fallbackId)
+      const preferredId = shouldReanchorSelection ? fallbackId : currentSelectedId
+      const nextSelectedId = await loadList(preferredId, {
+        respectCurrentSelection: !shouldReanchorSelection,
+        selectionAnchorId: preferredId,
+      })
+      if (nextSelectedId !== LOAD_LIST_FAILED && shouldReanchorSelection) {
+        await loadDetail(nextSelectedId)
+      }
+      clearDetailError(accountId)
       emitUpstreamAccountsChanged()
     },
-    [items, loadDetail, loadList, setSelectedAccount],
+    [clearDetailError, items, loadDetail, loadList],
   )
 
   useEffect(
