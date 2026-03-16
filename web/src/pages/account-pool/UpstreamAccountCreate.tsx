@@ -1778,7 +1778,12 @@ export default function UpstreamAccountCreatePage() {
                           >
                             <button
                               type="button"
-                              className="inline-flex h-7 min-w-0 max-w-full items-center justify-start rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
+                              className={cn(
+                                'inline-flex h-7 min-w-0 max-w-full cursor-copy items-center justify-start rounded-full px-2.5 font-mono text-xs',
+                                'border border-base-300/80 bg-base-100 text-base-content/80 shadow-sm transition-[border-color,background-color,color,box-shadow,transform]',
+                                'hover:-translate-y-px hover:border-primary/70 hover:bg-primary/6 hover:text-primary hover:shadow-md',
+                                'focus-visible:-translate-y-px focus-visible:border-primary/70 focus-visible:bg-primary/6 focus-visible:text-primary focus-visible:shadow-md focus-visible:outline-none',
+                              )}
                               aria-label={t('accountPool.upstreamAccounts.actions.copyMailbox')}
                               onClick={() => void handleCopySingleMailbox()}
                             >
@@ -2169,7 +2174,12 @@ export default function UpstreamAccountCreatePage() {
                                             >
                                               <button
                                                 type="button"
-                                                className="inline-flex h-7 min-w-0 max-w-full items-center justify-start rounded-full border border-base-300/80 bg-base-100 px-2.5 font-mono text-xs text-base-content/80 transition-colors hover:border-primary/40 hover:text-primary"
+                                                className={cn(
+                                                  'inline-flex h-7 min-w-0 max-w-full cursor-copy items-center justify-start rounded-full px-2.5 font-mono text-xs',
+                                                  'border border-base-300/80 bg-base-100 text-base-content/80 shadow-sm transition-[border-color,background-color,color,box-shadow,transform]',
+                                                  'hover:-translate-y-px hover:border-primary/70 hover:bg-primary/6 hover:text-primary hover:shadow-md',
+                                                  'focus-visible:-translate-y-px focus-visible:border-primary/70 focus-visible:bg-primary/6 focus-visible:text-primary focus-visible:shadow-md focus-visible:outline-none',
+                                                )}
                                                 aria-label={t('accountPool.upstreamAccounts.actions.copyMailbox')}
                                                 onClick={() => void handleBatchCopyMailbox(row.id)}
                                               >

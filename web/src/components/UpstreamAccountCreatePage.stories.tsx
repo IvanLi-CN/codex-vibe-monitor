@@ -140,6 +140,38 @@ export const OauthMailboxReady: Story = {
   },
 }
 
+export const OauthMailboxHover: Story = {
+  name: 'OAuth Mailbox Hover',
+  render: () => {
+    const mailboxSession = createMailboxSession('story-mailbox-oauth-hover', 'hover-preview@mail-tw.707079.xyz')
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          state: {
+            draft: {
+              oauth: {
+                displayName: 'Hover Preview',
+                mailboxSession,
+                mailboxInput: mailboxSession.emailAddress,
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
+
+    await userEvent.hover(copyMailboxButton)
+    const tooltip = within(document.body)
+    await expect(tooltip.getByText(/click to copy/i)).toBeInTheDocument()
+    await expect(tooltip.getByText(/hover-preview@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
+  },
+}
+
 export const OauthMailboxDetachedName: Story = {
   name: 'OAuth Mailbox Detached Name',
   render: () => {
