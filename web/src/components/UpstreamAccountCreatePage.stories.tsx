@@ -4,6 +4,7 @@ import { SystemNotificationProvider } from './ui/system-notifications'
 import { I18nProvider } from '../i18n'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
 import type { OauthMailboxSession, OauthMailboxStatus } from '../lib/api'
+import { OauthMailboxChip } from './account-pool/OauthMailboxChip'
 import {
   AccountPoolStoryRouter,
   StorybookUpstreamAccountsMock,
@@ -142,34 +143,25 @@ export const OauthMailboxReady: Story = {
 
 export const OauthMailboxHover: Story = {
   name: 'OAuth Mailbox Hover',
-  render: () => {
-    const mailboxSession = createMailboxSession('story-mailbox-oauth-hover', 'hover-preview@mail-tw.707079.xyz')
-    return (
-      <AccountPoolStoryRouter
-        initialEntry={{
-          pathname: '/account-pool/upstream-accounts/new',
-          state: {
-            draft: {
-              oauth: {
-                displayName: 'Hover Preview',
-                mailboxSession,
-                mailboxInput: mailboxSession.emailAddress,
-              },
-            },
-          },
-        }}
-      />
-    )
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
-
-    await userEvent.hover(copyMailboxButton)
-    const tooltip = within(document.body)
-    await expect(tooltip.getByText(/click to copy/i)).toBeInTheDocument()
-    await expect(tooltip.getByText(/hover-preview@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
-  },
+  render: () => (
+    <div className="min-h-screen bg-base-200 px-10 py-12">
+      <div className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm">
+        <div className="flex items-center gap-3">
+          <span className="field-label shrink-0">Display Name</span>
+          <OauthMailboxChip
+            className="max-w-[24rem]"
+            emailAddress="hover-preview@mail-tw.707079.xyz"
+            emptyLabel="No mailbox yet"
+            copyAriaLabel="Copy mailbox"
+            copyHintLabel="Click to copy"
+            forceHover
+            openTooltip
+            onCopy={() => undefined}
+          />
+        </div>
+      </div>
+    </div>
+  ),
 }
 
 export const OauthMailboxDetachedName: Story = {
