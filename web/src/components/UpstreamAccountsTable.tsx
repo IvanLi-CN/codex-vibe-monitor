@@ -2,6 +2,7 @@ import type { KeyboardEvent, ReactNode } from 'react'
 import { AppIcon } from './AppIcon'
 import { MotherAccountBadge } from './MotherAccountToggle'
 import { Badge } from './ui/badge'
+import { Tooltip } from './ui/tooltip'
 import type { AccountTagSummary, UpstreamAccountSummary } from '../lib/api'
 import { cn } from '../lib/utils'
 
@@ -71,7 +72,9 @@ function compactBadge(content: ReactNode, variant: 'accent' | 'secondary' | 'suc
 function renderTagBadges(tags?: AccountTagSummary[] | null) {
   const safeTags = tags ?? []
   const visible = safeTags.slice(0, 3)
-  const overflowCount = safeTags.length - visible.length
+  const hidden = safeTags.slice(visible.length)
+  const overflowCount = hidden.length
+  const hiddenNames = hidden.map((tag) => tag.name).join(', ')
 
   return (
     <>
@@ -86,7 +89,19 @@ function renderTagBadges(tags?: AccountTagSummary[] | null) {
         </Badge>
       ))}
       {overflowCount > 0
-        ? compactBadge(`+${overflowCount}`, 'secondary')
+        ? (
+          <Tooltip
+            content={
+              <div className="max-w-56 text-xs leading-5 text-base-content/80">
+                {hiddenNames}
+              </div>
+            }
+          >
+            <span title={hiddenNames}>
+              {compactBadge(`+${overflowCount}`, 'secondary')}
+            </span>
+          </Tooltip>
+        )
         : null}
     </>
   )
