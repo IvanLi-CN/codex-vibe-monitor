@@ -1,4 +1,8 @@
 use super::*;
+use crate::oauth_bridge::{
+    OauthBridgeRegisterResult, fixed_oauth_bridge_openai_base_url,
+    register_oauth_bridge_access_token,
+};
 use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, KeyInit},
@@ -47,7 +51,7 @@ const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
 const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
 const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
 const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
-const DEFAULT_OAUTH_SCOPE: &str = "openid profile email offline_access api.connectors.read api.connectors.invoke api.model.read api.responses.write";
+const DEFAULT_OAUTH_SCOPE: &str = "openid profile email offline_access";
 const DEFAULT_OAUTH_AUDIENCE: &str = "https://api.openai.com/v1";
 const DEFAULT_OAUTH_PROMPT: &str = "login";
 const OAUTH_ORIGINATOR: &str = "Codex Desktop";
@@ -62,6 +66,14 @@ const USAGE_PATH_STYLE_CODEX_API: &str = "/api/codex/usage";
 pub(crate) struct UpstreamAccountsRuntime {
     pub(crate) crypto_key: Option<[u8; 32]>,
     sync_lock: Arc<Mutex<()>>,
+    oauth_bridge_tokens: Arc<Mutex<HashMap<i64, CachedOauthBridgeToken>>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedOauthBridgeToken {
+    token_key: String,
+    expire_at: Option<DateTime<Utc>>,
+    access_token_fingerprint: String,
 }
 
 impl UpstreamAccountsRuntime {
@@ -86,6 +98,7 @@ impl UpstreamAccountsRuntime {
         Ok(Self {
             crypto_key,
             sync_lock: Arc::new(Mutex::new(())),
+            oauth_bridge_tokens: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -110,6 +123,7 @@ impl UpstreamAccountsRuntime {
         Self {
             crypto_key: Some(derive_secret_key("test-upstream-account-secret")),
             sync_lock: Arc::new(Mutex::new(())),
+            oauth_bridge_tokens: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -4652,6 +4666,9 @@ fn resolve_pool_account_upstream_base_url(
     row: &UpstreamAccountRow,
     global_upstream_base_url: &Url,
 ) -> Result<Url> {
+    if row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
+        return fixed_oauth_bridge_openai_base_url();
+    }
     if row.kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
         return Ok(global_upstream_base_url.clone());
     }
@@ -4834,6 +4851,44 @@ fn is_scope_permission_error_message(message: &str) -> bool {
         || msg.contains("insufficient permissions for this operation")
         || msg.contains("api.responses.write")
         || msg.contains("api.model.read")
+}
+
+fn is_bridge_error_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("oauth bridge")
+        || msg.contains("token exchange failed")
+        || msg.contains("bridge upstream")
+        || msg.contains("bridge token")
+}
+
+fn is_bridge_token_rejected_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("oauth bridge token is unknown or was not registered")
+        || msg.contains("oauth bridge token expired; register again")
+}
+
+pub(crate) fn should_retry_same_account_after_bridge_token_rejection(
+    account_kind: &str,
+    status: StatusCode,
+    upstream_error_code: Option<&str>,
+    upstream_error_message: Option<&str>,
+    summary_message: &str,
+) -> bool {
+    if account_kind != UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+        || !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+    {
+        return false;
+    }
+    let code = upstream_error_code
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if code == "invalid_api_key" || code == "token_expired" {
+        return true;
+    }
+    upstream_error_message
+        .map(is_bridge_token_rejected_message)
+        .unwrap_or(false)
+        || is_bridge_token_rejected_message(summary_message)
 }
 
 fn is_explicit_reauth_error_message(message: &str) -> bool {
@@ -5046,6 +5101,19 @@ pub(crate) async fn resolve_pool_account_for_request(
     Ok(PoolAccountResolution::NoCandidate)
 }
 
+pub(crate) async fn refresh_pool_account_for_retry(
+    state: &AppState,
+    account_id: i64,
+) -> Result<Option<PoolResolvedAccount>> {
+    let Some(row) = load_upstream_account_row(&state.pool, account_id).await? else {
+        return Ok(None);
+    };
+    if !is_account_selectable_for_routing(&row) {
+        return Ok(None);
+    }
+    prepare_pool_account(state, &row).await
+}
+
 pub(crate) async fn record_pool_route_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -5092,6 +5160,7 @@ pub(crate) async fn record_pool_route_http_failure(
         let next_status = if account_kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
             && is_explicit_reauth_error_message(error_message)
             && !is_scope_permission_error_message(error_message)
+            && !is_bridge_error_message(error_message)
         {
             UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
         } else {
@@ -5426,15 +5495,99 @@ async fn prepare_pool_account(
                 }
             }
 
+            let bridge =
+                match resolve_oauth_bridge_registration(state, row.id, &value.access_token).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        update_account_error(
+                            &state.pool,
+                            row.id,
+                            UPSTREAM_ACCOUNT_STATUS_ERROR,
+                            &err.to_string(),
+                        )
+                        .await?;
+                        return Ok(None);
+                    }
+                };
+
             Ok(Some(PoolResolvedAccount {
                 account_id: row.id,
                 display_name: row.display_name.clone(),
                 kind: row.kind.clone(),
-                authorization: format!("Bearer {}", value.access_token),
+                authorization: format!("Bearer {}", bridge.token_key),
                 upstream_base_url,
             }))
         }
     }
+}
+
+fn fingerprint_access_token(access_token: &str) -> String {
+    format!("{:x}", Sha256::digest(access_token.as_bytes()))
+}
+
+fn cached_bridge_token_is_usable(
+    cached: &CachedOauthBridgeToken,
+    access_token_fingerprint: &str,
+) -> bool {
+    if cached.access_token_fingerprint != access_token_fingerprint {
+        return false;
+    }
+    cached
+        .expire_at
+        .map(|value| value > Utc::now() + ChronoDuration::seconds(30))
+        .unwrap_or(true)
+}
+
+async fn resolve_oauth_bridge_registration(
+    state: &AppState,
+    account_id: i64,
+    access_token: &str,
+) -> Result<OauthBridgeRegisterResult> {
+    let access_token_fingerprint = fingerprint_access_token(access_token);
+    if let Some(cached) = state
+        .upstream_accounts
+        .oauth_bridge_tokens
+        .lock()
+        .await
+        .get(&account_id)
+        .cloned()
+        .filter(|cached| cached_bridge_token_is_usable(cached, &access_token_fingerprint))
+    {
+        return Ok(OauthBridgeRegisterResult {
+            token_key: cached.token_key,
+            expire_at: cached.expire_at,
+        });
+    }
+
+    let registered = register_oauth_bridge_access_token(
+        &state.http_clients.shared,
+        &account_id.to_string(),
+        access_token,
+    )
+    .await?;
+    state
+        .upstream_accounts
+        .oauth_bridge_tokens
+        .lock()
+        .await
+        .insert(
+            account_id,
+            CachedOauthBridgeToken {
+                token_key: registered.token_key.clone(),
+                expire_at: registered.expire_at,
+                access_token_fingerprint,
+            },
+        );
+    Ok(registered)
+}
+
+pub(crate) async fn clear_cached_oauth_bridge_token(state: &AppState, account_id: i64) {
+    state
+        .upstream_accounts
+        .oauth_bridge_tokens
+        .lock()
+        .await
+        .remove(&account_id);
 }
 
 fn is_account_selectable_for_routing(row: &UpstreamAccountRow) -> bool {
@@ -5730,8 +5883,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts() {
+    #[tokio::test]
+    async fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts() {
+        let _bridge_lock = crate::oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+        crate::oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
+
         fn build_row(kind: &str, upstream_base_url: Option<&str>) -> UpstreamAccountRow {
             UpstreamAccountRow {
                 id: 1,
@@ -5775,7 +5931,10 @@ mod tests {
         let oauth_row = build_row(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX, Some(override_url));
         let oauth_resolved = resolve_pool_account_upstream_base_url(&oauth_row, &global)
             .expect("resolve oauth upstream base url");
-        assert_eq!(oauth_resolved, global);
+        assert_eq!(
+            oauth_resolved.as_str(),
+            "http://ai-openai-oauth-bridge:3000/openai"
+        );
 
         let api_key_row = build_row(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX, Some(override_url));
         let api_key_resolved = resolve_pool_account_upstream_base_url(&api_key_row, &global)
@@ -5886,7 +6045,7 @@ mod tests {
     }
 
     #[test]
-    fn build_oauth_authorize_url_requests_api_scopes_and_audience() {
+    fn build_oauth_authorize_url_requests_official_scopes_and_audience() {
         let url = build_oauth_authorize_url(
             &Url::parse("https://auth.openai.com").expect("issuer"),
             "client-id",
@@ -5911,9 +6070,11 @@ mod tests {
             query.get("prompt").map(String::as_str),
             Some(DEFAULT_OAUTH_PROMPT)
         );
-        assert!(scope_parts.contains(&"api.model.read"));
-        assert!(scope_parts.contains(&"api.responses.write"));
+        assert!(scope_parts.contains(&"openid"));
+        assert!(scope_parts.contains(&"profile"));
+        assert!(scope_parts.contains(&"email"));
         assert!(scope_parts.contains(&"offline_access"));
+        assert_eq!(scope_parts.len(), 4);
     }
 
     #[test]
@@ -6094,6 +6255,63 @@ mod tests {
                 .await
                 .expect("load account status");
         assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_keeps_bridge_exchange_oauth_as_error() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Bridge OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-bridge"),
+            StatusCode::UNAUTHORIZED,
+            "oauth bridge token exchange failed: oauth bridge responded with 502",
+        )
+        .await
+        .expect("record route failure");
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+                .bind(account_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load account status");
+        assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+    }
+
+    #[test]
+    fn should_retry_same_account_after_bridge_token_rejection_only_for_oauth_bridge_rejections() {
+        assert!(should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::UNAUTHORIZED,
+            Some("invalid_api_key"),
+            Some("oauth bridge token is unknown or was not registered"),
+            "pool upstream responded with 401",
+        ));
+        assert!(should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::FORBIDDEN,
+            Some("token_expired"),
+            Some("oauth bridge token expired; register again"),
+            "pool upstream responded with 403",
+        ));
+        assert!(!should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            StatusCode::UNAUTHORIZED,
+            Some("invalid_api_key"),
+            Some("oauth bridge token is unknown or was not registered"),
+            "pool upstream responded with 401",
+        ));
+        assert!(!should_retry_same_account_after_bridge_token_rejection(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::UNAUTHORIZED,
+            Some("missing_scopes"),
+            Some("Missing scopes: api.responses.write"),
+            "pool upstream responded with 401: Missing scopes: api.responses.write",
+        ));
     }
 
     async fn insert_limit_sample(
