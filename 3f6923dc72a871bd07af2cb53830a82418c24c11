@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.10.2",
+  "base_stable_version": "1.10.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-16T02:55:29Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.10.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ca1aaf67fde10cf624d3c8488dc5eb1c1d6dc225",
+  "pr_number": 152,
+  "pr_title": "fix(oauth): request API scopes and harden reauth handling",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.10.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.10.2,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "3f6923dc72a871bd07af2cb53830a82418c24c11",
+  "type_label": "type:patch"
+}
