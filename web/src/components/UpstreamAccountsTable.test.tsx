@@ -39,14 +39,15 @@ const labels = {
   duplicate: 'Duplicate',
   mother: 'Mother',
   off: 'Off',
-  status: (value: string) =>
+  statusValue: (item: { status: string }) => item.status,
+  status: (item: { status: string }) =>
     ({
       active: 'Active',
       syncing: 'Syncing',
       needs_reauth: 'Needs reauth',
       error: 'Error',
       disabled: 'Disabled',
-    })[value] ?? value,
+    })[item.status] ?? item.status,
 }
 
 function renderTable(items: UpstreamAccountSummary[]) {

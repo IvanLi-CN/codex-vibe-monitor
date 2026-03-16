@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   createApiKeyUpstreamAccount,
+  createOauthMailboxSession,
   completeOauthLoginSession,
   createOauthLoginSession,
+  deleteOauthMailboxSession,
   deleteUpstreamAccount,
+  fetchOauthMailboxStatuses,
   fetchOauthLoginSession,
   fetchUpstreamAccountDetail,
   fetchUpstreamAccounts,
@@ -16,6 +19,8 @@ import {
   type CompleteOauthLoginSessionPayload,
   type CreateOauthLoginSessionPayload,
   type LoginSessionStatusResponse,
+  type OauthMailboxSession,
+  type OauthMailboxStatus,
   type PoolRoutingSettings,
   type UpstreamAccountGroupSummary,
   type UpdatePoolRoutingSettingsPayload,
@@ -141,6 +146,23 @@ export function useUpstreamAccounts() {
     return response
   }, [])
 
+  const beginOauthMailboxSession = useCallback(async (): Promise<OauthMailboxSession> => {
+    const response = await createOauthMailboxSession()
+    setError(null)
+    return response
+  }, [])
+
+  const getOauthMailboxStatuses = useCallback(async (sessionIds: string[]): Promise<OauthMailboxStatus[]> => {
+    const response = await fetchOauthMailboxStatuses({ sessionIds })
+    setError(null)
+    return response
+  }, [])
+
+  const removeOauthMailboxSession = useCallback(async (sessionId: string) => {
+    await deleteOauthMailboxSession(sessionId)
+    setError(null)
+  }, [])
+
   const completeOauthLogin = useCallback(
     async (loginId: string, payload: CompleteOauthLoginSessionPayload) => {
       const response = await completeOauthLoginSession(loginId, payload)
@@ -241,6 +263,9 @@ export function useUpstreamAccounts() {
     beginOauthLogin,
     beginRelogin,
     getLoginSession,
+    beginOauthMailboxSession,
+    getOauthMailboxStatuses,
+    removeOauthMailboxSession,
     completeOauthLogin,
     createApiKeyAccount,
     saveAccount,

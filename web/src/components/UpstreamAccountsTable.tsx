@@ -30,7 +30,8 @@ interface UpstreamAccountsTableProps {
     mother: string
     duplicate: string
     off: string
-    status: (value: string) => string
+    status: (item: UpstreamAccountSummary) => string
+    statusValue: (item: UpstreamAccountSummary) => string
   }
 }
 
@@ -251,6 +252,7 @@ export function UpstreamAccountsTable({
               ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
               : undefined
             const selected = item.id === selectedId
+            const displayStatus = labels.statusValue(item)
             return (
               <tr
                 key={item.id}
@@ -282,7 +284,7 @@ export function UpstreamAccountsTable({
                       {item.duplicateInfo
                         ? compactBadge(labels.duplicate, 'warning')
                         : null}
-                      {compactBadge(labels.status(item.status), badgeVariant(item.status))}
+                      {compactBadge(labels.status(item), badgeVariant(displayStatus))}
                       {!item.enabled
                         ? compactBadge(labels.off, 'secondary')
                         : null}
