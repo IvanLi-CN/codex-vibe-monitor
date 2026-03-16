@@ -315,6 +315,8 @@ function mockUpstreamAccounts(
     groups: [],
     writesEnabled: true,
     isLoading: false,
+    listError: null,
+    detailError: null,
     error: null,
     beginOauthLogin: vi.fn().mockResolvedValue({
       loginId: "login-1",
@@ -351,6 +353,13 @@ function mockUpstreamAccounts(
 }
 
 describe("UpstreamAccountCreatePage batch oauth", () => {
+  it("does not show background detail errors as the create-page banner", () => {
+    mockUpstreamAccounts({ detailError: "Background detail failed", error: "Background detail failed" });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    expect(document.body.textContent).not.toContain("Background detail failed");
+  });
+
   it("opens batch oauth mode from the query string with five empty rows", () => {
     mockUpstreamAccounts();
     render("/account-pool/upstream-accounts/new?mode=batchOauth");

@@ -1848,9 +1848,13 @@ export async function fetchUpstreamStickyConversations(
 
 export async function fetchUpstreamAccountDetail(
   accountId: number,
+  signal?: AbortSignal,
 ): Promise<UpstreamAccountDetail> {
   const response = await fetchJson<unknown>(
     `/api/pool/upstream-accounts/${accountId}`,
+    {
+      signal,
+    },
   );
   return normalizeUpstreamAccountDetail(response);
 }

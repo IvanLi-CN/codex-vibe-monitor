@@ -55,24 +55,18 @@
 - OAuth token 与 API key 必须以服务端加密密文落库；若未配置加密密钥，所有账号管理写接口必须拒绝请求并返回明确错误。
 - OAuth 账号持久化后必须保存 `access_token`、`refresh_token`、`id_token`、`token_expires_at`、`chatgpt_account_id`、`chatgpt_user_id`、`email`、`plan_type` 等最小恢复信息；应用重启后必须可以继续刷新与同步。
 - 上游账号身份重复（共享 `chatgpt_account_id` 或 `chatgpt_user_id`）只能告警、不得阻止保存；列表与详情必须持续显示重复标记，且 OAuth 新建完成后要给出一次性 warning。
-- 当同一 `chatgpt_account_id` 的账号簇全部满足 `plan_type=team` 时，共享 account id 视为 Team 合法共享，不得单独标记为重复；若共享 `chatgpt_user_id`，仍必须继续标记为重复身份。
-- Team 共享 account id 的判定必须优先使用账号最新 usage sample 中的 `plan_type`，仅在最新 sample 不可用时才回退到账户表字段，避免 legacy / stale `plan_type` 把整簇 Team 账号误判或漏判。
-- usage sample 持久化在上游未返回 `plan_type` 时不得把账户表旧值回填进最新 sample；列表、详情与重复判定读取到的 `planType` 必须共享同一份“最新非空 sample 优先、账户表兜底”的解析口径。
-- 当 OAuth 刷新拿到更新后的 `id_token plan_type` 而 usage 响应省略 `plan_type` 时，同步流程必须把该次刷新确认过的有效 plan type 一并写入最新 sample；若账户 claims 的观测时间晚于最近一个非空 sample，列表、详情与重复判定必须以更新后的账户 claims 为准。
-- 上述 freshness 比较只允许使用认证身份实际更新产生的时间戳（如 `lastRefreshedAt` / 新 OAuth 落库时刻）；普通状态写入、备注编辑或同步成功导致的通用 `updatedAt` 变化不得改变 `planType` 的优先级。若本次 usage 省略 `plan_type` 且账户 claims 也不比历史 sample 更新，则必须沿用现有有效 sample 值，而不是回退到更旧的账户 claims。
-- freshness 判定所比较的 sample 基线必须是“最近一个非空 `plan_type` sample”，而不是“最新一行 sample”；否则在最新采样缺失 `plan_type` 时，会把更晚刷新得到的 claims 或更晚确认过的有效 sample 错误地压回旧值。
-- 服务端必须为 OAuth 账户单独维护“`plan_type` 实际观测时间”元数据；只有在 JWT claims 中拿到非空 `plan_type` 时才允许推进该时间。Team 判重与列表/详情 `planType` 的 freshness 一律基于该观测时间和“最近一个非空 sample”的时间比较，不能直接复用泛化的 token refresh 时间。若两者落在同一秒，默认以账户 claims 为 tie-break winner。
 - `displayName` 必须全局唯一，按“忽略大小写 + 去首尾空格”判重；单 OAuth、批量 OAuth、API Key 创建与详情编辑命中重复时必须拒绝提交。
 - 服务端必须定期刷新即将过期的 OAuth token，并定期从 Codex / ChatGPT usage 接口采集 `5 小时(primary)` 与 `7 天(secondary)` 窗口，落库为最新快照与历史样本。
 - `5 小时` 与 `7 天` 必须在列表和详情中同时以图形化 + 文字展示：列表展示最新进度，详情展示进度条/图 + 趋势图 + 重置时间 + 状态说明。
 - API Key 账号必须支持新增、编辑、启停、删除；其 `5 小时` 与 `7 天` 限额来自本地配置，默认 `used=0`，并在 UI 中显式标注“本地占位统计”。
-- 账号详情里的删除操作必须使用应用内锚定按钮的气泡式二次确认，禁止依赖浏览器原生确认对话框。
-- 从账号详情触发的删除失败必须留在详情抽屉内展示，不得泄漏到号池主页公共错误区域。
 - 号池路由密钥弹窗必须提供“生成密钥”次级动作：前端本地生成 `cvm-` 前缀的高熵 key 并填入输入框，只有用户点击保存后才真正替换当前生效 key。
 - 批量 OAuth 模式必须以表格呈现，允许“一个逻辑账号占两行视觉布局”，但每个字段控件都必须保持单行输入，不得在单元格内自动换行；每行 OAuth 生成/完成状态独立，失败不得阻塞其他行。
 - 批量 OAuth 行操作区必须在“完成 OAuth 登录”与状态 badge 之间提供母号皇冠按钮，使用 Iconify `mdi:crown` / `mdi:crown-outline`。
 - 账号状态至少支持 `active`、`syncing`、`needs_reauth`、`error` 与 `disabled`；授权失效只能转 `needs_reauth`，不得静默删除账号或清空最后一次成功快照。
 - 任何导致组内母号归属变化的写操作，都必须触发系统级通知，并提供 10 秒可撤销窗口；同组后续切换应覆盖旧撤销上下文。
+- 账号详情页的操作忙碌态必须按账号隔离：当账号 A 正在同步/保存/删除/启停时，切到账号 B 的详情不得继承 A 的 loading/spinning 状态；若随后对账号 B 发起同类操作，账号 A 原有的按钮 busy 态也不得被覆盖或提前清除；同一账号存在任一进行中的写操作时，该账号的其它写操作入口必须一并禁用，直到该账号自己的请求结束。
+- 账号切换必须在同一交互拍内使旧 detail 请求失效：用户点击从账号 A 切到账号 B 后，即使 React 尚未提交下一次 effect，A 的晚到 detail 成功/失败响应也不得再写入 detail 或全局错误提示。
+- 保存/同步这类直接写入详情的成功响应，必须先使当前 in-flight detail 请求失效；更早发出的 detail reload 成功返回后，不得再把刚保存/同步后的新详情回写成旧快照。
 
 ### SHOULD
 
@@ -93,6 +87,22 @@
 - 用户点击 `重新登录` 会创建绑定到现有账号的登录会话；callback 成功后覆盖旧 token，但账号主键、历史样本和本地备注保持不变。
 - 用户点击 `立即同步` 时，OAuth 账号执行 refresh + usage 拉取；API Key 账号仅刷新本地展示状态。
 - 用户在账号详情里点击 `删除` 时，前端只打开锚定删除按钮的确认气泡；只有在气泡中二次确认后才真正发送删除请求。
+- 用户在账号 A 的异步操作未完成前切换到账号 B 时，晚到的 A 详情成功响应、失败响应、同步响应或列表刷新都不得覆盖 B 的 detail 区块，也不得把当前选中账号强行切回 A，且不得把 A 的错误消息串到 B。
+- 当详情抽屉处于打开状态时，外部 refresh/list 刷新若失败，不得清空当前账号 detail；只有成功拿到新列表并完成选中账号收口后，才允许切换 detail 内容。
+- refresh/list 刷新在决定详情补拉目标时，必须先用最新列表数据与当前选中账号纯计算出最终 `selectedId`，再据此决定是否补拉 detail；不得依赖 `setSelectedId(updater)` 的执行时机来推导返回值。
+- hook 级错误态必须按来源隔离：list/routing 级错误只能由对应 list/routing 请求清空，账号 detail 错误只能由同一账号、同一来源链路的成功结果清空；其它账号的成功不得把当前账号的错误提示抹掉。
+- 多个账号的 detail 错误必须并存保存：账号 A 与账号 B 先后失败后，切回任一账号时仍需看到它自己的 detail 错误，直到该账号自己的后续结果替换它。
+- 账号操作在清理自己的错误提示时，不得顺带清空 routing 级错误；routing 保存失败后，后续任意账号的保存/同步/启停/删除成功都不得吞掉该 routing 错误。
+- routing 错误与账号级错误必须分别展示；当两类错误同时存在时，页面不得只保留其中一条。
+- 页面级 `Refresh` 不得因为其它账号的保存/同步/启停/删除而被全局锁死；只有真正的全局路由保存过程才允许暂时禁用该按钮。
+- 删除账号的成功响应不得覆盖用户已经切换后的当前选中项；只有“当前正显示的账号被删除”时，才允许把选中项收口到 fallback。
+- 若用户在账号 A 删除进行中切换到账号 B，A 的删除成功后不得把当前抽屉关闭；只有当前抽屉仍停留在 A 时，删除成功才允许关闭抽屉或收口到 fallback。
+- 若当前正显示的账号删除成功后紧接着列表刷新失败，页面仍必须立刻把选中项与 detail 从被删账号收口到 fallback（或空态），不得继续停留在已删除账号的幽灵详情上。
+- 账号自己的保存/同步成功必须清掉该账号自己的 detail 错误缓存，即使成功返回时用户已经切到别的账号。
+- 若用户在账号 A 的保存进行中切换到账号 B 并编辑 B 的详情草稿，A 的保存成功回包不得重置 B 当前未提交的草稿字段（例如 API Key 轮换输入框）。
+- 保存/同步成功一旦落地，就必须立即使该账号更早发出的 in-flight detail reload 失效；即使后续列表刷新仍在进行，旧 reload 也不得趁机把 detail 回写成旧快照。
+- refresh 进行中若用户切换到别的账号，refresh 在列表返回后仍必须按最终收口后的当前选中账号补拉 detail；不得因为 refresh 启动时捕获的是旧 `selectedId` 就跳过这次 detail 刷新。
+- 多个 list/refresh 请求并发时，只有最新仍有效的那一次允许回写 `items/groups/routing/selectedId/listError`；较早发出的旧列表成功/失败结果一律视为过期，不得覆盖较新的列表状态。
 
 ### Edge cases / errors
 
@@ -120,21 +130,38 @@
 - Given 用户位于 `dashboard / live / settings` 任意页面，When 点击导航中的 `号池`，Then 页面进入 `号池 -> 上游账号` 且不影响现有四个模块。
 - Given 前端创建 OAuth 登录会话，When 打开 `authUrl` 并完成授权，Then callback 会把账号落库，轮询接口变为 `completed`，列表中出现该账号。
 - Given 用户进入 `Batch OAuth` 模式，When 在多行里分别生成授权链接、粘贴 callback 并完成其中一行，Then 该行显示 `completed` 且页面保持在批量表格，其他行仍可继续生成或完成。
-- Given 两个非 Team OAuth 账号，或同一 `chatgpt_account_id` 簇中混入非 Team 账号，When 它们共享相同的 `chatgpt_account_id`，Then 系统保留多条账号记录，并在列表/详情中标记为重复身份。
-- Given 多个 `plan_type=team` 的 OAuth 账号共享相同的 `chatgpt_account_id` 且 `chatgpt_user_id` 各不相同，When 最后一个账号完成入池，Then 列表与详情不得仅因共享 account id 标记其为重复身份。
-- Given 任意 OAuth 账号共享相同的 `chatgpt_user_id`，When 后一个账号完成入池，Then 系统仍必须在列表/详情中标记为重复身份。
+- Given 两个 OAuth 账号共享相同的 `chatgpt_account_id` 或 `chatgpt_user_id`，When 第二个账号完成入池，Then 系统保留两条账号记录，并在列表/详情中标记为重复身份。
 - Given 用户在任一创建/编辑入口提交重复的 `displayName`，When 后端接收请求，Then 请求返回 `409`，前端展示 inline error，并禁止继续提交。
 - Given 同组已有母号，When 用户把另一账号设为母号，Then 系统自动切换母号归属、弹出系统级通知，并在通知中提供撤销按钮恢复到切换前状态。
 - Given OAuth 登录会话过期、state 错误或重复消费，When callback 被访问，Then 会话标记为 `failed/expired` 且不会创建或覆盖账号。
 - Given 已持久化 OAuth 账号且 access token 到期，When 后台维护任务或手动同步运行，Then 系统会自动 refresh 并继续同步 usage，无需用户重新登录。
 - Given refresh token 已失效，When 后台维护任务运行，Then 账号进入 `needs_reauth`，但账号记录、历史样本和最后成功同步时间仍然保留。
-- Given 用户在账号详情里点击 `删除`，When 首次点击危险按钮，Then 页面只展开应用内确认气泡，不会触发浏览器原生确认框，也不会立即发起删除请求。
-- Given 删除确认气泡由详情抽屉内按钮触发，When 详情区本身可滚动或处于窄屏布局，Then 确认层仍必须完整可见，且保持在详情抽屉 dialog 子树内，不得被滚动容器裁切或跑到抽屉外层。
-- Given 删除确认气泡已打开，When 用户按下 `Escape`，Then 只关闭确认气泡并把焦点还给详情抽屉里的 `删除` 按钮，不关闭整个详情抽屉。
-- Given 用户在账号详情气泡里确认删除但后端返回错误，When 请求失败，Then 错误仅显示在详情抽屉内部，不显示在号池主页公共错误位。
 - Given API Key 账号录入了本地 `5 小时 / 7 天` 限额，When 打开列表或详情，Then 两个窗口都能显示本地限额与 `0` 使用量，并明确标记为占位统计。
 - Given OAuth 账号已有 usage 样本，When 打开详情页，Then `5 小时` 与 `7 天` 卡片都能展示最新百分比、重置时间和最近 7 天趋势线。
 - Given 用户打开号池路由密钥弹窗，When 点击“生成密钥”后关闭且未保存，Then 新生成的 key 只停留在当前草稿中，再次打开弹窗时输入框恢复为已保存状态。
+- Given 账号 A 正在执行手动同步，When 用户切换并打开账号 B 的详情，Then B 的“立即同步”按钮保持空闲 outline 图标，且不会显示 A 的 spinner。
+- Given 账号 A 的手动同步尚未结束，When 用户切到账号 B 并再次触发手动同步后再回到 A，Then A 的“立即同步”按钮仍保持 disabled + spinner，直到 A 自己的同步完成。
+- Given 账号 A 正在执行保存、同步、删除或启停中的任意一种写操作，When 用户仍停留在账号 A 的详情，Then 账号 A 的其它写操作入口必须全部 disabled，避免同账号并发提交互相覆盖。
+- Given 账号 A 的详情请求或同步响应晚于账号 B 返回，When 当前选中账号已经是 B，Then 页面只接受 B 的 detail 结果，A 的晚到响应不会覆盖详情内容，也不会把选中项切回 A。
+- Given 账号 A 的详情请求在切到账号 B 后才失败，When 当前选中账号已经是 B，Then 页面不会向 B 展示 A 的错误消息，错误态仍只属于当前账号自己的请求。
+- Given 用户刚从账号 A 切到账号 B，When A 的旧详情请求在同一轮交互里立刻失败或成功返回，Then 该旧响应仍必须被视为过期，不得写入 detail，也不得在页面底部展示 A 的错误提示。
+- Given 账号 A 曾经失败并留下错误消息，When 用户切到账号 B 发起新的写操作后再回到 A，Then A 自己的错误消息仍应保留，除非 A 自己再次发起操作或被成功覆盖。
+- Given 当前详情抽屉正显示账号 A，When 外部列表 refresh 请求失败，Then 账号 A 的详情内容保持不变，只展示 refresh 自己的错误提示，不会把 detail 清空成空状态。
+- Given 当前账号已经显示 detail 错误，When 随后外部 refresh/list 刷新再次失败，Then 页面必须同时保留 detail 错误与 refresh 自己的错误提示，不得只显示旧 detail 错误。
+- Given refresh 返回的新列表已经把当前有效选中账号收口到 B，When refresh 继续决定是否补拉 detail，Then 它必须按这个最终收口结果刷新 B 的 detail，而不是依赖 React state updater 是否已经执行。
+- Given 用户先触发账号 A 的 detail reload，再触发账号 A 的手动同步或保存，When 更早的 detail reload 晚于同步/保存返回，Then 页面仍必须保留同步/保存后的最新详情，不得被旧 reload 结果覆盖。
+- Given 账号 B 当前正显示自己的 detail 错误，When 账号 A 的列表刷新、保存或同步成功返回，Then 账号 B 的错误提示必须继续保留，直到 B 自己的请求成功或失败被替换。
+- Given routing 密钥保存失败后页面仍显示 routing 错误，When 用户随后执行任意账号级操作且该操作成功，Then routing 错误提示仍然可见，直到 routing 请求自己成功或被新的 routing 结果替换。
+- Given routing 保存失败且当前账号同时还有账号级错误，When 页面重新渲染错误提示，Then routing 错误与账号级错误都必须可见，而不是二选一。
+- Given 账号 A 正在执行账号级异步操作，When 用户查看页面头部的 `Refresh` 按钮，Then 该按钮仍应可点击；只有路由密钥保存进行中时才允许禁用它。
+- Given 用户删除账号 A 后立即切到账号 C，When A 的删除请求稍后成功返回，Then 页面仍保持在 C，不得被旧删除响应收口到别的 fallback 账号。
+- Given 当前正显示的账号 A 已成功删除，但删除后的列表刷新失败，When 页面完成这次删除流程，Then 选中项必须立即切到 fallback 账号或空态，且详情区域不得继续显示 A。
+- Given 账号 A 曾显示 detail 错误，When A 的保存或同步稍后成功返回且这时用户已切到账号 B，Then A 的旧 detail 错误缓存必须被清掉，之后再切回 A 时不再显示那条过期错误。
+- Given 账号 A 存在更早发出的 detail reload，When A 的保存或同步先成功返回但后续列表刷新仍未完成，Then 那个旧 reload 仍必须被视为过期，不能在等待列表期间把详情短暂写回旧快照。
+- Given 用户在 refresh 进行中从账号 A 切到账号 B，When refresh 的列表响应稍后返回并把最终选中账号收口到 B，Then 页面仍必须补拉 B 的 detail，而不是停留在切换前或切换时的旧 detail。
+- Given 用户先手动触发一次 refresh，随后同一账号的保存/同步/删除又触发了更新的列表刷新，When 较早那次 refresh 更晚返回，Then 页面只能保留较新的列表状态，旧 refresh 不得把 `items/groups/routing/selectedId` 回写成旧快照。
+- Given 账号 A 的保存/同步/删除在后台完成时用户已经切到账号 B，When 动作成功后的列表刷新完成，Then 页面仍必须补拉 B 的最新 detail，避免右侧继续停留在 B 的旧 detail 快照。
+- 新建账号页顶部的全局错误提示只允许承载创建流程自己的错误或 list 级错误；详情页背景 detail 错误不得冒泡成创建页的通用错误横幅。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -164,9 +191,24 @@
 - [x] M2: OAuth login session / callback / token refresh / usage sync 落地。
 - [x] M3: `号池 -> 上游账号` 前端页面、列表、详情、图表与交互完成。
 - [x] M4: Rust + Web 自动化验证补齐，并完成本地浏览器 smoke。
-- [x] M5: spec sync、PR、checks、review-loop 收敛。
+- [ ] M5: spec sync、PR、checks、review-loop 收敛。
+
+## Change log
+
+- 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 与 action error 都要按账号隔离、同一账号任一写操作进行中时其它写入口必须锁住、账号切换要在同一交互拍内使旧 detail 请求失效、保存/同步成功要先失效旧 detail reload、refresh 必须用列表数据纯计算最终选中账号后再刷新 detail 且列表失败时不得清空当前 detail、hook 级 list/detail 错误必须按来源隔离、同类动作跨账号并发时不得互相覆盖 busy/error 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
 
 ## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Detail Drawer
+  state: idle-sync-button
+  evidence_note: 验证账号详情抽屉里的 `立即同步` 按钮空闲态为 outline 风格同步图标，而不是 spinner 或实心刷新图标。
+  image:
+  ![Upstream account sync button outline](./assets/upstream-account-sync-button-outline.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -280,11 +322,3 @@
 - 2026-03-13: 扩展上游账号创建页为单账号 OAuth / 批量 OAuth / API Key 同页模式，并将批量 OAuth 表格纳入现有手动 OAuth 流程。
 - 2026-03-13: 刷新 Storybook 视觉证据，补充路由设置弹窗、Sticky Key 对话与记录页上游筛选展示。
 - 2026-03-14: 调整 OAuth 新建语义为“重复身份仅告警不合并”，并补充 `displayName` 全局唯一约束与 UI warning/inline error 验收口径。
-- 2026-03-16: 收紧重复身份口径：纯 `plan_type=team` 账号簇共享 `chatgpt_account_id` 不再判重，但共享 `chatgpt_user_id` 与 mixed-plan 簇仍继续告警。
-- 2026-03-16: 明确 Team 判重必须优先使用最新 usage sample 的 `plan_type`，账户表字段只做兜底，避免旧数据让 101 上的 legacy Team 账号继续误报。
-- 2026-03-16: 补充 latest-sample 读写一致性约束：空 `plan_type` sample 不得回填旧账户值，列表/详情展示的 `planType` 也必须与 Team 判重使用同一解析结果。
-- 2026-03-16: 进一步收紧 freshness 语义：同步时若 usage 未返回 `plan_type`，必须落库存活跃账户当前确认过的有效值；若账户 claims 比最近非空 sample 更新，则读取路径必须让更新后的 claims 覆盖旧 sample。
-- 2026-03-16: 明确 freshness 只认认证身份更新时间，不认通用 `updatedAt`；并补充“usage 省略 `plan_type` 时沿用当前有效值”的同步兜底，避免旧 claims 在下一次采样里反向覆盖更新 sample。
-- 2026-03-16: 补充“最近一个非空 sample”基线约束，避免用最新空 sample 参与 freshness 比较，导致刷新后的 claims 或现有有效 sample 被错误回退。
-- 2026-03-16: 引入 `plan_type` 专属观测时间语义：只有拿到非空 claims 才推进 freshness，不能复用通用 refresh 时间；同秒冲突默认让账户 claims 胜出，避免秒级时间戳把最新 Team 口径吞掉。
-- 2026-03-16: 删除确认气泡改为挂载到详情抽屉 dialog 子树内的 portal popover，避免被抽屉滚动容器裁切，并补充焦点回落与 `Escape` 只关闭确认层的回归约束。
