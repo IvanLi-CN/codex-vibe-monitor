@@ -70,6 +70,7 @@ use tracing::{debug, error, info, warn};
 
 mod api;
 mod forward_proxy;
+mod oauth_bridge;
 mod stats;
 #[cfg(test)]
 mod tests;
@@ -6489,7 +6490,7 @@ async fn send_pool_request_with_failover(
     let mut same_account_attempts = same_account_attempts.max(1);
 
     'account_loop: loop {
-        let account = if let Some(account) = preferred_account.take() {
+        let mut account = if let Some(account) = preferred_account.take() {
             account
         } else {
             match resolve_pool_account_for_request(state.as_ref(), sticky_key, &excluded_ids).await
@@ -6535,21 +6536,22 @@ async fn send_pool_request_with_failover(
         };
 
         excluded_ids.push(account.account_id);
-        let target_url = match build_proxy_upstream_url(&account.upstream_base_url, original_uri) {
-            Ok(url) => url,
-            Err(err) => {
-                return Err(PoolUpstreamError {
-                    account: Some(account),
-                    status: StatusCode::BAD_GATEWAY,
-                    message: format!("failed to build pool upstream url: {err}"),
-                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                    connect_latency_ms: 0.0,
-                    upstream_error_code: None,
-                    upstream_error_message: None,
-                    upstream_request_id: None,
-                });
-            }
-        };
+        let mut target_url =
+            match build_proxy_upstream_url(&account.upstream_base_url, original_uri) {
+                Ok(url) => url,
+                Err(err) => {
+                    return Err(PoolUpstreamError {
+                        account: Some(account),
+                        status: StatusCode::BAD_GATEWAY,
+                        message: format!("failed to build pool upstream url: {err}"),
+                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                        connect_latency_ms: 0.0,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
+                    });
+                }
+            };
         let client = match state.http_clients.client_for_parallelism(false) {
             Ok(client) => client,
             Err(err) => {
@@ -6723,6 +6725,55 @@ async fn send_pool_request_with_failover(
                             ),
                         ),
                     };
+                if has_retry_budget
+                    && should_retry_same_account_after_bridge_token_rejection(
+                        &account.kind,
+                        status,
+                        upstream_error_code.as_deref(),
+                        upstream_error_message.as_deref(),
+                        &message,
+                    )
+                {
+                    clear_cached_oauth_bridge_token(state.as_ref(), account.account_id).await;
+                    match refresh_pool_account_for_retry(state.as_ref(), account.account_id).await {
+                        Ok(Some(refreshed_account)) => {
+                            account = refreshed_account;
+                            target_url = match build_proxy_upstream_url(
+                                &account.upstream_base_url,
+                                original_uri,
+                            ) {
+                                Ok(url) => url,
+                                Err(err) => {
+                                    warn!(
+                                        account_id = account.account_id,
+                                        error = %err,
+                                        "failed to rebuild pool upstream url after oauth bridge token refresh"
+                                    );
+                                    continue 'account_loop;
+                                }
+                            };
+                        }
+                        Ok(None) => {
+                            continue 'account_loop;
+                        }
+                        Err(err) => {
+                            warn!(
+                                account_id = account.account_id,
+                                error = %err,
+                                "failed to refresh oauth bridge registration after token rejection"
+                            );
+                            continue 'account_loop;
+                        }
+                    }
+                    info!(
+                        account_id = account.account_id,
+                        status = status.as_u16(),
+                        retry_index = same_account_attempt + 1,
+                        max_same_account_attempts = POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                        "pool oauth bridge token was rejected; clearing cached bridge token and retrying same account"
+                    );
+                    continue;
+                }
                 let route_error_message = upstream_error_code
                     .as_deref()
                     .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));

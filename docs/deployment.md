@@ -121,9 +121,25 @@ labels:
 
 - OAuth callback 地址固定为 `/api/pool/upstream-accounts/oauth/callback`；服务会根据实际请求 `Origin/Host` 生成 redirect URI，因此反向代理必须正确透传这两个头。
 - 后台会定期刷新临近过期的 OAuth access token，并同步归一化后的 `5 小时(primary)` / `7 天(secondary)` 配额窗口；明确的授权失效会把账号转成 `needs_reauth`，但不会删除账号或清空最后成功快照。
-- OAuth 登录现在会申请 API 调用所需的 scopes（包含 `/v1/responses` 与 `/v1/models` 所需权限）；发布这一变更后，已有 OAuth 账号需要重新授权一次，旧 token 不会自动补齐新增 scopes。
-- 若 OAuth 账号的 `last_error` 出现 `Missing scopes` 或 `insufficient permissions`，优先按“旧 token scope 不足 / OpenAI 角色权限不足”排查；只有 refresh/token 端明确失效时，系统才会把账号标成 `needs_reauth`。
+- OAuth 登录保持官方可用 scopes：`openid profile email offline_access`。OAuth 账号的 `/v1/*` 数据面固定走项目内置 sidecar `ai-openai-oauth-bridge`，不再直连 `api.openai.com`，也不提供额外 bridge 配置项。
+- 若 OAuth 账号的 `last_error` 出现 `oauth bridge unavailable`、`oauth bridge token exchange failed` 或 `oauth bridge upstream rejected request`，优先按 bridge sidecar 的服务状态、注册日志与上游拒绝原因排查；只有 refresh/token 端明确失效时，系统才会把账号标成 `needs_reauth`。
 - API Key 账号第一阶段只展示本地占位限额，不会探测真实 usage；真实计量会在后续路由阶段接入。
+
+固定 bridge sidecar 部署示例：
+
+```yaml
+services:
+  ai-codex-vibe-monitor:
+    image: ghcr.io/ivanli-cn/codex-vibe-monitor:latest
+    command: ["codex-vibe-monitor"]
+
+  ai-openai-oauth-bridge:
+    image: ghcr.io/ivanli-cn/codex-vibe-monitor:latest
+    command: ["openai-oauth-bridge"]
+```
+
+- sidecar 服务名必须保持 `ai-openai-oauth-bridge`，主服务会固定通过该名称访问 `http://ai-openai-oauth-bridge:3000`。
+- 不需要额外 bridge env；如果 sidecar 没启动，OAuth 账号会进入 `error`，但 API key 账号不受影响。
 
 - `GET /api/quota/latest`：读取数据库里最近一条历史 quota snapshot；本服务不再从外部 XYAI 上游抓取新 quota。
 - `GET /api/stats`、`/api/stats/summary`、`/api/stats/timeseries` 默认合并数据库中的历史 `xy`、当前 `proxy`，以及启用时的 `crs` 来源。
