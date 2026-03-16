@@ -9,7 +9,7 @@ use axum::{
     response::Html,
 };
 use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
-use rand::{RngCore, rngs::OsRng};
+use rand::{Rng, RngCore, rngs::OsRng};
 use sqlx::Transaction;
 
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
@@ -4440,11 +4440,7 @@ async fn moemail_create_email(
     client: &Client,
     config: &UpstreamAccountsMoeMailConfig,
 ) -> Result<MoeMailGenerateEmailPayload> {
-    let local_name = format!(
-        "oauth-{}",
-        random_hex(6).map_err(|(_, message)| anyhow!(message))?
-    )
-    .to_ascii_lowercase();
+    let local_name = generate_mailbox_local_name().map_err(|(_, message)| anyhow!(message))?;
     let response = client
         .post(
             config
@@ -5406,6 +5402,61 @@ fn random_hex(size: usize) -> Result<String, (StatusCode, String)> {
             .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     }
     Ok(output)
+}
+
+fn random_base36(size: usize) -> Result<String, (StatusCode, String)> {
+    const ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = OsRng;
+    let mut output = String::with_capacity(size);
+    for _ in 0..size {
+        let idx = rng.gen_range(0..ALPHABET.len());
+        output.push(ALPHABET[idx] as char);
+    }
+    Ok(output)
+}
+
+fn generate_mailbox_local_name() -> Result<String, (StatusCode, String)> {
+    const GIVEN_NAMES: &[&str] = &[
+        "alex", "emma", "olivia", "liam", "sophia", "noah", "ava", "mia", "ethan", "nora",
+        "lucas", "zoe",
+    ];
+    const FAMILY_NAMES: &[&str] = &[
+        "carter", "ng", "morgan", "patel", "reed", "young", "kim", "bennett", "wong", "brooks",
+    ];
+    const ORG_NAMES: &[&str] = &[
+        "northstar", "acorn", "harbor", "summit", "evergreen", "lattice", "brightpath", "aurora",
+    ];
+    const TEAM_NAMES: &[&str] = &[
+        "ops", "research", "growth", "support", "finance", "design", "legal", "success",
+    ];
+    const UNIT_NAMES: &[&str] = &[
+        "team", "desk", "hub", "group", "office", "lab", "studio", "center",
+    ];
+
+    let mut rng = OsRng;
+    let suffix_len = rng.gen_range(3..=5);
+    let suffix = random_base36(suffix_len)?;
+    let local = match rng.gen_range(0..3) {
+        0 => format!(
+            "{}.{}-{}",
+            GIVEN_NAMES[rng.gen_range(0..GIVEN_NAMES.len())],
+            FAMILY_NAMES[rng.gen_range(0..FAMILY_NAMES.len())],
+            suffix
+        ),
+        1 => format!(
+            "{}-{}-{}",
+            ORG_NAMES[rng.gen_range(0..ORG_NAMES.len())],
+            TEAM_NAMES[rng.gen_range(0..TEAM_NAMES.len())],
+            suffix
+        ),
+        _ => format!(
+            "{}-{}-{}",
+            TEAM_NAMES[rng.gen_range(0..TEAM_NAMES.len())],
+            UNIT_NAMES[rng.gen_range(0..UNIT_NAMES.len())],
+            suffix
+        ),
+    };
+    Ok(local)
 }
 
 fn format_window_label(window_duration_mins: i64) -> String {
@@ -6861,5 +6912,22 @@ mod tests {
         );
         assert!(validate_mailbox_binding_fields(Some("session_1"), None).is_err());
         assert!(validate_mailbox_binding_fields(None, Some("mail@example.com")).is_err());
+    }
+
+    #[test]
+    fn generate_mailbox_local_name_looks_like_human_or_org_style() {
+        let local = generate_mailbox_local_name().expect("mailbox local part");
+        assert!(local.len() >= 10);
+        assert!(local.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.' || ch == '-'));
+        assert!(local.contains('-'));
+        assert!(!local.starts_with('-'));
+        assert!(!local.ends_with('-'));
+    }
+
+    #[test]
+    fn random_base36_uses_letters_and_digits() {
+        let token = random_base36(24).expect("base36 token");
+        assert_eq!(token.len(), 24);
+        assert!(token.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit()));
     }
 }
