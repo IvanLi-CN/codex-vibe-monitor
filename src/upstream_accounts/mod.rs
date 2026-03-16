@@ -225,6 +225,7 @@ pub(crate) struct UpstreamAccountSummary {
     masked_api_key: Option<String>,
     last_synced_at: Option<String>,
     last_successful_sync_at: Option<String>,
+    last_activity_at: Option<String>,
     last_error: Option<String>,
     last_error_at: Option<String>,
     token_expires_at: Option<String>,
@@ -669,6 +670,12 @@ struct StickyKeyAggregateRow {
     total_tokens: i64,
     total_cost: f64,
     created_at: String,
+    last_activity_at: String,
+}
+
+#[derive(Debug, FromRow)]
+struct AccountLastActivityRow {
+    account_id: i64,
     last_activity_at: String,
 }
 
@@ -3288,6 +3295,7 @@ async fn load_upstream_account_summaries(
     .fetch_all(pool)
     .await?;
     let account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
+    let last_activity_map = load_account_last_activity_map(pool, &account_ids).await?;
     let tag_map = load_account_tag_map(pool, &account_ids).await?;
 
     let mut items = Vec::with_capacity(rows.len());
@@ -3297,6 +3305,7 @@ async fn load_upstream_account_summaries(
         items.push(build_summary_from_row(
             &row,
             latest.as_ref(),
+            last_activity_map.get(&row.id).cloned(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
         ));
@@ -3312,6 +3321,9 @@ async fn load_upstream_account_detail(
         return Ok(None);
     };
     let latest = load_latest_usage_sample(pool, row.id).await?;
+    let last_activity_at = load_account_last_activity_map(pool, &[row.id])
+        .await?
+        .remove(&row.id);
     let tags = load_account_tag_map(pool, &[row.id])
         .await?
         .remove(&row.id)
@@ -3348,6 +3360,7 @@ async fn load_upstream_account_detail(
         summary: build_summary_from_row(
             &row,
             latest.as_ref(),
+            last_activity_at,
             tags,
             duplicate_info_map.get(&row.id).cloned(),
         ),
@@ -3418,6 +3431,7 @@ async fn load_latest_usage_sample(
 fn build_summary_from_row(
     row: &UpstreamAccountRow,
     sample: Option<&UpstreamAccountSampleRow>,
+    last_activity_at: Option<String>,
     tags: Vec<AccountTagSummary>,
     duplicate_info: Option<DuplicateInfo>,
 ) -> UpstreamAccountSummary {
@@ -3492,6 +3506,7 @@ fn build_summary_from_row(
         masked_api_key: row.masked_api_key.clone(),
         last_synced_at: row.last_synced_at.clone(),
         last_successful_sync_at: row.last_successful_sync_at.clone(),
+        last_activity_at,
         last_error: row.last_error.clone(),
         last_error_at: row.last_error_at.clone(),
         token_expires_at: row.token_expires_at.clone(),
@@ -3503,6 +3518,41 @@ fn build_summary_from_row(
         tags,
         effective_routing_rule,
     }
+}
+
+async fn load_account_last_activity_map(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<HashMap<i64, String>> {
+    if account_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query
+        .push(ACCOUNT_EXPR)
+        .push(" AS account_id, MAX(occurred_at) AS last_activity_at FROM codex_invocations WHERE ")
+        .push(ACCOUNT_EXPR)
+        .push(" IN (");
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(") GROUP BY account_id");
+
+    let rows = query
+        .build_query_as::<AccountLastActivityRow>()
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.account_id, row.last_activity_at))
+        .collect())
 }
 
 async fn group_has_accounts(pool: &Pool<Sqlite>, group_name: &str) -> Result<bool> {

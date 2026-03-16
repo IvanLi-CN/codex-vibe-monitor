@@ -2740,6 +2740,59 @@ async fn insert_test_pool_api_key_account_with_options(
 }
 
 #[tokio::test]
+async fn list_upstream_accounts_includes_last_activity_at() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("account-last-activity")
+    .bind("2026-03-11 20:35:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(42_i64)
+    .bind(0.12_f64)
+    .bind(
+        json!({
+            "upstreamAccountId": account_id,
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert account invocation");
+
+    let Json(response) = list_upstream_accounts(State(state))
+        .await
+        .expect("list upstream accounts");
+    let response_json = serde_json::to_value(response).expect("serialize upstream accounts");
+    let account = response_json
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items array")
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_i64) == Some(account_id))
+        .expect("account summary");
+
+    assert_eq!(
+        account
+            .get("lastActivityAt")
+            .and_then(serde_json::Value::as_str),
+        Some("2026-03-11 20:35:00")
+    );
+}
+
+#[tokio::test]
 async fn create_api_key_account_enforces_single_mother_per_group() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

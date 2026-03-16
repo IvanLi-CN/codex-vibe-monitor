@@ -52,6 +52,7 @@ const items: UpstreamAccountSummary[] = [
     planType: 'pro',
     lastSyncedAt: now,
     lastSuccessfulSyncAt: now,
+    lastActivityAt: '2026-03-11T12:12:00.000Z',
     primaryWindow: {
       usedPercent: 42,
       usedText: '42% used',
@@ -91,6 +92,7 @@ const items: UpstreamAccountSummary[] = [
     maskedApiKey: 'sk-live••••••c9f2',
     lastSyncedAt: '2026-03-11T08:10:00.000Z',
     lastSuccessfulSyncAt: '2026-03-11T07:48:00.000Z',
+    lastActivityAt: '2026-03-11T08:16:00.000Z',
     lastError: 'refresh token expired',
     primaryWindow: {
       usedPercent: 0,
@@ -128,10 +130,11 @@ const items: UpstreamAccountSummary[] = [
 ]
 
 const labels = {
-  sync: 'Last sync',
+  sync: 'Sync / Call',
+  lastSuccess: 'Sync',
+  lastCall: 'Call',
   windows: 'Windows',
   never: 'Never',
-  group: 'Group',
   primary: '5h',
   primaryShort: '5h',
   secondary: '7d',

@@ -23,10 +23,11 @@ const tags: AccountTagSummary[] = [
 ]
 
 const labels = {
-  sync: 'Last success',
+  sync: 'Sync / Call',
+  lastSuccess: 'Sync',
+  lastCall: 'Call',
   windows: 'Windows',
   never: 'Never',
-  group: 'Group',
   primary: '5h',
   primaryShort: '5h',
   secondary: '7d',
@@ -74,6 +75,7 @@ describe('UpstreamAccountsTable', () => {
         enabled: true,
         planType: 'team',
         lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
+        lastActivityAt: '2026-03-16T02:05:00.000Z',
         primaryWindow: {
           usedPercent: 42,
           usedText: '42 requests',
@@ -100,6 +102,8 @@ describe('UpstreamAccountsTable', () => {
     ])
 
     expect(html).toContain('Windows')
+    expect(html).toContain('Sync / Call')
+    expect(html).toContain('Call')
     expect(html).toContain('Duplicate')
     expect(html).toContain('Mother')
     expect(html).toContain('team')
@@ -109,6 +113,7 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('+2')
     expect(html).toContain('5h')
     expect(html).toContain('7d')
+    expect(html).not.toContain('production-apac-primary-operators')
     expect(html).not.toContain('overflow-x-auto')
     expect(html).not.toContain('min-w-[940px]')
   })
@@ -126,6 +131,7 @@ describe('UpstreamAccountsTable', () => {
         enabled: false,
         planType: null,
         lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
         primaryWindow: null,
         secondaryWindow: null,
         credits: null,

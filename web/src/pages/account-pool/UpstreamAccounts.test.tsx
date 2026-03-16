@@ -260,6 +260,8 @@ function mockAccountsPage() {
       enabled: true,
       isMother: true,
       planType: "team",
+      lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
+      lastActivityAt: "2026-03-16T02:05:00.000Z",
       primaryWindow: {
         usedPercent: 42,
         usedText: "42 requests",
@@ -298,6 +300,8 @@ function mockAccountsPage() {
       enabled: true,
       isMother: true,
       planType: "team",
+      lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
+      lastActivityAt: "2026-03-16T02:05:00.000Z",
       primaryWindow: {
         usedPercent: 42,
         usedText: "42 requests",
@@ -357,7 +361,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     const headerCells = Array.from(document.body.querySelectorAll("thead th")).map((cell) =>
       cell.textContent?.trim() || "",
     );
-    expect(headerCells).toEqual(["Account", "Last success", "Windows", ""]);
+    expect(headerCells).toEqual(["Account", "Sync / Call", "Windows", ""]);
     expect(document.body.textContent).toContain("vip");
     expect(document.body.textContent).toContain("+1");
     expect(document.body.textContent).toContain("team");

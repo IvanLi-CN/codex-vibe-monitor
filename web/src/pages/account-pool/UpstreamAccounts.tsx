@@ -932,10 +932,11 @@ export default function UpstreamAccountsPage() {
               emptyTitle={t('accountPool.upstreamAccounts.emptyTitle')}
               emptyDescription={t('accountPool.upstreamAccounts.emptyDescription')}
               labels={{
-                sync: t('accountPool.upstreamAccounts.table.lastSync'),
+                sync: t('accountPool.upstreamAccounts.table.syncAndCall'),
+                lastSuccess: t('accountPool.upstreamAccounts.table.lastSuccessShort'),
+                lastCall: t('accountPool.upstreamAccounts.table.lastCallShort'),
                 windows: t('accountPool.upstreamAccounts.table.windows'),
                 never: t('accountPool.upstreamAccounts.never'),
-                group: t('accountPool.upstreamAccounts.fields.groupName'),
                 primary: t('accountPool.upstreamAccounts.primaryWindowLabel'),
                 primaryShort: t('accountPool.upstreamAccounts.primaryWindowShortLabel'),
                 secondary: t('accountPool.upstreamAccounts.secondaryWindowLabel'),

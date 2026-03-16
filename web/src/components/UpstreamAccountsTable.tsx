@@ -13,8 +13,9 @@ interface UpstreamAccountsTableProps {
   emptyDescription: string
   labels: {
     sync: string
+    lastSuccess: string
+    lastCall: string
     never: string
-    group: string
     windows: string
     primary: string
     primaryShort: string
@@ -127,6 +128,25 @@ function CompactWindowLine({
   )
 }
 
+function CompactTimestampLine({
+  label,
+  value,
+}: {
+  label: string
+  value: string
+}) {
+  return (
+    <div className="grid grid-cols-[2.6rem,minmax(0,1fr)] items-center gap-1.5">
+      <span className="truncate whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.08em] text-base-content/48">
+        {label}
+      </span>
+      <span className="truncate whitespace-nowrap text-sm text-base-content/72" title={value}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
 function handleRowKeyDown(
   event: KeyboardEvent<HTMLTableRowElement>,
   accountId: number,
@@ -166,9 +186,9 @@ export function UpstreamAccountsTable({
     <div className="overflow-hidden rounded-[1.35rem] border border-base-300/80 bg-base-100/72">
       <table className="w-full table-fixed border-collapse">
         <colgroup>
-          <col className="w-[41%]" />
-          <col className="w-[13%]" />
-          <col className="w-[42%]" />
+          <col className="w-[38%]" />
+          <col className="w-[18%]" />
+          <col className="w-[40%]" />
           <col className="w-[4%]" />
         </colgroup>
         <thead>
@@ -196,7 +216,6 @@ export function UpstreamAccountsTable({
               ? `${labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
               : undefined
             const selected = item.id === selectedId
-            const groupValue = item.groupName?.trim() || '—'
             return (
               <tr
                 key={item.id}
@@ -219,13 +238,7 @@ export function UpstreamAccountsTable({
                     >
                       {item.displayName}
                     </p>
-                    <p
-                      className="mt-1 truncate whitespace-nowrap text-sm text-base-content/62"
-                      title={`${labels.group}: ${groupValue}`}
-                    >
-                      {groupValue}
-                    </p>
-                    <div className="mt-2 flex min-w-0 items-center gap-1.5 overflow-hidden">
+                    <div className="mt-3 flex min-w-0 items-center gap-1.5 overflow-hidden">
                       {item.isMother ? (
                         <div className="shrink-0">
                           <MotherAccountBadge label={labels.mother} />
@@ -247,12 +260,16 @@ export function UpstreamAccountsTable({
                   </div>
                 </td>
                 <td className="px-4 py-4 align-middle">
-                  <span
-                    className="block truncate whitespace-nowrap text-sm text-base-content/72"
-                    title={formatDateTime(item.lastSuccessfulSyncAt, labels.never)}
-                  >
-                    {formatDateTime(item.lastSuccessfulSyncAt, labels.never)}
-                  </span>
+                  <div className="space-y-1.5">
+                    <CompactTimestampLine
+                      label={labels.lastSuccess}
+                      value={formatDateTime(item.lastSuccessfulSyncAt, labels.never)}
+                    />
+                    <CompactTimestampLine
+                      label={labels.lastCall}
+                      value={formatDateTime(item.lastActivityAt, labels.never)}
+                    />
+                  </div>
                 </td>
                 <td className="px-4 py-4">
                   <div className="space-y-2">
