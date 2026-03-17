@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.14.0",
+  "base_stable_version": "1.13.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-17T16:51:43Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.14.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "712f9db8dddf86e9bc8b7cacd795de2e4bd5bee6",
+  "pr_number": 170,
+  "pr_title": "feat: stream running invocation updates",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.14.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.14.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "2734464c46a8e183dfe3379a2b5fd162703034b8",
+  "type_label": "type:minor"
+}
