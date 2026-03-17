@@ -580,6 +580,12 @@ function jsonResponse(payload: unknown, status = 200) {
   )
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
 function noContent() {
   return Promise.resolve(new Response(null, { status: 204 }))
 }
@@ -669,6 +675,12 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       if (path === '/api/pool/upstream-accounts/oauth/mailbox-sessions' && method === 'POST') {
         const body = parseBody<{ emailAddress?: string }>(init?.body, {})
         const requestedAddress = body.emailAddress?.trim().toLowerCase() ?? ''
+        const shouldDelayMailboxAttach =
+          storyId === 'account-pool-pages-upstream-account-create--batch-oauth-mailbox-popover-edit' ||
+          storyId === 'account-pool-pages-upstream-account-create--batch-oauth-mailbox-attach-pending'
+        if (requestedAddress && shouldDelayMailboxAttach) {
+          await wait(900)
+        }
         if (requestedAddress) {
           if (!requestedAddress.includes('@')) {
             return jsonResponse(

@@ -39,7 +39,7 @@ function buildEditableMailboxHint(copyLabel: string, emailAddress: string | null
           </code>
         ) : null}
       </div>
-      <p className="leading-5 text-base-content/70">{editHintLabel}</p>
+      <p className="text-sm leading-5 text-base-content/70">{editHintLabel}</p>
     </div>
   )
 }
@@ -109,6 +109,8 @@ interface OauthMailboxChipProps {
     onCancel: () => void
     editing: boolean
     busy?: boolean
+    inputInvalid?: boolean
+    inputError?: string | null
     disabled?: boolean
     submitDisabled?: boolean
   }
@@ -243,13 +245,18 @@ export function OauthMailboxChip({
           {editor.editing ? (
             <div className="space-y-3">
               <Input
+                type="email"
                 name={editor.inputName}
                 aria-label={editor.inputAriaLabel}
+                aria-invalid={editor.inputInvalid ? 'true' : 'false'}
                 placeholder={editor.inputPlaceholder}
                 value={editor.draftValue}
                 onChange={handleEditorDraftChange}
                 disabled={editor.busy}
               />
+              {editor.inputError ? (
+                <p className="text-xs leading-5 text-error">{editor.inputError}</p>
+              ) : null}
               <div className="flex items-center justify-end gap-2">
                 <Button
                   type="button"

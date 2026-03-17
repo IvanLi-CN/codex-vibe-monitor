@@ -341,9 +341,50 @@ export const BatchOauthMailboxPopoverEdit: Story = {
     await userEvent.hover(mailboxChip)
     await expect(within(document.body).getByRole('button', { name: /edit mailbox/i })).toBeInTheDocument()
     await userEvent.click(within(document.body).getByRole('button', { name: /edit mailbox/i }))
-    await expect(within(document.body).getByRole('textbox', { name: /mailbox address/i })).toBeInTheDocument()
-    await expect(within(document.body).getByRole('button', { name: /submit mailbox/i })).toBeInTheDocument()
+    const editorInput = within(document.body).getByRole('textbox', { name: /mailbox address/i })
+    const submitButton = within(document.body).getByRole('button', { name: /submit mailbox/i })
+    await expect(editorInput).toBeInTheDocument()
+    await expect(submitButton).toBeInTheDocument()
     await expect(within(document.body).getByRole('button', { name: /cancel mailbox edit/i })).toBeInTheDocument()
+    await userEvent.clear(editorInput)
+    await userEvent.type(editorInput, 'edited-batch@mail-tw.707079.xyz')
+    await userEvent.click(submitButton)
+    await expect(submitButton).toBeDisabled()
+    await expect(canvas.getByText(/edited-batch@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
+  },
+}
+
+export const BatchOauthMailboxAttachPending: Story = {
+  name: 'Batch OAuth Mailbox Attach Pending',
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              rows: [
+                {
+                  id: 'row-1',
+                  displayName: 'Batch Pending Mailbox Attach',
+                  groupName: 'production',
+                  mailboxInput: 'pending-batch@mail-tw.707079.xyz',
+                  mailboxEditorOpen: true,
+                  mailboxEditorValue: 'pending-batch@mail-tw.707079.xyz',
+                  mailboxBusyAction: 'attach',
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(within(document.body).getByRole('button', { name: /submit mailbox/i })).toBeDisabled()
+    await expect(canvas.getAllByRole('button', { name: /^generate$/i })[0]).toBeDisabled()
   },
 }
 

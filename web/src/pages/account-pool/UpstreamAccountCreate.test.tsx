@@ -796,6 +796,37 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     );
   });
 
+  it("validates the batch mailbox editor before attaching", async () => {
+    const beginOauthMailboxSessionForAddress = vi.fn();
+    mockUpstreamAccounts({ beginOauthMailboxSessionForAddress });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Edit mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    setBodyInputValue('input[name^="batchOauthMailboxEditor-"]', "not-an-email");
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Enter a valid email address before attaching it.");
+  });
+
   it("cancels batch mailbox editing without mutating the row mailbox value", async () => {
     mockUpstreamAccounts();
     render({

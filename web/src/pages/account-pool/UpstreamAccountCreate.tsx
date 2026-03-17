@@ -96,6 +96,7 @@ type BatchOauthRow = {
   mailboxBusyAction: MailboxBusyAction
   mailboxEditorOpen: boolean
   mailboxEditorValue: string
+  mailboxEditorError: string | null
 }
 
 type CreatePageDraft = {
@@ -200,6 +201,7 @@ function createBatchOauthRow(id: string, groupName = ''): BatchOauthRow {
     mailboxBusyAction: null,
     mailboxEditorOpen: false,
     mailboxEditorValue: '',
+    mailboxEditorError: null,
   }
 }
 
@@ -233,6 +235,7 @@ function hydrateBatchOauthRow(
         : typeof seed.mailboxInput === 'string'
           ? seed.mailboxInput
           : seed.mailboxSession?.emailAddress ?? '',
+    mailboxEditorError: typeof seed.mailboxEditorError === 'string' ? seed.mailboxEditorError : null,
   }
 }
 
@@ -255,6 +258,10 @@ function normalizeMailboxAddressKey(value: string) {
 function mailboxInputMatchesSession(input: string, session: OauthMailboxSessionSupported | null) {
   if (!session) return false
   return normalizeMailboxAddressKey(input) === normalizeMailboxAddressKey(session.emailAddress)
+}
+
+function isProbablyValidEmailAddress(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
 
 function findDisplayNameConflict(
@@ -1602,6 +1609,7 @@ export default function UpstreamAccountCreatePage() {
         ...current,
         mailboxEditorOpen: true,
         mailboxEditorValue: baseValue,
+        mailboxEditorError: null,
         actionError: null,
       }
     })
@@ -1611,6 +1619,7 @@ export default function UpstreamAccountCreatePage() {
     updateBatchRow(rowId, (current) => ({
       ...current,
       mailboxEditorValue: value,
+      mailboxEditorError: null,
     }))
   }
 
@@ -1619,6 +1628,7 @@ export default function UpstreamAccountCreatePage() {
       ...current,
       mailboxEditorOpen: false,
       mailboxEditorValue: current.mailboxInput || current.mailboxSession?.emailAddress || '',
+      mailboxEditorError: null,
     }))
   }
 
@@ -1627,12 +1637,20 @@ export default function UpstreamAccountCreatePage() {
     if (!row) return
     const normalizedAddress = row.mailboxEditorValue.trim()
     if (!normalizedAddress) return
+    if (!isProbablyValidEmailAddress(normalizedAddress)) {
+      updateBatchRow(rowId, (current) => ({
+        ...current,
+        mailboxEditorError: t('accountPool.upstreamAccounts.batchOauth.validation.mailboxFormat'),
+      }))
+      return
+    }
 
     updateBatchRow(rowId, (current) => ({
       ...current,
       mailboxBusyAction: 'attach',
       actionError: null,
       mailboxError: null,
+      mailboxEditorError: null,
     }))
 
     const previousSessionId = row.mailboxSession?.sessionId ?? null
@@ -1651,6 +1669,7 @@ export default function UpstreamAccountCreatePage() {
         mailboxBusyAction: null,
         mailboxEditorOpen: false,
         mailboxEditorValue: response.emailAddress,
+        mailboxEditorError: null,
         mailboxSession: isSupportedMailboxSession(response) ? response : null,
         mailboxInput: response.emailAddress,
         mailboxStatus: null,
@@ -2694,8 +2713,10 @@ export default function UpstreamAccountCreatePage() {
                                               onCancel: () => handleBatchCancelMailboxEdit(row.id),
                                               editing: row.mailboxEditorOpen,
                                               busy: row.mailboxBusyAction === 'attach',
+                                              inputInvalid: row.mailboxEditorError != null,
+                                              inputError: row.mailboxEditorError,
                                               disabled: actionLocked || !writesEnabled,
-                                              submitDisabled: !row.mailboxEditorValue.trim(),
+                                              submitDisabled: !row.mailboxEditorValue.trim() || row.mailboxEditorError != null,
                                             }}
                                           />
                                           <Tooltip
