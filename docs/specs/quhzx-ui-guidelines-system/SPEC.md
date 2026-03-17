@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-18
 - Last: 2026-03-18
 
@@ -105,7 +105,7 @@
 - [x] M2: 完成 foundations / components / patterns / data-viz / storybook 五份规范正文
 - [x] M3: 创建 spec 并同步索引与 README 入口
 - [x] M4: 完成本地验证（dprint、路径检查、Storybook build）
-- [ ] M5: 完成 docs-only fast-track 交付（提交、PR、checks、review-loop、spec-sync）
+- [x] M5: 完成 docs-only fast-track 交付（提交、PR、checks、review-loop、spec-sync）
 
 ## 方案概述（Approach, high-level）
 
@@ -124,3 +124,4 @@
 
 - 2026-03-18: 创建 spec，冻结 docs-only UI 规范补档范围、验收标准与 fast-track 交付路径。
 - 2026-03-18: 完成 `docs/ui/` 六份文档、README 入口与本地验证；进入 PR 交付与 review 收敛阶段。
+- 2026-03-18: 修复 review 指出的 specs 索引表渲染问题与 foundations spacing 约束缺口，随后同步 `origin/main`、更新 PR #173 到 mergeable clean，并确认 checks green / review-loop clear。
