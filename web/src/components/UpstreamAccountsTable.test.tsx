@@ -230,7 +230,7 @@ describe('UpstreamAccountsTable', () => {
       },
     ])
 
-    const trigger = document.body.querySelector('[aria-label=\"Show 2 hidden tags: sticky-pool, rotating\"]')
+    const trigger = document.body.querySelector('[aria-label="Show 2 hidden tags: sticky-pool, rotating"]')
     if (!(trigger instanceof HTMLElement)) {
       throw new Error('missing folded tags trigger')
     }

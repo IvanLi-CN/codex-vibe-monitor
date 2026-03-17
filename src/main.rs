@@ -3361,7 +3361,6 @@ async fn backfill_upstream_account_last_activity_from_archives(
 
         let archive_path = PathBuf::from(archive_file.file_path);
         if !archive_path.exists() {
-            exhausted_archives = false;
             continue;
         }
         scanned_batches += 1;

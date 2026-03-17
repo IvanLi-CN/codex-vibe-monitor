@@ -18007,7 +18007,7 @@ async fn upstream_last_activity_live_backfill_marks_unmatched_rows_complete() {
 }
 
 #[tokio::test]
-async fn upstream_last_activity_archive_backfill_keeps_pending_when_archive_missing() {
+async fn upstream_last_activity_archive_backfill_marks_complete_when_archive_missing() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
     )
@@ -18070,7 +18070,7 @@ async fn upstream_last_activity_archive_backfill_keeps_pending_when_archive_miss
     .fetch_one(&state.pool)
     .await
     .expect("load archive completion flag");
-    assert_eq!(completed, 0);
+    assert_eq!(completed, 1);
 
     let progress = load_startup_backfill_progress(&state.pool, &task_name)
         .await
