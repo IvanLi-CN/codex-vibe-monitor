@@ -1507,6 +1507,12 @@ pub(crate) async fn create_oauth_mailbox_session(
                 "not_readable",
             )));
         };
+        let mut remote_messages =
+            moemail_list_messages(&state.http_clients.shared, config, &remote_mailbox.id)
+                .await
+                .map_err(internal_error_tuple)?;
+        sort_mailbox_messages_desc(&mut remote_messages);
+        let latest_message_id = latest_mailbox_message_id(&remote_messages);
         let session_id = random_hex(16)?;
         let now = Utc::now();
         let expires_at = remote_mailbox
@@ -1528,7 +1534,7 @@ pub(crate) async fn create_oauth_mailbox_session(
                 latest_code_value, latest_code_source, latest_code_updated_at, invite_subject,
                 invite_copy_value, invite_copy_label, invite_updated_at, invited, last_message_id,
                 created_at, updated_at, expires_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?6, ?6, ?7)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ?6, ?7, ?7, ?8)
             "#,
         )
         .bind(&session_id)
@@ -1536,6 +1542,7 @@ pub(crate) async fn create_oauth_mailbox_session(
         .bind(&manual_email_address)
         .bind(&email_domain)
         .bind(OAUTH_MAILBOX_SOURCE_ATTACHED)
+        .bind(latest_message_id)
         .bind(&now_iso)
         .bind(&expires_at)
         .execute(&state.pool)
@@ -4762,6 +4769,32 @@ fn parsed_invite_from_mailbox_row(row: &OauthMailboxSessionRow) -> Option<Parsed
     })
 }
 
+fn sort_mailbox_messages_desc(messages: &mut [MoeMailMessageSummary]) {
+    messages.sort_by(|left, right| right.received_at.cmp(&left.received_at));
+}
+
+fn latest_mailbox_message_id(messages: &[MoeMailMessageSummary]) -> Option<String> {
+    messages.first().map(|message| message.id.clone())
+}
+
+fn collect_unseen_mailbox_messages(
+    messages: Vec<MoeMailMessageSummary>,
+    last_message_id: Option<&str>,
+) -> Vec<MoeMailMessageSummary> {
+    let Some(last_message_id) = last_message_id.filter(|value| !value.trim().is_empty()) else {
+        return messages;
+    };
+
+    let mut unseen = Vec::new();
+    for message in messages {
+        if message.id == last_message_id {
+            break;
+        }
+        unseen.push(message);
+    }
+    unseen
+}
+
 async fn moemail_create_email(
     client: &Client,
     config: &UpstreamAccountsMoeMailConfig,
@@ -4932,13 +4965,13 @@ async fn refresh_oauth_mailbox_session_status(
     let config = upstream_mailbox_config(&state.config).map_err(|(_, message)| anyhow!(message))?;
     let mut messages =
         moemail_list_messages(&state.http_clients.shared, config, &row.remote_email_id).await?;
-    messages.sort_by(|left, right| right.received_at.cmp(&left.received_at));
+    sort_mailbox_messages_desc(&mut messages);
 
     let mut latest_code = parsed_code_from_mailbox_row(row);
     let mut latest_invite = parsed_invite_from_mailbox_row(row);
-    let latest_message_id = messages.first().map(|message| message.id.clone());
+    let latest_message_id = latest_mailbox_message_id(&messages);
 
-    for summary in messages
+    for summary in collect_unseen_mailbox_messages(messages, row.last_message_id.as_deref())
         .into_iter()
         .take(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_STATUS_FETCH_LIMIT as usize)
     {
@@ -8494,6 +8527,54 @@ mod tests {
         assert!(mailbox_address_is_valid("valid.user@example.com"));
         assert!(!mailbox_address_is_valid("broken-address"));
         assert!(!mailbox_address_is_valid("missing-domain@"));
+    }
+
+    #[test]
+    fn collect_unseen_mailbox_messages_stops_at_last_seen_id() {
+        let messages = vec![
+            MoeMailMessageSummary {
+                id: "msg_3".to_string(),
+                subject: Some("newest".to_string()),
+                received_at: Some("2026-03-16T03:00:00Z".to_string()),
+            },
+            MoeMailMessageSummary {
+                id: "msg_2".to_string(),
+                subject: Some("baseline".to_string()),
+                received_at: Some("2026-03-16T02:00:00Z".to_string()),
+            },
+            MoeMailMessageSummary {
+                id: "msg_1".to_string(),
+                subject: Some("older".to_string()),
+                received_at: Some("2026-03-16T01:00:00Z".to_string()),
+            },
+        ];
+
+        let unseen = collect_unseen_mailbox_messages(messages, Some("msg_2"));
+
+        assert_eq!(unseen.len(), 1);
+        assert_eq!(unseen[0].id, "msg_3");
+    }
+
+    #[test]
+    fn collect_unseen_mailbox_messages_keeps_all_when_baseline_is_missing() {
+        let messages = vec![
+            MoeMailMessageSummary {
+                id: "msg_2".to_string(),
+                subject: None,
+                received_at: Some("2026-03-16T02:00:00Z".to_string()),
+            },
+            MoeMailMessageSummary {
+                id: "msg_1".to_string(),
+                subject: None,
+                received_at: Some("2026-03-16T01:00:00Z".to_string()),
+            },
+        ];
+
+        let unseen = collect_unseen_mailbox_messages(messages.clone(), Some("missing"));
+
+        assert_eq!(unseen.len(), messages.len());
+        assert_eq!(unseen[0].id, "msg_2");
+        assert_eq!(unseen[1].id, "msg_1");
     }
 
     #[test]

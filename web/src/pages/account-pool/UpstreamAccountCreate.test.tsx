@@ -1130,6 +1130,20 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).toContain("temp-user-2@example.com");
   });
 
+  it("removes the active mailbox session when the manual input changes", async () => {
+    const removeOauthMailboxSession = vi.fn().mockResolvedValue(undefined);
+    mockUpstreamAccounts({ removeOauthMailboxSession });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    clickButton(/Generate/i);
+    await flushAsync();
+
+    setInputValue('input[name="oauthMailboxInput"]', "new-target@example.com");
+    await flushAsync();
+
+    expect(removeOauthMailboxSession).toHaveBeenCalledWith("mailbox-1");
+  });
+
   it("attaches a supported manual mailbox address without blocking oauth actions", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
