@@ -1243,7 +1243,7 @@ export default function UpstreamAccountsPage() {
         title={selected?.displayName ?? t('accountPool.upstreamAccounts.detailTitle')}
         subtitle={t('accountPool.upstreamAccounts.detailTitle')}
         closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
-        closeDisabled={hasBusyAccountAction(busyAction, selected?.id)}
+        closeDisabled={isBusyAction(busyAction, 'delete', selected?.id)}
         autoFocusCloseButton={!isDeleteConfirmOpen}
         onPortalContainerChange={setDetailDrawerPortalContainer}
         onClose={handleCloseDetailDrawer}
