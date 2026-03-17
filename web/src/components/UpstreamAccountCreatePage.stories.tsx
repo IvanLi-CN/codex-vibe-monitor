@@ -3,7 +3,7 @@ import { userEvent, within, expect } from 'storybook/test'
 import { SystemNotificationProvider } from './ui/system-notifications'
 import { I18nProvider } from '../i18n'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
-import type { OauthMailboxSession, OauthMailboxStatus } from '../lib/api'
+import type { OauthMailboxSession, OauthMailboxSessionSupported, OauthMailboxStatus } from '../lib/api'
 import {
   AccountPoolStoryRouter,
   StorybookUpstreamAccountsMock,
@@ -22,16 +22,18 @@ function createCompletedSession(loginId: string, accountId: number) {
   }
 }
 
-function createMailboxSession(sessionId: string, emailAddress: string): OauthMailboxSession {
+function createMailboxSession(sessionId: string, emailAddress: string): OauthMailboxSessionSupported {
   return {
+    supported: true,
     sessionId,
     emailAddress,
     expiresAt: '2026-03-20T12:50:00.000Z',
+    source: 'generated',
   }
 }
 
 function createMailboxStatus(
-  session: OauthMailboxSession,
+  session: OauthMailboxSessionSupported,
   overrides?: Partial<OauthMailboxStatus>,
 ): OauthMailboxStatus {
   return {
@@ -102,6 +104,38 @@ export const OauthMailboxGenerated: Story = {
   },
 }
 
+export const OauthManualMailboxUnsupported: Story = {
+  name: 'OAuth Manual Mailbox Unsupported',
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.type(canvas.getByPlaceholderText(/enter a supported mailbox address/i), 'manual@example.com')
+    await userEvent.click(canvas.getByRole('button', { name: /use address/i }))
+    await expect(
+      canvas.getByText(/mailbox is not readable through the current moemail integration/i),
+    ).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /generate oauth url/i })).toBeEnabled()
+  },
+}
+
+export const OauthReauthManualMailboxAttached: Story = {
+  name: 'OAuth Reauth Manual Mailbox Attached',
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=oauth&accountId=101" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const mailboxInput = canvas.getByPlaceholderText(/enter a supported mailbox address/i)
+    await userEvent.clear(mailboxInput)
+    await userEvent.type(mailboxInput, 'manual-existing@mail-tw.707079.xyz')
+    await userEvent.click(canvas.getByRole('button', { name: /use address/i }))
+    await expect(canvas.getByText(/manual-existing@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/attached/i)).toBeInTheDocument()
+    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
+    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeEnabled()
+  },
+}
+
 export const OauthMailboxReady: Story = {
   name: 'OAuth Mailbox Ready',
   render: () => {
@@ -144,9 +178,11 @@ export const OauthMailboxExpired: Story = {
   name: 'OAuth Mailbox Expired',
   render: () => {
     const mailboxSession: OauthMailboxSession = {
+      supported: true,
       sessionId: 'story-mailbox-oauth-expired',
       emailAddress: 'expired-oauth@mail-tw.707079.xyz',
       expiresAt: '2026-03-11T10:00:00.000Z',
+      source: 'generated',
     }
     return (
       <AccountPoolStoryRouter
@@ -392,9 +428,11 @@ export const BatchOauthMailboxExpired: Story = {
   name: 'Batch OAuth Mailbox Expired',
   render: () => {
     const mailboxSession: OauthMailboxSession = {
+      supported: true,
       sessionId: 'story-mailbox-batch-expired',
       emailAddress: 'expired-batch@mail-tw.707079.xyz',
       expiresAt: '2026-03-11T10:00:00.000Z',
+      source: 'generated',
     }
     return (
       <AccountPoolStoryRouter

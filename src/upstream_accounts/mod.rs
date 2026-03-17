@@ -42,6 +42,8 @@ pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: u64 = 30;
 const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS: u64 = 60 * 60;
 const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_STATUS_FETCH_LIMIT: i64 = 12;
 const DEFAULT_MANUAL_OAUTH_CALLBACK_PORT: u16 = 1455;
+const OAUTH_MAILBOX_SOURCE_GENERATED: &str = "generated";
+const OAUTH_MAILBOX_SOURCE_ATTACHED: &str = "attached";
 
 const UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX: &str = "oauth_codex";
 const UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX: &str = "api_key_codex";
@@ -355,9 +357,16 @@ pub(crate) struct LoginSessionStatusResponse {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OauthMailboxSessionResponse {
-    session_id: String,
     email_address: String,
-    expires_at: String,
+    supported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -407,7 +416,8 @@ pub(crate) struct CreateOauthLoginSessionRequest {
     tag_ids: Vec<i64>,
     is_mother: Option<bool>,
     mailbox_session_id: Option<String>,
-    generated_mailbox_address: Option<String>,
+    #[serde(alias = "generatedMailboxAddress")]
+    mailbox_address: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -415,12 +425,15 @@ pub(crate) struct CreateOauthLoginSessionRequest {
 pub(crate) struct CompleteOauthLoginSessionRequest {
     callback_url: String,
     mailbox_session_id: Option<String>,
-    generated_mailbox_address: Option<String>,
+    #[serde(alias = "generatedMailboxAddress")]
+    mailbox_address: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct CreateOauthMailboxSessionRequest {}
+pub(crate) struct CreateOauthMailboxSessionRequest {
+    email_address: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -778,7 +791,7 @@ struct OauthLoginSessionRow {
     tag_ids_json: Option<String>,
     group_note: Option<String>,
     mailbox_session_id: Option<String>,
-    generated_mailbox_address: Option<String>,
+    mailbox_address: Option<String>,
     state: String,
     pkce_verifier: String,
     redirect_uri: String,
@@ -798,6 +811,7 @@ struct OauthMailboxSessionRow {
     remote_email_id: String,
     email_address: String,
     email_domain: String,
+    mailbox_source: Option<String>,
     latest_code_value: Option<String>,
     latest_code_source: Option<String>,
     latest_code_updated_at: Option<String>,
@@ -1015,6 +1029,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             remote_email_id TEXT NOT NULL,
             email_address TEXT NOT NULL,
             email_domain TEXT NOT NULL,
+            mailbox_source TEXT,
             latest_code_value TEXT,
             latest_code_source TEXT,
             latest_code_updated_at TEXT,
@@ -1033,6 +1048,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_oauth_mailbox_sessions table existence")?;
+    ensure_nullable_text_column(pool, "pool_oauth_mailbox_sessions", "mailbox_source")
+        .await
+        .context("failed to ensure pool_oauth_mailbox_sessions.mailbox_source")?;
 
     sqlx::query(
         r#"
@@ -1433,7 +1451,7 @@ pub(crate) async fn get_upstream_account_sticky_keys(
 pub(crate) async fn create_oauth_mailbox_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(_payload): Json<CreateOauthMailboxSessionRequest>,
+    Json(payload): Json<CreateOauthMailboxSessionRequest>,
 ) -> Result<Json<OauthMailboxSessionResponse>, (StatusCode, String)> {
     if !is_same_origin_settings_write(&headers) {
         return Err((
@@ -1446,6 +1464,91 @@ pub(crate) async fn create_oauth_mailbox_session(
         .await
         .map_err(internal_error_tuple)?;
     let config = upstream_mailbox_config(&state.config)?;
+    if let Some(manual_email_address) =
+        normalize_mailbox_address(payload.email_address.as_deref().unwrap_or_default())
+    {
+        if !mailbox_address_is_valid(&manual_email_address) {
+            return Ok(Json(oauth_mailbox_session_unsupported_response(
+                manual_email_address,
+                "invalid_format",
+            )));
+        }
+        let moemail_config = moemail_get_config(&state.http_clients.shared, config)
+            .await
+            .map_err(internal_error_tuple)?;
+        let supported_domains = moemail_config
+            .email_domains
+            .unwrap_or_default()
+            .split(',')
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<HashSet<_>>();
+        let email_domain = manual_email_address
+            .split('@')
+            .nth(1)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !supported_domains.is_empty() && !supported_domains.contains(&email_domain) {
+            return Ok(Json(oauth_mailbox_session_unsupported_response(
+                manual_email_address,
+                "unsupported_domain",
+            )));
+        }
+        let remote_mailbox = moemail_list_emails(&state.http_clients.shared, config)
+            .await
+            .map_err(internal_error_tuple)?
+            .into_iter()
+            .find(|item| {
+                normalize_mailbox_address(&item.address) == Some(manual_email_address.clone())
+            });
+        let Some(remote_mailbox) = remote_mailbox else {
+            return Ok(Json(oauth_mailbox_session_unsupported_response(
+                manual_email_address,
+                "not_readable",
+            )));
+        };
+        let session_id = random_hex(16)?;
+        let now = Utc::now();
+        let expires_at = remote_mailbox
+            .expires_at
+            .clone()
+            .filter(|value| DateTime::parse_from_rfc3339(value).is_ok())
+            .unwrap_or_else(|| {
+                format_utc_iso(
+                    now + ChronoDuration::seconds(
+                        DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS as i64,
+                    ),
+                )
+            });
+        let now_iso = format_utc_iso(now);
+        sqlx::query(
+            r#"
+            INSERT INTO pool_oauth_mailbox_sessions (
+                session_id, remote_email_id, email_address, email_domain, mailbox_source,
+                latest_code_value, latest_code_source, latest_code_updated_at, invite_subject,
+                invite_copy_value, invite_copy_label, invite_updated_at, invited, last_message_id,
+                created_at, updated_at, expires_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?6, ?6, ?7)
+            "#,
+        )
+        .bind(&session_id)
+        .bind(&remote_mailbox.id)
+        .bind(&manual_email_address)
+        .bind(&email_domain)
+        .bind(OAUTH_MAILBOX_SOURCE_ATTACHED)
+        .bind(&now_iso)
+        .bind(&expires_at)
+        .execute(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+
+        return Ok(Json(oauth_mailbox_session_supported_response(
+            session_id,
+            manual_email_address,
+            expires_at,
+            OAUTH_MAILBOX_SOURCE_ATTACHED,
+        )));
+    }
     let generated = moemail_create_email(&state.http_clients.shared, config)
         .await
         .map_err(internal_error_tuple)?;
@@ -1464,28 +1567,30 @@ pub(crate) async fn create_oauth_mailbox_session(
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_mailbox_sessions (
-            session_id, remote_email_id, email_address, email_domain, latest_code_value,
+            session_id, remote_email_id, email_address, email_domain, mailbox_source, latest_code_value,
             latest_code_source, latest_code_updated_at, invite_subject, invite_copy_value,
             invite_copy_label, invite_updated_at, invited, last_message_id, created_at, updated_at,
             expires_at
-        ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?5, ?5, ?6)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?6, ?6, ?7)
         "#,
     )
     .bind(&session_id)
     .bind(&generated.id)
     .bind(&email_address)
     .bind(&email_domain)
+    .bind(OAUTH_MAILBOX_SOURCE_GENERATED)
     .bind(&now_iso)
     .bind(&expires_at_iso)
     .execute(&state.pool)
     .await
     .map_err(internal_error_tuple)?;
 
-    Ok(Json(OauthMailboxSessionResponse {
+    Ok(Json(oauth_mailbox_session_supported_response(
         session_id,
         email_address,
-        expires_at: expires_at_iso,
-    }))
+        expires_at_iso,
+        OAUTH_MAILBOX_SOURCE_GENERATED,
+    )))
 }
 
 pub(crate) async fn get_oauth_mailbox_session_status(
@@ -1544,7 +1649,8 @@ pub(crate) async fn delete_oauth_mailbox_session(
     else {
         return Ok(StatusCode::NO_CONTENT);
     };
-    if let Some(config) = state.config.upstream_accounts_moemail.as_ref()
+    if row.mailbox_source.as_deref() != Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
+        && let Some(config) = state.config.upstream_accounts_moemail.as_ref()
         && let Err(err) =
             moemail_delete_email(&state.http_clients.shared, config, &row.remote_email_id).await
     {
@@ -1576,7 +1682,7 @@ pub(crate) async fn create_oauth_login_session(
     validate_mailbox_binding(
         &state.pool,
         payload.mailbox_session_id.as_deref(),
-        payload.generated_mailbox_address.as_deref(),
+        payload.mailbox_address.as_deref(),
     )
     .await?;
     let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
@@ -1672,7 +1778,7 @@ pub(crate) async fn create_oauth_login_session(
     .bind(tag_ids_json)
     .bind(stored_group_note)
     .bind(normalize_optional_text(payload.mailbox_session_id.clone()))
-    .bind(normalize_optional_text(payload.generated_mailbox_address.clone()))
+    .bind(normalize_optional_text(payload.mailbox_address.clone()))
     .bind(&state_token)
     .bind(&pkce_verifier)
     .bind(&redirect_uri)
@@ -1743,11 +1849,10 @@ pub(crate) async fn complete_oauth_login_session(
         .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
     validate_mailbox_binding_fields(
         payload.mailbox_session_id.as_deref(),
-        payload.generated_mailbox_address.as_deref(),
+        payload.mailbox_address.as_deref(),
     )?;
     if session.mailbox_session_id.as_deref() != payload.mailbox_session_id.as_deref()
-        || session.generated_mailbox_address.as_deref()
-            != payload.generated_mailbox_address.as_deref()
+        || session.mailbox_address.as_deref() != payload.mailbox_address.as_deref()
     {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -1757,7 +1862,7 @@ pub(crate) async fn complete_oauth_login_session(
     validate_mailbox_binding(
         &state.pool,
         session.mailbox_session_id.as_deref(),
-        session.generated_mailbox_address.as_deref(),
+        session.mailbox_address.as_deref(),
     )
     .await?;
     let query = parse_manual_oauth_callback(&payload.callback_url, &session.redirect_uri)
@@ -1798,7 +1903,7 @@ pub(crate) async fn relogin_upstream_account(
         tag_ids,
         is_mother: None,
         mailbox_session_id: None,
-        generated_mailbox_address: None,
+        mailbox_address: None,
     };
     create_oauth_login_session(State(state), headers, Json(payload)).await
 }
@@ -4068,7 +4173,7 @@ async fn load_login_session_by_login_id_with_executor(
         r#"
         SELECT
             login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note,
-            mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
+            mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
         WHERE login_id = ?1
@@ -4096,7 +4201,7 @@ async fn load_login_session_by_state(
         r#"
         SELECT
             login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note,
-            mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
+            mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
         WHERE state = ?1
@@ -4133,7 +4238,7 @@ async fn load_oauth_mailbox_session(
     sqlx::query_as::<_, OauthMailboxSessionRow>(
         r#"
         SELECT
-            session_id, remote_email_id, email_address, email_domain, latest_code_value,
+            session_id, remote_email_id, email_address, email_domain, mailbox_source, latest_code_value,
             latest_code_source, latest_code_updated_at, invite_subject, invite_copy_value,
             invite_copy_label, invite_updated_at, invited, last_message_id, created_at, updated_at,
             expires_at
@@ -4158,7 +4263,7 @@ async fn load_oauth_mailbox_sessions(
     let mut builder = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
-            session_id, remote_email_id, email_address, email_domain, latest_code_value,
+            session_id, remote_email_id, email_address, email_domain, mailbox_source, latest_code_value,
             latest_code_source, latest_code_updated_at, invite_subject, invite_copy_value,
             invite_copy_label, invite_updated_at, invited, last_message_id, created_at, updated_at,
             expires_at
@@ -4204,7 +4309,7 @@ async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> 
     let expired_rows = sqlx::query_as::<_, OauthMailboxSessionRow>(
         r#"
         SELECT
-            session_id, remote_email_id, email_address, email_domain, latest_code_value,
+            session_id, remote_email_id, email_address, email_domain, mailbox_source, latest_code_value,
             latest_code_source, latest_code_updated_at, invite_subject, invite_copy_value,
             invite_copy_label, invite_updated_at, invited, last_message_id, created_at, updated_at,
             expires_at
@@ -4218,8 +4323,9 @@ async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> 
     .await?;
 
     for row in expired_rows {
-        if let Err(err) =
-            moemail_delete_email(&state.http_clients.shared, config, &row.remote_email_id).await
+        if row.mailbox_source.as_deref() != Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
+            && let Err(err) =
+                moemail_delete_email(&state.http_clients.shared, config, &row.remote_email_id).await
         {
             debug!(
                 mailbox_session_id = %row.session_id,
@@ -4346,9 +4452,30 @@ struct ParsedMailboxInvite {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MoeMailConfigPayload {
+    email_domains: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MoeMailGenerateEmailPayload {
     id: String,
     email: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoeMailEmailListPayload {
+    emails: Vec<MoeMailEmailSummary>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoeMailEmailSummary {
+    id: String,
+    address: String,
+    expires_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4395,6 +4522,10 @@ static URL_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("valid url regex"));
 static HTML_TAG_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"<[^>]+>").expect("valid html tag regex"));
+static BASIC_EMAIL_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+        .expect("valid basic email regex")
+});
 
 fn oauth_mailbox_status_from_row(row: &OauthMailboxSessionRow) -> OauthMailboxStatus {
     OauthMailboxStatus {
@@ -4434,6 +4565,48 @@ fn oauth_mailbox_status_from_row(row: &OauthMailboxSessionRow) -> OauthMailboxSt
     }
 }
 
+fn oauth_mailbox_session_supported_response(
+    session_id: String,
+    email_address: String,
+    expires_at: String,
+    source: &str,
+) -> OauthMailboxSessionResponse {
+    OauthMailboxSessionResponse {
+        email_address,
+        supported: true,
+        session_id: Some(session_id),
+        expires_at: Some(expires_at),
+        source: Some(source.to_string()),
+        reason: None,
+    }
+}
+
+fn oauth_mailbox_session_unsupported_response(
+    email_address: String,
+    reason: &str,
+) -> OauthMailboxSessionResponse {
+    OauthMailboxSessionResponse {
+        email_address,
+        supported: false,
+        session_id: None,
+        expires_at: None,
+        source: None,
+        reason: Some(reason.to_string()),
+    }
+}
+
+fn normalize_mailbox_address(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
+fn mailbox_address_is_valid(value: &str) -> bool {
+    BASIC_EMAIL_REGEX.is_match(value.trim())
+}
+
 fn upstream_mailbox_config(
     config: &AppConfig,
 ) -> Result<&UpstreamAccountsMoeMailConfig, (StatusCode, String)> {
@@ -4452,13 +4625,13 @@ fn upstream_mailbox_config(
 
 fn validate_mailbox_binding_fields(
     mailbox_session_id: Option<&str>,
-    generated_mailbox_address: Option<&str>,
+    mailbox_address: Option<&str>,
 ) -> Result<(), (StatusCode, String)> {
-    match (mailbox_session_id, generated_mailbox_address) {
+    match (mailbox_session_id, mailbox_address) {
         (Some(_), Some(_)) | (None, None) => Ok(()),
         _ => Err((
             StatusCode::BAD_REQUEST,
-            "mailboxSessionId and generatedMailboxAddress must be provided together".to_string(),
+            "mailboxSessionId and mailboxAddress must be provided together".to_string(),
         )),
     }
 }
@@ -4466,13 +4639,13 @@ fn validate_mailbox_binding_fields(
 async fn validate_mailbox_binding(
     pool: &Pool<Sqlite>,
     mailbox_session_id: Option<&str>,
-    generated_mailbox_address: Option<&str>,
+    mailbox_address: Option<&str>,
 ) -> Result<(), (StatusCode, String)> {
-    validate_mailbox_binding_fields(mailbox_session_id, generated_mailbox_address)?;
+    validate_mailbox_binding_fields(mailbox_session_id, mailbox_address)?;
     let Some(session_id) = mailbox_session_id else {
         return Ok(());
     };
-    let Some(expected_address) = generated_mailbox_address else {
+    let Some(expected_address) = mailbox_address else {
         return Ok(());
     };
     let row = load_oauth_mailbox_session(pool, session_id)
@@ -4484,10 +4657,11 @@ async fn validate_mailbox_binding(
                 "mailbox session is missing or expired".to_string(),
             )
         })?;
-    if row.email_address != expected_address.trim() {
+    if normalize_mailbox_address(&row.email_address) != normalize_mailbox_address(expected_address)
+    {
         return Err((
             StatusCode::BAD_REQUEST,
-            "generatedMailboxAddress no longer matches the mailbox session".to_string(),
+            "mailboxAddress no longer matches the mailbox session".to_string(),
         ));
     }
     Ok(())
@@ -4616,6 +4790,65 @@ async fn moemail_create_email(
         .json::<MoeMailGenerateEmailPayload>()
         .await
         .context("failed to decode moemail create mailbox response")
+}
+
+async fn moemail_get_config(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+) -> Result<MoeMailConfigPayload> {
+    let response = client
+        .get(
+            config
+                .base_url
+                .join("/api/config")
+                .context("invalid moemail config endpoint")?,
+        )
+        .header("X-API-Key", config.api_key.as_str())
+        .send()
+        .await
+        .context("failed to load moemail config")?
+        .error_for_status()
+        .context("moemail config request failed")?;
+
+    response
+        .json::<MoeMailConfigPayload>()
+        .await
+        .context("failed to decode moemail config response")
+}
+
+async fn moemail_list_emails(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+) -> Result<Vec<MoeMailEmailSummary>> {
+    let mut items = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut url = config
+            .base_url
+            .join("/api/emails")
+            .context("invalid moemail email list endpoint")?;
+        if let Some(current_cursor) = cursor.as_deref() {
+            url.query_pairs_mut().append_pair("cursor", current_cursor);
+        }
+        let response = client
+            .get(url)
+            .header("X-API-Key", config.api_key.as_str())
+            .send()
+            .await
+            .context("failed to list moemail mailboxes")?
+            .error_for_status()
+            .context("moemail email list request failed")?;
+        let payload = response
+            .json::<MoeMailEmailListPayload>()
+            .await
+            .context("failed to decode moemail email list response")?;
+        items.extend(payload.emails);
+        match payload.next_cursor {
+            Some(next_cursor) if !next_cursor.trim().is_empty() => cursor = Some(next_cursor),
+            _ => break,
+        }
+    }
+    Ok(items)
 }
 
 async fn moemail_list_messages(
@@ -8245,6 +8478,22 @@ mod tests {
         );
         assert!(validate_mailbox_binding_fields(Some("session_1"), None).is_err());
         assert!(validate_mailbox_binding_fields(None, Some("mail@example.com")).is_err());
+    }
+
+    #[test]
+    fn normalize_mailbox_address_trims_and_lowercases() {
+        assert_eq!(
+            normalize_mailbox_address("  Mixed.Case+1@Example.COM "),
+            Some("mixed.case+1@example.com".to_string())
+        );
+        assert_eq!(normalize_mailbox_address("   "), None);
+    }
+
+    #[test]
+    fn mailbox_address_is_valid_rejects_broken_values() {
+        assert!(mailbox_address_is_valid("valid.user@example.com"));
+        assert!(!mailbox_address_is_valid("broken-address"));
+        assert!(!mailbox_address_is_valid("missing-domain@"));
     }
 
     #[test]
