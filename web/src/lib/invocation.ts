@@ -67,6 +67,7 @@ export function resolveInvocationAccountLabel(
   upstreamAccountName: string | null | undefined,
   upstreamAccountId: number | null | undefined,
   reverseProxyLabel: string,
+  poolRoutingPendingLabel: string,
 ): string {
   if (!isPoolRouteMode(routeMode)) return reverseProxyLabel
 
@@ -75,7 +76,7 @@ export function resolveInvocationAccountLabel(
   if (typeof upstreamAccountId === 'number' && Number.isFinite(upstreamAccountId)) {
     return `账号 #${Math.trunc(upstreamAccountId)}`
   }
-  return reverseProxyLabel
+  return poolRoutingPendingLabel
 }
 
 export function formatResponseContentEncoding(

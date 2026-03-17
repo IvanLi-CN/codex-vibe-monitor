@@ -402,6 +402,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           record.upstreamAccountName,
           record.upstreamAccountId,
           t('table.account.reverseProxy'),
+          t('table.account.poolRoutingPending'),
         )
         const accountClickable = canOpenInvocationAccount(record)
         const requestedServiceTierValue = formatServiceTier(record.requestedServiceTier)

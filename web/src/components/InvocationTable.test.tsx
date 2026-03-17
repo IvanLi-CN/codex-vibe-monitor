@@ -290,6 +290,52 @@ describe('InvocationTable', () => {
     expect(html).toContain('data-testid="invocation-account-name"')
   })
 
+  it('shows a neutral pool-routing label before the upstream account identity is known', () => {
+    const html = renderTable([
+      {
+        id: 34,
+        invokeId: 'invocation-pool-routing-pending',
+        occurredAt: '2026-03-07T03:13:50Z',
+        createdAt: '2026-03-07T03:13:50Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        proxyDisplayName: 'codex-relay-03',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+      },
+      {
+        id: 35,
+        invokeId: 'invocation-pool-routing-id-only',
+        occurredAt: '2026-03-07T03:13:49Z',
+        createdAt: '2026-03-07T03:13:49Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 19,
+        proxyDisplayName: 'codex-relay-04',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+      },
+      {
+        id: 36,
+        invokeId: 'invocation-forward-proxy-fallback',
+        occurredAt: '2026-03-07T03:13:48Z',
+        createdAt: '2026-03-07T03:13:48Z',
+        source: 'proxy',
+        routeMode: 'forward_proxy',
+        proxyDisplayName: 'codex-relay-05',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+      },
+    ])
+
+    expect(html).toContain('号池路由中')
+    expect(html).toContain('账号 #19')
+    expect(html).toContain('反向代理')
+  })
+
   it('shows proxyDisplayName in both summary and expanded details when present', async () => {
     await renderInteractiveTable([
       {
