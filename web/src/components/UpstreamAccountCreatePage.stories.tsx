@@ -307,6 +307,46 @@ export const BatchOauthMailboxGenerated: Story = {
   },
 }
 
+export const BatchOauthMailboxPopoverEdit: Story = {
+  name: 'Batch OAuth Mailbox Popover Edit',
+  render: () => {
+    const mailboxSession = createMailboxSession('story-mailbox-batch-edit', 'batch-edit@mail-tw.707079.xyz')
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          search: '?mode=batchOauth',
+          state: {
+            draft: {
+              batchOauth: {
+                rows: [
+                  {
+                    id: 'row-1',
+                    displayName: 'Batch Editable Mailbox',
+                    groupName: 'production',
+                    mailboxSession,
+                    mailboxInput: mailboxSession.emailAddress,
+                  },
+                ],
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const mailboxChip = canvas.getByRole('button', { name: /copy mailbox/i })
+    await userEvent.hover(mailboxChip)
+    await expect(within(document.body).getByRole('button', { name: /edit mailbox/i })).toBeInTheDocument()
+    await userEvent.click(within(document.body).getByRole('button', { name: /edit mailbox/i }))
+    await expect(within(document.body).getByRole('textbox', { name: /mailbox address/i })).toBeInTheDocument()
+    await expect(within(document.body).getByRole('button', { name: /submit mailbox/i })).toBeInTheDocument()
+    await expect(within(document.body).getByRole('button', { name: /cancel mailbox edit/i })).toBeInTheDocument()
+  },
+}
+
 export const BatchOauthActionTooltips: Story = {
   name: 'Batch OAuth Action Tooltips',
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
