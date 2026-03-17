@@ -1248,6 +1248,7 @@ export const Default: Story = {
 }
 
 export const RunningLifecycleSimulation: Story = {
+  args: defaultArgs,
   render: () => <RunningInvocationLifecyclePreview />,
 
   parameters: {
@@ -1310,6 +1311,7 @@ export const AccountProxySemantics: Story = {
 }
 
 export const Recent20StreamingSimulation: Story = {
+  args: defaultArgs,
   render: () => <Recent20StreamingPreview />,
   parameters: {
     docs: {
