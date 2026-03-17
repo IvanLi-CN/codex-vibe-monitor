@@ -821,7 +821,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                         <div className="flex min-w-0 flex-col items-center justify-center gap-1 leading-tight text-center">
                           <Badge
                             variant={row.meta.variant}
-                            className="mx-auto min-h-9 w-fit max-w-full items-center justify-center overflow-hidden px-4 py-1.5 text-center leading-none"
+                            className="mx-auto h-8 w-fit max-w-full items-center justify-center overflow-hidden px-3.5 py-0 text-center leading-none"
                             data-testid="invocation-proxy-badge"
                           >
                             <span
