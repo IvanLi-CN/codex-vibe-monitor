@@ -1,3 +1,5 @@
+import type { ApiInvocation } from './api'
+
 const DEFAULT_FALLBACK = '—'
 const PRIORITY_SERVICE_TIER = 'priority'
 const ROUTE_MODE_POOL = 'pool'
@@ -83,4 +85,15 @@ export function formatResponseContentEncoding(
   if (typeof value !== 'string') return fallback
   const normalized = value.trim().toLowerCase()
   return normalized.length > 0 ? normalized : fallback
+}
+
+export function invocationStableKey(record: Pick<ApiInvocation, 'invokeId' | 'occurredAt'>): string {
+  return `${record.invokeId}-${record.occurredAt}`
+}
+
+export function invocationStableDomKey(
+  record: Pick<ApiInvocation, 'invokeId' | 'occurredAt'> | string,
+): string {
+  const stableKey = typeof record === 'string' ? record : invocationStableKey(record)
+  return stableKey.replace(/[^A-Za-z0-9_-]/g, '_')
 }

@@ -9036,6 +9036,34 @@ async fn proxy_openai_v1_capture_target(
     let req_raw = store_raw_payload_file(&state.config, &invoke_id, "request", &upstream_body);
     let upstream_body_bytes = Bytes::from(upstream_body);
 
+    let initial_running_record = build_running_proxy_capture_record(
+        &invoke_id,
+        &occurred_at,
+        capture_target,
+        &request_info,
+        requester_ip.as_deref(),
+        sticky_key.as_deref(),
+        prompt_cache_key.as_deref(),
+        pool_route_active,
+        None,
+        None,
+        None,
+        None,
+        t_req_read_ms,
+        t_req_parse_ms,
+        0.0,
+        0.0,
+    );
+    if let Err(err) =
+        broadcast_proxy_capture_runtime_snapshot(&state.broadcaster, &initial_running_record)
+    {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast initial running proxy capture snapshot"
+        );
+    }
+
     let mut upstream_headers = headers.clone();
     if body_rewritten {
         upstream_headers.remove(header::CONTENT_LENGTH);
@@ -9388,6 +9416,37 @@ async fn proxy_openai_v1_capture_target(
         .map(str::to_string);
     let response_content_encoding =
         summarize_response_content_encoding(upstream_content_encoding.as_deref());
+    let selected_proxy_display_name =
+        resolve_invocation_proxy_display_name(selected_proxy.as_ref());
+    let response_running_record = build_running_proxy_capture_record(
+        &invoke_id,
+        &occurred_at,
+        capture_target,
+        &request_info,
+        requester_ip.as_deref(),
+        sticky_key.as_deref(),
+        prompt_cache_key.as_deref(),
+        pool_route_active,
+        pool_account.as_ref().map(|account| account.account_id),
+        pool_account
+            .as_ref()
+            .map(|account| account.display_name.as_str()),
+        selected_proxy_display_name.as_deref(),
+        Some(response_content_encoding.as_str()),
+        t_req_read_ms,
+        t_req_parse_ms,
+        t_upstream_connect_ms,
+        prefetched_ttfb_ms,
+    );
+    if let Err(err) =
+        broadcast_proxy_capture_runtime_snapshot(&state.broadcaster, &response_running_record)
+    {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast response-ready proxy capture snapshot"
+        );
+    }
     let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
         if should_forward_proxy_header(name, &upstream_connection_scoped) {
@@ -9411,6 +9470,7 @@ async fn proxy_openai_v1_capture_target(
     let sticky_key_for_task = sticky_key.clone();
     let prompt_cache_key_for_task = prompt_cache_key.clone();
     let selected_proxy_for_task = selected_proxy.clone();
+    let selected_proxy_display_name_for_task = selected_proxy_display_name.clone();
     let pool_account_for_task = pool_account.clone();
     let attempt_already_recorded_for_task = attempt_already_recorded;
     let final_attempt_update_for_task = final_attempt_update;
@@ -9446,6 +9506,38 @@ async fn proxy_openai_v1_capture_target(
                     if stream_started_at.is_none() {
                         t_upstream_ttfb_ms = elapsed_ms(ttfb_started);
                         stream_started_at = Some(Instant::now());
+                        let running_record = build_running_proxy_capture_record(
+                            &invoke_id_for_task,
+                            &occurred_at_for_task,
+                            capture_target,
+                            &request_info_for_task,
+                            requester_ip_for_task.as_deref(),
+                            sticky_key_for_task.as_deref(),
+                            prompt_cache_key_for_task.as_deref(),
+                            pool_account_for_task.is_some(),
+                            pool_account_for_task
+                                .as_ref()
+                                .map(|account| account.account_id),
+                            pool_account_for_task
+                                .as_ref()
+                                .map(|account| account.display_name.as_str()),
+                            selected_proxy_display_name_for_task.as_deref(),
+                            Some(response_content_encoding.as_str()),
+                            t_req_read_ms,
+                            t_req_parse_ms,
+                            t_upstream_connect_ms,
+                            t_upstream_ttfb_ms,
+                        );
+                        if let Err(err) = broadcast_proxy_capture_runtime_snapshot(
+                            &state_for_task.broadcaster,
+                            &running_record,
+                        ) {
+                            warn!(
+                                ?err,
+                                invoke_id = %invoke_id_for_task,
+                                "failed to broadcast first-byte proxy capture snapshot"
+                            );
+                        }
                     }
                     response_bytes.extend_from_slice(&chunk);
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
@@ -10724,6 +10816,240 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         "proxyWeightDelta": proxy_weight_delta,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn temporary_invocation_id(invoke_id: &str, occurred_at: &str) -> i64 {
+    let mut hasher = DefaultHasher::new();
+    invoke_id.hash(&mut hasher);
+    occurred_at.hash(&mut hasher);
+    -((hasher.finish() & (i64::MAX as u64)) as i64) - 1
+}
+
+fn runtime_invocation_iso_from_local_occurred_at(value: &str) -> String {
+    parse_shanghai_local_naive(value)
+        .map(|naive| format_utc_iso(local_naive_to_utc(naive, Shanghai)))
+        .unwrap_or_else(|_| value.to_string())
+}
+
+fn runtime_payload_text(payload: Option<&Value>, key: &str) -> Option<String> {
+    payload
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn runtime_payload_i64(payload: Option<&Value>, key: &str) -> Option<i64> {
+    payload
+        .and_then(|value| value.get(key))
+        .and_then(json_value_to_i64)
+}
+
+fn runtime_payload_f64(payload: Option<&Value>, key: &str) -> Option<f64> {
+    payload
+        .and_then(|value| value.get(key))
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str()?.parse::<f64>().ok())
+        })
+        .filter(|value| value.is_finite())
+}
+
+fn runtime_timing_value(value: f64) -> Option<f64> {
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
+fn runtime_api_invocation_from_proxy_capture_record(record: &ProxyCaptureRecord) -> ApiInvocation {
+    let payload = record
+        .payload
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+    let failure = classify_invocation_failure(
+        Some(record.status.as_str()),
+        record.error_message.as_deref(),
+    );
+    let occurred_at = runtime_invocation_iso_from_local_occurred_at(&record.occurred_at);
+    let created_at = occurred_at.clone();
+    let is_running = matches!(
+        record.status.trim().to_ascii_lowercase().as_str(),
+        "running" | "pending"
+    );
+
+    ApiInvocation {
+        id: temporary_invocation_id(&record.invoke_id, &record.occurred_at),
+        invoke_id: record.invoke_id.clone(),
+        occurred_at,
+        source: SOURCE_PROXY.to_string(),
+        proxy_display_name: runtime_payload_text(payload.as_ref(), "proxyDisplayName"),
+        model: record.model.clone(),
+        input_tokens: record.usage.input_tokens,
+        output_tokens: record.usage.output_tokens,
+        cache_input_tokens: record.usage.cache_input_tokens,
+        reasoning_tokens: record.usage.reasoning_tokens,
+        reasoning_effort: runtime_payload_text(payload.as_ref(), "reasoningEffort"),
+        total_tokens: record.usage.total_tokens,
+        cost: record.cost,
+        status: Some(record.status.clone()),
+        error_message: record.error_message.clone(),
+        failure_kind: record
+            .failure_kind
+            .clone()
+            .or_else(|| runtime_payload_text(payload.as_ref(), "failureKind")),
+        stream_terminal_event: runtime_payload_text(payload.as_ref(), "streamTerminalEvent"),
+        upstream_error_code: runtime_payload_text(payload.as_ref(), "upstreamErrorCode"),
+        upstream_error_message: runtime_payload_text(payload.as_ref(), "upstreamErrorMessage"),
+        upstream_request_id: runtime_payload_text(payload.as_ref(), "upstreamRequestId"),
+        failure_class: Some(failure.failure_class.as_str().to_string()),
+        is_actionable: Some(failure.is_actionable),
+        endpoint: runtime_payload_text(payload.as_ref(), "endpoint"),
+        requester_ip: runtime_payload_text(payload.as_ref(), "requesterIp"),
+        prompt_cache_key: runtime_payload_text(payload.as_ref(), "promptCacheKey"),
+        route_mode: runtime_payload_text(payload.as_ref(), "routeMode"),
+        upstream_account_id: runtime_payload_i64(payload.as_ref(), "upstreamAccountId"),
+        upstream_account_name: runtime_payload_text(payload.as_ref(), "upstreamAccountName"),
+        response_content_encoding: runtime_payload_text(
+            payload.as_ref(),
+            "responseContentEncoding",
+        ),
+        requested_service_tier: runtime_payload_text(payload.as_ref(), "requestedServiceTier"),
+        service_tier: runtime_payload_text(payload.as_ref(), "serviceTier"),
+        proxy_weight_delta: runtime_payload_f64(payload.as_ref(), "proxyWeightDelta"),
+        cost_estimated: Some(i64::from(record.cost_estimated)),
+        price_version: record.price_version.clone(),
+        request_raw_path: None,
+        request_raw_size: None,
+        request_raw_truncated: None,
+        request_raw_truncated_reason: None,
+        response_raw_path: None,
+        response_raw_size: None,
+        response_raw_truncated: None,
+        response_raw_truncated_reason: None,
+        detail_level: "full".to_string(),
+        detail_pruned_at: None,
+        detail_prune_reason: None,
+        t_total_ms: if is_running {
+            None
+        } else {
+            runtime_timing_value(record.timings.t_total_ms)
+        },
+        t_req_read_ms: runtime_timing_value(record.timings.t_req_read_ms),
+        t_req_parse_ms: runtime_timing_value(record.timings.t_req_parse_ms),
+        t_upstream_connect_ms: runtime_timing_value(record.timings.t_upstream_connect_ms),
+        t_upstream_ttfb_ms: runtime_timing_value(record.timings.t_upstream_ttfb_ms),
+        t_upstream_stream_ms: if is_running {
+            None
+        } else {
+            runtime_timing_value(record.timings.t_upstream_stream_ms)
+        },
+        t_resp_parse_ms: if is_running {
+            None
+        } else {
+            runtime_timing_value(record.timings.t_resp_parse_ms)
+        },
+        t_persist_ms: if is_running {
+            None
+        } else {
+            runtime_timing_value(record.timings.t_persist_ms)
+        },
+        created_at,
+    }
+}
+
+fn broadcast_proxy_capture_runtime_snapshot(
+    broadcaster: &broadcast::Sender<BroadcastPayload>,
+    record: &ProxyCaptureRecord,
+) -> Result<bool, broadcast::error::SendError<BroadcastPayload>> {
+    if broadcaster.receiver_count() == 0 {
+        return Ok(false);
+    }
+
+    broadcaster.send(BroadcastPayload::Records {
+        records: vec![runtime_api_invocation_from_proxy_capture_record(record)],
+    })?;
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_running_proxy_capture_record(
+    invoke_id: &str,
+    occurred_at: &str,
+    target: ProxyCaptureTarget,
+    request_info: &RequestCaptureInfo,
+    requester_ip: Option<&str>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    pool_route_active: bool,
+    upstream_account_id: Option<i64>,
+    upstream_account_name: Option<&str>,
+    proxy_display_name: Option<&str>,
+    response_content_encoding: Option<&str>,
+    t_req_read_ms: f64,
+    t_req_parse_ms: f64,
+    t_upstream_connect_ms: f64,
+    t_upstream_ttfb_ms: f64,
+) -> ProxyCaptureRecord {
+    ProxyCaptureRecord {
+        invoke_id: invoke_id.to_string(),
+        occurred_at: occurred_at.to_string(),
+        model: request_info.model.clone(),
+        usage: ParsedUsage::default(),
+        cost: None,
+        cost_estimated: false,
+        price_version: None,
+        status: "running".to_string(),
+        error_message: None,
+        failure_kind: None,
+        payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
+            target,
+            status: StatusCode::OK,
+            is_stream: request_info.is_stream,
+            request_model: request_info.model.as_deref(),
+            requested_service_tier: request_info.requested_service_tier.as_deref(),
+            reasoning_effort: request_info.reasoning_effort.as_deref(),
+            response_model: None,
+            usage_missing_reason: None,
+            request_parse_error: request_info.parse_error.as_deref(),
+            failure_kind: None,
+            requester_ip,
+            upstream_scope: if pool_route_active {
+                INVOCATION_UPSTREAM_SCOPE_INTERNAL
+            } else {
+                INVOCATION_UPSTREAM_SCOPE_EXTERNAL
+            },
+            route_mode: if pool_route_active {
+                INVOCATION_ROUTE_MODE_POOL
+            } else {
+                INVOCATION_ROUTE_MODE_FORWARD_PROXY
+            },
+            sticky_key,
+            prompt_cache_key,
+            upstream_account_id,
+            upstream_account_name,
+            service_tier: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            upstream_request_id: None,
+            response_content_encoding,
+            proxy_display_name,
+            proxy_weight_delta: None,
+        })),
+        raw_response: "{}".to_string(),
+        req_raw: RawPayloadMeta::default(),
+        resp_raw: RawPayloadMeta::default(),
+        timings: StageTimings {
+            t_total_ms: 0.0,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms: 0.0,
+            t_resp_parse_ms: 0.0,
+            t_persist_ms: 0.0,
+        },
+    }
 }
 
 fn resolve_invocation_proxy_display_name(
