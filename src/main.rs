@@ -7177,7 +7177,12 @@ async fn proxy_openai_v1_via_pool(
     body: Body,
 ) -> Result<Response, (StatusCode, String)> {
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
-    let handshake_timeout = state.config.proxy_upstream_handshake_timeout(None);
+    let capture_target = capture_target_for_request(original_uri.path(), &method);
+    let handshake_timeout = state
+        .config
+        .proxy_upstream_handshake_timeout(capture_target);
+    let first_chunk_timeout =
+        pool_upstream_first_chunk_timeout(&state.config, original_uri, &method, handshake_timeout);
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
         .size_hint()
@@ -7404,7 +7409,7 @@ async fn proxy_openai_v1_via_pool(
                         let first_byte_started = Instant::now();
                         match read_pool_upstream_first_chunk_with_timeout(
                             response,
-                            state.config.request_timeout,
+                            first_chunk_timeout,
                             connect_started,
                         )
                         .await
@@ -7574,7 +7579,7 @@ async fn proxy_openai_v1_via_pool(
                             let first_byte_started = Instant::now();
                             match read_pool_upstream_first_chunk_with_timeout(
                                 response,
-                                state.config.request_timeout,
+                                first_chunk_timeout,
                                 connect_started,
                             )
                             .await

@@ -8840,6 +8840,38 @@ async fn proxy_capture_target_compact_uses_dedicated_handshake_timeout() {
     upstream_handle.abort();
 }
 
+#[test]
+fn pool_upstream_first_chunk_timeout_uses_compact_budget_for_compact_route() {
+    let mut config = test_config();
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+
+    let timeout = pool_upstream_first_chunk_timeout(
+        &config,
+        &"/v1/responses/compact".parse().expect("valid uri"),
+        &Method::POST,
+        config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::ResponsesCompact)),
+    );
+
+    assert_eq!(timeout, Duration::from_millis(400));
+}
+
+#[test]
+fn pool_upstream_first_chunk_timeout_keeps_default_budget_for_non_compact_route() {
+    let mut config = test_config();
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+
+    let timeout = pool_upstream_first_chunk_timeout(
+        &config,
+        &"/v1/responses".parse().expect("valid uri"),
+        &Method::POST,
+        config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::Responses)),
+    );
+
+    assert_eq!(timeout, Duration::from_millis(200));
+}
+
 #[tokio::test]
 async fn proxy_capture_target_responses_uses_default_handshake_timeout() {
     let (upstream_base, _captured_requests, upstream_handle) =
