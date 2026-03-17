@@ -797,6 +797,7 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require(publish_permissions.get("contents") == "write", "release.yml.jobs.release-publish.permissions.contents must stay write")
     require(publish_permissions.get("issues") == "write", "release.yml.jobs.release-publish.permissions.issues must stay write")
     require(publish_permissions.get("packages") == "write", "release.yml.jobs.release-publish.permissions.packages must stay write")
+    require(publish_permissions.get("pull-requests") == "write", "release.yml.jobs.release-publish.permissions.pull-requests must stay write")
     publish_checkout = checkout_step(publish, "Checkout code", "release.yml.jobs.release-publish")
     require(publish_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.release-publish checkout ref drifted")
     tag_step = step_config(publish, "Create and push git tag", "release.yml.jobs.release-publish")
