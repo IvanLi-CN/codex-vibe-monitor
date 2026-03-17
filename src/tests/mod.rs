@@ -24,7 +24,7 @@ use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::error::{DatabaseError, ErrorKind};
-use sqlx::{Connection, SqliteConnection, SqlitePool};
+use sqlx::{Connection, SqliteConnection, SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -2839,6 +2839,101 @@ fn encrypt_test_oauth_credentials(access_token: &str) -> String {
         "ciphertext": BASE64_STANDARD.encode(ciphertext),
     })
     .to_string()
+}
+
+#[tokio::test]
+async fn list_upstream_accounts_includes_last_activity_at() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("account-last-activity")
+    .bind("2026-03-11 20:35:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(42_i64)
+    .bind(0.12_f64)
+    .bind(
+        json!({
+            "upstreamAccountId": account_id,
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert account invocation");
+    sqlx::query("UPDATE pool_upstream_accounts SET last_activity_at = ?1 WHERE id = ?2")
+        .bind("2026-03-11 20:35:00")
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("persist account last activity");
+
+    let Json(response) = list_upstream_accounts(State(state))
+        .await
+        .expect("list upstream accounts");
+    let response_json = serde_json::to_value(response).expect("serialize upstream accounts");
+    let account = response_json
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items array")
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_i64) == Some(account_id))
+        .expect("account summary");
+
+    assert_eq!(
+        account
+            .get("lastActivityAt")
+            .and_then(serde_json::Value::as_str),
+        Some("2026-03-11T12:35:00Z")
+    );
+}
+
+#[tokio::test]
+async fn list_upstream_accounts_includes_archived_last_activity_at() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("create archive activity pool");
+    let account_id = 17_i64;
+
+    sqlx::query(
+        "CREATE TABLE pool_upstream_accounts (id INTEGER PRIMARY KEY, last_activity_at TEXT)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create accounts table");
+    sqlx::query("CREATE TABLE codex_invocations (occurred_at TEXT NOT NULL, payload TEXT)")
+        .execute(&pool)
+        .await
+        .expect("create active invocation table");
+    sqlx::query("INSERT INTO pool_upstream_accounts (id, last_activity_at) VALUES (?1, ?2)")
+        .bind(account_id)
+        .bind("2026-03-12 07:05:00")
+        .execute(&pool)
+        .await
+        .expect("seed persisted last activity");
+
+    let last_activity = load_account_last_activity_map(&pool, &[account_id])
+        .await
+        .expect("load last activity map");
+
+    assert_eq!(
+        last_activity.get(&account_id).map(String::as_str),
+        Some("2026-03-12 07:05:00")
+    );
 }
 
 #[tokio::test]
@@ -16990,6 +17085,20 @@ async fn ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_re
     assert!(tables.contains("archive_batches"));
     assert!(tables.contains("invocation_rollup_daily"));
     assert!(tables.contains("startup_backfill_progress"));
+
+    let upstream_account_index_sql = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND name = 'idx_codex_invocations_upstream_account_occurred_at'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load upstream account invocation index");
+    assert!(upstream_account_index_sql.contains("$.upstreamAccountId"));
+    assert!(upstream_account_index_sql.contains("occurred_at"));
 }
 
 #[tokio::test]
@@ -17758,6 +17867,572 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
         "historical archive files should keep their legacy schema"
     );
     archived_pool.close().await;
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_backfill_reads_archived_batches() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("upstream-last-activity-archive-backfill").await;
+    let created_at = format_utc_iso(Utc::now());
+    let account_id = 501_i64;
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Archived-only account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert upstream account");
+
+    let occurred_at = shanghai_local_days_ago(120, 9, 30, 0);
+    let month_key = occurred_at[..7].to_string();
+    let archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve archived invocation batch");
+    fs::create_dir_all(
+        archive_path
+            .parent()
+            .expect("archived invocation batch should have parent"),
+    )
+    .expect("create archived invocation batch dir");
+
+    let archive_db_path = temp_dir.join("upstream-last-activity-archive.sqlite");
+    fs::File::create(&archive_db_path).expect("create archive sqlite file");
+    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open archive sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create archive schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, raw_response, created_at, payload
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind(1_i64)
+    .bind("archived-upstream-activity")
+    .bind(&occurred_at)
+    .bind("{}")
+    .bind(&occurred_at)
+    .bind(json!({ "upstreamAccountId": account_id }).to_string())
+    .execute(&archive_pool)
+    .await
+    .expect("insert archived invocation");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress archived invocation batch");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(sha256_hex_file(&archive_path).expect("archive sha256"))
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("insert archive batch manifest");
+
+    backfill_upstream_account_last_activity_from_archives(&pool, None, None)
+        .await
+        .expect("backfill upstream last activity from archives");
+
+    let last_activity_at: Option<String> =
+        sqlx::query_scalar("SELECT last_activity_at FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load persisted last activity");
+    assert_eq!(last_activity_at.as_deref(), Some(occurred_at.as_str()));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_retries_after_failed_progress() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let pool = state.pool.clone();
+
+    let task_name = STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES;
+    let retry_due = format_utc_iso(Utc::now() - ChronoDuration::seconds(1));
+    mark_startup_backfill_running(&pool, task_name, 0)
+        .await
+        .expect("seed running startup progress");
+    save_startup_backfill_progress(
+        &pool,
+        task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: 0,
+            scanned: 0,
+            updated: 0,
+            zero_update_streak: 0,
+            next_run_after: &retry_due,
+            status: STARTUP_BACKFILL_STATUS_FAILED,
+        },
+    )
+    .await
+    .expect("seed failed startup progress");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("retry failed archive backfill progress");
+
+    let progress = load_startup_backfill_progress(&pool, task_name)
+        .await
+        .expect("load startup backfill progress");
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
+    assert!(progress.last_finished_at.is_some());
+    assert!(!progress.is_due(Utc::now()));
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_marks_exhausted_accounts_complete() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task_name = startup_backfill_task_progress_key(
+        state.as_ref(),
+        StartupBackfillTask::UpstreamActivityArchives,
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    let account_id = 902_i64;
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Never used account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("run archive activity backfill");
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load archive backfill progress");
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
+    assert_eq!(progress.last_updated, 0);
+    assert_eq!(progress.last_scanned, 0);
+
+    let completed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load archive completion flag");
+    assert_eq!(completed, 1);
+
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after = ?1 WHERE task_name = ?2")
+        .bind(format_utc_iso(Utc::now() - ChronoDuration::seconds(1)))
+        .bind(&task_name)
+        .execute(&state.pool)
+        .await
+        .expect("force archive task due again");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("rerun archive activity backfill");
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("reload archive backfill progress");
+    assert_eq!(progress.last_scanned, 0);
+    assert_eq!(progress.last_updated, 0);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_live_backfill_marks_unmatched_rows_complete() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task_name = startup_backfill_task_progress_key(
+        state.as_ref(),
+        StartupBackfillTask::UpstreamActivityLive,
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(903_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("No live invocation")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityLive)
+        .await
+        .expect("run live activity backfill");
+
+    let row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_live_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(903_i64)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load live backfill row");
+    assert!(row.0.is_none());
+    assert_eq!(row.1, 1);
+
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after = ?1 WHERE task_name = ?2")
+        .bind(format_utc_iso(Utc::now() - ChronoDuration::seconds(1)))
+        .bind(&task_name)
+        .execute(&state.pool)
+        .await
+        .expect("force live task due again");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityLive)
+        .await
+        .expect("rerun live activity backfill");
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load live backfill progress");
+    assert_eq!(progress.last_updated, 0);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_keeps_pending_when_archive_missing() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task_name = startup_backfill_task_progress_key(
+        state.as_ref(),
+        StartupBackfillTask::UpstreamActivityArchives,
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(904_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Missing archive account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind("2025-01")
+    .bind("/tmp/definitely-missing-upstream-activity.sqlite.gz")
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&state.pool)
+    .await
+    .expect("insert missing archive manifest");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("run archive activity backfill with missing file");
+
+    let completed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(904_i64)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load archive completion flag");
+    assert_eq!(completed, 0);
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load archive backfill progress");
+    assert_eq!(progress.last_updated, 0);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_when_new_archive_arrives()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let pool = state.pool.clone();
+    let temp_dir = make_temp_test_dir("upstream-archive-activity-refresh");
+    let account_id = 905_i64;
+    let created_at = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Archive refresh account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert upstream account");
+
+    let first_activity_at = format_utc_iso(Utc::now() - ChronoDuration::days(14));
+    {
+        let month_key = "2025-01";
+        let suffix = "first";
+        let occurred_at = &first_activity_at;
+        let archive_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite.gz"));
+        let archive_db_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite"));
+        let archive_url = format!("sqlite://{}", archive_db_path.to_string_lossy());
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                build_sqlite_connect_options(
+                    &archive_url,
+                    Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+                )
+                .expect("build archive sqlite options"),
+            )
+            .await
+            .expect("open archive sqlite");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoke_id TEXT NOT NULL,
+                requester TEXT,
+                occurred_at TEXT NOT NULL,
+                request_method TEXT,
+                payload TEXT
+            )
+            "#,
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create archive codex_invocations");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, requester, occurred_at, request_method, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(format!("archive-{suffix}"))
+        .bind("archived-upstream-activity")
+        .bind(occurred_at)
+        .bind("{}")
+        .bind(json!({ "upstreamAccountId": account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert archived invocation");
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+            .expect("compress archived invocation batch");
+
+        let batch = ArchiveBatchOutcome {
+            dataset: "codex_invocations",
+            month_key: month_key.to_string(),
+            file_path: archive_path.to_string_lossy().to_string(),
+            sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
+            row_count: 1,
+            upstream_last_activity: vec![(account_id, occurred_at.to_string())],
+        };
+        let mut tx = pool.begin().await.expect("begin archive batch tx");
+        upsert_archive_batch_manifest(tx.as_mut(), &batch)
+            .await
+            .expect("upsert archive batch manifest");
+        tx.commit().await.expect("commit archive batch manifest");
+    }
+
+    backfill_upstream_account_last_activity_from_archives(&pool, None, None)
+        .await
+        .expect("backfill first archive activity");
+
+    let first_row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load first archive backfill row");
+    assert_eq!(first_row.0.as_deref(), Some(first_activity_at.as_str()));
+    assert_eq!(first_row.1, 0);
+
+    let second_activity_at = format_utc_iso(Utc::now() - ChronoDuration::days(1));
+    {
+        let month_key = "2025-02";
+        let suffix = "second";
+        let occurred_at = &second_activity_at;
+        let archive_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite.gz"));
+        let archive_db_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite"));
+        let archive_url = format!("sqlite://{}", archive_db_path.to_string_lossy());
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                build_sqlite_connect_options(
+                    &archive_url,
+                    Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+                )
+                .expect("build archive sqlite options"),
+            )
+            .await
+            .expect("open archive sqlite");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoke_id TEXT NOT NULL,
+                requester TEXT,
+                occurred_at TEXT NOT NULL,
+                request_method TEXT,
+                payload TEXT
+            )
+            "#,
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create archive codex_invocations");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, requester, occurred_at, request_method, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(format!("archive-{suffix}"))
+        .bind("archived-upstream-activity")
+        .bind(occurred_at)
+        .bind("{}")
+        .bind(json!({ "upstreamAccountId": account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert archived invocation");
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+            .expect("compress archived invocation batch");
+
+        let batch = ArchiveBatchOutcome {
+            dataset: "codex_invocations",
+            month_key: month_key.to_string(),
+            file_path: archive_path.to_string_lossy().to_string(),
+            sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
+            row_count: 1,
+            upstream_last_activity: vec![(account_id, occurred_at.to_string())],
+        };
+        let mut tx = pool.begin().await.expect("begin archive batch tx");
+        upsert_archive_batch_manifest(tx.as_mut(), &batch)
+            .await
+            .expect("upsert archive batch manifest");
+        tx.commit().await.expect("commit archive batch manifest");
+    }
+
+    let refreshed_row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load refreshed archive row after new archive");
+    assert_eq!(
+        refreshed_row.0.as_deref(),
+        Some(second_activity_at.as_str())
+    );
+    assert_eq!(refreshed_row.1, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

@@ -11,6 +11,9 @@ import { SystemNotificationProvider } from './ui/system-notifications'
 
 const baseOccurredAt = '2026-02-25T10:15:30Z'
 const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
+const POOL_PROXY_NODE_NAME = 'Ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
+const FORWARD_PROXY_NODE_NAME = 'Ivan-iij-vless-vision-01KHTAANPS3QM1DB4H8FEWMYEW'
+const DIRECT_PROXY_NODE_NAME = 'Direct'
 
 const records: ApiInvocation[] = [
   {
@@ -111,6 +114,127 @@ const records: ApiInvocation[] = [
     tRespParseMs: 5.6,
     tPersistMs: 1.8,
     tTotalMs: 721.3,
+  },
+]
+
+const accountProxySemanticsRecords: ApiInvocation[] = [
+  {
+    id: 3001,
+    invokeId: 'inv_semantics_pool_named_with_proxy',
+    occurredAt: '2026-02-25T12:00:00Z',
+    createdAt: '2026-02-25T12:00:00Z',
+    source: 'proxy',
+    routeMode: 'pool',
+    upstreamAccountId: 2,
+    upstreamAccountName: 'NSNGC',
+    proxyDisplayName: POOL_PROXY_NODE_NAME,
+    responseContentEncoding: 'gzip',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'success',
+    inputTokens: 4096,
+    outputTokens: 96,
+    cacheInputTokens: 3584,
+    totalTokens: 4192,
+    cost: 0.0128,
+    tUpstreamTtfbMs: 118.4,
+    tTotalMs: 842.7,
+  },
+  {
+    id: 3002,
+    invokeId: 'inv_semantics_pool_named_without_proxy',
+    occurredAt: '2026-02-25T12:02:00Z',
+    createdAt: '2026-02-25T12:02:00Z',
+    source: 'proxy',
+    routeMode: 'pool',
+    upstreamAccountId: 2,
+    upstreamAccountName: 'NSNGC',
+    responseContentEncoding: 'gzip',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'success',
+    inputTokens: 3980,
+    outputTokens: 88,
+    cacheInputTokens: 3328,
+    totalTokens: 4068,
+    cost: 0.0119,
+    tUpstreamTtfbMs: 120.1,
+    tTotalMs: 901.3,
+  },
+  {
+    id: 3003,
+    invokeId: 'inv_semantics_pool_id_only_without_proxy',
+    occurredAt: '2026-02-25T12:04:00Z',
+    createdAt: '2026-02-25T12:04:00Z',
+    source: 'proxy',
+    routeMode: 'pool',
+    upstreamAccountId: 9,
+    responseContentEncoding: 'identity',
+    endpoint: '/v1/responses',
+    model: 'gpt-5-mini',
+    status: 'success',
+    inputTokens: 1880,
+    outputTokens: 64,
+    cacheInputTokens: 1440,
+    totalTokens: 1944,
+    cost: 0.0041,
+    tUpstreamTtfbMs: 86.2,
+    tTotalMs: 510.8,
+  },
+  {
+    id: 3004,
+    invokeId: 'inv_semantics_forward_proxy_with_node',
+    occurredAt: '2026-02-25T12:06:00Z',
+    createdAt: '2026-02-25T12:06:00Z',
+    source: 'proxy',
+    routeMode: 'forward_proxy',
+    proxyDisplayName: FORWARD_PROXY_NODE_NAME,
+    responseContentEncoding: 'br',
+    endpoint: '/v1/chat/completions',
+    model: 'gpt-5',
+    status: 'success',
+    inputTokens: 1280,
+    outputTokens: 32,
+    totalTokens: 1312,
+    cost: 0.0036,
+    tUpstreamTtfbMs: 144.9,
+    tTotalMs: 980.2,
+  },
+  {
+    id: 3005,
+    invokeId: 'inv_semantics_forward_proxy_without_node',
+    occurredAt: '2026-02-25T12:08:00Z',
+    createdAt: '2026-02-25T12:08:00Z',
+    source: 'proxy',
+    routeMode: 'forward_proxy',
+    responseContentEncoding: 'identity',
+    endpoint: '/v1/chat/completions',
+    model: 'gpt-5',
+    status: 'failed',
+    inputTokens: 960,
+    outputTokens: 0,
+    totalTokens: 960,
+    errorMessage: 'selected forward proxy missing display name',
+    failureKind: 'upstream_timeout',
+    tUpstreamTtfbMs: null,
+    tTotalMs: 30000.0,
+  },
+  {
+    id: 3006,
+    invokeId: 'inv_semantics_legacy_missing_route_mode',
+    occurredAt: '2026-02-25T12:10:00Z',
+    createdAt: '2026-02-25T12:10:00Z',
+    source: 'proxy',
+    proxyDisplayName: DIRECT_PROXY_NODE_NAME,
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'success',
+    inputTokens: 2100,
+    outputTokens: 44,
+    totalTokens: 2144,
+    cost: 0.0052,
+    tUpstreamTtfbMs: 72.4,
+    tTotalMs: 440.0,
   },
 ]
 
@@ -374,6 +498,116 @@ const reasoningEffortRecords: ApiInvocation[] = [
 ]
 
 const accountDetails = new Map<number, UpstreamAccountDetail>([
+  [
+    2,
+    {
+      id: 2,
+      kind: 'oauth_codex',
+      provider: 'openai',
+      displayName: 'NSNGC',
+      groupName: 'nsngc',
+      isMother: false,
+      status: 'active',
+      enabled: true,
+      email: 'nsngc@example.com',
+      chatgptAccountId: 'org_nsngc',
+      chatgptUserId: 'user_nsngc',
+      planType: 'team',
+      maskedApiKey: null,
+      lastSyncedAt: '2026-03-16T09:12:00Z',
+      lastSuccessfulSyncAt: '2026-03-16T09:11:00Z',
+      lastError: null,
+      lastErrorAt: null,
+      tokenExpiresAt: '2026-03-16T12:15:00Z',
+      lastRefreshedAt: '2026-03-16T09:11:30Z',
+      primaryWindow: {
+        usedPercent: 18,
+        usedText: '18 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-16T10:00:00Z',
+        windowDurationMins: 300,
+      },
+      secondaryWindow: {
+        usedPercent: 31,
+        usedText: '31 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-17T00:00:00Z',
+        windowDurationMins: 10080,
+      },
+      credits: null,
+      localLimits: null,
+      duplicateInfo: null,
+      tags: [],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+      note: null,
+      upstreamBaseUrl: 'https://claude-relay-service.nsngc.org',
+      history: [],
+    },
+  ],
+  [
+    9,
+    {
+      id: 9,
+      kind: 'oauth_codex',
+      provider: 'openai',
+      displayName: 'Fallback Account 9',
+      groupName: 'fallback',
+      isMother: false,
+      status: 'active',
+      enabled: true,
+      email: 'fallback9@example.com',
+      chatgptAccountId: 'org_fallback_9',
+      chatgptUserId: 'user_fallback_9',
+      planType: 'pro',
+      maskedApiKey: null,
+      lastSyncedAt: '2026-03-16T07:12:00Z',
+      lastSuccessfulSyncAt: '2026-03-16T07:11:00Z',
+      lastError: null,
+      lastErrorAt: null,
+      tokenExpiresAt: '2026-03-16T11:45:00Z',
+      lastRefreshedAt: '2026-03-16T07:11:30Z',
+      primaryWindow: {
+        usedPercent: 9,
+        usedText: '9 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-16T10:00:00Z',
+        windowDurationMins: 300,
+      },
+      secondaryWindow: {
+        usedPercent: 14,
+        usedText: '14 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-17T00:00:00Z',
+        windowDurationMins: 10080,
+      },
+      credits: null,
+      localLimits: null,
+      duplicateInfo: null,
+      tags: [],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+      note: null,
+      upstreamBaseUrl: null,
+      history: [],
+    },
+  ],
   [
     21,
     {
@@ -647,7 +881,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Shows recent invocation records with status, account attribution, proxy metadata, latency/compression summaries, and expandable request details. The default story includes both pool-routed and reverse-proxy records so you can verify the new `账号 / 代理` split, the dedicated `时延` column, and the current-page account drawer trigger. The output summary still shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, and the expanded detail section for request metadata, timing stages, account attribution, and HTTP compression.',
+          'Shows recent invocation records with status, account attribution, proxy metadata, latency/compression summaries, and expandable request details. The default story includes both pool-routed and reverse-proxy records so you can verify the new `账号 / 代理` split, the dedicated `时延` column, and the current-page account drawer trigger. The output summary still shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nThe `账号 / 代理` column follows a strict semantic split: the first line identifies who sent the request (`号池账号名` / `账号 #<id>` / `反向代理`), while the second line identifies the true forward-proxy node and may only show a real proxy display name or `—`. Upstream hosts such as `claude-relay-service.nsngc.org`, `chatgpt.com`, or `api.openai.com` are never valid proxy-line values. Use the `Account Proxy Semantics` story to review the supported combinations side by side.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, and the expanded detail section for request metadata, timing stages, account attribution, and HTTP compression.',
       },
     },
   },
@@ -723,6 +957,32 @@ export const Default: Story = {
           'Reference state with pool-routed and reverse-proxy invocations. Verify the `账号 / 代理` split, the dedicated latency/compression column, and the reasoning-token breakdown in the output summary.',
       },
     },
+  },
+}
+
+export const AccountProxySemantics: Story = {
+  args: {
+    records: accountProxySemanticsRecords,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Curated semantics matrix for the `账号 / 代理` column. It demonstrates the six supported combinations: `pool + 账号名 + 真实代理节点`, `pool + 账号名 + 无代理节点`, `pool + 仅账号 ID`, `forward_proxy + 真实代理节点`, `forward_proxy + 无代理节点`, and `历史记录缺 routeMode 的降级展示`. In every case, the first line is the routing identity and the second line is only the real proxy node or `—`; upstream hosts must never appear here.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getAllByRole('button', { name: 'NSNGC' })).toHaveLength(2)
+    await expect(canvas.getByRole('button', { name: '账号 #9' })).toBeInTheDocument()
+    await expect(canvas.queryByRole('button', { name: '反向代理' })).not.toBeInTheDocument()
+    await expect(canvas.getByText(POOL_PROXY_NODE_NAME)).toBeInTheDocument()
+    await expect(canvas.getByText(FORWARD_PROXY_NODE_NAME)).toBeInTheDocument()
+    await expect(canvas.getByText(DIRECT_PROXY_NODE_NAME)).toBeInTheDocument()
+    await expect(canvas.queryByText('claude-relay-service.nsngc.org')).not.toBeInTheDocument()
   },
 }
 

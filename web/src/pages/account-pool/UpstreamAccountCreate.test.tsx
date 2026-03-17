@@ -145,6 +145,12 @@ async function flushAsync() {
   });
 }
 
+async function flushTimers() {
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
+}
+
 function setInputValue(selector: string, value: string) {
   const input = host?.querySelector(selector);
   if (
@@ -1479,6 +1485,8 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
       },
     });
 
+    await flushAsync();
+    await flushTimers();
     await flushAsync();
 
     expect(host?.textContent).toContain(
