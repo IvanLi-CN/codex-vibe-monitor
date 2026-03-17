@@ -93,6 +93,7 @@ const DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
 const BACKFILL_BATCH_SIZE: i64 = 200;
+const BACKFILL_ACCOUNT_BIND_BATCH_SIZE: usize = 400;
 const STARTUP_BACKFILL_SCAN_LIMIT: u64 = 2_000;
 const STARTUP_BACKFILL_RUN_BUDGET_SECS: u64 = 3;
 const STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS: u64 = 15;
@@ -107,6 +108,9 @@ const STARTUP_BACKFILL_STATUS_IDLE: &str = "idle";
 const STARTUP_BACKFILL_STATUS_RUNNING: &str = "running";
 const STARTUP_BACKFILL_STATUS_OK: &str = "ok";
 const STARTUP_BACKFILL_STATUS_FAILED: &str = "failed";
+const STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE: &str = "upstream_activity_live_backfill_v1";
+const STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES: &str =
+    "upstream_activity_archive_backfill_v1";
 const STARTUP_BACKFILL_TASK_PROXY_USAGE: &str = "proxy_usage_tokens_v1";
 const STARTUP_BACKFILL_TASK_PROXY_COST: &str = "proxy_cost_v1";
 const STARTUP_BACKFILL_TASK_PROMPT_CACHE_KEY: &str = "proxy_prompt_cache_key_v1";
@@ -1181,6 +1185,8 @@ enum StartupBackfillTask {
     InvocationServiceTier,
     ReasoningEffort,
     FailureClassification,
+    UpstreamActivityLive,
+    UpstreamActivityArchives,
 }
 
 impl StartupBackfillTask {
@@ -1193,6 +1199,8 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier,
             Self::ReasoningEffort,
             Self::FailureClassification,
+            Self::UpstreamActivityLive,
+            Self::UpstreamActivityArchives,
         ]
     }
 
@@ -1205,6 +1213,8 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier => STARTUP_BACKFILL_TASK_INVOCATION_SERVICE_TIER,
             Self::ReasoningEffort => STARTUP_BACKFILL_TASK_REASONING_EFFORT,
             Self::FailureClassification => STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION,
+            Self::UpstreamActivityLive => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE,
+            Self::UpstreamActivityArchives => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
         }
     }
 
@@ -1217,6 +1227,8 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier => "invocation service tier",
             Self::ReasoningEffort => "proxy reasoning effort",
             Self::FailureClassification => "invocation failure classification",
+            Self::UpstreamActivityLive => "upstream activity live rows",
+            Self::UpstreamActivityArchives => "upstream activity archives",
         }
     }
 }
@@ -1801,6 +1813,42 @@ async fn run_startup_backfill_task(
                 "failure classification recalculated".to_string(),
             ))
         }
+        StartupBackfillTask::UpstreamActivityLive => {
+            let updated_accounts =
+                backfill_upstream_account_last_activity_from_live_invocations(&state.pool).await?;
+            let pending_accounts =
+                count_upstream_accounts_missing_live_last_activity(&state.pool).await?;
+            Ok((
+                StartupBackfillRunState {
+                    next_cursor_id: cursor_id,
+                    scanned: 0,
+                    updated: updated_accounts,
+                    hit_scan_limit: false,
+                    samples: Vec::new(),
+                },
+                format!("pending_accounts={pending_accounts}"),
+            ))
+        }
+        StartupBackfillTask::UpstreamActivityArchives => {
+            let summary = backfill_upstream_account_last_activity_from_archives(
+                &state.pool,
+                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                max_elapsed,
+            )
+            .await?;
+            let pending_accounts =
+                count_upstream_accounts_missing_last_activity(&state.pool).await?;
+            Ok((
+                StartupBackfillRunState {
+                    next_cursor_id: cursor_id,
+                    scanned: summary.scanned_batches,
+                    updated: summary.updated_accounts,
+                    hit_scan_limit: pending_accounts > 0 && summary.hit_budget,
+                    samples: Vec::new(),
+                },
+                format!("pending_accounts={pending_accounts}"),
+            ))
+        }
     }
 }
 
@@ -1967,6 +2015,7 @@ struct ArchiveBatchOutcome {
     file_path: String,
     sha256: String,
     row_count: i64,
+    upstream_last_activity: Vec<(i64, String)>,
 }
 
 #[derive(Debug, Default)]
@@ -2004,6 +2053,34 @@ struct InvocationRawCompressionCandidate {
     occurred_at: String,
     request_raw_path: Option<String>,
     response_raw_path: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct ArchiveBatchFileRow {
+    _id: i64,
+    file_path: String,
+}
+
+#[derive(Debug, FromRow)]
+struct ArchivedAccountLastActivityRow {
+    account_id: i64,
+    last_activity_at: String,
+}
+
+#[derive(Debug, Default)]
+struct ArchiveBackfillSummary {
+    scanned_batches: u64,
+    updated_accounts: u64,
+    hit_budget: bool,
+}
+
+#[derive(Debug)]
+struct TempSqliteCleanup(PathBuf);
+
+impl Drop for TempSqliteCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -3230,6 +3307,259 @@ async fn compact_old_quota_snapshots(
     Ok((rows_archived, archive_batches))
 }
 
+async fn backfill_upstream_account_last_activity_from_archives(
+    pool: &Pool<Sqlite>,
+    scan_limit: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> Result<ArchiveBackfillSummary> {
+    let started_at = Instant::now();
+    let pending_account_ids = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT id
+        FROM pool_upstream_accounts
+        WHERE last_activity_at IS NULL
+          AND last_activity_archive_backfill_completed = 0
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    if pending_account_ids.is_empty() {
+        return Ok(ArchiveBackfillSummary::default());
+    }
+
+    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+        r#"
+        SELECT id AS _id, file_path
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations' AND status = ?1
+        ORDER BY month_key DESC, created_at DESC, id DESC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
+    .await?;
+    if archive_files.is_empty() {
+        mark_archive_backfill_completed_for_accounts(pool, &pending_account_ids).await?;
+        return Ok(ArchiveBackfillSummary::default());
+    }
+
+    let pending = pending_account_ids.into_iter().collect::<HashSet<_>>();
+    let mut recovered = HashMap::<i64, String>::new();
+    let mut scanned_batches = 0_u64;
+    let mut exhausted_archives = true;
+    let mut hit_budget = false;
+
+    for archive_file in archive_files {
+        if startup_backfill_budget_reached(started_at, scanned_batches, scan_limit, max_elapsed) {
+            exhausted_archives = false;
+            hit_budget = true;
+            break;
+        }
+        if recovered.len() == pending.len() {
+            exhausted_archives = false;
+            break;
+        }
+
+        let archive_path = PathBuf::from(archive_file.file_path);
+        if !archive_path.exists() {
+            exhausted_archives = false;
+            continue;
+        }
+        scanned_batches += 1;
+
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+
+        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        let database_url = format!("sqlite://{}", temp_path.to_string_lossy());
+        let connect_opts = build_sqlite_connect_options(
+            &database_url,
+            Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+        )?;
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect_opts)
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+
+        let rows = {
+            const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+            let mut rows = Vec::new();
+            let remaining_account_ids = pending
+                .iter()
+                .copied()
+                .filter(|account_id| !recovered.contains_key(account_id))
+                .collect::<Vec<_>>();
+            for account_ids in remaining_account_ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT ",
+                );
+                query
+                    .push(ACCOUNT_EXPR)
+                    .push(" AS account_id, occurred_at FROM codex_invocations WHERE ")
+                    .push(ACCOUNT_EXPR)
+                    .push(" IN (");
+                {
+                    let mut separated = query.separated(", ");
+                    for account_id in account_ids {
+                        separated.push_bind(account_id);
+                    }
+                }
+                query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
+                rows.extend(
+                    query
+                        .build_query_as::<ArchivedAccountLastActivityRow>()
+                        .fetch_all(&archive_pool)
+                        .await?,
+                );
+            }
+            rows
+        };
+
+        archive_pool.close().await;
+        drop(temp_cleanup);
+
+        for row in rows {
+            recovered
+                .entry(row.account_id)
+                .and_modify(|current| {
+                    if *current < row.last_activity_at {
+                        *current = row.last_activity_at.clone();
+                    }
+                })
+                .or_insert(row.last_activity_at);
+        }
+    }
+
+    if recovered.is_empty() {
+        if exhausted_archives {
+            let pending_account_ids = pending.iter().copied().collect::<Vec<_>>();
+            mark_archive_backfill_completed_for_accounts(pool, &pending_account_ids).await?;
+        }
+        return Ok(ArchiveBackfillSummary {
+            scanned_batches,
+            updated_accounts: 0,
+            hit_budget,
+        });
+    }
+
+    let unresolved: Vec<i64> = pending
+        .iter()
+        .copied()
+        .filter(|account_id| !recovered.contains_key(account_id))
+        .collect();
+    let updated_accounts = recovered.len() as u64;
+    let mut tx = pool.begin().await?;
+    for (account_id, occurred_at) in recovered {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_activity_at = CASE
+                    WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
+                    ELSE last_activity_at
+                END,
+                last_activity_archive_backfill_completed = 1
+            WHERE id = ?2
+            "#,
+        )
+        .bind(occurred_at)
+        .bind(account_id)
+        .execute(tx.as_mut())
+        .await?;
+    }
+    if exhausted_archives && !unresolved.is_empty() {
+        mark_archive_backfill_completed_for_accounts_tx(tx.as_mut(), &unresolved).await?;
+    }
+    tx.commit().await?;
+
+    Ok(ArchiveBackfillSummary {
+        scanned_batches,
+        updated_accounts,
+        hit_budget,
+    })
+}
+
+async fn mark_archive_backfill_completed_for_accounts(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<()> {
+    if account_ids.is_empty() {
+        return Ok(());
+    }
+    for account_chunk in account_ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        let mut update = QueryBuilder::<Sqlite>::new(
+            "UPDATE pool_upstream_accounts SET last_activity_archive_backfill_completed = 1 WHERE id IN (",
+        );
+        {
+            let mut separated = update.separated(", ");
+            for account_id in account_chunk {
+                separated.push_bind(account_id);
+            }
+        }
+        update.push(")");
+        update.build().execute(pool).await?;
+    }
+    Ok(())
+}
+
+async fn mark_archive_backfill_completed_for_accounts_tx(
+    tx: &mut SqliteConnection,
+    account_ids: &[i64],
+) -> Result<()> {
+    if account_ids.is_empty() {
+        return Ok(());
+    }
+    for account_chunk in account_ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        let mut update = QueryBuilder::<Sqlite>::new(
+            "UPDATE pool_upstream_accounts SET last_activity_archive_backfill_completed = 1 WHERE id IN (",
+        );
+        {
+            let mut separated = update.separated(", ");
+            for account_id in account_chunk {
+                separated.push_bind(account_id);
+            }
+        }
+        update.push(")");
+        update.build().execute(&mut *tx).await?;
+    }
+    Ok(())
+}
+
+async fn count_upstream_accounts_missing_last_activity(pool: &Pool<Sqlite>) -> Result<u64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+            SELECT COUNT(*)
+            FROM pool_upstream_accounts
+            WHERE last_activity_at IS NULL
+              AND last_activity_archive_backfill_completed = 0
+            "#,
+    )
+    .fetch_one(pool)
+    .await?
+    .max(0) as u64)
+}
+
+async fn count_upstream_accounts_missing_live_last_activity(pool: &Pool<Sqlite>) -> Result<u64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+            SELECT COUNT(*)
+            FROM pool_upstream_accounts
+            WHERE last_activity_at IS NULL
+              AND last_activity_live_backfill_completed = 0
+            "#,
+    )
+    .fetch_one(pool)
+    .await?
+    .max(0) as u64)
+}
+
 async fn ensure_sqlite_file_initialized(path: &Path) -> Result<()> {
     let database_url = format!("sqlite://{}", path.to_string_lossy());
     let connect_opts = build_sqlite_connect_options(
@@ -3292,6 +3622,33 @@ async fn archive_rows_into_month_batch(
             .await
             .with_context(|| format!("failed to ensure archive schema for {}", spec.dataset))?;
 
+        let upstream_last_activity = if spec.dataset == "codex_invocations" {
+            let mut rows = Vec::new();
+            for chunk in ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS account_id, occurred_at FROM main.codex_invocations WHERE id IN (",
+                );
+                {
+                    let mut separated = query.separated(", ");
+                    for id in chunk {
+                        separated.push_bind(id);
+                    }
+                }
+                query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
+                rows.extend(
+                    query
+                        .build_query_as::<ArchivedAccountLastActivityRow>()
+                        .fetch_all(&mut *conn)
+                        .await?,
+                );
+            }
+            rows.into_iter()
+                .map(|row| (row.account_id, row.last_activity_at))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
         let mut insert = QueryBuilder::<Sqlite>::new(format!(
             "INSERT OR IGNORE INTO archive_db.{} ({}) SELECT {} FROM main.{} WHERE id IN (",
             spec.dataset, spec.columns, spec.columns, spec.dataset
@@ -3319,12 +3676,12 @@ async fn archive_rows_into_month_batch(
             .execute(&mut *conn)
             .await
             .context("failed to detach archive database")?;
-        Ok::<i64, anyhow::Error>(row_count)
+        Ok::<(i64, Vec<(i64, String)>), anyhow::Error>((row_count, upstream_last_activity))
     }
     .await;
 
-    let result = match row_count {
-        Ok(row_count) => row_count,
+    let (result, upstream_last_activity) = match row_count {
+        Ok(values) => values,
         Err(err) => {
             let _ = fs::remove_file(&work_path);
             let _ = fs::remove_file(&temp_gzip_path);
@@ -3349,7 +3706,31 @@ async fn archive_rows_into_month_batch(
         file_path: final_path.to_string_lossy().to_string(),
         sha256,
         row_count: result,
+        upstream_last_activity,
     })
+}
+
+async fn upsert_archived_upstream_last_activity(
+    tx: &mut sqlx::SqliteConnection,
+    values: &[(i64, String)],
+) -> Result<()> {
+    for (account_id, occurred_at) in values {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_activity_at = CASE
+                    WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
+                    ELSE last_activity_at
+                END
+            WHERE id = ?2
+            "#,
+        )
+        .bind(occurred_at)
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    Ok(())
 }
 
 async fn upsert_archive_batch_manifest(
@@ -3383,6 +3764,9 @@ async fn upsert_archive_batch_manifest(
     .bind(ARCHIVE_STATUS_COMPLETED)
     .execute(&mut *tx)
     .await?;
+    if batch.dataset == "codex_invocations" && !batch.upstream_last_activity.is_empty() {
+        upsert_archived_upstream_last_activity(tx, &batch.upstream_last_activity).await?;
+    }
     Ok(())
 }
 
@@ -4768,6 +5152,19 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_codex_invocations_requester_ip_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_upstream_account_occurred_at
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END),
+            occurred_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_upstream_account_occurred_at")?;
 
     // The records analytics page compares trimmed lowercase text for exact-match filters.
     // Mirror those expressions in dedicated indexes so high-volume searches avoid full index scans.
@@ -10237,6 +10634,12 @@ fn json_value_to_i64(value: &Value) -> Option<i64> {
     value.as_str().and_then(|v| v.parse::<i64>().ok())
 }
 
+fn upstream_account_id_from_payload(payload: Option<&str>) -> Option<i64> {
+    let payload = payload?;
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    value.get("upstreamAccountId").and_then(json_value_to_i64)
+}
+
 struct ProxyPayloadSummary<'a> {
     target: ProxyCaptureTarget,
     status: StatusCode,
@@ -11123,6 +11526,23 @@ async fn persist_proxy_capture_record(
 
     if insert_result.rows_affected() == 0 {
         return Ok(None);
+    }
+
+    if let Some(upstream_account_id) = upstream_account_id_from_payload(record.payload.as_deref()) {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_activity_at = CASE
+                WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
+                ELSE last_activity_at
+            END
+            WHERE id = ?2
+            "#,
+        )
+        .bind(&record.occurred_at)
+        .bind(upstream_account_id)
+        .execute(pool)
+        .await?;
     }
 
     let inserted = sqlx::query_as::<_, ApiInvocation>(

@@ -12,6 +12,7 @@ interface TooltipProps {
   side?: 'top' | 'right' | 'bottom' | 'left'
   sideOffset?: number
   open?: boolean
+  triggerProps?: React.HTMLAttributes<HTMLSpanElement>
 }
 
 export function Tooltip({
@@ -22,6 +23,7 @@ export function Tooltip({
   side = 'top',
   sideOffset = 10,
   open,
+  triggerProps,
 }: TooltipProps) {
   const longPressTimerRef = React.useRef<number | null>(null)
   const [hoverOpen, setHoverOpen] = React.useState(false)
@@ -59,6 +61,7 @@ export function Tooltip({
         <TooltipPrimitive.Trigger asChild>
           <span
             className={cn('inline-flex', className)}
+            {...triggerProps}
             onBlur={open === undefined ? () => setHoverOpen(false) : undefined}
             onFocus={open === undefined ? () => setHoverOpen(true) : undefined}
             onMouseEnter={open === undefined ? () => setHoverOpen(true) : undefined}

@@ -1105,6 +1105,7 @@ export interface UpstreamAccountSummary {
   maskedApiKey?: string | null;
   lastSyncedAt?: string | null;
   lastSuccessfulSyncAt?: string | null;
+  lastActivityAt?: string | null;
   lastError?: string | null;
   lastErrorAt?: string | null;
   tokenExpiresAt?: string | null;
@@ -1421,6 +1422,8 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
       typeof payload.lastSuccessfulSyncAt === "string"
         ? payload.lastSuccessfulSyncAt
         : null,
+    lastActivityAt:
+      typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : null,
     lastError: typeof payload.lastError === "string" ? payload.lastError : null,
     lastErrorAt:
       typeof payload.lastErrorAt === "string" ? payload.lastErrorAt : null,

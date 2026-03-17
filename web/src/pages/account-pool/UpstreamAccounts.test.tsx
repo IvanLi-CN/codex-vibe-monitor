@@ -14,6 +14,7 @@ import { MemoryRouter, Route, Routes, type InitialEntry } from "react-router-dom
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
 import UpstreamAccountsPage from "./UpstreamAccounts";
+import type { EffectiveRoutingRule } from "../../lib/api";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const hookMocks = vi.hoisted(() => ({
@@ -197,6 +198,17 @@ function pressButton(button: HTMLButtonElement) {
   });
 }
 
+const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
+  guardEnabled: false,
+  lookbackHours: null,
+  maxConversations: null,
+  allowCutOut: true,
+  allowCutIn: true,
+  sourceTagIds: [],
+  sourceTagNames: [],
+  guardRules: [],
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -204,7 +216,7 @@ function deferred<T>() {
     resolve = res;
     reject = rej;
   });
-  return { promise, resolve, reject };
+  return { promise, resolve, reject }
 }
 
 function mockAccountsPage() {
@@ -218,10 +230,35 @@ function mockAccountsPage() {
         groupName: "prod",
         status: "active",
         enabled: true,
+        isMother: true,
+        planType: "team",
+        primaryWindow: {
+          usedPercent: 42,
+          usedText: "42 requests",
+          limitText: "120 requests",
+          resetsAt: "2026-03-16T06:55:00.000Z",
+          windowDurationMins: 300,
+        },
+        secondaryWindow: {
+          usedPercent: 12,
+          usedText: "12 requests",
+          limitText: "500 requests",
+          resetsAt: "2026-03-18T00:00:00.000Z",
+          windowDurationMins: 10080,
+        },
+        credits: null,
+        localLimits: null,
         duplicateInfo: {
           peerAccountIds: [9],
           reasons: ["sharedChatgptAccountId"],
         },
+        tags: [
+          { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
+          { id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule },
+          { id: 3, name: "prod-apac", routingRule: defaultEffectiveRoutingRule },
+          { id: 4, name: "sticky-pool", routingRule: defaultEffectiveRoutingRule },
+        ],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
       },
       {
         id: 9,
@@ -231,6 +268,14 @@ function mockAccountsPage() {
         groupName: "prod",
         status: "active",
         enabled: true,
+        isMother: false,
+        planType: "pro",
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
       },
     ],
     writesEnabled: true,
@@ -243,10 +288,37 @@ function mockAccountsPage() {
       groupName: "prod",
       status: "active",
       enabled: true,
+      isMother: true,
+      planType: "team",
+      lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
+      lastActivityAt: "2026-03-16T02:05:00.000Z",
+      primaryWindow: {
+        usedPercent: 42,
+        usedText: "42 requests",
+        limitText: "120 requests",
+        resetsAt: "2026-03-16T06:55:00.000Z",
+        windowDurationMins: 300,
+      },
+      secondaryWindow: {
+        usedPercent: 12,
+        usedText: "12 requests",
+        limitText: "500 requests",
+        resetsAt: "2026-03-18T00:00:00.000Z",
+        windowDurationMins: 10080,
+      },
+      credits: null,
+      localLimits: null,
       duplicateInfo: {
         peerAccountIds: [9],
         reasons: ["sharedChatgptAccountId"],
       },
+      tags: [
+        { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
+        { id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule },
+        { id: 3, name: "prod-apac", routingRule: defaultEffectiveRoutingRule },
+        { id: 4, name: "sticky-pool", routingRule: defaultEffectiveRoutingRule },
+      ],
+      effectiveRoutingRule: defaultEffectiveRoutingRule,
     },
     detail: {
       id: 5,
@@ -256,6 +328,24 @@ function mockAccountsPage() {
       groupName: "prod",
       status: "active",
       enabled: true,
+      isMother: true,
+      planType: "team",
+      lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
+      lastActivityAt: "2026-03-16T02:05:00.000Z",
+      primaryWindow: {
+        usedPercent: 42,
+        usedText: "42 requests",
+        limitText: "120 requests",
+        resetsAt: "2026-03-16T06:55:00.000Z",
+        windowDurationMins: 300,
+      },
+      secondaryWindow: {
+        usedPercent: 12,
+        usedText: "12 requests",
+        limitText: "500 requests",
+        resetsAt: "2026-03-18T00:00:00.000Z",
+        windowDurationMins: 10080,
+      },
       duplicateInfo: {
         peerAccountIds: [9],
         reasons: ["sharedChatgptAccountId"],
@@ -263,6 +353,15 @@ function mockAccountsPage() {
       email: "dup@example.com",
       chatgptAccountId: "org_1",
       chatgptUserId: "user_1",
+      credits: null,
+      localLimits: null,
+      tags: [
+        { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
+        { id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule },
+        { id: 3, name: "prod-apac", routingRule: defaultEffectiveRoutingRule },
+        { id: 4, name: "sticky-pool", routingRule: defaultEffectiveRoutingRule },
+      ],
+      effectiveRoutingRule: defaultEffectiveRoutingRule,
       history: [],
     },
     isLoading: false,
@@ -287,6 +386,19 @@ function mockAccountsPage() {
 }
 
 describe("UpstreamAccountsPage duplicates", () => {
+  it("renders the compact roster header and folded metadata chips", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    const headerCells = Array.from(document.body.querySelectorAll("thead th")).map((cell) =>
+      cell.textContent?.trim() || "",
+    );
+    expect(headerCells).toEqual(["Account", "Sync / Call", "Windows", ""]);
+    expect(document.body.textContent).toContain("vip");
+    expect(document.body.textContent).toContain("+1");
+    expect(document.body.textContent).toContain("team");
+  });
+
   it("shows duplicate warnings in the roster and detail drawer", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
