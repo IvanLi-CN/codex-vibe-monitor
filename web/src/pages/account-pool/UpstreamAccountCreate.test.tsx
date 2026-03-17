@@ -1324,7 +1324,8 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
   });
 
   it("shows an explicit expired mailbox warning for single oauth", async () => {
-    mockUpstreamAccounts();
+    const expiredAt = new Date(Date.now() - 60_000).toISOString()
+    mockUpstreamAccounts()
     render({
       pathname: "/account-pool/upstream-accounts/new",
       state: {
@@ -1335,7 +1336,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
               supported: true,
               sessionId: "mailbox-expired",
               emailAddress: "expired@example.com",
-              expiresAt: "2026-03-13T09:00:00.000Z",
+              expiresAt: expiredAt,
               source: "generated",
             },
             mailboxInput: "expired@example.com",
@@ -1352,6 +1353,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
   });
 
   it("shows mailbox refresh failures instead of silently looking empty", async () => {
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString()
     mockUpstreamAccounts({
       getOauthMailboxStatuses: vi.fn().mockRejectedValue(new Error("boom")),
     });
@@ -1365,7 +1367,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
               supported: true,
               sessionId: "mailbox-refresh-failure",
               emailAddress: "failed@example.com",
-              expiresAt: "2026-03-20T10:00:00.000Z",
+              expiresAt,
               source: "generated",
             },
             mailboxInput: "failed@example.com",

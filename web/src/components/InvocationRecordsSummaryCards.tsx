@@ -17,6 +17,19 @@ interface SummaryMetric {
   toneClass?: string
 }
 
+function formatSecondsFromMilliseconds(value: number | null | undefined, localeTag: string) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+
+  const seconds = value / 1000
+  const precision = Math.abs(seconds) >= 100 ? 1 : Math.abs(seconds) >= 1 ? 2 : 3
+  const rounded = Number(seconds.toFixed(precision))
+
+  return `${rounded.toLocaleString(localeTag, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: precision,
+  })} s`
+}
+
 function MetricCell({ label, value, toneClass, loading }: SummaryMetric & { loading: boolean }) {
   return (
     <div className="metric-cell">
@@ -51,6 +64,7 @@ export function InvocationRecordsSummaryCards({ focus, summary, isLoading, error
 
   const formatNumber = (value?: number | null) => numberFormatter.format(value ?? 0)
   const formatMs = (value?: number | null) => (value == null ? '—' : `${numberFormatter.format(value)} ms`)
+  const formatSeconds = (value?: number | null) => formatSecondsFromMilliseconds(value, localeTag)
   const formatCost = (value?: number | null) => currencyFormatter.format(value ?? 0)
 
   const metrics: SummaryMetric[] = (() => {
@@ -59,8 +73,8 @@ export function InvocationRecordsSummaryCards({ focus, summary, isLoading, error
         return [
           { label: t('records.summary.network.avgTtfb'), value: formatMs(summary?.network.avgTtfbMs), toneClass: 'text-info' },
           { label: t('records.summary.network.p95Ttfb'), value: formatMs(summary?.network.p95TtfbMs) },
-          { label: t('records.summary.network.avgTotal'), value: formatMs(summary?.network.avgTotalMs), toneClass: 'text-primary' },
-          { label: t('records.summary.network.p95Total'), value: formatMs(summary?.network.p95TotalMs) },
+          { label: t('records.summary.network.avgTotal'), value: formatSeconds(summary?.network.avgTotalMs), toneClass: 'text-primary' },
+          { label: t('records.summary.network.p95Total'), value: formatSeconds(summary?.network.p95TotalMs) },
         ]
       case 'exception':
         return [

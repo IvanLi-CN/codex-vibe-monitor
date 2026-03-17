@@ -1527,7 +1527,9 @@ pub(crate) async fn create_oauth_mailbox_session(
         let now = Utc::now();
         let expires_at = normalize_mailbox_session_expires_at(
             remote_mailbox.expires_at.as_deref(),
-            now + ChronoDuration::seconds(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS as i64),
+            now + ChronoDuration::seconds(
+                DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS as i64,
+            ),
         );
         let now_iso = format_utc_iso(now);
         sqlx::query(
