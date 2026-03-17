@@ -1130,7 +1130,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).toContain("temp-user-2@example.com");
   });
 
-  it("keeps the generated oauth session active while editing a mailbox draft", async () => {
+  it("invalidates a mailbox-bound oauth session when the mailbox draft changes", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -1151,9 +1151,9 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     setInputValue('input[name="oauthMailboxInput"]', "new-target@example.com");
     await flushAsync();
 
-    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
-    expect(host?.textContent).not.toContain(
-      "Generate a fresh OAuth URL for this row before completing login.",
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
+    expect(host?.textContent).toContain(
+      "Generate a fresh OAuth URL before completing login.",
     );
   });
 

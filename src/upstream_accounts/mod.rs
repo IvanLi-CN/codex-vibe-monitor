@@ -1525,17 +1525,10 @@ pub(crate) async fn create_oauth_mailbox_session(
         .map_err(internal_error_tuple)?;
         let session_id = random_hex(16)?;
         let now = Utc::now();
-        let expires_at = remote_mailbox
-            .expires_at
-            .clone()
-            .filter(|value| DateTime::parse_from_rfc3339(value).is_ok())
-            .unwrap_or_else(|| {
-                format_utc_iso(
-                    now + ChronoDuration::seconds(
-                        DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS as i64,
-                    ),
-                )
-            });
+        let expires_at = normalize_mailbox_session_expires_at(
+            remote_mailbox.expires_at.as_deref(),
+            now + ChronoDuration::seconds(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS as i64),
+        );
         let now_iso = format_utc_iso(now);
         sqlx::query(
             r#"
@@ -4667,6 +4660,16 @@ fn validate_mailbox_binding_fields(
 fn mailbox_addresses_match(left: Option<&str>, right: Option<&str>) -> bool {
     normalize_mailbox_address(left.unwrap_or_default())
         == normalize_mailbox_address(right.unwrap_or_default())
+}
+
+fn normalize_mailbox_session_expires_at(value: Option<&str>, fallback: DateTime<Utc>) -> String {
+    value
+        .and_then(|raw| {
+            DateTime::parse_from_rfc3339(raw)
+                .ok()
+                .map(|parsed| format_utc_iso(parsed.with_timezone(&Utc)))
+        })
+        .unwrap_or_else(|| format_utc_iso(fallback))
 }
 
 async fn validate_mailbox_binding(
@@ -8578,6 +8581,26 @@ mod tests {
             Some("one@example.com"),
             Some("two@example.com")
         ));
+    }
+
+    #[test]
+    fn normalize_mailbox_session_expires_at_converts_rfc3339_offsets_to_utc_iso() {
+        assert_eq!(
+            normalize_mailbox_session_expires_at(
+                Some("2026-03-18T10:00:00+08:00"),
+                Utc.with_ymd_and_hms(2026, 3, 17, 0, 0, 0).unwrap(),
+            ),
+            "2026-03-18T02:00:00Z"
+        );
+    }
+
+    #[test]
+    fn normalize_mailbox_session_expires_at_falls_back_when_source_is_invalid() {
+        let fallback = Utc.with_ymd_and_hms(2026, 3, 17, 8, 9, 10).unwrap();
+        assert_eq!(
+            normalize_mailbox_session_expires_at(Some("not-a-timestamp"), fallback),
+            "2026-03-17T08:09:10Z"
+        );
     }
 
     #[test]

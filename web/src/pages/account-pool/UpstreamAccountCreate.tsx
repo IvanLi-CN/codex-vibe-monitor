@@ -1211,6 +1211,23 @@ export default function UpstreamAccountCreatePage() {
       t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
     )
   }, [session, t])
+  const invalidateOauthSessionForMailboxChange = useCallback(
+    (nextInput: string) => {
+      if (!session || !activeOauthMailboxSession) return
+      if (mailboxInputMatchesSession(nextInput, activeOauthMailboxSession)) return
+      invalidatePendingSingleOauthSession(
+        session,
+        setSession,
+        setSessionHint,
+        setOauthCallbackUrl,
+        setManualCopyOpen,
+        setActionError,
+        setOauthDuplicateWarning,
+        t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
+      )
+    },
+    [activeOauthMailboxSession, session, t],
+  )
 
   const notifyMotherChange = (updated: UpstreamAccountSummary) => {
     const nextItems = applyMotherUpdateToItems(items, updated)
@@ -1262,6 +1279,7 @@ export default function UpstreamAccountCreatePage() {
   const handleAttachOauthMailbox = async () => {
     const normalizedAddress = oauthMailboxInput.trim()
     if (!normalizedAddress) {
+      invalidateOauthSessionForMailboxChange('')
       setOauthMailboxSession(null)
       setOauthMailboxStatus(null)
       setOauthMailboxError(null)
@@ -1292,6 +1310,17 @@ export default function UpstreamAccountCreatePage() {
           )
         }
         setOauthDisplayName((current) => (current.trim() ? current : response.emailAddress))
+      } else if (previousSessionId) {
+        invalidatePendingSingleOauthSession(
+          session,
+          setSession,
+          setSessionHint,
+          setOauthCallbackUrl,
+          setManualCopyOpen,
+          setActionError,
+          setOauthDuplicateWarning,
+          t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
+        )
       }
       if (previousSessionId && (!isSupportedMailboxSession(response) || previousSessionId !== response.sessionId)) {
         void removeOauthMailboxSession(previousSessionId).catch(() => undefined)
@@ -2030,6 +2059,7 @@ export default function UpstreamAccountCreatePage() {
                           onChange={(event) => {
                             const nextValue = event.target.value
                             setOauthMailboxInput(nextValue)
+                            invalidateOauthSessionForMailboxChange(nextValue)
                             const currentAddress = oauthMailboxSession?.emailAddress ?? ''
                             if (
                               oauthMailboxSession &&
