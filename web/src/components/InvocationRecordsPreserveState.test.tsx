@@ -99,6 +99,30 @@ describe('records stale-data rendering', () => {
     expect(text).toContain('records.summary.token.requests')
   })
 
+  it('renders network summary totals in seconds while keeping ttfb in milliseconds', () => {
+    render(<InvocationRecordsSummaryCards focus="network" summary={createSummary()} isLoading={false} />)
+
+    const text = host?.textContent ?? ''
+    expect(text).toContain('10 ms')
+    expect(text).toContain('12 ms')
+    expect(text).toContain('0.02 s')
+    expect(text).toContain('0.025 s')
+  })
+
+  it('renders network record totals in seconds while keeping ttfb in milliseconds', () => {
+    render(
+      <InvocationRecordsTable
+        focus="network"
+        records={[createRecord({ endpoint: '/v1/responses', requesterIp: '127.0.0.1', tUpstreamTtfbMs: 118.2, tTotalMs: 910.4 })]}
+        isLoading={false}
+      />,
+    )
+
+    const text = host?.textContent ?? ''
+    expect(text).toContain('118 ms')
+    expect(text).toContain('0.91 s')
+  })
+
   it('keeps table rows visible when a refresh error arrives', () => {
     render(<InvocationRecordsTable focus="token" records={[createRecord()]} isLoading error="boom" />)
 
