@@ -4616,7 +4616,7 @@ async fn test_upstream_capture_target_echo(
     State(captured): State<Arc<Mutex<Vec<Value>>>>,
     uri: Uri,
     body: Bytes,
-) -> impl IntoResponse {
+) -> Response {
     if uri
         .query()
         .is_some_and(|query| query.contains("mode=delay"))
@@ -4626,29 +4626,37 @@ async fn test_upstream_capture_target_echo(
 
     let payload: Value = serde_json::from_slice(&body).expect("decode upstream captured body");
     captured.lock().await.push(payload.clone());
+    let response_payload = json!({
+        "id": "resp_test",
+        "object": "response",
+        "model": "gpt-5.3-codex",
+        "service_tier": "priority",
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 3,
+            "total_tokens": 15
+        },
+        "received": payload,
+    });
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "id": "resp_test",
-            "object": "response",
-            "model": "gpt-5.3-codex",
-            "service_tier": "priority",
-            "usage": {
-                "input_tokens": 12,
-                "output_tokens": 3,
-                "total_tokens": 15
-            },
-            "received": payload,
-        })),
-    )
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=slow-first-chunk"))
+    {
+        return chunked_json_response_with_delayed_first_chunk(
+            response_payload,
+            Duration::from_millis(250),
+        );
+    }
+
+    (StatusCode::OK, Json(response_payload)).into_response()
 }
 
 async fn test_upstream_capture_target_compact_echo(
     State(captured): State<Arc<Mutex<Vec<Value>>>>,
     uri: Uri,
     body: Bytes,
-) -> impl IntoResponse {
+) -> Response {
     if uri
         .query()
         .is_some_and(|query| query.contains("mode=delay"))
@@ -4658,33 +4666,75 @@ async fn test_upstream_capture_target_compact_echo(
 
     let payload: Value = serde_json::from_slice(&body).expect("decode upstream captured body");
     captured.lock().await.push(payload.clone());
+    let response_payload = json!({
+        "id": "resp_compact_test",
+        "object": "response.compaction",
+        "output": [
+            {
+                "id": "cmp_001",
+                "type": "compaction",
+                "encrypted_content": "encrypted-summary"
+            }
+        ],
+        "usage": {
+            "input_tokens": 139,
+            "input_tokens_details": {
+                "cached_tokens": 11
+            },
+            "output_tokens": 438,
+            "output_tokens_details": {
+                "reasoning_tokens": 64
+            },
+            "total_tokens": 577
+        },
+        "received": payload,
+    });
+
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=slow-first-chunk"))
+    {
+        return chunked_json_response_with_delayed_first_chunk(
+            response_payload,
+            Duration::from_millis(250),
+        );
+    }
+
+    (StatusCode::OK, Json(response_payload)).into_response()
+}
+
+fn chunked_json_response_with_delayed_first_chunk(payload: Value, delay: Duration) -> Response {
+    let response_bytes = serde_json::to_vec(&payload).expect("serialize streamed json response");
+    let split_at = response_bytes
+        .len()
+        .saturating_div(2)
+        .clamp(1, response_bytes.len() - 1);
+    let first_chunk = Bytes::copy_from_slice(&response_bytes[..split_at]);
+    let second_chunk = Bytes::copy_from_slice(&response_bytes[split_at..]);
+    let chunked = stream::unfold(0u8, move |state| {
+        let first_chunk = first_chunk.clone();
+        let second_chunk = second_chunk.clone();
+        async move {
+            match state {
+                0 => {
+                    tokio::time::sleep(delay).await;
+                    Some((Ok::<Bytes, Infallible>(first_chunk), 1))
+                }
+                1 => Some((Ok::<Bytes, Infallible>(second_chunk), 2)),
+                _ => None,
+            }
+        }
+    });
 
     (
         StatusCode::OK,
-        Json(json!({
-            "id": "resp_compact_test",
-            "object": "response.compaction",
-            "output": [
-                {
-                    "id": "cmp_001",
-                    "type": "compaction",
-                    "encrypted_content": "encrypted-summary"
-                }
-            ],
-            "usage": {
-                "input_tokens": 139,
-                "input_tokens_details": {
-                    "cached_tokens": 11
-                },
-                "output_tokens": 438,
-                "output_tokens_details": {
-                    "reasoning_tokens": 64
-                },
-                "total_tokens": 577
-            },
-            "received": payload,
-        })),
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        Body::from_stream(chunked),
     )
+        .into_response()
 }
 
 async fn spawn_capture_target_body_upstream() -> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>) {
@@ -8885,6 +8935,38 @@ async fn proxy_capture_target_compact_uses_dedicated_handshake_timeout() {
     upstream_handle.abort();
 }
 
+#[test]
+fn pool_upstream_first_chunk_timeout_uses_compact_budget_for_compact_route() {
+    let mut config = test_config();
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+
+    let timeout = pool_upstream_first_chunk_timeout(
+        &config,
+        &"/v1/responses/compact".parse().expect("valid uri"),
+        &Method::POST,
+        config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::ResponsesCompact)),
+    );
+
+    assert_eq!(timeout, Duration::from_millis(400));
+}
+
+#[test]
+fn pool_upstream_first_chunk_timeout_keeps_default_budget_for_non_compact_route() {
+    let mut config = test_config();
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+
+    let timeout = pool_upstream_first_chunk_timeout(
+        &config,
+        &"/v1/responses".parse().expect("valid uri"),
+        &Method::POST,
+        config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::Responses)),
+    );
+
+    assert_eq!(timeout, Duration::from_millis(200));
+}
+
 #[tokio::test]
 async fn proxy_capture_target_responses_uses_default_handshake_timeout() {
     let (upstream_base, _captured_requests, upstream_handle) =
@@ -10950,6 +11032,121 @@ async fn pool_openai_v1_responses_stream_survives_short_request_timeout() {
     assert!(payload.contains("resp_slow_test"));
 
     server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_compact_waits_for_dedicated_first_chunk_timeout() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "previous_response_id": "resp_prev_001",
+        "input": [{"role": "user", "content": "compact this thread"}],
+    }))
+    .expect("serialize compact request body");
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        proxy_openai_v1(
+            State(state),
+            OriginalUri(
+                "/v1/responses/compact?mode=slow-first-chunk"
+                    .parse()
+                    .expect("valid uri"),
+            ),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body),
+        ),
+    )
+    .await
+    .expect("compact pool request should not hang");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read compact pool body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode compact pool response");
+    assert_eq!(
+        payload.get("object").and_then(Value::as_str),
+        Some("response.compaction")
+    );
+    assert_eq!(
+        payload.get("id").and_then(Value::as_str),
+        Some("resp_compact_test")
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_still_times_out_before_first_chunk() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": "hello",
+    }))
+    .expect("serialize responses request body");
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        proxy_openai_v1(
+            State(state),
+            OriginalUri(
+                "/v1/responses?mode=slow-first-chunk"
+                    .parse()
+                    .expect("valid uri"),
+            ),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body),
+        ),
+    )
+    .await
+    .expect("responses pool request should not hang");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read responses pool error body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("first upstream chunk"));
+
     upstream_handle.abort();
 }
 
