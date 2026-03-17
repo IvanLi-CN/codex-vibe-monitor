@@ -1228,13 +1228,13 @@ export default function UpstreamAccountCreatePage() {
     },
     [activeOauthMailboxSession, session, t],
   )
-  const clearOauthMailboxSession = useCallback((sessionToRemoveId?: string | null) => {
+  const clearOauthMailboxSession = useCallback((sessionToRemoveId?: string | null, options?: { deleteRemote?: boolean }) => {
     setOauthMailboxSession(null)
     setOauthMailboxStatus(null)
     setOauthMailboxError(null)
     setOauthMailboxTone('idle')
     setOauthMailboxCodeTone('idle')
-    if (sessionToRemoveId) {
+    if (sessionToRemoveId && options?.deleteRemote !== false) {
       void removeOauthMailboxSession(sessionToRemoveId).catch(() => undefined)
     }
   }, [removeOauthMailboxSession])
@@ -2077,6 +2077,7 @@ export default function UpstreamAccountCreatePage() {
                             ) {
                               clearOauthMailboxSession(
                                 isSupportedMailboxSession(oauthMailboxSession) ? oauthMailboxSession.sessionId : null,
+                                { deleteRemote: false },
                               )
                             }
                           }}

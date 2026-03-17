@@ -1574,15 +1574,15 @@ function normalizeOauthMailboxSession(raw: unknown): OauthMailboxSession {
   const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
   const emailAddress = typeof payload.emailAddress === 'string' ? payload.emailAddress : ''
   const expiresAt = typeof payload.expiresAt === 'string' ? payload.expiresAt : ''
-  if (!emailAddress) {
-    throw new Error('Request failed: invalid OAuth mailbox session payload')
-  }
   if (!supported) {
     return {
       supported: false,
       emailAddress,
       reason: typeof payload.reason === 'string' && payload.reason.trim() ? payload.reason : 'not_readable',
     }
+  }
+  if (!emailAddress) {
+    throw new Error('Request failed: invalid OAuth mailbox session payload')
   }
   if (!sessionId || !expiresAt) {
     throw new Error('Request failed: invalid OAuth mailbox session payload')

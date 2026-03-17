@@ -1466,8 +1466,9 @@ pub(crate) async fn create_oauth_mailbox_session(
     let config = upstream_mailbox_config(&state.config)?;
     if let Some(manual_email_address) =
         match requested_manual_mailbox_address(payload.email_address.as_deref()) {
-            Ok(value) => value,
-            Err(invalid_email_address) => {
+            RequestedManualMailboxAddress::Missing => None,
+            RequestedManualMailboxAddress::Valid(value) => Some(value),
+            RequestedManualMailboxAddress::Invalid(invalid_email_address) => {
                 return Ok(Json(oauth_mailbox_session_unsupported_response(
                     invalid_email_address,
                     "invalid_format",
@@ -4654,14 +4655,22 @@ fn normalize_mailbox_address(value: &str) -> Option<String> {
     Some(trimmed.to_ascii_lowercase())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RequestedManualMailboxAddress {
+    Missing,
+    Valid(String),
+    Invalid(String),
+}
+
 fn requested_manual_mailbox_address(
     raw_email_address: Option<&str>,
-) -> std::result::Result<Option<String>, String> {
+) -> RequestedManualMailboxAddress {
     match raw_email_address {
-        None => Ok(None),
-        Some(value) => normalize_mailbox_address(value)
-            .map(Some)
-            .ok_or_else(String::new),
+        None => RequestedManualMailboxAddress::Missing,
+        Some(value) => match normalize_mailbox_address(value) {
+            Some(normalized) => RequestedManualMailboxAddress::Valid(normalized),
+            None => RequestedManualMailboxAddress::Invalid(value.to_string()),
+        },
     }
 }
 
@@ -8722,14 +8731,17 @@ mod tests {
 
     #[test]
     fn requested_manual_mailbox_address_distinguishes_missing_from_blank_input() {
-        assert_eq!(requested_manual_mailbox_address(None), Ok(None));
+        assert!(matches!(
+            requested_manual_mailbox_address(None),
+            RequestedManualMailboxAddress::Missing
+        ));
         assert_eq!(
             requested_manual_mailbox_address(Some("  Mixed.Case@Example.COM  ")),
-            Ok(Some("mixed.case@example.com".to_string()))
+            RequestedManualMailboxAddress::Valid("mixed.case@example.com".to_string())
         );
         assert_eq!(
             requested_manual_mailbox_address(Some("   ")),
-            Err(String::new())
+            RequestedManualMailboxAddress::Invalid("   ".to_string())
         );
     }
 

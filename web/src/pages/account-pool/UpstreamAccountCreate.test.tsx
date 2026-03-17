@@ -1319,6 +1319,37 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).not.toContain("Attached mailbox");
   });
 
+  it("does not delete a generated mailbox remotely when the draft input changes", async () => {
+    const removeOauthMailboxSession = vi.fn().mockResolvedValue(undefined);
+    mockUpstreamAccounts({ removeOauthMailboxSession });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=oauth",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Generated Mailbox",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-generated-1",
+              emailAddress: "generated@mail-tw.707079.xyz",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              source: "generated",
+            },
+            mailboxInput: "generated@mail-tw.707079.xyz",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@example.com");
+    await flushAsync();
+
+    expect(removeOauthMailboxSession).not.toHaveBeenCalled();
+    expect(host?.textContent).not.toContain("Generated mailbox");
+  });
+
   it("keeps a supported mailbox session when the input only changes casing", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
