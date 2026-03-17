@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-03-16
-- Last: 2026-03-16
+- Last: 2026-03-17
 
 ## 背景 / 问题陈述
 
@@ -152,7 +152,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring / InvocationTable / Default
   state: summary
   evidence_note: 验证列表摘要区已经拆分为“账号 / 代理”与独立“时延”列，并在时延列展示总耗时、首字耗时和 HTTP 压缩算法。
@@ -163,7 +163,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring / InvocationTable / Expanded Details
   state: expanded request details
   evidence_note: 验证展开详情已经补齐账号、代理、总耗时、首字耗时、HTTP 压缩算法等请求上下文，并保留阶段耗时分区。
@@ -174,7 +174,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring / InvocationTable / Expanded Details
   state: latency unit verification
   evidence_note: 验证当前界面已统一为“首字耗时保留毫秒、其余总耗时/阶段耗时按秒展示”的展示口径，列表摘要与展开详情同时可见。
@@ -185,7 +185,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Records / InvocationRecordsTable / Network Focus
   state: records network table latency units
   evidence_note: 验证 Records 网络视图中，TTFB 保持毫秒展示，而总耗时已切换为秒展示，口径与主 InvocationTable 对齐。
@@ -196,7 +196,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Records / InvocationRecordsSummaryCards / Network Focus
   state: records network summary latency units
   evidence_note: 验证 Records 网络摘要卡片中，平均/P95 TTFB 继续使用毫秒，而平均/P95 总耗时统一改为秒展示。
@@ -207,7 +207,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring / InvocationTable / Account Pool Destination
   state: destination page with selected account detail
   evidence_note: 验证从 InvocationTable 账号抽屉点击“去号池查看完整详情”后，会进入号池页并打开对应账号的完整详情视图。
@@ -220,10 +220,10 @@
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: 后端 capture payload 与 `/api/invocations` 扩展出 route/account/compression 字段。
-- [ ] M2: InvocationTable 完成账号/代理与时延列改造，并在详情区补齐相关字段。
-- [ ] M3: Dashboard / Live 接通当前页只读账号详情抽屉与账号名点击交互。
-- [ ] M4: Vitest / Playwright / Storybook / 本地构建验证通过。
+- [x] M1: 后端 capture payload 与 `/api/invocations` 扩展出 route/account/compression 字段。
+- [x] M2: InvocationTable 完成账号/代理与时延列改造，并在详情区补齐相关字段。
+- [x] M3: Dashboard / Live 接通当前页只读账号详情抽屉与账号名点击交互。
+- [x] M4: Vitest / Playwright / Storybook / 本地构建验证通过。
 
 ## 方案概述（Approach, high-level）
 
