@@ -71,6 +71,8 @@ type GroupNoteEditorState = {
   existing: boolean
 }
 type MailboxCopyTone = 'idle' | 'copied' | 'manual'
+const MAILBOX_REFRESH_INTERVAL_MS = 5_000
+const MAILBOX_REFRESH_TICK_MS = 1_000
 
 type BatchOauthRow = {
   id: string
@@ -93,6 +95,8 @@ type BatchOauthRow = {
   mailboxTone: MailboxCopyTone
   mailboxCodeTone: MailboxCopyTone
   mailboxBusy: boolean
+  mailboxRefreshBusy: boolean
+  mailboxNextRefreshAt: number | null
 }
 
 type CreatePageDraft = {
@@ -113,6 +117,8 @@ type CreatePageDraft = {
     mailboxError?: string | null
     mailboxTone?: MailboxCopyTone
     mailboxCodeTone?: MailboxCopyTone
+    mailboxRefreshBusy?: boolean
+    mailboxNextRefreshAt?: number | null
   }
   batchOauth?: {
     defaultGroupName?: string
@@ -159,6 +165,16 @@ function formatDateTime(value?: string | null) {
   }).format(date)
 }
 
+function formatRelativeRefreshCountdown(
+  nextRefreshAt: number | null,
+  now: number,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (!nextRefreshAt) return t('accountPool.upstreamAccounts.oauth.refreshScheduledUnknown')
+  const seconds = Math.max(0, Math.ceil((nextRefreshAt - now) / 1000))
+  return t('accountPool.upstreamAccounts.oauth.refreshIn', { seconds })
+}
+
 function parseAccountId(search: string): number | null {
   const value = new URLSearchParams(search).get('accountId')
   if (!value) return null
@@ -195,6 +211,8 @@ function createBatchOauthRow(id: string, groupName = ''): BatchOauthRow {
     mailboxTone: 'idle',
     mailboxCodeTone: 'idle',
     mailboxBusy: false,
+    mailboxRefreshBusy: false,
+    mailboxNextRefreshAt: null,
   }
 }
 
@@ -221,6 +239,8 @@ function hydrateBatchOauthRow(
     mailboxTone: seed.mailboxTone === 'copied' || seed.mailboxTone === 'manual' ? seed.mailboxTone : 'idle',
     mailboxCodeTone: seed.mailboxCodeTone === 'copied' ? 'copied' : 'idle',
     mailboxBusy: seed.mailboxBusy === true,
+    mailboxRefreshBusy: seed.mailboxRefreshBusy === true,
+    mailboxNextRefreshAt: typeof seed.mailboxNextRefreshAt === 'number' ? seed.mailboxNextRefreshAt : null,
   }
 }
 
@@ -336,10 +356,53 @@ function batchMailboxCodeLabel(row: BatchOauthRow) {
   return row.mailboxStatus?.latestCode?.value ?? '------'
 }
 
+function batchMailboxRefreshVariant(row: BatchOauthRow): 'outline' | 'secondary' {
+  return row.mailboxRefreshBusy ? 'secondary' : 'outline'
+}
+
 function isExpiredIso(value: string | null | undefined) {
   if (!value) return false
   const timestamp = Date.parse(value)
   return Number.isFinite(timestamp) && timestamp <= Date.now()
+}
+
+function isRefreshableMailboxSession(session: OauthMailboxSessionSupported | null | undefined) {
+  return Boolean(session && !isExpiredIso(session.expiresAt))
+}
+
+function batchMailboxRefreshLabel(
+  row: BatchOauthRow,
+  now: number,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (row.mailboxRefreshBusy) {
+    return t('accountPool.upstreamAccounts.oauth.refreshingShort')
+  }
+  if (!isRefreshableMailboxSession(row.mailboxSession)) {
+    return t('accountPool.upstreamAccounts.actions.fetchMailboxStatus')
+  }
+  if (!row.mailboxNextRefreshAt) {
+    return t('accountPool.upstreamAccounts.actions.fetchMailboxStatus')
+  }
+  const seconds = Math.max(0, Math.ceil((row.mailboxNextRefreshAt - now) / 1000))
+  return t('accountPool.upstreamAccounts.oauth.refreshInShort', { seconds })
+}
+
+function batchMailboxRefreshTooltipDetail(
+  row: BatchOauthRow,
+  now: number,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (row.mailboxRefreshBusy) {
+    return t('accountPool.upstreamAccounts.oauth.refreshing')
+  }
+  const receivedAt = row.mailboxStatus?.latestCode?.updatedAt ?? row.mailboxStatus?.invite?.updatedAt ?? null
+  if (receivedAt) {
+    return `${t('accountPool.upstreamAccounts.oauth.receivedAt', {
+      timestamp: formatDateTime(receivedAt),
+    })} · ${formatRelativeRefreshCountdown(row.mailboxNextRefreshAt, now, t)}`
+  }
+  return formatRelativeRefreshCountdown(row.mailboxNextRefreshAt, now, t)
 }
 
 function resolveMailboxIssue(
@@ -633,6 +696,8 @@ export default function UpstreamAccountCreatePage() {
     () => draft?.oauth?.mailboxCodeTone ?? 'idle',
   )
   const [oauthMailboxBusy, setOauthMailboxBusy] = useState(false)
+  const [oauthMailboxRefreshBusy, setOauthMailboxRefreshBusy] = useState(false)
+  const [refreshClockMs, setRefreshClockMs] = useState(() => Date.now())
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState(() => draft?.apiKey?.displayName ?? '')
   const [apiKeyGroupName, setApiKeyGroupName] = useState(() => draft?.apiKey?.groupName ?? '')
   const [apiKeyIsMother, setApiKeyIsMother] = useState(() => draft?.apiKey?.isMother === true)
@@ -677,6 +742,10 @@ export default function UpstreamAccountCreatePage() {
         : null,
     [oauthMailboxInput, oauthMailboxSession],
   )
+  const refreshableOauthMailboxSession = useMemo(
+    () => (isRefreshableMailboxSession(activeOauthMailboxSession) ? activeOauthMailboxSession : null),
+    [activeOauthMailboxSession, refreshClockMs],
+  )
   const resolvedOauthMailboxSession =
     activeOauthMailboxSession ?? (oauthMailboxSession && !isSupportedMailboxSession(oauthMailboxSession) ? oauthMailboxSession : null)
   const displayedOauthMailboxStatus = activeOauthMailboxSession ? oauthMailboxStatus : null
@@ -687,7 +756,18 @@ export default function UpstreamAccountCreatePage() {
     activeOauthMailboxSession?.expiresAt ?? null,
     t,
   )
-
+  const oauthMailboxCodeStatusBadge = useMemo(() => {
+    if (oauthMailboxRefreshBusy) return 'checking'
+    if (
+      resolvedOauthMailboxSession &&
+      oauthMailboxError &&
+      (oauthMailboxError === t('accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable') ||
+        oauthMailboxError === t('accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed'))
+    ) {
+      return 'failed'
+    }
+    return null
+  }, [oauthMailboxError, oauthMailboxRefreshBusy, resolvedOauthMailboxSession, t])
   useEffect(() => {
     return () => {
       if (oauthMailboxToneResetRef.current != null) {
@@ -697,6 +777,12 @@ export default function UpstreamAccountCreatePage() {
         window.clearTimeout(timerId)
       })
     }
+  }, [])
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setRefreshClockMs(Date.now())
+    }, MAILBOX_REFRESH_TICK_MS)
+    return () => window.clearInterval(timer)
   }, [])
   const batchRowIdRef = useRef(getNextBatchRowIndex(initialBatchRows))
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null)
@@ -836,61 +922,95 @@ export default function UpstreamAccountCreatePage() {
   }, [oauthMailboxSession])
 
   useEffect(() => {
-    if (!activeOauthMailboxSession) return
+    if (!refreshableOauthMailboxSession) {
+      setOauthMailboxRefreshBusy(false)
+      return
+    }
     let cancelled = false
     const poll = async () => {
+      setOauthMailboxRefreshBusy(true)
       try {
-        const [status] = await getOauthMailboxStatuses([activeOauthMailboxSession.sessionId])
+        const [status] = await getOauthMailboxStatuses([refreshableOauthMailboxSession.sessionId])
         if (cancelled) return
         if (!status) {
           setOauthMailboxError((current) =>
             current && current.trim()
               ? current
-              : isExpiredIso(activeOauthMailboxSession.expiresAt)
+              : isExpiredIso(refreshableOauthMailboxSession.expiresAt)
                 ? t('accountPool.upstreamAccounts.oauth.mailboxExpired')
                 : t('accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable'),
           )
           return
         }
-        setOauthMailboxStatus(status)
+        setOauthMailboxStatus((current) => {
+          if (status.latestCode?.value && status.latestCode.value !== current?.latestCode?.value) {
+            setOauthMailboxCodeTone('idle')
+          }
+          return status
+        })
         setOauthMailboxError(status.error ?? null)
-        if (status.latestCode?.value && status.latestCode.value !== oauthMailboxStatus?.latestCode?.value) {
-          setOauthMailboxCodeTone('idle')
-        }
       } catch {
         if (!cancelled) {
           setOauthMailboxError(t('accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed'))
+        }
+      } finally {
+        if (!cancelled) {
+          setOauthMailboxRefreshBusy(false)
         }
       }
     }
     void poll()
     const timer = window.setInterval(() => {
       void poll()
-    }, 5000)
+    }, MAILBOX_REFRESH_INTERVAL_MS)
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
   }, [
-    activeOauthMailboxSession,
     getOauthMailboxStatuses,
-    oauthMailboxStatus?.latestCode?.value,
+    refreshableOauthMailboxSession,
+    t,
   ])
 
+  const activeBatchMailboxSessionIds = useMemo(
+    () =>
+      batchRows
+        .filter((row) => isRefreshableMailboxSession(row.mailboxSession))
+        .map((row) => row.mailboxSession?.sessionId ?? '')
+        .filter((value) => value.length > 0),
+    [batchRows, refreshClockMs],
+  )
+  const activeBatchMailboxSessionIdsKey = useMemo(
+    () => activeBatchMailboxSessionIds.join('|'),
+    [activeBatchMailboxSessionIds],
+  )
+
   useEffect(() => {
-    const activeRows = batchRows.filter((row) => row.mailboxSession != null)
-    if (activeRows.length === 0) return
+    const sessionIds = activeBatchMailboxSessionIdsKey
+      ? activeBatchMailboxSessionIdsKey.split('|').filter((value) => value.length > 0)
+      : []
+    if (sessionIds.length === 0) {
+      setBatchRows((current) =>
+        current.map((row) =>
+          row.mailboxRefreshBusy || row.mailboxNextRefreshAt != null
+            ? { ...row, mailboxRefreshBusy: false, mailboxNextRefreshAt: null }
+            : row,
+        ),
+      )
+      return
+    }
     let cancelled = false
-    const previousCodeMap = new Map(
-      activeRows.map((row) => [row.id, row.mailboxStatus?.latestCode?.value ?? null]),
-    )
     const poll = async () => {
+      setBatchRows((current) =>
+        current.map((row) =>
+          isRefreshableMailboxSession(row.mailboxSession)
+            ? { ...row, mailboxRefreshBusy: true, mailboxNextRefreshAt: null }
+            : row,
+        ),
+      )
       try {
-        const statuses = await getOauthMailboxStatuses(
-          activeRows
-            .map((row) => row.mailboxSession?.sessionId ?? '')
-            .filter((value) => value.length > 0),
-        )
+        const statuses = await getOauthMailboxStatuses(sessionIds)
         if (cancelled) return
         const bySessionId = new Map(statuses.map((status) => [status.sessionId, status]))
         setBatchRows((current) =>
@@ -907,12 +1027,14 @@ export default function UpstreamAccountCreatePage() {
                   : isExpiredIso(row.mailboxSession?.expiresAt)
                     ? t('accountPool.upstreamAccounts.oauth.mailboxExpired')
                     : t('accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable'))
-            const previousCode = previousCodeMap.get(row.id)
+            const previousCode = row.mailboxStatus?.latestCode?.value ?? null
             const nextCode = nextStatus?.latestCode?.value ?? null
             return {
               ...row,
               mailboxStatus: nextStatus ?? null,
               mailboxError: nextError,
+              mailboxRefreshBusy: false,
+              mailboxNextRefreshAt: Date.now() + MAILBOX_REFRESH_INTERVAL_MS,
               mailboxCodeTone:
                 nextCode && previousCode && nextCode !== previousCode ? 'idle' : row.mailboxCodeTone,
             }
@@ -925,6 +1047,8 @@ export default function UpstreamAccountCreatePage() {
               row.mailboxSession
                 ? {
                     ...row,
+                    mailboxRefreshBusy: false,
+                    mailboxNextRefreshAt: Date.now() + MAILBOX_REFRESH_INTERVAL_MS,
                     mailboxError: isExpiredIso(row.mailboxSession.expiresAt)
                       ? t('accountPool.upstreamAccounts.oauth.mailboxExpired')
                       : t('accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed'),
@@ -938,12 +1062,74 @@ export default function UpstreamAccountCreatePage() {
     void poll()
     const timer = window.setInterval(() => {
       void poll()
-    }, 5000)
+    }, MAILBOX_REFRESH_INTERVAL_MS)
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [batchRows, getOauthMailboxStatuses, t])
+  }, [activeBatchMailboxSessionIdsKey, getOauthMailboxStatuses, t])
+
+  const handleBatchMailboxFetch = useCallback(
+    async (rowId: string) => {
+      const row = batchRows.find((item) => item.id === rowId)
+      const sessionId = row?.mailboxSession?.sessionId
+      if (!sessionId || !isRefreshableMailboxSession(row.mailboxSession)) return
+      setBatchRows((current) =>
+        current.map((item) =>
+          item.id === rowId
+            ? { ...item, mailboxRefreshBusy: true, mailboxNextRefreshAt: null }
+            : item,
+        ),
+      )
+      try {
+        const [status] = await getOauthMailboxStatuses([sessionId])
+        setBatchRows((current) =>
+          current.map((item) => {
+            if (item.id !== rowId || !item.mailboxSession) return item
+            if (!status) {
+              return {
+                ...item,
+                mailboxRefreshBusy: false,
+                mailboxNextRefreshAt: Date.now() + MAILBOX_REFRESH_INTERVAL_MS,
+                mailboxError: item.mailboxError && item.mailboxError.trim()
+                  ? item.mailboxError
+                  : isExpiredIso(item.mailboxSession.expiresAt)
+                    ? t('accountPool.upstreamAccounts.oauth.mailboxExpired')
+                    : t('accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable'),
+              }
+            }
+            const previousCode = item.mailboxStatus?.latestCode?.value ?? null
+            const nextCode = status.latestCode?.value ?? null
+            return {
+              ...item,
+              mailboxStatus: status,
+              mailboxError: status.error ?? null,
+              mailboxRefreshBusy: false,
+              mailboxNextRefreshAt: Date.now() + MAILBOX_REFRESH_INTERVAL_MS,
+              mailboxCodeTone:
+                nextCode && previousCode && nextCode !== previousCode ? 'idle' : item.mailboxCodeTone,
+            }
+          }),
+        )
+      } catch {
+        setBatchRows((current) =>
+          current.map((item) =>
+            item.id === rowId && item.mailboxSession
+              ? {
+                  ...item,
+                  mailboxRefreshBusy: false,
+                  mailboxNextRefreshAt: Date.now() + MAILBOX_REFRESH_INTERVAL_MS,
+                  mailboxError: isExpiredIso(item.mailboxSession.expiresAt)
+                    ? t('accountPool.upstreamAccounts.oauth.mailboxExpired')
+                    : t('accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed'),
+                }
+              : item,
+          ),
+        )
+      }
+    },
+    [batchRows, getOauthMailboxStatuses, t],
+  )
 
   useEffect(() => {
     setGroupDraftNotes((current) => {
@@ -2219,12 +2405,31 @@ export default function UpstreamAccountCreatePage() {
                     <div className="rounded-2xl border border-base-300/70 bg-base-200/40 p-4">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <p className="text-sm font-semibold text-base-content">
+                          <p className="flex items-center gap-2 text-sm font-semibold text-base-content">
                             {t('accountPool.upstreamAccounts.oauth.codeCardTitle')}
+                            {oauthMailboxCodeStatusBadge === 'checking' ? (
+                              <Badge
+                                variant="secondary"
+                                className="h-5 gap-1 rounded-full px-1.5 py-0 text-[10px] font-medium leading-none"
+                              >
+                                <Spinner size="sm" className="h-2.5 w-2.5" />
+                                {t('accountPool.upstreamAccounts.oauth.mailboxCheckingBadge')}
+                              </Badge>
+                            ) : null}
+                            {oauthMailboxCodeStatusBadge === 'failed' ? (
+                              <Badge
+                                variant="error"
+                                className="h-5 rounded-full px-1.5 py-0 text-[10px] font-medium leading-none"
+                              >
+                                {t('accountPool.upstreamAccounts.oauth.mailboxCheckFailedBadge')}
+                              </Badge>
+                            ) : null}
                           </p>
                           <p className="mt-1 text-xs text-base-content/65">
                             {displayedOauthMailboxStatus?.latestCode?.updatedAt
-                              ? formatDateTime(displayedOauthMailboxStatus.latestCode.updatedAt)
+                              ? t('accountPool.upstreamAccounts.oauth.receivedAt', {
+                                  timestamp: formatDateTime(displayedOauthMailboxStatus.latestCode.updatedAt),
+                                })
                               : t('accountPool.upstreamAccounts.oauth.codeCardEmpty')}
                           </p>
                         </div>
@@ -2250,8 +2455,12 @@ export default function UpstreamAccountCreatePage() {
                             {t('accountPool.upstreamAccounts.oauth.inviteCardTitle')}
                           </p>
                           <p className="mt-1 text-xs text-base-content/65">
-                            {displayedOauthMailboxStatus?.invite?.subject ??
-                              t('accountPool.upstreamAccounts.oauth.inviteCardEmpty')}
+                            {displayedOauthMailboxStatus?.invite?.updatedAt
+                              ? t('accountPool.upstreamAccounts.oauth.receivedAt', {
+                                  timestamp: formatDateTime(displayedOauthMailboxStatus.invite.updatedAt),
+                                })
+                              : (displayedOauthMailboxStatus?.invite?.subject ??
+                                t('accountPool.upstreamAccounts.oauth.inviteCardEmpty'))}
                           </p>
                         </div>
                         <Button
@@ -2268,13 +2477,13 @@ export default function UpstreamAccountCreatePage() {
                       <div className="mt-4 flex items-center gap-3">
                         <Badge
                           variant={displayedOauthMailboxStatus?.invited ? 'success' : 'secondary'}
-                          className="rounded-full px-3 py-1 text-sm"
+                          className="shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-sm leading-none"
                         >
                           {displayedOauthMailboxStatus?.invited
                             ? t('accountPool.upstreamAccounts.oauth.invitedState')
                             : t('accountPool.upstreamAccounts.oauth.notInvitedState')}
                         </Badge>
-                        <span className="truncate text-sm text-base-content/70">
+                        <span className="min-w-0 flex-1 truncate text-sm text-base-content/70">
                           {displayedOauthMailboxStatus?.invite?.copyValue ?? '—'}
                         </span>
                       </div>
@@ -2709,6 +2918,31 @@ export default function UpstreamAccountCreatePage() {
                                               disabled={!row.mailboxStatus?.latestCode?.value}
                                             >
                                               {batchMailboxCodeLabel(row)}
+                                            </Button>
+                                          </Tooltip>
+                                        ) : null}
+                                        {row.mailboxSession ? (
+                                          <Tooltip
+                                            content={buildActionTooltip(
+                                              t('accountPool.upstreamAccounts.actions.fetchMailboxStatus'),
+                                              batchMailboxRefreshTooltipDetail(row, refreshClockMs, t),
+                                            )}
+                                          >
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant={batchMailboxRefreshVariant(row)}
+                                              className="h-9 shrink-0 rounded-full px-3 text-xs font-semibold"
+                                              aria-label={t('accountPool.upstreamAccounts.actions.fetchMailboxStatus')}
+                                              onClick={() => void handleBatchMailboxFetch(row.id)}
+                                              disabled={!isRefreshableMailboxSession(row.mailboxSession) || row.mailboxRefreshBusy}
+                                            >
+                                              {row.mailboxRefreshBusy ? (
+                                                <Spinner size="sm" className="mr-1.5" />
+                                              ) : (
+                                                <AppIcon name="refresh" className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                                              )}
+                                              {batchMailboxRefreshLabel(row, refreshClockMs, t)}
                                             </Button>
                                           </Tooltip>
                                         ) : null}

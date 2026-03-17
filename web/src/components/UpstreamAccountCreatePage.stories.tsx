@@ -4,6 +4,11 @@ import { SystemNotificationProvider } from './ui/system-notifications'
 import { I18nProvider } from '../i18n'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
 import type { OauthMailboxSession, OauthMailboxSessionSupported, OauthMailboxStatus } from '../lib/api'
+import { Alert } from './ui/alert'
+import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Spinner } from './ui/spinner'
+import { AppIcon } from './AppIcon'
 import {
   AccountPoolStoryRouter,
   StorybookUpstreamAccountsMock,
@@ -47,6 +52,161 @@ function createMailboxStatus(
   }
 }
 
+const oauthMailboxPollingStates = [
+  {
+    title: '查收中',
+    description: '轮询请求进行中，验证码标题旁显示查收中标记。',
+    codeBadge: 'checking' as const,
+    codeSubtitle: '暂时还没有识别到验证码。',
+    codeValue: '—',
+    inviteSubtitle: '暂时还没有识别到邀请通知。',
+    inviteValue: '—',
+    invitedLabel: '未受邀',
+    invitedVariant: 'secondary' as const,
+  },
+  {
+    title: '验证码已就绪',
+    description: '验证码、邀请摘要和收到时间都齐全的正常态。',
+    codeSubtitle: '收到于 2026/03/11 20:36:00',
+    codeValue: '824931',
+    inviteSubtitle: '收到于 2026/03/11 20:37:00',
+    inviteValue: 'https://chatgpt.com/invite/story-ready',
+    invitedLabel: '已受邀',
+    invitedVariant: 'success' as const,
+  },
+  {
+    title: '查收失败',
+    description: '最近一轮轮询失败时显示查收失败标记，并保留错误提示。',
+    issueVariant: 'error' as const,
+    issueText: '邮箱状态刷新失败，暂时无法确认最新验证码或邀请状态。',
+    codeBadge: 'failed' as const,
+    codeSubtitle: '暂时还没有识别到验证码。',
+    codeValue: '—',
+    inviteSubtitle: '暂时还没有识别到邀请通知。',
+    inviteValue: '—',
+    invitedLabel: '未受邀',
+    invitedVariant: 'secondary' as const,
+  },
+] as const
+
+const oauthMailboxContentStates = [
+  {
+    title: '生成后等待邮件',
+    description: '已生成临时邮箱，但验证码和邀请都还没到。',
+    codeSubtitle: '暂时还没有识别到验证码。',
+    codeValue: '—',
+    inviteSubtitle: '暂时还没有识别到邀请通知。',
+    inviteValue: '—',
+    invitedLabel: '未受邀',
+    invitedVariant: 'secondary' as const,
+  },
+  {
+    title: '邮箱已过期',
+    description: '临时邮箱过期后停止查收，并给出过期提示。',
+    issueVariant: 'warning' as const,
+    issueText: '这个临时邮箱已经过期了。请重新生成一个新邮箱再等新邮件。',
+    codeSubtitle: '暂时还没有识别到验证码。',
+    codeValue: '—',
+    inviteSubtitle: '暂时还没有识别到邀请通知。',
+    inviteValue: '—',
+    invitedLabel: '未受邀',
+    invitedVariant: 'secondary' as const,
+  },
+] as const
+
+function OauthMailboxStateCard({
+  title,
+  description,
+  issueText,
+  issueVariant,
+  codeBadge,
+  codeSubtitle,
+  codeValue,
+  inviteSubtitle,
+  inviteValue,
+  invitedLabel,
+  invitedVariant,
+}: {
+  title: string
+  description: string
+  issueText?: string
+  issueVariant?: 'warning' | 'error'
+  codeBadge?: 'checking' | 'failed'
+  codeSubtitle: string
+  codeValue: string
+  inviteSubtitle: string
+  inviteValue: string
+  invitedLabel: string
+  invitedVariant: 'secondary' | 'success'
+}) {
+  return (
+    <section className="overflow-hidden rounded-[28px] border border-base-300/80 bg-base-100 shadow-[0_24px_64px_-36px_rgba(15,23,42,0.35)]">
+      <div className="border-b border-base-300/70 bg-gradient-to-r from-base-200/80 via-base-100 to-base-100 px-5 py-4">
+        <p className="text-sm font-semibold text-base-content">{title}</p>
+        <p className="mt-1 text-sm text-base-content/65">{description}</p>
+      </div>
+      <div className="space-y-4 bg-base-100 p-5">
+        {issueText && issueVariant ? <Alert variant={issueVariant}>{issueText}</Alert> : null}
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-2xl border border-base-300/70 bg-base-200/40 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="flex items-center gap-2 text-sm font-semibold text-base-content">
+                  验证码
+                  {codeBadge === 'checking' ? (
+                    <Badge
+                      variant="secondary"
+                      className="h-5 gap-1 rounded-full px-1.5 py-0 text-[10px] font-medium leading-none"
+                    >
+                      <Spinner size="sm" className="h-2.5 w-2.5" />
+                      查收中
+                    </Badge>
+                  ) : null}
+                  {codeBadge === 'failed' ? (
+                    <Badge
+                      variant="error"
+                      className="h-5 rounded-full px-1.5 py-0 text-[10px] font-medium leading-none"
+                    >
+                      查收失败
+                    </Badge>
+                  ) : null}
+                </p>
+                <p className="mt-1 text-xs text-base-content/65">{codeSubtitle}</p>
+              </div>
+              <Button type="button" size="sm" variant="default" disabled={codeValue === '—'}>
+                <AppIcon name="content-copy" className="mr-1.5 h-4 w-4" aria-hidden />
+                复制验证码
+              </Button>
+            </div>
+            <p className="mt-4 font-mono text-2xl font-semibold tracking-[0.24em] text-base-content">{codeValue}</p>
+          </div>
+          <div className="rounded-2xl border border-base-300/70 bg-base-200/40 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-base-content">邀请摘要</p>
+                <p className="mt-1 text-xs text-base-content/65">{inviteSubtitle}</p>
+              </div>
+              <Button type="button" variant="secondary" size="sm" disabled={inviteValue === '—'}>
+                <AppIcon name="content-copy" className="mr-1.5 h-4 w-4" aria-hidden />
+                复制邀请
+              </Button>
+            </div>
+            <div className="mt-4 flex items-center gap-3">
+              <Badge
+                variant={invitedVariant}
+                className="shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-sm leading-none"
+              >
+                {invitedLabel}
+              </Badge>
+              <span className="min-w-0 flex-1 truncate text-sm text-base-content/70">{inviteValue}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 const meta = {
   title: 'Account Pool/Pages/Upstream Account Create',
   component: UpstreamAccountCreatePage,
@@ -86,24 +246,6 @@ export const OauthReady: Story = {
   },
 }
 
-export const OauthMailboxGenerated: Story = {
-  name: 'OAuth Mailbox Generated',
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByRole('button', { name: /^generate$/i }))
-
-    const displayName = canvas.getByLabelText(/display name/i) as HTMLInputElement
-    const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
-
-    await expect(displayName.value).toMatch(/storybook-oauth-\d+@mail-tw\.707079\.xyz/i)
-    await expect(copyMailboxButton).toBeInTheDocument()
-    await expect(canvas.getByText(/storybook-oauth-\d+@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
-    await userEvent.hover(copyMailboxButton)
-    await expect(within(document.body).getByText(/click to copy/i)).toBeInTheDocument()
-  },
-}
-
 export const OauthManualMailboxUnsupported: Story = {
   name: 'OAuth Manual Mailbox Unsupported',
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
@@ -136,107 +278,53 @@ export const OauthReauthManualMailboxAttached: Story = {
   },
 }
 
-export const OauthMailboxReady: Story = {
-  name: 'OAuth Mailbox Ready',
-  render: () => {
-    const mailboxSession = createMailboxSession('story-mailbox-oauth-ready', 'oauth-ready@mail-tw.707079.xyz')
-    return (
-      <AccountPoolStoryRouter
-        initialEntry={{
-          pathname: '/account-pool/upstream-accounts/new',
-          state: {
-            draft: {
-              oauth: {
-                displayName: 'Codex Pro - Manual',
-                groupName: 'production',
-                mailboxSession,
-                mailboxInput: mailboxSession.emailAddress,
-                mailboxStatus: createMailboxStatus(mailboxSession, {
-                  latestCode: {
-                    value: '824931',
-                    source: 'subject',
-                    updatedAt: '2026-03-11T12:36:00.000Z',
-                  },
-                  invite: {
-                    subject: 'Alice has invited you to join OpenAI Workspace',
-                    copyValue: 'https://chatgpt.com/invite/story-ready',
-                    copyLabel: 'Join workspace',
-                    updatedAt: '2026-03-11T12:37:00.000Z',
-                  },
-                  invited: true,
-                }),
-              },
-            },
-          },
-        }}
-      />
-    )
+export const OauthMailboxStateGallery: Story = {
+  name: 'OAuth Mailbox State Gallery',
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Curated single-account mailbox docs view that concentrates the mailbox lifecycle, status badges, and failure handling into one Storybook surface.',
+      },
+    },
   },
-}
-
-export const OauthMailboxExpired: Story = {
-  name: 'OAuth Mailbox Expired',
-  render: () => {
-    const mailboxSession: OauthMailboxSession = {
-      supported: true,
-      sessionId: 'story-mailbox-oauth-expired',
-      emailAddress: 'expired-oauth@mail-tw.707079.xyz',
-      expiresAt: '2026-03-11T10:00:00.000Z',
-      source: 'generated',
-    }
-    return (
-      <AccountPoolStoryRouter
-        initialEntry={{
-          pathname: '/account-pool/upstream-accounts/new',
-          state: {
-            draft: {
-              oauth: {
-                displayName: 'Expired OAuth Mailbox',
-                groupName: 'production',
-                mailboxSession,
-                mailboxInput: mailboxSession.emailAddress,
-              },
-            },
-          },
-        }}
-      />
-    )
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByText(/temp mailbox has expired/i)).toBeInTheDocument()
-  },
-}
-
-export const OauthMailboxRefreshFailed: Story = {
-  name: 'OAuth Mailbox Refresh Failed',
-  render: () => {
-    const mailboxSession = createMailboxSession('story-mailbox-oauth-failed', 'failed-oauth@mail-tw.707079.xyz')
-    return (
-      <AccountPoolStoryRouter
-        initialEntry={{
-          pathname: '/account-pool/upstream-accounts/new',
-          state: {
-            draft: {
-              oauth: {
-                displayName: 'Failed OAuth Mailbox',
-                groupName: 'production',
-                mailboxSession,
-                mailboxInput: mailboxSession.emailAddress,
-                mailboxStatus: createMailboxStatus(mailboxSession, {
-                  error: 'Mailbox refresh failed. We could not confirm the latest code or invite state.',
-                }),
-              },
-            },
-          },
-        }}
-      />
-    )
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByText(/mailbox refresh failed/i)).toBeInTheDocument()
-  },
+  render: () => (
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.16),_transparent_52%),linear-gradient(180deg,rgba(248,250,252,1)_0%,rgba(241,245,249,1)_100%)] px-6 py-8 text-base-content">
+      <div className="mx-auto max-w-[1720px] space-y-6">
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-primary/80">Single OAuth Mailbox</p>
+          <h2 className="text-3xl font-semibold tracking-tight text-base-content">单账号邮箱状态总览</h2>
+          <p className="max-w-3xl text-sm leading-6 text-base-content/70">
+            把单账号 OAuth 邮箱区块拆成“轮询状态”和“邮箱内容状态”两组，方便单独审阅查收过程与内容结果。
+          </p>
+        </div>
+        <section className="space-y-3">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-base-content/50">Polling States</p>
+            <h3 className="text-lg font-semibold text-base-content">轮询状态</h3>
+            <p className="text-sm text-base-content/65">这两个状态由轮询请求本身驱动，不代表邮箱里已经有了新内容。</p>
+          </div>
+          <div className="grid gap-6 xl:grid-cols-2">
+            {oauthMailboxPollingStates.map((item) => (
+              <OauthMailboxStateCard key={item.title} {...item} />
+            ))}
+          </div>
+        </section>
+        <section className="space-y-3">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-base-content/50">Mailbox Content States</p>
+            <h3 className="text-lg font-semibold text-base-content">邮箱内容状态</h3>
+            <p className="text-sm text-base-content/65">这些状态描述邮箱当前内容结果，比如还没收到验证码、已经收到验证码，或者邮箱已经失效。</p>
+          </div>
+          <div className="grid gap-6 xl:grid-cols-2">
+            {oauthMailboxContentStates.map((item) => (
+              <OauthMailboxStateCard key={item.title} {...item} />
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  ),
 }
 
 export const OauthMailboxDetachedName: Story = {
