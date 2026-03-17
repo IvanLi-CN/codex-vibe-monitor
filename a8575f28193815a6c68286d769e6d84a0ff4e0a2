@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.12.6",
+  "base_stable_version": "1.12.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-17T09:46:35Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.12.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1eb47ac366d2f28cf5d8a998b7830cf272e4fdac",
+  "pr_number": 164,
+  "pr_title": "fix: avoid pool stream timeout truncation",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.12.6",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.12.6,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "a8575f28193815a6c68286d769e6d84a0ff4e0a2",
+  "type_label": "type:patch"
+}
