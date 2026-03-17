@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.13.1",
+  "base_stable_version": "1.13.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-17T13:58:21Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.13.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2c9efde6c53e2ca16e023efeab8a12ea9fa3916e",
+  "pr_number": 151,
+  "pr_title": "feat(web): compact upstream account roster",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.13.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.13.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "3eba4d25f2d30e1b167fd03060c0843a92dec914",
+  "type_label": "type:patch"
+}
