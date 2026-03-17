@@ -37,6 +37,10 @@ export const Operational: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
 }
 
+export const CompactLongLabels: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+}
+
 export const DetailDrawer: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
   play: async ({ canvasElement }) => {

@@ -236,6 +236,7 @@ pub(crate) struct UpstreamAccountSummary {
     masked_api_key: Option<String>,
     last_synced_at: Option<String>,
     last_successful_sync_at: Option<String>,
+    last_activity_at: Option<String>,
     last_error: Option<String>,
     last_error_at: Option<String>,
     token_expires_at: Option<String>,
@@ -646,6 +647,7 @@ struct UpstreamAccountRow {
     last_refreshed_at: Option<String>,
     last_synced_at: Option<String>,
     last_successful_sync_at: Option<String>,
+    last_activity_at: Option<String>,
     last_error: Option<String>,
     last_error_at: Option<String>,
     last_selected_at: Option<String>,
@@ -754,6 +756,12 @@ struct StickyKeyAggregateRow {
 }
 
 #[derive(Debug, FromRow)]
+struct AccountLastActivityRow {
+    account_id: i64,
+    last_activity_at: String,
+}
+
+#[derive(Debug, FromRow)]
 struct StickyKeyEventRow {
     occurred_at: String,
     status: String,
@@ -852,6 +860,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             last_successful_sync_at TEXT,
             last_error TEXT,
             last_error_at TEXT,
+            last_activity_at TEXT,
             last_selected_at TEXT,
             last_route_failure_at TEXT,
             cooldown_until TEXT,
@@ -890,6 +899,37 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "plan_type_observed_at")
         .await
         .context("failed to ensure pool_upstream_accounts.plan_type_observed_at")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_activity_at")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_activity_at")?;
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE pool_upstream_accounts
+        ADD COLUMN last_activity_live_backfill_completed INTEGER NOT NULL DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context(
+            "failed to ensure pool_upstream_accounts.last_activity_live_backfill_completed",
+        );
+    }
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE pool_upstream_accounts
+        ADD COLUMN last_activity_archive_backfill_completed INTEGER NOT NULL DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context(
+            "failed to ensure pool_upstream_accounts.last_activity_archive_backfill_completed",
+        );
+    }
 
     if let Err(err) = sqlx::query(
         r#"
@@ -1210,6 +1250,16 @@ async fn ensure_nullable_text_column(
     let statement = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} TEXT");
     sqlx::query(&statement).execute(pool).await?;
     Ok(())
+}
+
+async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+    )
+    .bind(table_name)
+    .fetch_one(pool)
+    .await?
+        > 0)
 }
 
 pub(crate) async fn list_upstream_accounts(
@@ -3849,7 +3899,7 @@ async fn load_upstream_account_summaries(
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_error, last_error_at,
+            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
             local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
             created_at, updated_at
@@ -3869,6 +3919,7 @@ async fn load_upstream_account_summaries(
         items.push(build_summary_from_row(
             &row,
             latest.as_ref(),
+            row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
         ));
@@ -3920,6 +3971,7 @@ async fn load_upstream_account_detail(
         summary: build_summary_from_row(
             &row,
             latest.as_ref(),
+            row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
         ),
@@ -3949,7 +4001,7 @@ async fn load_upstream_account_row_conn(
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_error, last_error_at,
+            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
             local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
             created_at, updated_at
@@ -4019,6 +4071,7 @@ async fn load_latest_usage_sample(
 fn build_summary_from_row(
     row: &UpstreamAccountRow,
     sample: Option<&UpstreamAccountSampleRow>,
+    last_activity_at: Option<String>,
     tags: Vec<AccountTagSummary>,
     duplicate_info: Option<DuplicateInfo>,
 ) -> UpstreamAccountSummary {
@@ -4093,6 +4146,11 @@ fn build_summary_from_row(
         masked_api_key: row.masked_api_key.clone(),
         last_synced_at: row.last_synced_at.clone(),
         last_successful_sync_at: row.last_successful_sync_at.clone(),
+        last_activity_at: last_activity_at
+            .as_deref()
+            .and_then(parse_to_utc_datetime)
+            .map(format_utc_iso)
+            .or(last_activity_at),
         last_error: row.last_error.clone(),
         last_error_at: row.last_error_at.clone(),
         token_expires_at: row.token_expires_at.clone(),
@@ -4104,6 +4162,67 @@ fn build_summary_from_row(
         tags,
         effective_routing_rule,
     }
+}
+
+pub(crate) async fn load_account_last_activity_map(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<HashMap<i64, String>> {
+    if account_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id AS account_id, last_activity_at FROM pool_upstream_accounts WHERE last_activity_at IS NOT NULL AND id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(")");
+
+    let rows = query
+        .build_query_as::<AccountLastActivityRow>()
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.account_id, row.last_activity_at))
+        .collect())
+}
+
+pub(crate) async fn backfill_upstream_account_last_activity_from_live_invocations(
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
+    if !sqlite_table_exists(pool, "codex_invocations")
+        .await
+        .context("failed to inspect codex_invocations existence")?
+    {
+        return Ok(0);
+    }
+
+    let updated = sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET last_activity_at = (
+                SELECT MAX(occurred_at)
+                FROM codex_invocations
+                WHERE CASE
+                    WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER)
+                END = pool_upstream_accounts.id
+            ),
+            last_activity_live_backfill_completed = 1
+        WHERE last_activity_at IS NULL
+          AND last_activity_live_backfill_completed = 0
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill pool_upstream_accounts.last_activity_at from live invocations")?;
+    Ok(updated.rows_affected())
 }
 
 async fn group_has_accounts(pool: &Pool<Sqlite>, group_name: &str) -> Result<bool> {
@@ -7198,6 +7317,7 @@ mod tests {
                 last_refreshed_at: None,
                 last_synced_at: None,
                 last_successful_sync_at: None,
+                last_activity_at: None,
                 last_error: None,
                 last_error_at: None,
                 last_selected_at: None,
