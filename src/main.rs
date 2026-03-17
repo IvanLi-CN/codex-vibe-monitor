@@ -2015,6 +2015,7 @@ struct ArchiveBatchOutcome {
     file_path: String,
     sha256: String,
     row_count: i64,
+    upstream_last_activity: Vec<(i64, String)>,
 }
 
 #[derive(Debug, Default)]
@@ -3316,7 +3317,8 @@ async fn backfill_upstream_account_last_activity_from_archives(
         r#"
         SELECT id
         FROM pool_upstream_accounts
-        WHERE last_activity_archive_backfill_completed = 0
+        WHERE last_activity_at IS NULL
+          AND last_activity_archive_backfill_completed = 0
         "#,
     )
     .fetch_all(pool)
@@ -3360,6 +3362,7 @@ async fn backfill_upstream_account_last_activity_from_archives(
 
         let archive_path = PathBuf::from(archive_file.file_path);
         if !archive_path.exists() {
+            exhausted_archives = false;
             continue;
         }
         scanned_batches += 1;
@@ -3534,7 +3537,8 @@ async fn count_upstream_accounts_missing_last_activity(pool: &Pool<Sqlite>) -> R
         r#"
             SELECT COUNT(*)
             FROM pool_upstream_accounts
-            WHERE last_activity_archive_backfill_completed = 0
+            WHERE last_activity_at IS NULL
+              AND last_activity_archive_backfill_completed = 0
             "#,
     )
     .fetch_one(pool)
@@ -3618,6 +3622,33 @@ async fn archive_rows_into_month_batch(
             .await
             .with_context(|| format!("failed to ensure archive schema for {}", spec.dataset))?;
 
+        let upstream_last_activity = if spec.dataset == "codex_invocations" {
+            let mut rows = Vec::new();
+            for chunk in ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS account_id, occurred_at FROM main.codex_invocations WHERE id IN (",
+                );
+                {
+                    let mut separated = query.separated(", ");
+                    for id in chunk {
+                        separated.push_bind(id);
+                    }
+                }
+                query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
+                rows.extend(
+                    query
+                        .build_query_as::<ArchivedAccountLastActivityRow>()
+                        .fetch_all(&mut *conn)
+                        .await?,
+                );
+            }
+            rows.into_iter()
+                .map(|row| (row.account_id, row.last_activity_at))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
         let mut insert = QueryBuilder::<Sqlite>::new(format!(
             "INSERT OR IGNORE INTO archive_db.{} ({}) SELECT {} FROM main.{} WHERE id IN (",
             spec.dataset, spec.columns, spec.columns, spec.dataset
@@ -3645,12 +3676,12 @@ async fn archive_rows_into_month_batch(
             .execute(&mut *conn)
             .await
             .context("failed to detach archive database")?;
-        Ok::<i64, anyhow::Error>(row_count)
+        Ok::<(i64, Vec<(i64, String)>), anyhow::Error>((row_count, upstream_last_activity))
     }
     .await;
 
-    let result = match row_count {
-        Ok(row_count) => row_count,
+    let (result, upstream_last_activity) = match row_count {
+        Ok(values) => values,
         Err(err) => {
             let _ = fs::remove_file(&work_path);
             let _ = fs::remove_file(&temp_gzip_path);
@@ -3675,7 +3706,31 @@ async fn archive_rows_into_month_batch(
         file_path: final_path.to_string_lossy().to_string(),
         sha256,
         row_count: result,
+        upstream_last_activity,
     })
+}
+
+async fn upsert_archived_upstream_last_activity(
+    tx: &mut sqlx::SqliteConnection,
+    values: &[(i64, String)],
+) -> Result<()> {
+    for (account_id, occurred_at) in values {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_activity_at = CASE
+                    WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
+                    ELSE last_activity_at
+                END
+            WHERE id = ?2
+            "#,
+        )
+        .bind(occurred_at)
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    Ok(())
 }
 
 async fn upsert_archive_batch_manifest(
@@ -3709,15 +3764,8 @@ async fn upsert_archive_batch_manifest(
     .bind(ARCHIVE_STATUS_COMPLETED)
     .execute(&mut *tx)
     .await?;
-    if batch.dataset == "codex_invocations" {
-        sqlx::query(
-            r#"
-            UPDATE pool_upstream_accounts
-            SET last_activity_archive_backfill_completed = 0
-            "#,
-        )
-        .execute(&mut *tx)
-        .await?;
+    if batch.dataset == "codex_invocations" && !batch.upstream_last_activity.is_empty() {
+        upsert_archived_upstream_last_activity(tx, &batch.upstream_last_activity).await?;
     }
     Ok(())
 }

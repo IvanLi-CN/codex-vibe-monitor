@@ -18204,7 +18204,7 @@ async fn upstream_last_activity_live_backfill_marks_unmatched_rows_complete() {
 }
 
 #[tokio::test]
-async fn upstream_last_activity_archive_backfill_marks_complete_when_archive_missing() {
+async fn upstream_last_activity_archive_backfill_keeps_pending_when_archive_missing() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
     )
@@ -18267,7 +18267,7 @@ async fn upstream_last_activity_archive_backfill_marks_complete_when_archive_mis
     .fetch_one(&state.pool)
     .await
     .expect("load archive completion flag");
-    assert_eq!(completed, 1);
+    assert_eq!(completed, 0);
 
     let progress = load_startup_backfill_progress(&state.pool, &task_name)
         .await
@@ -18368,6 +18368,7 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             file_path: archive_path.to_string_lossy().to_string(),
             sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
             row_count: 1,
+            upstream_last_activity: vec![(account_id, occurred_at.to_string())],
         };
         let mut tx = pool.begin().await.expect("begin archive batch tx");
         upsert_archive_batch_manifest(tx.as_mut(), &batch)
@@ -18392,7 +18393,7 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
     .await
     .expect("load first archive backfill row");
     assert_eq!(first_row.0.as_deref(), Some(first_activity_at.as_str()));
-    assert_eq!(first_row.1, 1);
+    assert_eq!(first_row.1, 0);
 
     let second_activity_at = format_utc_iso(Utc::now() - ChronoDuration::days(1));
     {
@@ -18456,6 +18457,7 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             file_path: archive_path.to_string_lossy().to_string(),
             sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
             row_count: 1,
+            upstream_last_activity: vec![(account_id, occurred_at.to_string())],
         };
         let mut tx = pool.begin().await.expect("begin archive batch tx");
         upsert_archive_batch_manifest(tx.as_mut(), &batch)
@@ -18463,23 +18465,6 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             .expect("upsert archive batch manifest");
         tx.commit().await.expect("commit archive batch manifest");
     }
-
-    let pending_after_new_archive: i64 = sqlx::query_scalar(
-        r#"
-        SELECT last_activity_archive_backfill_completed
-        FROM pool_upstream_accounts
-        WHERE id = ?1
-        "#,
-    )
-    .bind(account_id)
-    .fetch_one(&pool)
-    .await
-    .expect("load pending flag after new archive");
-    assert_eq!(pending_after_new_archive, 0);
-
-    backfill_upstream_account_last_activity_from_archives(&pool, None, None)
-        .await
-        .expect("backfill refreshed archive activity");
 
     let refreshed_row = sqlx::query_as::<_, (Option<String>, i64)>(
         r#"
@@ -18491,9 +18476,9 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
     .bind(account_id)
     .fetch_one(&pool)
     .await
-    .expect("load refreshed archive backfill row");
+    .expect("load refreshed archive row after new archive");
     assert_eq!(refreshed_row.0.as_deref(), Some(second_activity_at.as_str()));
-    assert_eq!(refreshed_row.1, 1);
+    assert_eq!(refreshed_row.1, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
