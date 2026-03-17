@@ -1319,6 +1319,59 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).not.toContain("Attached mailbox");
   });
 
+  it("keeps a supported mailbox session when the input only changes casing", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const removeOauthMailboxSession = vi.fn().mockResolvedValue(undefined);
+    mockUpstreamAccounts({ beginOauthLogin, removeOauthMailboxSession });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=oauth",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Mailbox Case",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-attached-case",
+              emailAddress: "manual-existing@mail-tw.707079.xyz",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              source: "attached",
+            },
+            mailboxInput: "manual-existing@mail-tw.707079.xyz",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    setInputValue('input[name="oauthMailboxInput"]', "MANUAL-EXISTING@MAIL-TW.707079.XYZ");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "Mailbox Case",
+      groupName: undefined,
+      note: undefined,
+      groupNote: undefined,
+      accountId: undefined,
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "mailbox-attached-case",
+      mailboxAddress: "manual-existing@mail-tw.707079.xyz",
+    });
+    expect(removeOauthMailboxSession).not.toHaveBeenCalled();
+    expect(host?.textContent).toContain("Attached mailbox");
+  });
+
   it("keeps oauth flow available when a manual mailbox is unsupported", async () => {
     const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
       supported: false,

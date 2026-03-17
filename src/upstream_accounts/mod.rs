@@ -1507,21 +1507,25 @@ pub(crate) async fn create_oauth_mailbox_session(
                 "not_readable",
             )));
         };
-        let mut remote_messages =
-            match moemail_list_messages(&state.http_clients.shared, config, &remote_mailbox.id)
-                .await
-            {
-                Ok(messages) => messages,
-                Err(_) => {
-                    return Ok(Json(oauth_mailbox_session_unsupported_response(
-                        manual_email_address,
-                        "not_readable",
-                    )));
-                }
-            };
+        let mut remote_messages = match moemail_list_messages_for_attach(
+            &state.http_clients.shared,
+            config,
+            &remote_mailbox.id,
+        )
+        .await
+        .map_err(internal_error_tuple)?
+        {
+            MoeMailAttachReadState::Readable(messages) => messages,
+            MoeMailAttachReadState::NotReadable => {
+                return Ok(Json(oauth_mailbox_session_unsupported_response(
+                    manual_email_address,
+                    "not_readable",
+                )));
+            }
+        };
         sort_mailbox_messages_desc(&mut remote_messages);
         let latest_message_id = latest_mailbox_message_id(&remote_messages);
-        let (latest_code, latest_invite) = match resolve_mailbox_message_state(
+        let (latest_code, latest_invite) = match resolve_mailbox_message_state_for_attach(
             &state.http_clients.shared,
             config,
             &remote_mailbox.id,
@@ -1530,9 +1534,10 @@ pub(crate) async fn create_oauth_mailbox_session(
             None,
         )
         .await
+        .map_err(internal_error_tuple)?
         {
-            Ok(state) => state,
-            Err(_) => {
+            MoeMailAttachReadState::Readable(state) => state,
+            MoeMailAttachReadState::NotReadable => {
                 return Ok(Json(oauth_mailbox_session_unsupported_response(
                     manual_email_address,
                     "not_readable",
@@ -4869,6 +4874,56 @@ async fn resolve_mailbox_message_state(
     Ok((latest_code, latest_invite))
 }
 
+enum MoeMailAttachReadState<T> {
+    Readable(T),
+    NotReadable,
+}
+
+fn moemail_attach_status_is_not_readable(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::NOT_FOUND
+    )
+}
+
+async fn resolve_mailbox_message_state_for_attach(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+    remote_email_id: &str,
+    messages: &[MoeMailMessageSummary],
+    mut latest_code: Option<ParsedMailboxCode>,
+    mut latest_invite: Option<ParsedMailboxInvite>,
+) -> Result<MoeMailAttachReadState<(Option<ParsedMailboxCode>, Option<ParsedMailboxInvite>)>> {
+    for summary in messages
+        .iter()
+        .take(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_STATUS_FETCH_LIMIT as usize)
+    {
+        if latest_code.is_some() && latest_invite.is_some() {
+            break;
+        }
+        let detail =
+            match moemail_get_message_for_attach(client, config, remote_email_id, &summary.id)
+                .await?
+            {
+                MoeMailAttachReadState::Readable(detail) => detail,
+                MoeMailAttachReadState::NotReadable => {
+                    return Ok(MoeMailAttachReadState::NotReadable);
+                }
+            };
+        if latest_code.is_none() {
+            latest_code = parse_mailbox_code(&detail);
+        }
+        if latest_invite.is_none() {
+            latest_invite = parse_mailbox_invite(&detail);
+        }
+    }
+
+    Ok(MoeMailAttachReadState::Readable((
+        latest_code,
+        latest_invite,
+    )))
+}
+
 async fn moemail_create_email(
     client: &Client,
     config: &UpstreamAccountsMoeMailConfig,
@@ -4984,6 +5039,36 @@ async fn moemail_list_messages(
     Ok(payload.messages)
 }
 
+async fn moemail_list_messages_for_attach(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+    remote_email_id: &str,
+) -> Result<MoeMailAttachReadState<Vec<MoeMailMessageSummary>>> {
+    let response = client
+        .get(
+            config
+                .base_url
+                .join(&format!("/api/emails/{remote_email_id}"))
+                .context("invalid moemail email detail endpoint")?,
+        )
+        .header("X-API-Key", config.api_key.as_str())
+        .send()
+        .await
+        .with_context(|| format!("failed to list moemail messages for {remote_email_id}"))?;
+    if moemail_attach_status_is_not_readable(response.status()) {
+        return Ok(MoeMailAttachReadState::NotReadable);
+    }
+    let response = response
+        .error_for_status()
+        .with_context(|| format!("moemail list messages request failed for {remote_email_id}"))?;
+
+    let payload = response
+        .json::<MoeMailMessageListPayload>()
+        .await
+        .context("failed to decode moemail message list response")?;
+    Ok(MoeMailAttachReadState::Readable(payload.messages))
+}
+
 async fn moemail_get_message(
     client: &Client,
     config: &UpstreamAccountsMoeMailConfig,
@@ -5009,6 +5094,37 @@ async fn moemail_get_message(
         .await
         .context("failed to decode moemail message detail response")?;
     Ok(payload.message)
+}
+
+async fn moemail_get_message_for_attach(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+    remote_email_id: &str,
+    message_id: &str,
+) -> Result<MoeMailAttachReadState<MoeMailMessageDetail>> {
+    let response = client
+        .get(
+            config
+                .base_url
+                .join(&format!("/api/emails/{remote_email_id}/{message_id}"))
+                .context("invalid moemail message detail endpoint")?,
+        )
+        .header("X-API-Key", config.api_key.as_str())
+        .send()
+        .await
+        .with_context(|| format!("failed to load moemail message {message_id}"))?;
+    if moemail_attach_status_is_not_readable(response.status()) {
+        return Ok(MoeMailAttachReadState::NotReadable);
+    }
+    let response = response
+        .error_for_status()
+        .with_context(|| format!("moemail message request failed for {message_id}"))?;
+
+    let payload = response
+        .json::<MoeMailMessageDetailPayload>()
+        .await
+        .context("failed to decode moemail message detail response")?;
+    Ok(MoeMailAttachReadState::Readable(payload.message))
 }
 
 async fn moemail_delete_email(
@@ -8619,6 +8735,22 @@ mod tests {
             normalize_mailbox_session_expires_at(Some("not-a-timestamp"), fallback),
             "2026-03-17T08:09:10Z"
         );
+    }
+
+    #[test]
+    fn moemail_attach_status_is_not_readable_only_for_permission_and_missing() {
+        assert!(moemail_attach_status_is_not_readable(
+            reqwest::StatusCode::FORBIDDEN
+        ));
+        assert!(moemail_attach_status_is_not_readable(
+            reqwest::StatusCode::NOT_FOUND
+        ));
+        assert!(!moemail_attach_status_is_not_readable(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(!moemail_attach_status_is_not_readable(
+            reqwest::StatusCode::GATEWAY_TIMEOUT
+        ));
     }
 
     #[test]

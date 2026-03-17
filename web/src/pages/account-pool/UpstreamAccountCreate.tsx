@@ -2070,8 +2070,11 @@ export default function UpstreamAccountCreatePage() {
                             const nextValue = event.target.value
                             setOauthMailboxInput(nextValue)
                             invalidateOauthSessionForMailboxChange(nextValue)
-                            const currentAddress = oauthMailboxSession?.emailAddress ?? ''
-                            if (oauthMailboxSession && nextValue.trim() !== currentAddress.trim()) {
+                            if (
+                              oauthMailboxSession &&
+                              (!isSupportedMailboxSession(oauthMailboxSession) ||
+                                !mailboxInputMatchesSession(nextValue, oauthMailboxSession))
+                            ) {
                               clearOauthMailboxSession(
                                 isSupportedMailboxSession(oauthMailboxSession) ? oauthMailboxSession.sessionId : null,
                               )
