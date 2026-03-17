@@ -399,9 +399,12 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const proxyDisplayName = resolveProxyDisplayName(record)
         const accountLabel = resolveInvocationAccountLabel(
           record.routeMode,
+          normalizedStatus,
           record.upstreamAccountName,
           record.upstreamAccountId,
           t('table.account.reverseProxy'),
+          t('table.account.poolRoutingPending'),
+          t('table.account.poolAccountUnavailable'),
         )
         const accountClickable = canOpenInvocationAccount(record)
         const requestedServiceTierValue = formatServiceTier(record.requestedServiceTier)

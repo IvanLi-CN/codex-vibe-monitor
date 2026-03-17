@@ -3,6 +3,8 @@ import { act, useMemo } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { BroadcastPayload, ListResponse } from '../lib/api'
+import { resolveInvocationAccountLabel } from '../lib/invocation'
+import { resolveInvocationDisplayStatus } from '../lib/invocationStatus'
 import { useInvocationStream } from './useInvocations'
 
 const apiMocks = vi.hoisted(() => ({
@@ -107,6 +109,23 @@ function StreamProbe({ limit = 20 }: { limit?: number }) {
       <div data-testid="keys">{records.map((record) => `${record.invokeId}:${record.status}`).join('|')}</div>
     </div>
   )
+}
+
+function AccountLabelProbe() {
+  const { records } = useInvocationStream(5, undefined, undefined, { enableStream: true })
+  const label = records[0]
+    ? resolveInvocationAccountLabel(
+        records[0].routeMode,
+        resolveInvocationDisplayStatus(records[0]),
+        records[0].upstreamAccountName,
+        records[0].upstreamAccountId,
+        '反向代理',
+        '号池路由中',
+        '号池账号未知',
+      )
+    : ''
+
+  return <div data-testid="first-account-label">{label}</div>
 }
 
 describe('useInvocationStream', () => {
@@ -253,5 +272,52 @@ describe('useInvocationStream', () => {
 
     expect(text('keys')).toBe('invocation-terminal:success')
     expect(text('first-status')).toBe('success')
+  })
+
+  it('upgrades the displayed account label when a richer pool snapshot arrives later', async () => {
+    apiMocks.fetchInvocations.mockResolvedValue({ records: [] })
+
+    render(<AccountLabelProbe />)
+    await flushAsync()
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: -30,
+            invokeId: 'invocation-pool-upgrade',
+            occurredAt: '2026-03-10T00:05:00Z',
+            createdAt: '2026-03-10T00:05:00Z',
+            routeMode: 'pool',
+            status: 'running',
+          },
+        ],
+      })
+    })
+
+    expect(text('first-account-label')).toBe('号池路由中')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: 30,
+            invokeId: 'invocation-pool-upgrade',
+            occurredAt: '2026-03-10T00:05:00Z',
+            createdAt: '2026-03-10T00:05:00Z',
+            routeMode: 'pool',
+            upstreamAccountId: 42,
+            upstreamAccountName: 'Pool Alpha',
+            status: 'success',
+            totalTokens: 128,
+            tTotalMs: 1400,
+          },
+        ],
+      })
+    })
+
+    expect(text('first-account-label')).toBe('Pool Alpha')
   })
 })

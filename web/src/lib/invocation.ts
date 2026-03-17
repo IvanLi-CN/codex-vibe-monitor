@@ -64,9 +64,12 @@ export function isPoolRouteMode(value: string | null | undefined): boolean {
 
 export function resolveInvocationAccountLabel(
   routeMode: string | null | undefined,
+  status: string | null | undefined,
   upstreamAccountName: string | null | undefined,
   upstreamAccountId: number | null | undefined,
   reverseProxyLabel: string,
+  poolRoutingPendingLabel: string,
+  poolAccountUnavailableLabel: string,
 ): string {
   if (!isPoolRouteMode(routeMode)) return reverseProxyLabel
 
@@ -75,7 +78,11 @@ export function resolveInvocationAccountLabel(
   if (typeof upstreamAccountId === 'number' && Number.isFinite(upstreamAccountId)) {
     return `账号 #${Math.trunc(upstreamAccountId)}`
   }
-  return reverseProxyLabel
+  const normalizedStatus = status?.trim().toLowerCase()
+  if (normalizedStatus === 'running' || normalizedStatus === 'pending') {
+    return poolRoutingPendingLabel
+  }
+  return poolAccountUnavailableLabel
 }
 
 export function formatResponseContentEncoding(
