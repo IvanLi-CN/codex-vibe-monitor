@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-16
-- Last: 2026-03-16
+- Last: 2026-03-17
 
 ## 背景 / 问题陈述
 
@@ -89,7 +89,7 @@
 - [x] M2: 完成账号列表组件重构与文案接线。
 - [x] M3: 补齐组件/页面测试与 Storybook 场景。
 - [x] M4: 完成本地验证与浏览器 smoke。
-- [ ] M5: 快车道收敛（spec sync、push、PR、checks、review-loop）。
+- [x] M5: 快车道收敛（spec sync、push、PR、checks、review-loop）。
 
 ## Visual Evidence (PR)
 
@@ -121,3 +121,4 @@
 - 2026-03-16: 根据最新界面反馈，为同步列补充“上次调用时间”，并扩展上游账号汇总接口返回最近一次调用时间字段。
 - 2026-03-16: 为最近调用时间聚合补充 `codex_invocations` 表达式索引，并将列表返回的 `lastActivityAt` 统一序列化为 UTC ISO，避免浏览器按本地时区误解析。
 - 2026-03-16: 调整标记带折叠策略与 `+N` 提示交互，继续保留前 `3` 个 tags，同时让折叠提示支持悬浮与键盘聚焦读取。
+- 2026-03-17: 快车道收敛完成，PR visual evidence 已同步，review-loop 对最新 PR head 收敛完成，进入直接合并阶段。

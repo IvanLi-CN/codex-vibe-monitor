@@ -7,7 +7,7 @@
 ## Index
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                                                          |
-| 62uhg | 上游账号列表紧凑化改版                                                        | 部分完成（4/5） | `62uhg-upstream-account-roster-compact/SPEC.md`          | 2026-03-16 | fast-track / compact roster shipped locally / lint+test+build+storybook smoke green           |
+| 62uhg | 上游账号列表紧凑化改版                                                        | 已完成（5/5）   | `62uhg-upstream-account-roster-compact/SPEC.md`          | 2026-03-17 | fast-track / PR #151 / review-loop clear / visual evidence synced / merge-ready                |
 | 3n287 | OAuth 临时邮箱自动化与验证码/邀请态集成                                   | 进行中         | `3n287-oauth-temp-mail-automation/SPEC.md`           | 2026-03-16 | fast-track / MoeMail mailbox sessions / oauth mailbox gating / parsing pending |
 | f6f6e | GH Actions 防取消发布链路全面对齐                                              | 部分完成（3/4） | `f6f6e-gh-actions-release-anti-cancel/SPEC.md`           | 2026-03-15 | strict anti-cancel / global serial CI Main+Release / current PR labels / contract refresh |
 | ----- | ----------------------------------------------------------------------------- | --------------- | -------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
