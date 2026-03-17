@@ -144,6 +144,12 @@ async function flushAsync() {
   });
 }
 
+async function flushTimers() {
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
+}
+
 function setInputValue(selector: string, value: string) {
   const input = host?.querySelector(selector);
   if (
@@ -1156,19 +1162,21 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
             mailboxSession: {
               sessionId: "mailbox-refresh-failure",
               emailAddress: "failed@example.com",
-              expiresAt: "2026-03-17T10:00:00.000Z",
+              expiresAt: "2026-03-18T10:00:00.000Z",
             },
             mailboxInput: "failed@example.com",
           },
         },
       },
-    });
+  });
 
-    await flushAsync();
+  await flushAsync();
+  await flushTimers();
+  await flushAsync();
 
-    expect(host?.textContent).toContain(
-      "Mailbox refresh failed. We could not confirm the latest code or invite state.",
-    );
+  expect(host?.textContent).toContain(
+    "Mailbox refresh failed. We could not confirm the latest code or invite state.",
+  );
   });
 });
 
