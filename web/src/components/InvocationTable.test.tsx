@@ -329,10 +329,23 @@ describe('InvocationTable', () => {
         model: 'gpt-5.4',
         status: 'running',
       },
+      {
+        id: 37,
+        invokeId: 'invocation-pool-account-unavailable',
+        occurredAt: '2026-03-07T03:13:47Z',
+        createdAt: '2026-03-07T03:13:47Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        proxyDisplayName: 'codex-relay-06',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+      },
     ])
 
     expect(html).toContain('号池路由中')
     expect(html).toContain('账号 #19')
+    expect(html).toContain('号池账号未知')
     expect(html).toContain('反向代理')
   })
 

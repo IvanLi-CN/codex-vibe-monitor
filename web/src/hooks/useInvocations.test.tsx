@@ -115,10 +115,12 @@ function AccountLabelProbe() {
   const label = records[0]
     ? resolveInvocationAccountLabel(
         records[0].routeMode,
+        records[0].status,
         records[0].upstreamAccountName,
         records[0].upstreamAccountId,
         '反向代理',
         '号池路由中',
+        '号池账号未知',
       )
     : ''
 
