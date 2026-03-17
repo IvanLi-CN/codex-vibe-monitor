@@ -88,3 +88,17 @@
 
 - 风险：pool 路由当前没有稳定的真实代理节点上下文，因此热修选择“宁可为空也不伪造”。
 - 假设：主人接受“只修未来，不回填历史”的 hotfix 边界。
+
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Monitoring / InvocationTable / Account Proxy Semantics
+  state: semantic matrix
+  evidence_note: Verifies the compact `账号 / 代理` badge and the six supported account-versus-proxy combinations, including pool accounts, reverse-proxy fallback, and empty proxy-node handling.
+
+  ![InvocationTable account/proxy semantics canvas](./assets/invocation-account-proxy-semantics-canvas-tight.png)
+
