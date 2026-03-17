@@ -361,6 +361,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      issues: write
       packages: write
     timeout-minutes: 45
     steps:
@@ -527,6 +528,90 @@ jobs:
             })
 
             core.notice(`Created GitHub Release for tag ${tag}`)
+
+      - name: Upsert PR release version comment
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ needs.release-meta.outputs.target_sha }}
+          RELEASE_TAG: ${{ needs.release-meta.outputs.release_tag }}
+          APP_EFFECTIVE_VERSION: ${{ needs.release-meta.outputs.app_effective_version }}
+          RELEASE_PR_NUMBER: ${{ needs.release-meta.outputs.pr_number }}
+          RELEASE_CHANNEL: ${{ needs.release-meta.outputs.release_channel }}
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const marker = '<!-- codex-release-version-comment -->'
+            const rawPrNumber = process.env.RELEASE_PR_NUMBER
+            const releaseTag = process.env.RELEASE_TAG
+            const appVersion = process.env.APP_EFFECTIVE_VERSION
+            const releaseChannel = process.env.RELEASE_CHANNEL || '(unknown)'
+            const targetSha = process.env.TARGET_SHA || '(unknown)'
+            const issueNumber = Number(rawPrNumber)
+
+            if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+              core.notice('No PR number available for release comment; skipping.')
+              return
+            }
+            if (!releaseTag || !appVersion) {
+              core.notice('Missing release tag or app version; skipping PR release comment.')
+              return
+            }
+
+            const releaseUrl = `https://github.com/${owner}/${repo}/releases/tag/${releaseTag}`
+            const body = [
+              marker,
+              `Released in [\`${releaseTag}\`](${releaseUrl})`,
+              `Version: \`${appVersion}\``,
+              `Channel: \`${releaseChannel}\``,
+              `Commit: \`${targetSha}\``,
+            ].join('\n')
+
+            try {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: issueNumber,
+                per_page: 100,
+              })
+              const foreignMarkerComment = comments.find(comment =>
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker) &&
+                (comment.user?.type !== 'Bot' || comment.user?.login !== 'github-actions[bot]')
+              )
+              if (foreignMarkerComment) {
+                core.warning(
+                  `Found marker comment ${foreignMarkerComment.id} owned by ${foreignMarkerComment.user?.login || 'unknown'}; leaving PR comment unchanged`
+                )
+                return
+              }
+              const existing = comments.find(comment =>
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker) &&
+                comment.user?.type === 'Bot' &&
+                comment.user?.login === 'github-actions[bot]'
+              )
+
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                  body,
+                })
+                core.notice(`Updated PR #${issueNumber} release version comment for ${releaseTag}`)
+                return
+              }
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body,
+              })
+              core.notice(`Created PR #${issueNumber} release version comment for ${releaseTag}`)
+            } catch (error) {
+              core.warning(`Failed to upsert PR release version comment: ${error.message}`)
+            }
 
       - name: Resolve next pending release target
         if: github.event_name != 'workflow_dispatch'
