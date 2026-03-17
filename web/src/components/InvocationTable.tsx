@@ -399,7 +399,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const proxyDisplayName = resolveProxyDisplayName(record)
         const accountLabel = resolveInvocationAccountLabel(
           record.routeMode,
-          record.status,
+          normalizedStatus,
           record.upstreamAccountName,
           record.upstreamAccountId,
           t('table.account.reverseProxy'),

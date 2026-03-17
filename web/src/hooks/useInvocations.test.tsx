@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { BroadcastPayload, ListResponse } from '../lib/api'
 import { resolveInvocationAccountLabel } from '../lib/invocation'
+import { resolveInvocationDisplayStatus } from '../lib/invocationStatus'
 import { useInvocationStream } from './useInvocations'
 
 const apiMocks = vi.hoisted(() => ({
@@ -115,7 +116,7 @@ function AccountLabelProbe() {
   const label = records[0]
     ? resolveInvocationAccountLabel(
         records[0].routeMode,
-        records[0].status,
+        resolveInvocationDisplayStatus(records[0]),
         records[0].upstreamAccountName,
         records[0].upstreamAccountId,
         '反向代理',

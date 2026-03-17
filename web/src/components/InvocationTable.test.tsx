@@ -349,6 +349,29 @@ describe('InvocationTable', () => {
     expect(html).toContain('反向代理')
   })
 
+  it('uses the resolved display status when deciding whether a pool label is still pending', () => {
+    const html = renderTable([
+      {
+        id: 38,
+        invokeId: 'invocation-pool-resolved-failure',
+        occurredAt: '2026-03-07T03:13:46Z',
+        createdAt: '2026-03-07T03:13:46Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        proxyDisplayName: 'codex-relay-07',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        failureClass: 'service_failure',
+        errorMessage: '[upstream_response_failed] server_error',
+      },
+    ])
+
+    expect(html).toContain('失败')
+    expect(html).toContain('号池账号未知')
+    expect(html).not.toContain('号池路由中')
+  })
+
   it('shows proxyDisplayName in both summary and expanded details when present', async () => {
     await renderInteractiveTable([
       {
