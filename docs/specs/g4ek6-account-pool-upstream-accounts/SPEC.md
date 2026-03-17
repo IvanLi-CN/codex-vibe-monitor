@@ -150,6 +150,7 @@
 - Given 当前账号已经显示 detail 错误，When 随后外部 refresh/list 刷新再次失败，Then 页面必须同时保留 detail 错误与 refresh 自己的错误提示，不得只显示旧 detail 错误。
 - Given refresh 返回的新列表已经把当前有效选中账号收口到 B，When refresh 继续决定是否补拉 detail，Then 它必须按这个最终收口结果刷新 B 的 detail，而不是依赖 React state updater 是否已经执行。
 - Given 用户先触发账号 A 的 detail reload，再触发账号 A 的手动同步或保存，When 更早的 detail reload 晚于同步/保存返回，Then 页面仍必须保留同步/保存后的最新详情，不得被旧 reload 结果覆盖。
+- Given 当前详情抽屉正显示账号 A 且 A 的同步请求仍在进行中，When 用户点击关闭按钮、遮罩或按下 Escape，Then 详情抽屉仍必须允许关闭；只有删除请求提交中才允许暂时锁住抽屉关闭。
 - Given 账号 B 当前正显示自己的 detail 错误，When 账号 A 的列表刷新、保存或同步成功返回，Then 账号 B 的错误提示必须继续保留，直到 B 自己的请求成功或失败被替换。
 - Given routing 密钥保存失败后页面仍显示 routing 错误，When 用户随后执行任意账号级操作且该操作成功，Then routing 错误提示仍然可见，直到 routing 请求自己成功或被新的 routing 结果替换。
 - Given routing 保存失败且当前账号同时还有账号级错误，When 页面重新渲染错误提示，Then routing 错误与账号级错误都必须可见，而不是二选一。

@@ -662,6 +662,111 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     ).not.toBeNull();
   });
 
+  it("keeps the detail drawer closable while sync is pending", async () => {
+    const syncDeferred = deferred<void>();
+    const runSync = vi.fn(() => syncDeferred.promise);
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule,
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule,
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+      saveGroupNote: vi.fn(),
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Open details/i);
+    clickButton(/Sync now/i);
+    await flushAsync();
+
+    const closeButton = document.body.querySelector(
+      '.drawer-header button[type="button"]',
+    );
+
+    expect(closeButton).toBeInstanceOf(HTMLButtonElement);
+    expect((closeButton as HTMLButtonElement).disabled).toBe(false);
+
+    pressButton(closeButton as HTMLButtonElement);
+    await flushAsync();
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+
+    syncDeferred.resolve();
+    await flushAsync();
+  });
+
   it("keeps refresh enabled while an account action is pending", () => {
     const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
     const refresh = vi.fn();
