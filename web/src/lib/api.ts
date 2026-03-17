@@ -64,6 +64,10 @@ export interface ApiInvocation {
   endpoint?: string;
   requesterIp?: string;
   promptCacheKey?: string;
+  routeMode?: string;
+  upstreamAccountId?: number | null;
+  upstreamAccountName?: string;
+  responseContentEncoding?: string;
   upstreamScope?: string;
   requestedServiceTier?: string;
   serviceTier?: string;
@@ -1851,9 +1855,13 @@ export async function fetchUpstreamStickyConversations(
 
 export async function fetchUpstreamAccountDetail(
   accountId: number,
+  signal?: AbortSignal,
 ): Promise<UpstreamAccountDetail> {
   const response = await fetchJson<unknown>(
     `/api/pool/upstream-accounts/${accountId}`,
+    {
+      signal,
+    },
   );
   return normalizeUpstreamAccountDetail(response);
 }

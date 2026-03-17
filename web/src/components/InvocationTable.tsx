@@ -2,14 +2,18 @@ import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { AppIcon } from './AppIcon'
 import type { ApiInvocation } from '../lib/api'
 import {
+  formatResponseContentEncoding,
   formatProxyWeightDelta,
+  isPoolRouteMode,
   formatServiceTier,
   getFastIndicatorState,
+  resolveInvocationAccountLabel,
   type FastIndicatorState,
 } from '../lib/invocation'
 import { resolveInvocationDisplayStatus } from '../lib/invocationStatus'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
+import { InvocationAccountDetailDrawer } from './InvocationAccountDetailDrawer'
 import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
 import { Spinner } from './ui/spinner'
@@ -43,11 +47,6 @@ function formatMilliseconds(value: number | null | undefined) {
   return `${value.toFixed(1)} ms`
 }
 
-function formatMillisecondsCompact(value: number | null | undefined) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
-  return Math.round(value).toString()
-}
-
 function formatOptionalNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
   return formatter.format(value)
@@ -56,6 +55,14 @@ function formatOptionalNumber(value: number | null | undefined, formatter: Intl.
 function formatOptionalText(value: string | null | undefined) {
   const normalized = value?.trim()
   return normalized ? normalized : FALLBACK_CELL
+}
+
+function canOpenInvocationAccount(record: ApiInvocation) {
+  return (
+    isPoolRouteMode(record.routeMode) &&
+    typeof record.upstreamAccountId === 'number' &&
+    Number.isFinite(record.upstreamAccountId)
+  )
 }
 
 function normalizeDetailLevel(value: ApiInvocation['detailLevel']): InvocationDetailLevel {
@@ -162,6 +169,9 @@ interface InvocationRowViewModel {
   meta: { variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'; key: TranslationKey }
   occurredTime: string
   occurredDate: string
+  accountLabel: string
+  accountId: number | null
+  accountClickable: boolean
   proxyDisplayName: string
   modelValue: string
   requestedServiceTierValue: string
@@ -178,10 +188,11 @@ interface InvocationRowViewModel {
   endpointValue: string
   isCompactEndpoint: boolean
   errorMessage: string
-  latencySummary: string
-  latencyCompactSummary: string
+  totalLatencyValue: string
+  firstByteLatencyValue: string
+  responseContentEncodingValue: string
   detailNotice: string | null
-  detailPairs: Array<{ label: string; value: ReactNode }>
+  detailPairs: Array<{ key: string; label: string; value: ReactNode }>
   timingPairs: Array<{ label: string; value: string }>
 }
 
@@ -189,6 +200,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   const { t, locale } = useTranslation()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [drawerAccountId, setDrawerAccountId] = useState<number | null>(null)
+  const [drawerAccountLabel, setDrawerAccountLabel] = useState<string | null>(null)
   const [isXlUp, setIsXlUp] = useState(() => {
     if (typeof window === 'undefined') return false
     return window.matchMedia('(min-width: 1280px)').matches
@@ -212,6 +225,46 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
       collapsed: 'Collapsed',
     }
   }, [locale])
+
+  const openAccountDrawer = (accountId: number | null, accountLabel: string) => {
+    if (accountId == null) return
+    setDrawerAccountId(accountId)
+    setDrawerAccountLabel(accountLabel)
+  }
+
+  const closeAccountDrawer = () => {
+    setDrawerAccountId(null)
+    setDrawerAccountLabel(null)
+  }
+
+  const renderAccountValue = (
+    accountLabel: string,
+    accountId: number | null,
+    accountClickable: boolean,
+    className?: string,
+  ) => {
+    if (!accountClickable || accountId == null) {
+      return (
+        <span className={cn('inline-block max-w-full truncate whitespace-nowrap', className)} title={accountLabel}>
+          {accountLabel}
+        </span>
+      )
+    }
+
+    return (
+      <button
+        type="button"
+        className={cn(
+          'inline-block max-w-full truncate whitespace-nowrap appearance-none border-0 bg-transparent p-0 align-middle font-inherit text-center text-current no-underline shadow-none transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+          className,
+        )}
+        onClick={() => openAccountDrawer(accountId, accountLabel)}
+        title={accountLabel}
+      >
+        {accountLabel}
+      </button>
+    )
+  }
 
   const detailLabels = useMemo(() => {
     if (locale === 'zh') {
@@ -308,14 +361,22 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const endpointValue = record.endpoint?.trim() || FALLBACK_CELL
         const isCompactEndpointValue = isCompactEndpoint(record.endpoint)
         const proxyDisplayName = resolveProxyDisplayName(record)
+        const accountLabel = resolveInvocationAccountLabel(
+          record.routeMode,
+          record.upstreamAccountName,
+          record.upstreamAccountId,
+          t('table.account.reverseProxy'),
+        )
+        const accountClickable = canOpenInvocationAccount(record)
         const requestedServiceTierValue = formatServiceTier(record.requestedServiceTier)
         const serviceTierValue = formatServiceTier(record.serviceTier)
         const fastIndicatorState = getFastIndicatorState(record.requestedServiceTier, record.serviceTier)
         const reasoningEffortValue = formatOptionalText(record.reasoningEffort)
         const reasoningTokensValue = formatOptionalNumber(record.reasoningTokens, numberFormatter)
         const outputReasoningBreakdownValue = `${t('table.column.reasoningTokensShort')} ${reasoningTokensValue}`
-        const latencySummary = `${formatMilliseconds(record.tUpstreamTtfbMs)} / ${formatMilliseconds(record.tTotalMs)}`
-        const latencyCompactSummary = `${formatMillisecondsCompact(record.tUpstreamTtfbMs)}/${formatMillisecondsCompact(record.tTotalMs)}`
+        const totalLatencyValue = formatMilliseconds(record.tTotalMs)
+        const firstByteLatencyValue = formatMilliseconds(record.tUpstreamTtfbMs)
+        const responseContentEncodingValue = formatResponseContentEncoding(record.responseContentEncoding)
         const occurredValid = !Number.isNaN(occurred.getTime())
         const occurredTime = occurredValid ? timeFormatter.format(occurred) : record.occurredAt
         const occurredDate = occurredValid ? dateFormatter.format(occurred) : FALLBACK_CELL
@@ -373,24 +434,33 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
               : detailLabels.structuredHint
             : detailLabels.fullHint
 
-        const detailPairs: Array<{ label: string; value: ReactNode }> = [
-          { label: t('table.details.invokeId'), value: record.invokeId || FALLBACK_CELL },
-          { label: t('table.details.source'), value: record.source || FALLBACK_CELL },
-          { label: t('table.details.proxy'), value: proxyDisplayName },
-          { label: t('table.details.endpoint'), value: record.endpoint || FALLBACK_CELL },
-          { label: t('table.details.requesterIp'), value: record.requesterIp || FALLBACK_CELL },
-          { label: t('table.details.promptCacheKey'), value: record.promptCacheKey || FALLBACK_CELL },
-          { label: t('table.details.requestedServiceTier'), value: requestedServiceTierValue },
-          { label: t('table.details.serviceTier'), value: serviceTierValue },
-          { label: t('table.details.reasoningEffort'), value: renderReasoningEffortBadge(reasoningEffortValue) },
-          { label: t('table.details.reasoningTokens'), value: reasoningTokensValue },
-          { label: t('table.details.proxyWeightDelta'), value: proxyWeightDeltaValue },
-          { label: t('table.details.failureKind'), value: formatOptionalText(record.failureKind) },
-          { label: t('table.details.streamTerminalEvent'), value: formatOptionalText(record.streamTerminalEvent) },
-          { label: t('table.details.upstreamErrorCode'), value: formatOptionalText(record.upstreamErrorCode) },
-          { label: t('table.details.upstreamErrorMessage'), value: formatOptionalText(record.upstreamErrorMessage) },
-          { label: t('table.details.upstreamRequestId'), value: formatOptionalText(record.upstreamRequestId) },
+        const detailPairs: Array<{ key: string; label: string; value: ReactNode }> = [
+          { key: 'invokeId', label: t('table.details.invokeId'), value: record.invokeId || FALLBACK_CELL },
+          { key: 'source', label: t('table.details.source'), value: record.source || FALLBACK_CELL },
           {
+            key: 'account',
+            label: t('table.details.account'),
+            value: renderAccountValue(accountLabel, record.upstreamAccountId ?? null, accountClickable, 'font-mono text-sm'),
+          },
+          { key: 'proxy', label: t('table.details.proxy'), value: proxyDisplayName },
+          { key: 'endpoint', label: t('table.details.endpoint'), value: record.endpoint || FALLBACK_CELL },
+          { key: 'requesterIp', label: t('table.details.requesterIp'), value: record.requesterIp || FALLBACK_CELL },
+          { key: 'promptCacheKey', label: t('table.details.promptCacheKey'), value: record.promptCacheKey || FALLBACK_CELL },
+          { key: 'totalLatency', label: t('table.details.totalLatency'), value: totalLatencyValue },
+          { key: 'firstByteLatency', label: t('table.details.firstByteLatency'), value: firstByteLatencyValue },
+          { key: 'responseContentEncoding', label: t('table.details.httpCompression'), value: responseContentEncodingValue },
+          { key: 'requestedServiceTier', label: t('table.details.requestedServiceTier'), value: requestedServiceTierValue },
+          { key: 'serviceTier', label: t('table.details.serviceTier'), value: serviceTierValue },
+          { key: 'reasoningEffort', label: t('table.details.reasoningEffort'), value: renderReasoningEffortBadge(reasoningEffortValue) },
+          { key: 'reasoningTokens', label: t('table.details.reasoningTokens'), value: reasoningTokensValue },
+          { key: 'proxyWeightDelta', label: t('table.details.proxyWeightDelta'), value: proxyWeightDeltaValue },
+          { key: 'failureKind', label: t('table.details.failureKind'), value: formatOptionalText(record.failureKind) },
+          { key: 'streamTerminalEvent', label: t('table.details.streamTerminalEvent'), value: formatOptionalText(record.streamTerminalEvent) },
+          { key: 'upstreamErrorCode', label: t('table.details.upstreamErrorCode'), value: formatOptionalText(record.upstreamErrorCode) },
+          { key: 'upstreamErrorMessage', label: t('table.details.upstreamErrorMessage'), value: formatOptionalText(record.upstreamErrorMessage) },
+          { key: 'upstreamRequestId', label: t('table.details.upstreamRequestId'), value: formatOptionalText(record.upstreamRequestId) },
+          {
+            key: 'detailLevel',
             label: detailLabels.level,
             value: (
               <Badge
@@ -403,8 +473,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
               </Badge>
             ),
           },
-          { label: detailLabels.prunedAt, value: detailPrunedAtValue },
-          { label: detailLabels.pruneReason, value: detailPruneReasonValue },
+          { key: 'detailPrunedAt', label: detailLabels.prunedAt, value: detailPrunedAtValue },
+          { key: 'detailPruneReason', label: detailLabels.pruneReason, value: detailPruneReasonValue },
         ]
         const timingPairs: Array<{ label: string; value: string }> = [
           { label: t('table.details.stage.requestRead'), value: formatMilliseconds(record.tReqReadMs) },
@@ -423,6 +493,12 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           meta,
           occurredTime,
           occurredDate,
+          accountLabel,
+          accountId:
+            typeof record.upstreamAccountId === 'number' && Number.isFinite(record.upstreamAccountId)
+              ? Math.trunc(record.upstreamAccountId)
+              : null,
+          accountClickable,
           proxyDisplayName,
           modelValue: record.model ?? FALLBACK_CELL,
           requestedServiceTierValue,
@@ -439,8 +515,9 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           endpointValue,
           isCompactEndpoint: isCompactEndpointValue,
           errorMessage,
-          latencySummary,
-          latencyCompactSummary,
+          totalLatencyValue,
+          firstByteLatencyValue,
+          responseContentEncodingValue,
           detailNotice,
           detailPairs,
           timingPairs,
@@ -451,7 +528,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
   const renderExpandedContent = (
     detailId: string,
-    detailPairs: Array<{ label: string; value: ReactNode }>,
+    detailPairs: Array<{ key: string; label: string; value: ReactNode }>,
     timingPairs: Array<{ label: string; value: string }>,
     errorMessage: string,
     detailNotice: string | null,
@@ -468,7 +545,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">{t('table.detailsTitle')}</span>
         <div className="grid gap-2 md:grid-cols-2">
           {detailPairs.map((entry) => (
-            <div key={entry.label} className="flex items-start gap-2">
+            <div key={entry.key} className="flex items-start gap-2">
               <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60 md:min-w-36">{entry.label}</span>
               <div className="min-w-0 break-all font-mono text-sm">{entry.value}</div>
             </div>
@@ -559,17 +636,24 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
                 <Badge variant={row.meta.variant}>{t(row.meta.key)}</Badge>
-                <span
-                  className="min-w-0 truncate text-xs text-base-content/75"
-                  title={row.proxyDisplayName}
-                  data-testid="invocation-proxy-name"
-                >
-                  {row.proxyDisplayName}
-                </span>
+                <div className="min-w-0 flex-1">
+                  <div data-testid="invocation-account-name">
+                    {renderAccountValue(row.accountLabel, row.accountId, row.accountClickable, 'text-xs font-medium text-base-content')}
+                  </div>
+                  <div
+                    className="min-w-0 truncate text-[11px] text-base-content/70"
+                    title={row.proxyDisplayName}
+                    data-testid="invocation-proxy-name"
+                  >
+                    {row.proxyDisplayName}
+                  </div>
+                </div>
               </div>
 
-              <div className="mt-2 text-xs font-mono text-base-content/70" title={row.latencySummary}>
-                {row.latencySummary}
+              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-mono text-base-content/70">
+                <span title={row.totalLatencyValue}>{`${t('table.column.totalLatencyShort')} ${row.totalLatencyValue}`}</span>
+                <span title={row.firstByteLatencyValue}>{`${t('table.column.firstByteLatencyShort')} ${row.firstByteLatencyValue}`}</span>
+                <span title={row.responseContentEncodingValue}>{`${t('table.column.httpCompressionShort')} ${row.responseContentEncodingValue}`}</span>
               </div>
 
               <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
@@ -635,16 +719,24 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           <table className="w-full table-fixed border-separate border-spacing-0 text-sm">
             <thead className="bg-base-200/65 text-[11px] uppercase tracking-[0.08em] text-base-content/70">
               <tr>
-                <th className="w-[12%] px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:w-[10%] xl:px-3">{t('table.column.time')}</th>
-                <th className="w-[18%] px-2 py-2.5 text-center font-semibold whitespace-nowrap xl:w-[15%] xl:px-3">
+                <th className="w-[11%] px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:w-[10%] xl:px-3">{t('table.column.time')}</th>
+                <th className="w-[18%] px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:w-[15%] xl:px-3">
                   <div className="flex flex-col leading-tight">
-                    <span>{t('table.column.proxy')}</span>
+                    <span>{t('table.column.account')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t('table.column.latency')}
+                      {t('table.column.proxy')}
                     </span>
                   </div>
                 </th>
-                <th className="w-[19%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[16%] xl:px-3">
+                <th className="w-[13%] px-2 py-2.5 text-left font-semibold whitespace-nowrap xl:w-[12%] xl:px-3">
+                  <div className="flex flex-col leading-tight">
+                    <span>{t('table.column.latency')}</span>
+                    <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
+                      {t('table.column.firstByteCompression')}
+                    </span>
+                  </div>
+                </th>
+                <th className="w-[17%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[14%] xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.model')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -652,7 +744,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="w-[18%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[15%] xl:px-3">
+                <th className="w-[16%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[14%] xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.inputTokens')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -660,7 +752,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="w-[12%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[11%] xl:px-3">
+                <th className="w-[10%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[10%] xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.outputTokens')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -668,7 +760,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="w-[14%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[12%] xl:px-3">
+                <th className="w-[12%] px-2 py-2.5 text-right font-semibold whitespace-nowrap xl:w-[11%] xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.totalTokens')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -676,7 +768,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="hidden w-[18%] px-2 py-2.5 text-left font-semibold xl:table-cell xl:px-3">
+                <th className="hidden w-[10%] px-2 py-2.5 text-left font-semibold xl:table-cell xl:px-3">
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.error')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
@@ -684,7 +776,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </span>
                   </div>
                 </th>
-                <th className="w-[10%] px-2 py-2.5 text-right xl:w-[7%] xl:px-3">
+                <th className="w-[9%] px-2 py-2.5 text-right xl:w-[4%] xl:px-3">
                   <span className="sr-only">{toggleLabels.header}</span>
                 </th>
               </tr>
@@ -706,27 +798,40 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                           <span className="truncate whitespace-nowrap text-base-content/70">{row.occurredDate}</span>
                         </div>
                       </td>
-                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle text-center xl:px-3">
-                        <div className="flex min-w-0 flex-col items-center justify-center gap-1 leading-tight">
+                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
+                        <div className="flex min-w-0 flex-col items-center justify-center gap-1 leading-tight text-center">
                           <Badge
                             variant={row.meta.variant}
-                            className="min-w-0 max-w-full justify-center overflow-hidden"
+                            className="mx-auto w-fit max-w-full justify-center overflow-hidden px-4 text-center"
                             data-testid="invocation-proxy-badge"
                           >
                             <span
-                              className="block max-w-full min-w-0 truncate whitespace-nowrap text-center"
-                              title={row.proxyDisplayName}
-                              data-testid="invocation-proxy-name"
+                              className="block max-w-full min-w-0 truncate whitespace-nowrap"
+                              data-testid="invocation-account-name"
                             >
-                              {row.proxyDisplayName}
+                              {renderAccountValue(row.accountLabel, row.accountId, row.accountClickable)}
                             </span>
                             <span className="sr-only">{t(row.meta.key)}</span>
                           </Badge>
-                          <span className="hidden whitespace-nowrap font-mono text-[11px] text-base-content/70 lg:block" title={row.latencySummary}>
-                            {row.latencySummary}
+                          <span
+                            className="block w-full truncate whitespace-nowrap text-center text-[11px] text-base-content/70"
+                            title={row.proxyDisplayName}
+                            data-testid="invocation-proxy-name"
+                          >
+                            {row.proxyDisplayName}
                           </span>
-                          <span className="whitespace-nowrap font-mono text-[11px] text-base-content/70 lg:hidden" title={row.latencySummary}>
-                            {row.latencyCompactSummary}
+                        </div>
+                      </td>
+                      <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
+                        <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
+                          <span className="truncate whitespace-nowrap font-mono tabular-nums" title={row.totalLatencyValue}>
+                            {row.totalLatencyValue}
+                          </span>
+                          <span
+                            className="truncate whitespace-nowrap text-[11px] text-base-content/70"
+                            title={`${row.firstByteLatencyValue} · ${row.responseContentEncodingValue}`}
+                          >
+                            {`${row.firstByteLatencyValue} · ${row.responseContentEncodingValue}`}
                           </span>
                         </div>
                       </td>
@@ -798,7 +903,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                     </tr>
                     {isExpanded && (
                       <tr className="bg-base-200/68">
-                        <td colSpan={isXlUp ? 8 : 7} className="border-t border-base-300/65 px-2 py-2.5 xl:px-3">
+                        <td colSpan={isXlUp ? 9 : 8} className="border-t border-base-300/65 px-2 py-2.5 xl:px-3">
                           {renderExpandedContent(
                             tableDetailId,
                             row.detailPairs,
@@ -817,6 +922,12 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           </table>
         </div>
       </div>
+      <InvocationAccountDetailDrawer
+        open={drawerAccountId != null}
+        accountId={drawerAccountId}
+        accountLabel={drawerAccountLabel}
+        onClose={closeAccountDrawer}
+      />
     </div>
   )
 }

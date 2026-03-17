@@ -156,6 +156,71 @@ fn local_naive_to_utc_does_not_fall_back_to_and_utc_on_dst_gap() {
 }
 
 #[test]
+fn resolve_invocation_proxy_display_name_prefers_selected_forward_proxy() {
+    let selected_proxy = SelectedForwardProxy {
+        key: "proxy-a".to_string(),
+        source: "manual".to_string(),
+        display_name: "Tokyo-Edge-1".to_string(),
+        endpoint_url: Some(Url::parse("http://127.0.0.1:7890").expect("valid proxy url")),
+        endpoint_url_raw: Some("http://127.0.0.1:7890".to_string()),
+    };
+    let pool_account = PoolResolvedAccount {
+        account_id: 7,
+        display_name: "Pool Alpha".to_string(),
+        kind: "api_key".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer pool-alpha".to_string(),
+        },
+        upstream_base_url: Url::parse("https://claude-relay-service.nsngc.org/openai")
+            .expect("valid upstream url"),
+    };
+
+    assert_eq!(
+        resolve_invocation_proxy_display_name(Some(&selected_proxy), Some(&pool_account))
+            .as_deref(),
+        Some("Tokyo-Edge-1")
+    );
+}
+
+#[test]
+fn resolve_invocation_proxy_display_name_uses_pool_upstream_host_and_port() {
+    let pool_account = PoolResolvedAccount {
+        account_id: 17,
+        display_name: "Pool Beta".to_string(),
+        kind: "api_key".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer pool-beta".to_string(),
+        },
+        upstream_base_url: Url::parse("http://127.0.0.1:43121/openai").expect("valid upstream url"),
+    };
+
+    assert_eq!(
+        resolve_invocation_proxy_display_name(None, Some(&pool_account)).as_deref(),
+        Some("127.0.0.1:43121")
+    );
+}
+
+#[test]
+fn resolve_invocation_proxy_display_name_uses_oauth_upstream_host() {
+    let pool_account = PoolResolvedAccount {
+        account_id: 23,
+        display_name: "OAuth Pool".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-token".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: Url::parse("https://chatgpt.com/backend-api/codex")
+            .expect("valid oauth upstream url"),
+    };
+
+    assert_eq!(
+        resolve_invocation_proxy_display_name(None, Some(&pool_account)).as_deref(),
+        Some("chatgpt.com")
+    );
+}
+
+#[test]
 fn normalize_single_proxy_url_supports_scheme_less_host_port() {
     assert_eq!(
         normalize_single_proxy_url("127.0.0.1:7890"),
@@ -4168,6 +4233,26 @@ async fn test_upstream_slow_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_slow_first_chunk() -> impl IntoResponse {
+    let chunks = stream::unfold(0usize, |state| async move {
+        match state {
+            0 => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Some((Ok::<_, Infallible>(Bytes::from_static(b"chunk-a")), 1))
+            }
+            _ => None,
+        }
+    });
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
 async fn test_upstream_hang() -> impl IntoResponse {
     tokio::time::sleep(Duration::from_secs(2)).await;
     StatusCode::NO_CONTENT
@@ -4237,6 +4322,39 @@ async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_responses_slow_success_stream() -> impl IntoResponse {
+    let first = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+    );
+    let second = concat!(
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
+    );
+    let chunks = stream::unfold(0usize, move |state| async move {
+        match state {
+            0 => Some((Ok::<_, Infallible>(Bytes::from_static(first.as_bytes())), 1)),
+            1 => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Some((
+                    Ok::<_, Infallible>(Bytes::from_static(second.as_bytes())),
+                    2,
+                ))
+            }
+            _ => None,
+        }
+    });
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
 async fn test_upstream_responses_failed_stream() -> impl IntoResponse {
     let payload = [
         "event: response.created
@@ -4274,6 +4392,13 @@ async fn test_upstream_responses(uri: Uri) -> Response {
         .is_some_and(|query| query.contains("mode=response_failed"))
     {
         test_upstream_responses_failed_stream()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=slow-success"))
+    {
+        test_upstream_responses_slow_success_stream()
             .await
             .into_response()
     } else if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
@@ -4418,6 +4543,7 @@ async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
         .route("/v1/stream-mid-error", any(test_upstream_stream_mid_error))
         .route("/v1/429-mid-error", any(test_upstream_429_mid_error))
         .route("/v1/slow-stream", any(test_upstream_slow_stream))
+        .route("/v1/slow-first-chunk", any(test_upstream_slow_first_chunk))
         .route("/v1/hang", any(test_upstream_hang))
         .route("/v1/models", get(test_upstream_models))
         .route("/v1/redirect", any(test_upstream_redirect))
@@ -4998,7 +5124,7 @@ async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
 
     let uri: Uri = "/v1/echo?foo=bar".parse().expect("valid uri");
     let response = proxy_openai_v1(
-        State(state),
+        State(state.clone()),
         OriginalUri(uri),
         Method::POST,
         headers,
@@ -5240,7 +5366,7 @@ async fn pool_route_streams_non_capture_request_body_without_eager_prebuffering(
     });
 
     let response = proxy_openai_v1(
-        State(state),
+        State(state.clone()),
         OriginalUri("/v1/echo?mode=pool-stream".parse().expect("valid uri")),
         Method::POST,
         HeaderMap::from_iter([(
@@ -8952,17 +9078,6 @@ struct PoolHttpFailureUpstreamState {
     error_message: String,
 }
 
-#[derive(Clone)]
-struct FixedOauthBridgeFailureState {
-    register_hits: Arc<AtomicUsize>,
-    failure: PoolHttpFailureUpstreamState,
-}
-
-#[derive(Clone)]
-struct FixedOauthBridgeRecoveryState {
-    register_hits: Arc<AtomicUsize>,
-}
-
 async fn pool_retry_upstream(
     State(state): State<PoolRetryUpstreamState>,
     headers: HeaderMap,
@@ -9069,135 +9184,133 @@ async fn pool_http_failure_upstream(State(state): State<PoolHttpFailureUpstreamS
         .into_response()
 }
 
-async fn fixed_oauth_bridge_register(
-    State(state): State<FixedOauthBridgeFailureState>,
-) -> Response {
-    state
-        .register_hits
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    (
-        StatusCode::OK,
-        Json(json!({
-            "token_key": "bridge-test-token",
-            "expire_at": (Utc::now() + chrono::Duration::minutes(10)).timestamp(),
-        })),
-    )
-        .into_response()
-}
-
-async fn fixed_oauth_bridge_register_recovery(
-    State(state): State<FixedOauthBridgeRecoveryState>,
-) -> Response {
-    let hit = state
-        .register_hits
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        + 1;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "token_key": format!("bridge-test-token-{hit}"),
-            "expire_at": (Utc::now() + chrono::Duration::minutes(10)).timestamp(),
-        })),
-    )
-        .into_response()
-}
-
-async fn spawn_fixed_oauth_bridge_http_failure(
+async fn spawn_oauth_codex_http_failure(
     status: StatusCode,
     error_code: Option<&str>,
     error_message: &str,
-) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
-    let register_hits = Arc::new(AtomicUsize::new(0));
-    let state = FixedOauthBridgeFailureState {
-        register_hits: register_hits.clone(),
-        failure: PoolHttpFailureUpstreamState {
+) -> (String, JoinHandle<()>) {
+    let app = Router::new()
+        .route(
+            "/backend-api/codex/responses",
+            post(pool_http_failure_upstream),
+        )
+        .with_state(PoolHttpFailureUpstreamState {
             status,
             error_code: error_code.map(str::to_string),
             error_message: error_message.to_string(),
-        },
-    };
-    let app = Router::new()
-        .route(
-            "/internal/token/register",
-            post(fixed_oauth_bridge_register),
-        )
-        .route(
-            "/openai/v1/responses",
-            post(
-                |State(state): State<FixedOauthBridgeFailureState>| async move {
-                    pool_http_failure_upstream(State(state.failure)).await
-                },
-            ),
-        )
-        .with_state(state);
+        });
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("bind fixed oauth bridge upstream");
-    let addr = listener
-        .local_addr()
-        .expect("fixed oauth bridge upstream addr");
+        .expect("bind oauth codex upstream");
+    let addr = listener.local_addr().expect("oauth codex upstream addr");
     let handle = tokio::spawn(async move {
         axum::serve(listener, app)
             .await
-            .expect("fixed oauth bridge upstream should run");
+            .expect("oauth codex upstream should run");
     });
-    (format!("http://{addr}"), register_hits, handle)
+    (format!("http://{addr}"), handle)
 }
 
-async fn spawn_fixed_oauth_bridge_stale_token_once() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
-    let register_hits = Arc::new(AtomicUsize::new(0));
-    let state = FixedOauthBridgeRecoveryState {
-        register_hits: register_hits.clone(),
-    };
-    let app = Router::new()
-        .route(
-            "/internal/token/register",
-            post(fixed_oauth_bridge_register_recovery),
-        )
-        .route(
-            "/openai/v1/responses",
-            post(|headers: HeaderMap| async move {
-                let authorization = headers
-                    .get(http_header::AUTHORIZATION)
-                    .and_then(|value| value.to_str().ok())
-                    .unwrap_or_default();
-                if authorization == "Bearer bridge-test-token-1" {
-                    return (
-                        StatusCode::UNAUTHORIZED,
-                        Json(json!({
-                            "error": {
-                                "code": "invalid_api_key",
-                                "message": "oauth bridge token is unknown or was not registered",
-                            }
-                        })),
-                    )
-                        .into_response();
-                }
-                (
-                    StatusCode::OK,
-                    Json(json!({
-                        "id": "resp_bridge_recovered",
-                        "object": "response",
-                        "status": "completed",
-                        "output": [],
-                    })),
-                )
-                    .into_response()
-            }),
-        )
-        .with_state(state);
+async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Response {
+    let path = request.uri().path().to_string();
+    let authorization = request
+        .headers()
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let sticky_key_header = request
+        .headers()
+        .get("x-sticky-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let prompt_cache_key_header = request
+        .headers()
+        .get("x-prompt-cache-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let forwarded_for = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body = to_bytes(request.into_body(), usize::MAX)
+        .await
+        .expect("read oauth codex capture request body");
+    (
+        StatusCode::OK,
+        Json(json!({
+            "path": path,
+            "authorization": authorization,
+            "stickyKeyHeader": sticky_key_header,
+            "promptCacheKeyHeader": prompt_cache_key_header,
+            "forwardedFor": forwarded_for,
+            "bodyLength": body.len(),
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
+    let app = Router::new().route(
+        "/backend-api/codex/*path",
+        any(oauth_codex_capture_upstream),
+    );
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("bind fixed oauth bridge recovery upstream");
+        .expect("bind oauth codex capture upstream");
     let addr = listener
         .local_addr()
-        .expect("fixed oauth bridge recovery upstream addr");
+        .expect("oauth codex capture upstream addr");
     let handle = tokio::spawn(async move {
         axum::serve(listener, app)
             .await
-            .expect("fixed oauth bridge recovery upstream should run");
+            .expect("oauth codex capture upstream should run");
     });
-    (format!("http://{addr}"), register_hits, handle)
+    (format!("http://{addr}"), handle)
+}
+
+async fn oauth_codex_slow_models_upstream() -> impl IntoResponse {
+    let chunks = stream::unfold(0usize, |state| async move {
+        match state {
+            0 => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Some((
+                    Ok::<_, Infallible>(Bytes::from_static(
+                        br#"{"data":[{"id":"slow-model","object":"model"}]}"#,
+                    )),
+                    1,
+                ))
+            }
+            _ => None,
+        }
+    });
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
+async fn spawn_oauth_codex_slow_models_upstream() -> (String, JoinHandle<()>) {
+    let app = Router::new().route(
+        "/backend-api/codex/models",
+        get(oauth_codex_slow_models_upstream),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind oauth codex slow models upstream");
+    let addr = listener
+        .local_addr()
+        .expect("oauth codex slow models upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("oauth codex slow models upstream should run");
+    });
+    (format!("http://{addr}"), handle)
 }
 
 async fn spawn_pool_retry_upstream(
@@ -9638,6 +9751,24 @@ async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_sing
         payload_json["upstreamAccountName"].as_str(),
         Some("Primary")
     );
+    let expected_proxy_display_name = {
+        let upstream_url = Url::parse(&upstream_base).expect("valid upstream base url");
+        match upstream_url.port() {
+            Some(port) => format!(
+                "{}:{}",
+                upstream_url.host_str().expect("upstream host should exist"),
+                port
+            ),
+            None => upstream_url
+                .host_str()
+                .expect("upstream host should exist")
+                .to_string(),
+        }
+    };
+    assert_eq!(
+        payload_json["proxyDisplayName"].as_str(),
+        Some(expected_proxy_display_name.as_str())
+    );
     assert_eq!(
         wait_for_test_sticky_route_account_id(&state.pool, "sticky-cap-001").await,
         Some(primary_id)
@@ -9688,7 +9819,9 @@ async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
 
 #[tokio::test]
 async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_details() {
-    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
 
     #[derive(sqlx::FromRow)]
     struct RouteStateRow {
@@ -9702,16 +9835,14 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
     }
 
     let scope_message = "You have insufficient permissions for this operation. Missing scopes: api.responses.write.";
-    let (bridge_base, register_hits, upstream_handle) = spawn_fixed_oauth_bridge_http_failure(
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_http_failure(
         StatusCode::UNAUTHORIZED,
         Some("missing_scopes"),
         scope_message,
     )
     .await;
-    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
-        Url::parse(&format!("{bridge_base}/internal/token/register"))
-            .expect("valid bridge register url"),
-        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
     )
     .await;
     let state = test_state_with_openai_base(
@@ -9804,90 +9935,24 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
             .as_str()
             .is_some_and(|value| value.contains("Missing scopes: api.responses.write"))
     );
-    assert_eq!(register_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
-
     upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
-}
-
-#[tokio::test]
-async fn pool_route_reregisters_oauth_bridge_token_after_bridge_restart_like_rejection() {
-    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
-
-    #[derive(sqlx::FromRow)]
-    struct RouteStateRow {
-        status: String,
-        last_error: Option<String>,
-    }
-
-    let (bridge_base, register_hits, upstream_handle) =
-        spawn_fixed_oauth_bridge_stale_token_once().await;
-    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
-        Url::parse(&format!("{bridge_base}/internal/token/register"))
-            .expect("valid bridge register url"),
-        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
-    )
-    .await;
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let account_id =
-        insert_test_pool_oauth_account(&state, "Recovery OAuth", "oauth-recover").await;
-
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/responses".parse().expect("valid uri")),
-        Method::POST,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
-        Body::from(r#"{"model":"gpt-5","input":"hello"}"#.as_bytes().to_vec()),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read response body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode response body");
-    assert_eq!(payload["id"].as_str(), Some("resp_bridge_recovered"));
-    assert_eq!(register_hits.load(std::sync::atomic::Ordering::SeqCst), 2);
-
-    let route_state = sqlx::query_as::<_, RouteStateRow>(
-        r#"
-        SELECT status, last_error
-        FROM pool_upstream_accounts
-        WHERE id = ?1
-        "#,
-    )
-    .bind(account_id)
-    .fetch_one(&state.pool)
-    .await
-    .expect("load route state");
-    assert_eq!(route_state.status, "active");
-    assert_eq!(route_state.last_error, None);
-
-    upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]
 async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
-    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
 
-    let (bridge_base, _register_hits, upstream_handle) = spawn_fixed_oauth_bridge_http_failure(
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_http_failure(
         StatusCode::FORBIDDEN,
         Some("token_invalidated"),
         "Authentication token has been invalidated, please sign in again.",
     )
     .await;
-    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
-        Url::parse(&format!("{bridge_base}/internal/token/register"))
-            .expect("valid bridge register url"),
-        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
     )
     .await;
     let state = test_state_with_openai_base(
@@ -9920,23 +9985,23 @@ async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
     assert_eq!(status, "needs_reauth");
 
     upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]
 async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
-    let _bridge_lock = oauth_bridge::TEST_FIXED_ENDPOINTS_LOCK.lock().await;
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
 
-    let (bridge_base, _register_hits, upstream_handle) = spawn_fixed_oauth_bridge_http_failure(
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_http_failure(
         StatusCode::UNAUTHORIZED,
         Some("invalid_grant"),
         "Unauthorized",
     )
     .await;
-    oauth_bridge::set_test_oauth_bridge_fixed_endpoints(
-        Url::parse(&format!("{bridge_base}/internal/token/register"))
-            .expect("valid bridge register url"),
-        Url::parse(&format!("{bridge_base}/openai")).expect("valid bridge openai url"),
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
     )
     .await;
     let state = test_state_with_openai_base(
@@ -9969,7 +10034,430 @@ async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
     assert_eq!(status, "needs_reauth");
 
     upstream_handle.abort();
-    oauth_bridge::reset_test_oauth_bridge_fixed_endpoints().await;
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_oauth_account(&state, "Large OAuth", "oauth-large").await;
+
+    let body = serde_json::to_vec(&json!({
+        "messages": [{
+            "role": "user",
+            "content": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 4096),
+        }],
+    }))
+    .expect("serialize large oauth passthrough body");
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(424242),
+    });
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write replay temp file");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Large OAuth".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-large".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+    };
+
+    let upstream = send_pool_request_with_failover(
+        state,
+        Method::POST,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file: temp_file.clone(),
+            size: body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        Some(account),
+        1,
+    )
+    .await
+    .expect("oauth passthrough should succeed");
+
+    assert_eq!(upstream.response.status(), StatusCode::OK);
+    let mut response_body = upstream.first_chunk.clone().unwrap_or_default().to_vec();
+    response_body.extend_from_slice(
+        &upstream
+            .response
+            .into_bytes()
+            .await
+            .expect("read oauth passthrough response"),
+    );
+    let payload =
+        serde_json::from_slice::<Value>(&response_body).expect("decode oauth passthrough response");
+    assert_eq!(
+        payload["path"].as_str(),
+        Some("/backend-api/codex/chat/completions")
+    );
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer oauth-large")
+    );
+    assert_eq!(payload["bodyLength"].as_u64(), Some(body.len() as u64));
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base_body_limit_and_read_timeout(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        Duration::from_millis(50),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_oauth_account(&state, "Streaming OAuth", "oauth-streaming").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from_static(b"{\"messages\":["))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                b"{\"role\":\"user\",\"content\":\"hello\"}]}",
+            )))
+            .await;
+    });
+
+    let uri = "/v1/chat/completions".parse().expect("valid uri");
+    let response = proxy_openai_v1_via_pool(
+        state,
+        42,
+        &uri,
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("sticky-oauth-stream"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static("prompt-cache-oauth-stream"),
+            ),
+            (
+                HeaderName::from_static("x-forwarded-for"),
+                HeaderValue::from_static("203.0.113.8"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await
+    .expect("oauth pool passthrough response");
+
+    let status = response.status();
+    let response_body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth passthrough response");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected oauth passthrough response: {}",
+        String::from_utf8_lossy(&response_body)
+    );
+    let payload: Value =
+        serde_json::from_slice(&response_body).expect("decode oauth passthrough response");
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer oauth-streaming")
+    );
+    assert!(payload["stickyKeyHeader"].is_null());
+    assert!(payload["promptCacheKeyHeader"].is_null());
+    assert!(payload["forwardedFor"].is_null());
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let _primary_id =
+        insert_test_pool_oauth_account(&state, "Primary OAuth", "oauth-primary").await;
+    let secondary_id =
+        insert_test_pool_oauth_account(&state, "Secondary OAuth", "oauth-secondary").await;
+    record_pool_route_success(&state.pool, secondary_id, Some("sticky-oauth-body"))
+        .await
+        .expect("seed oauth sticky route");
+
+    let request_body = serde_json::to_vec(&json!({
+        "messages": [{
+            "role": "user",
+            "content": "hello",
+        }],
+        "stickyKey": "sticky-oauth-body",
+    }))
+    .expect("serialize oauth sticky body");
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(4);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(request_body))).await;
+    });
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read oauth sticky response"),
+    )
+    .expect("decode oauth sticky response");
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer oauth-secondary")
+    );
+    let selected_at: Vec<(i64, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, last_selected_at
+        FROM pool_upstream_accounts
+        WHERE display_name IN ('Primary OAuth', 'Secondary OAuth')
+        ORDER BY id
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load oauth account selection timestamps");
+    assert_eq!(selected_at.len(), 2);
+    assert_eq!(selected_at[0].1, None);
+    assert!(
+        selected_at[1].1.is_some(),
+        "sticky-selected oauth account should be marked"
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let oauth_id =
+        insert_test_pool_oauth_account(&state, "Oversized Responses OAuth", "oauth-oversized")
+            .await;
+    let api_key_id =
+        insert_test_pool_api_key_account(&state, "Fallback API Key", "upstream-fallback").await;
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(626262),
+    });
+    let body = vec![b'x'; OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1];
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write oversized oauth responses body");
+
+    let upstream = send_pool_request_with_failover(
+        state.clone(),
+        Method::POST,
+        &"/v1/responses?mode=delay".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file,
+            size: body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        None,
+        1,
+    )
+    .await
+    .expect("api key account should handle oversized oauth responses body");
+
+    assert_eq!(upstream.account.account_id, api_key_id);
+    let selected_at: Vec<(i64, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, last_selected_at
+        FROM pool_upstream_accounts
+        WHERE id IN (?1, ?2)
+        ORDER BY id
+        "#,
+    )
+    .bind(oauth_id)
+    .bind(api_key_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load selected timestamps");
+    assert_eq!(selected_at.len(), 2);
+    assert_eq!(selected_at[0], (oauth_id, None));
+    assert!(selected_at[1].1.is_some());
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Responses OAuth", "oauth-responses").await;
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(515151),
+    });
+    let body = vec![b'x'; OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1];
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write oversized oauth responses body");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Responses OAuth".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-responses".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+    };
+
+    let err = send_pool_request_with_failover(
+        state,
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file,
+            size: body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        Some(account),
+        1,
+    )
+    .await
+    .expect_err("oversized oauth responses body should be rejected");
+
+    assert_eq!(err.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(
+        err.message
+            .contains("oauth /v1/responses request body exceeds"),
+        "unexpected oversized oauth responses error: {}",
+        err.message
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn extract_sticky_key_from_large_file_backed_replay_snapshot() {
+    let sticky_body = serde_json::to_vec(&json!({
+        "stickyKey": "sticky-large-file",
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
+    }))
+    .expect("serialize sticky replay body");
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(737373),
+    });
+    tokio::fs::write(&temp_file.path, &sticky_body)
+        .await
+        .expect("write sticky replay temp file");
+    let snapshot = PoolReplayBodySnapshot::File {
+        temp_file,
+        size: sticky_body.len(),
+    };
+
+    assert_eq!(
+        extract_sticky_key_from_replay_snapshot(&snapshot)
+            .await
+            .as_deref(),
+        Some("sticky-large-file")
+    );
 }
 
 #[test]
@@ -10161,7 +10649,9 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         account_id: 8,
         display_name: "Gateway Key".to_string(),
         kind: "api_key_codex".to_string(),
-        authorization: "Bearer upstream-primary".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer upstream-primary".to_string(),
+        },
         upstream_base_url: Url::parse("https://proxy.example.com/gateway")
             .expect("account upstream base url"),
     };
@@ -10328,6 +10818,184 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
 
     server_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_e2e_stream_survives_short_request_timeout() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy test server");
+    let addr = listener.local_addr().expect("proxy test server addr");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("proxy test server should run");
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://{addr}/v1/slow-stream"))
+        .header(http_header::AUTHORIZATION, "Bearer pool-live-key")
+        .send()
+        .await
+        .expect("send pool proxy stream request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.bytes().await.expect("read proxied stream");
+    assert_eq!(&body[..], b"chunk-achunk-b");
+
+    server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_times_out_before_first_chunk_with_short_request_timeout() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy test server");
+    let addr = listener.local_addr().expect("proxy test server addr");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("proxy test server should run");
+    });
+
+    let client = reqwest::Client::new();
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        client
+            .get(format!("http://{addr}/v1/slow-first-chunk"))
+            .header(http_header::AUTHORIZATION, "Bearer pool-live-key")
+            .send(),
+    )
+    .await
+    .expect("pool request should not hang")
+    .expect("send pool proxy request");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response.bytes().await.expect("read pool error body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("first upstream chunk"));
+
+    server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_stream_survives_short_request_timeout() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy test server");
+    let addr = listener.local_addr().expect("proxy test server addr");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("proxy test server should run");
+    });
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+    }))
+    .expect("serialize request body");
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{addr}/v1/responses?mode=slow-success"))
+        .header(http_header::AUTHORIZATION, "Bearer pool-live-key")
+        .header(http_header::CONTENT_TYPE, "application/json")
+        .body(request_body)
+        .send()
+        .await
+        .expect("send pool responses request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.bytes().await.expect("read pool responses body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("response.created"));
+    assert!(payload.contains("response.completed"));
+    assert!(payload.contains("resp_slow_test"));
+
+    server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_oauth_models_preserve_response_timeout_after_headers() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_slow_models_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let mut config = test_config();
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_oauth_account(&state, "Primary OAuth", "oauth-primary").await;
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::from_iter([(
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            )]),
+            Body::empty(),
+        ),
+    )
+    .await
+    .expect("oauth pool request should not hang");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth pool error body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("timed out"));
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]
@@ -11805,7 +12473,7 @@ async fn list_invocations_projects_payload_context_fields() {
     .bind(SOURCE_PROXY)
     .bind("failed")
     .bind(
-        r#"{"endpoint":"/v1/responses","failureKind":"upstream_stream_error","requesterIp":"198.51.100.77","promptCacheKey":"pck-list-1","requestedServiceTier":"priority","serviceTier":null,"service_tier":"priority","proxyDisplayName":"jp-relay-01","proxyWeightDelta":-0.68,"reasoningEffort":"high"}"#,
+        r#"{"endpoint":"/v1/responses","failureKind":"upstream_stream_error","requesterIp":"198.51.100.77","promptCacheKey":"pck-list-1","routeMode":"pool","upstreamAccountId":17,"upstreamAccountName":"pool-account-17","responseContentEncoding":"gzip, br","requestedServiceTier":"priority","serviceTier":null,"service_tier":"priority","proxyDisplayName":"jp-relay-01","proxyWeightDelta":-0.68,"reasoningEffort":"high"}"#,
     )
     .bind("{}")
     .execute(&state.pool)
@@ -11836,6 +12504,16 @@ async fn list_invocations_projects_payload_context_fields() {
     );
     assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
     assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-list-1"));
+    assert_eq!(record.route_mode.as_deref(), Some("pool"));
+    assert_eq!(record.upstream_account_id, Some(17));
+    assert_eq!(
+        record.upstream_account_name.as_deref(),
+        Some("pool-account-17")
+    );
+    assert_eq!(
+        record.response_content_encoding.as_deref(),
+        Some("gzip, br")
+    );
     assert_eq!(record.requested_service_tier.as_deref(), Some("priority"));
     assert_eq!(record.service_tier.as_deref(), Some("priority"));
     assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));

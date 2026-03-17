@@ -1,7 +1,12 @@
+/** @vitest-environment jsdom */
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { MemoryRouter } from 'react-router-dom'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '../i18n'
 import type { ApiInvocation } from '../lib/api'
+import type { UpstreamAccountDetail } from '../lib/api'
 import {
   formatProxyWeightDelta,
   formatServiceTier,
@@ -11,7 +16,60 @@ import {
 import { InvocationTable } from './InvocationTable'
 import { getReasoningEffortTone } from './invocation-table-reasoning'
 
+const apiMocks = vi.hoisted(() => ({
+  fetchUpstreamAccountDetail: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
+}))
+
+vi.mock('../lib/api', async () => {
+  const actual = await vi.importActual<typeof import('../lib/api')>('../lib/api')
+  return {
+    ...actual,
+    fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
+  }
+})
+
 const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
+let host: HTMLDivElement | null = null
+let root: Root | null = null
+
+beforeAll(() => {
+  Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+    configurable: true,
+    writable: true,
+    value: true,
+  })
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(min-width: 1280px)',
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  })
+})
+
+beforeEach(() => {
+  apiMocks.fetchUpstreamAccountDetail.mockReset()
+  host = document.createElement('div')
+  document.body.appendChild(host)
+  root = createRoot(host)
+})
+
+afterEach(async () => {
+  await act(async () => {
+    root?.unmount()
+  })
+  host?.remove()
+  host = null
+  root = null
+  document.body.innerHTML = ''
+})
 
 function renderTable(records: ApiInvocation[]) {
   return renderToStaticMarkup(
@@ -19,6 +77,18 @@ function renderTable(records: ApiInvocation[]) {
       <InvocationTable records={records} isLoading={false} error={null} />
     </I18nProvider>,
   )
+}
+
+async function renderInteractiveTable(records: ApiInvocation[]) {
+  await act(async () => {
+    root?.render(
+      <MemoryRouter>
+        <I18nProvider>
+          <InvocationTable records={records} isLoading={false} error={null} />
+        </I18nProvider>
+      </MemoryRouter>,
+    )
+  })
 }
 
 describe('formatProxyWeightDelta', () => {
@@ -165,6 +235,97 @@ describe('InvocationTable', () => {
     expect(html).toContain('data-reasoning-effort-tone="high"')
     expect(html).toContain('border-warning/45')
     expect(html).toContain('>—</span>')
+  })
+
+  it('renders account/proxy and total-latency/compression summaries', () => {
+    const html = renderTable([
+      {
+        id: 31,
+        invokeId: 'invocation-account-summary',
+        occurredAt: '2026-03-07T03:13:53Z',
+        createdAt: '2026-03-07T03:13:53Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        proxyDisplayName: 'codex-relay-01',
+        responseContentEncoding: 'gzip, br',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        totalTokens: 2048,
+        cost: 0.0042,
+        tUpstreamTtfbMs: 118.2,
+        tTotalMs: 910.4,
+      },
+      {
+        id: 32,
+        invokeId: 'invocation-reverse-proxy-summary',
+        occurredAt: '2026-03-07T03:13:52Z',
+        createdAt: '2026-03-07T03:13:52Z',
+        source: 'proxy',
+        routeMode: 'forward_proxy',
+        proxyDisplayName: 'codex-relay-02',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        totalTokens: 1024,
+        cost: 0.0021,
+        tUpstreamTtfbMs: 96.5,
+        tTotalMs: 804.4,
+      },
+    ])
+
+    expect(html).toContain('账号')
+    expect(html).toContain('代理')
+    expect(html).toContain('时延')
+    expect(html).toContain('首字耗时')
+    expect(html).toContain('首字耗时 / HTTP 压缩')
+    expect(html).toContain('pool-account-a')
+    expect(html).toContain('反向代理')
+    expect(html).toContain('gzip, br')
+    expect(html).toContain('data-testid="invocation-account-name"')
+  })
+
+  it('shows proxyDisplayName in both summary and expanded details when present', async () => {
+    await renderInteractiveTable([
+      {
+        id: 33,
+        invokeId: 'invocation-proxy-detail-visible',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        proxyDisplayName: 'codex-relay-01',
+        responseContentEncoding: 'gzip, br',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        totalTokens: 2048,
+        cost: 0.0042,
+        tUpstreamTtfbMs: 118.2,
+        tTotalMs: 910.4,
+      },
+    ])
+
+    const beforeExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? []
+    expect(beforeExpandMatches.length).toBeGreaterThanOrEqual(1)
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('请求详情')
+    const afterExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? []
+    expect(afterExpandMatches.length).toBeGreaterThanOrEqual(2)
   })
 
   it('colors compact endpoint paths without adding extra summary badges', () => {
@@ -331,6 +492,95 @@ describe('InvocationTable', () => {
     expect(html.match(/data-fast-state="requested_only"/g)?.length ?? 0).toBe(4)
     expect(html).toContain('Fast 模式（Priority processing）')
     expect(html).toContain('请求想要 Fast，但实际未命中 Priority processing')
+  })
+
+  it('opens the current-page upstream account drawer when clicking a pool account name', async () => {
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
+      id: 42,
+      kind: 'oauth_codex',
+      provider: 'openai',
+      displayName: 'Pool Alpha',
+      groupName: 'group-a',
+      isMother: true,
+      status: 'active',
+      enabled: true,
+      email: 'pool-alpha@example.com',
+      chatgptAccountId: 'org_pool_alpha',
+      chatgptUserId: 'user_pool_alpha',
+      planType: 'team',
+      maskedApiKey: null,
+      lastSyncedAt: '2026-03-16T09:10:00Z',
+      lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
+      lastError: null,
+      lastErrorAt: null,
+      tokenExpiresAt: '2026-03-16T12:00:00Z',
+      lastRefreshedAt: '2026-03-16T09:09:00Z',
+      primaryWindow: {
+        usedPercent: 22,
+        usedText: '22 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-16T10:00:00Z',
+        windowDurationMins: 300,
+      },
+      secondaryWindow: {
+        usedPercent: 36,
+        usedText: '36 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-17T00:00:00Z',
+        windowDurationMins: 10080,
+      },
+      credits: null,
+      localLimits: null,
+      duplicateInfo: null,
+      tags: [],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+      note: null,
+      upstreamBaseUrl: null,
+      history: [],
+    })
+
+    await renderInteractiveTable([
+      {
+        id: 41,
+        invokeId: 'pool-drawer-open',
+        occurredAt: '2026-03-16T09:10:30Z',
+        createdAt: '2026-03-16T09:10:30Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 42,
+        upstreamAccountName: 'Pool Alpha',
+        proxyDisplayName: 'relay-alpha',
+        responseContentEncoding: 'gzip',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        totalTokens: 512,
+        tUpstreamTtfbMs: 104.4,
+        tTotalMs: 702.3,
+      },
+    ])
+
+    const trigger = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Pool Alpha'))
+    expect(trigger).toBeTruthy()
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledWith(42)
+    expect(document.body.textContent).toContain('上游账号')
+    expect(document.body.textContent).toContain('Pool Alpha')
+    expect(document.body.textContent).toContain('去号池查看完整详情')
   })
 
   it('keeps structured-only metadata out of summary rows', () => {
