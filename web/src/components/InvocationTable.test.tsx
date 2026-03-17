@@ -230,6 +230,8 @@ describe('InvocationTable', () => {
     expect(html).toContain('high')
     expect(html).toContain('推理 41')
     expect(html).toContain('推理 —')
+    expect(html).toContain('7.79 s')
+    expect(html).toContain('149.5 ms')
     expect(html).toContain('/v1/responses')
     expect(html).toContain('/v1/chat/completions')
     expect(html).toContain('data-reasoning-effort-tone="high"')
@@ -492,6 +494,50 @@ describe('InvocationTable', () => {
     expect(html.match(/data-fast-state="requested_only"/g)?.length ?? 0).toBe(4)
     expect(html).toContain('Fast 模式（Priority processing）')
     expect(html).toContain('请求想要 Fast，但实际未命中 Priority processing')
+  })
+
+  it('renders expanded timing details with seconds for non-ttfb durations', async () => {
+    await renderInteractiveTable([
+      {
+        id: 91,
+        invokeId: 'invocation-expanded-timings',
+        occurredAt: '2026-03-16T09:10:30Z',
+        createdAt: '2026-03-16T09:10:30Z',
+        source: 'proxy',
+        proxyDisplayName: 'relay-expanded',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        totalTokens: 512,
+        tReqReadMs: 3450,
+        tReqParseMs: 20,
+        tUpstreamConnectMs: 456.7,
+        tUpstreamTtfbMs: 88.8,
+        tUpstreamStreamMs: 12000,
+        tRespParseMs: 90,
+        tPersistMs: 8,
+        tTotalMs: 12345,
+      },
+    ])
+
+    const trigger = Array.from(document.querySelectorAll('button')).find((button) => {
+      const label = button.getAttribute('aria-label')
+      return label === '展开详情' || label === 'Show details'
+    })
+    expect(trigger).toBeTruthy()
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('3.45 s')
+    expect(text).toContain('0.02 s')
+    expect(text).toContain('0.457 s')
+    expect(text).toContain('88.8 ms')
+    expect(text).toContain('12 s')
+    expect(text).toContain('12.35 s')
   })
 
   it('opens the current-page upstream account drawer when clicking a pool account name', async () => {
