@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.13.0",
+  "base_stable_version": "1.12.10",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-17T13:18:59Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.13.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e9ec512e94867cba0925935175836c80f53f6df6",
+  "pr_number": 163,
+  "pr_title": "feat(account-pool): support manual oauth mailbox attach",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.13.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.13.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "d7653dac5f9033fb8a800e008d65aee1a5038666",
+  "type_label": "type:minor"
+}
