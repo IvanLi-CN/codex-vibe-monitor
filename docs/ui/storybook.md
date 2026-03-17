@@ -39,6 +39,6 @@
 
 ## 已知例外 / 待治理
 
-- 不是所有 `ui/*` 组件都有独立 story；目前仍有部分组件依赖页面 story 间接验证。
+- 不是所有 `web/src/components/ui/` 组件都有独立 story；目前仍有部分组件依赖页面 story 间接验证。
 - 个别交互细节仍需浏览器真实环境复核，Storybook 只能提供大部分视觉与结构证据。
 - 现有 stories 的命名与层级已足够支撑文档，但还没有单独的“UI guideline showcase”合集页。

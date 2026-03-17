@@ -11,7 +11,7 @@
 ### 语义色与表面层级
 
 - `web/src/index.css` 中的 `:root` 与 `[data-theme='vibe-dark']` 定义了主题 token，项目统一使用语义 token，而不是直接在页面里硬编码品牌色。
-- 基础语义色固定使用 `base / primary / secondary / accent / neutral / info / success / warning / error` 这一组命名。
+- 基础语义色由 `base-100 / base-200 / base-300 / base-content` 底色族，加上 `primary / secondary / accent / neutral / info / success / warning / error` 这一组强调语义组成。
 - 页面背景不是纯色平铺，而是由渐变、orb 和细网格叠加构成；应用级 surface 再通过半透明面板与阴影抬起。
 - 通用表面层级优先复用这些类：`surface-panel`、`drawer-shell`、`dialog-surface`、`sbdocs .sbdocs-preview`。
 
@@ -24,7 +24,7 @@
 ### 动效边界
 
 - 全局元素默认只过渡 `background-color`、`border-color`、`color`、`box-shadow`，避免大范围 `transition: all`。
-- Popover、Dialog、Storybook overlay 都使用短时长的 fade / zoom / slide 进入离场动画；页面文档不定义额外复杂 motion system。
+- Popover、Dialog 与 Tooltip 使用短时长的 fade / zoom / slide 进入离场动画；页面文档不定义额外复杂 motion system。
 
 ## 后续新增规则
 

@@ -17,8 +17,8 @@
 - 图表配色：`web/src/lib/chartTheme.ts`
 - Storybook 运行约束：`web/.storybook/preview.ts`
 - 基础组件实现：`web/src/components/ui/`
-- 页面级参考：`web/src/components/*.stories.tsx`
-- 历史功能 spec：`docs/specs/**/SPEC.md`
+- 页面级参考：`web/src/components/AppLayout.stories.tsx`、`web/src/components/SettingsPage.stories.tsx`、`web/src/components/RecordsPage.stories.tsx`、`web/src/components/InvocationTable.stories.tsx`、`web/src/components/TodayStatsOverview.stories.tsx`
+- 历史功能 spec：`docs/specs/jpg66-settings-shadcn-refresh/SPEC.md`、`docs/specs/6whgx-records-stable-snapshot-analytics/SPEC.md`、`docs/specs/g4ek6-account-pool-upstream-accounts/SPEC.md`
 
 当文档和实现不一致时，先以实现与对应 story 为准，再回写本目录与相关 spec；不要让 `docs/ui/` 先于真实实现漂移。
 

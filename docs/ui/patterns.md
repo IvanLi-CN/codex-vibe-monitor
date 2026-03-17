@@ -11,12 +11,12 @@
 ### 面板、卡片与详情区
 
 - 仪表盘、设置、记录页与标签页都偏向 surface-first 布局：先给一层卡片/面板，再在内部使用 section heading、divider 与 metric grid。
-- 抽屉优先使用 `drawer-shell / drawer-header / drawer-body`；模态对话框优先使用 `Dialog` 体系，不重复实现浮层外壳。
+- 抽屉优先使用 `web/src/index.css` 里的 `drawer-shell`、`drawer-header`、`drawer-body`；模态对话框优先使用 `web/src/components/ui/dialog.tsx` 提供的 `Dialog` 体系，不重复实现浮层外壳。
 - KPI 与 summary 卡片应优先采用“标签小、数字大、辅助说明轻”的三段结构。
 
 ### 列表 / 表格 / 详情展开
 
-- 数据密集列表同时兼顾桌面表格与移动端卡片/堆叠布局，代表参考是 `InvocationTable`、`InvocationRecordsTable`、`UpstreamAccounts` 相关 story。
+- 数据密集列表同时兼顾桌面表格与移动端卡片/堆叠布局，代表参考是 `web/src/components/InvocationTable.stories.tsx`、`web/src/components/InvocationRecordsTable.stories.tsx`、`web/src/components/UpstreamAccountsPage.stories.tsx`。
 - 详情信息优先以内联展开、抽屉或卡片二级区块呈现，不鼓励跳转到无上下文的新页面。
 - 长文本、代理名、endpoint、token key 等字段默认允许截断，但必须保留可在详情区或 tooltip 中复核的路径。
 
