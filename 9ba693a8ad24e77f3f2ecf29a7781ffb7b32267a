@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.14.2",
+  "base_stable_version": "1.14.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-17T18:20:44Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.14.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "3c1312b278ade3d52c7697877b60ed9ec4289ee4",
+  "pr_number": 174,
+  "pr_title": "fix: avoid reverse-proxy fallback for unresolved pool accounts",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.14.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.14.2,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "9ba693a8ad24e77f3f2ecf29a7781ffb7b32267a",
+  "type_label": "type:patch"
+}
