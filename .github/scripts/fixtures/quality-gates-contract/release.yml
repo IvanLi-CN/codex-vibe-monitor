@@ -611,7 +611,11 @@ jobs:
               })
               core.notice(`Created PR #${issueNumber} release version comment for ${releaseTag}`)
             } catch (error) {
-              core.warning(`Failed to upsert PR release version comment: ${error.message}`)
+              const acceptedPermissions = error.response?.headers?.['x-accepted-github-permissions'] || '(not provided)'
+              const status = error.status || error.response?.status || '(unknown)'
+              core.warning(
+                `Failed to upsert PR release version comment: ${error.message} (status=${status}, accepted_permissions=${acceptedPermissions})`
+              )
             }
 
       - name: Resolve next pending release target
