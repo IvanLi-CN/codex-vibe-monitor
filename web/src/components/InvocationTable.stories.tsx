@@ -1,10 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
-import { useEffect, useRef, type ReactNode } from 'react'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
 import { InvocationTable } from './InvocationTable'
 import type { ApiInvocation, UpstreamAccountDetail, UpstreamAccountSummary } from '../lib/api'
+import { invocationStableKey } from '../lib/invocation'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 import { SystemNotificationProvider } from './ui/system-notifications'
@@ -872,6 +873,292 @@ function InvocationTableStoryShell({ children }: { children: ReactNode }) {
   )
 }
 
+function RunningInvocationLifecyclePreview() {
+  const occurredAtRef = useRef<string>(new Date(Date.now() - 1200).toISOString())
+  const [phase, setPhase] = useState<'initial' | 'enriched' | 'terminal'>('initial')
+
+  useEffect(() => {
+    const enrichTimer = window.setTimeout(() => setPhase('enriched'), 1200)
+    const terminalTimer = window.setTimeout(() => setPhase('terminal'), 2800)
+    return () => {
+      window.clearTimeout(enrichTimer)
+      window.clearTimeout(terminalTimer)
+    }
+  }, [])
+
+  const occurredAt = occurredAtRef.current
+  const terminalElapsedMs = Math.max(0, Date.now() - Date.parse(occurredAt))
+  const lifecycleRecord: ApiInvocation =
+    phase === 'terminal'
+      ? {
+          id: 1201,
+          invokeId: 'inv_storybook_running_lifecycle',
+          occurredAt,
+          createdAt: occurredAt,
+          source: 'proxy',
+          routeMode: 'pool',
+          upstreamAccountId: 21,
+          upstreamAccountName: 'Codex Team Alpha',
+          proxyDisplayName: 'Storybook Live Running Demo',
+          responseContentEncoding: 'gzip, br',
+          endpoint: '/v1/responses/compact',
+          model: 'gpt-5.4',
+          status: 'success',
+          inputTokens: 2048,
+          outputTokens: 188,
+          cacheInputTokens: 1536,
+          reasoningTokens: 64,
+          reasoningEffort: 'high',
+          totalTokens: 2236,
+          cost: 0.0046,
+          requestedServiceTier: 'priority',
+          serviceTier: 'priority',
+          proxyWeightDelta: 0.42,
+          tUpstreamTtfbMs: 184.2,
+          tTotalMs: Number(terminalElapsedMs.toFixed(1)),
+        }
+      : {
+          id: -1201,
+          invokeId: 'inv_storybook_running_lifecycle',
+          occurredAt,
+          createdAt: occurredAt,
+          source: 'proxy',
+          routeMode: 'pool',
+          upstreamAccountId: 21,
+          upstreamAccountName: 'Codex Team Alpha',
+          proxyDisplayName: 'Storybook Live Running Demo',
+          endpoint: '/v1/responses/compact',
+          model: 'gpt-5.4',
+          status: 'running',
+          inputTokens: 2048,
+          cacheInputTokens: 1536,
+          totalTokens: 2048,
+          requestedServiceTier: 'priority',
+          responseContentEncoding: phase === 'enriched' ? 'gzip' : undefined,
+          tUpstreamTtfbMs: phase === 'enriched' ? 184.2 : null,
+        }
+
+  return <InvocationTable records={[lifecycleRecord]} isLoading={false} error={null} />
+}
+
+const STREAM_VISIBLE_LIMIT = 20
+const STREAM_PROXY_NAMES = [
+  'Tokyo-Edge-1',
+  'Seoul-Edge-2',
+  'Frankfurt-Relay-3',
+  'Virginia-Relay-4',
+  'Singapore-Edge-5',
+  'Sydney-Relay-6',
+]
+const STREAM_MODELS = ['gpt-5.4', 'gpt-5', 'gpt-5-mini', 'gpt-5.4-mini']
+const STREAM_ENDPOINTS = ['/v1/responses', '/v1/responses/compact', '/v1/chat/completions']
+const STREAM_COMPRESSIONS = ['gzip', 'br', 'gzip, br']
+const STREAM_REQUEST_TIERS = ['priority', 'auto', 'flex'] as const
+const STREAM_SUCCESS_TOTAL_MS = [2480, 3920, 5180, 2840, 4630, 3360]
+const STREAM_FAILURE_TOTAL_MS = [6120, 8450, 7310, 9280]
+const STREAM_TTFB_MS = [118, 166, 241, 384, 92, 211]
+const STREAM_MIN_SPAWN_DELAY_MS = 3_000
+const STREAM_MAX_SPAWN_DELAY_MS = 10_000
+
+function randomStreamingSpawnDelayMs() {
+  return Math.round(
+    STREAM_MIN_SPAWN_DELAY_MS +
+      Math.random() * (STREAM_MAX_SPAWN_DELAY_MS - STREAM_MIN_SPAWN_DELAY_MS),
+  )
+}
+
+function defaultStreamingTerminalDurationMs(seq: number, phase: 'success' | 'failed') {
+  if (phase === 'failed') {
+    return STREAM_FAILURE_TOTAL_MS[seq % STREAM_FAILURE_TOTAL_MS.length] + seq * 41
+  }
+  return STREAM_SUCCESS_TOTAL_MS[seq % STREAM_SUCCESS_TOTAL_MS.length] + seq * 27
+}
+
+function clampVisibleRecords(records: ApiInvocation[]): ApiInvocation[] {
+  return records
+    .slice()
+    .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))
+    .slice(0, STREAM_VISIBLE_LIMIT)
+}
+
+function upsertVisibleRecord(records: ApiInvocation[], nextRecord: ApiInvocation): ApiInvocation[] {
+  const nextKey = invocationStableKey(nextRecord)
+  const index = records.findIndex((record) => invocationStableKey(record) === nextKey)
+  if (index === -1) {
+    return clampVisibleRecords([nextRecord, ...records])
+  }
+  const updated = records.slice()
+  updated[index] = nextRecord
+  return clampVisibleRecords(updated)
+}
+
+function buildStreamingInvocation(
+  seq: number,
+  occurredAt: string,
+  phase: 'initial' | 'enriched' | 'success' | 'failed',
+  terminalDurationMs?: number,
+): ApiInvocation {
+  const routeMode = seq % 3 === 0 ? 'forward_proxy' : 'pool'
+  const upstreamAccountId = routeMode === 'pool' ? 21 + (seq % 2) : null
+  const upstreamAccountName = routeMode === 'pool' ? (seq % 2 === 0 ? 'Codex Team Alpha' : 'Codex Team Beta') : undefined
+  const requestedServiceTier = STREAM_REQUEST_TIERS[seq % STREAM_REQUEST_TIERS.length]
+  const totalMs =
+    terminalDurationMs ??
+    defaultStreamingTerminalDurationMs(seq, phase === 'failed' ? 'failed' : 'success')
+  const ttfbMs = STREAM_TTFB_MS[seq % STREAM_TTFB_MS.length]
+  const inputTokens = 1400 + seq * 37
+  const cacheInputTokens = 720 + (seq % 5) * 128
+  const outputTokens = 96 + (seq % 7) * 23
+  const reasoningTokens = 18 + (seq % 4) * 21
+  const stableFields = {
+    invokeId: `inv_storybook_stream_${seq}`,
+    occurredAt,
+    createdAt: occurredAt,
+    source: 'proxy',
+    routeMode,
+    upstreamAccountId,
+    upstreamAccountName,
+    proxyDisplayName: STREAM_PROXY_NAMES[seq % STREAM_PROXY_NAMES.length],
+    endpoint: STREAM_ENDPOINTS[seq % STREAM_ENDPOINTS.length],
+    model: STREAM_MODELS[seq % STREAM_MODELS.length],
+    requestedServiceTier,
+  } satisfies Partial<ApiInvocation>
+
+  if (phase === 'initial') {
+    return {
+      id: -10_000 - seq,
+      ...stableFields,
+      status: 'running',
+      inputTokens,
+      cacheInputTokens,
+      totalTokens: inputTokens,
+    } as ApiInvocation
+  }
+
+  if (phase === 'enriched') {
+    return {
+      id: -10_000 - seq,
+      ...stableFields,
+      status: 'running',
+      inputTokens,
+      cacheInputTokens,
+      totalTokens: inputTokens,
+      responseContentEncoding: STREAM_COMPRESSIONS[seq % STREAM_COMPRESSIONS.length],
+      tUpstreamTtfbMs: ttfbMs,
+    } as ApiInvocation
+  }
+
+  if (phase === 'failed') {
+    return {
+      id: 20_000 + seq,
+      ...stableFields,
+      status: 'failed',
+      inputTokens,
+      cacheInputTokens,
+      totalTokens: inputTokens,
+      responseContentEncoding: STREAM_COMPRESSIONS[seq % STREAM_COMPRESSIONS.length],
+      errorMessage: 'upstream timeout while waiting first byte',
+      failureKind: 'upstream_timeout',
+      serviceTier: requestedServiceTier === 'priority' ? 'auto' : requestedServiceTier,
+      proxyWeightDelta: -0.18 - (seq % 4) * 0.11,
+      tUpstreamTtfbMs: null,
+      tTotalMs: totalMs,
+    } as ApiInvocation
+  }
+
+  return {
+    id: 20_000 + seq,
+    ...stableFields,
+    status: 'success',
+    inputTokens,
+    outputTokens,
+    cacheInputTokens,
+    reasoningTokens,
+    reasoningEffort: seq % 3 === 0 ? 'medium' : seq % 3 === 1 ? 'high' : 'low',
+    totalTokens: inputTokens + outputTokens,
+    cost: Number((0.0028 + seq * 0.00013).toFixed(4)),
+    responseContentEncoding: STREAM_COMPRESSIONS[seq % STREAM_COMPRESSIONS.length],
+    serviceTier: requestedServiceTier === 'flex' ? 'flex' : 'priority',
+    proxyWeightDelta: seq % 5 === 0 ? 0 : Number((0.09 + (seq % 4) * 0.11).toFixed(2)),
+    tUpstreamTtfbMs: ttfbMs,
+    tTotalMs: totalMs,
+  } as ApiInvocation
+}
+
+function buildInitialStreamingRecords(): ApiInvocation[] {
+  const now = Date.now()
+  const records = Array.from({ length: 16 }, (_, index) => {
+    const seq = 1_000 + index
+    const terminalPhase = seq % 6 === 0 ? 'failed' : 'success'
+    const terminalDurationMs = defaultStreamingTerminalDurationMs(seq, terminalPhase)
+    const completedAgoMs = (15 - index) * 1800 + 900
+    const occurredAt = new Date(now - completedAgoMs - terminalDurationMs).toISOString()
+    return buildStreamingInvocation(seq, occurredAt, terminalPhase, terminalDurationMs)
+  })
+  return clampVisibleRecords(records)
+}
+
+function Recent20StreamingPreview() {
+  const [records, setRecords] = useState<ApiInvocation[]>(() => buildInitialStreamingRecords())
+  const nextSequenceRef = useRef(2_000)
+  const timeoutIdsRef = useRef<number[]>([])
+
+  useEffect(() => {
+    const spawnRecord = () => {
+      const seq = nextSequenceRef.current
+      nextSequenceRef.current += 1
+      const occurredAt = new Date().toISOString()
+      const enrichDelayMs = 700 + (seq % 3) * 350
+      const terminalDelayMs = 5_000 + (seq % 6) * 1_850
+      const terminalPhase = seq % 5 === 0 ? 'failed' : 'success'
+
+      setRecords((current) => upsertVisibleRecord(current, buildStreamingInvocation(seq, occurredAt, 'initial')))
+
+      timeoutIdsRef.current.push(
+        window.setTimeout(() => {
+          setRecords((current) => {
+            const hasVisibleRecord = current.some((record) => invocationStableKey(record) === `inv_storybook_stream_${seq}-${occurredAt}`)
+            if (!hasVisibleRecord) return current
+            return upsertVisibleRecord(current, buildStreamingInvocation(seq, occurredAt, 'enriched'))
+          })
+        }, enrichDelayMs),
+      )
+
+      timeoutIdsRef.current.push(
+        window.setTimeout(() => {
+          setRecords((current) => {
+            const hasVisibleRecord = current.some((record) => invocationStableKey(record) === `inv_storybook_stream_${seq}-${occurredAt}`)
+            if (!hasVisibleRecord) return current
+            const elapsedMs = Math.max(0, Date.now() - Date.parse(occurredAt))
+            return upsertVisibleRecord(
+              current,
+              buildStreamingInvocation(seq, occurredAt, terminalPhase, Number(elapsedMs.toFixed(1))),
+            )
+          })
+        }, terminalDelayMs),
+      )
+    }
+
+    const scheduleNextSpawn = () => {
+      const timeoutId = window.setTimeout(() => {
+        spawnRecord()
+        scheduleNextSpawn()
+      }, randomStreamingSpawnDelayMs())
+      timeoutIdsRef.current.push(timeoutId)
+    }
+
+    spawnRecord()
+    scheduleNextSpawn()
+
+    return () => {
+      timeoutIdsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId))
+      timeoutIdsRef.current = []
+    }
+  }, [])
+
+  return <InvocationTable records={records} isLoading={false} error={null} />
+}
+
 const meta = {
   title: 'Monitoring/InvocationTable',
   component: InvocationTable,
@@ -881,7 +1168,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Shows recent invocation records with status, account attribution, proxy metadata, latency/compression summaries, and expandable request details. The default story includes both pool-routed and reverse-proxy records so you can verify the new `账号 / 代理` split, the dedicated `时延` column, and the current-page account drawer trigger. The output summary still shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nThe `账号 / 代理` column follows a strict semantic split: the first line identifies who sent the request (`号池账号名` / `账号 #<id>` / `反向代理`), while the second line identifies the true forward-proxy node and may only show a real proxy display name or `—`. Upstream hosts such as `claude-relay-service.nsngc.org`, `chatgpt.com`, or `api.openai.com` are never valid proxy-line values. Use the `Account Proxy Semantics` story to review the supported combinations side by side.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, and the expanded detail section for request metadata, timing stages, account attribution, and HTTP compression.',
+          'Shows recent invocation records with status, account attribution, proxy metadata, elapsed/compression summaries, and expandable request details. The default story includes both pool-routed and reverse-proxy records so you can verify the `账号 / 代理` split, the dedicated `用时` column, and the current-page account drawer trigger. The output summary still shows output tokens on the first line and the reasoning-token breakdown on the second line.\n\nThe `账号 / 代理` column follows a strict semantic split: the first line identifies who sent the request (`号池账号名` / `账号 #<id>` / `反向代理`), while the second line identifies the true forward-proxy node and may only show a real proxy display name or `—`. Upstream hosts such as `claude-relay-service.nsngc.org`, `chatgpt.com`, or `api.openai.com` are never valid proxy-line values. Use the `Account Proxy Semantics` story to review the supported combinations side by side.\n\nVisible reasoning effort cases in this component: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, missing (`—`), and unknown raw strings such as `custom-tier`. The component only shows explicitly recorded request values and does not infer model defaults. According to the OpenAI API docs as checked on 2026-03-07, the general API-level values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`, but model support is narrower for some models.\n\nReasoning-effort colors now follow a stable ladder: `none` stays neutral, `minimal/low` use cool informational tones, `medium` moves into the primary tier, `high` warns in amber, `xhigh` escalates to error red, and unknown raw strings use a dashed neutral badge so they cannot be mistaken for a standard level.\n\nUse this component to verify the summary row layout on desktop, the card layout on mobile, the account/proxy semantics matrix, the running-to-terminal live update story, and the expanded detail section for request metadata, timing stages, account attribution, and HTTP compression.',
       },
     },
   },
@@ -954,9 +1241,46 @@ export const Default: Story = {
     docs: {
       description: {
         story:
-          'Reference state with pool-routed and reverse-proxy invocations. Verify the `账号 / 代理` split, the dedicated latency/compression column, and the reasoning-token breakdown in the output summary.',
+          'Reference state with pool-routed and reverse-proxy invocations. Verify the `账号 / 代理` split, the dedicated elapsed/compression column, and the reasoning-token breakdown in the output summary.',
       },
     },
+  },
+}
+
+export const RunningLifecycleSimulation: Story = {
+  args: defaultArgs,
+  render: () => <RunningInvocationLifecyclePreview />,
+
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Mock story for the new live-running experience: the row appears immediately as `running`, later receives TTFB + HTTP compression context, and finally swaps in the terminal persisted record without duplicating the row. The terminal step intentionally switches from a negative temporary id to a positive persisted id while keeping the same `invokeId + occurredAt` stable key.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/Storybook Live Running Demo/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/运行中|running/i)).toBeInTheDocument()
+
+    const toggleButtons = await canvas.findAllByRole('button', { name: /展开详情|show details/i })
+    await userEvent.click(toggleButtons[0])
+
+    await waitFor(
+      async () => {
+        await expect(canvas.getByText(/HTTP 压缩算法|http compression/i)).toBeInTheDocument()
+        await expect(canvas.getByText(/gzip/i)).toBeInTheDocument()
+      },
+      { timeout: 4000 },
+    )
+
+    await waitFor(
+      async () => {
+        await expect(canvas.getByText(/成功|success/i)).toBeInTheDocument()
+      },
+      { timeout: 5000 },
+    )
   },
 }
 
@@ -983,6 +1307,46 @@ export const AccountProxySemantics: Story = {
     await expect(canvas.getByText(FORWARD_PROXY_NODE_NAME)).toBeInTheDocument()
     await expect(canvas.getByText(DIRECT_PROXY_NODE_NAME)).toBeInTheDocument()
     await expect(canvas.queryByText('claude-relay-service.nsngc.org')).not.toBeInTheDocument()
+  },
+}
+
+export const Recent20StreamingSimulation: Story = {
+  args: defaultArgs,
+  render: () => <Recent20StreamingPreview />,
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Simulates the “最近 20 条实况” surface with a continuously moving stream: new requests keep appearing at the top, several rows remain in `running`, and each request finishes after a different delay so the table mixes success, failure, and in-flight elapsed timers at the same time. New arrivals are randomized between 3 and 10 seconds to better match a real monitoring feed, and the canvas stays capped near 20 visible rows to mirror the real dashboard/live summary view.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+
+    await waitFor(
+      async () => {
+        const rowCount = canvasElement.querySelectorAll('tbody > tr').length
+        expect(rowCount).toBeGreaterThanOrEqual(12)
+      },
+      { timeout: 3000 },
+    )
+
+    await waitFor(
+      async () => {
+        await expect(canvas.getByText(/运行中|running/i)).toBeInTheDocument()
+      },
+      { timeout: 5000 },
+    )
+
+    await waitFor(
+      async () => {
+        const statusText = canvasElement.textContent ?? ''
+        expect(/成功|success/i.test(statusText)).toBe(true)
+        expect(/失败|failed/i.test(statusText)).toBe(true)
+      },
+      { timeout: 7000 },
+    )
   },
 }
 

@@ -3426,6 +3426,115 @@ fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCapture
     }
 }
 
+#[test]
+fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape() {
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        prompt_cache_key: Some("pck-running".to_string()),
+        requested_service_tier: Some("priority".to_string()),
+        reasoning_effort: Some("high".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let record = build_running_proxy_capture_record(
+        "invoke-running",
+        "2026-03-17 18:13:34",
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        Some("pck-running"),
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        Some("jp-relay-01"),
+        Some("gzip"),
+        22.0,
+        4.0,
+        330.0,
+        120.0,
+    );
+
+    let api_record = runtime_api_invocation_from_proxy_capture_record(&record);
+    assert!(
+        api_record.id < 0,
+        "running snapshots should use transient ids"
+    );
+    assert_eq!(api_record.status.as_deref(), Some("running"));
+    assert_eq!(api_record.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(api_record.endpoint.as_deref(), Some("/v1/responses"));
+    assert_eq!(
+        api_record.proxy_display_name.as_deref(),
+        Some("jp-relay-01")
+    );
+    assert_eq!(api_record.upstream_account_id, Some(17));
+    assert_eq!(
+        api_record.upstream_account_name.as_deref(),
+        Some("pool-account-17")
+    );
+    assert_eq!(
+        api_record.response_content_encoding.as_deref(),
+        Some("gzip")
+    );
+    assert_eq!(api_record.prompt_cache_key.as_deref(), Some("pck-running"));
+    assert_eq!(
+        api_record.t_total_ms, None,
+        "running snapshots should not freeze total time"
+    );
+    assert_eq!(api_record.t_req_read_ms, Some(22.0));
+    assert_eq!(api_record.t_req_parse_ms, Some(4.0));
+    assert_eq!(api_record.t_upstream_connect_ms, Some(330.0));
+    assert_eq!(api_record.t_upstream_ttfb_ms, Some(120.0));
+}
+
+#[tokio::test]
+async fn broadcast_proxy_capture_runtime_snapshot_emits_records_payload() {
+    let (tx, mut rx) = broadcast::channel(4);
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: false,
+        ..RequestCaptureInfo::default()
+    };
+    let record = build_running_proxy_capture_record(
+        "invoke-runtime-broadcast",
+        "2026-03-17 18:13:34",
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some("edge-runtime"),
+        None,
+        12.0,
+        3.0,
+        99.0,
+        0.0,
+    );
+
+    assert!(
+        broadcast_proxy_capture_runtime_snapshot(&tx, &record)
+            .expect("runtime snapshot broadcast should succeed")
+    );
+
+    let payload = rx
+        .recv()
+        .await
+        .expect("runtime snapshot payload should arrive");
+    match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            let record = &records[0];
+            assert_eq!(record.status.as_deref(), Some("running"));
+            assert_eq!(record.proxy_display_name.as_deref(), Some("edge-runtime"));
+            assert!(record.id < 0);
+        }
+        other => panic!("expected records payload, got {other:?}"),
+    }
+}
+
 async fn seed_quota_snapshot(pool: &SqlitePool, captured_at: &str) {
     sqlx::query(
         r#"

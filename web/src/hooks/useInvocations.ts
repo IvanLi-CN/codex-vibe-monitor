@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchInvocations } from '../lib/api'
 import type { ApiInvocation, BroadcastPayload } from '../lib/api'
+import { invocationStableKey } from '../lib/invocation'
 import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 
 export interface InvocationFilters {
@@ -9,7 +10,7 @@ export interface InvocationFilters {
 }
 
 function recordKey(record: ApiInvocation) {
-  return `${record.invokeId}-${record.occurredAt}`
+  return invocationStableKey(record)
 }
 
 function recordsChanged(next: ApiInvocation[], current: ApiInvocation[]) {
@@ -49,30 +50,85 @@ function sortRecords(records: ApiInvocation[]) {
   )
 }
 
+function normalizeStatus(value: string | null | undefined) {
+  return value?.trim().toLowerCase() ?? ''
+}
+
+function recordLifecycleRank(record: ApiInvocation) {
+  const status = normalizeStatus(record.status)
+  if (status === 'running' || status === 'pending') return 1
+  return 2
+}
+
+function recordCompletenessScore(record: ApiInvocation) {
+  let score = 0
+  if (record.model?.trim()) score += 1
+  if (record.proxyDisplayName?.trim()) score += 1
+  if (record.endpoint?.trim()) score += 1
+  if (record.promptCacheKey?.trim()) score += 1
+  if (record.requesterIp?.trim()) score += 1
+  if (record.upstreamAccountName?.trim()) score += 1
+  if (typeof record.upstreamAccountId === 'number' && Number.isFinite(record.upstreamAccountId)) score += 1
+  if (record.responseContentEncoding?.trim()) score += 1
+  if (typeof record.tUpstreamConnectMs === 'number' && Number.isFinite(record.tUpstreamConnectMs) && record.tUpstreamConnectMs > 0) score += 1
+  if (typeof record.tUpstreamTtfbMs === 'number' && Number.isFinite(record.tUpstreamTtfbMs) && record.tUpstreamTtfbMs > 0) score += 2
+  if (typeof record.tTotalMs === 'number' && Number.isFinite(record.tTotalMs) && record.tTotalMs > 0) score += 3
+  if (typeof record.totalTokens === 'number' && Number.isFinite(record.totalTokens)) score += 2
+  if (typeof record.cost === 'number' && Number.isFinite(record.cost)) score += 2
+  if (record.errorMessage?.trim()) score += 2
+  return score
+}
+
+function choosePreferredRecord(current: ApiInvocation | undefined, next: ApiInvocation) {
+  if (!current) return next
+
+  const currentRank = recordLifecycleRank(current)
+  const nextRank = recordLifecycleRank(next)
+  if (nextRank !== currentRank) {
+    return nextRank > currentRank ? next : current
+  }
+
+  const currentScore = recordCompletenessScore(current)
+  const nextScore = recordCompletenessScore(next)
+  if (nextScore !== currentScore) {
+    return nextScore > currentScore ? next : current
+  }
+
+  return next
+}
+
 function mergeRecords(
   incoming: ApiInvocation[],
   current: ApiInvocation[],
   limit: number,
   filters?: InvocationFilters,
+  hiddenKeys?: Set<string>,
 ) {
   const dedupe = new Map<string, ApiInvocation>()
+  const currentKeys = new Set(current.map((record) => recordKey(record)))
+  const nextHidden = new Set(hiddenKeys ?? [])
+
+  const pushRecord = (record: ApiInvocation) => {
+    if (!matchesFilters(record, filters)) return
+    const key = recordKey(record)
+    if (nextHidden.has(key) && !currentKeys.has(key)) return
+    dedupe.set(key, choosePreferredRecord(dedupe.get(key), record))
+  }
 
   for (const record of incoming) {
-    if (!matchesFilters(record, filters)) continue
-    const key = recordKey(record)
-    dedupe.set(key, record)
+    pushRecord(record)
   }
 
   for (const record of current) {
-    if (!matchesFilters(record, filters)) continue
-    const key = recordKey(record)
-    if (!dedupe.has(key)) {
-      dedupe.set(key, record)
-    }
+    pushRecord(record)
   }
 
   const merged = sortRecords(Array.from(dedupe.values()))
-  return merged.slice(0, limit)
+  const visible = merged.slice(0, limit)
+  for (const record of merged.slice(limit)) {
+    nextHidden.add(recordKey(record))
+  }
+  return { records: visible, hiddenKeys: nextHidden }
 }
 
 export function useInvocationStream(
@@ -90,6 +146,7 @@ export function useInvocationStream(
   const lastResyncAtRef = useRef(0)
   const requestSeqRef = useRef(0)
   const recordsRef = useRef<ApiInvocation[]>([])
+  const hiddenKeysRef = useRef<Set<string>>(new Set())
   const onNewRecordsRef = useRef(onNewRecords)
 
   useEffect(() => {
@@ -116,11 +173,14 @@ export function useInvocationStream(
           return
         }
         setRecords((current) => {
-          const authoritative = mergeRecords(response.records, [], limit, filters)
+          hiddenKeysRef.current = new Set()
+          const authoritative = mergeRecords(response.records, [], limit, filters, hiddenKeysRef.current)
           const concurrent = current.filter(
             (record) => matchesFilters(record, filters) && !baselineKeys.has(recordKey(record)),
           )
-          const next = mergeRecords(authoritative, concurrent, limit, filters)
+          const nextState = mergeRecords(authoritative.records, concurrent, limit, filters, authoritative.hiddenKeys)
+          const next = nextState.records
+          hiddenKeysRef.current = nextState.hiddenKeys
           recordsRef.current = next
           if (onNewRecordsRef.current && recordsChanged(next, current)) {
             onNewRecordsRef.current(next)
@@ -162,6 +222,7 @@ export function useInvocationStream(
     hasHydratedRef.current = false
     pendingOpenResyncRef.current = false
     lastResyncAtRef.current = 0
+    hiddenKeysRef.current = new Set()
     void load()
   }, [load])
 
@@ -194,7 +255,9 @@ export function useInvocationStream(
     const unsubscribe = subscribeToSse((payload: BroadcastPayload) => {
       if (payload.type !== 'records') return
       setRecords((current) => {
-        const next = mergeRecords(payload.records, current, limit, filters)
+        const nextState = mergeRecords(payload.records, current, limit, filters, hiddenKeysRef.current)
+        const next = nextState.records
+        hiddenKeysRef.current = nextState.hiddenKeys
         recordsRef.current = next
         if (onNewRecordsRef.current) {
           if (recordsChanged(next, current)) {
