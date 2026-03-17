@@ -6235,6 +6235,50 @@ impl ProxyUpstreamResponseBody {
     }
 }
 
+fn pool_upstream_timeout_message(total_timeout: Duration, phase: &str) -> String {
+    format!(
+        "request timed out after {}ms while {phase}",
+        total_timeout.as_millis()
+    )
+}
+
+async fn read_pool_upstream_bytes_with_timeout(
+    response: ProxyUpstreamResponseBody,
+    total_timeout: Duration,
+    started: Instant,
+    phase: &str,
+) -> Result<Bytes, String> {
+    let Some(timeout_budget) = remaining_timeout_budget(total_timeout, started.elapsed()) else {
+        return Err(pool_upstream_timeout_message(total_timeout, phase));
+    };
+
+    match timeout(timeout_budget, response.into_bytes()).await {
+        Ok(result) => result,
+        Err(_) => Err(pool_upstream_timeout_message(total_timeout, phase)),
+    }
+}
+
+async fn read_pool_upstream_first_chunk_with_timeout(
+    response: ProxyUpstreamResponseBody,
+    total_timeout: Duration,
+    started: Instant,
+) -> Result<(ProxyUpstreamResponseBody, Option<Bytes>), String> {
+    let Some(timeout_budget) = remaining_timeout_budget(total_timeout, started.elapsed()) else {
+        return Err(pool_upstream_timeout_message(
+            total_timeout,
+            "waiting for first upstream chunk",
+        ));
+    };
+
+    match timeout(timeout_budget, response.into_first_chunk()).await {
+        Ok(result) => result,
+        Err(_) => Err(pool_upstream_timeout_message(
+            total_timeout,
+            "waiting for first upstream chunk",
+        )),
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct PoolUpstreamResponse {
     pub(crate) account: PoolResolvedAccount,
@@ -6661,21 +6705,7 @@ async fn send_pool_request_with_failover(
             }
             PoolResolvedAuth::Oauth { .. } => None,
         };
-        let client = match state.http_clients.client_for_parallelism(false) {
-            Ok(client) => client,
-            Err(err) => {
-                return Err(PoolUpstreamError {
-                    account: Some(account),
-                    status: StatusCode::BAD_GATEWAY,
-                    message: format!("failed to initialize upstream client: {err}"),
-                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                    connect_latency_ms: 0.0,
-                    upstream_error_code: None,
-                    upstream_error_message: None,
-                    upstream_request_id: None,
-                });
-            }
-        };
+        let client = state.http_clients.client_for_pool_upstream();
 
         for same_account_attempt in 0..same_account_attempts {
             let connect_started = Instant::now();
@@ -6868,6 +6898,7 @@ async fn send_pool_request_with_failover(
                             headers,
                             oauth_body,
                             handshake_timeout,
+                            state.config.request_timeout,
                             access_token,
                             chatgpt_account_id.as_deref(),
                         )
@@ -6912,7 +6943,14 @@ async fn send_pool_request_with_failover(
                     .filter(|value| !value.is_empty())
                     .map(|value| value.to_string());
                 let (upstream_error_code, upstream_error_message, upstream_request_id, message) =
-                    match response.into_bytes().await {
+                    match read_pool_upstream_bytes_with_timeout(
+                        response,
+                        state.config.request_timeout,
+                        connect_started,
+                        "reading upstream error body",
+                    )
+                    .await
+                    {
                         Ok(body_bytes) => summarize_pool_upstream_http_failure(
                             status,
                             upstream_request_id_header.as_deref(),
@@ -6967,7 +7005,13 @@ async fn send_pool_request_with_failover(
             }
 
             let first_byte_started = Instant::now();
-            let (response, first_chunk) = match response.into_first_chunk().await {
+            let (response, first_chunk) = match read_pool_upstream_first_chunk_with_timeout(
+                response,
+                state.config.request_timeout,
+                connect_started,
+            )
+            .await
+            {
                 Ok(value) => value,
                 Err(err) => {
                     let message = format!("upstream stream error before first chunk: {err}");
@@ -7270,20 +7314,13 @@ async fn proxy_openai_v1_via_pool(
                     let connect_started = Instant::now();
                     let response = ProxyUpstreamResponseBody::Axum(
                         oauth_bridge::send_oauth_upstream_request(
-                            &state
-                                .http_clients
-                                .client_for_parallelism(false)
-                                .map_err(|err| {
-                                    (
-                                        StatusCode::BAD_GATEWAY,
-                                        format!("failed to initialize upstream client: {err}"),
-                                    )
-                                })?,
+                            &state.http_clients.client_for_pool_upstream(),
                             method.clone(),
                             original_uri,
                             &headers,
                             oauth_bridge::OauthUpstreamRequestBody::Stream(replayable.body),
                             handshake_timeout,
+                            state.config.request_timeout,
                             access_token,
                             chatgpt_account_id.as_deref(),
                         )
@@ -7307,7 +7344,14 @@ async fn proxy_openai_v1_via_pool(
                             upstream_error_message,
                             upstream_request_id,
                             message,
-                        ) = match response.into_bytes().await {
+                        ) = match read_pool_upstream_bytes_with_timeout(
+                            response,
+                            state.config.request_timeout,
+                            connect_started,
+                            "reading upstream error body",
+                        )
+                        .await
+                        {
                             Ok(body_bytes) => summarize_pool_upstream_http_failure(
                                 status,
                                 upstream_request_id_header.as_deref(),
@@ -7356,7 +7400,13 @@ async fn proxy_openai_v1_via_pool(
                         .map_err(|err| (err.status, err.message))?
                     } else {
                         let first_byte_started = Instant::now();
-                        match response.into_first_chunk().await {
+                        match read_pool_upstream_first_chunk_with_timeout(
+                            response,
+                            state.config.request_timeout,
+                            connect_started,
+                        )
+                        .await
+                        {
                             Ok((response, first_chunk)) => PoolUpstreamResponse {
                                 account: initial_account,
                                 response,
@@ -7405,15 +7455,7 @@ async fn proxy_openai_v1_via_pool(
                                 format!("failed to build pool upstream url: {err}"),
                             )
                         })?;
-                let client = state
-                    .http_clients
-                    .client_for_parallelism(false)
-                    .map_err(|err| {
-                        (
-                            StatusCode::BAD_GATEWAY,
-                            format!("failed to initialize upstream client: {err}"),
-                        )
-                    })?;
+                let client = state.http_clients.client_for_pool_upstream();
                 let request_connection_scoped = connection_scoped_header_names(&headers);
                 let replayable = spawn_pool_replayable_request_body(
                     body,
@@ -7472,7 +7514,14 @@ async fn proxy_openai_v1_via_pool(
                                 upstream_error_message,
                                 upstream_request_id,
                                 message,
-                            ) = match response.into_bytes().await {
+                            ) = match read_pool_upstream_bytes_with_timeout(
+                                response,
+                                state.config.request_timeout,
+                                connect_started,
+                                "reading upstream error body",
+                            )
+                            .await
+                            {
                                 Ok(body_bytes) => summarize_pool_upstream_http_failure(
                                     status,
                                     upstream_request_id_header.as_deref(),
@@ -7521,7 +7570,13 @@ async fn proxy_openai_v1_via_pool(
                             .map_err(|err| (err.status, err.message))?
                         } else {
                             let first_byte_started = Instant::now();
-                            match response.into_first_chunk().await {
+                            match read_pool_upstream_first_chunk_with_timeout(
+                                response,
+                                state.config.request_timeout,
+                                connect_started,
+                            )
+                            .await
+                            {
                                 Ok((response, first_chunk)) => PoolUpstreamResponse {
                                     account: initial_account,
                                     response,
@@ -14239,6 +14294,7 @@ fn normalize_pricing_source(raw: String) -> String {
 #[derive(Debug, Clone)]
 struct HttpClients {
     shared: Client,
+    pool_upstream: Client,
     proxy: Client,
     timeout: Duration,
     user_agent: String,
@@ -14254,6 +14310,13 @@ impl HttpClients {
             .build()
             .context("failed to construct shared HTTP client")?;
 
+        // Pool live upstream traffic can legitimately stream well past REQUEST_TIMEOUT_SECS.
+        // Handshake and upload budgets are enforced by route-specific timeout wrappers instead.
+        let pool_upstream = Self::builder(None, &user_agent)
+            .pool_max_idle_per_host(config.shared_connection_parallelism)
+            .build()
+            .context("failed to construct pool upstream HTTP client")?;
+
         let proxy = Self::builder(None, &user_agent)
             .pool_max_idle_per_host(config.shared_connection_parallelism)
             .connect_timeout(timeout)
@@ -14263,6 +14326,7 @@ impl HttpClients {
 
         Ok(Self {
             shared,
+            pool_upstream,
             proxy,
             timeout,
             user_agent,
@@ -14279,6 +14343,10 @@ impl HttpClients {
         } else {
             Ok(self.shared.clone())
         }
+    }
+
+    fn client_for_pool_upstream(&self) -> Client {
+        self.pool_upstream.clone()
     }
 
     fn client_for_forward_proxy(&self, endpoint_url: Option<&Url>) -> Result<Client> {

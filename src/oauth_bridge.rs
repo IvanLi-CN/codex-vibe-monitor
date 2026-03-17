@@ -9,7 +9,7 @@ use futures_util::TryStreamExt;
 use reqwest::{Body as ReqwestBody, Client, Url};
 use serde_json::{Value, json};
 use std::time::Duration;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 #[cfg(test)]
 use once_cell::sync::Lazy;
@@ -68,17 +68,26 @@ pub(crate) async fn send_oauth_upstream_request(
     headers: &HeaderMap,
     body: OauthUpstreamRequestBody,
     handshake_timeout: Duration,
+    response_timeout: Duration,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Response {
     match original_uri.path() {
         "/v1/models" => {
-            oauth_models(client, handshake_timeout, access_token, chatgpt_account_id).await
+            oauth_models(
+                client,
+                handshake_timeout,
+                response_timeout,
+                access_token,
+                chatgpt_account_id,
+            )
+            .await
         }
         "/v1/responses" => {
             oauth_responses(
                 client,
                 handshake_timeout,
+                response_timeout,
                 access_token,
                 chatgpt_account_id,
                 match body {
@@ -130,6 +139,7 @@ fn is_supported_oauth_passthrough_route(path: &str) -> bool {
 async fn oauth_models(
     client: &Client,
     handshake_timeout: Duration,
+    response_timeout: Duration,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Response {
@@ -156,6 +166,7 @@ async fn oauth_models(
         .bearer_auth(access_token)
         .header("OpenAI-Beta", "responses=experimental");
     let request = attach_account_header(request, chatgpt_account_id);
+    let request_started = Instant::now();
     let upstream = match timeout(handshake_timeout, request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
@@ -177,7 +188,14 @@ async fn oauth_models(
         }
     };
     let status = upstream.status();
-    let bytes = match upstream.bytes().await {
+    let bytes = match read_oauth_upstream_bytes_with_timeout(
+        upstream,
+        response_timeout,
+        request_started,
+        "reading oauth codex models response",
+    )
+    .await
+    {
         Ok(bytes) => bytes,
         Err(err) => {
             return error_response(
@@ -203,6 +221,7 @@ async fn oauth_models(
 async fn oauth_responses(
     client: &Client,
     handshake_timeout: Duration,
+    response_timeout: Duration,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
     body: Bytes,
@@ -234,6 +253,7 @@ async fn oauth_responses(
         .header("OpenAI-Beta", "responses=experimental")
         .body(upstream_body);
     let request = attach_account_header(request, chatgpt_account_id);
+    let request_started = Instant::now();
     let upstream = match timeout(handshake_timeout, request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
@@ -256,7 +276,14 @@ async fn oauth_responses(
     };
     if !upstream.status().is_success() {
         let status = upstream.status();
-        let bytes = match upstream.bytes().await {
+        let bytes = match read_oauth_upstream_bytes_with_timeout(
+            upstream,
+            response_timeout,
+            request_started,
+            "reading oauth codex error response",
+        )
+        .await
+        {
             Ok(bytes) => bytes,
             Err(err) => {
                 return error_response(
@@ -271,7 +298,14 @@ async fn oauth_responses(
     if wants_stream {
         return reqwest_response_to_axum_response(upstream);
     }
-    let bytes = match upstream.bytes().await {
+    let bytes = match read_oauth_upstream_bytes_with_timeout(
+        upstream,
+        response_timeout,
+        request_started,
+        "reading oauth codex responses stream",
+    )
+    .await
+    {
         Ok(bytes) => bytes,
         Err(err) => {
             return error_response(
@@ -394,6 +428,30 @@ fn attach_account_header(
         builder.header("ChatGPT-Account-Id", chatgpt_account_id.unwrap_or_default())
     } else {
         builder
+    }
+}
+
+fn oauth_upstream_timeout_message(total_timeout: Duration, phase: &str) -> String {
+    format!(
+        "request timed out after {}ms while {phase}",
+        total_timeout.as_millis()
+    )
+}
+
+async fn read_oauth_upstream_bytes_with_timeout(
+    upstream: reqwest::Response,
+    total_timeout: Duration,
+    started: Instant,
+    phase: &str,
+) -> Result<Bytes, String> {
+    let Some(timeout_budget) = crate::remaining_timeout_budget(total_timeout, started.elapsed())
+    else {
+        return Err(oauth_upstream_timeout_message(total_timeout, phase));
+    };
+
+    match timeout(timeout_budget, upstream.bytes()).await {
+        Ok(result) => result.map_err(|err| err.to_string()),
+        Err(_) => Err(oauth_upstream_timeout_message(total_timeout, phase)),
     }
 }
 
