@@ -3316,8 +3316,7 @@ async fn backfill_upstream_account_last_activity_from_archives(
         r#"
         SELECT id
         FROM pool_upstream_accounts
-        WHERE last_activity_at IS NULL
-          AND last_activity_archive_backfill_completed = 0
+        WHERE last_activity_archive_backfill_completed = 0
         "#,
     )
     .fetch_all(pool)
@@ -3459,9 +3458,12 @@ async fn backfill_upstream_account_last_activity_from_archives(
         sqlx::query(
             r#"
             UPDATE pool_upstream_accounts
-            SET last_activity_at = ?1,
+            SET last_activity_at = CASE
+                    WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
+                    ELSE last_activity_at
+                END,
                 last_activity_archive_backfill_completed = 1
-            WHERE id = ?2 AND last_activity_at IS NULL
+            WHERE id = ?2
             "#,
         )
         .bind(occurred_at)
@@ -3532,8 +3534,7 @@ async fn count_upstream_accounts_missing_last_activity(pool: &Pool<Sqlite>) -> R
         r#"
             SELECT COUNT(*)
             FROM pool_upstream_accounts
-            WHERE last_activity_at IS NULL
-              AND last_activity_archive_backfill_completed = 0
+            WHERE last_activity_archive_backfill_completed = 0
             "#,
     )
     .fetch_one(pool)
@@ -3713,7 +3714,6 @@ async fn upsert_archive_batch_manifest(
             r#"
             UPDATE pool_upstream_accounts
             SET last_activity_archive_backfill_completed = 0
-            WHERE last_activity_at IS NULL
             "#,
         )
         .execute(&mut *tx)

@@ -18276,6 +18276,229 @@ async fn upstream_last_activity_archive_backfill_marks_complete_when_archive_mis
 }
 
 #[tokio::test]
+async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_when_new_archive_arrives() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let pool = state.pool.clone();
+    let temp_dir = make_temp_test_dir("upstream-archive-activity-refresh");
+    let account_id = 905_i64;
+    let created_at = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Archive refresh account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert upstream account");
+
+    let first_activity_at = format_utc_iso(Utc::now() - ChronoDuration::days(14));
+    {
+        let month_key = "2025-01";
+        let suffix = "first";
+        let occurred_at = &first_activity_at;
+        let archive_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite.gz"));
+        let archive_db_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite"));
+        let archive_url = format!("sqlite://{}", archive_db_path.to_string_lossy());
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                build_sqlite_connect_options(
+                    &archive_url,
+                    Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+                )
+                .expect("build archive sqlite options"),
+            )
+            .await
+            .expect("open archive sqlite");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoke_id TEXT NOT NULL,
+                requester TEXT,
+                occurred_at TEXT NOT NULL,
+                request_method TEXT,
+                payload TEXT
+            )
+            "#,
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create archive codex_invocations");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, requester, occurred_at, request_method, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(format!("archive-{suffix}"))
+        .bind("archived-upstream-activity")
+        .bind(occurred_at)
+        .bind("{}")
+        .bind(json!({ "upstreamAccountId": account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert archived invocation");
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+            .expect("compress archived invocation batch");
+
+        let batch = ArchiveBatchOutcome {
+            dataset: "codex_invocations",
+            month_key: month_key.to_string(),
+            file_path: archive_path.to_string_lossy().to_string(),
+            sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
+            row_count: 1,
+        };
+        let mut tx = pool.begin().await.expect("begin archive batch tx");
+        upsert_archive_batch_manifest(tx.as_mut(), &batch)
+            .await
+            .expect("upsert archive batch manifest");
+        tx.commit().await.expect("commit archive batch manifest");
+    }
+
+    backfill_upstream_account_last_activity_from_archives(&pool, None, None)
+        .await
+        .expect("backfill first archive activity");
+
+    let first_row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load first archive backfill row");
+    assert_eq!(first_row.0.as_deref(), Some(first_activity_at.as_str()));
+    assert_eq!(first_row.1, 1);
+
+    let second_activity_at = format_utc_iso(Utc::now() - ChronoDuration::days(1));
+    {
+        let month_key = "2025-02";
+        let suffix = "second";
+        let occurred_at = &second_activity_at;
+        let archive_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite.gz"));
+        let archive_db_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite"));
+        let archive_url = format!("sqlite://{}", archive_db_path.to_string_lossy());
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                build_sqlite_connect_options(
+                    &archive_url,
+                    Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+                )
+                .expect("build archive sqlite options"),
+            )
+            .await
+            .expect("open archive sqlite");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoke_id TEXT NOT NULL,
+                requester TEXT,
+                occurred_at TEXT NOT NULL,
+                request_method TEXT,
+                payload TEXT
+            )
+            "#,
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create archive codex_invocations");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, requester, occurred_at, request_method, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(format!("archive-{suffix}"))
+        .bind("archived-upstream-activity")
+        .bind(occurred_at)
+        .bind("{}")
+        .bind(json!({ "upstreamAccountId": account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert archived invocation");
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+            .expect("compress archived invocation batch");
+
+        let batch = ArchiveBatchOutcome {
+            dataset: "codex_invocations",
+            month_key: month_key.to_string(),
+            file_path: archive_path.to_string_lossy().to_string(),
+            sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
+            row_count: 1,
+        };
+        let mut tx = pool.begin().await.expect("begin archive batch tx");
+        upsert_archive_batch_manifest(tx.as_mut(), &batch)
+            .await
+            .expect("upsert archive batch manifest");
+        tx.commit().await.expect("commit archive batch manifest");
+    }
+
+    let pending_after_new_archive: i64 = sqlx::query_scalar(
+        r#"
+        SELECT last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load pending flag after new archive");
+    assert_eq!(pending_after_new_archive, 0);
+
+    backfill_upstream_account_last_activity_from_archives(&pool, None, None)
+        .await
+        .expect("backfill refreshed archive activity");
+
+    let refreshed_row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load refreshed archive backfill row");
+    assert_eq!(refreshed_row.0.as_deref(), Some(second_activity_at.as_str()));
+    assert_eq!(refreshed_row.1, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_archives_forward_proxy_attempts_and_stats_snapshots() {
     let (pool, config, temp_dir) = retention_test_pool_and_config("retention-timestamped").await;
     let old_attempt = Utc::now() - ChronoDuration::days(35);
