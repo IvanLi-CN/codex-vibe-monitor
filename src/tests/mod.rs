@@ -164,60 +164,16 @@ fn resolve_invocation_proxy_display_name_prefers_selected_forward_proxy() {
         endpoint_url: Some(Url::parse("http://127.0.0.1:7890").expect("valid proxy url")),
         endpoint_url_raw: Some("http://127.0.0.1:7890".to_string()),
     };
-    let pool_account = PoolResolvedAccount {
-        account_id: 7,
-        display_name: "Pool Alpha".to_string(),
-        kind: "api_key".to_string(),
-        auth: PoolResolvedAuth::ApiKey {
-            authorization: "Bearer pool-alpha".to_string(),
-        },
-        upstream_base_url: Url::parse("https://claude-relay-service.nsngc.org/openai")
-            .expect("valid upstream url"),
-    };
 
     assert_eq!(
-        resolve_invocation_proxy_display_name(Some(&selected_proxy), Some(&pool_account))
-            .as_deref(),
+        resolve_invocation_proxy_display_name(Some(&selected_proxy)).as_deref(),
         Some("Tokyo-Edge-1")
     );
 }
 
 #[test]
-fn resolve_invocation_proxy_display_name_uses_pool_upstream_host_and_port() {
-    let pool_account = PoolResolvedAccount {
-        account_id: 17,
-        display_name: "Pool Beta".to_string(),
-        kind: "api_key".to_string(),
-        auth: PoolResolvedAuth::ApiKey {
-            authorization: "Bearer pool-beta".to_string(),
-        },
-        upstream_base_url: Url::parse("http://127.0.0.1:43121/openai").expect("valid upstream url"),
-    };
-
-    assert_eq!(
-        resolve_invocation_proxy_display_name(None, Some(&pool_account)).as_deref(),
-        Some("127.0.0.1:43121")
-    );
-}
-
-#[test]
-fn resolve_invocation_proxy_display_name_uses_oauth_upstream_host() {
-    let pool_account = PoolResolvedAccount {
-        account_id: 23,
-        display_name: "OAuth Pool".to_string(),
-        kind: "oauth_codex".to_string(),
-        auth: PoolResolvedAuth::Oauth {
-            access_token: "oauth-token".to_string(),
-            chatgpt_account_id: Some("org_test".to_string()),
-        },
-        upstream_base_url: Url::parse("https://chatgpt.com/backend-api/codex")
-            .expect("valid oauth upstream url"),
-    };
-
-    assert_eq!(
-        resolve_invocation_proxy_display_name(None, Some(&pool_account)).as_deref(),
-        Some("chatgpt.com")
-    );
+fn resolve_invocation_proxy_display_name_returns_none_without_selected_forward_proxy() {
+    assert_eq!(resolve_invocation_proxy_display_name(None).as_deref(), None);
 }
 
 #[test]
@@ -3365,7 +3321,7 @@ fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCapture
         error_message: None,
         failure_kind: None,
         payload: Some(
-            "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\",\"requestedServiceTier\":\"priority\",\"reasoningEffort\":\"high\"}"
+            "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\",\"routeMode\":\"pool\",\"upstreamAccountId\":17,\"upstreamAccountName\":\"pool-account-17\",\"responseContentEncoding\":\"gzip, br\",\"requestedServiceTier\":\"priority\",\"reasoningEffort\":\"high\",\"proxyDisplayName\":\"jp-relay-01\"}"
                 .to_string(),
         ),
         raw_response: "{}".to_string(),
@@ -7760,6 +7716,17 @@ async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
     assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
     assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
     assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-broadcast-1"));
+    assert_eq!(record.route_mode.as_deref(), Some("pool"));
+    assert_eq!(record.upstream_account_id, Some(17));
+    assert_eq!(
+        record.upstream_account_name.as_deref(),
+        Some("pool-account-17")
+    );
+    assert_eq!(
+        record.response_content_encoding.as_deref(),
+        Some("gzip, br")
+    );
+    assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
     assert_eq!(record.requested_service_tier.as_deref(), Some("priority"));
     assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
     assert!(record.failure_kind.is_none());
@@ -9656,24 +9623,7 @@ async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_sing
         payload_json["upstreamAccountName"].as_str(),
         Some("Primary")
     );
-    let expected_proxy_display_name = {
-        let upstream_url = Url::parse(&upstream_base).expect("valid upstream base url");
-        match upstream_url.port() {
-            Some(port) => format!(
-                "{}:{}",
-                upstream_url.host_str().expect("upstream host should exist"),
-                port
-            ),
-            None => upstream_url
-                .host_str()
-                .expect("upstream host should exist")
-                .to_string(),
-        }
-    };
-    assert_eq!(
-        payload_json["proxyDisplayName"].as_str(),
-        Some(expected_proxy_display_name.as_str())
-    );
+    assert!(payload_json["proxyDisplayName"].is_null());
     assert_eq!(
         wait_for_test_sticky_route_account_id(&state.pool, "sticky-cap-001").await,
         Some(primary_id)
