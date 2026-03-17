@@ -287,6 +287,47 @@ describe('InvocationTable', () => {
     expect(html).toContain('data-testid="invocation-account-name"')
   })
 
+  it('shows proxyDisplayName in both summary and expanded details when present', async () => {
+    await renderInteractiveTable([
+      {
+        id: 33,
+        invokeId: 'invocation-proxy-detail-visible',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        proxyDisplayName: 'codex-relay-01',
+        responseContentEncoding: 'gzip, br',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        totalTokens: 2048,
+        cost: 0.0042,
+        tUpstreamTtfbMs: 118.2,
+        tTotalMs: 910.4,
+      },
+    ])
+
+    const beforeExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? []
+    expect(beforeExpandMatches.length).toBeGreaterThanOrEqual(1)
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('请求详情')
+    const afterExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? []
+    expect(afterExpandMatches.length).toBeGreaterThanOrEqual(2)
+  })
+
   it('colors compact endpoint paths without adding extra summary badges', () => {
     const html = renderTable([
       {
