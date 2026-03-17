@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  createOauthMailboxSession,
   fetchInvocationRecords,
   fetchForwardProxyLiveStats,
   fetchSettings,
@@ -250,6 +251,34 @@ describe("fetchSummary", () => {
     expect(firstCall).toBeDefined();
     const init = firstCall?.[1] as RequestInit | undefined;
     expect(init?.signal).toBe(controller.signal);
+  });
+});
+
+describe("createOauthMailboxSession", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("accepts unsupported responses even when emailAddress is blank", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            supported: false,
+            emailAddress: "",
+            reason: "invalid_format",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    await expect(createOauthMailboxSession({ emailAddress: "" })).resolves.toEqual({
+      supported: false,
+      emailAddress: "",
+      reason: "invalid_format",
+    });
   });
 });
 

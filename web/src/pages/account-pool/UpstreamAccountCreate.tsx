@@ -36,6 +36,7 @@ import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import type {
   LoginSessionStatusResponse,
   OauthMailboxSession,
+  OauthMailboxSessionSupported,
   OauthMailboxStatus,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
@@ -85,7 +86,7 @@ type BatchOauthRow = {
   needsRefresh: boolean
   actionError: string | null
   busyAction: BatchOauthBusyAction
-  mailboxSession: OauthMailboxSession | null
+  mailboxSession: OauthMailboxSessionSupported | null
   mailboxInput: string
   mailboxStatus: OauthMailboxStatus | null
   mailboxError: string | null
@@ -106,7 +107,7 @@ type CreatePageDraft = {
     sessionHint?: string | null
     duplicateWarning?: DuplicateWarningState | null
     actionError?: string | null
-    mailboxSession?: OauthMailboxSession | null
+    mailboxSession?: OauthMailboxSessionSupported | null
     mailboxInput?: string
     mailboxStatus?: OauthMailboxStatus | null
     mailboxError?: string | null
@@ -235,6 +236,15 @@ function normalizeDisplayNameKey(value: string) {
   return value.trim().toLocaleLowerCase()
 }
 
+function normalizeMailboxAddressKey(value: string) {
+  return value.trim().toLocaleLowerCase()
+}
+
+function mailboxInputMatchesSession(input: string, session: OauthMailboxSessionSupported | null) {
+  if (!session) return false
+  return normalizeMailboxAddressKey(input) === normalizeMailboxAddressKey(session.emailAddress)
+}
+
 function findDisplayNameConflict(
   items: UpstreamAccountSummary[],
   displayName: string,
@@ -333,17 +343,33 @@ function isExpiredIso(value: string | null | undefined) {
 }
 
 function resolveMailboxIssue(
+  session: OauthMailboxSession | null,
   status: OauthMailboxStatus | null,
   localError: string | null,
   expiresAt: string | null | undefined,
   t: (key: string, values?: Record<string, string | number>) => string,
 ) {
+  if (session?.supported === false) {
+    if (session.reason === 'invalid_format') {
+      return t('accountPool.upstreamAccounts.oauth.mailboxUnsupportedInvalidFormat')
+    }
+    if (session.reason === 'unsupported_domain') {
+      return t('accountPool.upstreamAccounts.oauth.mailboxUnsupportedDomain')
+    }
+    return t('accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable')
+  }
   if (isExpiredIso(expiresAt)) {
     return t('accountPool.upstreamAccounts.oauth.mailboxExpired')
   }
   if (localError) return localError
   if (status?.error) return status.error
   return null
+}
+
+function isSupportedMailboxSession(
+  session: OauthMailboxSession | null,
+): session is OauthMailboxSessionSupported {
+  return Boolean(session && session.supported !== false)
 }
 
 function buildActionTooltip(title: string, description: string) {
@@ -556,6 +582,7 @@ export default function UpstreamAccountCreatePage() {
     listError,
     beginOauthLogin,
     beginOauthMailboxSession,
+    beginOauthMailboxSessionForAddress,
     getLoginSession,
     getOauthMailboxStatuses,
     removeOauthMailboxSession,
@@ -643,10 +670,21 @@ export default function UpstreamAccountCreatePage() {
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
   const oauthMailboxToneResetRef = useRef<number | null>(null)
   const batchMailboxToneResetRef = useRef<Record<string, number>>({})
+  const activeOauthMailboxSession = useMemo(
+    () =>
+      isSupportedMailboxSession(oauthMailboxSession) && mailboxInputMatchesSession(oauthMailboxInput, oauthMailboxSession)
+        ? oauthMailboxSession
+        : null,
+    [oauthMailboxInput, oauthMailboxSession],
+  )
+  const resolvedOauthMailboxSession =
+    activeOauthMailboxSession ?? (oauthMailboxSession && !isSupportedMailboxSession(oauthMailboxSession) ? oauthMailboxSession : null)
+  const displayedOauthMailboxStatus = activeOauthMailboxSession ? oauthMailboxStatus : null
   const oauthMailboxIssue = resolveMailboxIssue(
-    oauthMailboxStatus,
-    oauthMailboxError,
-    oauthMailboxSession?.expiresAt,
+    resolvedOauthMailboxSession,
+    displayedOauthMailboxStatus,
+    activeOauthMailboxSession || (oauthMailboxSession && !isSupportedMailboxSession(oauthMailboxSession)) ? oauthMailboxError : null,
+    activeOauthMailboxSession?.expiresAt ?? null,
     t,
   )
 
@@ -743,7 +781,7 @@ export default function UpstreamAccountCreatePage() {
     }
     return null
   }, [apiKeyUpstreamBaseUrl, t])
-  const oauthMailboxAddress = oauthMailboxSession?.emailAddress ?? oauthMailboxInput
+  const oauthMailboxAddress = activeOauthMailboxSession?.emailAddress ?? oauthMailboxInput
 
   const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
     const detail = await createTag(payload)
@@ -798,17 +836,17 @@ export default function UpstreamAccountCreatePage() {
   }, [oauthMailboxSession])
 
   useEffect(() => {
-    if (!oauthMailboxSession) return
+    if (!activeOauthMailboxSession) return
     let cancelled = false
     const poll = async () => {
       try {
-        const [status] = await getOauthMailboxStatuses([oauthMailboxSession.sessionId])
+        const [status] = await getOauthMailboxStatuses([activeOauthMailboxSession.sessionId])
         if (cancelled) return
         if (!status) {
           setOauthMailboxError((current) =>
             current && current.trim()
               ? current
-              : isExpiredIso(oauthMailboxSession.expiresAt)
+              : isExpiredIso(activeOauthMailboxSession.expiresAt)
                 ? t('accountPool.upstreamAccounts.oauth.mailboxExpired')
                 : t('accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable'),
           )
@@ -834,13 +872,13 @@ export default function UpstreamAccountCreatePage() {
       window.clearInterval(timer)
     }
   }, [
+    activeOauthMailboxSession,
     getOauthMailboxStatuses,
-    oauthMailboxSession,
     oauthMailboxStatus?.latestCode?.value,
   ])
 
   useEffect(() => {
-    const activeRows = batchRows.filter((row) => row.mailboxSession)
+    const activeRows = batchRows.filter((row) => row.mailboxSession != null)
     if (activeRows.length === 0) return
     let cancelled = false
     const previousCodeMap = new Map(
@@ -1173,6 +1211,33 @@ export default function UpstreamAccountCreatePage() {
       t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
     )
   }, [session, t])
+  const invalidateOauthSessionForMailboxChange = useCallback(
+    (nextInput: string) => {
+      if (!session || !activeOauthMailboxSession) return
+      if (mailboxInputMatchesSession(nextInput, activeOauthMailboxSession)) return
+      invalidatePendingSingleOauthSession(
+        session,
+        setSession,
+        setSessionHint,
+        setOauthCallbackUrl,
+        setManualCopyOpen,
+        setActionError,
+        setOauthDuplicateWarning,
+        t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
+      )
+    },
+    [activeOauthMailboxSession, session, t],
+  )
+  const clearOauthMailboxSession = useCallback((sessionToRemoveId?: string | null, options?: { deleteRemote?: boolean }) => {
+    setOauthMailboxSession(null)
+    setOauthMailboxStatus(null)
+    setOauthMailboxError(null)
+    setOauthMailboxTone('idle')
+    setOauthMailboxCodeTone('idle')
+    if (sessionToRemoveId && options?.deleteRemote !== false) {
+      void removeOauthMailboxSession(sessionToRemoveId).catch(() => undefined)
+    }
+  }, [removeOauthMailboxSession])
 
   const notifyMotherChange = (updated: UpstreamAccountSummary) => {
     const nextItems = applyMotherUpdateToItems(items, updated)
@@ -1180,12 +1245,20 @@ export default function UpstreamAccountCreatePage() {
   }
 
   const handleGenerateOauthMailbox = async () => {
-    const previousSessionId = oauthMailboxSession?.sessionId
+    const previousSessionId = isSupportedMailboxSession(oauthMailboxSession) ? oauthMailboxSession.sessionId : null
     setOauthMailboxBusy(true)
     setActionError(null)
     setOauthMailboxError(null)
     try {
       const response = await beginOauthMailboxSession()
+      if (!isSupportedMailboxSession(response)) {
+        setOauthMailboxSession(response)
+        setOauthMailboxInput(response.emailAddress)
+        setOauthMailboxStatus(null)
+        setOauthMailboxTone('idle')
+        setOauthMailboxCodeTone('idle')
+        return
+      }
       setOauthMailboxSession(response)
       setOauthMailboxInput(response.emailAddress)
       setOauthDisplayName((current) => (current.trim() ? current : response.emailAddress))
@@ -1213,6 +1286,62 @@ export default function UpstreamAccountCreatePage() {
     }
   }
 
+  const handleAttachOauthMailbox = async () => {
+    const normalizedAddress = oauthMailboxInput.trim()
+    if (!normalizedAddress) {
+      invalidateOauthSessionForMailboxChange('')
+      setOauthMailboxSession(null)
+      setOauthMailboxStatus(null)
+      setOauthMailboxError(null)
+      return
+    }
+    const previousSessionId = isSupportedMailboxSession(oauthMailboxSession) ? oauthMailboxSession.sessionId : null
+    setOauthMailboxBusy(true)
+    setActionError(null)
+    setOauthMailboxError(null)
+    try {
+      const response = await beginOauthMailboxSessionForAddress(normalizedAddress)
+      setOauthMailboxSession(response)
+      setOauthMailboxInput(response.emailAddress)
+      setOauthMailboxStatus(null)
+      setOauthMailboxTone('idle')
+      setOauthMailboxCodeTone('idle')
+      if (isSupportedMailboxSession(response)) {
+        if (!previousSessionId || previousSessionId !== response.sessionId) {
+          invalidatePendingSingleOauthSession(
+            session,
+            setSession,
+            setSessionHint,
+            setOauthCallbackUrl,
+            setManualCopyOpen,
+            setActionError,
+            setOauthDuplicateWarning,
+            t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
+          )
+        }
+        setOauthDisplayName((current) => (current.trim() ? current : response.emailAddress))
+      } else if (previousSessionId) {
+        invalidatePendingSingleOauthSession(
+          session,
+          setSession,
+          setSessionHint,
+          setOauthCallbackUrl,
+          setManualCopyOpen,
+          setActionError,
+          setOauthDuplicateWarning,
+          t('accountPool.upstreamAccounts.oauth.regenerateRequired'),
+        )
+      }
+      if (previousSessionId && (!isSupportedMailboxSession(response) || previousSessionId !== response.sessionId)) {
+        void removeOauthMailboxSession(previousSessionId).catch(() => undefined)
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setOauthMailboxBusy(false)
+    }
+  }
+
   const handleCopySingleMailbox = async () => {
     if (!oauthMailboxAddress) return
     const result = await copyText(oauthMailboxAddress, { preferExecCommand: true })
@@ -1225,7 +1354,7 @@ export default function UpstreamAccountCreatePage() {
   }
 
   const handleCopySingleMailboxCode = async () => {
-    const value = oauthMailboxStatus?.latestCode?.value
+    const value = displayedOauthMailboxStatus?.latestCode?.value
     if (!value) return
     const result = await copyText(value, { preferExecCommand: true })
     if (result.ok) {
@@ -1234,7 +1363,7 @@ export default function UpstreamAccountCreatePage() {
   }
 
   const handleCopySingleInvite = async () => {
-    const value = oauthMailboxStatus?.invite?.copyValue
+    const value = displayedOauthMailboxStatus?.invite?.copyValue
     if (!value) return
     await copyText(value, { preferExecCommand: true })
   }
@@ -1257,8 +1386,8 @@ export default function UpstreamAccountCreatePage() {
         accountId: relinkAccountId ?? undefined,
         tagIds: oauthTagIds,
         isMother: oauthIsMother,
-        mailboxSessionId: oauthMailboxSession?.sessionId,
-        generatedMailboxAddress: oauthMailboxSession?.emailAddress,
+        mailboxSessionId: activeOauthMailboxSession?.sessionId,
+        mailboxAddress: activeOauthMailboxSession?.emailAddress,
       })
       setSession(response)
       setManualCopyOpen(false)
@@ -1298,8 +1427,8 @@ export default function UpstreamAccountCreatePage() {
     try {
       const detail = await completeOauthLogin(session.loginId, {
         callbackUrl: oauthCallbackUrl.trim(),
-        mailboxSessionId: oauthMailboxSession?.sessionId,
-        generatedMailboxAddress: oauthMailboxSession?.emailAddress,
+        mailboxSessionId: activeOauthMailboxSession?.sessionId,
+        mailboxAddress: activeOauthMailboxSession?.emailAddress,
       })
       notifyMotherChange(detail)
       setSession({
@@ -1390,6 +1519,15 @@ export default function UpstreamAccountCreatePage() {
 
     try {
       const response = await beginOauthMailboxSession()
+      if (!isSupportedMailboxSession(response)) {
+        updateBatchRow(rowId, (current) => ({
+          ...current,
+          mailboxBusy: false,
+          mailboxError: t('accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable'),
+          actionError: null,
+        }))
+        return
+      }
       const previousSessionId = row.mailboxSession?.sessionId
       updateBatchRow(rowId, (current) => ({
         ...current,
@@ -1470,7 +1608,7 @@ export default function UpstreamAccountCreatePage() {
         groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
         isMother: row.isMother,
         mailboxSessionId: row.mailboxSession?.sessionId,
-        generatedMailboxAddress: row.mailboxSession?.emailAddress,
+        mailboxAddress: row.mailboxSession?.emailAddress,
       })
       setBatchManualCopyRowId((current) => (current === rowId ? null : current))
       updateBatchRow(rowId, (current) => ({
@@ -1531,7 +1669,7 @@ export default function UpstreamAccountCreatePage() {
       const detail = await completeOauthLogin(row.session.loginId, {
         callbackUrl: row.callbackUrl.trim(),
         mailboxSessionId: row.mailboxSession?.sessionId,
-        generatedMailboxAddress: row.mailboxSession?.emailAddress,
+        mailboxAddress: row.mailboxSession?.emailAddress,
       })
       notifyMotherChange(detail)
       updateBatchRow(rowId, (current) => {
@@ -1899,34 +2037,9 @@ export default function UpstreamAccountCreatePage() {
               {activeTab === 'oauth' ? (
                 <>
                   <div className="field">
-                    <div className="flex items-center gap-3">
-                      <label htmlFor="oauth-display-name" className="field-label shrink-0">
-                        {t('accountPool.upstreamAccounts.fields.displayName')}
-                      </label>
-                      <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
-                        <OauthMailboxChip
-                          emailAddress={oauthMailboxAddress}
-                          emptyLabel={t('accountPool.upstreamAccounts.oauth.mailboxEmpty')}
-                          copyAriaLabel={t('accountPool.upstreamAccounts.actions.copyMailbox')}
-                          copyHintLabel={t('accountPool.upstreamAccounts.actions.copyMailboxHint')}
-                          copiedLabel={t('accountPool.upstreamAccounts.actions.copied')}
-                          manualCopyLabel={t('accountPool.upstreamAccounts.actions.manualCopyMailbox')}
-                          manualBadgeLabel={t('accountPool.upstreamAccounts.actions.manual')}
-                          tone={oauthMailboxTone}
-                          onCopy={() => void handleCopySingleMailbox()}
-                        />
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          className="h-7 shrink-0 rounded-full px-3"
-                          onClick={() => void handleGenerateOauthMailbox()}
-                          disabled={!writesEnabled || oauthMailboxBusy || session?.status === 'completed'}
-                        >
-                          {oauthMailboxBusy ? <Spinner size="sm" /> : t('accountPool.upstreamAccounts.actions.generateMailbox')}
-                        </Button>
-                      </div>
-                    </div>
+                    <label htmlFor="oauth-display-name" className="field-label shrink-0">
+                      {t('accountPool.upstreamAccounts.fields.displayName')}
+                    </label>
                     <div className="relative">
                       <Input
                         id="oauth-display-name"
@@ -1942,6 +2055,77 @@ export default function UpstreamAccountCreatePage() {
                         <FloatingFieldError
                           message={t('accountPool.upstreamAccounts.validation.displayNameDuplicate')}
                         />
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="field">
+                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.mailboxAddress')}</span>
+                    <div className="grid gap-2">
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <Input
+                          name="oauthMailboxInput"
+                          placeholder={t('accountPool.upstreamAccounts.oauth.mailboxInputPlaceholder')}
+                          value={oauthMailboxInput}
+                          onChange={(event) => {
+                            const nextValue = event.target.value
+                            setOauthMailboxInput(nextValue)
+                            invalidateOauthSessionForMailboxChange(nextValue)
+                            if (
+                              oauthMailboxSession &&
+                              (!isSupportedMailboxSession(oauthMailboxSession) ||
+                                !mailboxInputMatchesSession(nextValue, oauthMailboxSession))
+                            ) {
+                              clearOauthMailboxSession(
+                                isSupportedMailboxSession(oauthMailboxSession) ? oauthMailboxSession.sessionId : null,
+                                { deleteRemote: false },
+                              )
+                            }
+                          }}
+                          disabled={!writesEnabled || session?.status === 'completed'}
+                        />
+                        <div className="flex gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-10 shrink-0 rounded-lg px-3"
+                            onClick={() => void handleAttachOauthMailbox()}
+                            disabled={!writesEnabled || oauthMailboxBusy || session?.status === 'completed' || !oauthMailboxInput.trim()}
+                          >
+                            {oauthMailboxBusy ? <Spinner size="sm" /> : t('accountPool.upstreamAccounts.actions.useMailboxAddress')}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-10 shrink-0 rounded-lg px-3"
+                            onClick={() => void handleGenerateOauthMailbox()}
+                            disabled={!writesEnabled || oauthMailboxBusy || session?.status === 'completed'}
+                          >
+                            {oauthMailboxBusy ? <Spinner size="sm" /> : t('accountPool.upstreamAccounts.actions.generateMailbox')}
+                          </Button>
+                        </div>
+                      </div>
+                      <p className="text-xs text-base-content/65">{t('accountPool.upstreamAccounts.oauth.mailboxHint')}</p>
+                      {activeOauthMailboxSession ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <OauthMailboxChip
+                            emailAddress={oauthMailboxAddress}
+                            emptyLabel={t('accountPool.upstreamAccounts.oauth.mailboxEmpty')}
+                            copyAriaLabel={t('accountPool.upstreamAccounts.actions.copyMailbox')}
+                            copyHintLabel={t('accountPool.upstreamAccounts.actions.copyMailboxHint')}
+                            copiedLabel={t('accountPool.upstreamAccounts.actions.copied')}
+                            manualCopyLabel={t('accountPool.upstreamAccounts.actions.manualCopyMailbox')}
+                            manualBadgeLabel={t('accountPool.upstreamAccounts.actions.manual')}
+                            tone={oauthMailboxTone}
+                            onCopy={() => void handleCopySingleMailbox()}
+                          />
+                          <Badge variant={activeOauthMailboxSession.source === 'attached' ? 'secondary' : 'success'}>
+                            {activeOauthMailboxSession.source === 'attached'
+                              ? t('accountPool.upstreamAccounts.oauth.mailboxAttached')
+                              : t('accountPool.upstreamAccounts.oauth.mailboxGenerated')}
+                          </Badge>
+                        </div>
                       ) : null}
                     </div>
                   </div>
@@ -2011,9 +2195,19 @@ export default function UpstreamAccountCreatePage() {
                   />
 
                   {oauthMailboxIssue ? (
-                    <Alert variant={isExpiredIso(oauthMailboxSession?.expiresAt) ? 'warning' : 'error'}>
+                    <Alert
+                      variant={
+                        isSupportedMailboxSession(oauthMailboxSession) && isExpiredIso(oauthMailboxSession.expiresAt)
+                          ? 'warning'
+                          : 'error'
+                      }
+                    >
                       <AppIcon
-                        name={isExpiredIso(oauthMailboxSession?.expiresAt) ? 'alert-outline' : 'alert-circle-outline'}
+                        name={
+                          isSupportedMailboxSession(oauthMailboxSession) && isExpiredIso(oauthMailboxSession.expiresAt)
+                            ? 'alert-outline'
+                            : 'alert-circle-outline'
+                        }
                         className="mt-0.5 h-4 w-4 shrink-0"
                         aria-hidden
                       />
@@ -2029,8 +2223,8 @@ export default function UpstreamAccountCreatePage() {
                             {t('accountPool.upstreamAccounts.oauth.codeCardTitle')}
                           </p>
                           <p className="mt-1 text-xs text-base-content/65">
-                            {oauthMailboxStatus?.latestCode?.updatedAt
-                              ? formatDateTime(oauthMailboxStatus.latestCode.updatedAt)
+                            {displayedOauthMailboxStatus?.latestCode?.updatedAt
+                              ? formatDateTime(displayedOauthMailboxStatus.latestCode.updatedAt)
                               : t('accountPool.upstreamAccounts.oauth.codeCardEmpty')}
                           </p>
                         </div>
@@ -2038,7 +2232,7 @@ export default function UpstreamAccountCreatePage() {
                           type="button"
                           variant={oauthMailboxCodeTone === 'copied' ? 'outline' : 'default'}
                           size="sm"
-                          disabled={!oauthMailboxStatus?.latestCode?.value}
+                          disabled={!displayedOauthMailboxStatus?.latestCode?.value}
                           onClick={() => void handleCopySingleMailboxCode()}
                         >
                           <AppIcon name="content-copy" className="mr-1.5 h-4 w-4" aria-hidden />
@@ -2046,7 +2240,7 @@ export default function UpstreamAccountCreatePage() {
                         </Button>
                       </div>
                       <p className="mt-4 font-mono text-2xl font-semibold tracking-[0.24em] text-base-content">
-                        {oauthMailboxStatus?.latestCode?.value ?? '—'}
+                        {displayedOauthMailboxStatus?.latestCode?.value ?? '—'}
                       </p>
                     </div>
                     <div className="rounded-2xl border border-base-300/70 bg-base-200/40 p-4">
@@ -2056,14 +2250,15 @@ export default function UpstreamAccountCreatePage() {
                             {t('accountPool.upstreamAccounts.oauth.inviteCardTitle')}
                           </p>
                           <p className="mt-1 text-xs text-base-content/65">
-                            {oauthMailboxStatus?.invite?.subject ?? t('accountPool.upstreamAccounts.oauth.inviteCardEmpty')}
+                            {displayedOauthMailboxStatus?.invite?.subject ??
+                              t('accountPool.upstreamAccounts.oauth.inviteCardEmpty')}
                           </p>
                         </div>
                         <Button
                           type="button"
                           variant="secondary"
                           size="sm"
-                          disabled={!oauthMailboxStatus?.invite?.copyValue}
+                          disabled={!displayedOauthMailboxStatus?.invite?.copyValue}
                           onClick={() => void handleCopySingleInvite()}
                         >
                           <AppIcon name="content-copy" className="mr-1.5 h-4 w-4" aria-hidden />
@@ -2072,15 +2267,15 @@ export default function UpstreamAccountCreatePage() {
                       </div>
                       <div className="mt-4 flex items-center gap-3">
                         <Badge
-                          variant={oauthMailboxStatus?.invited ? 'success' : 'secondary'}
+                          variant={displayedOauthMailboxStatus?.invited ? 'success' : 'secondary'}
                           className="rounded-full px-3 py-1 text-sm"
                         >
-                          {oauthMailboxStatus?.invited
+                          {displayedOauthMailboxStatus?.invited
                             ? t('accountPool.upstreamAccounts.oauth.invitedState')
                             : t('accountPool.upstreamAccounts.oauth.notInvitedState')}
                         </Badge>
                         <span className="truncate text-sm text-base-content/70">
-                          {oauthMailboxStatus?.invite?.copyValue ?? '—'}
+                          {displayedOauthMailboxStatus?.invite?.copyValue ?? '—'}
                         </span>
                       </div>
                     </div>
