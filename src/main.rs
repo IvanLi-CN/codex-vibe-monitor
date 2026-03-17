@@ -8689,8 +8689,7 @@ async fn proxy_openai_v1_capture_target(
                     )
                     .await;
                 let error_message = format!("[{}] {}", err.failure_kind, err.message);
-                let pool_proxy_display_name =
-                    resolve_invocation_proxy_display_name(None, err.account.as_ref());
+                let pool_proxy_display_name = resolve_invocation_proxy_display_name(None);
                 let record = ProxyCaptureRecord {
                     invoke_id,
                     occurred_at,
@@ -8900,10 +8899,7 @@ async fn proxy_openai_v1_capture_target(
                 &usage,
             )
             .await;
-            let proxy_display_name = resolve_invocation_proxy_display_name(
-                selected_proxy.as_ref(),
-                pool_account.as_ref(),
-            );
+            let proxy_display_name = resolve_invocation_proxy_display_name(selected_proxy.as_ref());
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -9153,10 +9149,8 @@ async fn proxy_openai_v1_capture_target(
         } else {
             format!("http_{}", upstream_status.as_u16())
         };
-        let selected_proxy_display_name = resolve_invocation_proxy_display_name(
-            selected_proxy_for_task.as_ref(),
-            pool_account_for_task.as_ref(),
-        );
+        let selected_proxy_display_name =
+            resolve_invocation_proxy_display_name(selected_proxy_for_task.as_ref());
         let proxy_attempt_update = if let Some(selected_proxy) = selected_proxy_for_task.as_ref() {
             let forward_proxy_success = proxy_capture_response_status_is_success(
                 upstream_status,
@@ -10329,24 +10323,10 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn format_pool_proxy_display_name(upstream_base_url: &Url) -> String {
-    let host = upstream_base_url
-        .host_str()
-        .unwrap_or_else(|| upstream_base_url.as_str());
-    match upstream_base_url.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host.to_string(),
-    }
-}
-
 fn resolve_invocation_proxy_display_name(
     selected_proxy: Option<&SelectedForwardProxy>,
-    pool_account: Option<&PoolResolvedAccount>,
 ) -> Option<String> {
-    if let Some(selected_proxy) = selected_proxy {
-        return Some(selected_proxy.display_name.clone());
-    }
-    pool_account.map(|account| format_pool_proxy_display_name(&account.upstream_base_url))
+    selected_proxy.map(|proxy| proxy.display_name.clone())
 }
 
 fn summarize_response_content_encoding(content_encoding: Option<&str>) -> String {
@@ -11173,6 +11153,10 @@ async fn persist_proxy_capture_record(
             is_actionable,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.routeMode') END AS route_mode,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountId') END AS upstream_account_id,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountName') END AS upstream_account_name,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.responseContentEncoding') END AS response_content_encoding,
             CASE
               WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text'
                 THEN json_extract(payload, '$.requestedServiceTier')
