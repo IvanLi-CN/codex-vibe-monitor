@@ -2408,13 +2408,19 @@ export default function UpstreamAccountCreatePage() {
                           <p className="flex items-center gap-2 text-sm font-semibold text-base-content">
                             {t('accountPool.upstreamAccounts.oauth.codeCardTitle')}
                             {oauthMailboxCodeStatusBadge === 'checking' ? (
-                              <Badge variant="secondary" className="gap-1.5 px-2 py-0.5 text-[11px] font-medium">
-                                <Spinner size="sm" className="h-3 w-3" />
+                              <Badge
+                                variant="secondary"
+                                className="h-5 gap-1 rounded-full px-1.5 py-0 text-[10px] font-medium leading-none"
+                              >
+                                <Spinner size="sm" className="h-2.5 w-2.5" />
                                 {t('accountPool.upstreamAccounts.oauth.mailboxCheckingBadge')}
                               </Badge>
                             ) : null}
                             {oauthMailboxCodeStatusBadge === 'failed' ? (
-                              <Badge variant="error" className="px-2 py-0.5 text-[11px] font-medium">
+                              <Badge
+                                variant="error"
+                                className="h-5 rounded-full px-1.5 py-0 text-[10px] font-medium leading-none"
+                              >
                                 {t('accountPool.upstreamAccounts.oauth.mailboxCheckFailedBadge')}
                               </Badge>
                             ) : null}
