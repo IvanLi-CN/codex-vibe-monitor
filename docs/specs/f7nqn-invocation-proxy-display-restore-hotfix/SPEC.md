@@ -33,6 +33,7 @@
 - `src/main.rs` 的 invocation payload 构造、`proxyDisplayName` 解析策略与 broadcast 回读投影。
 - `src/tests/mod.rs` 的后端回归测试。
 - `web/src/components/InvocationTable.test.tsx` 的前端展示回归验证。
+- `web/src/components/InvocationTable.stories.tsx` 的 Storybook 语义矩阵与 docs 展示。
 - `docs/specs/README.md` 与本热修 spec 的同步。
 
 ### Out of scope
@@ -52,6 +53,7 @@
   - `routeMode=pool` 且有账号信息时，账号显示真实号池账号名。
   - `proxyDisplayName` 非空时显示真实代理节点名。
   - `proxyDisplayName` 为空时显示 `—`，而不是把上游 host 伪装成代理。
+- Storybook 必须提供 `Account Proxy Semantics` 展示，用 6 类记录并排说明 `账号 / 代理` 列的支持语义，并明确禁止把 `claude-relay-service.nsngc.org` 这类上游 host 当成代理节点。
 
 ### Edge cases / errors
 
@@ -75,6 +77,7 @@
 - `cargo test list_invocations_projects_payload_context_fields`
 - `cargo test capture_target_pool_route_retries_first_chunk_failure_and_persists_single_invocation`
 - `cd web && bunx vitest run src/components/InvocationTable.test.tsx`
+- `cd web && bun run build-storybook`
 
 ## 文档更新（Docs to Update）
 
