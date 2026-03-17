@@ -1508,12 +1508,20 @@ pub(crate) async fn create_oauth_mailbox_session(
             )));
         };
         let mut remote_messages =
-            moemail_list_messages(&state.http_clients.shared, config, &remote_mailbox.id)
+            match moemail_list_messages(&state.http_clients.shared, config, &remote_mailbox.id)
                 .await
-                .map_err(internal_error_tuple)?;
+            {
+                Ok(messages) => messages,
+                Err(_) => {
+                    return Ok(Json(oauth_mailbox_session_unsupported_response(
+                        manual_email_address,
+                        "not_readable",
+                    )));
+                }
+            };
         sort_mailbox_messages_desc(&mut remote_messages);
         let latest_message_id = latest_mailbox_message_id(&remote_messages);
-        let (latest_code, latest_invite) = resolve_mailbox_message_state(
+        let (latest_code, latest_invite) = match resolve_mailbox_message_state(
             &state.http_clients.shared,
             config,
             &remote_mailbox.id,
@@ -1522,7 +1530,15 @@ pub(crate) async fn create_oauth_mailbox_session(
             None,
         )
         .await
-        .map_err(internal_error_tuple)?;
+        {
+            Ok(state) => state,
+            Err(_) => {
+                return Ok(Json(oauth_mailbox_session_unsupported_response(
+                    manual_email_address,
+                    "not_readable",
+                )));
+            }
+        };
         let session_id = random_hex(16)?;
         let now = Utc::now();
         let expires_at = normalize_mailbox_session_expires_at(

@@ -1228,6 +1228,16 @@ export default function UpstreamAccountCreatePage() {
     },
     [activeOauthMailboxSession, session, t],
   )
+  const clearOauthMailboxSession = useCallback((sessionToRemoveId?: string | null) => {
+    setOauthMailboxSession(null)
+    setOauthMailboxStatus(null)
+    setOauthMailboxError(null)
+    setOauthMailboxTone('idle')
+    setOauthMailboxCodeTone('idle')
+    if (sessionToRemoveId) {
+      void removeOauthMailboxSession(sessionToRemoveId).catch(() => undefined)
+    }
+  }, [removeOauthMailboxSession])
 
   const notifyMotherChange = (updated: UpstreamAccountSummary) => {
     const nextItems = applyMotherUpdateToItems(items, updated)
@@ -2061,16 +2071,10 @@ export default function UpstreamAccountCreatePage() {
                             setOauthMailboxInput(nextValue)
                             invalidateOauthSessionForMailboxChange(nextValue)
                             const currentAddress = oauthMailboxSession?.emailAddress ?? ''
-                            if (
-                              oauthMailboxSession &&
-                              !isSupportedMailboxSession(oauthMailboxSession) &&
-                              nextValue.trim() !== currentAddress.trim()
-                            ) {
-                              setOauthMailboxSession(null)
-                              setOauthMailboxStatus(null)
-                              setOauthMailboxError(null)
-                              setOauthMailboxTone('idle')
-                              setOauthMailboxCodeTone('idle')
+                            if (oauthMailboxSession && nextValue.trim() !== currentAddress.trim()) {
+                              clearOauthMailboxSession(
+                                isSupportedMailboxSession(oauthMailboxSession) ? oauthMailboxSession.sessionId : null,
+                              )
                             }
                           }}
                           disabled={!writesEnabled || session?.status === 'completed'}

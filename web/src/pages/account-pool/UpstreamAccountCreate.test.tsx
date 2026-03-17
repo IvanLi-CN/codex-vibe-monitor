@@ -1299,6 +1299,24 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     });
     expect(findButton(/Copy code/i)?.disabled).toBe(true);
     expect(host?.textContent).not.toContain("Attached mailbox");
+
+    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@mail-tw.707079.xyz");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthLogin).toHaveBeenLastCalledWith({
+      displayName: "Mailbox Drift",
+      groupName: undefined,
+      note: undefined,
+      groupNote: undefined,
+      accountId: undefined,
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: undefined,
+      mailboxAddress: undefined,
+    });
+    expect(host?.textContent).not.toContain("Attached mailbox");
   });
 
   it("keeps oauth flow available when a manual mailbox is unsupported", async () => {
