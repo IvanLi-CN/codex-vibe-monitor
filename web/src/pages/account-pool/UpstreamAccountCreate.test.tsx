@@ -1671,17 +1671,17 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
 
     await flushAsync();
     expect(batchStatuses).toHaveBeenCalledTimes(1);
-    expect(host?.textContent).toContain("444444");
-    expect(host?.textContent).toMatch(/\d+s/);
+    expect(document.body.textContent ?? "").toContain("444444");
+    expect(document.body.textContent ?? "").toMatch(/\d+s/);
 
     const row = getBatchRows()[0];
-    const fetchButton = Array.from(row?.querySelectorAll("button") ?? []).find(
-      (candidate) =>
-        candidate instanceof HTMLButtonElement &&
-        /Fetch/i.test(
-          candidate.getAttribute("aria-label") || candidate.textContent || "",
-        ),
-    ) as HTMLButtonElement | undefined;
+    const fetchButton = Array.from(
+      row?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+    ).find((candidate) =>
+      /Fetch/i.test(
+        candidate.getAttribute("aria-label") ?? candidate.textContent ?? "",
+      ),
+    );
     expect(fetchButton).toBeInstanceOf(HTMLButtonElement);
 
     act(() => {
