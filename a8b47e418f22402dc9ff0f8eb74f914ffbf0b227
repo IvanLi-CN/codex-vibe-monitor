@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.12.8",
+  "base_stable_version": "1.12.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-17T11:18:27Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.12.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7bb2ea4d179d67be85dd1c0fc2dd9270f0e9b057",
+  "pr_number": 166,
+  "pr_title": "fix: align compact pool first chunk timeout",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.12.8",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.12.8,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "a8b47e418f22402dc9ff0f8eb74f914ffbf0b227",
+  "type_label": "type:patch"
+}
