@@ -2008,21 +2008,18 @@ export default function UpstreamAccountCreatePage() {
                           value={oauthMailboxInput}
                           onChange={(event) => {
                             const nextValue = event.target.value
-                            const previousSessionId = isSupportedMailboxSession(oauthMailboxSession)
-                              ? oauthMailboxSession.sessionId
-                              : null
                             setOauthMailboxInput(nextValue)
                             const currentAddress = oauthMailboxSession?.emailAddress ?? ''
-                            if (nextValue.trim() !== currentAddress.trim()) {
-                              if (previousSessionId) {
-                                void removeOauthMailboxSession(previousSessionId).catch(() => undefined)
-                              }
+                            if (
+                              oauthMailboxSession &&
+                              !isSupportedMailboxSession(oauthMailboxSession) &&
+                              nextValue.trim() !== currentAddress.trim()
+                            ) {
                               setOauthMailboxSession(null)
                               setOauthMailboxStatus(null)
                               setOauthMailboxError(null)
                               setOauthMailboxTone('idle')
                               setOauthMailboxCodeTone('idle')
-                              invalidateOauthSession()
                             }
                           }}
                           disabled={!writesEnabled || session?.status === 'completed'}

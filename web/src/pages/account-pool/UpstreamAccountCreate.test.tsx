@@ -1130,18 +1130,31 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).toContain("temp-user-2@example.com");
   });
 
-  it("removes the active mailbox session when the manual input changes", async () => {
-    const removeOauthMailboxSession = vi.fn().mockResolvedValue(undefined);
-    mockUpstreamAccounts({ removeOauthMailboxSession });
+  it("keeps the generated oauth session active while editing a mailbox draft", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
     render("/account-pool/upstream-accounts/new?mode=oauth");
 
     clickButton(/Generate/i);
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
     await flushAsync();
 
     setInputValue('input[name="oauthMailboxInput"]', "new-target@example.com");
     await flushAsync();
 
-    expect(removeOauthMailboxSession).toHaveBeenCalledWith("mailbox-1");
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(host?.textContent).not.toContain(
+      "Generate a fresh OAuth URL for this row before completing login.",
+    );
   });
 
   it("attaches a supported manual mailbox address without blocking oauth actions", async () => {

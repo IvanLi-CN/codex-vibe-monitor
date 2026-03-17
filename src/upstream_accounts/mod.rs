@@ -1513,6 +1513,16 @@ pub(crate) async fn create_oauth_mailbox_session(
                 .map_err(internal_error_tuple)?;
         sort_mailbox_messages_desc(&mut remote_messages);
         let latest_message_id = latest_mailbox_message_id(&remote_messages);
+        let (latest_code, latest_invite) = resolve_mailbox_message_state(
+            &state.http_clients.shared,
+            config,
+            &remote_mailbox.id,
+            &remote_messages,
+            None,
+            None,
+        )
+        .await
+        .map_err(internal_error_tuple)?;
         let session_id = random_hex(16)?;
         let now = Utc::now();
         let expires_at = remote_mailbox
@@ -1534,7 +1544,7 @@ pub(crate) async fn create_oauth_mailbox_session(
                 latest_code_value, latest_code_source, latest_code_updated_at, invite_subject,
                 invite_copy_value, invite_copy_label, invite_updated_at, invited, last_message_id,
                 created_at, updated_at, expires_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ?6, ?7, ?7, ?8)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16)
             "#,
         )
         .bind(&session_id)
@@ -1542,6 +1552,14 @@ pub(crate) async fn create_oauth_mailbox_session(
         .bind(&manual_email_address)
         .bind(&email_domain)
         .bind(OAUTH_MAILBOX_SOURCE_ATTACHED)
+        .bind(latest_code.as_ref().map(|value| value.value.clone()))
+        .bind(latest_code.as_ref().map(|value| value.source.clone()))
+        .bind(latest_code.as_ref().map(|value| value.updated_at.clone()))
+        .bind(latest_invite.as_ref().map(|value| value.subject.clone()))
+        .bind(latest_invite.as_ref().map(|value| value.copy_value.clone()))
+        .bind(latest_invite.as_ref().map(|value| value.copy_label.clone()))
+        .bind(latest_invite.as_ref().map(|value| value.updated_at.clone()))
+        .bind(if latest_invite.is_some() { 1 } else { 0 })
         .bind(latest_message_id)
         .bind(&now_iso)
         .bind(&expires_at)
@@ -1859,7 +1877,10 @@ pub(crate) async fn complete_oauth_login_session(
         payload.mailbox_address.as_deref(),
     )?;
     if session.mailbox_session_id.as_deref() != payload.mailbox_session_id.as_deref()
-        || session.mailbox_address.as_deref() != payload.mailbox_address.as_deref()
+        || !mailbox_addresses_match(
+            session.mailbox_address.as_deref(),
+            payload.mailbox_address.as_deref(),
+        )
     {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -4643,6 +4664,11 @@ fn validate_mailbox_binding_fields(
     }
 }
 
+fn mailbox_addresses_match(left: Option<&str>, right: Option<&str>) -> bool {
+    normalize_mailbox_address(left.unwrap_or_default())
+        == normalize_mailbox_address(right.unwrap_or_default())
+}
+
 async fn validate_mailbox_binding(
     pool: &Pool<Sqlite>,
     mailbox_session_id: Option<&str>,
@@ -4793,6 +4819,33 @@ fn collect_unseen_mailbox_messages(
         unseen.push(message);
     }
     unseen
+}
+
+async fn resolve_mailbox_message_state(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+    remote_email_id: &str,
+    messages: &[MoeMailMessageSummary],
+    mut latest_code: Option<ParsedMailboxCode>,
+    mut latest_invite: Option<ParsedMailboxInvite>,
+) -> Result<(Option<ParsedMailboxCode>, Option<ParsedMailboxInvite>)> {
+    for summary in messages
+        .iter()
+        .take(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_STATUS_FETCH_LIMIT as usize)
+    {
+        if latest_code.is_some() && latest_invite.is_some() {
+            break;
+        }
+        let detail = moemail_get_message(client, config, remote_email_id, &summary.id).await?;
+        if latest_code.is_none() {
+            latest_code = parse_mailbox_code(&detail);
+        }
+        if latest_invite.is_none() {
+            latest_invite = parse_mailbox_invite(&detail);
+        }
+    }
+
+    Ok((latest_code, latest_invite))
 }
 
 async fn moemail_create_email(
@@ -4967,31 +5020,17 @@ async fn refresh_oauth_mailbox_session_status(
         moemail_list_messages(&state.http_clients.shared, config, &row.remote_email_id).await?;
     sort_mailbox_messages_desc(&mut messages);
 
-    let mut latest_code = parsed_code_from_mailbox_row(row);
-    let mut latest_invite = parsed_invite_from_mailbox_row(row);
     let latest_message_id = latest_mailbox_message_id(&messages);
-
-    for summary in collect_unseen_mailbox_messages(messages, row.last_message_id.as_deref())
-        .into_iter()
-        .take(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_STATUS_FETCH_LIMIT as usize)
-    {
-        if latest_code.is_some() && latest_invite.is_some() {
-            break;
-        }
-        let detail = moemail_get_message(
-            &state.http_clients.shared,
-            config,
-            &row.remote_email_id,
-            &summary.id,
-        )
-        .await?;
-        if latest_code.is_none() {
-            latest_code = parse_mailbox_code(&detail);
-        }
-        if latest_invite.is_none() {
-            latest_invite = parse_mailbox_invite(&detail);
-        }
-    }
+    let unseen_messages = collect_unseen_mailbox_messages(messages, row.last_message_id.as_deref());
+    let (latest_code, latest_invite) = resolve_mailbox_message_state(
+        &state.http_clients.shared,
+        config,
+        &row.remote_email_id,
+        &unseen_messages,
+        parsed_code_from_mailbox_row(row),
+        parsed_invite_from_mailbox_row(row),
+    )
+    .await?;
 
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
@@ -8527,6 +8566,18 @@ mod tests {
         assert!(mailbox_address_is_valid("valid.user@example.com"));
         assert!(!mailbox_address_is_valid("broken-address"));
         assert!(!mailbox_address_is_valid("missing-domain@"));
+    }
+
+    #[test]
+    fn mailbox_addresses_match_normalizes_case_and_whitespace() {
+        assert!(mailbox_addresses_match(
+            Some(" Manual.User@Example.com "),
+            Some("manual.user@example.com")
+        ));
+        assert!(!mailbox_addresses_match(
+            Some("one@example.com"),
+            Some("two@example.com")
+        ));
     }
 
     #[test]
