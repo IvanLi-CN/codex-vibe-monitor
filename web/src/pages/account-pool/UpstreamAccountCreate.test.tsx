@@ -1238,7 +1238,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
               supported: true,
               sessionId: "mailbox-refresh-failure",
               emailAddress: "failed@example.com",
-              expiresAt: "2026-03-17T10:00:00.000Z",
+              expiresAt: "2026-03-20T10:00:00.000Z",
               source: "generated",
             },
             mailboxInput: "failed@example.com",
