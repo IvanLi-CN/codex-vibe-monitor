@@ -40,7 +40,6 @@ pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS: u64 = 5 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS: u64 = 15 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: u64 = 30;
 const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS: u64 = 60 * 60;
-const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_STATUS_FETCH_LIMIT: i64 = 12;
 const DEFAULT_MANUAL_OAUTH_CALLBACK_PORT: u16 = 1455;
 const OAUTH_MAILBOX_SOURCE_GENERATED: &str = "generated";
 const OAUTH_MAILBOX_SOURCE_ATTACHED: &str = "attached";
@@ -1539,8 +1538,6 @@ pub(crate) async fn create_oauth_mailbox_session(
             config,
             &remote_mailbox.id,
             &remote_messages,
-            None,
-            None,
         )
         .await
         .map_err(internal_error_tuple)?
@@ -4852,6 +4849,49 @@ fn parsed_invite_from_mailbox_row(row: &OauthMailboxSessionRow) -> Option<Parsed
     })
 }
 
+fn mailbox_updated_at_is_newer_or_equal(candidate: &str, baseline: &str) -> bool {
+    match (parse_rfc3339_utc(candidate), parse_rfc3339_utc(baseline)) {
+        (Some(candidate), Some(baseline)) => candidate >= baseline,
+        _ => candidate >= baseline,
+    }
+}
+
+fn merge_mailbox_code(
+    fresh: Option<ParsedMailboxCode>,
+    stored: Option<ParsedMailboxCode>,
+) -> Option<ParsedMailboxCode> {
+    match (fresh, stored) {
+        (Some(fresh), Some(stored)) => {
+            if mailbox_updated_at_is_newer_or_equal(&fresh.updated_at, &stored.updated_at) {
+                Some(fresh)
+            } else {
+                Some(stored)
+            }
+        }
+        (Some(fresh), None) => Some(fresh),
+        (None, Some(stored)) => Some(stored),
+        (None, None) => None,
+    }
+}
+
+fn merge_mailbox_invite(
+    fresh: Option<ParsedMailboxInvite>,
+    stored: Option<ParsedMailboxInvite>,
+) -> Option<ParsedMailboxInvite> {
+    match (fresh, stored) {
+        (Some(fresh), Some(stored)) => {
+            if mailbox_updated_at_is_newer_or_equal(&fresh.updated_at, &stored.updated_at) {
+                Some(fresh)
+            } else {
+                Some(stored)
+            }
+        }
+        (Some(fresh), None) => Some(fresh),
+        (None, Some(stored)) => Some(stored),
+        (None, None) => None,
+    }
+}
+
 fn sort_mailbox_messages_desc(messages: &mut [MoeMailMessageSummary]) {
     messages.sort_by(|left, right| right.received_at.cmp(&left.received_at));
 }
@@ -4878,18 +4918,25 @@ fn collect_unseen_mailbox_messages(
     unseen
 }
 
+fn next_mailbox_cursor_after_refresh(
+    previous_last_message_id: Option<&str>,
+    processed_messages: &[MoeMailMessageSummary],
+) -> Option<String> {
+    processed_messages
+        .first()
+        .map(|message| message.id.clone())
+        .or_else(|| previous_last_message_id.map(ToOwned::to_owned))
+}
+
 async fn resolve_mailbox_message_state(
     client: &Client,
     config: &UpstreamAccountsMoeMailConfig,
     remote_email_id: &str,
     messages: &[MoeMailMessageSummary],
-    mut latest_code: Option<ParsedMailboxCode>,
-    mut latest_invite: Option<ParsedMailboxInvite>,
 ) -> Result<(Option<ParsedMailboxCode>, Option<ParsedMailboxInvite>)> {
-    for summary in messages
-        .iter()
-        .take(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_STATUS_FETCH_LIMIT as usize)
-    {
+    let mut latest_code = None;
+    let mut latest_invite = None;
+    for summary in messages.iter() {
         if latest_code.is_some() && latest_invite.is_some() {
             break;
         }
@@ -4922,13 +4969,10 @@ async fn resolve_mailbox_message_state_for_attach(
     config: &UpstreamAccountsMoeMailConfig,
     remote_email_id: &str,
     messages: &[MoeMailMessageSummary],
-    mut latest_code: Option<ParsedMailboxCode>,
-    mut latest_invite: Option<ParsedMailboxInvite>,
 ) -> Result<MoeMailAttachReadState<(Option<ParsedMailboxCode>, Option<ParsedMailboxInvite>)>> {
-    for summary in messages
-        .iter()
-        .take(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_STATUS_FETCH_LIMIT as usize)
-    {
+    let mut latest_code = None;
+    let mut latest_invite = None;
+    for summary in messages.iter() {
         if latest_code.is_some() && latest_invite.is_some() {
             break;
         }
@@ -5188,17 +5232,18 @@ async fn refresh_oauth_mailbox_session_status(
         moemail_list_messages(&state.http_clients.shared, config, &row.remote_email_id).await?;
     sort_mailbox_messages_desc(&mut messages);
 
-    let latest_message_id = latest_mailbox_message_id(&messages);
     let unseen_messages = collect_unseen_mailbox_messages(messages, row.last_message_id.as_deref());
-    let (latest_code, latest_invite) = resolve_mailbox_message_state(
+    let (fresh_code, fresh_invite) = resolve_mailbox_message_state(
         &state.http_clients.shared,
         config,
         &row.remote_email_id,
         &unseen_messages,
-        parsed_code_from_mailbox_row(row),
-        parsed_invite_from_mailbox_row(row),
     )
     .await?;
+    let latest_code = merge_mailbox_code(fresh_code, parsed_code_from_mailbox_row(row));
+    let latest_invite = merge_mailbox_invite(fresh_invite, parsed_invite_from_mailbox_row(row));
+    let next_last_message_id =
+        next_mailbox_cursor_after_refresh(row.last_message_id.as_deref(), &unseen_messages);
 
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
@@ -5226,7 +5271,7 @@ async fn refresh_oauth_mailbox_session_status(
     .bind(latest_invite.as_ref().map(|value| value.copy_label.clone()))
     .bind(latest_invite.as_ref().map(|value| value.updated_at.clone()))
     .bind(if latest_invite.is_some() { 1 } else { 0 })
-    .bind(latest_message_id.or_else(|| row.last_message_id.clone()))
+    .bind(next_last_message_id)
     .bind(&now_iso)
     .execute(&state.pool)
     .await?;
@@ -8876,6 +8921,73 @@ mod tests {
         assert_eq!(unseen.len(), messages.len());
         assert_eq!(unseen[0].id, "msg_2");
         assert_eq!(unseen[1].id, "msg_1");
+    }
+
+    #[test]
+    fn next_mailbox_cursor_after_refresh_advances_to_latest_processed_message() {
+        let processed = vec![
+            MoeMailMessageSummary {
+                id: "msg_5".to_string(),
+                subject: Some("latest".to_string()),
+                received_at: Some("2026-03-16T05:00:00Z".to_string()),
+            },
+            MoeMailMessageSummary {
+                id: "msg_4".to_string(),
+                subject: Some("older".to_string()),
+                received_at: Some("2026-03-16T04:00:00Z".to_string()),
+            },
+        ];
+
+        let next = next_mailbox_cursor_after_refresh(Some("msg_3"), &processed);
+
+        assert_eq!(next.as_deref(), Some("msg_5"));
+    }
+
+    #[test]
+    fn next_mailbox_cursor_after_refresh_keeps_existing_cursor_when_nothing_was_processed() {
+        let next = next_mailbox_cursor_after_refresh(Some("msg_3"), &[]);
+
+        assert_eq!(next.as_deref(), Some("msg_3"));
+    }
+
+    #[test]
+    fn merge_mailbox_code_prefers_fresher_refresh_value() {
+        let stored = ParsedMailboxCode {
+            value: "111111".to_string(),
+            source: "subject".to_string(),
+            updated_at: "2026-03-16T00:00:00Z".to_string(),
+        };
+        let fresh = ParsedMailboxCode {
+            value: "222222".to_string(),
+            source: "subject".to_string(),
+            updated_at: "2026-03-16T00:01:00Z".to_string(),
+        };
+
+        let merged = merge_mailbox_code(Some(fresh), Some(stored)).expect("merged code");
+
+        assert_eq!(merged.value, "222222");
+        assert_eq!(merged.updated_at, "2026-03-16T00:01:00Z");
+    }
+
+    #[test]
+    fn merge_mailbox_invite_keeps_newer_stored_value_when_refresh_is_older() {
+        let stored = ParsedMailboxInvite {
+            subject: "New invite".to_string(),
+            copy_value: "https://example.com/new".to_string(),
+            copy_label: "invite-link".to_string(),
+            updated_at: "2026-03-16T00:05:00Z".to_string(),
+        };
+        let fresh = ParsedMailboxInvite {
+            subject: "Old invite".to_string(),
+            copy_value: "https://example.com/old".to_string(),
+            copy_label: "invite-link".to_string(),
+            updated_at: "2026-03-16T00:01:00Z".to_string(),
+        };
+
+        let merged = merge_mailbox_invite(Some(fresh), Some(stored)).expect("merged invite");
+
+        assert_eq!(merged.subject, "New invite");
+        assert_eq!(merged.copy_value, "https://example.com/new");
     }
 
     #[test]
