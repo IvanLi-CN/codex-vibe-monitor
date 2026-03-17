@@ -18226,7 +18226,8 @@ async fn upstream_last_activity_archive_backfill_keeps_pending_when_archive_miss
 }
 
 #[tokio::test]
-async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_when_new_archive_arrives() {
+async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_when_new_archive_arrives()
+ {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
     )
@@ -18427,7 +18428,10 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
     .fetch_one(&pool)
     .await
     .expect("load refreshed archive row after new archive");
-    assert_eq!(refreshed_row.0.as_deref(), Some(second_activity_at.as_str()));
+    assert_eq!(
+        refreshed_row.0.as_deref(),
+        Some(second_activity_at.as_str())
+    );
     assert_eq!(refreshed_row.1, 0);
 
     cleanup_temp_test_dir(&temp_dir);
