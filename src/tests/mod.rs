@@ -4073,6 +4073,26 @@ async fn test_upstream_slow_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_slow_first_chunk() -> impl IntoResponse {
+    let chunks = stream::unfold(0usize, |state| async move {
+        match state {
+            0 => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Some((Ok::<_, Infallible>(Bytes::from_static(b"chunk-a")), 1))
+            }
+            _ => None,
+        }
+    });
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
 async fn test_upstream_hang() -> impl IntoResponse {
     tokio::time::sleep(Duration::from_secs(2)).await;
     StatusCode::NO_CONTENT
@@ -4142,6 +4162,39 @@ async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_responses_slow_success_stream() -> impl IntoResponse {
+    let first = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+    );
+    let second = concat!(
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
+    );
+    let chunks = stream::unfold(0usize, move |state| async move {
+        match state {
+            0 => Some((Ok::<_, Infallible>(Bytes::from_static(first.as_bytes())), 1)),
+            1 => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Some((
+                    Ok::<_, Infallible>(Bytes::from_static(second.as_bytes())),
+                    2,
+                ))
+            }
+            _ => None,
+        }
+    });
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
 async fn test_upstream_responses_failed_stream() -> impl IntoResponse {
     let payload = [
         "event: response.created
@@ -4179,6 +4232,13 @@ async fn test_upstream_responses(uri: Uri) -> Response {
         .is_some_and(|query| query.contains("mode=response_failed"))
     {
         test_upstream_responses_failed_stream()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=slow-success"))
+    {
+        test_upstream_responses_slow_success_stream()
             .await
             .into_response()
     } else if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
@@ -4323,6 +4383,7 @@ async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
         .route("/v1/stream-mid-error", any(test_upstream_stream_mid_error))
         .route("/v1/429-mid-error", any(test_upstream_429_mid_error))
         .route("/v1/slow-stream", any(test_upstream_slow_stream))
+        .route("/v1/slow-first-chunk", any(test_upstream_slow_first_chunk))
         .route("/v1/hang", any(test_upstream_hang))
         .route("/v1/models", get(test_upstream_models))
         .route("/v1/redirect", any(test_upstream_redirect))
@@ -9048,6 +9109,50 @@ async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
     (format!("http://{addr}"), handle)
 }
 
+async fn oauth_codex_slow_models_upstream() -> impl IntoResponse {
+    let chunks = stream::unfold(0usize, |state| async move {
+        match state {
+            0 => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Some((
+                    Ok::<_, Infallible>(Bytes::from_static(
+                        br#"{"data":[{"id":"slow-model","object":"model"}]}"#,
+                    )),
+                    1,
+                ))
+            }
+            _ => None,
+        }
+    });
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
+async fn spawn_oauth_codex_slow_models_upstream() -> (String, JoinHandle<()>) {
+    let app = Router::new().route(
+        "/backend-api/codex/models",
+        get(oauth_codex_slow_models_upstream),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind oauth codex slow models upstream");
+    let addr = listener
+        .local_addr()
+        .expect("oauth codex slow models upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("oauth codex slow models upstream should run");
+    });
+    (format!("http://{addr}"), handle)
+}
+
 async fn spawn_pool_retry_upstream(
     fail_before_success: &[(&str, usize)],
 ) -> (
@@ -10535,6 +10640,184 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
 
     server_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_e2e_stream_survives_short_request_timeout() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy test server");
+    let addr = listener.local_addr().expect("proxy test server addr");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("proxy test server should run");
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://{addr}/v1/slow-stream"))
+        .header(http_header::AUTHORIZATION, "Bearer pool-live-key")
+        .send()
+        .await
+        .expect("send pool proxy stream request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.bytes().await.expect("read proxied stream");
+    assert_eq!(&body[..], b"chunk-achunk-b");
+
+    server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_times_out_before_first_chunk_with_short_request_timeout() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy test server");
+    let addr = listener.local_addr().expect("proxy test server addr");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("proxy test server should run");
+    });
+
+    let client = reqwest::Client::new();
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        client
+            .get(format!("http://{addr}/v1/slow-first-chunk"))
+            .header(http_header::AUTHORIZATION, "Bearer pool-live-key")
+            .send(),
+    )
+    .await
+    .expect("pool request should not hang")
+    .expect("send pool proxy request");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response.bytes().await.expect("read pool error body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("first upstream chunk"));
+
+    server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_stream_survives_short_request_timeout() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy test server");
+    let addr = listener.local_addr().expect("proxy test server addr");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("proxy test server should run");
+    });
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+    }))
+    .expect("serialize request body");
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{addr}/v1/responses?mode=slow-success"))
+        .header(http_header::AUTHORIZATION, "Bearer pool-live-key")
+        .header(http_header::CONTENT_TYPE, "application/json")
+        .body(request_body)
+        .send()
+        .await
+        .expect("send pool responses request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.bytes().await.expect("read pool responses body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("response.created"));
+    assert!(payload.contains("response.completed"));
+    assert!(payload.contains("resp_slow_test"));
+
+    server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_oauth_models_preserve_response_timeout_after_headers() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_slow_models_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let mut config = test_config();
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_oauth_account(&state, "Primary OAuth", "oauth-primary").await;
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::from_iter([(
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            )]),
+            Body::empty(),
+        ),
+    )
+    .await
+    .expect("oauth pool request should not hang");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth pool error body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("timed out"));
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]
