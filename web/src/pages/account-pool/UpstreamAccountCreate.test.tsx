@@ -1157,6 +1157,39 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     );
   });
 
+  it("keeps the pending oauth url when an unsupported mailbox attach falls back", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: false,
+      emailAddress: "manual-existing@example.com",
+      reason: "not_readable",
+    });
+    mockUpstreamAccounts({ beginOauthLogin, beginOauthMailboxSessionForAddress });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@example.com");
+    await flushAsync();
+    clickButton(/Use address/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("manual-existing@example.com");
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(host?.textContent).not.toContain(
+      "Generate a fresh OAuth URL for this row before completing login.",
+    );
+  });
+
   it("attaches a supported manual mailbox address without blocking oauth actions", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
@@ -1199,6 +1232,73 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).toContain("manual-existing@mail-tw.707079.xyz");
     expect(host?.textContent).toContain("Attached mailbox");
     expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
+  });
+
+  it("stops using a supported mailbox session after the input diverges", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=oauth",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Mailbox Drift",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-attached-9",
+              emailAddress: "manual-existing@mail-tw.707079.xyz",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              source: "attached",
+            },
+            mailboxInput: "manual-existing@mail-tw.707079.xyz",
+            mailboxStatus: {
+              sessionId: "mailbox-attached-9",
+              emailAddress: "manual-existing@mail-tw.707079.xyz",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              latestCode: {
+                value: "123456",
+                updatedAt: "2026-03-13T09:59:00.000Z",
+              },
+              invite: {
+                subject: "Invite",
+                copyValue: "invite-link",
+              },
+              invited: true,
+              error: null,
+            },
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    setInputValue('input[name="oauthMailboxInput"]', "different@example.com");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "Mailbox Drift",
+      groupName: undefined,
+      note: undefined,
+      groupNote: undefined,
+      accountId: undefined,
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: undefined,
+      mailboxAddress: undefined,
+    });
+    expect(findButton(/Copy code/i)?.disabled).toBe(true);
+    expect(host?.textContent).not.toContain("Attached mailbox");
   });
 
   it("keeps oauth flow available when a manual mailbox is unsupported", async () => {
