@@ -8,7 +8,9 @@
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                                                          |
 | m7a9k | OAuth 手动邮箱附着与增强能力判定                                             | 进行中         | `m7a9k-oauth-manual-mailbox-attach/SPEC.md`          | 2026-03-17 | fast-track / single oauth + reauth manual mailbox attach / mailboxAddress contract / review pending |
+| ynr8z | 号池流式上游误用整请求超时 | 进行中 | `ynr8z-pool-stream-total-timeout/SPEC.md` | 2026-03-17 | fast-track / pool streaming / shared client timeout / no replay semantic change |
 | q1m9k | Release PR 评论权限补齐                                                      | 进行中         | `q1m9k-release-pr-comment-permission/SPEC.md`        | 2026-03-17 | fast-track / release workflow / pull-requests write / comment permission fix |
+| f7nqn | InvocationTable 代理节点展示恢复热修 | 进行中 | `f7nqn-invocation-proxy-display-restore-hotfix/SPEC.md` | 2026-03-17 | fast-track / hotfix / restore proxyDisplayName for future invocations |
 | sq8gw | Release 工作流 PR 版本评论                                               | 进行中         | `sq8gw-release-pr-version-comment/SPEC.md`           | 2026-03-17 | fast-track / release publish / PR version comment upsert / review convergence |
 | 3n287 | OAuth 临时邮箱自动化与验证码/邀请态集成                                   | 进行中         | `3n287-oauth-temp-mail-automation/SPEC.md`           | 2026-03-17 | fast-track / MoeMail mailbox sessions baseline / manual mailbox attach moved to m7a9k |
 | f6f6e | GH Actions 防取消发布链路全面对齐                                              | 部分完成（3/4） | `f6f6e-gh-actions-release-anti-cancel/SPEC.md`           | 2026-03-15 | strict anti-cancel / global serial CI Main+Release / current PR labels / contract refresh |

@@ -6235,6 +6235,50 @@ impl ProxyUpstreamResponseBody {
     }
 }
 
+fn pool_upstream_timeout_message(total_timeout: Duration, phase: &str) -> String {
+    format!(
+        "request timed out after {}ms while {phase}",
+        total_timeout.as_millis()
+    )
+}
+
+async fn read_pool_upstream_bytes_with_timeout(
+    response: ProxyUpstreamResponseBody,
+    total_timeout: Duration,
+    started: Instant,
+    phase: &str,
+) -> Result<Bytes, String> {
+    let Some(timeout_budget) = remaining_timeout_budget(total_timeout, started.elapsed()) else {
+        return Err(pool_upstream_timeout_message(total_timeout, phase));
+    };
+
+    match timeout(timeout_budget, response.into_bytes()).await {
+        Ok(result) => result,
+        Err(_) => Err(pool_upstream_timeout_message(total_timeout, phase)),
+    }
+}
+
+async fn read_pool_upstream_first_chunk_with_timeout(
+    response: ProxyUpstreamResponseBody,
+    total_timeout: Duration,
+    started: Instant,
+) -> Result<(ProxyUpstreamResponseBody, Option<Bytes>), String> {
+    let Some(timeout_budget) = remaining_timeout_budget(total_timeout, started.elapsed()) else {
+        return Err(pool_upstream_timeout_message(
+            total_timeout,
+            "waiting for first upstream chunk",
+        ));
+    };
+
+    match timeout(timeout_budget, response.into_first_chunk()).await {
+        Ok(result) => result,
+        Err(_) => Err(pool_upstream_timeout_message(
+            total_timeout,
+            "waiting for first upstream chunk",
+        )),
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct PoolUpstreamResponse {
     pub(crate) account: PoolResolvedAccount,
@@ -6661,21 +6705,7 @@ async fn send_pool_request_with_failover(
             }
             PoolResolvedAuth::Oauth { .. } => None,
         };
-        let client = match state.http_clients.client_for_parallelism(false) {
-            Ok(client) => client,
-            Err(err) => {
-                return Err(PoolUpstreamError {
-                    account: Some(account),
-                    status: StatusCode::BAD_GATEWAY,
-                    message: format!("failed to initialize upstream client: {err}"),
-                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                    connect_latency_ms: 0.0,
-                    upstream_error_code: None,
-                    upstream_error_message: None,
-                    upstream_request_id: None,
-                });
-            }
-        };
+        let client = state.http_clients.client_for_pool_upstream();
 
         for same_account_attempt in 0..same_account_attempts {
             let connect_started = Instant::now();
@@ -6868,6 +6898,7 @@ async fn send_pool_request_with_failover(
                             headers,
                             oauth_body,
                             handshake_timeout,
+                            state.config.request_timeout,
                             access_token,
                             chatgpt_account_id.as_deref(),
                         )
@@ -6912,7 +6943,14 @@ async fn send_pool_request_with_failover(
                     .filter(|value| !value.is_empty())
                     .map(|value| value.to_string());
                 let (upstream_error_code, upstream_error_message, upstream_request_id, message) =
-                    match response.into_bytes().await {
+                    match read_pool_upstream_bytes_with_timeout(
+                        response,
+                        state.config.request_timeout,
+                        connect_started,
+                        "reading upstream error body",
+                    )
+                    .await
+                    {
                         Ok(body_bytes) => summarize_pool_upstream_http_failure(
                             status,
                             upstream_request_id_header.as_deref(),
@@ -6967,7 +7005,13 @@ async fn send_pool_request_with_failover(
             }
 
             let first_byte_started = Instant::now();
-            let (response, first_chunk) = match response.into_first_chunk().await {
+            let (response, first_chunk) = match read_pool_upstream_first_chunk_with_timeout(
+                response,
+                state.config.request_timeout,
+                connect_started,
+            )
+            .await
+            {
                 Ok(value) => value,
                 Err(err) => {
                     let message = format!("upstream stream error before first chunk: {err}");
@@ -7270,20 +7314,13 @@ async fn proxy_openai_v1_via_pool(
                     let connect_started = Instant::now();
                     let response = ProxyUpstreamResponseBody::Axum(
                         oauth_bridge::send_oauth_upstream_request(
-                            &state
-                                .http_clients
-                                .client_for_parallelism(false)
-                                .map_err(|err| {
-                                    (
-                                        StatusCode::BAD_GATEWAY,
-                                        format!("failed to initialize upstream client: {err}"),
-                                    )
-                                })?,
+                            &state.http_clients.client_for_pool_upstream(),
                             method.clone(),
                             original_uri,
                             &headers,
                             oauth_bridge::OauthUpstreamRequestBody::Stream(replayable.body),
                             handshake_timeout,
+                            state.config.request_timeout,
                             access_token,
                             chatgpt_account_id.as_deref(),
                         )
@@ -7307,7 +7344,14 @@ async fn proxy_openai_v1_via_pool(
                             upstream_error_message,
                             upstream_request_id,
                             message,
-                        ) = match response.into_bytes().await {
+                        ) = match read_pool_upstream_bytes_with_timeout(
+                            response,
+                            state.config.request_timeout,
+                            connect_started,
+                            "reading upstream error body",
+                        )
+                        .await
+                        {
                             Ok(body_bytes) => summarize_pool_upstream_http_failure(
                                 status,
                                 upstream_request_id_header.as_deref(),
@@ -7356,7 +7400,13 @@ async fn proxy_openai_v1_via_pool(
                         .map_err(|err| (err.status, err.message))?
                     } else {
                         let first_byte_started = Instant::now();
-                        match response.into_first_chunk().await {
+                        match read_pool_upstream_first_chunk_with_timeout(
+                            response,
+                            state.config.request_timeout,
+                            connect_started,
+                        )
+                        .await
+                        {
                             Ok((response, first_chunk)) => PoolUpstreamResponse {
                                 account: initial_account,
                                 response,
@@ -7405,15 +7455,7 @@ async fn proxy_openai_v1_via_pool(
                                 format!("failed to build pool upstream url: {err}"),
                             )
                         })?;
-                let client = state
-                    .http_clients
-                    .client_for_parallelism(false)
-                    .map_err(|err| {
-                        (
-                            StatusCode::BAD_GATEWAY,
-                            format!("failed to initialize upstream client: {err}"),
-                        )
-                    })?;
+                let client = state.http_clients.client_for_pool_upstream();
                 let request_connection_scoped = connection_scoped_header_names(&headers);
                 let replayable = spawn_pool_replayable_request_body(
                     body,
@@ -7472,7 +7514,14 @@ async fn proxy_openai_v1_via_pool(
                                 upstream_error_message,
                                 upstream_request_id,
                                 message,
-                            ) = match response.into_bytes().await {
+                            ) = match read_pool_upstream_bytes_with_timeout(
+                                response,
+                                state.config.request_timeout,
+                                connect_started,
+                                "reading upstream error body",
+                            )
+                            .await
+                            {
                                 Ok(body_bytes) => summarize_pool_upstream_http_failure(
                                     status,
                                     upstream_request_id_header.as_deref(),
@@ -7521,7 +7570,13 @@ async fn proxy_openai_v1_via_pool(
                             .map_err(|err| (err.status, err.message))?
                         } else {
                             let first_byte_started = Instant::now();
-                            match response.into_first_chunk().await {
+                            match read_pool_upstream_first_chunk_with_timeout(
+                                response,
+                                state.config.request_timeout,
+                                connect_started,
+                            )
+                            .await
+                            {
                                 Ok((response, first_chunk)) => PoolUpstreamResponse {
                                     account: initial_account,
                                     response,
@@ -8498,41 +8553,41 @@ async fn proxy_openai_v1_capture_target(
                 },
                 error_message: Some(error_message),
                 failure_kind: Some(read_err.failure_kind.to_string()),
-                payload: Some(build_proxy_payload_summary(
-                    capture_target,
-                    read_err.status,
-                    request_info.is_stream,
-                    None,
-                    request_info.requested_service_tier.as_deref(),
-                    request_info.reasoning_effort.as_deref(),
-                    None,
-                    None,
-                    request_info.parse_error.as_deref(),
-                    Some(read_err.failure_kind),
-                    requester_ip.as_deref(),
-                    if pool_route_active {
+                payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
+                    target: capture_target,
+                    status: read_err.status,
+                    is_stream: request_info.is_stream,
+                    request_model: None,
+                    requested_service_tier: request_info.requested_service_tier.as_deref(),
+                    reasoning_effort: request_info.reasoning_effort.as_deref(),
+                    response_model: None,
+                    usage_missing_reason: None,
+                    request_parse_error: request_info.parse_error.as_deref(),
+                    failure_kind: Some(read_err.failure_kind),
+                    requester_ip: requester_ip.as_deref(),
+                    upstream_scope: if pool_route_active {
                         INVOCATION_UPSTREAM_SCOPE_INTERNAL
                     } else {
                         INVOCATION_UPSTREAM_SCOPE_EXTERNAL
                     },
-                    if pool_route_active {
+                    route_mode: if pool_route_active {
                         INVOCATION_ROUTE_MODE_POOL
                     } else {
                         INVOCATION_ROUTE_MODE_FORWARD_PROXY
                     },
-                    header_sticky_key.as_deref(),
-                    header_prompt_cache_key.as_deref(),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )),
+                    sticky_key: header_sticky_key.as_deref(),
+                    prompt_cache_key: header_prompt_cache_key.as_deref(),
+                    upstream_account_id: None,
+                    upstream_account_name: None,
+                    service_tier: None,
+                    stream_terminal_event: None,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    upstream_request_id: None,
+                    response_content_encoding: None,
+                    proxy_display_name: None,
+                    proxy_weight_delta: None,
+                })),
                 raw_response: "{}".to_string(),
                 req_raw,
                 resp_raw: RawPayloadMeta::default(),
@@ -8627,6 +8682,8 @@ async fn proxy_openai_v1_capture_target(
                     )
                     .await;
                 let error_message = format!("[{}] {}", err.failure_kind, err.message);
+                let pool_proxy_display_name =
+                    resolve_invocation_proxy_display_name(None, err.account.as_ref());
                 let record = ProxyCaptureRecord {
                     invoke_id,
                     occurred_at,
@@ -8642,35 +8699,36 @@ async fn proxy_openai_v1_capture_target(
                     },
                     error_message: Some(error_message),
                     failure_kind: Some(err.failure_kind.to_string()),
-                    payload: Some(build_proxy_payload_summary(
-                        capture_target,
-                        err.status,
-                        request_info.is_stream,
-                        None,
-                        request_info.requested_service_tier.as_deref(),
-                        request_info.reasoning_effort.as_deref(),
-                        None,
-                        None,
-                        request_info.parse_error.as_deref(),
-                        Some(err.failure_kind),
-                        requester_ip.as_deref(),
-                        INVOCATION_UPSTREAM_SCOPE_INTERNAL,
-                        INVOCATION_ROUTE_MODE_POOL,
-                        sticky_key.as_deref(),
-                        prompt_cache_key.as_deref(),
-                        err.account.as_ref().map(|account| account.account_id),
-                        err.account
+                    payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
+                        target: capture_target,
+                        status: err.status,
+                        is_stream: request_info.is_stream,
+                        request_model: None,
+                        requested_service_tier: request_info.requested_service_tier.as_deref(),
+                        reasoning_effort: request_info.reasoning_effort.as_deref(),
+                        response_model: None,
+                        usage_missing_reason: None,
+                        request_parse_error: request_info.parse_error.as_deref(),
+                        failure_kind: Some(err.failure_kind),
+                        requester_ip: requester_ip.as_deref(),
+                        upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
+                        route_mode: INVOCATION_ROUTE_MODE_POOL,
+                        sticky_key: sticky_key.as_deref(),
+                        prompt_cache_key: prompt_cache_key.as_deref(),
+                        upstream_account_id: err.account.as_ref().map(|account| account.account_id),
+                        upstream_account_name: err
+                            .account
                             .as_ref()
                             .map(|account| account.display_name.as_str()),
-                        None,
-                        None,
-                        err.upstream_error_code.as_deref(),
-                        err.upstream_error_message.as_deref(),
-                        err.upstream_request_id.as_deref(),
-                        None,
-                        None,
-                        None,
-                    )),
+                        service_tier: None,
+                        stream_terminal_event: None,
+                        upstream_error_code: err.upstream_error_code.as_deref(),
+                        upstream_error_message: err.upstream_error_message.as_deref(),
+                        upstream_request_id: err.upstream_request_id.as_deref(),
+                        response_content_encoding: None,
+                        proxy_display_name: pool_proxy_display_name.as_deref(),
+                        proxy_weight_delta: None,
+                    })),
                     raw_response: "{}".to_string(),
                     req_raw,
                     resp_raw: RawPayloadMeta::default(),
@@ -8750,33 +8808,33 @@ async fn proxy_openai_v1_capture_target(
                     },
                     error_message: Some(error_message),
                     failure_kind: Some(err.failure_kind.to_string()),
-                    payload: Some(build_proxy_payload_summary(
-                        capture_target,
-                        err.status,
-                        request_info.is_stream,
-                        None,
-                        request_info.requested_service_tier.as_deref(),
-                        request_info.reasoning_effort.as_deref(),
-                        None,
-                        None,
-                        request_info.parse_error.as_deref(),
-                        Some(err.failure_kind),
-                        requester_ip.as_deref(),
-                        INVOCATION_UPSTREAM_SCOPE_EXTERNAL,
-                        INVOCATION_ROUTE_MODE_FORWARD_PROXY,
-                        sticky_key.as_deref(),
-                        prompt_cache_key.as_deref(),
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        Some(err.selected_proxy.display_name.as_str()),
-                        proxy_attempt_update.delta(),
-                    )),
+                    payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
+                        target: capture_target,
+                        status: err.status,
+                        is_stream: request_info.is_stream,
+                        request_model: None,
+                        requested_service_tier: request_info.requested_service_tier.as_deref(),
+                        reasoning_effort: request_info.reasoning_effort.as_deref(),
+                        response_model: None,
+                        usage_missing_reason: None,
+                        request_parse_error: request_info.parse_error.as_deref(),
+                        failure_kind: Some(err.failure_kind),
+                        requester_ip: requester_ip.as_deref(),
+                        upstream_scope: INVOCATION_UPSTREAM_SCOPE_EXTERNAL,
+                        route_mode: INVOCATION_ROUTE_MODE_FORWARD_PROXY,
+                        sticky_key: sticky_key.as_deref(),
+                        prompt_cache_key: prompt_cache_key.as_deref(),
+                        upstream_account_id: None,
+                        upstream_account_name: None,
+                        service_tier: None,
+                        stream_terminal_event: None,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
+                        response_content_encoding: None,
+                        proxy_display_name: Some(err.selected_proxy.display_name.as_str()),
+                        proxy_weight_delta: proxy_attempt_update.delta(),
+                    })),
                     raw_response: "{}".to_string(),
                     req_raw,
                     resp_raw: RawPayloadMeta::default(),
@@ -8835,6 +8893,10 @@ async fn proxy_openai_v1_capture_target(
                 &usage,
             )
             .await;
+            let proxy_display_name = resolve_invocation_proxy_display_name(
+                selected_proxy.as_ref(),
+                pool_account.as_ref(),
+            );
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -8846,40 +8908,40 @@ async fn proxy_openai_v1_capture_target(
                 status: "http_502".to_string(),
                 error_message: Some(message.clone()),
                 failure_kind: None,
-                payload: Some(build_proxy_payload_summary(
-                    capture_target,
-                    StatusCode::BAD_GATEWAY,
-                    request_info.is_stream,
-                    None,
-                    request_info.requested_service_tier.as_deref(),
-                    request_info.reasoning_effort.as_deref(),
-                    None,
-                    None,
-                    request_info.parse_error.as_deref(),
-                    None,
-                    requester_ip.as_deref(),
-                    if pool_route_active {
+                payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
+                    target: capture_target,
+                    status: StatusCode::BAD_GATEWAY,
+                    is_stream: request_info.is_stream,
+                    request_model: None,
+                    requested_service_tier: request_info.requested_service_tier.as_deref(),
+                    reasoning_effort: request_info.reasoning_effort.as_deref(),
+                    response_model: None,
+                    usage_missing_reason: None,
+                    request_parse_error: request_info.parse_error.as_deref(),
+                    failure_kind: None,
+                    requester_ip: requester_ip.as_deref(),
+                    upstream_scope: if pool_route_active {
                         INVOCATION_UPSTREAM_SCOPE_INTERNAL
                     } else {
                         INVOCATION_UPSTREAM_SCOPE_EXTERNAL
                     },
-                    if pool_route_active {
+                    route_mode: if pool_route_active {
                         INVOCATION_ROUTE_MODE_POOL
                     } else {
                         INVOCATION_ROUTE_MODE_FORWARD_PROXY
                     },
-                    sticky_key.as_deref(),
-                    prompt_cache_key.as_deref(),
-                    pool_account.as_ref().map(|account| account.account_id),
-                    pool_account
+                    sticky_key: sticky_key.as_deref(),
+                    prompt_cache_key: prompt_cache_key.as_deref(),
+                    upstream_account_id: pool_account.as_ref().map(|account| account.account_id),
+                    upstream_account_name: pool_account
                         .as_ref()
                         .map(|account| account.display_name.as_str()),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(
+                    service_tier: None,
+                    stream_terminal_event: None,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    upstream_request_id: None,
+                    response_content_encoding: Some(
                         summarize_response_content_encoding(
                             upstream_response
                                 .headers()
@@ -8888,15 +8950,13 @@ async fn proxy_openai_v1_capture_target(
                         )
                         .as_str(),
                     ),
-                    selected_proxy
-                        .as_ref()
-                        .map(|proxy| proxy.display_name.as_str()),
-                    if selected_proxy.is_some() {
+                    proxy_display_name: proxy_display_name.as_deref(),
+                    proxy_weight_delta: if selected_proxy.is_some() {
                         proxy_attempt_update.delta()
                     } else {
                         None
                     },
-                )),
+                })),
                 raw_response: "{}".to_string(),
                 req_raw,
                 resp_raw: RawPayloadMeta::default(),
@@ -9086,9 +9146,10 @@ async fn proxy_openai_v1_capture_target(
         } else {
             format!("http_{}", upstream_status.as_u16())
         };
-        let selected_proxy_display_name = selected_proxy_for_task
-            .as_ref()
-            .map(|proxy| proxy.display_name.clone());
+        let selected_proxy_display_name = resolve_invocation_proxy_display_name(
+            selected_proxy_for_task.as_ref(),
+            pool_account_for_task.as_ref(),
+        );
         let proxy_attempt_update = if let Some(selected_proxy) = selected_proxy_for_task.as_ref() {
             let forward_proxy_success = proxy_capture_response_status_is_success(
                 upstream_status,
@@ -9171,49 +9232,49 @@ async fn proxy_openai_v1_capture_target(
             "response",
             &response_bytes,
         );
-        let payload = build_proxy_payload_summary(
-            capture_target,
-            upstream_status,
-            request_info_for_task.is_stream,
-            request_info_for_task.model.as_deref(),
-            request_info_for_task.requested_service_tier.as_deref(),
-            request_info_for_task.reasoning_effort.as_deref(),
-            response_info.model.as_deref(),
-            response_info.usage_missing_reason.as_deref(),
-            request_info_for_task.parse_error.as_deref(),
+        let payload = build_proxy_payload_summary(ProxyPayloadSummary {
+            target: capture_target,
+            status: upstream_status,
+            is_stream: request_info_for_task.is_stream,
+            request_model: request_info_for_task.model.as_deref(),
+            requested_service_tier: request_info_for_task.requested_service_tier.as_deref(),
+            reasoning_effort: request_info_for_task.reasoning_effort.as_deref(),
+            response_model: response_info.model.as_deref(),
+            usage_missing_reason: response_info.usage_missing_reason.as_deref(),
+            request_parse_error: request_info_for_task.parse_error.as_deref(),
             failure_kind,
-            requester_ip_for_task.as_deref(),
-            if pool_account_for_task.is_some() {
+            requester_ip: requester_ip_for_task.as_deref(),
+            upstream_scope: if pool_account_for_task.is_some() {
                 INVOCATION_UPSTREAM_SCOPE_INTERNAL
             } else {
                 INVOCATION_UPSTREAM_SCOPE_EXTERNAL
             },
-            if pool_account_for_task.is_some() {
+            route_mode: if pool_account_for_task.is_some() {
                 INVOCATION_ROUTE_MODE_POOL
             } else {
                 INVOCATION_ROUTE_MODE_FORWARD_PROXY
             },
-            sticky_key_for_task.as_deref(),
-            prompt_cache_key_for_task.as_deref(),
-            pool_account_for_task
+            sticky_key: sticky_key_for_task.as_deref(),
+            prompt_cache_key: prompt_cache_key_for_task.as_deref(),
+            upstream_account_id: pool_account_for_task
                 .as_ref()
                 .map(|account| account.account_id),
-            pool_account_for_task
+            upstream_account_name: pool_account_for_task
                 .as_ref()
                 .map(|account| account.display_name.as_str()),
-            response_info.service_tier.as_deref(),
-            response_info.stream_terminal_event.as_deref(),
-            response_info.upstream_error_code.as_deref(),
-            response_info.upstream_error_message.as_deref(),
-            response_info.upstream_request_id.as_deref(),
-            Some(response_content_encoding.as_str()),
-            selected_proxy_display_name.as_deref(),
-            if selected_proxy_display_name.is_some() {
+            service_tier: response_info.service_tier.as_deref(),
+            stream_terminal_event: response_info.stream_terminal_event.as_deref(),
+            upstream_error_code: response_info.upstream_error_code.as_deref(),
+            upstream_error_message: response_info.upstream_error_message.as_deref(),
+            upstream_request_id: response_info.upstream_request_id.as_deref(),
+            response_content_encoding: Some(response_content_encoding.as_str()),
+            proxy_display_name: selected_proxy_display_name.as_deref(),
+            proxy_weight_delta: if selected_proxy_for_task.is_some() {
                 proxy_attempt_update.delta()
             } else {
                 None
             },
-        );
+        });
 
         let record = ProxyCaptureRecord {
             invoke_id: invoke_id_for_task,
@@ -10160,34 +10221,62 @@ fn json_value_to_i64(value: &Value) -> Option<i64> {
     value.as_str().and_then(|v| v.parse::<i64>().ok())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_proxy_payload_summary(
+struct ProxyPayloadSummary<'a> {
     target: ProxyCaptureTarget,
     status: StatusCode,
     is_stream: bool,
-    request_model: Option<&str>,
-    requested_service_tier: Option<&str>,
-    reasoning_effort: Option<&str>,
-    response_model: Option<&str>,
-    usage_missing_reason: Option<&str>,
-    request_parse_error: Option<&str>,
-    failure_kind: Option<&str>,
-    requester_ip: Option<&str>,
-    upstream_scope: &str,
-    route_mode: &str,
-    sticky_key: Option<&str>,
-    prompt_cache_key: Option<&str>,
+    request_model: Option<&'a str>,
+    requested_service_tier: Option<&'a str>,
+    reasoning_effort: Option<&'a str>,
+    response_model: Option<&'a str>,
+    usage_missing_reason: Option<&'a str>,
+    request_parse_error: Option<&'a str>,
+    failure_kind: Option<&'a str>,
+    requester_ip: Option<&'a str>,
+    upstream_scope: &'a str,
+    route_mode: &'a str,
+    sticky_key: Option<&'a str>,
+    prompt_cache_key: Option<&'a str>,
     upstream_account_id: Option<i64>,
-    upstream_account_name: Option<&str>,
-    service_tier: Option<&str>,
-    stream_terminal_event: Option<&str>,
-    upstream_error_code: Option<&str>,
-    upstream_error_message: Option<&str>,
-    upstream_request_id: Option<&str>,
-    response_content_encoding: Option<&str>,
-    proxy_display_name: Option<&str>,
+    upstream_account_name: Option<&'a str>,
+    service_tier: Option<&'a str>,
+    stream_terminal_event: Option<&'a str>,
+    upstream_error_code: Option<&'a str>,
+    upstream_error_message: Option<&'a str>,
+    upstream_request_id: Option<&'a str>,
+    response_content_encoding: Option<&'a str>,
+    proxy_display_name: Option<&'a str>,
     proxy_weight_delta: Option<f64>,
-) -> String {
+}
+
+fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
+    let ProxyPayloadSummary {
+        target,
+        status,
+        is_stream,
+        request_model,
+        requested_service_tier,
+        reasoning_effort,
+        response_model,
+        usage_missing_reason,
+        request_parse_error,
+        failure_kind,
+        requester_ip,
+        upstream_scope,
+        route_mode,
+        sticky_key,
+        prompt_cache_key,
+        upstream_account_id,
+        upstream_account_name,
+        service_tier,
+        stream_terminal_event,
+        upstream_error_code,
+        upstream_error_message,
+        upstream_request_id,
+        response_content_encoding,
+        proxy_display_name,
+        proxy_weight_delta,
+    } = summary;
     let payload = json!({
         "endpoint": target.endpoint(),
         "statusCode": status.as_u16(),
@@ -10216,6 +10305,26 @@ fn build_proxy_payload_summary(
         "proxyWeightDelta": proxy_weight_delta,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn format_pool_proxy_display_name(upstream_base_url: &Url) -> String {
+    let host = upstream_base_url
+        .host_str()
+        .unwrap_or_else(|| upstream_base_url.as_str());
+    match upstream_base_url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    }
+}
+
+fn resolve_invocation_proxy_display_name(
+    selected_proxy: Option<&SelectedForwardProxy>,
+    pool_account: Option<&PoolResolvedAccount>,
+) -> Option<String> {
+    if let Some(selected_proxy) = selected_proxy {
+        return Some(selected_proxy.display_name.clone());
+    }
+    pool_account.map(|account| format_pool_proxy_display_name(&account.upstream_base_url))
 }
 
 fn summarize_response_content_encoding(content_encoding: Option<&str>) -> String {
@@ -14239,6 +14348,7 @@ fn normalize_pricing_source(raw: String) -> String {
 #[derive(Debug, Clone)]
 struct HttpClients {
     shared: Client,
+    pool_upstream: Client,
     proxy: Client,
     timeout: Duration,
     user_agent: String,
@@ -14254,6 +14364,13 @@ impl HttpClients {
             .build()
             .context("failed to construct shared HTTP client")?;
 
+        // Pool live upstream traffic can legitimately stream well past REQUEST_TIMEOUT_SECS.
+        // Handshake and upload budgets are enforced by route-specific timeout wrappers instead.
+        let pool_upstream = Self::builder(None, &user_agent)
+            .pool_max_idle_per_host(config.shared_connection_parallelism)
+            .build()
+            .context("failed to construct pool upstream HTTP client")?;
+
         let proxy = Self::builder(None, &user_agent)
             .pool_max_idle_per_host(config.shared_connection_parallelism)
             .connect_timeout(timeout)
@@ -14263,6 +14380,7 @@ impl HttpClients {
 
         Ok(Self {
             shared,
+            pool_upstream,
             proxy,
             timeout,
             user_agent,
@@ -14279,6 +14397,10 @@ impl HttpClients {
         } else {
             Ok(self.shared.clone())
         }
+    }
+
+    fn client_for_pool_upstream(&self) -> Client {
+        self.pool_upstream.clone()
     }
 
     fn client_for_forward_proxy(&self, endpoint_url: Option<&Url>) -> Result<Client> {
