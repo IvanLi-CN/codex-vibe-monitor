@@ -62,6 +62,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  vi.useRealTimers()
   await act(async () => {
     root?.unmount()
   })
@@ -280,7 +281,7 @@ describe('InvocationTable', () => {
 
     expect(html).toContain('账号')
     expect(html).toContain('代理')
-    expect(html).toContain('时延')
+    expect(html).toContain('用时')
     expect(html).toContain('首字耗时')
     expect(html).toContain('首字耗时 / HTTP 压缩')
     expect(html).toContain('pool-account-a')
@@ -538,6 +539,37 @@ describe('InvocationTable', () => {
     expect(text).toContain('88.8 ms')
     expect(text).toContain('12 s')
     expect(text).toContain('12.35 s')
+  })
+
+  it('ticks running elapsed time on the client while leaving first-byte data empty', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-16T09:10:35Z'))
+
+    await renderInteractiveTable([
+      {
+        id: -91,
+        invokeId: 'invocation-running-elapsed',
+        occurredAt: '2026-03-16T09:10:30Z',
+        createdAt: '2026-03-16T09:10:30Z',
+        source: 'proxy',
+        proxyDisplayName: 'relay-running',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+      },
+    ])
+
+    expect(document.body.textContent).toContain('用时')
+    expect(document.body.textContent).toContain('5 s')
+    expect(document.body.textContent).toContain('— · —')
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('6 s')
+    vi.useRealTimers()
   })
 
   it('opens the current-page upstream account drawer when clicking a pool account name', async () => {

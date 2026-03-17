@@ -10,6 +10,7 @@ import { usePromptCacheConversations } from '../hooks/usePromptCacheConversation
 import { useSummary } from '../hooks/useStats'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
+import { resolveInvocationDisplayStatus } from '../lib/invocationStatus'
 import { cn } from '../lib/utils'
 
 const LIMIT_OPTIONS = [20, 50, 100]
@@ -47,6 +48,14 @@ export default function LivePage() {
     isLoading,
     error,
   } = useInvocationStream(limit, undefined, undefined, { enableStream: true })
+  const chartRecords = useMemo(
+    () =>
+      records.filter((record) => {
+        const status = resolveInvocationDisplayStatus(record)?.trim().toLowerCase() ?? ''
+        return status !== 'running' && status !== 'pending'
+      }),
+    [records],
+  )
   const {
     stats: conversationStats,
     isLoading: conversationsLoading,
@@ -147,7 +156,7 @@ export default function LivePage() {
               </select>
             </label>
           </div>
-          <InvocationChart records={records} isLoading={isLoading} />
+          <InvocationChart records={chartRecords} isLoading={isLoading} />
         </div>
       </section>
 
