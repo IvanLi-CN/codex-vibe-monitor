@@ -6633,6 +6633,8 @@ async fn send_pool_request_with_failover(
     same_account_attempts: u8,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let request_connection_scoped = connection_scoped_header_names(headers);
+    let first_chunk_timeout =
+        pool_upstream_first_chunk_timeout(&state.config, original_uri, &method, handshake_timeout);
     let mut excluded_ids = Vec::new();
     let mut last_error: Option<PoolUpstreamError> = None;
     let mut preferred_account = preferred_account;
@@ -7007,7 +7009,7 @@ async fn send_pool_request_with_failover(
             let first_byte_started = Instant::now();
             let (response, first_chunk) = match read_pool_upstream_first_chunk_with_timeout(
                 response,
-                state.config.request_timeout,
+                first_chunk_timeout,
                 connect_started,
             )
             .await
@@ -7175,7 +7177,12 @@ async fn proxy_openai_v1_via_pool(
     body: Body,
 ) -> Result<Response, (StatusCode, String)> {
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
-    let handshake_timeout = state.config.proxy_upstream_handshake_timeout(None);
+    let capture_target = capture_target_for_request(original_uri.path(), &method);
+    let handshake_timeout = state
+        .config
+        .proxy_upstream_handshake_timeout(capture_target);
+    let first_chunk_timeout =
+        pool_upstream_first_chunk_timeout(&state.config, original_uri, &method, handshake_timeout);
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
         .size_hint()
@@ -7402,7 +7409,7 @@ async fn proxy_openai_v1_via_pool(
                         let first_byte_started = Instant::now();
                         match read_pool_upstream_first_chunk_with_timeout(
                             response,
-                            state.config.request_timeout,
+                            first_chunk_timeout,
                             connect_started,
                         )
                         .await
@@ -7572,7 +7579,7 @@ async fn proxy_openai_v1_via_pool(
                             let first_byte_started = Instant::now();
                             match read_pool_upstream_first_chunk_with_timeout(
                                 response,
-                                state.config.request_timeout,
+                                first_chunk_timeout,
                                 connect_started,
                             )
                             .await
@@ -9602,6 +9609,21 @@ fn proxy_upstream_handshake_timeout_for_capture_target(
         config.openai_proxy_compact_handshake_timeout
     } else {
         config.openai_proxy_handshake_timeout
+    }
+}
+
+fn pool_upstream_first_chunk_timeout(
+    config: &AppConfig,
+    original_uri: &Uri,
+    method: &Method,
+    handshake_timeout: Duration,
+) -> Duration {
+    if capture_target_for_request(original_uri.path(), method)
+        .is_some_and(ProxyCaptureTarget::uses_compact_upstream_timeout)
+    {
+        handshake_timeout
+    } else {
+        config.request_timeout
     }
 }
 
