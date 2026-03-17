@@ -696,9 +696,6 @@ export default function UpstreamAccountCreatePage() {
     () => draft?.oauth?.mailboxCodeTone ?? 'idle',
   )
   const [oauthMailboxBusy, setOauthMailboxBusy] = useState(false)
-  const [oauthMailboxRefreshBusy, setOauthMailboxRefreshBusy] = useState(false)
-  const [oauthMailboxNextRefreshAt, setOauthMailboxNextRefreshAt] = useState<number | null>(null)
-  const [oauthMailboxRefreshCycle, setOauthMailboxRefreshCycle] = useState(0)
   const [refreshClockMs, setRefreshClockMs] = useState(() => Date.now())
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState(() => draft?.apiKey?.displayName ?? '')
   const [apiKeyGroupName, setApiKeyGroupName] = useState(() => draft?.apiKey?.groupName ?? '')
@@ -758,11 +755,6 @@ export default function UpstreamAccountCreatePage() {
     activeOauthMailboxSession?.expiresAt ?? null,
     t,
   )
-  const oauthMailboxRefreshLabel = useMemo(
-    () => formatRelativeRefreshCountdown(oauthMailboxNextRefreshAt, refreshClockMs, t),
-    [oauthMailboxNextRefreshAt, refreshClockMs, t],
-  )
-
   useEffect(() => {
     return () => {
       if (oauthMailboxToneResetRef.current != null) {
@@ -918,14 +910,10 @@ export default function UpstreamAccountCreatePage() {
 
   useEffect(() => {
     if (!refreshableOauthMailboxSession) {
-      setOauthMailboxRefreshBusy(false)
-      setOauthMailboxNextRefreshAt(null)
       return
     }
     let cancelled = false
     const poll = async () => {
-      setOauthMailboxRefreshBusy(true)
-      setOauthMailboxNextRefreshAt(null)
       try {
         const [status] = await getOauthMailboxStatuses([refreshableOauthMailboxSession.sessionId])
         if (cancelled) return
@@ -937,8 +925,6 @@ export default function UpstreamAccountCreatePage() {
                 ? t('accountPool.upstreamAccounts.oauth.mailboxExpired')
                 : t('accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable'),
           )
-          setOauthMailboxRefreshBusy(false)
-          setOauthMailboxNextRefreshAt(Date.now() + MAILBOX_REFRESH_INTERVAL_MS)
           return
         }
         setOauthMailboxStatus((current) => {
@@ -952,11 +938,6 @@ export default function UpstreamAccountCreatePage() {
         if (!cancelled) {
           setOauthMailboxError(t('accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed'))
         }
-      } finally {
-        if (!cancelled) {
-          setOauthMailboxRefreshBusy(false)
-          setOauthMailboxNextRefreshAt(Date.now() + MAILBOX_REFRESH_INTERVAL_MS)
-        }
       }
     }
     void poll()
@@ -969,7 +950,6 @@ export default function UpstreamAccountCreatePage() {
     }
   }, [
     getOauthMailboxStatuses,
-    oauthMailboxRefreshCycle,
     refreshableOauthMailboxSession,
     t,
   ])
@@ -1069,10 +1049,6 @@ export default function UpstreamAccountCreatePage() {
       window.clearInterval(timer)
     }
   }, [activeBatchMailboxSessionIdsKey, getOauthMailboxStatuses, t])
-
-  const handleSingleMailboxFetch = useCallback(() => {
-    setOauthMailboxRefreshCycle((current) => current + 1)
-  }, [])
 
   const handleBatchMailboxFetch = useCallback(
     async (rowId: string) => {
@@ -2404,35 +2380,6 @@ export default function UpstreamAccountCreatePage() {
                       />
                       <div className="text-sm">{oauthMailboxIssue}</div>
                     </Alert>
-                  ) : null}
-
-                  {resolvedOauthMailboxSession ? (
-                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-base-300/60 bg-base-200/30 px-4 py-3">
-                      <div className="space-y-1">
-                        <p className="text-sm font-semibold text-base-content">
-                          {t('accountPool.upstreamAccounts.oauth.refreshSectionTitle')}
-                        </p>
-                        <p className="text-xs text-base-content/65">
-                          {oauthMailboxRefreshBusy
-                            ? t('accountPool.upstreamAccounts.oauth.refreshing')
-                            : oauthMailboxRefreshLabel}
-                        </p>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={!refreshableOauthMailboxSession || oauthMailboxRefreshBusy}
-                        onClick={() => void handleSingleMailboxFetch()}
-                      >
-                        {oauthMailboxRefreshBusy ? (
-                          <Spinner size="sm" className="mr-1.5" />
-                        ) : (
-                          <AppIcon name="refresh" className="mr-1.5 h-4 w-4" aria-hidden />
-                        )}
-                        {t('accountPool.upstreamAccounts.actions.fetchMailboxStatus')}
-                      </Button>
-                    </div>
                   ) : null}
 
                   <div className="grid gap-4 rounded-2xl border border-base-300/80 bg-base-100/72 p-4 sm:grid-cols-2">

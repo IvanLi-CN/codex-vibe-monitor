@@ -1557,7 +1557,6 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(getOauthMailboxStatuses).toHaveBeenCalledTimes(1);
     expect(host?.textContent).toContain("111111");
     expect(host?.textContent).toContain("Received at");
-    expect(host?.textContent).toContain("Next refresh in 5s");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
@@ -1568,51 +1567,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).toContain("222222");
   });
 
-  it("fetches mailbox status on demand for single and batch oauth flows", async () => {
-    const singleExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
-    const singleStatuses = vi.fn().mockResolvedValue([
-      {
-        sessionId: "mailbox-manual-single",
-        emailAddress: "single@example.com",
-        expiresAt: singleExpiresAt,
-        latestCode: {
-          value: "333333",
-          source: "subject",
-          updatedAt: "2026-03-13T10:00:00.000Z",
-        },
-        invite: null,
-        invited: false,
-        error: null,
-      },
-    ]);
-    mockUpstreamAccounts({ getOauthMailboxStatuses: singleStatuses });
-    render({
-      pathname: "/account-pool/upstream-accounts/new",
-      search: "?mode=oauth",
-      state: {
-        draft: {
-          oauth: {
-            displayName: "Manual Fetch",
-            mailboxSession: {
-              supported: true,
-              sessionId: "mailbox-manual-single",
-              emailAddress: "single@example.com",
-              expiresAt: singleExpiresAt,
-              source: "generated",
-            },
-            mailboxInput: "single@example.com",
-          },
-        },
-      },
-    });
-
-    await flushAsync();
-    expect(singleStatuses).toHaveBeenCalledTimes(1);
-
-    clickButton(/^Fetch$/i);
-    await flushAsync();
-    expect(singleStatuses).toHaveBeenCalledTimes(2);
-
+  it("fetches mailbox status on demand for batch oauth flows", async () => {
     act(() => {
       root?.unmount();
     });
@@ -1620,11 +1575,12 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     host = null;
     root = null;
 
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
     const batchStatuses = vi.fn().mockResolvedValue([
       {
         sessionId: "mailbox-manual-batch",
         emailAddress: "batch@example.com",
-        expiresAt: singleExpiresAt,
+        expiresAt,
         latestCode: {
           value: "444444",
           source: "subject",
@@ -1650,7 +1606,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
                   supported: true,
                   sessionId: "mailbox-manual-batch",
                   emailAddress: "batch@example.com",
-                  expiresAt: singleExpiresAt,
+                  expiresAt,
                   source: "generated",
                 },
                 mailboxInput: "batch@example.com",
