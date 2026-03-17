@@ -7,6 +7,7 @@
 ## Index
 
 | ID    | Title                                                                         | Status          | Spec                                                     | Last       | Notes                                                                                          |
+| ynr8z | 号池流式上游误用整请求超时 | 进行中 | `ynr8z-pool-stream-total-timeout/SPEC.md` | 2026-03-17 | fast-track / pool streaming / shared client timeout / no replay semantic change |
 | q1m9k | Release PR 评论权限补齐 | 进行中 | `q1m9k-release-pr-comment-permission/SPEC.md` | 2026-03-17 | fast-track / release workflow / pull-requests write / comment permission fix |
 | f7nqn | InvocationTable 代理节点展示恢复热修 | 进行中 | `f7nqn-invocation-proxy-display-restore-hotfix/SPEC.md` | 2026-03-17 | fast-track / hotfix / restore proxyDisplayName for future invocations |
 | sq8gw | Release 工作流 PR 版本评论                                               | 进行中         | `sq8gw-release-pr-version-comment/SPEC.md`           | 2026-03-17 | fast-track / release publish / PR version comment upsert / review convergence |
