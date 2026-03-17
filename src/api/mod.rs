@@ -10,6 +10,11 @@ const INVOCATION_REQUESTER_IP_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.requesterIp') AS TEXT) END";
 const INVOCATION_PROMPT_CACHE_KEY_SQL: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
 const INVOCATION_UPSTREAM_SCOPE_SQL: &str = "COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamScope') AS TEXT) END, 'external')";
+const INVOCATION_ROUTE_MODE_SQL: &str =
+    "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.routeMode') AS TEXT) END";
+const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
+const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
 const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
 
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
@@ -48,6 +53,26 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
         .push(
             " AS prompt_cache_key, \
+         ",
+        )
+        .push(INVOCATION_ROUTE_MODE_SQL)
+        .push(
+            " AS route_mode, \
+         ",
+        )
+        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(
+            " AS upstream_account_id, \
+         ",
+        )
+        .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
+        .push(
+            " AS upstream_account_name, \
+         ",
+        )
+        .push(INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
+        .push(
+            " AS response_content_encoding, \
          CASE \
            WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
              THEN json_extract(payload, '$.requestedServiceTier') \
@@ -3037,6 +3062,14 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) prompt_cache_key: Option<String>,
     #[sqlx(default)]
+    pub(crate) route_mode: Option<String>,
+    #[sqlx(default)]
+    pub(crate) upstream_account_id: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) upstream_account_name: Option<String>,
+    #[sqlx(default)]
+    pub(crate) response_content_encoding: Option<String>,
+    #[sqlx(default)]
     pub(crate) requested_service_tier: Option<String>,
     #[sqlx(default)]
     pub(crate) service_tier: Option<String>,
@@ -3480,7 +3513,7 @@ pub(crate) struct ProxyCaptureRecord {
     pub(crate) timings: StageTimings,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct RequestBodyReadError {
     pub(crate) status: StatusCode,
     pub(crate) message: String,

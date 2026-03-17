@@ -37,6 +37,10 @@ export const Operational: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
 }
 
+export const CompactLongLabels: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+}
+
 export const DetailDrawer: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
   play: async ({ canvasElement }) => {
@@ -47,6 +51,50 @@ export const DetailDrawer: Story = {
     })
     await userEvent.click(openButton)
     await expect(documentScope.getByRole('dialog', { name: /Codex Pro - Tokyo/i })).toBeInTheDocument()
+  },
+}
+
+export const DeleteConfirmation: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts',
+        state: {
+          selectedAccountId: 101,
+          openDetail: true,
+          openDeleteConfirm: true,
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
+    await expect(documentScope.getByRole('alertdialog')).toBeInTheDocument()
+    await expect(documentScope.getByText(/确认删除 Codex Pro - Tokyo|delete Codex Pro - Tokyo/i)).toBeInTheDocument()
+  },
+}
+
+export const DeleteFailure: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts',
+        state: {
+          selectedAccountId: 101,
+          openDetail: true,
+          openDeleteConfirm: true,
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
+    const confirmDialog = await documentScope.findByRole('alertdialog')
+    await userEvent.click(within(confirmDialog).getByRole('button', { name: /确认删除|delete account/i }))
+    await expect(within(dialog).getByText(/database is locked/i)).toBeInTheDocument()
+    await expect(documentScope.queryByRole('alertdialog')).not.toBeInTheDocument()
   },
 }
 

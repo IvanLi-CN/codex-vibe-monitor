@@ -43,6 +43,19 @@ function formatMilliseconds(value?: number | null) {
   return `${Math.round(value)} ms`
 }
 
+function formatSecondsFromMilliseconds(value: number | null | undefined, localeTag: string) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
+
+  const seconds = value / 1000
+  const precision = Math.abs(seconds) >= 100 ? 1 : Math.abs(seconds) >= 1 ? 2 : 3
+  const rounded = Number(seconds.toFixed(precision))
+
+  return `${rounded.toLocaleString(localeTag, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: precision,
+  })} s`
+}
+
 function formatCost(value: number | null | undefined, formatter: Intl.NumberFormat) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
   return formatter.format(value)
@@ -183,7 +196,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
             <td className="px-3 py-3 align-middle text-left font-mono text-xs">{formatText(record.endpoint)}</td>
             <td className="px-3 py-3 align-middle text-left font-mono text-xs">{formatText(record.requesterIp)}</td>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatMilliseconds(record.tUpstreamTtfbMs)}</td>
-            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatMilliseconds(record.tTotalMs)}</td>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatSecondsFromMilliseconds(record.tTotalMs, localeTag)}</td>
           </>
         )
       case 'exception': {
@@ -232,7 +245,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
             <div className="flex items-center justify-between gap-3"><dt>{t('records.table.network.endpoint')}</dt><dd className="truncate font-mono">{formatText(record.endpoint)}</dd></div>
             <div className="flex items-center justify-between gap-3"><dt>{t('records.table.network.requesterIp')}</dt><dd className="truncate font-mono">{formatText(record.requesterIp)}</dd></div>
             <div className="flex items-center justify-between gap-3"><dt>{t('records.table.network.ttfb')}</dt><dd className="font-mono">{formatMilliseconds(record.tUpstreamTtfbMs)}</dd></div>
-            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.network.totalMs')}</dt><dd className="font-mono">{formatMilliseconds(record.tTotalMs)}</dd></div>
+            <div className="flex items-center justify-between gap-3"><dt>{t('records.table.network.totalMs')}</dt><dd className="font-mono">{formatSecondsFromMilliseconds(record.tTotalMs, localeTag)}</dd></div>
           </>
         )
       case 'exception': {
@@ -297,7 +310,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
                     <div className="flex items-start justify-between gap-3"><span>{t('table.details.promptCacheKey')}</span><span className="break-all font-mono">{formatText(record.promptCacheKey)}</span></div>
                     <div className="flex items-start justify-between gap-3"><span>{t('table.details.requesterIp')}</span><span className="break-all font-mono">{formatText(record.requesterIp)}</span></div>
                     <div className="flex items-start justify-between gap-3"><span>{t('table.details.stage.upstreamFirstByte')}</span><span className="font-mono">{formatMilliseconds(record.tUpstreamTtfbMs)}</span></div>
-                    <div className="flex items-start justify-between gap-3"><span>{t('table.details.stage.total')}</span><span className="font-mono">{formatMilliseconds(record.tTotalMs)}</span></div>
+                    <div className="flex items-start justify-between gap-3"><span>{t('table.details.stage.total')}</span><span className="font-mono">{formatSecondsFromMilliseconds(record.tTotalMs, localeTag)}</span></div>
                     <div className="flex items-start justify-between gap-3"><span>{t('table.errorDetailsTitle')}</span><span className="break-all font-mono">{formatText(record.errorMessage)}</span></div>
                   </div>
                 </div>
@@ -368,7 +381,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
                               <div className="flex items-start justify-between gap-3"><span>{t('records.table.token.totalTokens')}</span><span className="font-mono">{formatNumber(record.totalTokens, numberFormatter)}</span></div>
                               <div className="flex items-start justify-between gap-3"><span>{t('records.table.token.cost')}</span><span className="font-mono">{formatCost(record.cost, costFormatter)}</span></div>
                               <div className="flex items-start justify-between gap-3"><span>{t('records.table.network.ttfb')}</span><span className="font-mono">{formatMilliseconds(record.tUpstreamTtfbMs)}</span></div>
-                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.network.totalMs')}</span><span className="font-mono">{formatMilliseconds(record.tTotalMs)}</span></div>
+                              <div className="flex items-start justify-between gap-3"><span>{t('records.table.network.totalMs')}</span><span className="font-mono">{formatSecondsFromMilliseconds(record.tTotalMs, localeTag)}</span></div>
                               <div className="flex items-start justify-between gap-3"><span>{t('records.table.exception.failureKind')}</span><span className="break-all font-mono">{formatText(record.failureKind)}</span></div>
                             </div>
                           </div>

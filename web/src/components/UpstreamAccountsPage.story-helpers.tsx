@@ -7,6 +7,7 @@ import type {
   CompleteOauthLoginSessionPayload,
   EffectiveRoutingRule,
   LoginSessionStatusResponse,
+  OauthMailboxStatus,
   UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
@@ -39,9 +40,10 @@ type StoryStore = {
       state?: string
     }
   >
+  mailboxStatuses: Record<string, OauthMailboxStatus>
+  nextMailboxId: number
 }
 
-const defaultTags: AccountTagSummary[] = []
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   guardEnabled: false,
   lookbackHours: null,
@@ -53,6 +55,29 @@ const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   guardRules: [],
 }
 
+const compactDefaultTags: AccountTagSummary[] = [
+  {
+    id: 1,
+    name: 'vip',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  {
+    id: 2,
+    name: 'burst-safe',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  {
+    id: 3,
+    name: 'prod-apac',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  {
+    id: 4,
+    name: 'sticky-pool',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+]
+
 export type StoryInitialEntry =
   | string
   | {
@@ -61,7 +86,9 @@ export type StoryInitialEntry =
       state?: unknown
     }
 
-const now = '2026-03-11T12:30:00.000Z'
+const now = '2026-03-17T12:30:00.000Z'
+const storyFutureExpiresAt = '2026-03-20T12:50:00.000Z'
+const storyFutureLoginExpiresAt = '2026-03-20T12:40:00.000Z'
 
 function buildWindow(percent: number, durationMins: number, usedText: string, limitText: string, resetsAt: string) {
   return {
@@ -121,6 +148,7 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
     planType: 'pro',
     lastSyncedAt: now,
     lastSuccessfulSyncAt: now,
+    lastActivityAt: '2026-03-11T12:12:00.000Z',
     lastRefreshedAt: now,
     tokenExpiresAt: '2026-03-12T12:30:00.000Z',
     lastError: null,
@@ -137,7 +165,7 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
       secondaryLimit: null,
       limitUnit: 'requests',
     },
-    tags: defaultTags,
+    tags: [],
     effectiveRoutingRule: defaultEffectiveRoutingRule,
     note: 'Primary team account for premium traffic.',
     maskedApiKey: null,
@@ -166,6 +194,7 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
     maskedApiKey: 'sk-live••••••c9f2',
     lastSyncedAt: now,
     lastSuccessfulSyncAt: now,
+    lastActivityAt: '2026-03-11T12:24:00.000Z',
     lastRefreshedAt: null,
     tokenExpiresAt: null,
     lastError: null,
@@ -182,7 +211,7 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
       secondaryLimit,
       limitUnit,
     },
-    tags: defaultTags,
+    tags: [],
     effectiveRoutingRule: defaultEffectiveRoutingRule,
     upstreamBaseUrl: 'https://proxy.example.com/gateway',
     note: 'Fallback API key before router metrics land.',
@@ -212,6 +241,7 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     maskedApiKey: detail.maskedApiKey,
     lastSyncedAt: detail.lastSyncedAt,
     lastSuccessfulSyncAt: detail.lastSuccessfulSyncAt,
+    lastActivityAt: detail.lastActivityAt,
     lastError: detail.lastError,
     lastErrorAt: detail.lastErrorAt,
     tokenExpiresAt: detail.tokenExpiresAt,
@@ -236,6 +266,7 @@ function createStore(): StoryStore {
   const duplicateStory =
     storyId === 'account-pool-pages-upstream-accounts--duplicate-oauth-warning' ||
     storyId === 'account-pool-pages-upstream-accounts--duplicate-oauth-detail'
+  const compactStory = storyId === 'account-pool-pages-upstream-accounts--compact-long-labels'
 
   const oauth = createOauthAccount(101, duplicateStory
     ? {
@@ -245,8 +276,28 @@ function createStore(): StoryStore {
         },
         note: 'Primary team account sharing the same upstream identity.',
       }
+    : compactStory
+      ? {
+          displayName: 'Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title',
+          groupName: 'production-apac-primary-operators',
+          tags: [
+            compactDefaultTags[0],
+            compactDefaultTags[1],
+            compactDefaultTags[2],
+            compactDefaultTags[3],
+          ],
+        }
     : undefined)
-  const apiKey = createApiKeyAccount(102)
+  const apiKey = createApiKeyAccount(102, compactStory
+    ? {
+        tags: [
+          compactDefaultTags[0],
+          compactDefaultTags[1],
+          compactDefaultTags[2],
+          compactDefaultTags[3],
+        ],
+      }
+    : undefined)
   const duplicateOauth = duplicateStory
     ? createOauthAccount(103, {
         displayName: 'Codex Pro - Seoul',
@@ -261,6 +312,84 @@ function createStore(): StoryStore {
         note: 'Sibling OAuth account kept for duplicate identity review.',
       })
     : null
+  const compactExtraAccounts = compactStory
+    ? [
+        createOauthAccount(104, {
+          displayName: 'Codex Pro - Singapore weekly ceiling watch',
+          groupName: 'production-apac-weekly',
+          isMother: false,
+          status: 'active',
+          planType: 'team',
+          lastSuccessfulSyncAt: '2026-03-11T20:10:00.000Z',
+          lastActivityAt: '2026-03-11T20:08:00.000Z',
+          primaryWindow: buildWindow(71, 300, '71% used', '5h rolling window', '2026-03-11T22:10:00.000Z'),
+          secondaryWindow: buildWindow(100, 10080, '100% used', '7d rolling window', '2026-03-18T08:00:00.000Z'),
+          tags: [
+            compactDefaultTags[0],
+            compactDefaultTags[1],
+            { id: 7, name: 'weekly-cap', routingRule: defaultEffectiveRoutingRule },
+          ],
+          note: 'Weekly window is fully exhausted while the 5h window still has room.',
+        }),
+        createOauthAccount(105, {
+          displayName: 'Codex Pro - Osaka burst limit exhausted',
+          groupName: 'production-apac-burst',
+          isMother: false,
+          status: 'syncing',
+          planType: 'team',
+          lastSuccessfulSyncAt: '2026-03-11T19:58:00.000Z',
+          lastActivityAt: '2026-03-11T19:56:00.000Z',
+          primaryWindow: buildWindow(100, 300, '100% used', '5h rolling window', '2026-03-11T21:42:00.000Z'),
+          secondaryWindow: buildWindow(46, 10080, '46% used', '7d rolling window', '2026-03-18T08:00:00.000Z'),
+          tags: [
+            compactDefaultTags[0],
+            { id: 8, name: 'burst-limit', routingRule: defaultEffectiveRoutingRule },
+            { id: 9, name: 'warm-spare', routingRule: defaultEffectiveRoutingRule },
+          ],
+          note: 'Burst traffic consumed the full 5h budget.',
+        }),
+        createApiKeyAccount(106, {
+          displayName: 'Backup key - weekly redline',
+          groupName: 'staging-overflow',
+          status: 'active',
+          enabled: true,
+          planType: 'local',
+          lastSuccessfulSyncAt: '2026-03-11T19:42:00.000Z',
+          lastActivityAt: '2026-03-11T20:18:00.000Z',
+          primaryWindow: buildWindow(93, 300, '112 requests', '120 requests', '2026-03-11T21:30:00.000Z'),
+          secondaryWindow: buildWindow(100, 10080, '500 requests', '500 requests', '2026-03-18T08:00:00.000Z'),
+          tags: [
+            { id: 10, name: 'overflow', routingRule: defaultEffectiveRoutingRule },
+            { id: 11, name: 'weekly-redline', routingRule: defaultEffectiveRoutingRule },
+            compactDefaultTags[1],
+          ],
+          note: 'Fallback key with the weekly allowance fully consumed.',
+        }),
+        createApiKeyAccount(107, {
+          displayName: 'Emergency key - both windows saturated',
+          groupName: 'rescue',
+          status: 'needs_reauth',
+          enabled: true,
+          planType: 'local',
+          lastSuccessfulSyncAt: '2026-03-11T18:55:00.000Z',
+          lastActivityAt: '2026-03-11T19:14:00.000Z',
+          primaryWindow: buildWindow(100, 300, '120 requests', '120 requests', '2026-03-11T20:40:00.000Z'),
+          secondaryWindow: buildWindow(100, 10080, '500 requests', '500 requests', '2026-03-18T08:00:00.000Z'),
+          tags: [
+            { id: 12, name: 'rescue', routingRule: defaultEffectiveRoutingRule },
+            { id: 13, name: 'manual-drain', routingRule: defaultEffectiveRoutingRule },
+          ],
+          note: 'Emergency key where both local placeholder windows are exhausted.',
+        }),
+      ]
+    : []
+  const accounts = [toSummary(oauth), ...(duplicateOauth ? [toSummary(duplicateOauth)] : []), toSummary(apiKey), ...compactExtraAccounts.map(toSummary)]
+  const details = {
+    [oauth.id]: oauth,
+    ...(duplicateOauth ? { [duplicateOauth.id]: duplicateOauth } : {}),
+    [apiKey.id]: apiKey,
+    ...Object.fromEntries(compactExtraAccounts.map((account) => [account.id, account])),
+  }
   return {
     writesEnabled: true,
     routing: {
@@ -270,15 +399,17 @@ function createStore(): StoryStore {
     groupNotes: {
       production: 'Premium traffic group note.',
       staging: 'Staging fallback group note.',
+      'production-apac-weekly': 'Weekly cap watch list.',
+      'production-apac-burst': 'Burst-heavy rotation group.',
+      'staging-overflow': 'Fallback keys that often ride the weekly edge.',
+      rescue: 'Emergency pool for overflow and incident recovery.',
     },
-    accounts: [toSummary(oauth), ...(duplicateOauth ? [toSummary(duplicateOauth)] : []), toSummary(apiKey)],
-    details: {
-      [oauth.id]: oauth,
-      ...(duplicateOauth ? { [duplicateOauth.id]: duplicateOauth } : {}),
-      [apiKey.id]: apiKey,
-    },
-    nextId: duplicateOauth ? 104 : 103,
+    accounts,
+    details,
+    nextId: compactStory ? 108 : duplicateOauth ? 104 : 103,
     sessions: {},
+    mailboxStatuses: {},
+    nextMailboxId: 1,
   }
 }
 
@@ -488,6 +619,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
       const parsedUrl = new URL(inputUrl, window.location.origin)
       const path = parsedUrl.pathname
+      const storyId = currentStoryId()
       const store = storeRef.current
 
       if (path === '/api/pool/upstream-accounts' && method === 'GET') {
@@ -520,7 +652,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           status: 'pending',
           authUrl: `https://auth.openai.com/authorize?mock=1&loginId=${loginId}&state=${state}`,
           redirectUri,
-          expiresAt: '2026-03-11T12:40:00.000Z',
+          expiresAt: storyFutureLoginExpiresAt,
           accountId: null,
           error: null,
           displayName: body.displayName,
@@ -532,6 +664,93 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         }
         store.sessions[loginId] = session
         return jsonResponse(clone(session), 201)
+      }
+
+      if (path === '/api/pool/upstream-accounts/oauth/mailbox-sessions' && method === 'POST') {
+        const body = parseBody<{ emailAddress?: string }>(init?.body, {})
+        const requestedAddress = body.emailAddress?.trim().toLowerCase() ?? ''
+        if (requestedAddress) {
+          if (!requestedAddress.includes('@')) {
+            return jsonResponse(
+              {
+                supported: false,
+                emailAddress: requestedAddress,
+                reason: 'invalid_format',
+              },
+              201,
+            )
+          }
+          const isSupportedDomain = requestedAddress.endsWith('@mail-tw.707079.xyz')
+          if (!isSupportedDomain) {
+            return jsonResponse(
+              {
+                supported: false,
+                emailAddress: requestedAddress,
+                reason: 'unsupported_domain',
+              },
+              201,
+            )
+          }
+          const nextMailboxId = store.nextMailboxId++
+          const sessionId = `mailbox_${nextMailboxId}`
+          const expiresAt = storyFutureExpiresAt
+          store.mailboxStatuses[sessionId] = {
+            sessionId,
+            emailAddress: requestedAddress,
+            expiresAt,
+            latestCode: null,
+            invite: null,
+            invited: false,
+          }
+          return jsonResponse(
+            {
+              supported: true,
+              sessionId,
+              emailAddress: requestedAddress,
+              expiresAt,
+              source: 'attached',
+            },
+            201,
+          )
+        }
+        const nextMailboxId = store.nextMailboxId++
+        const sessionId = `mailbox_${nextMailboxId}`
+        const emailAddress = `storybook-oauth-${nextMailboxId}@mail-tw.707079.xyz`
+        const expiresAt = storyFutureExpiresAt
+        store.mailboxStatuses[sessionId] = {
+          sessionId,
+          emailAddress,
+          expiresAt,
+          latestCode: null,
+          invite: null,
+          invited: false,
+        }
+        return jsonResponse(
+          {
+            supported: true,
+            sessionId,
+            emailAddress,
+            expiresAt,
+            source: 'generated',
+          },
+          201,
+        )
+      }
+
+      if (path === '/api/pool/upstream-accounts/oauth/mailbox-sessions/status' && method === 'POST') {
+        const body = parseBody<{ sessionIds?: string[] }>(init?.body, {})
+        const sessionIds = Array.isArray(body.sessionIds) ? body.sessionIds : []
+        const items = sessionIds
+          .map((sessionId) => store.mailboxStatuses[sessionId])
+          .filter((item): item is OauthMailboxStatus => item != null)
+        return jsonResponse({ items })
+      }
+
+      const mailboxSessionMatch = path.match(/^\/api\/pool\/upstream-accounts\/oauth\/mailbox-sessions\/([^/]+)$/)
+      if (mailboxSessionMatch && method === 'DELETE') {
+        const sessionId = decodeURIComponent(mailboxSessionMatch[1])
+        delete store.mailboxStatuses[sessionId]
+        return noContent()
       }
 
       const loginSessionMatch = path.match(/^\/api\/pool\/upstream-accounts\/oauth\/login-sessions\/([^/]+)$/)
@@ -615,7 +834,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           status: 'pending',
           authUrl: `https://auth.openai.com/authorize?mock=1&accountId=${accountId}&state=${state}`,
           redirectUri: `http://localhost:432${String(accountId).slice(-1)}/oauth/callback`,
-          expiresAt: '2026-03-11T12:40:00.000Z',
+          expiresAt: storyFutureLoginExpiresAt,
           accountId,
           error: null,
           state,
@@ -702,6 +921,14 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
 
       if (detailMatch && method === 'DELETE') {
         const accountId = Number(detailMatch[1])
+        if (storyId === 'account-pool-pages-upstream-accounts--delete-failure') {
+          return Promise.resolve(
+            new Response('error returned from database: (code: 5) database is locked', {
+              status: 500,
+              headers: { 'Content-Type': 'text/plain' },
+            }),
+          )
+        }
         delete store.details[accountId]
         store.accounts = store.accounts.filter((item) => item.id !== accountId)
         return noContent()

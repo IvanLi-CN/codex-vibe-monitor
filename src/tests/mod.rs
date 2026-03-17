@@ -14,19 +14,24 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use brotli::CompressorWriter;
 use chrono::Timelike;
-use flate2::{Compression, write::GzEncoder};
+use flate2::{
+    Compression,
+    write::{DeflateEncoder, GzEncoder, ZlibEncoder},
+};
 use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::error::{DatabaseError, ErrorKind};
-use sqlx::{Connection, SqliteConnection, SqlitePool};
+use sqlx::{Connection, SqliteConnection, SqlitePool, sqlite::SqlitePoolOptions};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     env,
     ffi::OsString,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, atomic::AtomicUsize},
     time::Duration,
@@ -148,6 +153,27 @@ fn local_naive_to_utc_does_not_fall_back_to_and_utc_on_dst_gap() {
     assert_eq!(local.hour(), 3);
     assert_eq!(local.minute(), 0);
     assert_eq!(local.second(), 0);
+}
+
+#[test]
+fn resolve_invocation_proxy_display_name_prefers_selected_forward_proxy() {
+    let selected_proxy = SelectedForwardProxy {
+        key: "proxy-a".to_string(),
+        source: "manual".to_string(),
+        display_name: "Tokyo-Edge-1".to_string(),
+        endpoint_url: Some(Url::parse("http://127.0.0.1:7890").expect("valid proxy url")),
+        endpoint_url_raw: Some("http://127.0.0.1:7890".to_string()),
+    };
+
+    assert_eq!(
+        resolve_invocation_proxy_display_name(Some(&selected_proxy)).as_deref(),
+        Some("Tokyo-Edge-1")
+    );
+}
+
+#[test]
+fn resolve_invocation_proxy_display_name_returns_none_without_selected_forward_proxy() {
+    assert_eq!(resolve_invocation_proxy_display_name(None).as_deref(), None);
 }
 
 #[test]
@@ -1811,6 +1837,7 @@ fn test_config() -> AppConfig {
             DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS,
         ),
         upstream_accounts_history_retention_days: DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
+        upstream_accounts_moemail: None,
     }
 }
 
@@ -2815,6 +2842,101 @@ fn encrypt_test_oauth_credentials(access_token: &str) -> String {
 }
 
 #[tokio::test]
+async fn list_upstream_accounts_includes_last_activity_at() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("account-last-activity")
+    .bind("2026-03-11 20:35:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(42_i64)
+    .bind(0.12_f64)
+    .bind(
+        json!({
+            "upstreamAccountId": account_id,
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert account invocation");
+    sqlx::query("UPDATE pool_upstream_accounts SET last_activity_at = ?1 WHERE id = ?2")
+        .bind("2026-03-11 20:35:00")
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("persist account last activity");
+
+    let Json(response) = list_upstream_accounts(State(state))
+        .await
+        .expect("list upstream accounts");
+    let response_json = serde_json::to_value(response).expect("serialize upstream accounts");
+    let account = response_json
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items array")
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_i64) == Some(account_id))
+        .expect("account summary");
+
+    assert_eq!(
+        account
+            .get("lastActivityAt")
+            .and_then(serde_json::Value::as_str),
+        Some("2026-03-11T12:35:00Z")
+    );
+}
+
+#[tokio::test]
+async fn list_upstream_accounts_includes_archived_last_activity_at() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("create archive activity pool");
+    let account_id = 17_i64;
+
+    sqlx::query(
+        "CREATE TABLE pool_upstream_accounts (id INTEGER PRIMARY KEY, last_activity_at TEXT)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create accounts table");
+    sqlx::query("CREATE TABLE codex_invocations (occurred_at TEXT NOT NULL, payload TEXT)")
+        .execute(&pool)
+        .await
+        .expect("create active invocation table");
+    sqlx::query("INSERT INTO pool_upstream_accounts (id, last_activity_at) VALUES (?1, ?2)")
+        .bind(account_id)
+        .bind("2026-03-12 07:05:00")
+        .execute(&pool)
+        .await
+        .expect("seed persisted last activity");
+
+    let last_activity = load_account_last_activity_map(&pool, &[account_id])
+        .await
+        .expect("load last activity map");
+
+    assert_eq!(
+        last_activity.get(&account_id).map(String::as_str),
+        Some("2026-03-12 07:05:00")
+    );
+}
+
+#[tokio::test]
 async fn create_api_key_account_enforces_single_mother_per_group() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -2929,6 +3051,166 @@ async fn update_upstream_account_can_clear_upstream_base_url_with_null_payload()
             .await
             .expect("load cleared upstream base url");
     assert_eq!(stored, None);
+}
+
+#[tokio::test]
+async fn delete_upstream_account_removes_related_rows_in_one_transaction() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Delete Target",
+        "sk-delete-target",
+        Some("prod"),
+        Some(false),
+        None,
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    let tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, guard_enabled, lookback_hours, max_conversations,
+            allow_cut_out, allow_cut_in, created_at, updated_at
+        ) VALUES (?1, 0, NULL, NULL, 1, 1, ?2, ?2)
+        RETURNING id
+        "#,
+    )
+    .bind("delete-tag")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert tag");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (
+            account_id, tag_id, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind(account_id)
+    .bind(tag_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert account tag link");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_login_sessions (
+            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note,
+            state, pkce_verifier, redirect_uri, status, auth_url, error_message, expires_at, consumed_at,
+            created_at, updated_at
+        ) VALUES (
+            ?1, ?2, ?3, ?4, 0, NULL, NULL, NULL,
+            ?5, ?6, ?7, ?8, ?9, NULL, ?10, NULL,
+            ?11, ?11
+        )
+        "#,
+    )
+    .bind("login-delete-target")
+    .bind(account_id)
+    .bind("Delete Target")
+    .bind("prod")
+    .bind("state-delete-target")
+    .bind("pkce-delete-target")
+    .bind("https://example.com/callback")
+    .bind("completed")
+    .bind("https://example.com/auth")
+    .bind(&now_iso)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert oauth login session");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_group_notes (
+            group_name, note, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind("prod")
+    .bind("cleanup me")
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert group note");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_limit_samples (
+            account_id, captured_at, limit_id, limit_name, plan_type,
+            primary_used_percent, primary_window_minutes, primary_resets_at,
+            secondary_used_percent, secondary_window_minutes, secondary_resets_at,
+            credits_has_credits, credits_unlimited, credits_balance
+        ) VALUES (
+            ?1, ?2, 'primary', 'Primary', 'team',
+            12.5, 300, ?2,
+            25.0, 10080, ?2,
+            1, 0, '42'
+        )
+        "#,
+    )
+    .bind(account_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert limit sample");
+
+    let status = delete_upstream_account(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path(account_id),
+    )
+    .await
+    .expect("delete upstream account");
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let remaining_accounts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count remaining accounts");
+    assert_eq!(remaining_accounts, 0);
+
+    let remaining_tag_links: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_tags WHERE account_id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count remaining tag links");
+    assert_eq!(remaining_tag_links, 0);
+
+    let remaining_sessions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_oauth_login_sessions WHERE account_id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count remaining login sessions");
+    assert_eq!(remaining_sessions, 0);
+
+    let remaining_samples: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_limit_samples WHERE account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count remaining limit samples");
+    assert_eq!(remaining_samples, 0);
+
+    let remaining_group_notes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_account_group_notes WHERE group_name = ?1",
+    )
+    .bind("prod")
+    .fetch_one(&state.pool)
+    .await
+    .expect("count remaining group notes");
+    assert_eq!(remaining_group_notes, 0);
 }
 
 #[tokio::test]
@@ -3134,13 +3416,122 @@ fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCapture
         error_message: None,
         failure_kind: None,
         payload: Some(
-            "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\",\"requestedServiceTier\":\"priority\",\"reasoningEffort\":\"high\"}"
+            "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":false,\"requesterIp\":\"198.51.100.77\",\"promptCacheKey\":\"pck-broadcast-1\",\"routeMode\":\"pool\",\"upstreamAccountId\":17,\"upstreamAccountName\":\"pool-account-17\",\"responseContentEncoding\":\"gzip, br\",\"requestedServiceTier\":\"priority\",\"reasoningEffort\":\"high\",\"proxyDisplayName\":\"jp-relay-01\"}"
                 .to_string(),
         ),
         raw_response: "{}".to_string(),
         req_raw: RawPayloadMeta::default(),
         resp_raw: RawPayloadMeta::default(),
         timings: test_stage_timings(),
+    }
+}
+
+#[test]
+fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape() {
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        prompt_cache_key: Some("pck-running".to_string()),
+        requested_service_tier: Some("priority".to_string()),
+        reasoning_effort: Some("high".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let record = build_running_proxy_capture_record(
+        "invoke-running",
+        "2026-03-17 18:13:34",
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        Some("pck-running"),
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        Some("jp-relay-01"),
+        Some("gzip"),
+        22.0,
+        4.0,
+        330.0,
+        120.0,
+    );
+
+    let api_record = runtime_api_invocation_from_proxy_capture_record(&record);
+    assert!(
+        api_record.id < 0,
+        "running snapshots should use transient ids"
+    );
+    assert_eq!(api_record.status.as_deref(), Some("running"));
+    assert_eq!(api_record.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(api_record.endpoint.as_deref(), Some("/v1/responses"));
+    assert_eq!(
+        api_record.proxy_display_name.as_deref(),
+        Some("jp-relay-01")
+    );
+    assert_eq!(api_record.upstream_account_id, Some(17));
+    assert_eq!(
+        api_record.upstream_account_name.as_deref(),
+        Some("pool-account-17")
+    );
+    assert_eq!(
+        api_record.response_content_encoding.as_deref(),
+        Some("gzip")
+    );
+    assert_eq!(api_record.prompt_cache_key.as_deref(), Some("pck-running"));
+    assert_eq!(
+        api_record.t_total_ms, None,
+        "running snapshots should not freeze total time"
+    );
+    assert_eq!(api_record.t_req_read_ms, Some(22.0));
+    assert_eq!(api_record.t_req_parse_ms, Some(4.0));
+    assert_eq!(api_record.t_upstream_connect_ms, Some(330.0));
+    assert_eq!(api_record.t_upstream_ttfb_ms, Some(120.0));
+}
+
+#[tokio::test]
+async fn broadcast_proxy_capture_runtime_snapshot_emits_records_payload() {
+    let (tx, mut rx) = broadcast::channel(4);
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: false,
+        ..RequestCaptureInfo::default()
+    };
+    let record = build_running_proxy_capture_record(
+        "invoke-runtime-broadcast",
+        "2026-03-17 18:13:34",
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some("edge-runtime"),
+        None,
+        12.0,
+        3.0,
+        99.0,
+        0.0,
+    );
+
+    assert!(
+        broadcast_proxy_capture_runtime_snapshot(&tx, &record)
+            .expect("runtime snapshot broadcast should succeed")
+    );
+
+    let payload = rx
+        .recv()
+        .await
+        .expect("runtime snapshot payload should arrive");
+    match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            let record = &records[0];
+            assert_eq!(record.status.as_deref(), Some("running"));
+            assert_eq!(record.proxy_display_name.as_deref(), Some("edge-runtime"));
+            assert!(record.id < 0);
+        }
+        other => panic!("expected records payload, got {other:?}"),
     }
 }
 
@@ -3751,6 +4142,11 @@ async fn test_upstream_echo(
         headers.contains_key(http_header::HeaderName::from_static("x-forwarded-for"));
     let forwarded_seen = headers.contains_key(http_header::HeaderName::from_static("forwarded"));
     let via_seen = headers.contains_key(http_header::HeaderName::from_static("via"));
+    let accept_encoding = headers
+        .get(http_header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         http_header::HeaderName::from_static("x-upstream"),
@@ -3787,6 +4183,7 @@ async fn test_upstream_echo(
             "xForwardedForSeen": x_forwarded_for_seen,
             "forwardedSeen": forwarded_seen,
             "viaSeen": via_seen,
+            "acceptEncoding": accept_encoding,
             "body": body,
         })),
     )
@@ -3901,6 +4298,26 @@ async fn test_upstream_slow_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_slow_first_chunk() -> impl IntoResponse {
+    let chunks = stream::unfold(0usize, |state| async move {
+        match state {
+            0 => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Some((Ok::<_, Infallible>(Bytes::from_static(b"chunk-a")), 1))
+            }
+            _ => None,
+        }
+    });
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
 async fn test_upstream_hang() -> impl IntoResponse {
     tokio::time::sleep(Duration::from_secs(2)).await;
     StatusCode::NO_CONTENT
@@ -3970,6 +4387,39 @@ async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_responses_slow_success_stream() -> impl IntoResponse {
+    let first = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+    );
+    let second = concat!(
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_slow_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_tokens\":15}}}\n\n",
+    );
+    let chunks = stream::unfold(0usize, move |state| async move {
+        match state {
+            0 => Some((Ok::<_, Infallible>(Bytes::from_static(first.as_bytes())), 1)),
+            1 => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Some((
+                    Ok::<_, Infallible>(Bytes::from_static(second.as_bytes())),
+                    2,
+                ))
+            }
+            _ => None,
+        }
+    });
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
 async fn test_upstream_responses_failed_stream() -> impl IntoResponse {
     let payload = [
         "event: response.created
@@ -4007,6 +4457,13 @@ async fn test_upstream_responses(uri: Uri) -> Response {
         .is_some_and(|query| query.contains("mode=response_failed"))
     {
         test_upstream_responses_failed_stream()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=slow-success"))
+    {
+        test_upstream_responses_slow_success_stream()
             .await
             .into_response()
     } else if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
@@ -4151,6 +4608,7 @@ async fn spawn_test_upstream() -> (String, JoinHandle<()>) {
         .route("/v1/stream-mid-error", any(test_upstream_stream_mid_error))
         .route("/v1/429-mid-error", any(test_upstream_429_mid_error))
         .route("/v1/slow-stream", any(test_upstream_slow_stream))
+        .route("/v1/slow-first-chunk", any(test_upstream_slow_first_chunk))
         .route("/v1/hang", any(test_upstream_hang))
         .route("/v1/models", get(test_upstream_models))
         .route("/v1/redirect", any(test_upstream_redirect))
@@ -4223,7 +4681,7 @@ async fn test_upstream_capture_target_echo(
     State(captured): State<Arc<Mutex<Vec<Value>>>>,
     uri: Uri,
     body: Bytes,
-) -> impl IntoResponse {
+) -> Response {
     if uri
         .query()
         .is_some_and(|query| query.contains("mode=delay"))
@@ -4233,29 +4691,37 @@ async fn test_upstream_capture_target_echo(
 
     let payload: Value = serde_json::from_slice(&body).expect("decode upstream captured body");
     captured.lock().await.push(payload.clone());
+    let response_payload = json!({
+        "id": "resp_test",
+        "object": "response",
+        "model": "gpt-5.3-codex",
+        "service_tier": "priority",
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 3,
+            "total_tokens": 15
+        },
+        "received": payload,
+    });
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "id": "resp_test",
-            "object": "response",
-            "model": "gpt-5.3-codex",
-            "service_tier": "priority",
-            "usage": {
-                "input_tokens": 12,
-                "output_tokens": 3,
-                "total_tokens": 15
-            },
-            "received": payload,
-        })),
-    )
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=slow-first-chunk"))
+    {
+        return chunked_json_response_with_delayed_first_chunk(
+            response_payload,
+            Duration::from_millis(250),
+        );
+    }
+
+    (StatusCode::OK, Json(response_payload)).into_response()
 }
 
 async fn test_upstream_capture_target_compact_echo(
     State(captured): State<Arc<Mutex<Vec<Value>>>>,
     uri: Uri,
     body: Bytes,
-) -> impl IntoResponse {
+) -> Response {
     if uri
         .query()
         .is_some_and(|query| query.contains("mode=delay"))
@@ -4265,33 +4731,75 @@ async fn test_upstream_capture_target_compact_echo(
 
     let payload: Value = serde_json::from_slice(&body).expect("decode upstream captured body");
     captured.lock().await.push(payload.clone());
+    let response_payload = json!({
+        "id": "resp_compact_test",
+        "object": "response.compaction",
+        "output": [
+            {
+                "id": "cmp_001",
+                "type": "compaction",
+                "encrypted_content": "encrypted-summary"
+            }
+        ],
+        "usage": {
+            "input_tokens": 139,
+            "input_tokens_details": {
+                "cached_tokens": 11
+            },
+            "output_tokens": 438,
+            "output_tokens_details": {
+                "reasoning_tokens": 64
+            },
+            "total_tokens": 577
+        },
+        "received": payload,
+    });
+
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=slow-first-chunk"))
+    {
+        return chunked_json_response_with_delayed_first_chunk(
+            response_payload,
+            Duration::from_millis(250),
+        );
+    }
+
+    (StatusCode::OK, Json(response_payload)).into_response()
+}
+
+fn chunked_json_response_with_delayed_first_chunk(payload: Value, delay: Duration) -> Response {
+    let response_bytes = serde_json::to_vec(&payload).expect("serialize streamed json response");
+    let split_at = response_bytes
+        .len()
+        .saturating_div(2)
+        .clamp(1, response_bytes.len() - 1);
+    let first_chunk = Bytes::copy_from_slice(&response_bytes[..split_at]);
+    let second_chunk = Bytes::copy_from_slice(&response_bytes[split_at..]);
+    let chunked = stream::unfold(0u8, move |state| {
+        let first_chunk = first_chunk.clone();
+        let second_chunk = second_chunk.clone();
+        async move {
+            match state {
+                0 => {
+                    tokio::time::sleep(delay).await;
+                    Some((Ok::<Bytes, Infallible>(first_chunk), 1))
+                }
+                1 => Some((Ok::<Bytes, Infallible>(second_chunk), 2)),
+                _ => None,
+            }
+        }
+    });
 
     (
         StatusCode::OK,
-        Json(json!({
-            "id": "resp_compact_test",
-            "object": "response.compaction",
-            "output": [
-                {
-                    "id": "cmp_001",
-                    "type": "compaction",
-                    "encrypted_content": "encrypted-summary"
-                }
-            ],
-            "usage": {
-                "input_tokens": 139,
-                "input_tokens_details": {
-                    "cached_tokens": 11
-                },
-                "output_tokens": 438,
-                "output_tokens_details": {
-                    "reasoning_tokens": 64
-                },
-                "total_tokens": 577
-            },
-            "received": payload,
-        })),
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        Body::from_stream(chunked),
     )
+        .into_response()
 }
 
 async fn spawn_capture_target_body_upstream() -> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>) {
@@ -4391,28 +4899,36 @@ fn has_invalid_percent_encoding_detects_malformed_sequences() {
 }
 
 #[test]
-fn should_proxy_header_filters_hop_by_hop_headers() {
-    assert!(should_proxy_header(&http_header::AUTHORIZATION));
-    assert!(should_proxy_header(&http_header::CONTENT_LENGTH));
-    assert!(!should_proxy_header(&http_header::HOST));
-    assert!(!should_proxy_header(&http_header::CONNECTION));
-    assert!(!should_proxy_header(&http_header::TRANSFER_ENCODING));
-    assert!(!should_proxy_header(&http_header::ACCEPT_ENCODING));
-    assert!(!should_proxy_header(&HeaderName::from_static("forwarded")));
-    assert!(!should_proxy_header(&HeaderName::from_static("via")));
-    assert!(!should_proxy_header(&HeaderName::from_static(
+fn should_transport_proxy_header_filters_only_transport_hop_by_hop_headers() {
+    assert!(should_transport_proxy_header(&http_header::AUTHORIZATION));
+    assert!(should_transport_proxy_header(&http_header::CONTENT_LENGTH));
+    assert!(should_transport_proxy_header(&http_header::ACCEPT_ENCODING));
+    assert!(!should_transport_proxy_header(&http_header::HOST));
+    assert!(!should_transport_proxy_header(&http_header::CONNECTION));
+    assert!(!should_transport_proxy_header(
+        &http_header::TRANSFER_ENCODING
+    ));
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
+        "forwarded"
+    )));
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
+        "via"
+    )));
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
         "x-forwarded-for"
     )));
-    assert!(!should_proxy_header(&HeaderName::from_static(
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
         "x-forwarded-host"
     )));
-    assert!(!should_proxy_header(&HeaderName::from_static(
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
         "x-forwarded-proto"
     )));
-    assert!(!should_proxy_header(&HeaderName::from_static(
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
         "x-forwarded-port"
     )));
-    assert!(!should_proxy_header(&HeaderName::from_static("x-real-ip")));
+    assert!(!should_transport_proxy_header(&HeaderName::from_static(
+        "x-real-ip"
+    )));
 }
 
 #[test]
@@ -4716,10 +5232,14 @@ async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
         http_header::HeaderName::from_static("via"),
         HeaderValue::from_static("1.1 browser-proxy"),
     );
+    headers.insert(
+        http_header::ACCEPT_ENCODING,
+        HeaderValue::from_static("gzip, br"),
+    );
 
     let uri: Uri = "/v1/echo?foo=bar".parse().expect("valid uri");
     let response = proxy_openai_v1(
-        State(state),
+        State(state.clone()),
         OriginalUri(uri),
         Method::POST,
         headers,
@@ -4763,6 +5283,7 @@ async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
     assert_eq!(payload["xForwardedForSeen"], false);
     assert_eq!(payload["forwardedSeen"], false);
     assert_eq!(payload["viaSeen"], false);
+    assert_eq!(payload["acceptEncoding"], "gzip, br");
     assert_eq!(payload["body"], "hello-proxy");
 
     upstream_handle.abort();
@@ -4935,6 +5456,49 @@ async fn proxy_openai_v1_streams_request_body_when_429_retry_is_disabled() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_streams_non_capture_request_body_without_eager_prebuffering() {
+    let (upstream_base, _attempts, _seen_bodies, upstream_handle) =
+        spawn_retrying_echo_upstream(0, None).await;
+    let state = test_state_with_openai_base_body_limit_and_read_timeout(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        Duration::from_millis(50),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from_static(b"hello"))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"-pool"))).await;
+    });
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/echo?mode=pool-stream".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+    assert_eq!(payload["attempt"], 1);
+    assert_eq!(payload["body"], "hello-pool");
 
     upstream_handle.abort();
 }
@@ -7406,6 +7970,17 @@ async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
     assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
     assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
     assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-broadcast-1"));
+    assert_eq!(record.route_mode.as_deref(), Some("pool"));
+    assert_eq!(record.upstream_account_id, Some(17));
+    assert_eq!(
+        record.upstream_account_name.as_deref(),
+        Some("pool-account-17")
+    );
+    assert_eq!(
+        record.response_content_encoding.as_deref(),
+        Some("gzip, br")
+    );
+    assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
     assert_eq!(record.requested_service_tier.as_deref(), Some("priority"));
     assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
     assert!(record.failure_kind.is_none());
@@ -8436,6 +9011,38 @@ async fn proxy_capture_target_compact_uses_dedicated_handshake_timeout() {
     upstream_handle.abort();
 }
 
+#[test]
+fn pool_upstream_first_chunk_timeout_uses_compact_budget_for_compact_route() {
+    let mut config = test_config();
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+
+    let timeout = pool_upstream_first_chunk_timeout(
+        &config,
+        &"/v1/responses/compact".parse().expect("valid uri"),
+        &Method::POST,
+        config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::ResponsesCompact)),
+    );
+
+    assert_eq!(timeout, Duration::from_millis(400));
+}
+
+#[test]
+fn pool_upstream_first_chunk_timeout_keeps_default_budget_for_non_compact_route() {
+    let mut config = test_config();
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+
+    let timeout = pool_upstream_first_chunk_timeout(
+        &config,
+        &"/v1/responses".parse().expect("valid uri"),
+        &Method::POST,
+        config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::Responses)),
+    );
+
+    assert_eq!(timeout, Duration::from_millis(200));
+}
+
 #[tokio::test]
 async fn proxy_capture_target_responses_uses_default_handshake_timeout() {
     let (upstream_base, _captured_requests, upstream_handle) =
@@ -8733,6 +9340,135 @@ async fn pool_http_failure_upstream(State(state): State<PoolHttpFailureUpstreamS
         })),
     )
         .into_response()
+}
+
+async fn spawn_oauth_codex_http_failure(
+    status: StatusCode,
+    error_code: Option<&str>,
+    error_message: &str,
+) -> (String, JoinHandle<()>) {
+    let app = Router::new()
+        .route(
+            "/backend-api/codex/responses",
+            post(pool_http_failure_upstream),
+        )
+        .with_state(PoolHttpFailureUpstreamState {
+            status,
+            error_code: error_code.map(str::to_string),
+            error_message: error_message.to_string(),
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind oauth codex upstream");
+    let addr = listener.local_addr().expect("oauth codex upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("oauth codex upstream should run");
+    });
+    (format!("http://{addr}"), handle)
+}
+
+async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Response {
+    let path = request.uri().path().to_string();
+    let authorization = request
+        .headers()
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let sticky_key_header = request
+        .headers()
+        .get("x-sticky-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let prompt_cache_key_header = request
+        .headers()
+        .get("x-prompt-cache-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let forwarded_for = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body = to_bytes(request.into_body(), usize::MAX)
+        .await
+        .expect("read oauth codex capture request body");
+    (
+        StatusCode::OK,
+        Json(json!({
+            "path": path,
+            "authorization": authorization,
+            "stickyKeyHeader": sticky_key_header,
+            "promptCacheKeyHeader": prompt_cache_key_header,
+            "forwardedFor": forwarded_for,
+            "bodyLength": body.len(),
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
+    let app = Router::new().route(
+        "/backend-api/codex/*path",
+        any(oauth_codex_capture_upstream),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind oauth codex capture upstream");
+    let addr = listener
+        .local_addr()
+        .expect("oauth codex capture upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("oauth codex capture upstream should run");
+    });
+    (format!("http://{addr}"), handle)
+}
+
+async fn oauth_codex_slow_models_upstream() -> impl IntoResponse {
+    let chunks = stream::unfold(0usize, |state| async move {
+        match state {
+            0 => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Some((
+                    Ok::<_, Infallible>(Bytes::from_static(
+                        br#"{"data":[{"id":"slow-model","object":"model"}]}"#,
+                    )),
+                    1,
+                ))
+            }
+            _ => None,
+        }
+    });
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
+async fn spawn_oauth_codex_slow_models_upstream() -> (String, JoinHandle<()>) {
+    let app = Router::new().route(
+        "/backend-api/codex/models",
+        get(oauth_codex_slow_models_upstream),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind oauth codex slow models upstream");
+    let addr = listener
+        .local_addr()
+        .expect("oauth codex slow models upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("oauth codex slow models upstream should run");
+    });
+    (format!("http://{addr}"), handle)
 }
 
 async fn spawn_pool_retry_upstream(
@@ -9173,6 +9909,7 @@ async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_sing
         payload_json["upstreamAccountName"].as_str(),
         Some("Primary")
     );
+    assert!(payload_json["proxyDisplayName"].is_null());
     assert_eq!(
         wait_for_test_sticky_route_account_id(&state.pool, "sticky-cap-001").await,
         Some(primary_id)
@@ -9223,6 +9960,10 @@ async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
 
 #[tokio::test]
 async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_details() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
     #[derive(sqlx::FromRow)]
     struct RouteStateRow {
         status: String,
@@ -9235,15 +9976,20 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
     }
 
     let scope_message = "You have insufficient permissions for this operation. Missing scopes: api.responses.write.";
-    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_http_failure(
         StatusCode::UNAUTHORIZED,
         Some("missing_scopes"),
         scope_message,
     )
     .await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id = insert_test_pool_oauth_account(&state, "Scope OAuth", "oauth-scope").await;
     record_pool_route_success(&state.pool, account_id, Some("sticky-scope-001"))
@@ -9330,21 +10076,30 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
             .as_str()
             .is_some_and(|value| value.contains("Missing scopes: api.responses.write"))
     );
-
     upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]
 async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
-    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_http_failure(
         StatusCode::FORBIDDEN,
         Some("token_invalidated"),
         "Authentication token has been invalidated, please sign in again.",
     )
     .await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id =
         insert_test_pool_oauth_account(&state, "Invalidated OAuth", "oauth-invalidated").await;
@@ -9371,19 +10126,29 @@ async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
     assert_eq!(status, "needs_reauth");
 
     upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]
 async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
-    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_http_failure(
         StatusCode::UNAUTHORIZED,
         Some("invalid_grant"),
         "Unauthorized",
     )
     .await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id =
         insert_test_pool_oauth_account(&state, "Grant OAuth", "oauth-invalid-grant").await;
@@ -9410,6 +10175,430 @@ async fn pool_route_marks_invalid_grant_error_code_as_needs_reauth() {
     assert_eq!(status, "needs_reauth");
 
     upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_oauth_account(&state, "Large OAuth", "oauth-large").await;
+
+    let body = serde_json::to_vec(&json!({
+        "messages": [{
+            "role": "user",
+            "content": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 4096),
+        }],
+    }))
+    .expect("serialize large oauth passthrough body");
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(424242),
+    });
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write replay temp file");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Large OAuth".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-large".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+    };
+
+    let upstream = send_pool_request_with_failover(
+        state,
+        Method::POST,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file: temp_file.clone(),
+            size: body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        Some(account),
+        1,
+    )
+    .await
+    .expect("oauth passthrough should succeed");
+
+    assert_eq!(upstream.response.status(), StatusCode::OK);
+    let mut response_body = upstream.first_chunk.clone().unwrap_or_default().to_vec();
+    response_body.extend_from_slice(
+        &upstream
+            .response
+            .into_bytes()
+            .await
+            .expect("read oauth passthrough response"),
+    );
+    let payload =
+        serde_json::from_slice::<Value>(&response_body).expect("decode oauth passthrough response");
+    assert_eq!(
+        payload["path"].as_str(),
+        Some("/backend-api/codex/chat/completions")
+    );
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer oauth-large")
+    );
+    assert_eq!(payload["bodyLength"].as_u64(), Some(body.len() as u64));
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base_body_limit_and_read_timeout(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        Duration::from_millis(50),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_oauth_account(&state, "Streaming OAuth", "oauth-streaming").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from_static(b"{\"messages\":["))).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                b"{\"role\":\"user\",\"content\":\"hello\"}]}",
+            )))
+            .await;
+    });
+
+    let uri = "/v1/chat/completions".parse().expect("valid uri");
+    let response = proxy_openai_v1_via_pool(
+        state,
+        42,
+        &uri,
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("sticky-oauth-stream"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static("prompt-cache-oauth-stream"),
+            ),
+            (
+                HeaderName::from_static("x-forwarded-for"),
+                HeaderValue::from_static("203.0.113.8"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await
+    .expect("oauth pool passthrough response");
+
+    let status = response.status();
+    let response_body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth passthrough response");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected oauth passthrough response: {}",
+        String::from_utf8_lossy(&response_body)
+    );
+    let payload: Value =
+        serde_json::from_slice(&response_body).expect("decode oauth passthrough response");
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer oauth-streaming")
+    );
+    assert!(payload["stickyKeyHeader"].is_null());
+    assert!(payload["promptCacheKeyHeader"].is_null());
+    assert!(payload["forwardedFor"].is_null());
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let _primary_id =
+        insert_test_pool_oauth_account(&state, "Primary OAuth", "oauth-primary").await;
+    let secondary_id =
+        insert_test_pool_oauth_account(&state, "Secondary OAuth", "oauth-secondary").await;
+    record_pool_route_success(&state.pool, secondary_id, Some("sticky-oauth-body"))
+        .await
+        .expect("seed oauth sticky route");
+
+    let request_body = serde_json::to_vec(&json!({
+        "messages": [{
+            "role": "user",
+            "content": "hello",
+        }],
+        "stickyKey": "sticky-oauth-body",
+    }))
+    .expect("serialize oauth sticky body");
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(4);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(request_body))).await;
+    });
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read oauth sticky response"),
+    )
+    .expect("decode oauth sticky response");
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer oauth-secondary")
+    );
+    let selected_at: Vec<(i64, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, last_selected_at
+        FROM pool_upstream_accounts
+        WHERE display_name IN ('Primary OAuth', 'Secondary OAuth')
+        ORDER BY id
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load oauth account selection timestamps");
+    assert_eq!(selected_at.len(), 2);
+    assert_eq!(selected_at[0].1, None);
+    assert!(
+        selected_at[1].1.is_some(),
+        "sticky-selected oauth account should be marked"
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let oauth_id =
+        insert_test_pool_oauth_account(&state, "Oversized Responses OAuth", "oauth-oversized")
+            .await;
+    let api_key_id =
+        insert_test_pool_api_key_account(&state, "Fallback API Key", "upstream-fallback").await;
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(626262),
+    });
+    let body = vec![b'x'; OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1];
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write oversized oauth responses body");
+
+    let upstream = send_pool_request_with_failover(
+        state.clone(),
+        Method::POST,
+        &"/v1/responses?mode=delay".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file,
+            size: body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        None,
+        1,
+    )
+    .await
+    .expect("api key account should handle oversized oauth responses body");
+
+    assert_eq!(upstream.account.account_id, api_key_id);
+    let selected_at: Vec<(i64, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, last_selected_at
+        FROM pool_upstream_accounts
+        WHERE id IN (?1, ?2)
+        ORDER BY id
+        "#,
+    )
+    .bind(oauth_id)
+    .bind(api_key_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load selected timestamps");
+    assert_eq!(selected_at.len(), 2);
+    assert_eq!(selected_at[0], (oauth_id, None));
+    assert!(selected_at[1].1.is_some());
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Responses OAuth", "oauth-responses").await;
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(515151),
+    });
+    let body = vec![b'x'; OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1];
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write oversized oauth responses body");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Responses OAuth".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-responses".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+    };
+
+    let err = send_pool_request_with_failover(
+        state,
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file,
+            size: body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        Some(account),
+        1,
+    )
+    .await
+    .expect_err("oversized oauth responses body should be rejected");
+
+    assert_eq!(err.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(
+        err.message
+            .contains("oauth /v1/responses request body exceeds"),
+        "unexpected oversized oauth responses error: {}",
+        err.message
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn extract_sticky_key_from_large_file_backed_replay_snapshot() {
+    let sticky_body = serde_json::to_vec(&json!({
+        "stickyKey": "sticky-large-file",
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
+    }))
+    .expect("serialize sticky replay body");
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(737373),
+    });
+    tokio::fs::write(&temp_file.path, &sticky_body)
+        .await
+        .expect("write sticky replay temp file");
+    let snapshot = PoolReplayBodySnapshot::File {
+        temp_file,
+        size: sticky_body.len(),
+    };
+
+    assert_eq!(
+        extract_sticky_key_from_replay_snapshot(&snapshot)
+            .await
+            .as_deref(),
+        Some("sticky-large-file")
+    );
 }
 
 #[test]
@@ -9508,10 +10697,16 @@ async fn pool_route_uses_account_specific_upstream_base_url() {
         State(state.clone()),
         OriginalUri("/v1/echo?from=pool".parse().expect("valid uri")),
         Method::POST,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::ACCEPT_ENCODING,
+                HeaderValue::from_static("gzip, br"),
+            ),
+        ]),
         Body::from(br#"{"model":"gpt-5","input":"hello"}"#.to_vec()),
     )
     .await;
@@ -9530,9 +10725,62 @@ async fn pool_route_uses_account_specific_upstream_base_url() {
         echo_payload["authorization"].as_str(),
         Some("Bearer upstream-primary")
     );
+    assert_eq!(echo_payload["acceptEncoding"].as_str(), Some("gzip, br"));
 
     global_upstream_handle.abort();
     account_upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_honors_existing_body_sticky_binding_for_non_capture_requests() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let _primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    record_pool_route_success(&state.pool, secondary_id, Some("sticky-body-001"))
+        .await
+        .expect("seed sticky route");
+    let request_body =
+        br#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-body-001"}"#.to_vec();
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/echo?sticky=body".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (
+                http_header::CONTENT_LENGTH,
+                HeaderValue::from_str(&request_body.len().to_string())
+                    .expect("valid content length"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer upstream-secondary")
+    );
+
+    upstream_handle.abort();
 }
 
 #[test]
@@ -9542,7 +10790,9 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         account_id: 8,
         display_name: "Gateway Key".to_string(),
         kind: "api_key_codex".to_string(),
-        authorization: "Bearer upstream-primary".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer upstream-primary".to_string(),
+        },
         upstream_base_url: Url::parse("https://proxy.example.com/gateway")
             .expect("account upstream base url"),
     };
@@ -9709,6 +10959,299 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
 
     server_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_e2e_stream_survives_short_request_timeout() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy test server");
+    let addr = listener.local_addr().expect("proxy test server addr");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("proxy test server should run");
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://{addr}/v1/slow-stream"))
+        .header(http_header::AUTHORIZATION, "Bearer pool-live-key")
+        .send()
+        .await
+        .expect("send pool proxy stream request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.bytes().await.expect("read proxied stream");
+    assert_eq!(&body[..], b"chunk-achunk-b");
+
+    server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_times_out_before_first_chunk_with_short_request_timeout() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy test server");
+    let addr = listener.local_addr().expect("proxy test server addr");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("proxy test server should run");
+    });
+
+    let client = reqwest::Client::new();
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        client
+            .get(format!("http://{addr}/v1/slow-first-chunk"))
+            .header(http_header::AUTHORIZATION, "Bearer pool-live-key")
+            .send(),
+    )
+    .await
+    .expect("pool request should not hang")
+    .expect("send pool proxy request");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response.bytes().await.expect("read pool error body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("first upstream chunk"));
+
+    server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_stream_survives_short_request_timeout() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy test server");
+    let addr = listener.local_addr().expect("proxy test server addr");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("proxy test server should run");
+    });
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+    }))
+    .expect("serialize request body");
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{addr}/v1/responses?mode=slow-success"))
+        .header(http_header::AUTHORIZATION, "Bearer pool-live-key")
+        .header(http_header::CONTENT_TYPE, "application/json")
+        .body(request_body)
+        .send()
+        .await
+        .expect("send pool responses request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.bytes().await.expect("read pool responses body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("response.created"));
+    assert!(payload.contains("response.completed"));
+    assert!(payload.contains("resp_slow_test"));
+
+    server_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_compact_waits_for_dedicated_first_chunk_timeout() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "previous_response_id": "resp_prev_001",
+        "input": [{"role": "user", "content": "compact this thread"}],
+    }))
+    .expect("serialize compact request body");
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        proxy_openai_v1(
+            State(state),
+            OriginalUri(
+                "/v1/responses/compact?mode=slow-first-chunk"
+                    .parse()
+                    .expect("valid uri"),
+            ),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body),
+        ),
+    )
+    .await
+    .expect("compact pool request should not hang");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read compact pool body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode compact pool response");
+    assert_eq!(
+        payload.get("object").and_then(Value::as_str),
+        Some("response.compaction")
+    );
+    assert_eq!(
+        payload.get("id").and_then(Value::as_str),
+        Some("resp_compact_test")
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_still_times_out_before_first_chunk() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(200);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": "hello",
+    }))
+    .expect("serialize responses request body");
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        proxy_openai_v1(
+            State(state),
+            OriginalUri(
+                "/v1/responses?mode=slow-first-chunk"
+                    .parse()
+                    .expect("valid uri"),
+            ),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body),
+        ),
+    )
+    .await
+    .expect("responses pool request should not hang");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read responses pool error body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("first upstream chunk"));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_oauth_models_preserve_response_timeout_after_headers() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_slow_models_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let mut config = test_config();
+    config.request_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_oauth_account(&state, "Primary OAuth", "oauth-primary").await;
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/models".parse().expect("valid uri")),
+            Method::GET,
+            HeaderMap::from_iter([(
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            )]),
+            Body::empty(),
+        ),
+    )
+    .await
+    .expect("oauth pool request should not hang");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth pool error body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("timed out"));
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]
@@ -11186,7 +12729,7 @@ async fn list_invocations_projects_payload_context_fields() {
     .bind(SOURCE_PROXY)
     .bind("failed")
     .bind(
-        r#"{"endpoint":"/v1/responses","failureKind":"upstream_stream_error","requesterIp":"198.51.100.77","promptCacheKey":"pck-list-1","requestedServiceTier":"priority","serviceTier":null,"service_tier":"priority","proxyDisplayName":"jp-relay-01","proxyWeightDelta":-0.68,"reasoningEffort":"high"}"#,
+        r#"{"endpoint":"/v1/responses","failureKind":"upstream_stream_error","requesterIp":"198.51.100.77","promptCacheKey":"pck-list-1","routeMode":"pool","upstreamAccountId":17,"upstreamAccountName":"pool-account-17","responseContentEncoding":"gzip, br","requestedServiceTier":"priority","serviceTier":null,"service_tier":"priority","proxyDisplayName":"jp-relay-01","proxyWeightDelta":-0.68,"reasoningEffort":"high"}"#,
     )
     .bind("{}")
     .execute(&state.pool)
@@ -11217,6 +12760,16 @@ async fn list_invocations_projects_payload_context_fields() {
     );
     assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
     assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-list-1"));
+    assert_eq!(record.route_mode.as_deref(), Some("pool"));
+    assert_eq!(record.upstream_account_id, Some(17));
+    assert_eq!(
+        record.upstream_account_name.as_deref(),
+        Some("pool-account-17")
+    );
+    assert_eq!(
+        record.response_content_encoding.as_deref(),
+        Some("gzip, br")
+    );
     assert_eq!(record.requested_service_tier.as_deref(), Some("priority"));
     assert_eq!(record.service_tier.as_deref(), Some("priority"));
     assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
@@ -13474,6 +15027,65 @@ fn decode_response_payload_for_usage_decompresses_gzip_stream() {
     assert_eq!(parsed.usage.reasoning_tokens, Some(4));
 }
 
+fn encode_brotli_payload(bytes: &[u8]) -> Vec<u8> {
+    let mut output = Vec::new();
+    {
+        let mut writer = CompressorWriter::new(&mut output, 4096, 5, 22);
+        writer.write_all(bytes).expect("write brotli payload");
+    }
+    output
+}
+
+#[test]
+fn decode_response_payload_for_usage_decompresses_brotli_stream() {
+    let raw = br#"{"usage":{"input_tokens":9,"output_tokens":4,"total_tokens":13}}"#;
+    let compressed = encode_brotli_payload(raw);
+
+    let (decoded, decode_error) = decode_response_payload_for_usage(&compressed, Some("br"));
+    assert!(decode_error.is_none());
+    assert_eq!(decoded.as_ref(), raw);
+}
+
+#[test]
+fn decode_response_payload_for_usage_decompresses_deflate_streams() {
+    let raw = br#"{"usage":{"input_tokens":11,"output_tokens":5,"total_tokens":16}}"#;
+
+    let mut zlib_encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    zlib_encoder.write_all(raw).expect("write zlib payload");
+    let zlib_compressed = zlib_encoder.finish().expect("finish zlib payload");
+
+    let (decoded_zlib, decode_error_zlib) =
+        decode_response_payload_for_usage(&zlib_compressed, Some("deflate"));
+    assert!(decode_error_zlib.is_none());
+    assert_eq!(decoded_zlib.as_ref(), raw);
+
+    let mut raw_encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+    raw_encoder
+        .write_all(raw)
+        .expect("write raw deflate payload");
+    let raw_compressed = raw_encoder.finish().expect("finish raw deflate payload");
+
+    let (decoded_raw, decode_error_raw) =
+        decode_response_payload_for_usage(&raw_compressed, Some("deflate"));
+    assert!(decode_error_raw.is_none());
+    assert_eq!(decoded_raw.as_ref(), raw);
+}
+
+#[test]
+fn decode_response_payload_for_usage_decompresses_stacked_content_encodings() {
+    let raw = br#"{"usage":{"input_tokens":21,"output_tokens":8,"total_tokens":29}}"#;
+    let mut gzip_encoder = GzEncoder::new(Vec::new(), Compression::default());
+    gzip_encoder
+        .write_all(raw)
+        .expect("write stacked gzip payload");
+    let gzip_compressed = gzip_encoder.finish().expect("finish stacked gzip payload");
+    let stacked = encode_brotli_payload(&gzip_compressed);
+
+    let (decoded, decode_error) = decode_response_payload_for_usage(&stacked, Some("gzip, br"));
+    assert!(decode_error.is_none());
+    assert_eq!(decoded.as_ref(), raw);
+}
+
 #[tokio::test]
 async fn backfill_proxy_prompt_cache_keys_updates_payload_and_is_idempotent() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -15582,6 +17194,20 @@ async fn ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_re
     assert!(tables.contains("archive_batches"));
     assert!(tables.contains("invocation_rollup_daily"));
     assert!(tables.contains("startup_backfill_progress"));
+
+    let upstream_account_index_sql = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND name = 'idx_codex_invocations_upstream_account_occurred_at'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load upstream account invocation index");
+    assert!(upstream_account_index_sql.contains("$.upstreamAccountId"));
+    assert!(upstream_account_index_sql.contains("occurred_at"));
 }
 
 #[tokio::test]
@@ -16350,6 +17976,572 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
         "historical archive files should keep their legacy schema"
     );
     archived_pool.close().await;
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_backfill_reads_archived_batches() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("upstream-last-activity-archive-backfill").await;
+    let created_at = format_utc_iso(Utc::now());
+    let account_id = 501_i64;
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Archived-only account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert upstream account");
+
+    let occurred_at = shanghai_local_days_ago(120, 9, 30, 0);
+    let month_key = occurred_at[..7].to_string();
+    let archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve archived invocation batch");
+    fs::create_dir_all(
+        archive_path
+            .parent()
+            .expect("archived invocation batch should have parent"),
+    )
+    .expect("create archived invocation batch dir");
+
+    let archive_db_path = temp_dir.join("upstream-last-activity-archive.sqlite");
+    fs::File::create(&archive_db_path).expect("create archive sqlite file");
+    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open archive sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create archive schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, raw_response, created_at, payload
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind(1_i64)
+    .bind("archived-upstream-activity")
+    .bind(&occurred_at)
+    .bind("{}")
+    .bind(&occurred_at)
+    .bind(json!({ "upstreamAccountId": account_id }).to_string())
+    .execute(&archive_pool)
+    .await
+    .expect("insert archived invocation");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress archived invocation batch");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(sha256_hex_file(&archive_path).expect("archive sha256"))
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("insert archive batch manifest");
+
+    backfill_upstream_account_last_activity_from_archives(&pool, None, None)
+        .await
+        .expect("backfill upstream last activity from archives");
+
+    let last_activity_at: Option<String> =
+        sqlx::query_scalar("SELECT last_activity_at FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load persisted last activity");
+    assert_eq!(last_activity_at.as_deref(), Some(occurred_at.as_str()));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_retries_after_failed_progress() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let pool = state.pool.clone();
+
+    let task_name = STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES;
+    let retry_due = format_utc_iso(Utc::now() - ChronoDuration::seconds(1));
+    mark_startup_backfill_running(&pool, task_name, 0)
+        .await
+        .expect("seed running startup progress");
+    save_startup_backfill_progress(
+        &pool,
+        task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: 0,
+            scanned: 0,
+            updated: 0,
+            zero_update_streak: 0,
+            next_run_after: &retry_due,
+            status: STARTUP_BACKFILL_STATUS_FAILED,
+        },
+    )
+    .await
+    .expect("seed failed startup progress");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("retry failed archive backfill progress");
+
+    let progress = load_startup_backfill_progress(&pool, task_name)
+        .await
+        .expect("load startup backfill progress");
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
+    assert!(progress.last_finished_at.is_some());
+    assert!(!progress.is_due(Utc::now()));
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_marks_exhausted_accounts_complete() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task_name = startup_backfill_task_progress_key(
+        state.as_ref(),
+        StartupBackfillTask::UpstreamActivityArchives,
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    let account_id = 902_i64;
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Never used account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("run archive activity backfill");
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load archive backfill progress");
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
+    assert_eq!(progress.last_updated, 0);
+    assert_eq!(progress.last_scanned, 0);
+
+    let completed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load archive completion flag");
+    assert_eq!(completed, 1);
+
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after = ?1 WHERE task_name = ?2")
+        .bind(format_utc_iso(Utc::now() - ChronoDuration::seconds(1)))
+        .bind(&task_name)
+        .execute(&state.pool)
+        .await
+        .expect("force archive task due again");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("rerun archive activity backfill");
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("reload archive backfill progress");
+    assert_eq!(progress.last_scanned, 0);
+    assert_eq!(progress.last_updated, 0);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_live_backfill_marks_unmatched_rows_complete() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task_name = startup_backfill_task_progress_key(
+        state.as_ref(),
+        StartupBackfillTask::UpstreamActivityLive,
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(903_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("No live invocation")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityLive)
+        .await
+        .expect("run live activity backfill");
+
+    let row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_live_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(903_i64)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load live backfill row");
+    assert!(row.0.is_none());
+    assert_eq!(row.1, 1);
+
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after = ?1 WHERE task_name = ?2")
+        .bind(format_utc_iso(Utc::now() - ChronoDuration::seconds(1)))
+        .bind(&task_name)
+        .execute(&state.pool)
+        .await
+        .expect("force live task due again");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityLive)
+        .await
+        .expect("rerun live activity backfill");
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load live backfill progress");
+    assert_eq!(progress.last_updated, 0);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_keeps_pending_when_archive_missing() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task_name = startup_backfill_task_progress_key(
+        state.as_ref(),
+        StartupBackfillTask::UpstreamActivityArchives,
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(904_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Missing archive account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind("2025-01")
+    .bind("/tmp/definitely-missing-upstream-activity.sqlite.gz")
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&state.pool)
+    .await
+    .expect("insert missing archive manifest");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("run archive activity backfill with missing file");
+
+    let completed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(904_i64)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load archive completion flag");
+    assert_eq!(completed, 0);
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load archive backfill progress");
+    assert_eq!(progress.last_updated, 0);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_when_new_archive_arrives()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let pool = state.pool.clone();
+    let temp_dir = make_temp_test_dir("upstream-archive-activity-refresh");
+    let account_id = 905_i64;
+    let created_at = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Archive refresh account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert upstream account");
+
+    let first_activity_at = format_utc_iso(Utc::now() - ChronoDuration::days(14));
+    {
+        let month_key = "2025-01";
+        let suffix = "first";
+        let occurred_at = &first_activity_at;
+        let archive_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite.gz"));
+        let archive_db_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite"));
+        let archive_url = format!("sqlite://{}", archive_db_path.to_string_lossy());
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                build_sqlite_connect_options(
+                    &archive_url,
+                    Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+                )
+                .expect("build archive sqlite options"),
+            )
+            .await
+            .expect("open archive sqlite");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoke_id TEXT NOT NULL,
+                requester TEXT,
+                occurred_at TEXT NOT NULL,
+                request_method TEXT,
+                payload TEXT
+            )
+            "#,
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create archive codex_invocations");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, requester, occurred_at, request_method, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(format!("archive-{suffix}"))
+        .bind("archived-upstream-activity")
+        .bind(occurred_at)
+        .bind("{}")
+        .bind(json!({ "upstreamAccountId": account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert archived invocation");
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+            .expect("compress archived invocation batch");
+
+        let batch = ArchiveBatchOutcome {
+            dataset: "codex_invocations",
+            month_key: month_key.to_string(),
+            file_path: archive_path.to_string_lossy().to_string(),
+            sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
+            row_count: 1,
+            upstream_last_activity: vec![(account_id, occurred_at.to_string())],
+        };
+        let mut tx = pool.begin().await.expect("begin archive batch tx");
+        upsert_archive_batch_manifest(tx.as_mut(), &batch)
+            .await
+            .expect("upsert archive batch manifest");
+        tx.commit().await.expect("commit archive batch manifest");
+    }
+
+    backfill_upstream_account_last_activity_from_archives(&pool, None, None)
+        .await
+        .expect("backfill first archive activity");
+
+    let first_row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load first archive backfill row");
+    assert_eq!(first_row.0.as_deref(), Some(first_activity_at.as_str()));
+    assert_eq!(first_row.1, 0);
+
+    let second_activity_at = format_utc_iso(Utc::now() - ChronoDuration::days(1));
+    {
+        let month_key = "2025-02";
+        let suffix = "second";
+        let occurred_at = &second_activity_at;
+        let archive_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite.gz"));
+        let archive_db_path = temp_dir.join(format!("{month_key}-{suffix}.sqlite"));
+        let archive_url = format!("sqlite://{}", archive_db_path.to_string_lossy());
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                build_sqlite_connect_options(
+                    &archive_url,
+                    Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+                )
+                .expect("build archive sqlite options"),
+            )
+            .await
+            .expect("open archive sqlite");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoke_id TEXT NOT NULL,
+                requester TEXT,
+                occurred_at TEXT NOT NULL,
+                request_method TEXT,
+                payload TEXT
+            )
+            "#,
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create archive codex_invocations");
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, requester, occurred_at, request_method, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(format!("archive-{suffix}"))
+        .bind("archived-upstream-activity")
+        .bind(occurred_at)
+        .bind("{}")
+        .bind(json!({ "upstreamAccountId": account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert archived invocation");
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+            .expect("compress archived invocation batch");
+
+        let batch = ArchiveBatchOutcome {
+            dataset: "codex_invocations",
+            month_key: month_key.to_string(),
+            file_path: archive_path.to_string_lossy().to_string(),
+            sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
+            row_count: 1,
+            upstream_last_activity: vec![(account_id, occurred_at.to_string())],
+        };
+        let mut tx = pool.begin().await.expect("begin archive batch tx");
+        upsert_archive_batch_manifest(tx.as_mut(), &batch)
+            .await
+            .expect("upsert archive batch manifest");
+        tx.commit().await.expect("commit archive batch manifest");
+    }
+
+    let refreshed_row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load refreshed archive row after new archive");
+    assert_eq!(
+        refreshed_row.0.as_deref(),
+        Some(second_activity_at.as_str())
+    );
+    assert_eq!(refreshed_row.1, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

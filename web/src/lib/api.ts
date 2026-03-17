@@ -64,6 +64,10 @@ export interface ApiInvocation {
   endpoint?: string;
   requesterIp?: string;
   promptCacheKey?: string;
+  routeMode?: string;
+  upstreamAccountId?: number | null;
+  upstreamAccountName?: string;
+  responseContentEncoding?: string;
   upstreamScope?: string;
   requestedServiceTier?: string;
   serviceTier?: string;
@@ -1101,6 +1105,7 @@ export interface UpstreamAccountSummary {
   maskedApiKey?: string | null;
   lastSyncedAt?: string | null;
   lastSuccessfulSyncAt?: string | null;
+  lastActivityAt?: string | null;
   lastError?: string | null;
   lastErrorAt?: string | null;
   tokenExpiresAt?: string | null;
@@ -1152,6 +1157,47 @@ export interface LoginSessionStatusResponse {
   error?: string | null;
 }
 
+export type OauthMailboxSession =
+  | OauthMailboxSessionSupported
+  | OauthMailboxSessionUnsupported;
+
+export interface OauthMailboxSessionSupported {
+  supported: true;
+  sessionId: string;
+  emailAddress: string;
+  expiresAt: string;
+  source: "generated" | "attached" | string;
+}
+
+export interface OauthMailboxSessionUnsupported {
+  supported: false;
+  emailAddress: string;
+  reason: "invalid_format" | "unsupported_domain" | "not_readable" | string;
+}
+
+export interface OauthMailboxCodeSummary {
+  value: string;
+  source: string;
+  updatedAt: string;
+}
+
+export interface OauthInviteSummary {
+  subject: string;
+  copyValue: string;
+  copyLabel: string;
+  updatedAt: string;
+}
+
+export interface OauthMailboxStatus {
+  sessionId: string;
+  emailAddress: string;
+  expiresAt: string;
+  latestCode?: OauthMailboxCodeSummary | null;
+  invite?: OauthInviteSummary | null;
+  invited: boolean;
+  error?: string | null;
+}
+
 export interface CreateOauthLoginSessionPayload {
   displayName?: string;
   groupName?: string;
@@ -1160,10 +1206,22 @@ export interface CreateOauthLoginSessionPayload {
   accountId?: number;
   tagIds?: number[];
   isMother?: boolean;
+  mailboxSessionId?: string;
+  mailboxAddress?: string;
 }
 
 export interface CompleteOauthLoginSessionPayload {
   callbackUrl: string;
+  mailboxSessionId?: string;
+  mailboxAddress?: string;
+}
+
+export interface CreateOauthMailboxSessionPayload {
+  emailAddress?: string;
+}
+
+export interface OauthMailboxStatusRequestPayload {
+  sessionIds: string[];
 }
 
 export interface CreateApiKeyAccountPayload {
@@ -1364,6 +1422,8 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
       typeof payload.lastSuccessfulSyncAt === "string"
         ? payload.lastSuccessfulSyncAt
         : null,
+    lastActivityAt:
+      typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : null,
     lastError: typeof payload.lastError === "string" ? payload.lastError : null,
     lastErrorAt:
       typeof payload.lastErrorAt === "string" ? payload.lastErrorAt : null,
@@ -1509,6 +1569,75 @@ function normalizeLoginSessionStatusResponse(raw: unknown): LoginSessionStatusRe
     accountId: accountId == null ? null : accountId,
     error: typeof payload.error === "string" ? payload.error : null,
   };
+}
+
+function normalizeOauthMailboxSession(raw: unknown): OauthMailboxSession {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const supported = payload.supported !== false
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+  const emailAddress = typeof payload.emailAddress === 'string' ? payload.emailAddress : ''
+  const expiresAt = typeof payload.expiresAt === 'string' ? payload.expiresAt : ''
+  if (!supported) {
+    return {
+      supported: false,
+      emailAddress,
+      reason: typeof payload.reason === 'string' && payload.reason.trim() ? payload.reason : 'not_readable',
+    }
+  }
+  if (!emailAddress) {
+    throw new Error('Request failed: invalid OAuth mailbox session payload')
+  }
+  if (!sessionId || !expiresAt) {
+    throw new Error('Request failed: invalid OAuth mailbox session payload')
+  }
+  return {
+    supported: true,
+    sessionId,
+    emailAddress,
+    expiresAt,
+    source: typeof payload.source === 'string' && payload.source.trim() ? payload.source : 'generated',
+  }
+}
+
+function normalizeOauthMailboxCodeSummary(raw: unknown): OauthMailboxCodeSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const value = typeof payload.value === 'string' ? payload.value : ''
+  const source = typeof payload.source === 'string' ? payload.source : ''
+  const updatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt : ''
+  if (!value || !source || !updatedAt) return null
+  return { value, source, updatedAt }
+}
+
+function normalizeOauthInviteSummary(raw: unknown): OauthInviteSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const subject = typeof payload.subject === 'string' ? payload.subject : ''
+  const copyValue = typeof payload.copyValue === 'string' ? payload.copyValue : ''
+  const copyLabel = typeof payload.copyLabel === 'string' ? payload.copyLabel : ''
+  const updatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt : ''
+  if (!subject || !copyValue || !copyLabel || !updatedAt) return null
+  return {
+    subject,
+    copyValue,
+    copyLabel,
+    updatedAt,
+  }
+}
+
+function normalizeOauthMailboxStatus(raw: unknown): OauthMailboxStatus | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+  const emailAddress = typeof payload.emailAddress === 'string' ? payload.emailAddress : ''
+  const expiresAt = typeof payload.expiresAt === 'string' ? payload.expiresAt : ''
+  if (!sessionId || !emailAddress || !expiresAt) return null
+  return {
+    sessionId,
+    emailAddress,
+    expiresAt,
+    latestCode: normalizeOauthMailboxCodeSummary(payload.latestCode),
+    invite: normalizeOauthInviteSummary(payload.invite),
+    invited: payload.invited === true,
+    error: typeof payload.error === 'string' && payload.error.trim() ? payload.error : null,
+  }
 }
 
 export async function fetchVersion(): Promise<VersionResponse> {
@@ -1755,9 +1884,13 @@ export async function fetchUpstreamStickyConversations(
 
 export async function fetchUpstreamAccountDetail(
   accountId: number,
+  signal?: AbortSignal,
 ): Promise<UpstreamAccountDetail> {
   const response = await fetchJson<unknown>(
     `/api/pool/upstream-accounts/${accountId}`,
+    {
+      signal,
+    },
   );
   return normalizeUpstreamAccountDetail(response);
 }
@@ -1773,6 +1906,46 @@ export async function createOauthLoginSession(
     },
   );
   return normalizeLoginSessionStatusResponse(response);
+}
+
+export async function createOauthMailboxSession(
+  payload: CreateOauthMailboxSessionPayload = {},
+): Promise<OauthMailboxSession> {
+  const response = await fetchJson<unknown>(
+    "/api/pool/upstream-accounts/oauth/mailbox-sessions",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  return normalizeOauthMailboxSession(response);
+}
+
+export async function fetchOauthMailboxStatuses(
+  payload: OauthMailboxStatusRequestPayload,
+): Promise<OauthMailboxStatus[]> {
+  const response = await fetchJson<unknown>(
+    "/api/pool/upstream-accounts/oauth/mailbox-sessions/status",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  const items = Array.isArray((response as Record<string, unknown> | null)?.items)
+    ? ((response as Record<string, unknown>).items as unknown[])
+    : [];
+  return items
+    .map(normalizeOauthMailboxStatus)
+    .filter((item): item is OauthMailboxStatus => item != null);
+}
+
+export async function deleteOauthMailboxSession(sessionId: string): Promise<void> {
+  await fetchJson(
+    `/api/pool/upstream-accounts/oauth/mailbox-sessions/${encodeURIComponent(sessionId)}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export async function fetchOauthLoginSession(

@@ -1,96 +1,195 @@
-import type { KeyboardEvent } from 'react'
+import type { KeyboardEvent, ReactNode } from 'react'
 import { AppIcon } from './AppIcon'
 import { MotherAccountBadge } from './MotherAccountToggle'
 import { Badge } from './ui/badge'
-import type { UpstreamAccountSummary } from '../lib/api'
+import { Tooltip } from './ui/tooltip'
+import type { AccountTagSummary, UpstreamAccountSummary } from '../lib/api'
 import { cn } from '../lib/utils'
 
 interface UpstreamAccountsTableProps {
-  items: UpstreamAccountSummary[];
-  selectedId: number | null;
-  onSelect: (accountId: number) => void;
-  emptyTitle: string;
-  emptyDescription: string;
+  items: UpstreamAccountSummary[]
+  selectedId: number | null
+  onSelect: (accountId: number) => void
+  emptyTitle: string
+  emptyDescription: string
   labels: {
-    sync: string;
-    never: string;
-    group: string;
-    primary: string;
-    secondary: string;
-    nextReset: string;
-    oauth: string;
-    apiKey: string;
-    mother: string;
-    duplicate: string;
-    status: (item: UpstreamAccountSummary) => string;
-    statusValue: (item: UpstreamAccountSummary) => string;
-  };
+    account: string
+    sync: string
+    lastSuccess: string
+    lastCall: string
+    never: string
+    windows: string
+    primary: string
+    primaryShort: string
+    secondary: string
+    secondaryShort: string
+    nextReset: string
+    nextResetCompact?: string
+    oauth: string
+    apiKey: string
+    mother: string
+    duplicate: string
+    off: string
+    hiddenTagsA11y: (count: number, names: string) => string
+    status: (item: UpstreamAccountSummary) => string
+    statusValue: (item: UpstreamAccountSummary) => string
+  }
 }
 
 function windowPercent(value?: number | null) {
-  if (!Number.isFinite(value ?? NaN)) return 0;
-  return Math.max(0, Math.min(value ?? 0, 100));
+  if (!Number.isFinite(value ?? NaN)) return 0
+  return Math.max(0, Math.min(value ?? 0, 100))
 }
 
-function formatDateTime(value?: string | null, fallback = "—") {
-  if (!value) return fallback;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+function formatDateTime(value?: string | null, fallback = '—') {
+  if (!value) return fallback
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
   return new Intl.DateTimeFormat(undefined, {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
     hour12: false,
-  }).format(date);
+  }).format(date)
 }
 
-function kindLabel(
-  item: UpstreamAccountSummary,
-  labels: UpstreamAccountsTableProps["labels"],
+function kindLabel(item: UpstreamAccountSummary, labels: UpstreamAccountsTableProps['labels']) {
+  return item.kind === 'oauth_codex' ? labels.oauth : labels.apiKey
+}
+
+function badgeVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
+  if (status === 'active') return 'success'
+  if (status === 'syncing') return 'warning'
+  if (status === 'error' || status === 'needs_reauth') return 'error'
+  return 'secondary'
+}
+
+function compactBadge(content: ReactNode, variant: 'accent' | 'secondary' | 'success' | 'warning' | 'error' | 'info') {
+  return (
+    <Badge variant={variant} className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4">
+      {content}
+    </Badge>
+  )
+}
+
+function splitVisibleAndHiddenTags(tags?: AccountTagSummary[] | null) {
+  const safeTags = tags ?? []
+  const visible = safeTags.slice(0, 3)
+  const hidden = safeTags.slice(visible.length)
+  return {
+    visible,
+    hidden,
+  }
+}
+
+function renderTagBadges(tags?: AccountTagSummary[] | null) {
+  const { visible } = splitVisibleAndHiddenTags(tags)
+  return (
+    <>
+      {visible.map((tag) => (
+        <Badge
+          key={tag.id}
+          variant="secondary"
+          className="min-w-0 max-w-[7.5rem] truncate px-2 py-px text-[11px] font-medium leading-4"
+          title={tag.name}
+        >
+          {tag.name}
+        </Badge>
+      ))}
+    </>
+  )
+}
+
+function renderTagOverflowBadge(
+  labels: UpstreamAccountsTableProps['labels'],
+  tags?: AccountTagSummary[] | null,
 ) {
-  return item.kind === "oauth_codex" ? labels.oauth : labels.apiKey;
+  const { hidden } = splitVisibleAndHiddenTags(tags)
+  const overflowCount = hidden.length
+  const hiddenNames = hidden.map((tag) => tag.name).join(', ')
+  if (overflowCount === 0) return null
+
+  return (
+    <Tooltip
+      content={
+        <div className="max-w-56 text-xs leading-5 text-base-content/80">
+          {hiddenNames}
+        </div>
+      }
+      triggerProps={{
+        tabIndex: 0,
+        'aria-label': labels.hiddenTagsA11y(overflowCount, hiddenNames),
+      }}
+    >
+      <span title={hiddenNames}>
+        {compactBadge(`+${overflowCount}`, 'secondary')}
+      </span>
+    </Tooltip>
+  )
 }
 
-function badgeVariant(
-  status: string,
-): "success" | "warning" | "error" | "secondary" {
-  if (status === "active") return "success";
-  if (status === "syncing") return "warning";
-  if (status === "error" || status === "needs_reauth") return "error";
-  return "secondary";
-}
-
-function CompactMeter({
+function CompactWindowLine({
+  label,
   percent,
   text,
   resetText,
   accentClassName,
 }: {
-  percent: number;
-  text: string;
-  resetText?: string;
-  accentClassName?: string;
+  label: string
+  percent: number
+  text: string
+  resetText?: string
+  accentClassName?: string
 }) {
+  const summary = resetText ? `${text} · ${resetText}` : text
+
   return (
-    <div className="min-w-[11rem]">
-      <div className="h-2 overflow-hidden rounded-full bg-base-300/60">
-        <div
-          className={cn("h-full rounded-full bg-primary", accentClassName)}
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-      <div className="mt-2 flex items-center justify-between gap-3 text-xs text-base-content/62">
-        <span className="truncate">{text}</span>
-        <span className="font-semibold text-base-content/72">
+    <div className="grid grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr)] items-center gap-x-2 gap-y-0.5 xl:grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr),minmax(5rem,1fr)]">
+      <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums">
+        {label}
+      </span>
+      <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums" title={text}>
+        {text}
+      </span>
+      <span
+        className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums"
+        title={summary}
+      >
+        {resetText ?? '—'}
+      </span>
+      <div className="col-start-2 col-span-2 flex min-w-0 items-center gap-2 xl:col-start-4 xl:col-span-1">
+        <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-base-300/60">
+          <div
+            className={cn('h-full rounded-full bg-primary', accentClassName)}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+        <span className="w-[2.75rem] shrink-0 text-right text-[11px] font-semibold leading-4 text-base-content/78 font-mono tabular-nums">
           {Math.round(percent)}%
         </span>
       </div>
-      {resetText ? (
-        <div className="mt-1 text-[11px] text-base-content/48">{resetText}</div>
-      ) : null}
     </div>
-  );
+  )
+}
+
+function CompactTimestampLine({
+  label,
+  value,
+}: {
+  label: string
+  value: string
+}) {
+  return (
+    <div className="grid grid-cols-[max-content,minmax(0,1fr)] items-center gap-1">
+      <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48">
+        {label}
+      </span>
+      <span className="truncate whitespace-nowrap text-[13px] leading-4 text-base-content/72 font-mono tabular-nums" title={value}>
+        {value}
+      </span>
+    </div>
+  )
 }
 
 function handleRowKeyDown(
@@ -98,9 +197,9 @@ function handleRowKeyDown(
   accountId: number,
   onSelect: (accountId: number) => void,
 ) {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    onSelect(accountId);
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    onSelect(accountId)
   }
 }
 
@@ -116,7 +215,7 @@ export function UpstreamAccountsTable({
     return (
       <div className="flex min-h-[16rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 py-10 text-center">
         <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-<AppIcon name="server-network-outline" className="h-7 w-7" aria-hidden />
+          <AppIcon name="server-network-outline" className="h-7 w-7" aria-hidden />
         </div>
         <h3 className="text-lg font-semibold text-base-content">
           {emptyTitle}
@@ -125,139 +224,137 @@ export function UpstreamAccountsTable({
           {emptyDescription}
         </p>
       </div>
-    );
+    )
   }
 
   return (
-    <div className="overflow-hidden rounded-[1.35rem] border border-base-300/80 bg-base-100/72">
-      <div className="overflow-x-auto">
-        <table className="min-w-[940px] w-full border-collapse">
-          <thead>
-            <tr className="border-b border-base-300/80 bg-base-100/86 text-left">
-              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                Account
-              </th>
-              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                {labels.group}
-              </th>
-              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                Status
-              </th>
-              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                Type
-              </th>
-              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                Plan
-              </th>
-              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                {labels.sync}
-              </th>
-              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                {labels.primary}
-              </th>
-              <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
-                {labels.secondary}
-              </th>
-              <th className="w-12 px-4 py-3" aria-hidden />
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item, index) => {
-              const primary = windowPercent(item.primaryWindow?.usedPercent);
-              const secondary = windowPercent(
-                item.secondaryWindow?.usedPercent,
-              );
-              const primaryResetText = item.primaryWindow?.resetsAt
-                ? `${labels.nextReset} ${formatDateTime(item.primaryWindow.resetsAt)}`
-                : undefined;
-              const secondaryResetText = item.secondaryWindow?.resetsAt
-                ? `${labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
-                : undefined;
-              const selected = item.id === selectedId;
-              const displayStatus = labels.statusValue(item);
-              return (
-                <tr
-                  key={item.id}
-                  role="button"
-                  tabIndex={0}
-                  aria-pressed={selected}
-                  onClick={() => onSelect(item.id)}
-                  onKeyDown={(event) =>
-                    handleRowKeyDown(event, item.id, onSelect)
-                  }
-                  className={cn(
-                    "cursor-pointer border-b border-base-300/70 align-top outline-none transition-colors last:border-b-0 hover:bg-base-100/88 focus-visible:bg-base-100/88",
-                    selected && "bg-primary/10",
-                    index % 2 === 1 && !selected && "bg-base-100/32",
-                  )}
-                >
-                  <td className="px-4 py-4">
-                    <div className="flex items-center gap-2">
-                      <span className="max-w-[18rem] truncate text-base font-semibold text-base-content">
-                        {item.displayName}
-                      </span>
-                      {item.isMother ? (
-                        <MotherAccountBadge label={labels.mother} />
-                      ) : null}
-                      {item.duplicateInfo ? (
-                        <Badge variant="warning" className="whitespace-nowrap">
-                          {labels.duplicate}
-                        </Badge>
-                      ) : null}
-                      {!item.enabled ? (
-                        <span className="rounded-full bg-base-300/70 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
-                          Off
-                        </span>
-                      ) : null}
+    <div className="overflow-x-auto rounded-[1.35rem] border border-base-300/80 bg-base-100/72 md:overflow-x-visible">
+      <table className="min-w-[54rem] w-full table-auto border-collapse md:min-w-0 md:table-fixed">
+        <colgroup>
+          <col className="w-[38%]" />
+          <col className="w-[16%]" />
+          <col className="w-[42%]" />
+          <col className="w-[4%]" />
+        </colgroup>
+        <thead>
+          <tr className="border-b border-base-300/80 bg-base-100/86 text-left">
+            <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+              {labels.account}
+            </th>
+            <th className="pl-1 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+              {labels.sync}
+            </th>
+            <th className="pl-1 pr-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
+              {labels.windows}
+            </th>
+            <th className="w-12 pl-1 pr-3 py-2.5" aria-hidden />
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item, index) => {
+            const primary = windowPercent(item.primaryWindow?.usedPercent)
+            const secondary = windowPercent(item.secondaryWindow?.usedPercent)
+            const primaryResetText = item.primaryWindow?.resetsAt
+              ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.primaryWindow.resetsAt)}`
+              : undefined
+            const secondaryResetText = item.secondaryWindow?.resetsAt
+              ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
+              : undefined
+            const selected = item.id === selectedId
+            const displayStatus = labels.statusValue(item)
+            return (
+              <tr
+                key={item.id}
+                role="button"
+                tabIndex={0}
+                aria-pressed={selected}
+                onClick={() => onSelect(item.id)}
+                onKeyDown={(event) => handleRowKeyDown(event, item.id, onSelect)}
+                className={cn(
+                  'cursor-pointer border-b border-base-300/70 align-top outline-none transition-colors last:border-b-0 hover:bg-base-100/88 focus-visible:bg-base-100/88',
+                  selected && 'bg-primary/10',
+                  index % 2 === 1 && !selected && 'bg-base-100/32',
+                )}
+              >
+                <td className="px-4 py-3">
+                  <div className="min-w-0">
+                    <p
+                      className="truncate whitespace-nowrap text-[15px] font-semibold leading-5 text-base-content"
+                      title={item.displayName}
+                    >
+                      {item.displayName}
+                    </p>
+                    <div className="mt-2 grid min-w-0 grid-cols-[minmax(0,max-content),minmax(3rem,1fr)] items-center gap-1">
+                      <div className="flex min-w-0 items-center gap-1 overflow-hidden">
+                        {item.isMother ? (
+                          <div className="shrink-0">
+                            <MotherAccountBadge label={labels.mother} />
+                          </div>
+                        ) : null}
+                        {item.duplicateInfo
+                          ? compactBadge(labels.duplicate, 'warning')
+                          : null}
+                        {compactBadge(labels.status(item), badgeVariant(displayStatus))}
+                        {!item.enabled
+                          ? compactBadge(labels.off, 'secondary')
+                          : null}
+                        {compactBadge(kindLabel(item, labels), 'secondary')}
+                        {item.planType
+                          ? compactBadge(item.planType, 'accent')
+                          : null}
+                      </div>
+                      <div className="flex min-w-[3rem] items-center justify-end gap-1">
+                        <div className="flex min-w-0 flex-1 justify-end gap-1 overflow-hidden">
+                          {renderTagBadges(item.tags)}
+                        </div>
+                        <div className="shrink-0">
+                          {renderTagOverflowBadge(labels, item.tags)}
+                        </div>
+                      </div>
                     </div>
-                  </td>
-                  <td className="px-4 py-4">
-                    <div className="max-w-[12rem] truncate text-sm text-base-content/72">
-                      {item.groupName?.trim() || "—"}
-                    </div>
-                  </td>
-                  <td className="px-4 py-4">
-                    <Badge variant={badgeVariant(displayStatus)}>
-                      {labels.status(item)}
-                    </Badge>
-                  </td>
-                  <td className="px-4 py-4">
-                    <Badge variant="secondary">{kindLabel(item, labels)}</Badge>
-                  </td>
-                  <td className="px-4 py-4 text-sm text-base-content/72">
-                    {item.planType ?? "—"}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-base-content/72">
-                    {formatDateTime(item.lastSuccessfulSyncAt, labels.never)}
-                  </td>
-                  <td className="px-4 py-4">
-                    <CompactMeter
+                  </div>
+                </td>
+                <td className="pl-1 pr-3 py-3 align-middle">
+                  <div className="space-y-1">
+                    <CompactTimestampLine
+                      label={labels.lastSuccess}
+                      value={formatDateTime(item.lastSuccessfulSyncAt, labels.never)}
+                    />
+                    <CompactTimestampLine
+                      label={labels.lastCall}
+                      value={formatDateTime(item.lastActivityAt, labels.never)}
+                    />
+                  </div>
+                </td>
+                <td className="pl-1 pr-3 py-3 align-middle">
+                  <div className="space-y-1.5">
+                    <CompactWindowLine
+                      label={labels.primaryShort}
                       percent={primary}
-                      text={item.primaryWindow?.usedText ?? "—"}
+                      text={item.primaryWindow?.usedText ?? '—'}
                       resetText={primaryResetText}
                     />
-                  </td>
-                  <td className="px-4 py-4">
-                    <CompactMeter
+                    <CompactWindowLine
+                      label={labels.secondaryShort}
                       percent={secondary}
-                      text={item.secondaryWindow?.usedText ?? "—"}
+                      text={item.secondaryWindow?.usedText ?? '—'}
                       resetText={secondaryResetText}
                       accentClassName="bg-secondary"
                     />
-                  </td>
-                  <td className="px-4 py-4 text-right">
-                    <AppIcon
-                      name={selected ? 'chevron-right-circle' : 'chevron-right'}
-                      className={cn('h-5 w-5', selected ? 'text-primary' : 'text-base-content/35')}
-                      aria-hidden
-                    />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                  </div>
+                </td>
+                <td className="pl-1 pr-3 py-3 text-right align-middle">
+                  <AppIcon
+                    name={selected ? 'chevron-right-circle' : 'chevron-right'}
+                    className={cn('h-5 w-5', selected ? 'text-primary' : 'text-base-content/35')}
+                    aria-hidden
+                  />
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
-  );
+  )
 }

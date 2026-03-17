@@ -96,6 +96,19 @@ function Probe() {
   )
 }
 
+function StreamProbe({ limit = 20 }: { limit?: number }) {
+  const { records } = useInvocationStream(limit, undefined, undefined, { enableStream: true })
+
+  return (
+    <div>
+      <div data-testid="count">{records.length}</div>
+      <div data-testid="first-status">{records[0]?.status ?? ''}</div>
+      <div data-testid="first-key">{records[0] ? `${records[0].invokeId}@${records[0].occurredAt}` : ''}</div>
+      <div data-testid="keys">{records.map((record) => `${record.invokeId}:${record.status}`).join('|')}</div>
+    </div>
+  )
+}
+
 describe('useInvocationStream', () => {
   it('treats failed filters as resolved failures for incoming SSE records', async () => {
     apiMocks.fetchInvocations.mockResolvedValue({ records: [] })
@@ -136,5 +149,109 @@ describe('useInvocationStream', () => {
 
     expect(text('count')).toBe('1')
     expect(text('first-status')).toBe('http_502')
+  })
+
+  it('does not reinsert records that already fell outside the current limit window', async () => {
+    apiMocks.fetchInvocations.mockResolvedValue({
+      records: [
+        {
+          id: 10,
+          invokeId: 'invocation-a',
+          occurredAt: '2026-03-10T00:02:00Z',
+          createdAt: '2026-03-10T00:02:00Z',
+          status: 'success',
+        },
+        {
+          id: 11,
+          invokeId: 'invocation-b',
+          occurredAt: '2026-03-10T00:01:00Z',
+          createdAt: '2026-03-10T00:01:00Z',
+          status: 'success',
+        },
+      ],
+    })
+
+    render(<StreamProbe limit={2} />)
+    await flushAsync()
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: -1,
+            invokeId: 'invocation-c',
+            occurredAt: '2026-03-10T00:03:00Z',
+            createdAt: '2026-03-10T00:03:00Z',
+            status: 'running',
+          },
+        ],
+      })
+    })
+
+    expect(text('keys')).toBe('invocation-c:running|invocation-a:success')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: -2,
+            invokeId: 'invocation-b',
+            occurredAt: '2026-03-10T00:01:00Z',
+            createdAt: '2026-03-10T00:01:00Z',
+            status: 'running',
+          },
+        ],
+      })
+    })
+
+    expect(text('keys')).toBe('invocation-c:running|invocation-a:success')
+  })
+
+  it('keeps the terminal record when a stale running snapshot arrives later', async () => {
+    apiMocks.fetchInvocations.mockResolvedValue({ records: [] })
+
+    render(<StreamProbe limit={5} />)
+    await flushAsync()
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: 20,
+            invokeId: 'invocation-terminal',
+            occurredAt: '2026-03-10T00:04:00Z',
+            createdAt: '2026-03-10T00:04:00Z',
+            status: 'success',
+            totalTokens: 18,
+            cost: 0.0025,
+            tTotalMs: 2400,
+          },
+        ],
+      })
+    })
+
+    expect(text('keys')).toBe('invocation-terminal:success')
+    expect(text('first-status')).toBe('success')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: -20,
+            invokeId: 'invocation-terminal',
+            occurredAt: '2026-03-10T00:04:00Z',
+            createdAt: '2026-03-10T00:04:00Z',
+            status: 'running',
+          },
+        ],
+      })
+    })
+
+    expect(text('keys')).toBe('invocation-terminal:success')
+    expect(text('first-status')).toBe('success')
   })
 })
