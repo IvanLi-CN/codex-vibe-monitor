@@ -95,7 +95,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring / InvocationTable / Account Proxy Semantics
   state: semantic matrix
   evidence_note: Verifies the compact `账号 / 代理` badge and the six supported account-versus-proxy combinations, including pool accounts, reverse-proxy fallback, and empty proxy-node handling.

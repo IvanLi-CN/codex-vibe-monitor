@@ -976,7 +976,7 @@ export const AccountProxySemantics: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(canvas.getByRole('button', { name: 'NSNGC' })).toBeInTheDocument()
+    await expect(canvas.getAllByRole('button', { name: 'NSNGC' })).toHaveLength(2)
     await expect(canvas.getByRole('button', { name: '账号 #9' })).toBeInTheDocument()
     await expect(canvas.queryByRole('button', { name: '反向代理' })).not.toBeInTheDocument()
     await expect(canvas.getByText(POOL_PROXY_NODE_NAME)).toBeInTheDocument()
