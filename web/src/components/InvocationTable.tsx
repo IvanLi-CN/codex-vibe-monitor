@@ -258,7 +258,13 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   ) => {
     if (!accountClickable || accountId == null) {
       return (
-        <span className={cn('inline-block max-w-full truncate whitespace-nowrap', className)} title={accountLabel}>
+        <span
+          className={cn(
+            'inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none',
+            className,
+          )}
+          title={accountLabel}
+        >
           {accountLabel}
         </span>
       )
@@ -268,7 +274,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
       <button
         type="button"
         className={cn(
-          'inline-block max-w-full truncate whitespace-nowrap appearance-none border-0 bg-transparent p-0 align-middle font-inherit text-center text-current no-underline shadow-none transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+          'inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap appearance-none border-0 bg-transparent p-0 align-middle font-inherit leading-none text-center text-current no-underline shadow-none transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
           className,
         )}
         onClick={() => openAccountDrawer(accountId, accountLabel)}
@@ -815,11 +821,11 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                         <div className="flex min-w-0 flex-col items-center justify-center gap-1 leading-tight text-center">
                           <Badge
                             variant={row.meta.variant}
-                            className="mx-auto w-fit max-w-full justify-center overflow-hidden px-4 text-center"
+                            className="mx-auto min-h-9 w-fit max-w-full items-center justify-center overflow-hidden px-4 py-1.5 text-center leading-none"
                             data-testid="invocation-proxy-badge"
                           >
                             <span
-                              className="block max-w-full min-w-0 truncate whitespace-nowrap"
+                              className="inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none"
                               data-testid="invocation-account-name"
                             >
                               {renderAccountValue(row.accountLabel, row.accountId, row.accountClickable)}
