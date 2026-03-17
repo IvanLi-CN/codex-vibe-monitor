@@ -2477,13 +2477,13 @@ export default function UpstreamAccountCreatePage() {
                       <div className="mt-4 flex items-center gap-3">
                         <Badge
                           variant={displayedOauthMailboxStatus?.invited ? 'success' : 'secondary'}
-                          className="rounded-full px-3 py-1 text-sm"
+                          className="shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-sm leading-none"
                         >
                           {displayedOauthMailboxStatus?.invited
                             ? t('accountPool.upstreamAccounts.oauth.invitedState')
                             : t('accountPool.upstreamAccounts.oauth.notInvitedState')}
                         </Badge>
-                        <span className="truncate text-sm text-base-content/70">
+                        <span className="min-w-0 flex-1 truncate text-sm text-base-content/70">
                           {displayedOauthMailboxStatus?.invite?.copyValue ?? '—'}
                         </span>
                       </div>

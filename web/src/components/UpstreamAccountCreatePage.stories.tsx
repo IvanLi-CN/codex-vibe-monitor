@@ -192,10 +192,13 @@ function OauthMailboxStateCard({
               </Button>
             </div>
             <div className="mt-4 flex items-center gap-3">
-              <Badge variant={invitedVariant} className="rounded-full px-3 py-1 text-sm">
+              <Badge
+                variant={invitedVariant}
+                className="shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-sm leading-none"
+              >
                 {invitedLabel}
               </Badge>
-              <span className="truncate text-sm text-base-content/70">{inviteValue}</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-base-content/70">{inviteValue}</span>
             </div>
           </div>
         </div>
