@@ -901,6 +901,34 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_activity_at")
         .await
         .context("failed to ensure pool_upstream_accounts.last_activity_at")?;
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE pool_upstream_accounts
+        ADD COLUMN last_activity_live_backfill_completed INTEGER NOT NULL DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context(
+            "failed to ensure pool_upstream_accounts.last_activity_live_backfill_completed",
+        );
+    }
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE pool_upstream_accounts
+        ADD COLUMN last_activity_archive_backfill_completed INTEGER NOT NULL DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context(
+            "failed to ensure pool_upstream_accounts.last_activity_archive_backfill_completed",
+        );
+    }
 
     if let Err(err) = sqlx::query(
         r#"
@@ -951,11 +979,22 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
                 END = pool_upstream_accounts.id
             )
             WHERE last_activity_at IS NULL
+              AND last_activity_live_backfill_completed = 0
             "#,
         )
         .execute(pool)
         .await
         .context("failed to backfill pool_upstream_accounts.last_activity_at")?;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_activity_live_backfill_completed = 1
+            WHERE last_activity_live_backfill_completed = 0
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to mark pool_upstream_accounts live last_activity backfill complete")?;
     }
 
     sqlx::query(
@@ -1242,15 +1281,13 @@ async fn ensure_nullable_text_column(
 }
 
 async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bool> {
-    Ok(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-        )
-        .bind(table_name)
-        .fetch_one(pool)
-        .await?
-            > 0,
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
     )
+    .bind(table_name)
+    .fetch_one(pool)
+    .await?
+        > 0)
 }
 
 pub(crate) async fn list_upstream_accounts(

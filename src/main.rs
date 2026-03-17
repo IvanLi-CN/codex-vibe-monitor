@@ -1807,8 +1807,10 @@ async fn run_startup_backfill_task(
             ))
         }
         StartupBackfillTask::UpstreamActivityArchives => {
-            let summary = backfill_upstream_account_last_activity_from_archives(&state.pool).await?;
-            let pending_accounts = count_upstream_accounts_missing_last_activity(&state.pool).await?;
+            let summary =
+                backfill_upstream_account_last_activity_from_archives(&state.pool).await?;
+            let pending_accounts =
+                count_upstream_accounts_missing_last_activity(&state.pool).await?;
             Ok((
                 StartupBackfillRunState {
                     next_cursor_id: cursor_id,
@@ -2027,6 +2029,7 @@ struct InvocationRawCompressionCandidate {
 
 #[derive(Debug, FromRow)]
 struct ArchiveBatchFileRow {
+    _id: i64,
     file_path: String,
 }
 
@@ -3279,7 +3282,12 @@ async fn backfill_upstream_account_last_activity_from_archives(
     pool: &Pool<Sqlite>,
 ) -> Result<ArchiveBackfillSummary> {
     let pending_account_ids = sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM pool_upstream_accounts WHERE last_activity_at IS NULL",
+        r#"
+        SELECT id
+        FROM pool_upstream_accounts
+        WHERE last_activity_at IS NULL
+          AND last_activity_archive_backfill_completed = 0
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -3289,7 +3297,7 @@ async fn backfill_upstream_account_last_activity_from_archives(
 
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT file_path
+        SELECT id AS _id, file_path
         FROM archive_batches
         WHERE dataset = 'codex_invocations' AND status = ?1
         ORDER BY month_key DESC, created_at DESC, id DESC
@@ -3299,15 +3307,28 @@ async fn backfill_upstream_account_last_activity_from_archives(
     .fetch_all(pool)
     .await?;
     if archive_files.is_empty() {
+        let mut update = QueryBuilder::<Sqlite>::new(
+            "UPDATE pool_upstream_accounts SET last_activity_archive_backfill_completed = 1 WHERE id IN (",
+        );
+        {
+            let mut separated = update.separated(", ");
+            for account_id in &pending_account_ids {
+                separated.push_bind(account_id);
+            }
+        }
+        update.push(")");
+        update.build().execute(pool).await?;
         return Ok(ArchiveBackfillSummary::default());
     }
 
     let pending = pending_account_ids.into_iter().collect::<HashSet<_>>();
     let mut recovered = HashMap::<i64, String>::new();
     let mut scanned_batches = 0_u64;
+    let mut exhausted_archives = true;
 
     for archive_file in archive_files {
         if recovered.len() == pending.len() {
+            exhausted_archives = false;
             break;
         }
 
@@ -3381,22 +3402,58 @@ async fn backfill_upstream_account_last_activity_from_archives(
     }
 
     if recovered.is_empty() {
+        if exhausted_archives {
+            let mut update = QueryBuilder::<Sqlite>::new(
+                "UPDATE pool_upstream_accounts SET last_activity_archive_backfill_completed = 1 WHERE id IN (",
+            );
+            {
+                let mut separated = update.separated(", ");
+                for account_id in &pending {
+                    separated.push_bind(account_id);
+                }
+            }
+            update.push(")");
+            update.build().execute(pool).await?;
+        }
         return Ok(ArchiveBackfillSummary {
             scanned_batches,
             updated_accounts: 0,
         });
     }
 
+    let unresolved: Vec<i64> = pending
+        .iter()
+        .copied()
+        .filter(|account_id| !recovered.contains_key(account_id))
+        .collect();
     let updated_accounts = recovered.len() as u64;
     let mut tx = pool.begin().await?;
     for (account_id, occurred_at) in recovered {
         sqlx::query(
-            "UPDATE pool_upstream_accounts SET last_activity_at = ?1 WHERE id = ?2 AND last_activity_at IS NULL",
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_activity_at = ?1,
+                last_activity_archive_backfill_completed = 1
+            WHERE id = ?2 AND last_activity_at IS NULL
+            "#,
         )
         .bind(occurred_at)
         .bind(account_id)
         .execute(tx.as_mut())
         .await?;
+    }
+    if exhausted_archives && !unresolved.is_empty() {
+        let mut update = QueryBuilder::<Sqlite>::new(
+            "UPDATE pool_upstream_accounts SET last_activity_archive_backfill_completed = 1 WHERE id IN (",
+        );
+        {
+            let mut separated = update.separated(", ");
+            for account_id in unresolved {
+                separated.push_bind(account_id);
+            }
+        }
+        update.push(")");
+        update.build().execute(tx.as_mut()).await?;
     }
     tx.commit().await?;
 
@@ -3406,17 +3463,18 @@ async fn backfill_upstream_account_last_activity_from_archives(
     })
 }
 
-async fn count_upstream_accounts_missing_last_activity(
-    pool: &Pool<Sqlite>,
-) -> Result<u64> {
-    Ok(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM pool_upstream_accounts WHERE last_activity_at IS NULL",
-        )
-        .fetch_one(pool)
-        .await?
-        .max(0) as u64,
+async fn count_upstream_accounts_missing_last_activity(pool: &Pool<Sqlite>) -> Result<u64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+            SELECT COUNT(*)
+            FROM pool_upstream_accounts
+            WHERE last_activity_at IS NULL
+              AND last_activity_archive_backfill_completed = 0
+            "#,
     )
+    .fetch_one(pool)
+    .await?
+    .max(0) as u64)
 }
 
 async fn ensure_sqlite_file_initialized(path: &Path) -> Result<()> {
@@ -3572,6 +3630,17 @@ async fn upsert_archive_batch_manifest(
     .bind(ARCHIVE_STATUS_COMPLETED)
     .execute(&mut *tx)
     .await?;
+    if batch.dataset == "codex_invocations" {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_activity_archive_backfill_completed = 0
+            WHERE last_activity_at IS NULL
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     Ok(())
 }
 
@@ -9898,9 +9967,7 @@ fn json_value_to_i64(value: &Value) -> Option<i64> {
 fn upstream_account_id_from_payload(payload: Option<&str>) -> Option<i64> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
-    value
-        .get("upstreamAccountId")
-        .and_then(json_value_to_i64)
+    value.get("upstreamAccountId").and_then(json_value_to_i64)
 }
 
 #[allow(clippy::too_many_arguments)]

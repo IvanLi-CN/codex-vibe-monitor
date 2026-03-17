@@ -2852,14 +2852,12 @@ async fn list_upstream_accounts_includes_last_activity_at() {
     .execute(&state.pool)
     .await
     .expect("insert account invocation");
-    sqlx::query(
-        "UPDATE pool_upstream_accounts SET last_activity_at = ?1 WHERE id = ?2",
-    )
-    .bind("2026-03-11 20:35:00")
-    .bind(account_id)
-    .execute(&state.pool)
-    .await
-    .expect("persist account last activity");
+    sqlx::query("UPDATE pool_upstream_accounts SET last_activity_at = ?1 WHERE id = ?2")
+        .bind("2026-03-11 20:35:00")
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("persist account last activity");
 
     let Json(response) = list_upstream_accounts(State(state))
         .await
@@ -2893,9 +2891,9 @@ async fn list_upstream_accounts_includes_archived_last_activity_at() {
     sqlx::query(
         "CREATE TABLE pool_upstream_accounts (id INTEGER PRIMARY KEY, last_activity_at TEXT)",
     )
-        .execute(&pool)
-        .await
-        .expect("create accounts table");
+    .execute(&pool)
+    .await
+    .expect("create accounts table");
     sqlx::query("CREATE TABLE codex_invocations (occurred_at TEXT NOT NULL, payload TEXT)")
         .execute(&pool)
         .await
@@ -17185,6 +17183,129 @@ async fn upstream_last_activity_archive_backfill_retries_after_failed_progress()
     assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
     assert!(progress.last_finished_at.is_some());
     assert!(!progress.is_due(Utc::now()));
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_marks_exhausted_accounts_complete() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task_name = startup_backfill_task_progress_key(
+        state.as_ref(),
+        StartupBackfillTask::UpstreamActivityArchives,
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    let account_id = 902_i64;
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Never used account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("run archive activity backfill");
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load archive backfill progress");
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_OK);
+    assert_eq!(progress.last_updated, 0);
+    assert_eq!(progress.last_scanned, 0);
+
+    let completed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load archive completion flag");
+    assert_eq!(completed, 1);
+
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after = ?1 WHERE task_name = ?2")
+        .bind(format_utc_iso(Utc::now() - ChronoDuration::seconds(1)))
+        .bind(&task_name)
+        .execute(&state.pool)
+        .await
+        .expect("force archive task due again");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("rerun archive activity backfill");
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("reload archive backfill progress");
+    assert_eq!(progress.last_scanned, 0);
+    assert_eq!(progress.last_updated, 0);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_live_backfill_marks_unmatched_rows_complete() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(903_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("No live invocation")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert upstream account");
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("rerun upstream accounts schema");
+
+    let row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_live_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(903_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("load live backfill row");
+    assert!(row.0.is_none());
+    assert_eq!(row.1, 1);
 }
 
 #[tokio::test]
