@@ -696,6 +696,7 @@ export default function UpstreamAccountCreatePage() {
     () => draft?.oauth?.mailboxCodeTone ?? 'idle',
   )
   const [oauthMailboxBusy, setOauthMailboxBusy] = useState(false)
+  const [oauthMailboxRefreshBusy, setOauthMailboxRefreshBusy] = useState(false)
   const [refreshClockMs, setRefreshClockMs] = useState(() => Date.now())
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState(() => draft?.apiKey?.displayName ?? '')
   const [apiKeyGroupName, setApiKeyGroupName] = useState(() => draft?.apiKey?.groupName ?? '')
@@ -755,6 +756,18 @@ export default function UpstreamAccountCreatePage() {
     activeOauthMailboxSession?.expiresAt ?? null,
     t,
   )
+  const oauthMailboxCodeStatusBadge = useMemo(() => {
+    if (oauthMailboxRefreshBusy) return 'checking'
+    if (
+      resolvedOauthMailboxSession &&
+      oauthMailboxError &&
+      (oauthMailboxError === t('accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable') ||
+        oauthMailboxError === t('accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed'))
+    ) {
+      return 'failed'
+    }
+    return null
+  }, [oauthMailboxError, oauthMailboxRefreshBusy, resolvedOauthMailboxSession, t])
   useEffect(() => {
     return () => {
       if (oauthMailboxToneResetRef.current != null) {
@@ -910,10 +923,12 @@ export default function UpstreamAccountCreatePage() {
 
   useEffect(() => {
     if (!refreshableOauthMailboxSession) {
+      setOauthMailboxRefreshBusy(false)
       return
     }
     let cancelled = false
     const poll = async () => {
+      setOauthMailboxRefreshBusy(true)
       try {
         const [status] = await getOauthMailboxStatuses([refreshableOauthMailboxSession.sessionId])
         if (cancelled) return
@@ -937,6 +952,10 @@ export default function UpstreamAccountCreatePage() {
       } catch {
         if (!cancelled) {
           setOauthMailboxError(t('accountPool.upstreamAccounts.oauth.mailboxStatusRefreshFailed'))
+        }
+      } finally {
+        if (!cancelled) {
+          setOauthMailboxRefreshBusy(false)
         }
       }
     }
@@ -2386,8 +2405,19 @@ export default function UpstreamAccountCreatePage() {
                     <div className="rounded-2xl border border-base-300/70 bg-base-200/40 p-4">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <p className="text-sm font-semibold text-base-content">
+                          <p className="flex items-center gap-2 text-sm font-semibold text-base-content">
                             {t('accountPool.upstreamAccounts.oauth.codeCardTitle')}
+                            {oauthMailboxCodeStatusBadge === 'checking' ? (
+                              <Badge variant="secondary" className="gap-1.5 px-2 py-0.5 text-[11px] font-medium">
+                                <Spinner size="sm" className="h-3 w-3" />
+                                {t('accountPool.upstreamAccounts.oauth.mailboxCheckingBadge')}
+                              </Badge>
+                            ) : null}
+                            {oauthMailboxCodeStatusBadge === 'failed' ? (
+                              <Badge variant="error" className="px-2 py-0.5 text-[11px] font-medium">
+                                {t('accountPool.upstreamAccounts.oauth.mailboxCheckFailedBadge')}
+                              </Badge>
+                            ) : null}
                           </p>
                           <p className="mt-1 text-xs text-base-content/65">
                             {displayedOauthMailboxStatus?.latestCode?.updatedAt

@@ -1484,7 +1484,59 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).toContain(
       "Mailbox refresh failed. We could not confirm the latest code or invite state.",
     );
+    expect(host?.textContent).toContain("Check failed");
   });
+
+  it("shows a checking badge while the mailbox refresh is in flight", async () => {
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString()
+    let releaseRefresh: ((value: Array<Record<string, unknown>>) => void) | null = null
+    const getOauthMailboxStatuses = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseRefresh = resolve as typeof releaseRefresh
+        }),
+    )
+    mockUpstreamAccounts({ getOauthMailboxStatuses })
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Checking Mailbox",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-checking",
+              emailAddress: "checking@example.com",
+              expiresAt,
+              source: "generated",
+            },
+            mailboxInput: "checking@example.com",
+          },
+        },
+      },
+    })
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(host?.textContent).toContain("Checking")
+
+    await act(async () => {
+      releaseRefresh?.([
+        {
+          sessionId: "mailbox-checking",
+          emailAddress: "checking@example.com",
+          expiresAt,
+          latestCode: null,
+          invite: null,
+          invited: false,
+          error: null,
+        },
+      ])
+      await Promise.resolve()
+    })
+  })
 
   it("auto refreshes the single mailbox status and shows received timestamps", async () => {
     vi.useFakeTimers();
