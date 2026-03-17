@@ -17263,11 +17263,15 @@ async fn upstream_last_activity_archive_backfill_marks_exhausted_accounts_comple
 
 #[tokio::test]
 async fn upstream_last_activity_live_backfill_marks_unmatched_rows_complete() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
-
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task_name = startup_backfill_task_progress_key(
+        state.as_ref(),
+        StartupBackfillTask::UpstreamActivityLive,
+    )
+    .await;
     let created_at = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -17285,13 +17289,13 @@ async fn upstream_last_activity_live_backfill_marks_unmatched_rows_complete() {
     .bind(1_i64)
     .bind(&created_at)
     .bind(&created_at)
-    .execute(&pool)
+    .execute(&state.pool)
     .await
     .expect("insert upstream account");
 
-    ensure_upstream_accounts_schema(&pool)
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityLive)
         .await
-        .expect("rerun upstream accounts schema");
+        .expect("run live activity backfill");
 
     let row = sqlx::query_as::<_, (Option<String>, i64)>(
         r#"
@@ -17301,11 +17305,99 @@ async fn upstream_last_activity_live_backfill_marks_unmatched_rows_complete() {
         "#,
     )
     .bind(903_i64)
-    .fetch_one(&pool)
+    .fetch_one(&state.pool)
     .await
     .expect("load live backfill row");
     assert!(row.0.is_none());
     assert_eq!(row.1, 1);
+
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after = ?1 WHERE task_name = ?2")
+        .bind(format_utc_iso(Utc::now() - ChronoDuration::seconds(1)))
+        .bind(&task_name)
+        .execute(&state.pool)
+        .await
+        .expect("force live task due again");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityLive)
+        .await
+        .expect("rerun live activity backfill");
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load live backfill progress");
+    assert_eq!(progress.last_updated, 0);
+}
+
+#[tokio::test]
+async fn upstream_last_activity_archive_backfill_keeps_pending_when_archive_missing() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task_name = startup_backfill_task_progress_key(
+        state.as_ref(),
+        StartupBackfillTask::UpstreamActivityArchives,
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(904_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Missing archive account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind("2025-01")
+    .bind("/tmp/definitely-missing-upstream-activity.sqlite.gz")
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&state.pool)
+    .await
+    .expect("insert missing archive manifest");
+
+    run_startup_backfill_task_if_due(&state, StartupBackfillTask::UpstreamActivityArchives)
+        .await
+        .expect("run archive activity backfill with missing file");
+
+    let completed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(904_i64)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load archive completion flag");
+    assert_eq!(completed, 0);
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load archive backfill progress");
+    assert_eq!(progress.last_updated, 0);
 }
 
 #[tokio::test]

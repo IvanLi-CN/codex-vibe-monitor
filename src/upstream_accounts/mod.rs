@@ -964,39 +964,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context("failed to ensure idx_pool_upstream_accounts_chatgpt_account_id")?;
 
-    if sqlite_table_exists(pool, "codex_invocations")
-        .await
-        .context("failed to inspect codex_invocations existence")?
-    {
-        sqlx::query(
-            r#"
-            UPDATE pool_upstream_accounts
-            SET last_activity_at = (
-                SELECT MAX(occurred_at)
-                FROM codex_invocations
-                WHERE CASE
-                    WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER)
-                END = pool_upstream_accounts.id
-            )
-            WHERE last_activity_at IS NULL
-              AND last_activity_live_backfill_completed = 0
-            "#,
-        )
-        .execute(pool)
-        .await
-        .context("failed to backfill pool_upstream_accounts.last_activity_at")?;
-        sqlx::query(
-            r#"
-            UPDATE pool_upstream_accounts
-            SET last_activity_live_backfill_completed = 1
-            WHERE last_activity_live_backfill_completed = 0
-            "#,
-        )
-        .execute(pool)
-        .await
-        .context("failed to mark pool_upstream_accounts live last_activity backfill complete")?;
-    }
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS pool_oauth_login_sessions (
@@ -4080,6 +4047,37 @@ pub(crate) async fn load_account_last_activity_map(
         .into_iter()
         .map(|row| (row.account_id, row.last_activity_at))
         .collect())
+}
+
+pub(crate) async fn backfill_upstream_account_last_activity_from_live_invocations(
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
+    if !sqlite_table_exists(pool, "codex_invocations")
+        .await
+        .context("failed to inspect codex_invocations existence")?
+    {
+        return Ok(0);
+    }
+
+    let updated = sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET last_activity_at = (
+                SELECT MAX(occurred_at)
+                FROM codex_invocations
+                WHERE CASE
+                    WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER)
+                END = pool_upstream_accounts.id
+            ),
+            last_activity_live_backfill_completed = 1
+        WHERE last_activity_at IS NULL
+          AND last_activity_live_backfill_completed = 0
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill pool_upstream_accounts.last_activity_at from live invocations")?;
+    Ok(updated.rows_affected())
 }
 
 async fn group_has_accounts(pool: &Pool<Sqlite>, group_name: &str) -> Result<bool> {

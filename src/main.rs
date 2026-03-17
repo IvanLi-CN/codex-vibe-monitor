@@ -106,6 +106,7 @@ const STARTUP_BACKFILL_STATUS_IDLE: &str = "idle";
 const STARTUP_BACKFILL_STATUS_RUNNING: &str = "running";
 const STARTUP_BACKFILL_STATUS_OK: &str = "ok";
 const STARTUP_BACKFILL_STATUS_FAILED: &str = "failed";
+const STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE: &str = "upstream_activity_live_backfill_v1";
 const STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES: &str =
     "upstream_activity_archive_backfill_v1";
 const STARTUP_BACKFILL_TASK_PROXY_USAGE: &str = "proxy_usage_tokens_v1";
@@ -1182,6 +1183,7 @@ enum StartupBackfillTask {
     InvocationServiceTier,
     ReasoningEffort,
     FailureClassification,
+    UpstreamActivityLive,
     UpstreamActivityArchives,
 }
 
@@ -1195,6 +1197,7 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier,
             Self::ReasoningEffort,
             Self::FailureClassification,
+            Self::UpstreamActivityLive,
             Self::UpstreamActivityArchives,
         ]
     }
@@ -1208,6 +1211,7 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier => STARTUP_BACKFILL_TASK_INVOCATION_SERVICE_TIER,
             Self::ReasoningEffort => STARTUP_BACKFILL_TASK_REASONING_EFFORT,
             Self::FailureClassification => STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION,
+            Self::UpstreamActivityLive => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE,
             Self::UpstreamActivityArchives => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
         }
     }
@@ -1221,6 +1225,7 @@ impl StartupBackfillTask {
             Self::InvocationServiceTier => "invocation service tier",
             Self::ReasoningEffort => "proxy reasoning effort",
             Self::FailureClassification => "invocation failure classification",
+            Self::UpstreamActivityLive => "upstream activity live rows",
             Self::UpstreamActivityArchives => "upstream activity archives",
         }
     }
@@ -1804,6 +1809,22 @@ async fn run_startup_backfill_task(
                     samples: outcome.samples,
                 },
                 "failure classification recalculated".to_string(),
+            ))
+        }
+        StartupBackfillTask::UpstreamActivityLive => {
+            let updated_accounts =
+                backfill_upstream_account_last_activity_from_live_invocations(&state.pool).await?;
+            let pending_accounts =
+                count_upstream_accounts_missing_live_last_activity(&state.pool).await?;
+            Ok((
+                StartupBackfillRunState {
+                    next_cursor_id: cursor_id,
+                    scanned: 0,
+                    updated: updated_accounts,
+                    hit_scan_limit: false,
+                    samples: Vec::new(),
+                },
+                format!("pending_accounts={pending_accounts}"),
             ))
         }
         StartupBackfillTask::UpstreamActivityArchives => {
@@ -3334,6 +3355,7 @@ async fn backfill_upstream_account_last_activity_from_archives(
 
         let archive_path = PathBuf::from(archive_file.file_path);
         if !archive_path.exists() {
+            exhausted_archives = false;
             continue;
         }
         scanned_batches += 1;
@@ -3470,6 +3492,20 @@ async fn count_upstream_accounts_missing_last_activity(pool: &Pool<Sqlite>) -> R
             FROM pool_upstream_accounts
             WHERE last_activity_at IS NULL
               AND last_activity_archive_backfill_completed = 0
+            "#,
+    )
+    .fetch_one(pool)
+    .await?
+    .max(0) as u64)
+}
+
+async fn count_upstream_accounts_missing_live_last_activity(pool: &Pool<Sqlite>) -> Result<u64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+            SELECT COUNT(*)
+            FROM pool_upstream_accounts
+            WHERE last_activity_at IS NULL
+              AND last_activity_live_backfill_completed = 0
             "#,
     )
     .fetch_one(pool)
