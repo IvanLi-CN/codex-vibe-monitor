@@ -1156,10 +1156,22 @@ export interface LoginSessionStatusResponse {
   error?: string | null;
 }
 
-export interface OauthMailboxSession {
+export type OauthMailboxSession =
+  | OauthMailboxSessionSupported
+  | OauthMailboxSessionUnsupported;
+
+export interface OauthMailboxSessionSupported {
+  supported: true;
   sessionId: string;
   emailAddress: string;
   expiresAt: string;
+  source: "generated" | "attached" | string;
+}
+
+export interface OauthMailboxSessionUnsupported {
+  supported: false;
+  emailAddress: string;
+  reason: "invalid_format" | "unsupported_domain" | "not_readable" | string;
 }
 
 export interface OauthMailboxCodeSummary {
@@ -1194,13 +1206,17 @@ export interface CreateOauthLoginSessionPayload {
   tagIds?: number[];
   isMother?: boolean;
   mailboxSessionId?: string;
-  generatedMailboxAddress?: string;
+  mailboxAddress?: string;
 }
 
 export interface CompleteOauthLoginSessionPayload {
   callbackUrl: string;
   mailboxSessionId?: string;
-  generatedMailboxAddress?: string;
+  mailboxAddress?: string;
+}
+
+export interface CreateOauthMailboxSessionPayload {
+  emailAddress?: string;
 }
 
 export interface OauthMailboxStatusRequestPayload {
@@ -1554,16 +1570,29 @@ function normalizeLoginSessionStatusResponse(raw: unknown): LoginSessionStatusRe
 
 function normalizeOauthMailboxSession(raw: unknown): OauthMailboxSession {
   const payload = (raw ?? {}) as Record<string, unknown>
+  const supported = payload.supported !== false
   const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
   const emailAddress = typeof payload.emailAddress === 'string' ? payload.emailAddress : ''
   const expiresAt = typeof payload.expiresAt === 'string' ? payload.expiresAt : ''
-  if (!sessionId || !emailAddress || !expiresAt) {
+  if (!supported) {
+    return {
+      supported: false,
+      emailAddress,
+      reason: typeof payload.reason === 'string' && payload.reason.trim() ? payload.reason : 'not_readable',
+    }
+  }
+  if (!emailAddress) {
+    throw new Error('Request failed: invalid OAuth mailbox session payload')
+  }
+  if (!sessionId || !expiresAt) {
     throw new Error('Request failed: invalid OAuth mailbox session payload')
   }
   return {
+    supported: true,
     sessionId,
     emailAddress,
     expiresAt,
+    source: typeof payload.source === 'string' && payload.source.trim() ? payload.source : 'generated',
   }
 }
 
@@ -1876,12 +1905,14 @@ export async function createOauthLoginSession(
   return normalizeLoginSessionStatusResponse(response);
 }
 
-export async function createOauthMailboxSession(): Promise<OauthMailboxSession> {
+export async function createOauthMailboxSession(
+  payload: CreateOauthMailboxSessionPayload = {},
+): Promise<OauthMailboxSession> {
   const response = await fetchJson<unknown>(
     "/api/pool/upstream-accounts/oauth/mailbox-sessions",
     {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify(payload),
     },
   );
   return normalizeOauthMailboxSession(response);

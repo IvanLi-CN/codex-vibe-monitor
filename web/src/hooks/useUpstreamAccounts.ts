@@ -248,6 +248,15 @@ export function useUpstreamAccounts() {
     return response
   }, [])
 
+  const beginOauthMailboxSessionForAddress = useCallback(
+    async (emailAddress: string): Promise<OauthMailboxSession> => {
+      const response = await createOauthMailboxSession({ emailAddress })
+      setListError(null)
+      return response
+    },
+    [],
+  )
+
   const getOauthMailboxStatuses = useCallback(async (sessionIds: string[]): Promise<OauthMailboxStatus[]> => {
     const response = await fetchOauthMailboxStatuses({ sessionIds })
     setListError(null)
@@ -402,6 +411,7 @@ export function useUpstreamAccounts() {
     beginRelogin,
     getLoginSession,
     beginOauthMailboxSession,
+    beginOauthMailboxSessionForAddress,
     getOauthMailboxStatuses,
     removeOauthMailboxSession,
     completeOauthLogin,

@@ -340,9 +340,18 @@ function mockUpstreamAccounts(
       .fn()
       .mockResolvedValue({ id: 41, displayName: "Row One" }),
     beginOauthMailboxSession: vi.fn().mockResolvedValue({
+      supported: true,
       sessionId: "mailbox-1",
       emailAddress: "mailbox-1@example.com",
       expiresAt: "2026-03-13T10:00:00.000Z",
+      source: "generated",
+    }),
+    beginOauthMailboxSessionForAddress: vi.fn().mockResolvedValue({
+      supported: true,
+      sessionId: "mailbox-attached-1",
+      emailAddress: "mailbox-1@example.com",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      source: "attached",
     }),
     getOauthMailboxStatuses: vi.fn().mockResolvedValue([]),
     removeOauthMailboxSession: vi.fn().mockResolvedValue(undefined),
@@ -1051,9 +1060,11 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 describe("UpstreamAccountCreatePage oauth mailbox", () => {
   it("fills the display name with the mailbox when it is blank", async () => {
     const beginOauthMailboxSession = vi.fn().mockResolvedValue({
+      supported: true,
       sessionId: "mailbox-1",
       emailAddress: "temp-user@example.com",
       expiresAt: "2026-03-13T10:00:00.000Z",
+      source: "generated",
     });
     mockUpstreamAccounts({ beginOauthMailboxSession });
     render("/account-pool/upstream-accounts/new?mode=oauth");
@@ -1091,9 +1102,11 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
 
   it("keeps the display name when it already has visible characters", async () => {
     const beginOauthMailboxSession = vi.fn().mockResolvedValue({
+      supported: true,
       sessionId: "mailbox-2",
       emailAddress: "temp-user-2@example.com",
       expiresAt: "2026-03-13T10:00:00.000Z",
+      source: "generated",
     });
     mockUpstreamAccounts({ beginOauthMailboxSession });
     render("/account-pool/upstream-accounts/new?mode=oauth");
@@ -1117,6 +1130,301 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).toContain("temp-user-2@example.com");
   });
 
+  it("invalidates a mailbox-bound oauth session when the mailbox draft changes", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    clickButton(/Generate/i);
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name="oauthMailboxInput"]', "new-target@example.com");
+    await flushAsync();
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
+    expect(host?.textContent).toContain(
+      "Generate a fresh OAuth URL before completing login.",
+    );
+  });
+
+  it("keeps the pending oauth url when an unsupported mailbox attach falls back", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: false,
+      emailAddress: "manual-existing@example.com",
+      reason: "not_readable",
+    });
+    mockUpstreamAccounts({ beginOauthLogin, beginOauthMailboxSessionForAddress });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@example.com");
+    await flushAsync();
+    clickButton(/Use address/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("manual-existing@example.com");
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(host?.textContent).not.toContain(
+      "Generate a fresh OAuth URL for this row before completing login.",
+    );
+  });
+
+  it("attaches a supported manual mailbox address without blocking oauth actions", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: true,
+      sessionId: "mailbox-attached-9",
+      emailAddress: "manual-existing@mail-tw.707079.xyz",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      source: "attached",
+    });
+    mockUpstreamAccounts({ beginOauthLogin, beginOauthMailboxSessionForAddress });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@mail-tw.707079.xyz");
+    await flushAsync();
+    clickButton(/Use address/i);
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("manual-existing@mail-tw.707079.xyz");
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "manual-existing@mail-tw.707079.xyz",
+      groupName: undefined,
+      note: undefined,
+      groupNote: undefined,
+      accountId: undefined,
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "mailbox-attached-9",
+      mailboxAddress: "manual-existing@mail-tw.707079.xyz",
+    });
+    expect(host?.textContent).toContain("manual-existing@mail-tw.707079.xyz");
+    expect(host?.textContent).toContain("Attached mailbox");
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
+  });
+
+  it("stops using a supported mailbox session after the input diverges", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=oauth",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Mailbox Drift",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-attached-9",
+              emailAddress: "manual-existing@mail-tw.707079.xyz",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              source: "attached",
+            },
+            mailboxInput: "manual-existing@mail-tw.707079.xyz",
+            mailboxStatus: {
+              sessionId: "mailbox-attached-9",
+              emailAddress: "manual-existing@mail-tw.707079.xyz",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              latestCode: {
+                value: "123456",
+                updatedAt: "2026-03-13T09:59:00.000Z",
+              },
+              invite: {
+                subject: "Invite",
+                copyValue: "invite-link",
+              },
+              invited: true,
+              error: null,
+            },
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    setInputValue('input[name="oauthMailboxInput"]', "different@example.com");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "Mailbox Drift",
+      groupName: undefined,
+      note: undefined,
+      groupNote: undefined,
+      accountId: undefined,
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: undefined,
+      mailboxAddress: undefined,
+    });
+    expect(findButton(/Copy code/i)?.disabled).toBe(true);
+    expect(host?.textContent).not.toContain("Attached mailbox");
+
+    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@mail-tw.707079.xyz");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthLogin).toHaveBeenLastCalledWith({
+      displayName: "Mailbox Drift",
+      groupName: undefined,
+      note: undefined,
+      groupNote: undefined,
+      accountId: undefined,
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: undefined,
+      mailboxAddress: undefined,
+    });
+    expect(host?.textContent).not.toContain("Attached mailbox");
+  });
+
+  it("does not delete a generated mailbox remotely when the draft input changes", async () => {
+    const removeOauthMailboxSession = vi.fn().mockResolvedValue(undefined);
+    mockUpstreamAccounts({ removeOauthMailboxSession });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=oauth",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Generated Mailbox",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-generated-1",
+              emailAddress: "generated@mail-tw.707079.xyz",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              source: "generated",
+            },
+            mailboxInput: "generated@mail-tw.707079.xyz",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@example.com");
+    await flushAsync();
+
+    expect(removeOauthMailboxSession).not.toHaveBeenCalled();
+    expect(host?.textContent).not.toContain("Generated mailbox");
+  });
+
+  it("keeps a supported mailbox session when the input only changes casing", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const removeOauthMailboxSession = vi.fn().mockResolvedValue(undefined);
+    mockUpstreamAccounts({ beginOauthLogin, removeOauthMailboxSession });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=oauth",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Mailbox Case",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-attached-case",
+              emailAddress: "manual-existing@mail-tw.707079.xyz",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              source: "attached",
+            },
+            mailboxInput: "manual-existing@mail-tw.707079.xyz",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    setInputValue('input[name="oauthMailboxInput"]', "MANUAL-EXISTING@MAIL-TW.707079.XYZ");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "Mailbox Case",
+      groupName: undefined,
+      note: undefined,
+      groupNote: undefined,
+      accountId: undefined,
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "mailbox-attached-case",
+      mailboxAddress: "manual-existing@mail-tw.707079.xyz",
+    });
+    expect(removeOauthMailboxSession).not.toHaveBeenCalled();
+    expect(host?.textContent).toContain("Attached mailbox");
+  });
+
+  it("keeps oauth flow available when a manual mailbox is unsupported", async () => {
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: false,
+      emailAddress: "manual-existing@example.com",
+      reason: "not_readable",
+    });
+    mockUpstreamAccounts({ beginOauthMailboxSessionForAddress });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@example.com");
+    await flushAsync();
+    clickButton(/Use address/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("manual-existing@example.com");
+    expect(host?.textContent).toContain(
+      "This mailbox is not readable through the current MoeMail integration, so mailbox enhancements stay disabled.",
+    );
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
+    expect(findButton(/Copy code/i)?.disabled).toBe(true);
+  });
+
   it("shows an explicit expired mailbox warning for single oauth", async () => {
     const expiredAt = new Date(Date.now() - 60_000).toISOString()
     mockUpstreamAccounts()
@@ -1127,9 +1435,11 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
           oauth: {
             displayName: "Expired Mailbox",
             mailboxSession: {
+              supported: true,
               sessionId: "mailbox-expired",
               emailAddress: "expired@example.com",
               expiresAt: expiredAt,
+              source: "generated",
             },
             mailboxInput: "expired@example.com",
           },
@@ -1156,9 +1466,11 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
           oauth: {
             displayName: "Refresh Failure Mailbox",
             mailboxSession: {
+              supported: true,
               sessionId: "mailbox-refresh-failure",
               emailAddress: "failed@example.com",
               expiresAt,
+              source: "generated",
             },
             mailboxInput: "failed@example.com",
           },
