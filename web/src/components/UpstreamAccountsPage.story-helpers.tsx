@@ -86,7 +86,9 @@ export type StoryInitialEntry =
       state?: unknown
     }
 
-const now = '2026-03-11T12:30:00.000Z'
+const now = '2026-03-17T12:30:00.000Z'
+const storyFutureExpiresAt = '2026-03-20T12:50:00.000Z'
+const storyFutureLoginExpiresAt = '2026-03-20T12:40:00.000Z'
 
 function buildWindow(percent: number, durationMins: number, usedText: string, limitText: string, resetsAt: string) {
   return {
@@ -650,7 +652,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           status: 'pending',
           authUrl: `https://auth.openai.com/authorize?mock=1&loginId=${loginId}&state=${state}`,
           redirectUri,
-          expiresAt: '2026-03-11T12:40:00.000Z',
+          expiresAt: storyFutureLoginExpiresAt,
           accountId: null,
           error: null,
           displayName: body.displayName,
@@ -665,10 +667,56 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       }
 
       if (path === '/api/pool/upstream-accounts/oauth/mailbox-sessions' && method === 'POST') {
+        const body = parseBody<{ emailAddress?: string }>(init?.body, {})
+        const requestedAddress = body.emailAddress?.trim().toLowerCase() ?? ''
+        if (requestedAddress) {
+          if (!requestedAddress.includes('@')) {
+            return jsonResponse(
+              {
+                supported: false,
+                emailAddress: requestedAddress,
+                reason: 'invalid_format',
+              },
+              201,
+            )
+          }
+          const isSupportedDomain = requestedAddress.endsWith('@mail-tw.707079.xyz')
+          if (!isSupportedDomain) {
+            return jsonResponse(
+              {
+                supported: false,
+                emailAddress: requestedAddress,
+                reason: 'unsupported_domain',
+              },
+              201,
+            )
+          }
+          const nextMailboxId = store.nextMailboxId++
+          const sessionId = `mailbox_${nextMailboxId}`
+          const expiresAt = storyFutureExpiresAt
+          store.mailboxStatuses[sessionId] = {
+            sessionId,
+            emailAddress: requestedAddress,
+            expiresAt,
+            latestCode: null,
+            invite: null,
+            invited: false,
+          }
+          return jsonResponse(
+            {
+              supported: true,
+              sessionId,
+              emailAddress: requestedAddress,
+              expiresAt,
+              source: 'attached',
+            },
+            201,
+          )
+        }
         const nextMailboxId = store.nextMailboxId++
         const sessionId = `mailbox_${nextMailboxId}`
         const emailAddress = `storybook-oauth-${nextMailboxId}@mail-tw.707079.xyz`
-        const expiresAt = '2026-03-11T12:50:00.000Z'
+        const expiresAt = storyFutureExpiresAt
         store.mailboxStatuses[sessionId] = {
           sessionId,
           emailAddress,
@@ -679,9 +727,11 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         }
         return jsonResponse(
           {
+            supported: true,
             sessionId,
             emailAddress,
             expiresAt,
+            source: 'generated',
           },
           201,
         )
@@ -784,7 +834,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           status: 'pending',
           authUrl: `https://auth.openai.com/authorize?mock=1&accountId=${accountId}&state=${state}`,
           redirectUri: `http://localhost:432${String(accountId).slice(-1)}/oauth/callback`,
-          expiresAt: '2026-03-11T12:40:00.000Z',
+          expiresAt: storyFutureLoginExpiresAt,
           accountId,
           error: null,
           state,
