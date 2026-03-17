@@ -1465,7 +1465,15 @@ pub(crate) async fn create_oauth_mailbox_session(
         .map_err(internal_error_tuple)?;
     let config = upstream_mailbox_config(&state.config)?;
     if let Some(manual_email_address) =
-        normalize_mailbox_address(payload.email_address.as_deref().unwrap_or_default())
+        match requested_manual_mailbox_address(payload.email_address.as_deref()) {
+            Ok(value) => value,
+            Err(invalid_email_address) => {
+                return Ok(Json(oauth_mailbox_session_unsupported_response(
+                    invalid_email_address,
+                    "invalid_format",
+                )));
+            }
+        }
     {
         if !mailbox_address_is_valid(&manual_email_address) {
             return Ok(Json(oauth_mailbox_session_unsupported_response(
@@ -4346,9 +4354,7 @@ async fn delete_oauth_mailbox_session_with_executor(
 }
 
 async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> {
-    let Some(config) = state.config.upstream_accounts_moemail.as_ref() else {
-        return Ok(());
-    };
+    let moemail_config = state.config.upstream_accounts_moemail.as_ref();
     let now_iso = format_utc_iso(Utc::now());
     let expired_rows = sqlx::query_as::<_, OauthMailboxSessionRow>(
         r#"
@@ -4367,7 +4373,8 @@ async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> 
     .await?;
 
     for row in expired_rows {
-        if row.mailbox_source.as_deref() != Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
+        if expired_mailbox_session_requires_remote_delete(&row)
+            && let Some(config) = moemail_config
             && let Err(err) =
                 moemail_delete_email(&state.http_clients.shared, config, &row.remote_email_id).await
         {
@@ -4647,6 +4654,17 @@ fn normalize_mailbox_address(value: &str) -> Option<String> {
     Some(trimmed.to_ascii_lowercase())
 }
 
+fn requested_manual_mailbox_address(
+    raw_email_address: Option<&str>,
+) -> std::result::Result<Option<String>, String> {
+    match raw_email_address {
+        None => Ok(None),
+        Some(value) => normalize_mailbox_address(value)
+            .map(Some)
+            .ok_or_else(String::new),
+    }
+}
+
 fn mailbox_address_is_valid(value: &str) -> bool {
     BASIC_EMAIL_REGEX.is_match(value.trim())
 }
@@ -4683,6 +4701,10 @@ fn validate_mailbox_binding_fields(
 fn mailbox_addresses_match(left: Option<&str>, right: Option<&str>) -> bool {
     normalize_mailbox_address(left.unwrap_or_default())
         == normalize_mailbox_address(right.unwrap_or_default())
+}
+
+fn expired_mailbox_session_requires_remote_delete(row: &OauthMailboxSessionRow) -> bool {
+    row.mailbox_source.as_deref() != Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
 }
 
 fn normalize_mailbox_session_expires_at(value: Option<&str>, fallback: DateTime<Utc>) -> String {
@@ -8699,6 +8721,19 @@ mod tests {
     }
 
     #[test]
+    fn requested_manual_mailbox_address_distinguishes_missing_from_blank_input() {
+        assert_eq!(requested_manual_mailbox_address(None), Ok(None));
+        assert_eq!(
+            requested_manual_mailbox_address(Some("  Mixed.Case@Example.COM  ")),
+            Ok(Some("mixed.case@example.com".to_string()))
+        );
+        assert_eq!(
+            requested_manual_mailbox_address(Some("   ")),
+            Err(String::new())
+        );
+    }
+
+    #[test]
     fn mailbox_address_is_valid_rejects_broken_values() {
         assert!(mailbox_address_is_valid("valid.user@example.com"));
         assert!(!mailbox_address_is_valid("broken-address"));
@@ -8735,6 +8770,36 @@ mod tests {
             normalize_mailbox_session_expires_at(Some("not-a-timestamp"), fallback),
             "2026-03-17T08:09:10Z"
         );
+    }
+
+    #[test]
+    fn expired_mailbox_session_requires_remote_delete_skips_attached_mailboxes() {
+        let attached = OauthMailboxSessionRow {
+            session_id: "session_attached".to_string(),
+            remote_email_id: "email_attached".to_string(),
+            email_address: "attached@example.com".to_string(),
+            email_domain: "example.com".to_string(),
+            mailbox_source: Some(OAUTH_MAILBOX_SOURCE_ATTACHED.to_string()),
+            latest_code_value: None,
+            latest_code_source: None,
+            latest_code_updated_at: None,
+            invite_subject: None,
+            invite_copy_value: None,
+            invite_copy_label: None,
+            invite_updated_at: None,
+            invited: 0,
+            last_message_id: None,
+            created_at: "2026-03-17T00:00:00Z".to_string(),
+            updated_at: "2026-03-17T00:00:00Z".to_string(),
+            expires_at: "2026-03-17T00:10:00Z".to_string(),
+        };
+        let generated = OauthMailboxSessionRow {
+            mailbox_source: Some(OAUTH_MAILBOX_SOURCE_GENERATED.to_string()),
+            ..attached.clone()
+        };
+
+        assert!(!expired_mailbox_session_requires_remote_delete(&attached));
+        assert!(expired_mailbox_session_requires_remote_delete(&generated));
     }
 
     #[test]
