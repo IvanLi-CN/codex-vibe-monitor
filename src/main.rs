@@ -92,6 +92,7 @@ const DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
 const BACKFILL_BATCH_SIZE: i64 = 200;
+const BACKFILL_ACCOUNT_BIND_BATCH_SIZE: usize = 400;
 const STARTUP_BACKFILL_SCAN_LIMIT: u64 = 2_000;
 const STARTUP_BACKFILL_RUN_BUDGET_SECS: u64 = 3;
 const STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS: u64 = 15;
@@ -1828,8 +1829,12 @@ async fn run_startup_backfill_task(
             ))
         }
         StartupBackfillTask::UpstreamActivityArchives => {
-            let summary =
-                backfill_upstream_account_last_activity_from_archives(&state.pool).await?;
+            let summary = backfill_upstream_account_last_activity_from_archives(
+                &state.pool,
+                Some(STARTUP_BACKFILL_SCAN_LIMIT),
+                max_elapsed,
+            )
+            .await?;
             let pending_accounts =
                 count_upstream_accounts_missing_last_activity(&state.pool).await?;
             Ok((
@@ -1837,7 +1842,7 @@ async fn run_startup_backfill_task(
                     next_cursor_id: cursor_id,
                     scanned: summary.scanned_batches,
                     updated: summary.updated_accounts,
-                    hit_scan_limit: pending_accounts > 0 && summary.updated_accounts > 0,
+                    hit_scan_limit: pending_accounts > 0 && summary.hit_budget,
                     samples: Vec::new(),
                 },
                 format!("pending_accounts={pending_accounts}"),
@@ -2064,6 +2069,7 @@ struct ArchivedAccountLastActivityRow {
 struct ArchiveBackfillSummary {
     scanned_batches: u64,
     updated_accounts: u64,
+    hit_budget: bool,
 }
 
 #[derive(Debug)]
@@ -3301,7 +3307,10 @@ async fn compact_old_quota_snapshots(
 
 async fn backfill_upstream_account_last_activity_from_archives(
     pool: &Pool<Sqlite>,
+    scan_limit: Option<u64>,
+    max_elapsed: Option<Duration>,
 ) -> Result<ArchiveBackfillSummary> {
+    let started_at = Instant::now();
     let pending_account_ids = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT id
@@ -3328,17 +3337,7 @@ async fn backfill_upstream_account_last_activity_from_archives(
     .fetch_all(pool)
     .await?;
     if archive_files.is_empty() {
-        let mut update = QueryBuilder::<Sqlite>::new(
-            "UPDATE pool_upstream_accounts SET last_activity_archive_backfill_completed = 1 WHERE id IN (",
-        );
-        {
-            let mut separated = update.separated(", ");
-            for account_id in &pending_account_ids {
-                separated.push_bind(account_id);
-            }
-        }
-        update.push(")");
-        update.build().execute(pool).await?;
+        mark_archive_backfill_completed_for_accounts(pool, &pending_account_ids).await?;
         return Ok(ArchiveBackfillSummary::default());
     }
 
@@ -3346,8 +3345,14 @@ async fn backfill_upstream_account_last_activity_from_archives(
     let mut recovered = HashMap::<i64, String>::new();
     let mut scanned_batches = 0_u64;
     let mut exhausted_archives = true;
+    let mut hit_budget = false;
 
     for archive_file in archive_files {
+        if startup_backfill_budget_reached(started_at, scanned_batches, scan_limit, max_elapsed) {
+            exhausted_archives = false;
+            hit_budget = true;
+            break;
+        }
         if recovered.len() == pending.len() {
             exhausted_archives = false;
             break;
@@ -3384,28 +3389,36 @@ async fn backfill_upstream_account_last_activity_from_archives(
 
         let rows = {
             const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
-            let mut query = QueryBuilder::<Sqlite>::new(
-                "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT ",
-            );
-            query
-                .push(ACCOUNT_EXPR)
-                .push(" AS account_id, occurred_at FROM codex_invocations WHERE ")
-                .push(ACCOUNT_EXPR)
-                .push(" IN (");
-            {
-                let mut separated = query.separated(", ");
-                for account_id in &pending {
-                    if recovered.contains_key(account_id) {
-                        continue;
+            let mut rows = Vec::new();
+            let remaining_account_ids = pending
+                .iter()
+                .copied()
+                .filter(|account_id| !recovered.contains_key(account_id))
+                .collect::<Vec<_>>();
+            for account_ids in remaining_account_ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT ",
+                );
+                query
+                    .push(ACCOUNT_EXPR)
+                    .push(" AS account_id, occurred_at FROM codex_invocations WHERE ")
+                    .push(ACCOUNT_EXPR)
+                    .push(" IN (");
+                {
+                    let mut separated = query.separated(", ");
+                    for account_id in account_ids {
+                        separated.push_bind(account_id);
                     }
-                    separated.push_bind(account_id);
                 }
+                query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
+                rows.extend(
+                    query
+                        .build_query_as::<ArchivedAccountLastActivityRow>()
+                        .fetch_all(&archive_pool)
+                        .await?,
+                );
             }
-            query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
-            query
-                .build_query_as::<ArchivedAccountLastActivityRow>()
-                .fetch_all(&archive_pool)
-                .await?
+            rows
         };
 
         archive_pool.close().await;
@@ -3425,21 +3438,13 @@ async fn backfill_upstream_account_last_activity_from_archives(
 
     if recovered.is_empty() {
         if exhausted_archives {
-            let mut update = QueryBuilder::<Sqlite>::new(
-                "UPDATE pool_upstream_accounts SET last_activity_archive_backfill_completed = 1 WHERE id IN (",
-            );
-            {
-                let mut separated = update.separated(", ");
-                for account_id in &pending {
-                    separated.push_bind(account_id);
-                }
-            }
-            update.push(")");
-            update.build().execute(pool).await?;
+            let pending_account_ids = pending.iter().copied().collect::<Vec<_>>();
+            mark_archive_backfill_completed_for_accounts(pool, &pending_account_ids).await?;
         }
         return Ok(ArchiveBackfillSummary {
             scanned_batches,
             updated_accounts: 0,
+            hit_budget,
         });
     }
 
@@ -3465,24 +3470,61 @@ async fn backfill_upstream_account_last_activity_from_archives(
         .await?;
     }
     if exhausted_archives && !unresolved.is_empty() {
-        let mut update = QueryBuilder::<Sqlite>::new(
-            "UPDATE pool_upstream_accounts SET last_activity_archive_backfill_completed = 1 WHERE id IN (",
-        );
-        {
-            let mut separated = update.separated(", ");
-            for account_id in unresolved {
-                separated.push_bind(account_id);
-            }
-        }
-        update.push(")");
-        update.build().execute(tx.as_mut()).await?;
+        mark_archive_backfill_completed_for_accounts_tx(tx.as_mut(), &unresolved).await?;
     }
     tx.commit().await?;
 
     Ok(ArchiveBackfillSummary {
         scanned_batches,
         updated_accounts,
+        hit_budget,
     })
+}
+
+async fn mark_archive_backfill_completed_for_accounts(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<()> {
+    if account_ids.is_empty() {
+        return Ok(());
+    }
+    for account_chunk in account_ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        let mut update = QueryBuilder::<Sqlite>::new(
+            "UPDATE pool_upstream_accounts SET last_activity_archive_backfill_completed = 1 WHERE id IN (",
+        );
+        {
+            let mut separated = update.separated(", ");
+            for account_id in account_chunk {
+                separated.push_bind(account_id);
+            }
+        }
+        update.push(")");
+        update.build().execute(pool).await?;
+    }
+    Ok(())
+}
+
+async fn mark_archive_backfill_completed_for_accounts_tx(
+    tx: &mut SqliteConnection,
+    account_ids: &[i64],
+) -> Result<()> {
+    if account_ids.is_empty() {
+        return Ok(());
+    }
+    for account_chunk in account_ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        let mut update = QueryBuilder::<Sqlite>::new(
+            "UPDATE pool_upstream_accounts SET last_activity_archive_backfill_completed = 1 WHERE id IN (",
+        );
+        {
+            let mut separated = update.separated(", ");
+            for account_id in account_chunk {
+                separated.push_bind(account_id);
+            }
+        }
+        update.push(")");
+        update.build().execute(&mut *tx).await?;
+    }
+    Ok(())
 }
 
 async fn count_upstream_accounts_missing_last_activity(pool: &Pool<Sqlite>) -> Result<u64> {

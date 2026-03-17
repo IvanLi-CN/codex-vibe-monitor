@@ -17130,7 +17130,7 @@ async fn upstream_last_activity_backfill_reads_archived_batches() {
     .await
     .expect("insert archive batch manifest");
 
-    backfill_upstream_account_last_activity_from_archives(&pool)
+    backfill_upstream_account_last_activity_from_archives(&pool, None, None)
         .await
         .expect("backfill upstream last activity from archives");
 
