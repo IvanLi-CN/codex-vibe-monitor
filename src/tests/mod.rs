@@ -156,6 +156,71 @@ fn local_naive_to_utc_does_not_fall_back_to_and_utc_on_dst_gap() {
 }
 
 #[test]
+fn resolve_invocation_proxy_display_name_prefers_selected_forward_proxy() {
+    let selected_proxy = SelectedForwardProxy {
+        key: "proxy-a".to_string(),
+        source: "manual".to_string(),
+        display_name: "Tokyo-Edge-1".to_string(),
+        endpoint_url: Some(Url::parse("http://127.0.0.1:7890").expect("valid proxy url")),
+        endpoint_url_raw: Some("http://127.0.0.1:7890".to_string()),
+    };
+    let pool_account = PoolResolvedAccount {
+        account_id: 7,
+        display_name: "Pool Alpha".to_string(),
+        kind: "api_key".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer pool-alpha".to_string(),
+        },
+        upstream_base_url: Url::parse("https://claude-relay-service.nsngc.org/openai")
+            .expect("valid upstream url"),
+    };
+
+    assert_eq!(
+        resolve_invocation_proxy_display_name(Some(&selected_proxy), Some(&pool_account))
+            .as_deref(),
+        Some("Tokyo-Edge-1")
+    );
+}
+
+#[test]
+fn resolve_invocation_proxy_display_name_uses_pool_upstream_host_and_port() {
+    let pool_account = PoolResolvedAccount {
+        account_id: 17,
+        display_name: "Pool Beta".to_string(),
+        kind: "api_key".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer pool-beta".to_string(),
+        },
+        upstream_base_url: Url::parse("http://127.0.0.1:43121/openai").expect("valid upstream url"),
+    };
+
+    assert_eq!(
+        resolve_invocation_proxy_display_name(None, Some(&pool_account)).as_deref(),
+        Some("127.0.0.1:43121")
+    );
+}
+
+#[test]
+fn resolve_invocation_proxy_display_name_uses_oauth_upstream_host() {
+    let pool_account = PoolResolvedAccount {
+        account_id: 23,
+        display_name: "OAuth Pool".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-token".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: Url::parse("https://chatgpt.com/backend-api/codex")
+            .expect("valid oauth upstream url"),
+    };
+
+    assert_eq!(
+        resolve_invocation_proxy_display_name(None, Some(&pool_account)).as_deref(),
+        Some("chatgpt.com")
+    );
+}
+
+#[test]
 fn normalize_single_proxy_url_supports_scheme_less_host_port() {
     assert_eq!(
         normalize_single_proxy_url("127.0.0.1:7890"),
@@ -9485,6 +9550,24 @@ async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_sing
     assert_eq!(
         payload_json["upstreamAccountName"].as_str(),
         Some("Primary")
+    );
+    let expected_proxy_display_name = {
+        let upstream_url = Url::parse(&upstream_base).expect("valid upstream base url");
+        match upstream_url.port() {
+            Some(port) => format!(
+                "{}:{}",
+                upstream_url.host_str().expect("upstream host should exist"),
+                port
+            ),
+            None => upstream_url
+                .host_str()
+                .expect("upstream host should exist")
+                .to_string(),
+        }
+    };
+    assert_eq!(
+        payload_json["proxyDisplayName"].as_str(),
+        Some(expected_proxy_display_name.as_str())
     );
     assert_eq!(
         wait_for_test_sticky_route_account_id(&state.pool, "sticky-cap-001").await,
