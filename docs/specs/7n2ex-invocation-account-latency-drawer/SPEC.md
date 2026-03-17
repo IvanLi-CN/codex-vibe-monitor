@@ -172,6 +172,39 @@
 
 - source_type: storybook_canvas
   target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Monitoring / InvocationTable / Expanded Details
+  state: latency unit verification
+  evidence_note: 验证当前界面已统一为“首字耗时保留毫秒、其余总耗时/阶段耗时按秒展示”的展示口径，列表摘要与展开详情同时可见。
+  image:
+  ![InvocationTable latency unit verification](./assets/invocation-table-latency-units.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Records / InvocationRecordsTable / Network Focus
+  state: records network table latency units
+  evidence_note: 验证 Records 网络视图中，TTFB 保持毫秒展示，而总耗时已切换为秒展示，口径与主 InvocationTable 对齐。
+  image:
+  ![InvocationRecordsTable network latency units](./assets/invocation-records-network-table-latency-units.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Records / InvocationRecordsSummaryCards / Network Focus
+  state: records network summary latency units
+  evidence_note: 验证 Records 网络摘要卡片中，平均/P95 TTFB 继续使用毫秒，而平均/P95 总耗时统一改为秒展示。
+  image:
+  ![InvocationRecordsSummaryCards network latency units](./assets/invocation-records-network-summary-latency-units.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
@@ -208,6 +241,7 @@
 ## 变更记录（Change log）
 
 - 2026-03-16: 创建 spec，冻结 InvocationTable 账号归因、时延压缩展示与当前页只读账号抽屉的范围与验收口径。
+- 2026-03-17: 补充 Storybook 截图证据，确认 InvocationTable 与 Records 网络视图里首字耗时维持毫秒，其余总耗时与阶段耗时统一按秒展示。
 
 ## 参考（References）
 

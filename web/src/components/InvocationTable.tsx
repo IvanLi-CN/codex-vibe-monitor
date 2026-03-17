@@ -47,6 +47,19 @@ function formatMilliseconds(value: number | null | undefined) {
   return `${value.toFixed(1)} ms`
 }
 
+function formatSecondsFromMilliseconds(value: number | null | undefined, localeTag: string) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
+
+  const seconds = value / 1000
+  const precision = Math.abs(seconds) >= 100 ? 1 : Math.abs(seconds) >= 1 ? 2 : 3
+  const rounded = Number(seconds.toFixed(precision))
+
+  return `${rounded.toLocaleString(localeTag, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: precision,
+  })} s`
+}
+
 function formatOptionalNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
   return formatter.format(value)
@@ -374,7 +387,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const reasoningEffortValue = formatOptionalText(record.reasoningEffort)
         const reasoningTokensValue = formatOptionalNumber(record.reasoningTokens, numberFormatter)
         const outputReasoningBreakdownValue = `${t('table.column.reasoningTokensShort')} ${reasoningTokensValue}`
-        const totalLatencyValue = formatMilliseconds(record.tTotalMs)
+        const totalLatencyValue = formatSecondsFromMilliseconds(record.tTotalMs, localeTag)
         const firstByteLatencyValue = formatMilliseconds(record.tUpstreamTtfbMs)
         const responseContentEncodingValue = formatResponseContentEncoding(record.responseContentEncoding)
         const occurredValid = !Number.isNaN(occurred.getTime())
@@ -477,14 +490,14 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           { key: 'detailPruneReason', label: detailLabels.pruneReason, value: detailPruneReasonValue },
         ]
         const timingPairs: Array<{ label: string; value: string }> = [
-          { label: t('table.details.stage.requestRead'), value: formatMilliseconds(record.tReqReadMs) },
-          { label: t('table.details.stage.requestParse'), value: formatMilliseconds(record.tReqParseMs) },
-          { label: t('table.details.stage.upstreamConnect'), value: formatMilliseconds(record.tUpstreamConnectMs) },
+          { label: t('table.details.stage.requestRead'), value: formatSecondsFromMilliseconds(record.tReqReadMs, localeTag) },
+          { label: t('table.details.stage.requestParse'), value: formatSecondsFromMilliseconds(record.tReqParseMs, localeTag) },
+          { label: t('table.details.stage.upstreamConnect'), value: formatSecondsFromMilliseconds(record.tUpstreamConnectMs, localeTag) },
           { label: t('table.details.stage.upstreamFirstByte'), value: formatMilliseconds(record.tUpstreamTtfbMs) },
-          { label: t('table.details.stage.upstreamStream'), value: formatMilliseconds(record.tUpstreamStreamMs) },
-          { label: t('table.details.stage.responseParse'), value: formatMilliseconds(record.tRespParseMs) },
-          { label: t('table.details.stage.persistence'), value: formatMilliseconds(record.tPersistMs) },
-          { label: t('table.details.stage.total'), value: formatMilliseconds(record.tTotalMs) },
+          { label: t('table.details.stage.upstreamStream'), value: formatSecondsFromMilliseconds(record.tUpstreamStreamMs, localeTag) },
+          { label: t('table.details.stage.responseParse'), value: formatSecondsFromMilliseconds(record.tRespParseMs, localeTag) },
+          { label: t('table.details.stage.persistence'), value: formatSecondsFromMilliseconds(record.tPersistMs, localeTag) },
+          { label: t('table.details.stage.total'), value: formatSecondsFromMilliseconds(record.tTotalMs, localeTag) },
         ]
 
         return {
@@ -523,7 +536,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           timingPairs,
         }
       }),
-    [records, currencyFormatter, dateFormatter, detailLabels, numberFormatter, t, timeFormatter],
+    [records, currencyFormatter, dateFormatter, detailLabels, localeTag, numberFormatter, t, timeFormatter],
   )
 
   const renderExpandedContent = (
