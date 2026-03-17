@@ -52,20 +52,10 @@ function createMailboxStatus(
   }
 }
 
-const oauthMailboxGalleryStates = [
-  {
-    title: '生成后等待邮件',
-    description: '已生成临时邮箱，但验证码和邀请都还没到。',
-    codeSubtitle: '暂时还没有识别到验证码。',
-    codeValue: '—',
-    inviteSubtitle: '暂时还没有识别到邀请通知。',
-    inviteValue: '—',
-    invitedLabel: '未受邀',
-    invitedVariant: 'secondary' as const,
-  },
+const oauthMailboxPollingStates = [
   {
     title: '查收中',
-    description: '邮箱状态轮询进行中，标题旁显示查收中标记。',
+    description: '轮询请求进行中，验证码标题旁显示查收中标记。',
     codeBadge: 'checking' as const,
     codeSubtitle: '暂时还没有识别到验证码。',
     codeValue: '—',
@@ -86,10 +76,23 @@ const oauthMailboxGalleryStates = [
   },
   {
     title: '查收失败',
-    description: '轮询失败时显示查收失败标记，并保留错误提示。',
+    description: '最近一轮轮询失败时显示查收失败标记，并保留错误提示。',
     issueVariant: 'error' as const,
     issueText: '邮箱状态刷新失败，暂时无法确认最新验证码或邀请状态。',
     codeBadge: 'failed' as const,
+    codeSubtitle: '暂时还没有识别到验证码。',
+    codeValue: '—',
+    inviteSubtitle: '暂时还没有识别到邀请通知。',
+    inviteValue: '—',
+    invitedLabel: '未受邀',
+    invitedVariant: 'secondary' as const,
+  },
+] as const
+
+const oauthMailboxContentStates = [
+  {
+    title: '生成后等待邮件',
+    description: '已生成临时邮箱，但验证码和邀请都还没到。',
     codeSubtitle: '暂时还没有识别到验证码。',
     codeValue: '—',
     inviteSubtitle: '暂时还没有识别到邀请通知。',
@@ -289,14 +292,33 @@ export const OauthMailboxStateGallery: Story = {
           <p className="text-xs font-semibold uppercase tracking-[0.28em] text-primary/80">Single OAuth Mailbox</p>
           <h2 className="text-3xl font-semibold tracking-tight text-base-content">单账号邮箱状态总览</h2>
           <p className="max-w-3xl text-sm leading-6 text-base-content/70">
-            把单账号 OAuth 邮箱的等待、查收中、验证码就绪、查收失败和过期集中到一页里，专门用来评审邮箱区块的多状态视觉与文案。
+            把单账号 OAuth 邮箱区块拆成“轮询状态”和“邮箱内容状态”两组，方便单独审阅查收过程与内容结果。
           </p>
         </div>
-        <div className="grid gap-6 xl:grid-cols-2">
-          {oauthMailboxGalleryStates.map((item) => (
-            <OauthMailboxStateCard key={item.title} {...item} />
-          ))}
-        </div>
+        <section className="space-y-3">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-base-content/50">Polling States</p>
+            <h3 className="text-lg font-semibold text-base-content">轮询状态</h3>
+            <p className="text-sm text-base-content/65">这两个状态由轮询请求本身驱动，不代表邮箱里已经有了新内容。</p>
+          </div>
+          <div className="grid gap-6 xl:grid-cols-2">
+            {oauthMailboxPollingStates.map((item) => (
+              <OauthMailboxStateCard key={item.title} {...item} />
+            ))}
+          </div>
+        </section>
+        <section className="space-y-3">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-base-content/50">Mailbox Content States</p>
+            <h3 className="text-lg font-semibold text-base-content">邮箱内容状态</h3>
+            <p className="text-sm text-base-content/65">这些状态描述邮箱当前内容结果，比如还没收到验证码、已经收到验证码，或者邮箱已经失效。</p>
+          </div>
+          <div className="grid gap-6 xl:grid-cols-2">
+            {oauthMailboxContentStates.map((item) => (
+              <OauthMailboxStateCard key={item.title} {...item} />
+            ))}
+          </div>
+        </section>
       </div>
     </div>
   ),
