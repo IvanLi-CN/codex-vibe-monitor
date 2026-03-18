@@ -119,7 +119,7 @@ export function AccountTagContextChip({
         onPointerCancel={clearLongPress}
       >
         <Badge variant="secondary" className="gap-2 px-3 py-1.5">
-          <AppIcon name="tag-outline" className="h-3.5 w-3.5" aria-hidden />
+          <AppIcon name="tag-outline" className="hidden h-3.5 w-3.5 shrink-0 sm:block" aria-hidden />
           <span>{name}</span>
           {currentPageCreated ? (
             <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">

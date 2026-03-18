@@ -133,4 +133,17 @@ describe('AccountTagContextChip', () => {
     expect(document.body.textContent).toContain('Delete and unlink')
     expect(document.body.textContent).toContain('New')
   })
+
+  it('marks the leading tag glyph as hidden on small screens', () => {
+    render(
+      <AccountTagContextChip
+        name="vip-routing"
+        labels={labels()}
+        onRemove={() => undefined}
+        onEdit={() => undefined}
+      />,
+    )
+
+    expect(host?.innerHTML).toContain('hidden h-3.5 w-3.5 shrink-0 sm:block')
+  })
 })
