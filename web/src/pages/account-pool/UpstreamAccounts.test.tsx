@@ -14,12 +14,13 @@ import { MemoryRouter, Route, Routes, type InitialEntry } from "react-router-dom
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
 import UpstreamAccountsPage from "./UpstreamAccounts";
-import type { EffectiveRoutingRule } from "../../lib/api";
+import type { EffectiveRoutingRule, TagSummary } from "../../lib/api";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const hookMocks = vi.hoisted(() => ({
   useUpstreamAccounts: vi.fn(),
   useUpstreamStickyConversations: vi.fn(),
+  usePoolTags: vi.fn(),
 }));
 
 vi.mock("react-router-dom", async () => {
@@ -39,6 +40,10 @@ vi.mock("../../hooks/useUpstreamAccounts", () => ({
 
 vi.mock("../../hooks/useUpstreamStickyConversations", () => ({
   useUpstreamStickyConversations: hookMocks.useUpstreamStickyConversations,
+}));
+
+vi.mock("../../hooks/usePoolTags", () => ({
+  usePoolTags: hookMocks.usePoolTags,
 }));
 
 let host: HTMLDivElement | null = null;
@@ -90,6 +95,18 @@ beforeEach(() => {
     stats: null,
     isLoading: false,
     error: null,
+  });
+  hookMocks.usePoolTags.mockReturnValue({
+    items: defaultPoolTags,
+    writesEnabled: true,
+    isLoading: false,
+    error: null,
+    query: {},
+    refresh: vi.fn(),
+    updateQuery: vi.fn(),
+    createTag: vi.fn(),
+    updateTag: vi.fn(),
+    deleteTag: vi.fn(),
   });
 });
 
@@ -186,6 +203,49 @@ function clickButton(matcher: RegExp) {
   return button;
 }
 
+function clickFirstRosterRow() {
+  const row = document.body.querySelector('tbody tr[role="button"]')
+  if (!(row instanceof HTMLTableRowElement)) {
+    throw new Error("missing roster row")
+  }
+  act(() => {
+    row.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+  })
+  return row
+}
+
+function clickCombobox(matcher: RegExp) {
+  const trigger = Array.from(document.body.querySelectorAll('button[role="combobox"]')).find(
+    (candidate) =>
+      candidate instanceof HTMLButtonElement &&
+      matcher.test(
+        candidate.getAttribute("aria-label") ||
+          candidate.textContent ||
+          "",
+      ),
+  )
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error(`missing combobox: ${matcher}`)
+  }
+  pressButton(trigger)
+  return trigger
+}
+
+function clickCommandItem(matcher: RegExp) {
+  const item = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
+    (candidate) =>
+      candidate instanceof HTMLElement &&
+      matcher.test(candidate.textContent || ""),
+  )
+  if (!(item instanceof HTMLElement)) {
+    throw new Error(`missing command item: ${matcher}`)
+  }
+  act(() => {
+    item.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+  })
+  return item
+}
+
 function pressButton(button: HTMLButtonElement) {
   act(() => {
     if (typeof PointerEvent === "function") {
@@ -208,6 +268,41 @@ const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   sourceTagNames: [],
   guardRules: [],
 }
+
+const defaultPoolTags: TagSummary[] = [
+  {
+    id: 1,
+    name: "vip",
+    routingRule: defaultEffectiveRoutingRule,
+    accountCount: 2,
+    groupCount: 1,
+    updatedAt: "2026-03-16T00:00:00.000Z",
+  },
+  {
+    id: 2,
+    name: "burst-safe",
+    routingRule: defaultEffectiveRoutingRule,
+    accountCount: 1,
+    groupCount: 1,
+    updatedAt: "2026-03-16T00:00:00.000Z",
+  },
+  {
+    id: 3,
+    name: "prod-apac",
+    routingRule: defaultEffectiveRoutingRule,
+    accountCount: 1,
+    groupCount: 1,
+    updatedAt: "2026-03-16T00:00:00.000Z",
+  },
+  {
+    id: 4,
+    name: "sticky-pool",
+    routingRule: defaultEffectiveRoutingRule,
+    accountCount: 1,
+    groupCount: 1,
+    updatedAt: "2026-03-16T00:00:00.000Z",
+  },
+]
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -278,6 +373,7 @@ function mockAccountsPage() {
         effectiveRoutingRule: defaultEffectiveRoutingRule,
       },
     ],
+    hasUngroupedAccounts: true,
     writesEnabled: true,
     selectedId: 5,
     selectedSummary: {
@@ -399,12 +495,44 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("team");
   });
 
+  it("passes all-match tag filters to the roster hook", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickCombobox(/filter accounts by tags/i);
+    clickCommandItem(/^vip$/i);
+    clickCommandItem(/^burst-safe$/i);
+
+    expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      tagIds: [1, 2],
+    });
+  });
+
+  it("passes ungrouped and tag filters to the roster hook together", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickCombobox(/account groups/i);
+    clickCommandItem(/^ungrouped$/i);
+    clickCombobox(/filter accounts by tags/i);
+    clickCommandItem(/^vip$/i);
+    clickCommandItem(/^burst-safe$/i);
+
+    expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      groupSearch: undefined,
+      groupUngrouped: true,
+      tagIds: [1, 2],
+    });
+  });
+
   it("shows duplicate warnings in the roster and detail drawer", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
 
     expect(document.body.textContent).toContain("Duplicate");
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     expect(document.body.textContent).toContain(
       "Matched reasons: shared ChatGPT account id. Related account ids: 9.",
     );
@@ -439,7 +567,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     setInputValue('input[name="detailDisplayName"]', " another oauth ");
 
     expect(document.body.textContent).toContain("Display name must be unique.");
@@ -522,7 +650,7 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     expect(document.body.textContent).toContain("Routing failed");
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/Sync now/i);
     await flushAsync();
 
@@ -666,7 +794,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickButton(/Edit pool key/i);
     clickButton(/Save pool key/i);
     await flushAsync();
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/Sync now/i);
     await flushAsync();
 
@@ -749,7 +877,7 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     });
 
     render();
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/Sync now/i);
     expect(runSync).toHaveBeenCalledWith(5);
 
@@ -859,7 +987,7 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/Sync now/i);
     await flushAsync();
 
@@ -962,7 +1090,7 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     });
 
     render();
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/Sync now/i);
 
     const refreshButton = findButton(/Refresh/i);
@@ -1040,7 +1168,7 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     });
 
     render();
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/Sync now/i);
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
@@ -1135,7 +1263,7 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     });
 
     render();
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/Save changes/i);
 
     const syncButton = document.body.querySelector(
@@ -1221,7 +1349,7 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     });
 
     render();
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/Sync now/i);
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
@@ -1316,7 +1444,7 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     });
 
     render();
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/Sync now/i);
     syncAlpha.reject(new Error("Alpha failed"));
     await flushAsync();
@@ -1407,7 +1535,7 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     });
 
     render();
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     await flushAsync();
 
     expect(document.body.textContent).toContain("Another OAuth");
@@ -1480,7 +1608,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 
     render("/account-pool/upstream-accounts");
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     expect(document.body.textContent).toContain(
       "This OAuth account still shows a legacy bridge error",
     );
@@ -1555,7 +1683,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 
     render("/account-pool/upstream-accounts");
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     expect(document.body.textContent).toContain(
       "This OAuth account needs a fresh sign-in",
     );
@@ -1626,7 +1754,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 
     render("/account-pool/upstream-accounts");
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     expect(document.body.textContent).toContain(
       "The OAuth data plane rejected this request",
     );
@@ -1720,7 +1848,7 @@ describe("UpstreamAccountsPage api key details", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/Save changes/i);
     await flushAsync();
     expect(saveAccount).toHaveBeenCalledWith(8, expect.any(Object));
@@ -1834,7 +1962,7 @@ describe("UpstreamAccountsPage api key details", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     setInputValue(
       'input[name="detailUpstreamBaseUrl"]',
       "https://proxy.example.com/gateway/v2",
@@ -1941,7 +2069,7 @@ describe("UpstreamAccountsPage api key details", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     setInputValue('input[name="detailUpstreamBaseUrl"]', "");
     clickButton(/Save changes/i);
     await flushAsync();
@@ -2028,7 +2156,7 @@ describe("UpstreamAccountsPage api key details", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     setInputValue(
       'input[name="detailUpstreamBaseUrl"]',
       "https://proxy.example.com/gateway?team=prod",
@@ -2124,7 +2252,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/^Delete$/i);
     await flushAsync();
     clickButton(/Delete account/i);
@@ -2224,7 +2352,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     const dialog = document.body.querySelector('[role="dialog"]');
     const deleteButton = dialog
       ? Array.from(dialog.querySelectorAll("button")).find((candidate) =>
@@ -2349,7 +2477,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     const dialog = document.body.querySelector('[role="dialog"]');
     const deleteButton = dialog
       ? Array.from(dialog.querySelectorAll("button")).find((candidate) =>
@@ -2437,7 +2565,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     const dialog = document.body.querySelector('[role="dialog"]');
     const deleteButton = dialog
       ? Array.from(dialog.querySelectorAll("button")).find((candidate) =>
@@ -2539,7 +2667,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     clickButton(/^Delete$/i);
     await flushAsync();
     await flushTimers();
@@ -2726,7 +2854,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
 
     render();
 
-    clickButton(/Open details/i);
+    clickFirstRosterRow();
     const dialog = document.body.querySelector('[role="dialog"]');
     const deleteButton = dialog
       ? Array.from(dialog.querySelectorAll("button")).find((candidate) =>

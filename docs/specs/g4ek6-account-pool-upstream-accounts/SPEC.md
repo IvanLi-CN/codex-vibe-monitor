@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-11
-- Last: 2026-03-16
+- Last: 2026-03-18
 
 ## 背景 / 问题陈述
 
@@ -71,6 +71,8 @@
 ### SHOULD
 
 - 列表应支持搜索、状态筛选与一键同步，便于首版管理几十个账号时仍可浏览。
+- 账号列表头部应同时提供 `分组` 与 `标签` 两类筛选；两者都必须由 `GET /api/pool/upstream-accounts` 在服务端完成筛选收口，标签筛选使用可搜索的多选控件，且必须按“账号包含全部已选 tag”收口，不允许退化为“命中任一 tag 即展示”。
+- 当列表行已经可以直接打开详情抽屉时，头部不应再保留额外的 `打开详情` 冗余按钮。
 - 详情页应支持行内编辑名称/备注/本地限额，不强制弹出完整编辑页面。
 - 后台同步应为同一账号串行，避免重复刷新 token 或并发写入相同快照。
 
@@ -94,6 +96,7 @@
 - 多个账号的 detail 错误必须并存保存：账号 A 与账号 B 先后失败后，切回任一账号时仍需看到它自己的 detail 错误，直到该账号自己的后续结果替换它。
 - 账号操作在清理自己的错误提示时，不得顺带清空 routing 级错误；routing 保存失败后，后续任意账号的保存/同步/启停/删除成功都不得吞掉该 routing 错误。
 - routing 错误与账号级错误必须分别展示；当两类错误同时存在时，页面不得只保留其中一条。
+- 列表头部切换分组筛选或标签筛选时，前端只能更新请求参数并重新拉取 `GET /api/pool/upstream-accounts`；不得再用已拉取的 `items` 在本地做二次筛选，以免分组选项、未分组可见性和列表内容出现口径漂移。
 - 页面级 `Refresh` 不得因为其它账号的保存/同步/启停/删除而被全局锁死；只有真正的全局路由保存过程才允许暂时禁用该按钮。
 - 删除账号的成功响应不得覆盖用户已经切换后的当前选中项；只有“当前正显示的账号被删除”时，才允许把选中项收口到 fallback。
 - 若用户在账号 A 删除进行中切换到账号 B，A 的删除成功后不得把当前抽屉关闭；只有当前抽屉仍停留在 A 时，删除成功才允许关闭抽屉或收口到 fallback。
@@ -199,6 +202,17 @@
 - 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 与 action error 都要按账号隔离、同一账号任一写操作进行中时其它写入口必须锁住、账号切换要在同一交互拍内使旧 detail 请求失效、保存/同步成功要先失效旧 detail reload、refresh 必须用列表数据纯计算最终选中账号后再刷新 detail 且列表失败时不得清空当前 detail、hook 级 list/detail 错误必须按来源隔离、同类动作跨账号并发时不得互相覆盖 busy/error 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
 
 ## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Tag Filter All Match
+  state: group-and-tag-combined-filter
+  evidence_note: 验证账号列表的分组筛选与标签筛选可同时生效；当分组为 `production` 且标签为 `vip + burst-safe` 时，列表只保留满足两类条件的账号。
+  image:
+  ![Upstream accounts group and tag combined filter](./assets/upstream-accounts-group-tag-filter-combined-storybook.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -323,3 +337,4 @@
 - 2026-03-13: 扩展上游账号创建页为单账号 OAuth / 批量 OAuth / API Key 同页模式，并将批量 OAuth 表格纳入现有手动 OAuth 流程。
 - 2026-03-13: 刷新 Storybook 视觉证据，补充路由设置弹窗、Sticky Key 对话与记录页上游筛选展示。
 - 2026-03-14: 调整 OAuth 新建语义为“重复身份仅告警不合并”，并补充 `displayName` 全局唯一约束与 UI warning/inline error 验收口径。
+- 2026-03-18: 账号列表头部改为 `分组 + 多 Tag` 双筛选，Tag 必须全匹配；移除头部 `打开详情` 冗余按钮并保持列表行点击/路由态打开详情抽屉的承接语义。

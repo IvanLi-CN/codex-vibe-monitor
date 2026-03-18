@@ -23,6 +23,7 @@ import { MotherAccountBadge, MotherAccountToggle } from '../../components/Mother
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
 import { AccountTagField } from '../../components/AccountTagField'
+import { AccountTagFilterCombobox } from '../../components/AccountTagFilterCombobox'
 import { EffectiveRoutingRuleCard } from '../../components/EffectiveRoutingRuleCard'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
@@ -509,9 +510,27 @@ export default function UpstreamAccountsPage() {
   const { t } = useTranslation()
   const location = useLocation()
   const navigate = useNavigate()
+  const [groupFilterQuery, setGroupFilterQuery] = useState('')
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([])
+  const accountListQuery = useMemo(() => {
+    const normalizedQuery = groupFilterQuery.trim()
+    const allLabel = t('accountPool.upstreamAccounts.groupFilter.all').toLocaleLowerCase()
+    const ungroupedLabel = t('accountPool.upstreamAccounts.groupFilter.ungrouped').toLocaleLowerCase()
+    const normalizedLowerQuery = normalizedQuery.toLocaleLowerCase()
+
+    return {
+      groupSearch:
+        !normalizedQuery || normalizedLowerQuery === allLabel || normalizedLowerQuery === ungroupedLabel
+          ? undefined
+          : normalizedQuery,
+      groupUngrouped: normalizedQuery ? normalizedLowerQuery === ungroupedLabel : undefined,
+      tagIds: selectedTagIds.length > 0 ? selectedTagIds : undefined,
+    }
+  }, [groupFilterQuery, selectedTagIds, t])
   const {
     items,
     groups = [],
+    hasUngroupedAccounts = false,
     writesEnabled,
     selectedId,
     selectedSummary,
@@ -528,7 +547,7 @@ export default function UpstreamAccountsPage() {
     routing,
     saveRouting,
     saveGroupNote,
-  } = useUpstreamAccounts()
+  } = useUpstreamAccounts(accountListQuery)
   const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags()
   const notifyMotherSwitches = useMotherSwitchNotifications()
 
@@ -546,7 +565,6 @@ export default function UpstreamAccountsPage() {
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
-  const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
   const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
   const [duplicateWarning, setDuplicateWarning] =
@@ -620,6 +638,14 @@ export default function UpstreamAccountsPage() {
   }, [groups])
 
   useEffect(() => {
+    const validTagIds = new Set(tagItems.map((tag) => tag.id))
+    setSelectedTagIds((current) => {
+      const next = current.filter((tagId) => validTagIds.has(tagId))
+      return next.length === current.length ? current : next
+    })
+  }, [tagItems])
+
+  useEffect(() => {
     const state = location.state as UpstreamAccountsLocationState | null
     if (!state?.selectedAccountId) return
 
@@ -668,17 +694,11 @@ export default function UpstreamAccountsPage() {
   }, [items, t])
 
   const availableGroups = useMemo(() => {
-    let hasUngrouped = false
-    for (const item of items) {
-      if (!normalizeGroupName(item.groupName)) {
-        hasUngrouped = true
-      }
-    }
     return {
       names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, groupDraftNotes),
-      hasUngrouped,
+      hasUngrouped: hasUngroupedAccounts,
     }
-  }, [groupDraftNotes, groups, items])
+  }, [groupDraftNotes, groups, hasUngroupedAccounts, items])
 
   const resolveGroupNoteForName = (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName)
   const resolvePendingGroupNoteForName = (groupName: string) => {
@@ -754,26 +774,6 @@ export default function UpstreamAccountsPage() {
     return suggestions
   }, [availableGroups, t])
 
-  const filteredItems = useMemo(() => {
-    const normalizedQuery = groupFilterQuery.trim().toLocaleLowerCase()
-    const allLabel = t('accountPool.upstreamAccounts.groupFilter.all').toLocaleLowerCase()
-    const ungroupedLabel = t('accountPool.upstreamAccounts.groupFilter.ungrouped').toLocaleLowerCase()
-
-    if (!normalizedQuery || normalizedQuery === allLabel) return items
-    if (normalizedQuery === ungroupedLabel) {
-      return items.filter((item) => !item.groupName?.trim())
-    }
-    return items.filter((item) =>
-      item.groupName?.trim().toLocaleLowerCase().includes(normalizedQuery),
-    )
-  }, [groupFilterQuery, items, t])
-
-  useEffect(() => {
-    if (filteredItems.length === 0) return
-    if (filteredItems.some((item) => item.id === selectedId)) return
-    selectAccount(filteredItems[0].id)
-  }, [filteredItems, selectAccount, selectedId])
-
   const {
     stats: stickyConversationStats,
     isLoading: stickyConversationLoading,
@@ -790,7 +790,6 @@ export default function UpstreamAccountsPage() {
     selectedDetail?.status ?? selected?.status ?? '',
     selectedDetail?.lastError ?? selected?.lastError,
   )
-  const selectedVisible = filteredItems.some((item) => item.id === selectedId)
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
   ) => {
@@ -1179,20 +1178,28 @@ export default function UpstreamAccountsPage() {
                     searchPlaceholder={t('accountPool.upstreamAccounts.groupFilterSearchPlaceholder')}
                     emptyLabel={t('accountPool.upstreamAccounts.groupFilterEmpty')}
                     createLabel={(value) => t('accountPool.upstreamAccounts.groupFilterUseValue', { value })}
+                    ariaLabel={t('accountPool.upstreamAccounts.groupFilterLabel')}
                     onValueChange={setGroupFilterQuery}
                   />
                 </label>
-                {selected && selectedVisible && !isDetailDrawerOpen ? (
-                  <Button type="button" variant="outline" onClick={() => setIsDetailDrawerOpen(true)}>
-                    <AppIcon name="account-details-outline" className="mr-2 h-4 w-4" aria-hidden />
-                    {t('accountPool.upstreamAccounts.actions.openDetails')}
-                  </Button>
-                ) : null}
+                <label className="field min-w-[15rem]">
+                  <span className="field-label">{t('accountPool.upstreamAccounts.tagFilterLabel')}</span>
+                  <AccountTagFilterCombobox
+                    tags={tagItems}
+                    value={selectedTagIds}
+                    placeholder={t('accountPool.upstreamAccounts.tagFilterPlaceholder')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.tagFilterSearchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.tagFilterEmpty')}
+                    clearLabel={t('accountPool.upstreamAccounts.tagFilterClear')}
+                    ariaLabel={t('accountPool.upstreamAccounts.tagFilterAriaLabel')}
+                    onValueChange={setSelectedTagIds}
+                  />
+                </label>
                 {isLoading ? <Spinner className="text-primary" /> : null}
               </div>
             </div>
             <UpstreamAccountsTable
-              items={filteredItems}
+              items={items}
               selectedId={selectedId}
               onSelect={handleSelectAccount}
               emptyTitle={t('accountPool.upstreamAccounts.emptyTitle')}

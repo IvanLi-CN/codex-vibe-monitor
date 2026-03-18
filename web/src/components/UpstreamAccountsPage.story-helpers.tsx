@@ -8,6 +8,7 @@ import type {
   EffectiveRoutingRule,
   LoginSessionStatusResponse,
   OauthMailboxStatus,
+  TagSummary,
   UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
@@ -130,6 +131,63 @@ function listGroupSummaries(store: StoryStore) {
       groupName,
       note: store.groupNotes[groupName] ?? null,
     }))
+}
+
+function listTagSummaries(store: StoryStore): TagSummary[] {
+  const summaries = new Map<number, TagSummary>()
+  const accountIdsByTag = new Map<number, Set<number>>()
+  const groupNamesByTag = new Map<number, Set<string>>()
+
+  for (const account of store.accounts) {
+    const groupName = normalizeGroupName(account.groupName)
+    for (const tag of account.tags) {
+      if (!summaries.has(tag.id)) {
+        summaries.set(tag.id, {
+          id: tag.id,
+          name: tag.name,
+          routingRule: clone(tag.routingRule),
+          accountCount: 0,
+          groupCount: 0,
+          updatedAt: now,
+        })
+      }
+      const accountIds = accountIdsByTag.get(tag.id) ?? new Set<number>()
+      accountIds.add(account.id)
+      accountIdsByTag.set(tag.id, accountIds)
+      const groupNames = groupNamesByTag.get(tag.id) ?? new Set<string>()
+      if (groupName) {
+        groupNames.add(groupName)
+      }
+      groupNamesByTag.set(tag.id, groupNames)
+    }
+  }
+
+  return Array.from(summaries.values())
+    .map((tag) => ({
+      ...tag,
+      accountCount: accountIdsByTag.get(tag.id)?.size ?? 0,
+      groupCount: groupNamesByTag.get(tag.id)?.size ?? 0,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name))
+}
+
+function filterAccountsForQuery(store: StoryStore, url: URL) {
+  const groupSearch = (url.searchParams.get('groupSearch') || '').trim().toLowerCase()
+  const groupUngrouped = url.searchParams.get('groupUngrouped') === 'true'
+  const tagIds = url.searchParams.getAll('tagIds').map((value) => Number(value)).filter(Number.isFinite)
+
+  return store.accounts.filter((account) => {
+    const normalizedGroup = normalizeGroupName(account.groupName)?.toLowerCase() ?? ''
+    const matchesGroup = groupUngrouped
+      ? !normalizeGroupName(account.groupName)
+      : groupSearch
+        ? normalizedGroup.includes(groupSearch)
+        : true
+    if (!matchesGroup) return false
+    if (tagIds.length === 0) return true
+    const accountTagIds = new Set(account.tags.map((tag) => tag.id))
+    return tagIds.every((tagId) => accountTagIds.has(tagId))
+  })
 }
 
 function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetail>): UpstreamAccountDetail {
@@ -267,6 +325,7 @@ function createStore(): StoryStore {
     storyId === 'account-pool-pages-upstream-accounts--duplicate-oauth-warning' ||
     storyId === 'account-pool-pages-upstream-accounts--duplicate-oauth-detail'
   const compactStory = storyId === 'account-pool-pages-upstream-accounts--compact-long-labels'
+  const tagFilterStory = storyId === 'account-pool-pages-upstream-accounts--tag-filter-all-match'
 
   const oauth = createOauthAccount(101, duplicateStory
     ? {
@@ -287,6 +346,14 @@ function createStore(): StoryStore {
             compactDefaultTags[3],
           ],
         }
+      : tagFilterStory
+        ? {
+            tags: [
+              compactDefaultTags[0],
+              compactDefaultTags[1],
+              compactDefaultTags[2],
+            ],
+          }
     : undefined)
   const apiKey = createApiKeyAccount(102, compactStory
     ? {
@@ -297,6 +364,13 @@ function createStore(): StoryStore {
           compactDefaultTags[3],
         ],
       }
+    : tagFilterStory
+      ? {
+          tags: [
+            compactDefaultTags[0],
+            compactDefaultTags[3],
+          ],
+        }
     : undefined)
   const duplicateOauth = duplicateStory
     ? createOauthAccount(103, {
@@ -632,10 +706,18 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
           groups: listGroupSummaries(store),
+          hasUngroupedAccounts: store.accounts.some((account) => !normalizeGroupName(account.groupName)),
           routing: clone(store.routing),
-          items: store.accounts.map((item) => clone(item)),
+          items: filterAccountsForQuery(store, parsedUrl).map((item) => clone(item)),
         }
         return jsonResponse(payload)
+      }
+
+      if (path === '/api/pool/tags' && method === 'GET') {
+        return jsonResponse({
+          writesEnabled: store.writesEnabled,
+          items: listTagSummaries(store),
+        })
       }
 
       if (path === '/api/pool/routing-settings' && method === 'PUT') {
