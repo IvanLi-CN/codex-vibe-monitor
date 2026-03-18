@@ -2895,9 +2895,10 @@ async fn list_upstream_accounts_includes_last_activity_at() {
         .await
         .expect("persist account last activity");
 
-    let Json(response) = list_upstream_accounts(State(state))
-        .await
-        .expect("list upstream accounts");
+    let Json(response) =
+        list_upstream_accounts(State(state), Query(ListUpstreamAccountsQuery::default()))
+            .await
+            .expect("list upstream accounts");
     let response_json = serde_json::to_value(response).expect("serialize upstream accounts");
     let account = response_json
         .get("items")
@@ -2913,6 +2914,137 @@ async fn list_upstream_accounts_includes_last_activity_at() {
             .and_then(serde_json::Value::as_str),
         Some("2026-03-11T12:35:00Z")
     );
+}
+
+#[tokio::test]
+async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let alpha_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Alpha",
+        "upstream-alpha",
+        Some("prod-blue"),
+        Some(false),
+        None,
+    )
+    .await;
+    let beta_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Beta",
+        "upstream-beta",
+        Some("prod-blue"),
+        Some(false),
+        None,
+    )
+    .await;
+    let gamma_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Gamma",
+        "upstream-gamma",
+        None,
+        Some(false),
+        None,
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+
+    let vip_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, guard_enabled, lookback_hours, max_conversations,
+            allow_cut_out, allow_cut_in, created_at, updated_at
+        ) VALUES (?1, 0, NULL, NULL, 1, 1, ?2, ?2)
+        RETURNING id
+        "#,
+    )
+    .bind("vip")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert vip tag");
+    let burst_safe_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, guard_enabled, lookback_hours, max_conversations,
+            allow_cut_out, allow_cut_in, created_at, updated_at
+        ) VALUES (?1, 0, NULL, NULL, 1, 1, ?2, ?2)
+        RETURNING id
+        "#,
+    )
+    .bind("burst-safe")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert burst-safe tag");
+
+    for (account_id, tag_id) in [
+        (alpha_id, vip_tag_id),
+        (alpha_id, burst_safe_tag_id),
+        (beta_id, vip_tag_id),
+        (gamma_id, vip_tag_id),
+        (gamma_id, burst_safe_tag_id),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_tags (
+                account_id, tag_id, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?3)
+            "#,
+        )
+        .bind(account_id)
+        .bind(tag_id)
+        .bind(&now_iso)
+        .execute(&state.pool)
+        .await
+        .expect("insert account tag link");
+    }
+
+    let Json(group_filtered) = list_upstream_accounts(
+        State(state.clone()),
+        Query(ListUpstreamAccountsQuery {
+            group_search: Some("prod".to_string()),
+            group_ungrouped: None,
+            tag_ids: vec![vip_tag_id, burst_safe_tag_id, vip_tag_id],
+        }),
+    )
+    .await
+    .expect("list filtered upstream accounts");
+    let group_filtered_json =
+        serde_json::to_value(group_filtered).expect("serialize filtered upstream accounts");
+    let group_filtered_names = group_filtered_json["items"]
+        .as_array()
+        .expect("filtered items array")
+        .iter()
+        .filter_map(|item| item.get("displayName").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(group_filtered_names, vec!["Alpha"]);
+    assert_eq!(
+        group_filtered_json["hasUngroupedAccounts"].as_bool(),
+        Some(true)
+    );
+
+    let Json(ungrouped_filtered) = list_upstream_accounts(
+        State(state),
+        Query(ListUpstreamAccountsQuery {
+            group_search: None,
+            group_ungrouped: Some(true),
+            tag_ids: vec![vip_tag_id, burst_safe_tag_id],
+        }),
+    )
+    .await
+    .expect("list ungrouped filtered upstream accounts");
+    let ungrouped_filtered_json = serde_json::to_value(ungrouped_filtered)
+        .expect("serialize ungrouped filtered upstream accounts");
+    let ungrouped_filtered_names = ungrouped_filtered_json["items"]
+        .as_array()
+        .expect("ungrouped filtered items array")
+        .iter()
+        .filter_map(|item| item.get("displayName").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(ungrouped_filtered_names, vec!["Gamma"]);
 }
 
 #[tokio::test]

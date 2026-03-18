@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  FetchUpstreamAccountsQuery,
   UpstreamAccountDetail,
   UpstreamAccountListResponse,
   UpstreamAccountSummary,
@@ -10,7 +11,9 @@ import type {
 import { useUpstreamAccounts } from "./useUpstreamAccounts";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchUpstreamAccounts: vi.fn<() => Promise<UpstreamAccountListResponse>>(),
+  fetchUpstreamAccounts: vi.fn<
+    (query?: FetchUpstreamAccountsQuery) => Promise<UpstreamAccountListResponse>
+  >(),
   fetchUpstreamAccountDetail: vi.fn<
     (accountId: number, signal?: AbortSignal) => Promise<UpstreamAccountDetail>
   >(),
@@ -140,11 +143,12 @@ function createListResponse(): UpstreamAccountListResponse {
     writesEnabled: true,
     items: [createSummary(1, "Alpha"), createSummary(2, "Beta")],
     groups: [],
+    hasUngroupedAccounts: false,
     routing: { apiKeyConfigured: false, maskedApiKey: null },
   };
 }
 
-function Probe() {
+function Probe({ query }: { query?: FetchUpstreamAccountsQuery }) {
   const {
     selectedId,
     selectedSummary,
@@ -159,7 +163,7 @@ function Probe() {
     beginRelogin,
     removeAccount,
   } =
-    useUpstreamAccounts();
+    useUpstreamAccounts(query);
 
   return (
     <div>
@@ -197,6 +201,16 @@ function Probe() {
 }
 
 describe("useUpstreamAccounts", () => {
+  it("passes server-side roster filters through to the list endpoint", async () => {
+    render(<Probe query={{ groupSearch: "prod", tagIds: [1, 2] }} />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledWith({
+      groupSearch: "prod",
+      tagIds: [1, 2],
+    });
+  });
+
   it("ignores stale detail responses after account switches", async () => {
     const first = deferred<UpstreamAccountDetail>();
     const second = deferred<UpstreamAccountDetail>();
@@ -390,6 +404,7 @@ describe("useUpstreamAccounts", () => {
         writesEnabled: true,
         items: [createSummary(2, "Beta")],
         groups: [],
+        hasUngroupedAccounts: false,
         routing: { apiKeyConfigured: false, maskedApiKey: null },
       });
     apiMocks.fetchUpstreamAccountDetail
@@ -549,12 +564,14 @@ describe("useUpstreamAccounts", () => {
         writesEnabled: true,
         items: [createSummary(1, "Alpha"), createSummary(3, "Gamma"), createSummary(2, "Beta")],
         groups: [],
+        hasUngroupedAccounts: false,
         routing: { apiKeyConfigured: false, maskedApiKey: null },
       })
       .mockResolvedValueOnce({
         writesEnabled: true,
         items: [createSummary(2, "Beta"), createSummary(3, "Gamma")],
         groups: [],
+        hasUngroupedAccounts: false,
         routing: { apiKeyConfigured: false, maskedApiKey: null },
       });
     apiMocks.deleteUpstreamAccount.mockImplementationOnce(async () => remove.promise);
@@ -680,6 +697,7 @@ describe("useUpstreamAccounts", () => {
         writesEnabled: true,
         items: [createSummary(1, "Alpha Synced"), createSummary(2, "Beta")],
         groups: [],
+        hasUngroupedAccounts: false,
         routing: { apiKeyConfigured: false, maskedApiKey: null },
       });
     apiMocks.fetchUpstreamAccountDetail
@@ -702,6 +720,7 @@ describe("useUpstreamAccounts", () => {
       writesEnabled: true,
       items: [createSummary(1, "Alpha Synced"), createSummary(2, "Beta")],
       groups: [],
+      hasUngroupedAccounts: false,
       routing: { apiKeyConfigured: false, maskedApiKey: null },
     });
     await flushAsync();
@@ -714,6 +733,7 @@ describe("useUpstreamAccounts", () => {
       writesEnabled: true,
       items: [createSummary(1, "Alpha Stale"), createSummary(2, "Beta")],
       groups: [],
+      hasUngroupedAccounts: false,
       routing: { apiKeyConfigured: false, maskedApiKey: null },
     });
     await flushAsync();
