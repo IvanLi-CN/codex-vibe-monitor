@@ -1,10 +1,13 @@
 import type { ReactNode } from 'react'
 import { FloatingFieldError } from './floating-field-error'
+import { FloatingFieldBubble } from './floating-field-bubble'
+import type { BubbleVariant } from './bubble'
 import { cn } from '../../lib/utils'
 
 interface FormFieldFeedbackProps {
   label: ReactNode
   message?: string | null
+  variant?: BubbleVariant
   className?: string
   labelClassName?: string
   messageClassName?: string
@@ -13,10 +16,28 @@ interface FormFieldFeedbackProps {
 export function FormFieldFeedback({
   label,
   message,
+  variant = 'error',
   className,
   labelClassName,
   messageClassName,
 }: FormFieldFeedbackProps) {
+  const feedback = !message ? null : variant === 'error'
+    ? (
+      <FloatingFieldError
+        placement="label-inline"
+        message={message}
+        className={messageClassName}
+      />
+      )
+    : (
+      <FloatingFieldBubble
+        placement="label-inline"
+        message={message}
+        variant={variant}
+        className={messageClassName}
+      />
+      )
+
   return (
     <div
       className={cn(
@@ -25,13 +46,7 @@ export function FormFieldFeedback({
       )}
     >
       <span className={cn('field-label', labelClassName)}>{label}</span>
-      {message ? (
-        <FloatingFieldError
-          placement="label-inline"
-          message={message}
-          className={messageClassName}
-        />
-      ) : null}
+      {feedback}
     </div>
   )
 }
