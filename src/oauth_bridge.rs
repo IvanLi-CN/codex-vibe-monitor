@@ -9,7 +9,8 @@ use futures_util::TryStreamExt;
 use reqwest::{Body as ReqwestBody, Client, Url};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::time::{Instant, timeout};
 use tracing::info;
@@ -31,6 +32,15 @@ const PROMPT_CACHE_HEADER_NAMES: &[&str] = &[
     "x-prompt-cache-key",
     "prompt-cache-key",
     "x-openai-prompt-cache-key",
+];
+const OAUTH_FINGERPRINT_VERSION: &str = "v1";
+pub(crate) const OAUTH_REQUEST_BODY_PREFIX_FINGERPRINT_MAX_BYTES: usize = 64 * 1024;
+const OAUTH_FINGERPRINTED_HEADER_NAMES: &[&str] = &[
+    "session_id",
+    "traceparent",
+    "x-client-request-id",
+    "x-codex-turn-metadata",
+    "originator",
 ];
 
 #[cfg(test)]
@@ -72,7 +82,10 @@ pub(crate) async fn reset_test_oauth_codex_upstream_base_url() {
 pub(crate) enum OauthUpstreamRequestBody {
     Empty,
     Bytes(Bytes),
-    Stream(ReqwestBody),
+    Stream {
+        body: ReqwestBody,
+        debug_body_prefix: Option<Bytes>,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -89,19 +102,26 @@ pub(crate) struct OauthResponsesRewriteSummary {
 pub(crate) struct OauthForwardedHeaderSummary {
     pub(crate) names: Vec<String>,
     pub(crate) prompt_cache_header_forwarded: bool,
+    pub(crate) fingerprints: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct OauthResponsesDebugInfo {
+pub(crate) struct OauthRequestDebugInfo {
+    pub(crate) fingerprint_version: Option<&'static str>,
     pub(crate) forwarded_header_names: Vec<String>,
+    pub(crate) forwarded_header_fingerprints: Option<BTreeMap<String, String>>,
     pub(crate) prompt_cache_header_forwarded: bool,
+    pub(crate) request_body_prefix_fingerprint: Option<String>,
+    pub(crate) request_body_prefix_bytes: Option<usize>,
     pub(crate) rewrite: OauthResponsesRewriteSummary,
 }
 
+pub(crate) type OauthResponsesDebugInfo = OauthRequestDebugInfo;
+
 pub(crate) struct OauthUpstreamResponse {
     pub(crate) response: Response,
-    pub(crate) responses_debug: Option<OauthResponsesDebugInfo>,
+    pub(crate) request_debug: Option<OauthRequestDebugInfo>,
 }
 
 struct PreparedResponsesRequestBody {
@@ -121,6 +141,7 @@ pub(crate) async fn send_oauth_upstream_request(
     account_id: Option<i64>,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
+    crypto_key: Option<&[u8; 32]>,
 ) -> OauthUpstreamResponse {
     match original_uri.path() {
         "/v1/models" => {
@@ -145,17 +166,18 @@ pub(crate) async fn send_oauth_upstream_request(
                 match body {
                     OauthUpstreamRequestBody::Empty => Bytes::new(),
                     OauthUpstreamRequestBody::Bytes(bytes) => bytes,
-                    OauthUpstreamRequestBody::Stream(_) => {
+                    OauthUpstreamRequestBody::Stream { .. } => {
                         return OauthUpstreamResponse {
                             response: error_response(
                                 StatusCode::INTERNAL_SERVER_ERROR,
                                 "streamed request bodies are not supported for /v1/responses",
                                 "server_error",
                             ),
-                            responses_debug: None,
+                            request_debug: None,
                         };
                     }
                 },
+                crypto_key,
             )
             .await
         }
@@ -166,13 +188,24 @@ pub(crate) async fn send_oauth_upstream_request(
                 original_uri,
                 headers,
                 match body {
-                    OauthUpstreamRequestBody::Empty => ReqwestBody::from(Bytes::new()),
-                    OauthUpstreamRequestBody::Bytes(bytes) => ReqwestBody::from(bytes),
-                    OauthUpstreamRequestBody::Stream(body) => body,
+                    OauthUpstreamRequestBody::Empty => {
+                        (ReqwestBody::from(Bytes::new()), Some(Bytes::new()))
+                    }
+                    OauthUpstreamRequestBody::Bytes(bytes) => {
+                        let debug_body_prefix =
+                            oauth_request_body_prefix_bytes(Some(bytes.as_ref())).map(Bytes::from);
+                        (ReqwestBody::from(bytes), debug_body_prefix)
+                    }
+                    OauthUpstreamRequestBody::Stream {
+                        body,
+                        debug_body_prefix,
+                    } => (body, debug_body_prefix),
                 },
                 handshake_timeout,
+                account_id,
                 access_token,
                 chatgpt_account_id,
+                crypto_key,
             )
             .await
         }
@@ -185,7 +218,7 @@ pub(crate) async fn send_oauth_upstream_request(
                 ),
                 "oauth_unsupported_route",
             ),
-            responses_debug: None,
+            request_debug: None,
         },
     }
 }
@@ -210,7 +243,7 @@ async fn oauth_models(
                     &format!("invalid oauth codex models url: {err}"),
                     "server_error",
                 ),
-                responses_debug: None,
+                request_debug: None,
             };
         }
     };
@@ -237,7 +270,7 @@ async fn oauth_models(
                     &format!("failed to contact oauth codex upstream: {err}"),
                     "oauth_upstream_unavailable",
                 ),
-                responses_debug: None,
+                request_debug: None,
             };
         }
         Err(_) => {
@@ -250,7 +283,7 @@ async fn oauth_models(
                     ),
                     "oauth_upstream_handshake_timeout",
                 ),
-                responses_debug: None,
+                request_debug: None,
             };
         }
     };
@@ -271,7 +304,7 @@ async fn oauth_models(
                     &format!("failed to read oauth codex models response: {err}"),
                     "oauth_upstream_read_failed",
                 ),
-                responses_debug: None,
+                request_debug: None,
             };
         }
     };
@@ -282,13 +315,13 @@ async fn oauth_models(
                 &bytes,
                 "oauth_upstream_rejected_request",
             ),
-            responses_debug: None,
+            request_debug: None,
         };
     }
     match transform_models_payload(&bytes) {
         Ok(value) => OauthUpstreamResponse {
             response: (status, Json(value)).into_response(),
-            responses_debug: None,
+            request_debug: None,
         },
         Err(err) => OauthUpstreamResponse {
             response: error_response(
@@ -296,7 +329,7 @@ async fn oauth_models(
                 &format!("oauth codex returned malformed models payload: {err}"),
                 "oauth_upstream_invalid_models",
             ),
-            responses_debug: None,
+            request_debug: None,
         },
     }
 }
@@ -310,6 +343,7 @@ async fn oauth_responses(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
     body: Bytes,
+    crypto_key: Option<&[u8; 32]>,
 ) -> OauthUpstreamResponse {
     let prepared = match prepare_responses_request_body(&body) {
         Ok(value) => value,
@@ -320,7 +354,7 @@ async fn oauth_responses(
                     &err.to_string(),
                     "invalid_request_error",
                 ),
-                responses_debug: None,
+                request_debug: None,
             };
         }
     };
@@ -333,7 +367,7 @@ async fn oauth_responses(
                     &format!("invalid oauth codex responses url: {err}"),
                     "server_error",
                 ),
-                responses_debug: None,
+                request_debug: None,
             };
         }
     };
@@ -341,6 +375,14 @@ async fn oauth_responses(
         client.post(upstream_url),
         headers,
         OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES,
+        crypto_key,
+    );
+    let request_debug = build_oauth_request_debug(
+        "/v1/responses",
+        &forwarded_headers,
+        Some(prepared.body.as_slice()),
+        prepared.rewrite.clone(),
+        crypto_key,
     );
     let request = request
         .header(header::CONTENT_TYPE, "application/json")
@@ -348,22 +390,21 @@ async fn oauth_responses(
         .header("OpenAI-Beta", "responses=experimental")
         .body(prepared.body);
     let request = attach_account_header(request, chatgpt_account_id);
-    let responses_debug = OauthResponsesDebugInfo {
-        forwarded_header_names: forwarded_headers.names.clone(),
-        prompt_cache_header_forwarded: forwarded_headers.prompt_cache_header_forwarded,
-        rewrite: prepared.rewrite.clone(),
-    };
     info!(
         account_id,
         path = "/v1/responses",
-        forwarded_header_count = responses_debug.forwarded_header_names.len(),
-        forwarded_header_names = ?responses_debug.forwarded_header_names,
-        prompt_cache_header_forwarded = responses_debug.prompt_cache_header_forwarded,
-        rewrite_applied = responses_debug.rewrite.applied,
-        rewrite_added_instructions = responses_debug.rewrite.added_instructions,
-        rewrite_added_store = responses_debug.rewrite.added_store,
-        rewrite_forced_stream_true = responses_debug.rewrite.forced_stream_true,
-        rewrite_removed_max_output_tokens = responses_debug.rewrite.removed_max_output_tokens,
+        forwarded_header_count = request_debug.forwarded_header_names.len(),
+        forwarded_header_names = ?request_debug.forwarded_header_names,
+        forwarded_header_fingerprints = ?request_debug.forwarded_header_fingerprints,
+        prompt_cache_header_forwarded = request_debug.prompt_cache_header_forwarded,
+        fingerprint_version = request_debug.fingerprint_version,
+        request_body_prefix_bytes = request_debug.request_body_prefix_bytes,
+        request_body_prefix_fingerprint = request_debug.request_body_prefix_fingerprint,
+        rewrite_applied = request_debug.rewrite.applied,
+        rewrite_added_instructions = request_debug.rewrite.added_instructions,
+        rewrite_added_store = request_debug.rewrite.added_store,
+        rewrite_forced_stream_true = request_debug.rewrite.forced_stream_true,
+        rewrite_removed_max_output_tokens = request_debug.rewrite.removed_max_output_tokens,
         "forwarding oauth responses request"
     );
     let request_started = Instant::now();
@@ -376,7 +417,7 @@ async fn oauth_responses(
                     &format!("failed to contact oauth codex upstream: {err}"),
                     "oauth_upstream_unavailable",
                 ),
-                responses_debug: Some(responses_debug),
+                request_debug: Some(request_debug),
             };
         }
         Err(_) => {
@@ -389,7 +430,7 @@ async fn oauth_responses(
                     ),
                     "oauth_upstream_handshake_timeout",
                 ),
-                responses_debug: Some(responses_debug),
+                request_debug: Some(request_debug),
             };
         }
     };
@@ -411,7 +452,7 @@ async fn oauth_responses(
                         &format!("failed to read oauth codex error response: {err}"),
                         "oauth_upstream_read_failed",
                     ),
-                    responses_debug: Some(responses_debug),
+                    request_debug: Some(request_debug),
                 };
             }
         };
@@ -421,13 +462,13 @@ async fn oauth_responses(
                 &bytes,
                 "oauth_upstream_rejected_request",
             ),
-            responses_debug: Some(responses_debug),
+            request_debug: Some(request_debug),
         };
     }
     if prepared.wants_stream {
         return OauthUpstreamResponse {
             response: reqwest_response_to_axum_response(upstream),
-            responses_debug: Some(responses_debug),
+            request_debug: Some(request_debug),
         };
     }
     let bytes = match read_oauth_upstream_bytes_with_timeout(
@@ -446,14 +487,14 @@ async fn oauth_responses(
                     &format!("failed to read oauth codex responses stream: {err}"),
                     "oauth_upstream_read_failed",
                 ),
-                responses_debug: Some(responses_debug),
+                request_debug: Some(request_debug),
             };
         }
     };
     match extract_completed_response_from_sse(&bytes) {
         Ok(response_value) => OauthUpstreamResponse {
             response: (StatusCode::OK, Json(response_value)).into_response(),
-            responses_debug: Some(responses_debug),
+            request_debug: Some(request_debug),
         },
         Err(err) => OauthUpstreamResponse {
             response: error_response(
@@ -461,7 +502,7 @@ async fn oauth_responses(
                 &format!("failed to decode oauth codex response stream: {err}"),
                 "oauth_upstream_invalid_response",
             ),
-            responses_debug: Some(responses_debug),
+            request_debug: Some(request_debug),
         },
     }
 }
@@ -471,10 +512,12 @@ async fn oauth_passthrough(
     method: Method,
     original_uri: &Uri,
     headers: &HeaderMap,
-    body: ReqwestBody,
+    body: (ReqwestBody, Option<Bytes>),
     handshake_timeout: Duration,
+    account_id: Option<i64>,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
+    crypto_key: Option<&[u8; 32]>,
 ) -> OauthUpstreamResponse {
     let suffix = original_uri
         .path()
@@ -489,7 +532,7 @@ async fn oauth_passthrough(
                     &format!("invalid oauth codex upstream url: {err}"),
                     "server_error",
                 ),
-                responses_debug: None,
+                request_debug: None,
             };
         }
     };
@@ -498,8 +541,32 @@ async fn oauth_passthrough(
         .bearer_auth(access_token)
         .header("OpenAI-Beta", "responses=experimental");
     builder = attach_account_header(builder, chatgpt_account_id);
-    let (builder, _) = copy_forwardable_headers(builder, headers, &[]);
-    let upstream = match timeout(handshake_timeout, builder.body(body).send()).await {
+    let (builder, forwarded_headers) = copy_forwardable_headers(builder, headers, &[], crypto_key);
+    let request_debug = build_oauth_request_debug(
+        original_uri.path(),
+        &forwarded_headers,
+        body.1.as_deref(),
+        OauthResponsesRewriteSummary::default(),
+        crypto_key,
+    );
+    info!(
+        account_id,
+        path = original_uri.path(),
+        forwarded_header_count = request_debug.forwarded_header_names.len(),
+        forwarded_header_names = ?request_debug.forwarded_header_names,
+        forwarded_header_fingerprints = ?request_debug.forwarded_header_fingerprints,
+        prompt_cache_header_forwarded = request_debug.prompt_cache_header_forwarded,
+        fingerprint_version = request_debug.fingerprint_version,
+        request_body_prefix_bytes = request_debug.request_body_prefix_bytes,
+        request_body_prefix_fingerprint = request_debug.request_body_prefix_fingerprint,
+        rewrite_applied = request_debug.rewrite.applied,
+        rewrite_added_instructions = request_debug.rewrite.added_instructions,
+        rewrite_added_store = request_debug.rewrite.added_store,
+        rewrite_forced_stream_true = request_debug.rewrite.forced_stream_true,
+        rewrite_removed_max_output_tokens = request_debug.rewrite.removed_max_output_tokens,
+        "forwarding oauth passthrough request"
+    );
+    let upstream = match timeout(handshake_timeout, builder.body(body.0).send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
             return OauthUpstreamResponse {
@@ -508,7 +575,7 @@ async fn oauth_passthrough(
                     &format!("failed to contact oauth codex upstream: {err}"),
                     "oauth_upstream_unavailable",
                 ),
-                responses_debug: None,
+                request_debug: Some(request_debug),
             };
         }
         Err(_) => {
@@ -521,13 +588,13 @@ async fn oauth_passthrough(
                     ),
                     "oauth_upstream_handshake_timeout",
                 ),
-                responses_debug: None,
+                request_debug: Some(request_debug),
             };
         }
     };
     OauthUpstreamResponse {
         response: reqwest_response_to_axum_response(upstream),
-        responses_debug: None,
+        request_debug: Some(request_debug),
     }
 }
 
@@ -549,9 +616,11 @@ fn copy_forwardable_headers(
     mut builder: reqwest::RequestBuilder,
     headers: &HeaderMap,
     excluded_names: &[&str],
+    crypto_key: Option<&[u8; 32]>,
 ) -> (reqwest::RequestBuilder, OauthForwardedHeaderSummary) {
     let connection_scoped = crate::connection_scoped_header_names(headers);
     let mut forwarded_names = BTreeSet::new();
+    let mut fingerprints = crypto_key.map(|_| BTreeMap::new());
     for (name, value) in headers {
         if *name == header::AUTHORIZATION
             || excluded_names
@@ -563,7 +632,22 @@ fn copy_forwardable_headers(
             continue;
         }
         builder = builder.header(name, value);
-        forwarded_names.insert(name.as_str().to_ascii_lowercase());
+        let lower_name = name.as_str().to_ascii_lowercase();
+        if let (Some(crypto_key), Some(header_fingerprints)) = (crypto_key, fingerprints.as_mut()) {
+            if is_fingerprinted_oauth_header_name(lower_name.as_str())
+                && !value.as_bytes().is_empty()
+            {
+                header_fingerprints.insert(
+                    lower_name.clone(),
+                    oauth_fingerprint_header_value(
+                        crypto_key,
+                        lower_name.as_str(),
+                        value.as_bytes(),
+                    ),
+                );
+            }
+        }
+        forwarded_names.insert(lower_name);
     }
     let names = forwarded_names.into_iter().collect::<Vec<_>>();
     let prompt_cache_header_forwarded = names
@@ -574,6 +658,7 @@ fn copy_forwardable_headers(
         OauthForwardedHeaderSummary {
             names,
             prompt_cache_header_forwarded,
+            fingerprints,
         },
     )
 }
@@ -586,6 +671,114 @@ fn is_prompt_cache_header_name(name: &str) -> bool {
     PROMPT_CACHE_HEADER_NAMES
         .iter()
         .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+fn is_fingerprinted_oauth_header_name(name: &str) -> bool {
+    OAUTH_FINGERPRINTED_HEADER_NAMES
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+fn oauth_request_body_prefix_bytes(body: Option<&[u8]>) -> Option<Vec<u8>> {
+    body.map(|bytes| {
+        bytes[..bytes
+            .len()
+            .min(OAUTH_REQUEST_BODY_PREFIX_FINGERPRINT_MAX_BYTES)]
+            .to_vec()
+    })
+}
+
+fn oauth_fingerprint_header_value(crypto_key: &[u8; 32], name: &str, value: &[u8]) -> String {
+    oauth_fingerprint_debug_value(crypto_key, "header", name.as_bytes(), value)
+}
+
+fn oauth_fingerprint_body_prefix(crypto_key: &[u8; 32], path: &str, prefix: &[u8]) -> String {
+    oauth_fingerprint_debug_value(crypto_key, "body-prefix", path.as_bytes(), prefix)
+}
+
+fn oauth_fingerprint_debug_value(
+    crypto_key: &[u8; 32],
+    namespace: &str,
+    discriminator: &[u8],
+    value: &[u8],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"oauth-debug");
+    hasher.update([0]);
+    hasher.update(OAUTH_FINGERPRINT_VERSION.as_bytes());
+    hasher.update([0]);
+    hasher.update(namespace.as_bytes());
+    hasher.update([0]);
+    hasher.update(discriminator);
+    hasher.update([0]);
+    hasher.update(crypto_key);
+    hasher.update([0]);
+    hasher.update(value);
+    let digest = hasher.finalize();
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn build_oauth_request_debug(
+    path: &str,
+    forwarded_headers: &OauthForwardedHeaderSummary,
+    body: Option<&[u8]>,
+    rewrite: OauthResponsesRewriteSummary,
+    crypto_key: Option<&[u8; 32]>,
+) -> OauthRequestDebugInfo {
+    let body_prefix = oauth_request_body_prefix_bytes(body);
+    let request_body_prefix_bytes = match (crypto_key, body_prefix.as_ref()) {
+        (Some(_), Some(prefix)) => Some(prefix.len()),
+        _ => None,
+    };
+    let request_body_prefix_fingerprint = match (crypto_key, body_prefix.as_ref()) {
+        (Some(crypto_key), Some(prefix)) => Some(oauth_fingerprint_body_prefix(
+            crypto_key,
+            path,
+            prefix.as_slice(),
+        )),
+        _ => None,
+    };
+
+    OauthRequestDebugInfo {
+        fingerprint_version: crypto_key.map(|_| OAUTH_FINGERPRINT_VERSION),
+        forwarded_header_names: forwarded_headers.names.clone(),
+        forwarded_header_fingerprints: if crypto_key.is_some() {
+            forwarded_headers.fingerprints.clone()
+        } else {
+            None
+        },
+        prompt_cache_header_forwarded: forwarded_headers.prompt_cache_header_forwarded,
+        request_body_prefix_fingerprint,
+        request_body_prefix_bytes,
+        rewrite,
+    }
+}
+
+pub(crate) fn backfill_oauth_request_debug_body_prefix(
+    debug: &mut OauthRequestDebugInfo,
+    path: &str,
+    body: &[u8],
+    crypto_key: Option<&[u8; 32]>,
+) {
+    let body_prefix = oauth_request_body_prefix_bytes(Some(body));
+    debug.request_body_prefix_bytes = match (crypto_key, body_prefix.as_ref()) {
+        (Some(_), Some(prefix)) => Some(prefix.len()),
+        _ => None,
+    };
+    debug.request_body_prefix_fingerprint = match (crypto_key, body_prefix.as_ref()) {
+        (Some(crypto_key), Some(prefix)) => Some(oauth_fingerprint_body_prefix(
+            crypto_key,
+            path,
+            prefix.as_slice(),
+        )),
+        _ => None,
+    };
+    if crypto_key.is_some() {
+        debug.fingerprint_version = Some(OAUTH_FINGERPRINT_VERSION);
+    }
 }
 
 fn attach_account_header(
@@ -908,6 +1101,7 @@ mod tests {
     #[test]
     fn copy_forwardable_headers_keeps_prompt_cache_headers_but_strips_sticky_headers() {
         let client = Client::new();
+        let crypto_key: [u8; 32] = Sha256::digest(b"oauth-debug-test-secret").into();
         let headers = HeaderMap::from_iter([
             (
                 header::HeaderName::from_static("x-prompt-cache-key"),
@@ -929,8 +1123,12 @@ mod tests {
             ),
         ]);
 
-        let (builder, summary) =
-            copy_forwardable_headers(client.get("https://example.com"), &headers, &[]);
+        let (builder, summary) = copy_forwardable_headers(
+            client.get("https://example.com"),
+            &headers,
+            &[],
+            Some(&crypto_key),
+        );
         let request = builder.build().expect("build request");
 
         assert_eq!(
@@ -964,6 +1162,11 @@ mod tests {
                 "x-prompt-cache-key".to_string()
             ]
         );
+        assert_eq!(
+            summary.fingerprints,
+            Some(BTreeMap::new()),
+            "non-allowlisted forwarded headers should not emit fingerprints"
+        );
     }
 
     #[test]
@@ -993,8 +1196,12 @@ mod tests {
         ]);
 
         let builder = client.post("https://example.com");
-        let (builder, _) =
-            copy_forwardable_headers(builder, &headers, OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES);
+        let (builder, _) = copy_forwardable_headers(
+            builder,
+            &headers,
+            OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES,
+            None,
+        );
         let request = attach_account_header(
             builder
                 .bearer_auth("oauth-upstream-token")
@@ -1034,5 +1241,113 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("prompt-cache-gamma")
         );
+    }
+
+    #[test]
+    fn copy_forwardable_headers_fingerprints_allowlisted_header_values() {
+        let client = Client::new();
+        let crypto_key: [u8; 32] = Sha256::digest(b"oauth-debug-test-secret").into();
+        let headers = HeaderMap::from_iter([
+            (
+                header::HeaderName::from_static("session_id"),
+                "session-alpha".parse().expect("session header"),
+            ),
+            (
+                header::HeaderName::from_static("traceparent"),
+                "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+                    .parse()
+                    .expect("traceparent"),
+            ),
+        ]);
+
+        let (_, summary_a) = copy_forwardable_headers(
+            client.get("https://example.com"),
+            &headers,
+            &[],
+            Some(&crypto_key),
+        );
+        let (_, summary_b) = copy_forwardable_headers(
+            client.get("https://example.com"),
+            &headers,
+            &[],
+            Some(&crypto_key),
+        );
+
+        let mut changed_headers = headers.clone();
+        changed_headers.insert(
+            header::HeaderName::from_static("session_id"),
+            "session-beta".parse().expect("updated session header"),
+        );
+        let (_, summary_c) = copy_forwardable_headers(
+            client.get("https://example.com"),
+            &changed_headers,
+            &[],
+            Some(&crypto_key),
+        );
+
+        assert_eq!(summary_a.fingerprints, summary_b.fingerprints);
+        assert_ne!(summary_a.fingerprints, summary_c.fingerprints);
+        assert_eq!(
+            summary_a
+                .fingerprints
+                .as_ref()
+                .and_then(|fingerprints| fingerprints.get("session_id"))
+                .map(String::len),
+            Some(16)
+        );
+        assert_eq!(
+            summary_a
+                .fingerprints
+                .as_ref()
+                .and_then(|fingerprints| fingerprints.get("traceparent"))
+                .map(String::len),
+            Some(16)
+        );
+    }
+
+    #[test]
+    fn build_oauth_request_debug_fingerprints_body_prefix_and_downgrades_without_crypto_key() {
+        let crypto_key: [u8; 32] = Sha256::digest(b"oauth-debug-test-secret").into();
+        let forwarded_headers = OauthForwardedHeaderSummary {
+            names: vec!["session_id".to_string()],
+            prompt_cache_header_forwarded: false,
+            fingerprints: Some(BTreeMap::from([(
+                "session_id".to_string(),
+                "0123456789abcdef".to_string(),
+            )])),
+        };
+        let debug = build_oauth_request_debug(
+            "/v1/responses",
+            &forwarded_headers,
+            Some(br#"{"model":"gpt-5.4","input":"hello"}"#),
+            OauthResponsesRewriteSummary::default(),
+            Some(&crypto_key),
+        );
+        let no_crypto = build_oauth_request_debug(
+            "/v1/responses",
+            &forwarded_headers,
+            Some(br#"{"model":"gpt-5.4","input":"hello"}"#),
+            OauthResponsesRewriteSummary::default(),
+            None,
+        );
+
+        assert_eq!(debug.fingerprint_version, Some("v1"));
+        assert!(
+            debug
+                .request_body_prefix_bytes
+                .expect("body prefix byte count")
+                > 0
+        );
+        assert_eq!(
+            debug
+                .request_body_prefix_fingerprint
+                .as_ref()
+                .map(String::len),
+            Some(16)
+        );
+        assert!(no_crypto.fingerprint_version.is_none());
+        assert!(no_crypto.request_body_prefix_fingerprint.is_none());
+        assert!(no_crypto.request_body_prefix_bytes.is_none());
+        assert!(no_crypto.forwarded_header_fingerprints.is_none());
     }
 }
