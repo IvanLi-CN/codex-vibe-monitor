@@ -7,6 +7,37 @@ import { FloatingFieldBubble } from './floating-field-bubble'
 import { Input } from './input'
 import type { BubbleVariant } from './bubble'
 
+function expectBubbleArrowInsideFlatSegment(bubble: Element | null) {
+  expect(bubble).toBeTruthy()
+
+  const bubbleElement = bubble as HTMLElement
+  const arrow = bubbleElement.querySelector('[data-bubble-arrow="true"]')
+
+  expect(arrow).toBeTruthy()
+
+  const bubbleRect = bubbleElement.getBoundingClientRect()
+  const arrowRect = (arrow as HTMLElement).getBoundingClientRect()
+  const radius = Number.parseFloat(getComputedStyle(bubbleElement).borderTopLeftRadius || '0')
+  const side = bubbleElement.getAttribute('data-side')
+
+  if (side === 'left' || side === 'right') {
+    const flatTop = bubbleRect.top + radius
+    const flatBottom = bubbleRect.bottom - radius
+
+    expect(arrowRect.top >= flatTop - 1).toBe(true)
+    expect(arrowRect.bottom <= flatBottom + 1).toBe(true)
+    return
+  }
+
+  if (side === 'top' || side === 'bottom') {
+    const flatLeft = bubbleRect.left + radius
+    const flatRight = bubbleRect.right - radius
+
+    expect(arrowRect.left >= flatLeft - 1).toBe(true)
+    expect(arrowRect.right <= flatRight + 1).toBe(true)
+  }
+}
+
 function backdropImage(theme: 'vibe-light' | 'vibe-dark') {
   const palette = theme === 'vibe-light'
     ? {
@@ -236,6 +267,14 @@ export const StateGallery: Story = {
       <ThemeBubblePanel theme="vibe-dark" title="Shared Bubbles" />
     </div>
   ),
+  play: async ({ canvasElement }) => {
+    const bubbles = canvasElement.ownerDocument.body.querySelectorAll('[role="status"], [role="alert"]')
+
+    await expect(bubbles.length).toBeGreaterThan(0)
+    bubbles.forEach((bubble) => {
+      expectBubbleArrowInsideFlatSegment(bubble)
+    })
+  },
 }
 
 export const InputCornerError: Story = {
@@ -245,6 +284,12 @@ export const InputCornerError: Story = {
     placement: 'input-corner',
   },
   render: (args) => <InputCornerHarness message={args.message} variant={args.variant} className="max-w-xl" />,
+  play: async ({ canvasElement }) => {
+    const doc = within(canvasElement.ownerDocument.body)
+    const bubble = await doc.findByRole('alert')
+
+    expectBubbleArrowInsideFlatSegment(bubble)
+  },
 }
 
 export const OverflowAncestor: Story = {
@@ -295,5 +340,6 @@ export const ViewportEdgeAware: Story = {
     await expect(rect.right <= window.innerWidth - 1).toBe(true)
     await expect(rect.bottom <= window.innerHeight - 1).toBe(true)
     await expect((bubble.getAttribute('data-side') ?? '').length > 0).toBe(true)
+    expectBubbleArrowInsideFlatSegment(bubble)
   },
 }

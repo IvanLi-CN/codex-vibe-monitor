@@ -11,6 +11,12 @@ import { cn } from '../../lib/utils'
 import { usePortaledTheme } from './use-portaled-theme'
 
 export type FloatingFieldBubblePlacement = 'input-corner' | 'label-inline'
+const INLINE_ARROW_PADDING = 16
+const INLINE_ARROW_WIDTH = 8
+const INLINE_ARROW_HEIGHT = 6
+const CORNER_ARROW_PADDING = 18
+const CORNER_ARROW_WIDTH = 14
+const CORNER_ARROW_HEIGHT = 8
 
 interface FloatingFieldBubbleProps {
   message: string
@@ -62,7 +68,7 @@ export function FloatingFieldBubble({
           side="left"
           align="center"
           sideOffset={2}
-          arrowPadding={12}
+          arrowPadding={INLINE_ARROW_PADDING}
           avoidCollisions
           collisionPadding={12}
           sticky="partial"
@@ -76,8 +82,8 @@ export function FloatingFieldBubble({
           <PopoverArrow
             data-theme={portalTheme}
             data-bubble-arrow="true"
-            width={12}
-            height={8}
+            width={INLINE_ARROW_WIDTH}
+            height={INLINE_ARROW_HEIGHT}
             className={bubbleArrowClassName(variant)}
             style={{
               ...bubbleArrowStyle(variant, portalTheme),
@@ -109,7 +115,7 @@ export function FloatingFieldBubble({
         avoidCollisions
         collisionPadding={12}
         sticky="partial"
-        arrowPadding={14}
+        arrowPadding={CORNER_ARROW_PADDING}
         className={cn(
           bubbleContentClassName(variant),
           'pointer-events-none w-[min(20rem,calc(100vw-1rem))]',
@@ -120,8 +126,8 @@ export function FloatingFieldBubble({
         <PopoverArrow
           data-theme={portalTheme}
           data-bubble-arrow="true"
-          width={16}
-          height={9}
+          width={CORNER_ARROW_WIDTH}
+          height={CORNER_ARROW_HEIGHT}
           className={bubbleArrowClassName(variant)}
           style={{
             ...bubbleArrowStyle(variant, portalTheme),
