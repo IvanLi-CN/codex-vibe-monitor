@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.15.4",
+  "base_stable_version": "1.15.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-18T21:40:52Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.15.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "95776785e346fdf8eea959c72fd99d50159158d7",
+  "pr_number": 182,
+  "pr_title": "fix: add OAuth fingerprint observability for cache diagnostics",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.15.4",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.15.4,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "d0b4e7fadd5e89f49dbb2e10e839abc208ee7510",
+  "type_label": "type:patch"
+}
