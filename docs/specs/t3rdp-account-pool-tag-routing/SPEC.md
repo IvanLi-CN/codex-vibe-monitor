@@ -123,14 +123,14 @@
 
 - source_type: storybook_canvas
   target_program: mock-only
-  capture_scope: element
+  capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool/Components/Account Tag Context Chip/Interaction Grid
-  state: default-action-menu
-  evidence_note: 验证 tag 交互芯片的默认态、悬浮后三点按钮可见态，以及上下文菜单展开态已被并排收敛到同一组 Storybook 证据里。
+  submission_gate: approved
+  story_id_or_title: Account Pool/Components/Account Tag Field/Overview
+  state: overview-gallery
+  evidence_note: 验证账号页 tag 字段已聚合展示默认态、空态、当前页新建 tag、添加气泡展开与 tag 上下文菜单展开，便于一次性核对最终交互与布局结果。
   image:
-  ![Tag context chip interaction grid](./assets/tag-context-chip-docs-grid.png)
+  ![Account tag field overview canvas](./assets/account-tag-field-overview-canvas.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
