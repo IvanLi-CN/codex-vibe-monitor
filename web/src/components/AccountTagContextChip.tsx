@@ -14,6 +14,7 @@ interface AccountTagContextChipLabels {
 interface AccountTagContextChipProps {
   name: string
   currentPageCreated?: boolean
+  disabled?: boolean
   labels: AccountTagContextChipLabels
   onRemove: () => void | Promise<void>
   onEdit: () => void
@@ -24,6 +25,7 @@ interface AccountTagContextChipProps {
 export function AccountTagContextChip({
   name,
   currentPageCreated = false,
+  disabled = false,
   labels,
   onRemove,
   onEdit,
@@ -32,9 +34,15 @@ export function AccountTagContextChip({
 }: AccountTagContextChipProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null)
   const longPressTimer = useRef<number | null>(null)
-  const [showActionButton, setShowActionButton] = useState(defaultShowActionButton || defaultOpen)
-  const [menuOpen, setMenuOpen] = useState(defaultOpen)
+  const [showActionButton, setShowActionButton] = useState(!disabled && (defaultShowActionButton || defaultOpen))
+  const [menuOpen, setMenuOpen] = useState(!disabled && defaultOpen)
   const [busyAction, setBusyAction] = useState<'remove' | null>(null)
+
+  useEffect(() => {
+    if (!disabled) return
+    setShowActionButton(false)
+    setMenuOpen(false)
+  }, [disabled])
 
   useEffect(() => {
     const clearLongPress = () => {
@@ -87,12 +95,19 @@ export function AccountTagContextChip({
     <div
       ref={wrapperRef}
       className="relative inline-flex"
-      onMouseEnter={() => setShowActionButton(true)}
-      onMouseLeave={() => setShowActionButton(menuOpen)}
+      onMouseEnter={() => {
+        if (disabled) return
+        setShowActionButton(true)
+      }}
+      onMouseLeave={() => {
+        if (disabled) return
+        setShowActionButton(menuOpen)
+      }}
     >
       <div
         className="inline-flex"
         onPointerDown={(event) => {
+          if (disabled) return
           if (event.pointerType !== 'touch') return
           clearLongPress()
           longPressTimer.current = window.setTimeout(() => {
@@ -119,15 +134,23 @@ export function AccountTagContextChip({
         aria-label={`${name} more actions`}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
+        disabled={disabled}
         className={cn(
           'absolute right-0.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-base-300 bg-base-100/95 text-base-content shadow-sm transition-all',
           showActionButton || menuOpen
             ? 'pointer-events-auto opacity-100 scale-100'
             : 'pointer-events-none opacity-0 scale-95',
         )}
-        onFocus={() => setShowActionButton(true)}
-        onBlur={() => setShowActionButton(menuOpen)}
+        onFocus={() => {
+          if (disabled) return
+          setShowActionButton(true)
+        }}
+        onBlur={() => {
+          if (disabled) return
+          setShowActionButton(menuOpen)
+        }}
         onClick={() => {
+          if (disabled) return
           setShowActionButton(true)
           setMenuOpen((current) => !current)
         }}

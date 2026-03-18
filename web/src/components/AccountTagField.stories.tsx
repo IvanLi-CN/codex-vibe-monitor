@@ -39,6 +39,7 @@ const labels = {
   add: 'Add tag',
   empty: 'No tags linked yet.',
   searchPlaceholder: 'Search tags',
+  searchEmpty: 'No matching tags.',
   createInline: (value: string) => (value ? `Create "${value}"` : 'Create new tag'),
   selectedFromCurrentPage: 'New',
   remove: 'Unlink tag',
@@ -72,9 +73,15 @@ function createDetailFromSummary(summary: TagSummary): TagDetail {
   return { ...summary }
 }
 
-function FieldHarness({ pageCreatedTagIds = [] }: { pageCreatedTagIds?: number[] }) {
+function FieldHarness({
+  pageCreatedTagIds = [],
+  initialSelectedTagIds = [1, 2],
+}: {
+  pageCreatedTagIds?: number[]
+  initialSelectedTagIds?: number[]
+}) {
   const [tags, setTags] = useState<TagSummary[]>(baseTags)
-  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([1, 2])
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>(initialSelectedTagIds)
 
   const selectedNames = useMemo(
     () => tags.filter((tag) => selectedTagIds.includes(tag.id)).map((tag) => tag.name),
@@ -160,7 +167,7 @@ const meta = {
     docs: {
       description: {
         component:
-          '上游账号详情与创建页共用的 tag 选择字段。已选 tag 统一通过独立的上下文菜单芯片承载交互：悬浮后在标签内部右侧显示三点按钮，点击打开菜单；移动端可长按打开菜单。',
+          '上游账号详情与创建页共用的内联 tag 选择字段。已选 tag 以内联 chips 形式展示在同一个输入式容器中，尾部通过气泡触发器完成搜索、多选与创建；每个已选 tag 继续复用独立的上下文菜单芯片交互。',
       },
     },
   },
@@ -182,6 +189,10 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
   render: () => <FieldHarness />,
+}
+
+export const Empty: Story = {
+  render: () => <FieldHarness initialSelectedTagIds={[]} />,
 }
 
 export const WithPageCreatedTag: Story = {
