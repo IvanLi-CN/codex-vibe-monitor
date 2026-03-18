@@ -299,7 +299,32 @@ function buildImportedOauthPendingState(
       detail: null,
       attempts: 0,
     })),
-    importReport: null,
+    importError: null,
+  }
+}
+
+function formatImportedOauthSelectionLabel(
+  items: ImportOauthCredentialFilePayload[],
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (items.length === 0) return null
+  return items.length === 1
+    ? items[0]?.fileName ?? null
+    : t('accountPool.upstreamAccounts.import.filesSelected', { count: items.length })
+}
+
+function buildImportedOauthStateFromRows(
+  rows: ImportedOauthValidationRow[],
+  items: ImportOauthCredentialFilePayload[],
+): ImportedOauthValidationDialogState {
+  const duplicateInInput = rows.filter((row) => row.status === 'duplicate_in_input').length
+  return {
+    inputFiles: items.length,
+    uniqueInInput: rows.length,
+    duplicateInInput,
+    checking: false,
+    importing: false,
+    rows,
     importError: null,
   }
 }
@@ -1527,7 +1552,6 @@ export default function UpstreamAccountCreatePage() {
               ...response,
               checking: false,
               importing: false,
-              importReport: null,
               importError: null,
             }
           }
@@ -1571,20 +1595,16 @@ export default function UpstreamAccountCreatePage() {
         setImportSelectionLabel(null)
         return
       }
-      try {
-        const items = await Promise.all(
-          selectedFiles.map(async (file, index) => ({
+    try {
+      const items = await Promise.all(
+        selectedFiles.map(async (file, index) => ({
             sourceId: createImportedOauthSourceId(file, index),
             fileName: file.name,
             content: await file.text(),
           })),
         )
         setImportFiles(items)
-        setImportSelectionLabel(
-          selectedFiles.length === 1
-            ? selectedFiles[0]?.name ?? null
-            : t('accountPool.upstreamAccounts.import.filesSelected', { count: selectedFiles.length }),
-        )
+        setImportSelectionLabel(formatImportedOauthSelectionLabel(items, t))
       } catch (err) {
         setImportFiles([])
         setImportSelectionLabel(null)
@@ -1657,42 +1677,48 @@ export default function UpstreamAccountCreatePage() {
         groupNote: importGroupNote,
         tagIds: importTagIds,
       })
+      const importedSourceIds = new Set(
+        response.results
+          .filter((result) => result.status === 'created' || result.status === 'updated_existing')
+          .map((result) => result.sourceId),
+      )
+      const failedResultsBySourceId = new Map(
+        response.results
+          .filter((result) => result.status === 'failed')
+          .map((result) => [result.sourceId, result] as const),
+      )
+
+      const remainingItems = importFiles.filter((item) => !importedSourceIds.has(item.sourceId))
+      setImportFiles(remainingItems)
+      setImportSelectionLabel(formatImportedOauthSelectionLabel(remainingItems, t))
+      setImportInputKey((current) => current + 1)
+
       setImportValidationState((current) => {
         if (!current) return current
-        const resultsBySourceId = new Map(response.results.map((result) => [result.sourceId, result] as const))
-        return {
-          ...current,
-          checking: false,
-          importing: false,
-          importError: null,
-          importReport: response,
-          rows: current.rows.map((row) => {
-            const result = resultsBySourceId.get(row.sourceId)
-            if (!result) return row
-            if (result.status === 'failed') {
-              return {
-                ...row,
-                status: 'error',
-                detail: result.detail ?? row.detail,
-              }
-            }
+        const remainingRows = current.rows
+          .filter((row) => !importedSourceIds.has(row.sourceId))
+          .map((row) => {
+            const failedResult = failedResultsBySourceId.get(row.sourceId)
+            if (!failedResult) return row
             return {
               ...row,
-              detail: result.detail ?? row.detail,
+              status: 'error',
+              detail: failedResult.detail ?? row.detail,
             }
-          }),
+          })
+
+        if (remainingRows.length === 0) {
+          return null
+        }
+
+        return {
+          ...buildImportedOauthStateFromRows(remainingRows, remainingItems),
+          importing: false,
         }
       })
-      if (response.summary.failed === 0) {
-        const firstAccountId = response.results.find((result) => typeof result.accountId === 'number')?.accountId ?? null
-        navigate('/account-pool/upstream-accounts', {
-          state: firstAccountId
-            ? {
-                selectedAccountId: firstAccountId,
-                openDetail: true,
-              }
-            : undefined,
-        })
+
+      if (importedSourceIds.size > 0 && remainingItems.length === 0) {
+        setImportValidationDialogOpen(false)
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -1706,7 +1732,7 @@ export default function UpstreamAccountCreatePage() {
           : current,
       )
     }
-  }, [groupDraftNotes, groups, importFiles, importGroupName, importOauthAccounts, importTagIds, importValidationState?.rows, navigate])
+  }, [groupDraftNotes, groups, importFiles, importGroupName, importOauthAccounts, importTagIds, importValidationState?.rows, t])
 
   const invalidateOauthSession = useCallback(() => {
     invalidatePendingSingleOauthSession(

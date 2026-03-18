@@ -79,7 +79,6 @@ const mixedResultsState: ImportedOauthValidationDialogState = {
       matchedAccount: null,
     },
   ],
-  importReport: null,
   importError: null,
 }
 
@@ -129,46 +128,25 @@ export const CheckingInProgress: Story = {
   },
 }
 
-export const PostImportReport: Story = {
+export const PagedResults: Story = {
   args: {
     state: {
       ...mixedResultsState,
-      importReport: {
-        summary: {
-          inputFiles: 6,
-          selectedFiles: 2,
-          created: 1,
-          updatedExisting: 1,
-          failed: 0,
-        },
-        results: [
-          {
-            sourceId: 'tokyo',
-            fileName: 'tokyo@duckmail.sbs.json',
-            email: 'tokyo@duckmail.sbs',
-            chatgptAccountId: 'acct_tokyo',
-            accountId: 88,
-            status: 'created',
-            detail: null,
-            matchedAccount: null,
-          },
-          {
-            sourceId: 'seoul',
-            fileName: 'seoul@duckmail.sbs.json',
-            email: 'seoul@duckmail.sbs',
-            chatgptAccountId: 'acct_seoul',
-            accountId: 52,
-            status: 'updated_existing',
-            detail: 'Imported, but initial sync failed: transient upstream timeout.',
-            matchedAccount: {
-              accountId: 52,
-              displayName: 'Seoul Prod',
-              groupName: 'prod',
-              status: 'active',
-            },
-          },
-        ],
-      },
+      inputFiles: 130,
+      uniqueInInput: 130,
+      duplicateInInput: 0,
+      rows: Array.from({ length: 130 }, (_, index) => ({
+        sourceId: `row-${index + 1}`,
+        fileName: `mailbox-${index + 1}@duckmail.sbs.json`,
+        email: `mailbox-${index + 1}@duckmail.sbs`,
+        chatgptAccountId: `acct_${index + 1}`,
+        displayName: `mailbox-${index + 1}@duckmail.sbs`,
+        tokenExpiresAt: '2026-03-19T10:30:00.000Z',
+        status: index % 5 === 0 ? 'error' : index % 4 === 0 ? 'invalid' : index % 3 === 0 ? 'ok_exhausted' : 'ok',
+        detail: index % 5 === 0 ? 'Network timeout while refreshing imported OAuth token.' : null,
+        attempts: index % 5 === 0 ? 2 : 1,
+        matchedAccount: null,
+      })),
     },
   },
 }

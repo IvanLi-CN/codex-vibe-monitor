@@ -20,7 +20,7 @@
 - 新增后端批量 `validate` / `import` 接口，先校验文件结构与凭据可用性，再导入通过项。
 - 验证阶段要区分 `ok`、`ok_exhausted`、`invalid`、`error`、`duplicate_in_input`，并回传现有账号匹配信息。
 - 导入阶段命中现有账号时更新凭据并重新同步；未命中时创建新的 OAuth 账号。
-- 导入结果弹窗对齐 `mixed-results` 交互：顶部统计、结果筛选、逐行状态、重试失败项、导入后汇总。
+- 导入结果弹窗对齐 `mixed-results` 交互：顶部统计、结果筛选、逐行状态、重试失败项，以及大结果集分页。
 
 ### Non-goals
 
@@ -47,8 +47,8 @@
 
 - 新增页顶部 tab 扩展为四种模式：`OAuth 登录`、`批量 OAuth`、`API Key`、`导入`。
 - 导入模式包含文件选择器、已选文件摘要、默认分组 / tags 表单，以及“开始验证”入口。
-- 验证成功后弹出结果对话框；对话框内支持状态筛选、单条重试、批量重试失败项、导入通过项与导入后结果汇总。
-- 导入完成后若仍有失败行，弹窗保留；若全部成功，弹窗关闭并回到账号列表，自动聚焦首个受影响账号。
+- 验证成功后弹出结果对话框；对话框内支持状态筛选、单条重试、批量重试失败项、导入通过项，且验证结果按每页 100 条分页展示。
+- 导入完成后不展示独立导入报告；已成功导入的行会从当前结果列表中移除，若剩余行为空则关闭弹窗。
 
 ## 验收标准
 
@@ -65,9 +65,13 @@
 - `cargo test`
 - `cd web && bun run test`
 - `cd web && bun run build`
-- Storybook: 导入结果弹窗至少覆盖 `Mixed Results`、`Checking In Progress`、`Post Import` 三类状态
+- Storybook: 导入结果弹窗至少覆盖 `Mixed Results`、`Checking In Progress`、`Paged Results` 三类状态
 
 ## 实现备注
 
 - 后端主改动位于 `src/upstream_accounts/mod.rs` 与 `src/main.rs` 的号池路由。
 - 前端主改动位于 `web/src/lib/api.ts`、`web/src/hooks/useUpstreamAccounts.ts`、`web/src/pages/account-pool/UpstreamAccountCreate.tsx` 与新导入结果弹窗组件 / stories。
+
+## Visual Evidence (PR)
+
+![导入验证弹窗当前实现](./assets/imported-oauth-validation-dialog-mixed-results.png)

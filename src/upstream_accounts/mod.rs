@@ -74,6 +74,7 @@ const POOL_SETTINGS_SINGLETON_ID: i64 = 1;
 const DEFAULT_STICKY_KEY_LIMIT: i64 = 50;
 const USAGE_PATH_STYLE_CHATGPT: &str = "/wham/usage";
 const USAGE_PATH_STYLE_CODEX_API: &str = "/api/codex/usage";
+const UPSTREAM_USAGE_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 
 #[derive(Debug)]
 pub(crate) struct UpstreamAccountsRuntime {
@@ -729,6 +730,7 @@ struct ImportedOauthProbeOutcome {
     credentials: StoredOauthCredentials,
     claims: ChatgptJwtClaims,
     exhausted: bool,
+    usage_snapshot_warning: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1665,7 +1667,7 @@ async fn build_imported_oauth_validation_response(
                 detail: if outcome.exhausted {
                     Some("usage snapshot indicates the account is currently exhausted".to_string())
                 } else {
-                    None
+                    outcome.usage_snapshot_warning
                 },
                 attempts: 1,
             }),
@@ -3371,8 +3373,8 @@ async fn probe_imported_oauth_credentials(
             .or(Some(imported.chatgpt_account_id.as_str())),
     )
     .await;
-    let snapshot = match usage_result {
-        Ok(snapshot) => snapshot,
+    let (snapshot, usage_snapshot_warning) = match usage_result {
+        Ok(snapshot) => (Some(snapshot), None),
         Err(err) if is_import_invalid_error_message(&err.to_string()) => return Err(err),
         Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
             let response = refresh_oauth_tokens(
@@ -3396,7 +3398,7 @@ async fn probe_imported_oauth_credentials(
             credentials.token_type = response.token_type;
             token_expires_at =
                 format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
-            fetch_usage_snapshot(
+            match fetch_usage_snapshot(
                 &state.http_clients.shared,
                 &state.config,
                 &credentials.access_token,
@@ -3405,16 +3407,40 @@ async fn probe_imported_oauth_credentials(
                     .as_deref()
                     .or(Some(imported.chatgpt_account_id.as_str())),
             )
-            .await?
+            .await
+            {
+                Ok(snapshot) => (Some(snapshot), None),
+                Err(retry_err)
+                    if !is_import_invalid_error_message(&retry_err.to_string())
+                        && !retry_err.to_string().contains("401")
+                        && !retry_err.to_string().contains("403") =>
+                {
+                    (
+                        None,
+                        Some(format!(
+                            "usage snapshot unavailable during validation: {retry_err}"
+                        )),
+                    )
+                }
+                Err(retry_err) => return Err(retry_err),
+            }
         }
-        Err(err) => return Err(err),
+        Err(err) => (
+            None,
+            Some(format!(
+                "usage snapshot unavailable during validation: {err}"
+            )),
+        ),
     };
 
     Ok(ImportedOauthProbeOutcome {
         token_expires_at,
         credentials,
         claims,
-        exhausted: imported_snapshot_is_exhausted(&snapshot),
+        exhausted: snapshot
+            .as_ref()
+            .is_some_and(imported_snapshot_is_exhausted),
+        usage_snapshot_warning,
     })
 }
 
@@ -6411,12 +6437,59 @@ async fn fetch_usage_snapshot(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Result<NormalizedUsageSnapshot> {
+    let primary_result = request_usage_snapshot_with_user_agent(
+        client,
+        config,
+        access_token,
+        chatgpt_account_id,
+        &config.user_agent,
+    )
+    .await;
+
+    if primary_result.is_ok() || config.user_agent == UPSTREAM_USAGE_BROWSER_USER_AGENT {
+        return primary_result;
+    }
+
+    let primary_error = match primary_result {
+        Ok(snapshot) => return Ok(snapshot),
+        Err(err) => err,
+    };
+
+    warn!(
+        error = ?primary_error,
+        configured_user_agent = %config.user_agent,
+        fallback_user_agent = %UPSTREAM_USAGE_BROWSER_USER_AGENT,
+        "usage snapshot request failed; retrying with browser user agent"
+    );
+
+    request_usage_snapshot_with_user_agent(
+        client,
+        config,
+        access_token,
+        chatgpt_account_id,
+        UPSTREAM_USAGE_BROWSER_USER_AGENT,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "initial usage snapshot attempt with configured user agent failed: {primary_error:#}"
+        )
+    })
+}
+
+async fn request_usage_snapshot_with_user_agent(
+    client: &Client,
+    config: &AppConfig,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+    user_agent: &str,
+) -> Result<NormalizedUsageSnapshot> {
     let url = build_usage_endpoint_url(&config.upstream_accounts_usage_base_url)
         .context("failed to build usage endpoint")?;
     let mut request = client
         .get(url)
         .bearer_auth(access_token)
-        .header(header::USER_AGENT, config.user_agent.clone());
+        .header(header::USER_AGENT, user_agent);
     if let Some(account_id) = chatgpt_account_id
         && !account_id.trim().is_empty()
     {
@@ -8053,8 +8126,15 @@ fn decrypt_secret_value(key: &[u8; 32], payload: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        Router,
+        extract::State,
+        http::{HeaderMap, StatusCode},
+        routing::get,
+    };
     use sqlx::SqlitePool;
-    use std::collections::HashMap;
+    use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+    use tokio::{net::TcpListener, sync::Mutex};
 
     #[test]
     fn derive_secret_key_is_stable() {
@@ -8356,6 +8436,146 @@ mod tests {
                 .as_deref(),
             Some("9.99")
         );
+    }
+
+    fn usage_snapshot_test_config(base_url: &str, user_agent: &str) -> AppConfig {
+        AppConfig {
+            openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
+            database_path: PathBuf::from(":memory:"),
+            poll_interval: Duration::from_secs(10),
+            request_timeout: Duration::from_secs(5),
+            openai_proxy_handshake_timeout: Duration::from_secs(
+                DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
+            ),
+            openai_proxy_compact_handshake_timeout: Duration::from_secs(
+                DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS,
+            ),
+            openai_proxy_request_read_timeout: Duration::from_secs(
+                DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
+            ),
+            openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+            proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
+            proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
+            proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
+            proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
+            proxy_raw_compression: DEFAULT_PROXY_RAW_COMPRESSION,
+            proxy_raw_hot_secs: DEFAULT_PROXY_RAW_HOT_SECS,
+            xray_binary: DEFAULT_XRAY_BINARY.to_string(),
+            xray_runtime_dir: PathBuf::from("target/xray-forward-tests"),
+            forward_proxy_algo: ForwardProxyAlgo::V1,
+            max_parallel_polls: 2,
+            shared_connection_parallelism: 1,
+            http_bind: "127.0.0.1:0".parse().expect("valid socket address"),
+            cors_allowed_origins: Vec::new(),
+            list_limit_max: 100,
+            user_agent: user_agent.to_string(),
+            static_dir: None,
+            retention_enabled: DEFAULT_RETENTION_ENABLED,
+            retention_dry_run: DEFAULT_RETENTION_DRY_RUN,
+            retention_interval: Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS),
+            retention_batch_rows: DEFAULT_RETENTION_BATCH_ROWS,
+            archive_dir: PathBuf::from("target/archive-tests"),
+            invocation_success_full_days: DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
+            invocation_max_days: DEFAULT_INVOCATION_MAX_DAYS,
+            forward_proxy_attempts_retention_days: DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
+            stats_source_snapshots_retention_days: DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
+            quota_snapshot_full_days: DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
+            crs_stats: None,
+            upstream_accounts_oauth_client_id: DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID
+                .to_string(),
+            upstream_accounts_oauth_issuer: Url::parse(DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_ISSUER)
+                .expect("valid oauth issuer"),
+            upstream_accounts_usage_base_url: Url::parse(base_url).expect("valid usage base url"),
+            upstream_accounts_login_session_ttl: Duration::from_secs(
+                DEFAULT_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS,
+            ),
+            upstream_accounts_sync_interval: Duration::from_secs(
+                DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
+            ),
+            upstream_accounts_refresh_lead_time: Duration::from_secs(
+                DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS,
+            ),
+            upstream_accounts_history_retention_days:
+                DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
+            upstream_accounts_moemail: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_usage_snapshot_retries_with_browser_user_agent() {
+        #[derive(Clone)]
+        struct UsageSnapshotTestState {
+            requests: Arc<Mutex<Vec<String>>>,
+        }
+
+        async fn handler(
+            State(state): State<UsageSnapshotTestState>,
+            headers: HeaderMap,
+        ) -> (StatusCode, String) {
+            let user_agent = headers
+                .get(header::USER_AGENT)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            state.requests.lock().await.push(user_agent.clone());
+            if user_agent == UPSTREAM_USAGE_BROWSER_USER_AGENT {
+                (
+                    StatusCode::OK,
+                    json!({
+                        "planType": "pro",
+                        "rateLimit": {
+                            "primaryWindow": {
+                                "usedPercent": 12,
+                                "windowDurationMins": 300,
+                                "resetsAt": 1771322400
+                            }
+                        }
+                    })
+                    .to_string(),
+                )
+            } else {
+                (
+                    StatusCode::FORBIDDEN,
+                    json!({ "detail": "blocked user agent" }).to_string(),
+                )
+            }
+        }
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state(UsageSnapshotTestState {
+                requests: requests.clone(),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let client = Client::builder().build().expect("client");
+        let config = usage_snapshot_test_config(
+            &format!("http://{addr}/backend-api"),
+            "codex-vibe-monitor/0.2.0",
+        );
+
+        let snapshot = fetch_usage_snapshot(&client, &config, "access-token", Some("acct_test"))
+            .await
+            .expect("fetch usage snapshot");
+
+        assert_eq!(snapshot.plan_type.as_deref(), Some("pro"));
+        let recorded = requests.lock().await.clone();
+        assert_eq!(
+            recorded,
+            vec![
+                "codex-vibe-monitor/0.2.0".to_string(),
+                UPSTREAM_USAGE_BROWSER_USER_AGENT.to_string()
+            ]
+        );
+
+        server.abort();
     }
 
     #[test]
