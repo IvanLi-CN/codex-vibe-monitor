@@ -1,3 +1,5 @@
+import type { ApiInvocation } from './api'
+
 const DEFAULT_FALLBACK = '—'
 const PRIORITY_SERVICE_TIER = 'priority'
 const ROUTE_MODE_POOL = 'pool'
@@ -62,9 +64,12 @@ export function isPoolRouteMode(value: string | null | undefined): boolean {
 
 export function resolveInvocationAccountLabel(
   routeMode: string | null | undefined,
+  status: string | null | undefined,
   upstreamAccountName: string | null | undefined,
   upstreamAccountId: number | null | undefined,
   reverseProxyLabel: string,
+  poolRoutingPendingLabel: string,
+  poolAccountUnavailableLabel: string,
 ): string {
   if (!isPoolRouteMode(routeMode)) return reverseProxyLabel
 
@@ -73,7 +78,11 @@ export function resolveInvocationAccountLabel(
   if (typeof upstreamAccountId === 'number' && Number.isFinite(upstreamAccountId)) {
     return `账号 #${Math.trunc(upstreamAccountId)}`
   }
-  return reverseProxyLabel
+  const normalizedStatus = status?.trim().toLowerCase()
+  if (normalizedStatus === 'running' || normalizedStatus === 'pending') {
+    return poolRoutingPendingLabel
+  }
+  return poolAccountUnavailableLabel
 }
 
 export function formatResponseContentEncoding(
@@ -83,4 +92,15 @@ export function formatResponseContentEncoding(
   if (typeof value !== 'string') return fallback
   const normalized = value.trim().toLowerCase()
   return normalized.length > 0 ? normalized : fallback
+}
+
+export function invocationStableKey(record: Pick<ApiInvocation, 'invokeId' | 'occurredAt'>): string {
+  return `${record.invokeId}-${record.occurredAt}`
+}
+
+export function invocationStableDomKey(
+  record: Pick<ApiInvocation, 'invokeId' | 'occurredAt'> | string,
+): string {
+  const stableKey = typeof record === 'string' ? record : invocationStableKey(record)
+  return stableKey.replace(/[^A-Za-z0-9_-]/g, '_')
 }

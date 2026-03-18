@@ -4,6 +4,8 @@ import type { ApiInvocation } from '../lib/api'
 import {
   formatResponseContentEncoding,
   formatProxyWeightDelta,
+  invocationStableKey,
+  invocationStableDomKey,
   isPoolRouteMode,
   formatServiceTier,
   getFastIndicatorState,
@@ -58,6 +60,16 @@ function formatSecondsFromMilliseconds(value: number | null | undefined, localeT
     minimumFractionDigits: 0,
     maximumFractionDigits: precision,
   })} s`
+}
+
+function formatElapsedSecondsFromTimestamp(
+  occurredAt: string | null | undefined,
+  localeTag: string,
+  nowMs: number,
+) {
+  const occurredMs = occurredAt ? Date.parse(occurredAt) : Number.NaN
+  if (!Number.isFinite(occurredMs)) return FALLBACK_CELL
+  return formatSecondsFromMilliseconds(Math.max(0, nowMs - occurredMs), localeTag)
 }
 
 function formatOptionalNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
@@ -178,8 +190,10 @@ function renderEndpointPath(
 
 interface InvocationRowViewModel {
   record: ApiInvocation
+  rowKey: string
   recordId: number
   meta: { variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'; key: TranslationKey }
+  isInFlight: boolean
   occurredTime: string
   occurredDate: string
   accountLabel: string
@@ -212,9 +226,10 @@ interface InvocationRowViewModel {
 export function InvocationTable({ records, isLoading, error }: InvocationTableProps) {
   const { t, locale } = useTranslation()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
-  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
   const [drawerAccountId, setDrawerAccountId] = useState<number | null>(null)
   const [drawerAccountLabel, setDrawerAccountLabel] = useState<string | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const [isXlUp, setIsXlUp] = useState(() => {
     if (typeof window === 'undefined') return false
     return window.matchMedia('(min-width: 1280px)').matches
@@ -258,7 +273,13 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   ) => {
     if (!accountClickable || accountId == null) {
       return (
-        <span className={cn('inline-block max-w-full truncate whitespace-nowrap', className)} title={accountLabel}>
+        <span
+          className={cn(
+            'inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none',
+            className,
+          )}
+          title={accountLabel}
+        >
           {accountLabel}
         </span>
       )
@@ -268,7 +289,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
       <button
         type="button"
         className={cn(
-          'inline-block max-w-full truncate whitespace-nowrap appearance-none border-0 bg-transparent p-0 align-middle font-inherit text-center text-current no-underline shadow-none transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+          'inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap appearance-none border-0 bg-transparent p-0 align-middle font-inherit leading-none text-center text-current no-underline shadow-none transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
           className,
         )}
         onClick={() => openAccountDrawer(accountId, accountLabel)}
@@ -308,7 +329,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   useEffect(() => {
     setExpandedId((current) => {
       if (current === null) return current
-      return records.some((record) => record.id === current) ? current : null
+      return records.some((record) => invocationStableKey(record) === current) ? current : null
     })
   }, [records])
 
@@ -366,19 +387,24 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   const rows = useMemo<InvocationRowViewModel[]>(
     () =>
       records.map((record) => {
+        const rowKey = invocationStableKey(record)
         const occurred = new Date(record.occurredAt)
         const normalizedStatus = (resolveInvocationDisplayStatus(record) || 'unknown').toLowerCase()
         const meta = STATUS_META[normalizedStatus] ?? FALLBACK_STATUS_META
         const recordId = record.id
+        const isInFlight = normalizedStatus === 'running' || normalizedStatus === 'pending'
         const errorMessage = record.errorMessage?.trim() ?? ''
         const endpointValue = record.endpoint?.trim() || FALLBACK_CELL
         const isCompactEndpointValue = isCompactEndpoint(record.endpoint)
         const proxyDisplayName = resolveProxyDisplayName(record)
         const accountLabel = resolveInvocationAccountLabel(
           record.routeMode,
+          normalizedStatus,
           record.upstreamAccountName,
           record.upstreamAccountId,
           t('table.account.reverseProxy'),
+          t('table.account.poolRoutingPending'),
+          t('table.account.poolAccountUnavailable'),
         )
         const accountClickable = canOpenInvocationAccount(record)
         const requestedServiceTierValue = formatServiceTier(record.requestedServiceTier)
@@ -387,7 +413,9 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const reasoningEffortValue = formatOptionalText(record.reasoningEffort)
         const reasoningTokensValue = formatOptionalNumber(record.reasoningTokens, numberFormatter)
         const outputReasoningBreakdownValue = `${t('table.column.reasoningTokensShort')} ${reasoningTokensValue}`
-        const totalLatencyValue = formatSecondsFromMilliseconds(record.tTotalMs, localeTag)
+        const totalLatencyValue = isInFlight
+          ? formatElapsedSecondsFromTimestamp(record.occurredAt, localeTag, nowMs)
+          : formatSecondsFromMilliseconds(record.tTotalMs, localeTag)
         const firstByteLatencyValue = formatMilliseconds(record.tUpstreamTtfbMs)
         const responseContentEncodingValue = formatResponseContentEncoding(record.responseContentEncoding)
         const occurredValid = !Number.isNaN(occurred.getTime())
@@ -502,8 +530,10 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
         return {
           record,
+          rowKey,
           recordId,
           meta,
+          isInFlight,
           occurredTime,
           occurredDate,
           accountLabel,
@@ -536,8 +566,19 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           timingPairs,
         }
       }),
-    [records, currencyFormatter, dateFormatter, detailLabels, localeTag, numberFormatter, t, timeFormatter],
+    [records, currencyFormatter, dateFormatter, detailLabels, localeTag, nowMs, numberFormatter, t, timeFormatter],
   )
+
+  const hasInFlightRows = useMemo(() => rows.some((row) => row.isInFlight), [rows])
+
+  useEffect(() => {
+    if (!hasInFlightRows) return
+    setNowMs(Date.now())
+    const id = window.setInterval(() => {
+      setNowMs(Date.now())
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [hasInFlightRows])
 
   const renderExpandedContent = (
     detailId: string,
@@ -613,15 +654,15 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
     <div className="space-y-3">
       <div className="space-y-3 md:hidden" data-testid="invocation-list">
         {rows.map((row, rowIndex) => {
-          const listDetailId = `invocation-list-details-${row.recordId}`
-          const isExpanded = expandedId === row.recordId
+          const listDetailId = `invocation-list-details-${invocationStableDomKey(row.rowKey)}`
+          const isExpanded = expandedId === row.rowKey
           const handleToggle = () => {
-            setExpandedId((current) => (current === row.recordId ? null : row.recordId))
+            setExpandedId((current) => (current === row.rowKey ? null : row.rowKey))
           }
 
           return (
             <article
-              key={`mobile-${row.recordId}`}
+              key={`mobile-${row.rowKey}`}
               data-testid="invocation-list-item"
               className={`rounded-xl border border-base-300/70 px-3 py-3 ${rowIndex % 2 === 0 ? 'bg-base-100/40' : 'bg-base-200/24'}`}
             >
@@ -796,14 +837,14 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
             </thead>
             <tbody className="divide-y divide-base-300/65">
               {rows.map((row, rowIndex) => {
-                const tableDetailId = `invocation-table-details-${row.recordId}`
-                const isExpanded = expandedId === row.recordId
+                const tableDetailId = `invocation-table-details-${invocationStableDomKey(row.rowKey)}`
+                const isExpanded = expandedId === row.rowKey
                 const handleToggle = () => {
-                  setExpandedId((current) => (current === row.recordId ? null : row.recordId))
+                  setExpandedId((current) => (current === row.rowKey ? null : row.rowKey))
                 }
 
                 return (
-                  <Fragment key={row.recordId}>
+                  <Fragment key={row.rowKey}>
                     <tr className={`${rowIndex % 2 === 0 ? 'bg-base-100/38' : 'bg-base-200/22'} hover:bg-primary/6`}>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
                         <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
@@ -815,11 +856,11 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                         <div className="flex min-w-0 flex-col items-center justify-center gap-1 leading-tight text-center">
                           <Badge
                             variant={row.meta.variant}
-                            className="mx-auto w-fit max-w-full justify-center overflow-hidden px-4 text-center"
+                            className="mx-auto h-6 w-fit max-w-full items-center justify-center overflow-hidden px-2.5 py-0 text-[11px] font-semibold text-center leading-none"
                             data-testid="invocation-proxy-badge"
                           >
                             <span
-                              className="block max-w-full min-w-0 truncate whitespace-nowrap"
+                              className="inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none"
                               data-testid="invocation-account-name"
                             >
                               {renderAccountValue(row.accountLabel, row.accountId, row.accountClickable)}

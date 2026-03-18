@@ -112,6 +112,7 @@ afterEach(() => {
   root = null;
   navigateMock.mockReset();
   apiMocks.fetchUpstreamAccountDetail.mockReset();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -1796,6 +1797,212 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).toContain(
       "Mailbox refresh failed. We could not confirm the latest code or invite state.",
     );
+    expect(host?.textContent).toContain("Check failed");
+  });
+
+  it("shows a checking badge while the mailbox refresh is in flight", async () => {
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString()
+    let releaseRefresh: ((value: Array<Record<string, unknown>>) => void) | null = null
+    const getOauthMailboxStatuses = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseRefresh = resolve as typeof releaseRefresh
+        }),
+    )
+    mockUpstreamAccounts({ getOauthMailboxStatuses })
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Checking Mailbox",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-checking",
+              emailAddress: "checking@example.com",
+              expiresAt,
+              source: "generated",
+            },
+            mailboxInput: "checking@example.com",
+          },
+        },
+      },
+    })
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(host?.textContent).toContain("Checking")
+
+    await act(async () => {
+      releaseRefresh?.([
+        {
+          sessionId: "mailbox-checking",
+          emailAddress: "checking@example.com",
+          expiresAt,
+          latestCode: null,
+          invite: null,
+          invited: false,
+          error: null,
+        },
+      ])
+      await Promise.resolve()
+    })
+  })
+
+  it("auto refreshes the single mailbox status and shows received timestamps", async () => {
+    vi.useFakeTimers();
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    const getOauthMailboxStatuses = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          sessionId: "mailbox-refresh-live",
+          emailAddress: "live@example.com",
+          expiresAt,
+          latestCode: {
+            value: "111111",
+            source: "subject",
+            updatedAt: "2026-03-13T10:00:00.000Z",
+          },
+          invite: {
+            subject: "Workspace invite",
+            copyValue: "https://example.com/invite",
+            copyLabel: "invite-link",
+            updatedAt: "2026-03-13T10:00:01.000Z",
+          },
+          invited: true,
+          error: null,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          sessionId: "mailbox-refresh-live",
+          emailAddress: "live@example.com",
+          expiresAt,
+          latestCode: {
+            value: "222222",
+            source: "subject",
+            updatedAt: "2026-03-13T10:00:05.000Z",
+          },
+          invite: {
+            subject: "Workspace invite",
+            copyValue: "https://example.com/invite",
+            copyLabel: "invite-link",
+            updatedAt: "2026-03-13T10:00:01.000Z",
+          },
+          invited: true,
+          error: null,
+        },
+      ]);
+    mockUpstreamAccounts({ getOauthMailboxStatuses });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=oauth",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Live Mailbox",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-refresh-live",
+              emailAddress: "live@example.com",
+              expiresAt,
+              source: "generated",
+            },
+            mailboxInput: "live@example.com",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+
+    expect(getOauthMailboxStatuses).toHaveBeenCalledTimes(1);
+    expect(host?.textContent).toContain("111111");
+    expect(host?.textContent).toContain("Received at");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await flushAsync();
+
+    expect(getOauthMailboxStatuses).toHaveBeenCalledTimes(2);
+    expect(host?.textContent).toContain("222222");
+  });
+
+  it("fetches mailbox status on demand for batch oauth flows", async () => {
+    act(() => {
+      root?.unmount();
+    });
+    host?.remove();
+    host = null;
+    root = null;
+
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    const batchStatuses = vi.fn().mockResolvedValue([
+      {
+        sessionId: "mailbox-manual-batch",
+        emailAddress: "batch@example.com",
+        expiresAt,
+        latestCode: {
+          value: "444444",
+          source: "subject",
+          updatedAt: "2026-03-13T10:00:00.000Z",
+        },
+        invite: null,
+        invited: false,
+        error: null,
+      },
+    ]);
+    mockUpstreamAccounts({ getOauthMailboxStatuses: batchStatuses });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              {
+                id: "row-1",
+                displayName: "Row One",
+                mailboxSession: {
+                  supported: true,
+                  sessionId: "mailbox-manual-batch",
+                  emailAddress: "batch@example.com",
+                  expiresAt,
+                  source: "generated",
+                },
+                mailboxInput: "batch@example.com",
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    expect(batchStatuses).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent ?? "").toContain("444444");
+    expect(document.body.textContent ?? "").toMatch(/\d+s/);
+
+    const row = getBatchRows()[0];
+    const fetchButton = Array.from(
+      row?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+    ).find((candidate) =>
+      /Fetch/i.test(
+        candidate.getAttribute("aria-label") ?? candidate.textContent ?? "",
+      ),
+    );
+    expect(fetchButton).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => {
+      fetchButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(batchStatuses).toHaveBeenCalledTimes(2);
   });
 });
 
