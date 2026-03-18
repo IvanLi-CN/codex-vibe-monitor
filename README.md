@@ -25,6 +25,15 @@
 - 前端应用：Tailwind + shadcn 风格组件化 UI，实时图表与统计概览，SSE 自动更新。
 - 容器镜像：多阶段 Dockerfile，产出轻量运行时；CI 自动推送 GHCR。
 
+## UI 文档
+
+- 全局 UI 规范入口：`docs/ui/README.md`
+- Foundations：`docs/ui/foundations.md`
+- Components：`docs/ui/components.md`
+- Patterns：`docs/ui/patterns.md`
+- Data Visualization：`docs/ui/data-viz.md`
+- Storybook：`docs/ui/storybook.md`
+
 ## 目录结构
 
 ```
