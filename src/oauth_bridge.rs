@@ -424,8 +424,11 @@ fn attach_account_header(
     builder: reqwest::RequestBuilder,
     chatgpt_account_id: Option<&str>,
 ) -> reqwest::RequestBuilder {
-    if chatgpt_account_id.is_some_and(|value| value.starts_with("org_")) {
-        builder.header("ChatGPT-Account-Id", chatgpt_account_id.unwrap_or_default())
+    if let Some(account_id) = chatgpt_account_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        builder.header("ChatGPT-Account-Id", account_id)
     } else {
         builder
     }
@@ -667,5 +670,48 @@ mod tests {
             "/v1/responses/compact"
         ));
         assert!(is_supported_oauth_passthrough_route("/v1/chat/completions"));
+    }
+
+    #[test]
+    fn attach_account_header_accepts_uuid_style_account_ids() {
+        let request = attach_account_header(
+            Client::new().get("https://example.com"),
+            Some(" 02355c9d-fb23-4517-a96d-35e5f6758e9e "),
+        )
+        .build()
+        .expect("build request");
+
+        assert_eq!(
+            request
+                .headers()
+                .get("ChatGPT-Account-Id")
+                .and_then(|value| value.to_str().ok()),
+            Some("02355c9d-fb23-4517-a96d-35e5f6758e9e")
+        );
+    }
+
+    #[test]
+    fn attach_account_header_skips_blank_account_ids() {
+        let request = attach_account_header(Client::new().get("https://example.com"), Some("   "))
+            .build()
+            .expect("build request");
+
+        assert!(request.headers().get("ChatGPT-Account-Id").is_none());
+    }
+
+    #[test]
+    fn prepare_responses_request_body_preserves_previous_response_id() {
+        let (wants_stream, rewritten) = prepare_responses_request_body(
+            br#"{"model":"gpt-5.4","stream":false,"max_output_tokens":256,"previous_response_id":"resp_prev_001"}"#,
+        )
+        .expect("rewrite responses request");
+
+        assert!(!wants_stream);
+        let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
+        assert_eq!(payload["previous_response_id"], "resp_prev_001");
+        assert_eq!(payload["instructions"], "");
+        assert_eq!(payload["store"], false);
+        assert_eq!(payload["stream"], true);
+        assert!(payload.get("max_output_tokens").is_none());
     }
 }

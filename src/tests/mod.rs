@@ -2779,6 +2779,21 @@ async fn insert_test_pool_oauth_account(
     display_name: &str,
     access_token: &str,
 ) -> i64 {
+    insert_test_pool_oauth_account_with_chatgpt_account_id(
+        state,
+        display_name,
+        access_token,
+        "org_test",
+    )
+    .await
+}
+
+async fn insert_test_pool_oauth_account_with_chatgpt_account_id(
+    state: &Arc<AppState>,
+    display_name: &str,
+    access_token: &str,
+    chatgpt_account_id: &str,
+) -> i64 {
     ensure_upstream_accounts_schema(&state.pool)
         .await
         .expect("ensure upstream account schema");
@@ -2806,7 +2821,7 @@ async fn insert_test_pool_oauth_account(
     .bind(display_name)
     .bind("active")
     .bind("oauth@example.com")
-    .bind("org_test")
+    .bind(chatgpt_account_id)
     .bind("user_test")
     .bind("team")
     .bind(encrypted_credentials)
@@ -9508,6 +9523,11 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         .get(http_header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let chatgpt_account_id = request
+        .headers()
+        .get("ChatGPT-Account-Id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let sticky_key_header = request
         .headers()
         .get("x-sticky-key")
@@ -9531,6 +9551,7 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         Json(json!({
             "path": path,
             "authorization": authorization,
+            "chatgptAccountId": chatgpt_account_id,
             "stickyKeyHeader": sticky_key_header,
             "promptCacheKeyHeader": prompt_cache_key_header,
             "forwardedFor": forwarded_for,
@@ -9555,6 +9576,75 @@ async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
         axum::serve(listener, app)
             .await
             .expect("oauth codex capture upstream should run");
+    });
+    (format!("http://{addr}"), handle)
+}
+
+async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request) -> Response {
+    let path = request.uri().path().to_string();
+    let authorization = request
+        .headers()
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let chatgpt_account_id = request
+        .headers()
+        .get("ChatGPT-Account-Id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body = to_bytes(request.into_body(), usize::MAX)
+        .await
+        .expect("read oauth codex responses capture request body");
+    let body_value: Value = serde_json::from_slice(&body).expect("decode oauth capture body");
+    let completed_event = serde_json::json!({
+        "type": "response.completed",
+        "response": {
+            "id": "resp_oauth_capture",
+            "model": "gpt-5.4",
+            "status": "completed",
+            "path": path,
+            "authorization": authorization,
+            "chatgptAccountId": chatgpt_account_id,
+            "received": body_value,
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 3,
+                "total_tokens": 15,
+            }
+        }
+    });
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        [
+            "event: response.completed".to_string(),
+            format!("data: {}", completed_event),
+            String::new(),
+        ]
+        .join("\n"),
+    )
+        .into_response()
+}
+
+async fn spawn_oauth_codex_responses_capture_upstream() -> (String, JoinHandle<()>) {
+    let app = Router::new().route(
+        "/backend-api/codex/responses",
+        post(oauth_codex_responses_capture_upstream),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind oauth codex responses capture upstream");
+    let addr = listener
+        .local_addr()
+        .expect("oauth codex responses capture upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("oauth codex responses capture upstream should run");
     });
     (format!("http://{addr}"), handle)
 }
@@ -10393,7 +10483,101 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         payload["authorization"].as_str(),
         Some("Bearer oauth-large")
     );
+    assert_eq!(payload["chatgptAccountId"].as_str(), Some("org_test"));
     assert_eq!(payload["bodyLength"].as_u64(), Some(body.len() as u64));
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_observability() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedRow {
+        payload: Option<String>,
+    }
+
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_oauth_account_with_chatgpt_account_id(
+        &state,
+        "UUID OAuth",
+        "oauth-uuid",
+        "02355c9d-fb23-4517-a96d-35e5f6758e9e",
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.4",
+                "input": "hello"
+            }))
+            .expect("serialize oauth responses body"),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode oauth response body");
+    assert_eq!(
+        payload["path"].as_str(),
+        Some("/backend-api/codex/responses")
+    );
+    assert_eq!(payload["authorization"].as_str(), Some("Bearer oauth-uuid"));
+    assert_eq!(
+        payload["chatgptAccountId"].as_str(),
+        Some("02355c9d-fb23-4517-a96d-35e5f6758e9e")
+    );
+    assert_eq!(payload["received"]["stream"], true);
+    assert_eq!(payload["received"]["store"], false);
+    assert_eq!(payload["received"]["instructions"], "");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let row = sqlx::query_as::<_, PersistedRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted invocation payload");
+    let payload_json: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("payload should be persisted for oauth responses"),
+    )
+    .expect("decode persisted invocation payload");
+    assert_eq!(payload_json["upstreamAccountId"].as_i64(), Some(account_id));
+    assert_eq!(payload_json["oauthAccountHeaderAttached"], true);
+    assert_eq!(payload_json["oauthAccountIdShape"].as_str(), Some("uuid"));
+    assert_eq!(payload_json["endpoint"].as_str(), Some("/v1/responses"));
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
