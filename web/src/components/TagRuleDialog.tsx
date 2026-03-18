@@ -16,9 +16,9 @@ type TagRuleDraft = {
   allowCutIn: boolean
 }
 
-function buildDraft(tag?: TagSummary | null): TagRuleDraft {
+function buildDraft(tag?: TagSummary | null, draftName = ''): TagRuleDraft {
   return {
-    name: tag?.name ?? '',
+    name: tag?.name ?? draftName,
     guardEnabled: tag?.routingRule.guardEnabled ?? false,
     lookbackHours: tag?.routingRule.lookbackHours == null ? '' : String(tag.routingRule.lookbackHours),
     maxConversations: tag?.routingRule.maxConversations == null ? '' : String(tag.routingRule.maxConversations),
@@ -53,6 +53,7 @@ interface TagRuleDialogProps {
   open: boolean
   mode: TagRuleDialogMode
   tag?: TagSummary | null
+  draftName?: string
   busy?: boolean
   error?: string | null
   onClose: () => void
@@ -75,12 +76,12 @@ interface TagRuleDialogProps {
   }
 }
 
-export function TagRuleDialog({ open, mode, tag, busy = false, error, onClose, onSubmit, labels }: TagRuleDialogProps) {
-  const [draft, setDraft] = useState<TagRuleDraft>(() => buildDraft(tag))
+export function TagRuleDialog({ open, mode, tag, draftName, busy = false, error, onClose, onSubmit, labels }: TagRuleDialogProps) {
+  const [draft, setDraft] = useState<TagRuleDraft>(() => buildDraft(tag, draftName))
 
   useEffect(() => {
-    if (open) setDraft(buildDraft(tag))
-  }, [open, tag])
+    if (open) setDraft(buildDraft(tag, draftName))
+  }, [draftName, open, tag])
 
   const payload = useMemo(() => buildPayload(draft), [draft])
   const disabled = !payload || !draft.name.trim() || busy

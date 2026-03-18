@@ -42,14 +42,19 @@ export const CompactLongLabels: Story = {
 }
 
 export const DetailDrawer: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts',
+        state: {
+          selectedAccountId: 101,
+          openDetail: true,
+        },
+      }}
+    />
+  ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
     const documentScope = within(canvasElement.ownerDocument.body)
-    const openButton = await canvas.findByRole('button', {
-      name: /打开详情/i,
-    })
-    await userEvent.click(openButton)
     await expect(documentScope.getByRole('dialog', { name: /Codex Pro - Tokyo/i })).toBeInTheDocument()
   },
 }
@@ -160,15 +165,19 @@ export const CreateAccountBatchOauthReady: Story = {
 }
 
 export const DetailDrawerGroupNotes: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts',
+        state: {
+          selectedAccountId: 101,
+          openDetail: true,
+        },
+      }}
+    />
+  ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
     const documentScope = within(canvasElement.ownerDocument.body)
-    await userEvent.click(
-      await canvas.findByRole('button', {
-        name: /打开详情/i,
-      }),
-    )
     await userEvent.click(
       await documentScope.findByRole('button', {
         name: /编辑分组备注|edit group note/i,
@@ -182,20 +191,41 @@ export const DetailDrawerGroupNotes: Story = {
 }
 
 export const DetailDrawerApiKeyInvalidUpstreamUrl: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts',
+        state: {
+          selectedAccountId: 102,
+          openDetail: true,
+        },
+      }}
+    />
+  ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
     const documentScope = within(canvasElement.ownerDocument.body)
-    const openButtons = await canvas.findAllByRole('button', {
-      name: /打开详情/i,
-    })
-    await userEvent.click(openButtons[1])
     const dialog = documentScope.getByRole('dialog', { name: /Team key - staging/i })
     const field = within(dialog).getByLabelText(/upstream base url/i)
     await userEvent.clear(field)
     await userEvent.type(field, 'https://proxy.example.com/gateway?team=staging')
     await expect(documentScope.getByText(/cannot include a query string or fragment|不能包含查询串或片段/i)).toBeInTheDocument()
     await expect(within(dialog).getByRole('button', { name: /save changes/i })).toBeDisabled()
+  },
+}
+
+export const TagFilterAllMatch: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const filterTrigger = await canvas.findByRole('button', {
+      name: /按标签筛选账号|filter accounts by tags/i,
+    })
+    await userEvent.click(filterTrigger)
+    await userEvent.click(await documentScope.findByText(/^vip$/i))
+    await userEvent.click(await documentScope.findByText(/^burst-safe$/i))
+    await expect(canvas.getByText(/Codex Pro - Tokyo/i)).toBeInTheDocument()
+    await expect(canvas.queryByText(/Team key - staging/i)).not.toBeInTheDocument()
   },
 }
 

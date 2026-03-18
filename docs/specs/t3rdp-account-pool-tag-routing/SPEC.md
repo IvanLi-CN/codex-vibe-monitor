@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-03-14
-- Last: 2026-03-14
+- Last: 2026-03-18
 
 ## 背景 / 问题陈述
 
@@ -50,6 +50,7 @@
 - tag 需支持名称、会话上限守卫（开关 + `lookbackHours` + `maxConversations`）、`allowCutOut`、`allowCutIn` 三类规则。
 - 一个账号可关联多个 tag；路由时多个 tag 规则同时生效，并按“最严格优先”合并。
 - 新增 OAuth / API Key 账号、编辑账号详情时都必须支持 tag 关联；OAuth 登录完成后不能丢失创建阶段选中的 tag。
+- 新增 OAuth / API Key 账号、编辑账号详情时的 tag 字段必须表现为单个输入式容器：已选 tag 内联展示为 chips，尾部固定添加触发器，触发后以 anchored popover 提供搜索、多选与创建。
 - 账号详情必须直接显示“最终生效规则”，包括合并后的结果以及来源 tag。
 - `Tags` 列表页必须至少展示：tag 名称、规则摘要、关联账号数量、关联账号分组数量、更新时间，并支持搜索与规则筛选。
 - 若 sticky 当前绑定账号禁止 `cut-out` 且该账号无法继续服务，则请求直接失败，不迁移到其他账号。
@@ -60,14 +61,15 @@
 
 - 标签编辑优先使用抽屉，保证在账号页与 tags 列表页之间复用同一编辑表单。
 - tag chip 的上下文菜单在桌面端支持 hover / focus，在触屏端支持长按触发。
+- tag 选择器在账号页与新增页应维持同一交互模型：选择/取消选择多个 tag 时 popover 不自动关闭，只有主动关闭或转入创建/编辑对话才退出当前选择上下文。
 - 服务端统一产出 `effectiveRoutingRule`，前端仅展示不重复实现合并逻辑。
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
 ### Core flows
 
-- 用户在新增账号页打开 tag 选择器，可搜索已有 tag、立即创建新 tag、编辑已选 tag 规则，并在保存账号时把 `tagIds` 一起提交。
-- 用户在账号详情页可查看已关联 tag 与最终生效规则，并可直接增删关联、编辑 tag 规则。
+- 用户在新增账号页打开 tag 选择器时，会看到同一个输入式容器内的已选 chips 与尾部添加触发器；打开 popover 后可搜索已有 tag、连续多选/反选、立即创建新 tag，并在保存账号时把 `tagIds` 一起提交。
+- 用户在账号详情页可查看已关联 tag 与最终生效规则，并可直接在内联 chips 容器里增删关联、编辑 tag 规则。
 - 用户进入 `号池 -> Tags` 页后，可按搜索词和规则开关过滤 tag 列表，并查看每个 tag 影响的账号与分组规模。
 - 路由收到带 stickyKey / promptCacheKey 的请求时，若已有 sticky route，优先尝试原账号；若原账号不可继续且其最终规则禁止 `cut-out`，则立即失败；否则再从候选池中筛掉不满足 `cut-in` 或会话上限守卫的账号。
 - 没有 tag 的账号仍按现有 `secondary -> primary -> last_selected -> id` 排序参与候选选择。
@@ -92,6 +94,8 @@
 ## 验收标准（Acceptance Criteria）
 
 - Given 用户在新增账号页选中多个 tag，When 保存 OAuth 或 API Key 账号，Then 列表与详情都会显示这些 tag，且 OAuth 完成后不会丢失关联。
+- Given 账号页或新增页的 tag 字段为空或已有已选项，When 用户查看该字段，Then 已选 tag 与空态提示都位于同一个输入式容器内，添加触发器固定在容器尾部，不再拆成独立的按钮区和展示区。
+- Given 用户在 tag popover 中连续选择或取消多个 tag，When 每次点击某个 tag，Then 当前 popover 保持打开，并即时反映选中状态。
 - Given 一个账号关联多个 tag，When 打开账号详情，Then 页面会展示最终生效规则，并清楚标注由哪些 tag 共同决定。
 - Given 某 tag 禁止 `allowCutOut`，When sticky 绑定账号无法继续服务，Then 该会话不会迁移到其他账号，而是直接返回无可用账号/上游失败。
 - Given 某目标账号禁止 `allowCutIn`，When 需要接收其他账号迁移来的 sticky 会话，Then 该候选会被跳过。
@@ -111,18 +115,22 @@
 - 假设：会话上限守卫按 `pool_sticky_routes.last_seen_at` 的滚动窗口 distinct sticky key 计数实现，无需额外会话统计表。
 - 风险：多 tag 会话守卫属于“全部满足”语义，单个 `lookbackHours/maxConversations` 无法完整表达全部规则，因此详情页与 API 需要额外返回逐条守卫明细。
 
+## Change log
+
+- 2026-03-18：补充账号页与新增页的 tag 字段交互契约，明确必须收敛为“内联 chips + 尾部添加触发器 + anchored popover 搜索/多选/创建”的单控件模型，并要求多选过程保持 popover 打开；本轮 PR 视觉证据继续限定为 Storybook mock-only。
+
 ## Visual Evidence (PR)
 
 - source_type: storybook_canvas
   target_program: mock-only
-  capture_scope: element
+  capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool/Components/Account Tag Context Chip/Interaction Grid
-  state: default-action-menu
-  evidence_note: 验证 tag 交互芯片的默认态、悬浮后三点按钮可见态，以及上下文菜单展开态已被并排收敛到同一组 Storybook 证据里。
+  submission_gate: approved
+  story_id_or_title: Account Pool/Components/Account Tag Field/Overview
+  state: overview-gallery
+  evidence_note: 验证账号页 tag 字段已聚合展示默认态、空态、当前页新建 tag、添加气泡展开与 tag 上下文菜单展开，便于一次性核对最终交互与布局结果。
   image:
-  ![Tag context chip interaction grid](./assets/tag-context-chip-docs-grid.png)
+  ![Account tag field overview canvas](./assets/account-tag-field-overview-canvas.png)
 
 - source_type: storybook_canvas
   target_program: mock-only

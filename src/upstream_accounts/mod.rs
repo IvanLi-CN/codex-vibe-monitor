@@ -138,7 +138,17 @@ pub(crate) struct UpstreamAccountListResponse {
     writes_enabled: bool,
     items: Vec<UpstreamAccountSummary>,
     groups: Vec<UpstreamAccountGroupSummary>,
+    has_ungrouped_accounts: bool,
     routing: PoolRoutingSettingsResponse,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ListUpstreamAccountsQuery {
+    pub(crate) group_search: Option<String>,
+    pub(crate) group_ungrouped: Option<bool>,
+    #[serde(default)]
+    pub(crate) tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -1401,14 +1411,18 @@ async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bo
 
 pub(crate) async fn list_upstream_accounts(
     State(state): State<Arc<AppState>>,
+    Query(params): Query<ListUpstreamAccountsQuery>,
 ) -> Result<Json<UpstreamAccountListResponse>, (StatusCode, String)> {
     expire_pending_login_sessions(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
-    let items = load_upstream_account_summaries(&state.pool)
+    let items = load_upstream_account_summaries_filtered(&state.pool, &params)
         .await
         .map_err(internal_error_tuple)?;
     let groups = load_upstream_account_groups(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+    let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
     let routing = load_pool_routing_settings(&state.pool)
@@ -1418,6 +1432,7 @@ pub(crate) async fn list_upstream_accounts(
         writes_enabled: state.upstream_accounts.writes_enabled(),
         items,
         groups,
+        has_ungrouped_accounts,
         routing: PoolRoutingSettingsResponse {
             writes_enabled: state.upstream_accounts.writes_enabled(),
             api_key_configured: routing
@@ -4582,8 +4597,23 @@ async fn load_upstream_account_groups(
 async fn load_upstream_account_summaries(
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<UpstreamAccountSummary>> {
+    load_upstream_account_summaries_filtered(pool, &ListUpstreamAccountsQuery::default()).await
+}
+
+async fn load_upstream_account_summaries_filtered(
+    pool: &Pool<Sqlite>,
+    params: &ListUpstreamAccountsQuery,
+) -> Result<Vec<UpstreamAccountSummary>> {
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
-    let rows = sqlx::query_as::<_, UpstreamAccountRow>(
+    let mut normalized_tag_ids = params
+        .tag_ids
+        .iter()
+        .copied()
+        .filter(|tag_id| *tag_id > 0)
+        .collect::<Vec<_>>();
+    normalized_tag_ids.sort_unstable();
+    normalized_tag_ids.dedup();
+    let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
@@ -4594,11 +4624,42 @@ async fn load_upstream_account_summaries(
             local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
             created_at, updated_at
         FROM pool_upstream_accounts
-        ORDER BY updated_at DESC, id DESC
         "#,
-    )
-    .fetch_all(pool)
-    .await?;
+    );
+    query.push(" WHERE 1 = 1");
+
+    if params.group_ungrouped.unwrap_or(false) {
+        query.push(" AND NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL");
+    } else if let Some(group_search) = params
+        .group_search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        query
+            .push(" AND LOWER(TRIM(COALESCE(group_name, ''))) LIKE ")
+            .push_bind(format!("%{}%", group_search.to_lowercase()));
+    }
+
+    if !normalized_tag_ids.is_empty() {
+        query.push(" AND id IN (SELECT link.account_id FROM pool_upstream_account_tags link WHERE link.tag_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for tag_id in &normalized_tag_ids {
+                separated.push_bind(tag_id);
+            }
+        }
+        query
+            .push(") GROUP BY link.account_id HAVING COUNT(DISTINCT link.tag_id) = ")
+            .push_bind(normalized_tag_ids.len() as i64)
+            .push(")");
+    }
+
+    let rows = query
+        .push(" ORDER BY updated_at DESC, id DESC")
+        .build_query_as::<UpstreamAccountRow>()
+        .fetch_all(pool)
+        .await?;
     let account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
     let tag_map = load_account_tag_map(pool, &account_ids).await?;
 
@@ -4615,6 +4676,19 @@ async fn load_upstream_account_summaries(
         ));
     }
     Ok(items)
+}
+
+async fn has_ungrouped_upstream_accounts(pool: &Pool<Sqlite>) -> Result<bool> {
+    let count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_accounts
+        WHERE NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
 }
 
 async fn load_upstream_account_detail(

@@ -1144,7 +1144,14 @@ export interface UpstreamAccountListResponse {
   writesEnabled: boolean;
   items: UpstreamAccountSummary[];
   groups: UpstreamAccountGroupSummary[];
+  hasUngroupedAccounts: boolean;
   routing?: PoolRoutingSettings | null;
+}
+
+export interface FetchUpstreamAccountsQuery {
+  groupSearch?: string;
+  groupUngrouped?: boolean;
+  tagIds?: number[];
 }
 
 export interface LoginSessionStatusResponse {
@@ -1614,6 +1621,7 @@ function normalizeUpstreamAccountListResponse(
     groups: groupsRaw
       .map(normalizeUpstreamAccountGroupSummary)
       .filter((item): item is UpstreamAccountGroupSummary => item != null),
+    hasUngroupedAccounts: payload.hasUngroupedAccounts === true,
     routing: normalizePoolRoutingSettings(payload.routing),
   };
 }
@@ -1992,8 +2000,18 @@ export async function fetchQuotaSnapshot() {
   return fetchJson<QuotaSnapshot>("/api/quota/latest");
 }
 
-export async function fetchUpstreamAccounts(): Promise<UpstreamAccountListResponse> {
-  const response = await fetchJson<unknown>("/api/pool/upstream-accounts");
+export async function fetchUpstreamAccounts(
+  query?: FetchUpstreamAccountsQuery,
+): Promise<UpstreamAccountListResponse> {
+  const search = new URLSearchParams();
+  if (query?.groupSearch) search.set("groupSearch", query.groupSearch);
+  if (query?.groupUngrouped != null) search.set("groupUngrouped", String(query.groupUngrouped));
+  for (const tagId of query?.tagIds ?? []) {
+    search.append("tagIds", String(tagId));
+  }
+  const response = await fetchJson<unknown>(
+    search.size ? `/api/pool/upstream-accounts?${search.toString()}` : "/api/pool/upstream-accounts",
+  );
   return normalizeUpstreamAccountListResponse(response);
 }
 

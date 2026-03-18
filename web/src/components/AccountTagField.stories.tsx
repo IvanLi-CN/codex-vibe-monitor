@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AccountTagField } from './AccountTagField'
 import type { CreateTagPayload, TagDetail, TagSummary, UpdateTagPayload } from '../lib/api'
 
@@ -39,6 +39,7 @@ const labels = {
   add: 'Add tag',
   empty: 'No tags linked yet.',
   searchPlaceholder: 'Search tags',
+  searchEmpty: 'No matching tags.',
   createInline: (value: string) => (value ? `Create "${value}"` : 'Create new tag'),
   selectedFromCurrentPage: 'New',
   remove: 'Unlink tag',
@@ -63,7 +64,7 @@ const labels = {
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-base-200 px-6 py-8 text-base-content">
-      <div className="mx-auto max-w-4xl">{children}</div>
+      <div className="mx-auto max-w-6xl">{children}</div>
     </div>
   )
 }
@@ -72,14 +73,32 @@ function createDetailFromSummary(summary: TagSummary): TagDetail {
   return { ...summary }
 }
 
-function FieldHarness({ pageCreatedTagIds = [] }: { pageCreatedTagIds?: number[] }) {
+function FieldHarness({
+  pageCreatedTagIds = [],
+  initialSelectedTagIds = [1, 2],
+  autoOpenTarget,
+}: {
+  pageCreatedTagIds?: number[]
+  initialSelectedTagIds?: number[]
+  autoOpenTarget?: 'picker' | 'chip-menu'
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null)
   const [tags, setTags] = useState<TagSummary[]>(baseTags)
-  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([1, 2])
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>(initialSelectedTagIds)
 
-  const selectedNames = useMemo(
-    () => tags.filter((tag) => selectedTagIds.includes(tag.id)).map((tag) => tag.name),
-    [selectedTagIds, tags],
-  )
+  useEffect(() => {
+    if (!autoOpenTarget) return
+    const frame = window.requestAnimationFrame(() => {
+      const root = rootRef.current
+      if (!root) return
+      const selector =
+        autoOpenTarget === 'picker'
+          ? `button[aria-label="${labels.add}"]`
+          : 'button[aria-label="vip-routing more actions"]'
+      root.querySelector<HTMLButtonElement>(selector)?.click()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [autoOpenTarget])
 
   const createTag = async (payload: CreateTagPayload) => {
     const detail: TagDetail = {
@@ -130,21 +149,76 @@ function FieldHarness({ pageCreatedTagIds = [] }: { pageCreatedTagIds?: number[]
   }
 
   return (
+    <div ref={rootRef} className="rounded-[1.8rem] border border-base-300/70 bg-base-100/75 p-6">
+      <AccountTagField
+        tags={tags}
+        selectedTagIds={selectedTagIds}
+        writesEnabled
+        pageCreatedTagIds={pageCreatedTagIds}
+        labels={labels}
+        onChange={setSelectedTagIds}
+        onCreateTag={createTag}
+        onUpdateTag={updateTag}
+        onDeleteTag={deleteTag}
+      />
+    </div>
+  )
+}
+
+function ShowcaseCard({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description: string
+  children: React.ReactNode
+}) {
+  return (
+    <section className="rounded-[1.6rem] border border-base-300/70 bg-base-100/75 p-5 shadow-sm">
+      <div className="mb-4 space-y-1">
+        <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/70">{title}</h3>
+        <p className="text-sm text-base-content/60">{description}</p>
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function OverviewHarness() {
+  return (
     <StorySurface>
-      <div className="space-y-4 rounded-[1.8rem] border border-base-300/70 bg-base-100/75 p-6">
-        <AccountTagField
-          tags={tags}
-          selectedTagIds={selectedTagIds}
-          writesEnabled
-          pageCreatedTagIds={pageCreatedTagIds}
-          labels={labels}
-          onChange={setSelectedTagIds}
-          onCreateTag={createTag}
-          onUpdateTag={updateTag}
-          onDeleteTag={deleteTag}
-        />
-        <div className="rounded-xl border border-base-300/70 bg-base-100/60 px-4 py-3 text-sm text-base-content/70">
-          Linked tags: <span className="font-mono text-base-content">{selectedNames.join(', ') || '—'}</span>
+      <div className="space-y-6">
+        <div className="max-w-2xl space-y-2">
+          <h2 className="text-xl font-semibold text-base-content">Account Tag Field Overview</h2>
+          <p className="text-sm text-base-content/65">
+            聚合查看空态、默认态、当前页新建 tag、添加气泡展开和 tag 菜单展开，方便一眼核对最终效果。
+          </p>
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-2">
+          <ShowcaseCard title="Default" description="标准多选展示，右侧保留添加触发器。">
+            <FieldHarness />
+          </ShowcaseCard>
+
+          <ShowcaseCard title="Empty" description="未选择任何 tag 时，空态文案与添加触发器同列显示。">
+            <FieldHarness initialSelectedTagIds={[]} />
+          </ShowcaseCard>
+
+          <ShowcaseCard title="Page-Created Tag" description="当前页刚创建的 tag 继续带有 New 标记。">
+            <FieldHarness pageCreatedTagIds={[2]} />
+          </ShowcaseCard>
+
+          <ShowcaseCard title="Picker Open" description="自动展开添加气泡，直接检查搜索与多选弹层尺寸。">
+            <FieldHarness autoOpenTarget="picker" />
+          </ShowcaseCard>
+
+          <ShowcaseCard
+            title="Chip Menu Open"
+            description="自动展开 tag 上下文菜单，确认紧凑菜单和 chip 尺寸关系。"
+          >
+            <FieldHarness autoOpenTarget="chip-menu" />
+          </ShowcaseCard>
         </div>
       </div>
     </StorySurface>
@@ -160,7 +234,7 @@ const meta = {
     docs: {
       description: {
         component:
-          '上游账号详情与创建页共用的 tag 选择字段。已选 tag 统一通过独立的上下文菜单芯片承载交互：悬浮后在标签内部右侧显示三点按钮，点击打开菜单；移动端可长按打开菜单。',
+          '上游账号详情与创建页共用的内联 tag 选择字段。已选 tag 以内联 chips 形式展示在同一个输入式容器中，尾部通过气泡触发器完成搜索、多选与创建；每个已选 tag 继续复用独立的上下文菜单芯片交互。',
       },
     },
   },
@@ -180,10 +254,30 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
+export const Overview: Story = {
+  render: () => <OverviewHarness />,
+}
+
 export const Default: Story = {
-  render: () => <FieldHarness />,
+  render: () => (
+    <StorySurface>
+      <FieldHarness />
+    </StorySurface>
+  ),
+}
+
+export const Empty: Story = {
+  render: () => (
+    <StorySurface>
+      <FieldHarness initialSelectedTagIds={[]} />
+    </StorySurface>
+  ),
 }
 
 export const WithPageCreatedTag: Story = {
-  render: () => <FieldHarness pageCreatedTagIds={[2]} />,
+  render: () => (
+    <StorySurface>
+      <FieldHarness pageCreatedTagIds={[2]} />
+    </StorySurface>
+  ),
 }

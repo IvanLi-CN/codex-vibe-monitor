@@ -8991,6 +8991,8 @@ async fn proxy_openai_v1_capture_target(
                     prompt_cache_key: header_prompt_cache_key.as_deref(),
                     upstream_account_id: None,
                     upstream_account_name: None,
+                    oauth_account_header_attached: None,
+                    oauth_account_id_shape: None,
                     service_tier: None,
                     stream_terminal_event: None,
                     upstream_error_code: None,
@@ -9159,6 +9161,12 @@ async fn proxy_openai_v1_capture_target(
                             .account
                             .as_ref()
                             .map(|account| account.display_name.as_str()),
+                        oauth_account_header_attached: oauth_account_header_attached_for_account(
+                            err.account.as_ref(),
+                        ),
+                        oauth_account_id_shape: oauth_account_id_shape_for_account(
+                            err.account.as_ref(),
+                        ),
                         service_tier: None,
                         stream_terminal_event: None,
                         upstream_error_code: err.upstream_error_code.as_deref(),
@@ -9265,6 +9273,8 @@ async fn proxy_openai_v1_capture_target(
                         prompt_cache_key: prompt_cache_key.as_deref(),
                         upstream_account_id: None,
                         upstream_account_name: None,
+                        oauth_account_header_attached: None,
+                        oauth_account_id_shape: None,
                         service_tier: None,
                         stream_terminal_event: None,
                         upstream_error_code: None,
@@ -9372,6 +9382,12 @@ async fn proxy_openai_v1_capture_target(
                     upstream_account_name: pool_account
                         .as_ref()
                         .map(|account| account.display_name.as_str()),
+                    oauth_account_header_attached: oauth_account_header_attached_for_account(
+                        pool_account.as_ref(),
+                    ),
+                    oauth_account_id_shape: oauth_account_id_shape_for_account(
+                        pool_account.as_ref(),
+                    ),
                     service_tier: None,
                     stream_terminal_event: None,
                     upstream_error_code: None,
@@ -9760,6 +9776,12 @@ async fn proxy_openai_v1_capture_target(
             upstream_account_name: pool_account_for_task
                 .as_ref()
                 .map(|account| account.display_name.as_str()),
+            oauth_account_header_attached: oauth_account_header_attached_for_account(
+                pool_account_for_task.as_ref(),
+            ),
+            oauth_account_id_shape: oauth_account_id_shape_for_account(
+                pool_account_for_task.as_ref(),
+            ),
             service_tier: response_info.service_tier.as_deref(),
             stream_terminal_event: response_info.stream_terminal_event.as_deref(),
             upstream_error_code: response_info.upstream_error_code.as_deref(),
@@ -10740,6 +10762,63 @@ fn upstream_account_id_from_payload(payload: Option<&str>) -> Option<i64> {
     value.get("upstreamAccountId").and_then(json_value_to_i64)
 }
 
+fn normalized_oauth_account_id(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn looks_like_uuid_shape(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (idx, byte) in bytes.iter().enumerate() {
+        let is_hyphen = matches!(idx, 8 | 13 | 18 | 23);
+        if is_hyphen {
+            if *byte != b'-' {
+                return false;
+            }
+        } else if !byte.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
+fn oauth_account_id_shape(value: Option<&str>) -> &'static str {
+    match normalized_oauth_account_id(value) {
+        None => "empty",
+        Some(value) if value.starts_with("org_") => "org",
+        Some(value) if looks_like_uuid_shape(value) => "uuid",
+        Some(_) => "other",
+    }
+}
+
+fn oauth_account_header_attached_for_account(
+    account: Option<&PoolResolvedAccount>,
+) -> Option<bool> {
+    let PoolResolvedAuth::Oauth {
+        chatgpt_account_id, ..
+    } = &account?.auth
+    else {
+        return None;
+    };
+
+    Some(normalized_oauth_account_id(chatgpt_account_id.as_deref()).is_some())
+}
+
+fn oauth_account_id_shape_for_account(
+    account: Option<&PoolResolvedAccount>,
+) -> Option<&'static str> {
+    let PoolResolvedAuth::Oauth {
+        chatgpt_account_id, ..
+    } = &account?.auth
+    else {
+        return None;
+    };
+
+    Some(oauth_account_id_shape(chatgpt_account_id.as_deref()))
+}
+
 struct ProxyPayloadSummary<'a> {
     target: ProxyCaptureTarget,
     status: StatusCode,
@@ -10758,6 +10837,8 @@ struct ProxyPayloadSummary<'a> {
     prompt_cache_key: Option<&'a str>,
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<&'a str>,
+    oauth_account_header_attached: Option<bool>,
+    oauth_account_id_shape: Option<&'a str>,
     service_tier: Option<&'a str>,
     stream_terminal_event: Option<&'a str>,
     upstream_error_code: Option<&'a str>,
@@ -10787,6 +10868,8 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         prompt_cache_key,
         upstream_account_id,
         upstream_account_name,
+        oauth_account_header_attached,
+        oauth_account_id_shape,
         service_tier,
         stream_terminal_event,
         upstream_error_code,
@@ -10814,6 +10897,8 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         "promptCacheKey": prompt_cache_key,
         "upstreamAccountId": upstream_account_id,
         "upstreamAccountName": upstream_account_name,
+        "oauthAccountHeaderAttached": oauth_account_header_attached,
+        "oauthAccountIdShape": oauth_account_id_shape,
         "serviceTier": service_tier,
         "streamTerminalEvent": stream_terminal_event,
         "upstreamErrorCode": upstream_error_code,
@@ -11035,6 +11120,8 @@ fn build_running_proxy_capture_record(
             prompt_cache_key,
             upstream_account_id,
             upstream_account_name,
+            oauth_account_header_attached: None,
+            oauth_account_id_shape: None,
             service_tier: None,
             stream_terminal_event: None,
             upstream_error_code: None,

@@ -438,6 +438,7 @@ describe("account pool frontend API helpers", () => {
           JSON.stringify({
             writesEnabled: true,
             groups: [],
+            hasUngroupedAccounts: false,
             routing: {
               apiKeyConfigured: true,
               maskedApiKey: "pool-live••••••c0de",
@@ -465,6 +466,7 @@ describe("account pool frontend API helpers", () => {
           JSON.stringify({
             writesEnabled: true,
             groups: [],
+            hasUngroupedAccounts: false,
             items: [
               {
                 id: 1,
@@ -492,6 +494,35 @@ describe("account pool frontend API helpers", () => {
       peerAccountIds: [2],
       reasons: ["sharedChatgptAccountId"],
     });
+  });
+
+  it("serializes upstream account roster filters into the query string", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
+      expect(String(_input)).toContain("/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&tagIds=1&tagIds=2");
+      return new Response(
+        JSON.stringify({
+          writesEnabled: true,
+          groups: [],
+          hasUngroupedAccounts: true,
+          items: [],
+          routing: {
+            apiKeyConfigured: false,
+            maskedApiKey: null,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const response = await fetchUpstreamAccounts({
+      groupSearch: "prod",
+      groupUngrouped: false,
+      tagIds: [1, 2],
+    });
+
+    expect(response.hasUngroupedAccounts).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("saves pool routing settings through the dedicated endpoint", async () => {

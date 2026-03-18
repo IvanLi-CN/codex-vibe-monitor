@@ -2480,6 +2480,7 @@ export default function UpstreamAccountCreatePage() {
     add: t('accountPool.tags.field.add'),
     empty: t('accountPool.tags.field.empty'),
     searchPlaceholder: t('accountPool.tags.field.searchPlaceholder'),
+    searchEmpty: t('accountPool.tags.field.searchEmpty'),
     createInline: (value: string) => t('accountPool.tags.field.createInline', { value: value || t('accountPool.tags.field.newTag') }),
     selectedFromCurrentPage: t('accountPool.tags.field.currentPage'),
     remove: t('accountPool.tags.field.remove'),
