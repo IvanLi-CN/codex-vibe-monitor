@@ -23,7 +23,7 @@ use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
     body::{Body, Bytes, HttpBody},
-    extract::{ConnectInfo, OriginalUri, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, OriginalUri, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
     response::{IntoResponse, Json, Response, Sse},
     routing::{any, delete, get, post, put},
@@ -88,6 +88,7 @@ const SOURCE_CRS: &str = "crs";
 const SOURCE_PROXY: &str = "proxy";
 const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
+const IMPORTED_OAUTH_ROUTE_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
@@ -4328,11 +4329,13 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
         )
         .route(
             "/api/pool/upstream-accounts/oauth/imports/validate",
-            post(validate_imported_oauth_accounts),
+            post(validate_imported_oauth_accounts)
+                .layer(DefaultBodyLimit::max(IMPORTED_OAUTH_ROUTE_MAX_BODY_BYTES)),
         )
         .route(
             "/api/pool/upstream-accounts/oauth/imports",
-            post(import_validated_oauth_accounts),
+            post(import_validated_oauth_accounts)
+                .layer(DefaultBodyLimit::max(IMPORTED_OAUTH_ROUTE_MAX_BODY_BYTES)),
         )
         .route(
             "/api/pool/upstream-accounts/oauth/mailbox-sessions",

@@ -39,9 +39,8 @@ vi.mock("../../hooks/useUpstreamAccounts", () => ({
 }));
 
 vi.mock("../../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../../lib/api")>(
-    "../../lib/api",
-  );
+  const actual =
+    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
@@ -116,7 +115,9 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(initialEntry: RenderEntry = "/account-pool/upstream-accounts/new") {
+function render(
+  initialEntry: RenderEntry = "/account-pool/upstream-accounts/new",
+) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -426,14 +427,19 @@ function mockUpstreamAccounts(
       },
       results: [],
     }),
-    saveGroupNote: vi.fn().mockResolvedValue({ groupName: "prod", note: "Saved note" }),
+    saveGroupNote: vi
+      .fn()
+      .mockResolvedValue({ groupName: "prod", note: "Saved note" }),
     ...overrides,
   });
 }
 
 describe("UpstreamAccountCreatePage batch oauth", () => {
   it("does not show background detail errors as the create-page banner", () => {
-    mockUpstreamAccounts({ detailError: "Background detail failed", error: "Background detail failed" });
+    mockUpstreamAccounts({
+      detailError: "Background detail failed",
+      error: "Background detail failed",
+    });
     render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
     expect(document.body.textContent).not.toContain("Background detail failed");
@@ -708,7 +714,10 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       accountId: null,
       error: null,
     });
-    mockUpstreamAccounts({ beginOauthMailboxSessionForAddress, beginOauthLogin });
+    mockUpstreamAccounts({
+      beginOauthMailboxSessionForAddress,
+      beginOauthLogin,
+    });
     render({
       pathname: "/account-pool/upstream-accounts/new",
       search: "?mode=batchOauth",
@@ -739,24 +748,37 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     const mailboxChip = findBodyButton(/Copy mailbox/i);
     expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
     });
     await flushAsync();
 
-    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
     if (!(editMailboxButton instanceof HTMLButtonElement)) {
       throw new Error("missing edit mailbox button");
     }
     act(() => {
-      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
     });
     await flushAsync();
-    setBodyInputValue('input[name="batchOauthMailboxEditor-row-1"]', "edited-batch@mail-tw.707079.xyz");
+    setBodyInputValue(
+      'input[name="batchOauthMailboxEditor-row-1"]',
+      "edited-batch@mail-tw.707079.xyz",
+    );
     clickBodyButton(/Submit mailbox/i);
     await flushAsync();
 
-    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("edited-batch@mail-tw.707079.xyz");
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith(
+      "edited-batch@mail-tw.707079.xyz",
+    );
     expect(host?.textContent).toContain("edited-batch@mail-tw.707079.xyz");
 
     clickButton(/Generate OAuth URL/i);
@@ -789,7 +811,10 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       emailAddress: "unsupported@example.com",
       reason: "not_readable",
     });
-    mockUpstreamAccounts({ beginOauthLogin, beginOauthMailboxSessionForAddress });
+    mockUpstreamAccounts({
+      beginOauthLogin,
+      beginOauthMailboxSessionForAddress,
+    });
     render("/account-pool/upstream-accounts/new?mode=batchOauth");
     await flushAsync();
 
@@ -801,24 +826,37 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     const mailboxChip = findBodyButton(/Edit mailbox/i);
     expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
     });
     await flushAsync();
 
-    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
     if (!(editMailboxButton instanceof HTMLButtonElement)) {
       throw new Error("missing edit mailbox button");
     }
     act(() => {
-      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
     });
     await flushAsync();
-    setBodyInputValue('input[name^="batchOauthMailboxEditor-"]', "unsupported@example.com");
+    setBodyInputValue(
+      'input[name^="batchOauthMailboxEditor-"]',
+      "unsupported@example.com",
+    );
     clickBodyButton(/Submit mailbox/i);
     await flushAsync();
 
-    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("unsupported@example.com");
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith(
+      "unsupported@example.com",
+    );
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
     expect(host?.textContent).toContain(
       "This mailbox is not readable through the current MoeMail integration, so mailbox enhancements stay disabled.",
@@ -834,26 +872,39 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     const mailboxChip = findBodyButton(/Edit mailbox/i);
     expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
     });
     await flushAsync();
 
-    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
     if (!(editMailboxButton instanceof HTMLButtonElement)) {
       throw new Error("missing edit mailbox button");
     }
     act(() => {
-      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
     });
     await flushAsync();
 
-    setBodyInputValue('input[name^="batchOauthMailboxEditor-"]', "not-an-email");
+    setBodyInputValue(
+      'input[name^="batchOauthMailboxEditor-"]',
+      "not-an-email",
+    );
     clickBodyButton(/Submit mailbox/i);
     await flushAsync();
 
     expect(beginOauthMailboxSessionForAddress).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("Enter a valid email address before attaching it.");
+    expect(document.body.textContent).toContain(
+      "Enter a valid email address before attaching it.",
+    );
   });
 
   it("cancels batch mailbox editing without mutating the row mailbox value", async () => {
@@ -887,20 +938,31 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     const mailboxChip = findBodyButton(/Copy mailbox/i);
     expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
     });
     await flushAsync();
 
-    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
     if (!(editMailboxButton instanceof HTMLButtonElement)) {
       throw new Error("missing edit mailbox button");
     }
     act(() => {
-      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
     });
     await flushAsync();
-    setBodyInputValue('input[name="batchOauthMailboxEditor-row-1"]', "edited-batch@mail-tw.707079.xyz");
+    setBodyInputValue(
+      'input[name="batchOauthMailboxEditor-row-1"]',
+      "edited-batch@mail-tw.707079.xyz",
+    );
     clickBodyButton(/Cancel mailbox edit/i);
     await flushAsync();
 
@@ -938,7 +1000,8 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
                 session: {
                   loginId: "login-existing-row-1",
                   status: "pending",
-                  authUrl: "https://auth.openai.com/authorize?login=existing-row-1",
+                  authUrl:
+                    "https://auth.openai.com/authorize?login=existing-row-1",
                   redirectUri: "http://localhost:1455/oauth/callback",
                   expiresAt: "2026-03-13T10:00:00.000Z",
                   accountId: null,
@@ -958,100 +1021,117 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     const mailboxChip = findBodyButton(/Copy mailbox/i);
     expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
     act(() => {
-      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
     });
     await flushAsync();
 
-    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
     if (!(editMailboxButton instanceof HTMLButtonElement)) {
       throw new Error("missing edit mailbox button");
     }
     act(() => {
-      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
     });
     await flushAsync();
-    setBodyInputValue('input[name="batchOauthMailboxEditor-row-1"]', "edited-batch@mail-tw.707079.xyz");
+    setBodyInputValue(
+      'input[name="batchOauthMailboxEditor-row-1"]',
+      "edited-batch@mail-tw.707079.xyz",
+    );
     clickBodyButton(/Submit mailbox/i);
     await flushAsync();
 
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
-    expect((host?.querySelector('input[name="batchOauthCallbackUrl-row-1"]') as HTMLInputElement | null)?.value).toBe("");
+    expect(
+      (
+        host?.querySelector(
+          'input[name="batchOauthCallbackUrl-row-1"]',
+        ) as HTMLInputElement | null
+      )?.value,
+    ).toBe("");
   });
 });
 
 describe("UpstreamAccountCreatePage display name validation", () => {
-  it('does not resend an existing shared group note when generating oauth for a grouped row', async () => {
+  it("does not resend an existing shared group note when generating oauth for a grouped row", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
-      loginId: 'login-1',
-      status: 'pending',
-      authUrl: 'https://auth.openai.com/authorize?login=1',
-      redirectUri: 'http://localhost:1455/oauth/callback',
-      expiresAt: '2026-03-13T10:00:00.000Z',
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
       accountId: null,
       error: null,
-    })
-    mockUpstreamAccounts({ beginOauthLogin })
-    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
-    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'prod')
-    await flushAsync()
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', "prod");
+    await flushAsync();
 
-    clickButton(/Generate OAuth URL/i)
-    await flushAsync()
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: undefined,
-      groupName: 'prod',
+      groupName: "prod",
       tagIds: [],
       groupNote: undefined,
       note: undefined,
       isMother: false,
-    })
-  })
+    });
+  });
 
-  it('passes a draft shared group note when generating oauth for a new grouped row', async () => {
+  it("passes a draft shared group note when generating oauth for a new grouped row", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
-      loginId: 'login-1',
-      status: 'pending',
-      authUrl: 'https://auth.openai.com/authorize?login=1',
-      redirectUri: 'http://localhost:1455/oauth/callback',
-      expiresAt: '2026-03-13T10:00:00.000Z',
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
       accountId: null,
       error: null,
-    })
-    mockUpstreamAccounts({ beginOauthLogin })
-    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
-    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'new-team')
-    await flushAsync()
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', "new-team");
+    await flushAsync();
 
-    clickButton(/Edit group note/i)
-    await flushAsync()
+    clickButton(/Edit group note/i);
+    await flushAsync();
     const draftGroupNoteField =
-      document.body.querySelector('textarea') ??
+      document.body.querySelector("textarea") ??
       (() => {
-        throw new Error('missing group note textarea')
-      })()
+        throw new Error("missing group note textarea");
+      })();
     if (!(draftGroupNoteField instanceof HTMLTextAreaElement)) {
-      throw new Error('missing group note textarea')
+      throw new Error("missing group note textarea");
     }
-    setFieldValue(draftGroupNoteField, 'Draft shared group note')
-    clickBodyButton(/Save changes/i)
-    await flushAsync()
+    setFieldValue(draftGroupNoteField, "Draft shared group note");
+    clickBodyButton(/Save changes/i);
+    await flushAsync();
 
-    clickButton(/Generate OAuth URL/i)
-    await flushAsync()
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: undefined,
-      groupName: 'new-team',
+      groupName: "new-team",
       tagIds: [],
-      groupNote: 'Draft shared group note',
+      groupNote: "Draft shared group note",
       note: undefined,
       isMother: false,
-    })
-  })
+    });
+  });
 
   it("blocks completing single oauth when the display name already exists", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
@@ -1103,43 +1183,45 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
   });
 
-  it('invalidates pending batch oauth sessions when a draft group note changes', async () => {
+  it("invalidates pending batch oauth sessions when a draft group note changes", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
-      loginId: 'login-1',
-      status: 'pending',
-      authUrl: 'https://auth.openai.com/authorize?login=1',
-      redirectUri: 'http://localhost:1455/oauth/callback',
-      expiresAt: '2026-03-13T10:00:00.000Z',
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
       accountId: null,
       error: null,
-    })
-    mockUpstreamAccounts({ beginOauthLogin })
-    render('/account-pool/upstream-accounts/new?mode=batchOauth')
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
-    setComboboxValue('input[name="batchOauthDefaultGroupName"]', 'new-team')
-    await flushAsync()
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', "new-team");
+    await flushAsync();
 
-    clickButton(/Generate OAuth URL/i)
-    await flushAsync()
-    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false)
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
 
-    clickButton(/Edit group note/i)
-    await flushAsync()
+    clickButton(/Edit group note/i);
+    await flushAsync();
     const updatedGroupNoteField =
-      document.body.querySelector('textarea') ??
+      document.body.querySelector("textarea") ??
       (() => {
-        throw new Error('missing group note textarea')
-      })()
+        throw new Error("missing group note textarea");
+      })();
     if (!(updatedGroupNoteField instanceof HTMLTextAreaElement)) {
-      throw new Error('missing group note textarea')
+      throw new Error("missing group note textarea");
     }
-    setFieldValue(updatedGroupNoteField, 'Updated draft shared note')
-    clickBodyButton(/Save changes/i)
-    await flushAsync()
+    setFieldValue(updatedGroupNoteField, "Updated draft shared note");
+    clickBodyButton(/Save changes/i);
+    await flushAsync();
 
-    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true)
-    expect(host?.textContent).toContain('Metadata changed. Generate a fresh OAuth URL for this row before completing login.')
-  })
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
+    expect(host?.textContent).toContain(
+      "Metadata changed. Generate a fresh OAuth URL for this row before completing login.",
+    );
+  });
 
   it("blocks creating an API key account when the display name already exists", async () => {
     mockUpstreamAccounts();
@@ -1177,9 +1259,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     clickButton(/Complete OAuth login/i);
     await flushAsync();
 
-    expect(document.body.textContent).toContain(
-      "Possible upstream duplicate",
-    );
+    expect(document.body.textContent).toContain("Possible upstream duplicate");
     expect(document.body.textContent).toContain(
       "Matched: shared ChatGPT account id. Related account ids: 5.",
     );
@@ -1215,9 +1295,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
 
     expect(getLoginSession).toHaveBeenCalledWith("login-1");
-    expect(document.body.textContent).toContain(
-      "Display name must be unique.",
-    );
+    expect(document.body.textContent).toContain("Display name must be unique.");
     expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
   });
 
@@ -1287,7 +1365,11 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     const completeOauthLogin = vi
       .fn()
       .mockRejectedValue(new Error("network failed"));
-    mockUpstreamAccounts({ beginOauthLogin, completeOauthLogin, getLoginSession });
+    mockUpstreamAccounts({
+      beginOauthLogin,
+      completeOauthLogin,
+      getLoginSession,
+    });
     render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
     setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
@@ -1335,7 +1417,11 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     const completeOauthLogin = vi
       .fn()
       .mockRejectedValue(new Error("network failed"));
-    mockUpstreamAccounts({ beginOauthLogin, completeOauthLogin, getLoginSession });
+    mockUpstreamAccounts({
+      beginOauthLogin,
+      completeOauthLogin,
+      getLoginSession,
+    });
     render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
     setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
@@ -1406,9 +1492,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     clickButton(/Complete OAuth login/i);
     await flushAsync();
 
-    expect(document.body.textContent).toContain(
-      "Possible upstream duplicate",
-    );
+    expect(document.body.textContent).toContain("Possible upstream duplicate");
     expect(document.body.textContent).toContain(
       "Matched: shared ChatGPT user id. Related account ids: 5.",
     );
@@ -1460,7 +1544,10 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     mockUpstreamAccounts({ beginOauthMailboxSession });
     render("/account-pool/upstream-accounts/new?mode=oauth");
 
-    const displayNameInput = setInputValue('input[name="oauthDisplayName"]', "Manual Alias");
+    const displayNameInput = setInputValue(
+      'input[name="oauthDisplayName"]',
+      "Manual Alias",
+    );
 
     clickButton(/Generate/i);
     await flushAsync();
@@ -1512,18 +1599,26 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
       emailAddress: "manual-existing@example.com",
       reason: "not_readable",
     });
-    mockUpstreamAccounts({ beginOauthLogin, beginOauthMailboxSessionForAddress });
+    mockUpstreamAccounts({
+      beginOauthLogin,
+      beginOauthMailboxSessionForAddress,
+    });
     render("/account-pool/upstream-accounts/new?mode=oauth");
 
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
 
-    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@example.com");
+    setInputValue(
+      'input[name="oauthMailboxInput"]',
+      "manual-existing@example.com",
+    );
     await flushAsync();
     clickButton(/Use address/i);
     await flushAsync();
 
-    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("manual-existing@example.com");
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith(
+      "manual-existing@example.com",
+    );
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
     expect(host?.textContent).not.toContain(
       "Generate a fresh OAuth URL for this row before completing login.",
@@ -1547,17 +1642,25 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
       expiresAt: "2026-03-13T10:00:00.000Z",
       source: "attached",
     });
-    mockUpstreamAccounts({ beginOauthLogin, beginOauthMailboxSessionForAddress });
+    mockUpstreamAccounts({
+      beginOauthLogin,
+      beginOauthMailboxSessionForAddress,
+    });
     render("/account-pool/upstream-accounts/new?mode=oauth");
 
-    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@mail-tw.707079.xyz");
+    setInputValue(
+      'input[name="oauthMailboxInput"]',
+      "manual-existing@mail-tw.707079.xyz",
+    );
     await flushAsync();
     clickButton(/Use address/i);
     await flushAsync();
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
 
-    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("manual-existing@mail-tw.707079.xyz");
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith(
+      "manual-existing@mail-tw.707079.xyz",
+    );
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "manual-existing@mail-tw.707079.xyz",
       groupName: undefined,
@@ -1640,7 +1743,10 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(findButton(/Copy code/i)?.disabled).toBe(true);
     expect(host?.textContent).not.toContain("Attached mailbox");
 
-    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@mail-tw.707079.xyz");
+    setInputValue(
+      'input[name="oauthMailboxInput"]',
+      "manual-existing@mail-tw.707079.xyz",
+    );
     await flushAsync();
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
@@ -1683,7 +1789,10 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     });
 
     await flushAsync();
-    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@example.com");
+    setInputValue(
+      'input[name="oauthMailboxInput"]',
+      "manual-existing@example.com",
+    );
     await flushAsync();
 
     expect(removeOauthMailboxSession).not.toHaveBeenCalled();
@@ -1723,7 +1832,10 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     });
 
     await flushAsync();
-    setInputValue('input[name="oauthMailboxInput"]', "MANUAL-EXISTING@MAIL-TW.707079.XYZ");
+    setInputValue(
+      'input[name="oauthMailboxInput"]',
+      "MANUAL-EXISTING@MAIL-TW.707079.XYZ",
+    );
     await flushAsync();
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
@@ -1752,12 +1864,17 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     mockUpstreamAccounts({ beginOauthMailboxSessionForAddress });
     render("/account-pool/upstream-accounts/new?mode=oauth");
 
-    setInputValue('input[name="oauthMailboxInput"]', "manual-existing@example.com");
+    setInputValue(
+      'input[name="oauthMailboxInput"]',
+      "manual-existing@example.com",
+    );
     await flushAsync();
     clickButton(/Use address/i);
     await flushAsync();
 
-    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("manual-existing@example.com");
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith(
+      "manual-existing@example.com",
+    );
     expect(host?.textContent).toContain(
       "This mailbox is not readable through the current MoeMail integration, so mailbox enhancements stay disabled.",
     );
@@ -1766,8 +1883,8 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
   });
 
   it("shows an explicit expired mailbox warning for single oauth", async () => {
-    const expiredAt = new Date(Date.now() - 60_000).toISOString()
-    mockUpstreamAccounts()
+    const expiredAt = new Date(Date.now() - 60_000).toISOString();
+    mockUpstreamAccounts();
     render({
       pathname: "/account-pool/upstream-accounts/new",
       state: {
@@ -1795,7 +1912,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
   });
 
   it("shows mailbox refresh failures instead of silently looking empty", async () => {
-    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString()
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
     mockUpstreamAccounts({
       getOauthMailboxStatuses: vi.fn().mockRejectedValue(new Error("boom")),
     });
@@ -1829,15 +1946,17 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
   });
 
   it("shows a checking badge while the mailbox refresh is in flight", async () => {
-    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString()
-    let releaseRefresh: ((value: Array<Record<string, unknown>>) => void) | null = null
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    let releaseRefresh:
+      | ((value: Array<Record<string, unknown>>) => void)
+      | null = null;
     const getOauthMailboxStatuses = vi.fn().mockImplementation(
       () =>
         new Promise((resolve) => {
-          releaseRefresh = resolve as typeof releaseRefresh
+          releaseRefresh = resolve as typeof releaseRefresh;
         }),
-    )
-    mockUpstreamAccounts({ getOauthMailboxStatuses })
+    );
+    mockUpstreamAccounts({ getOauthMailboxStatuses });
     render({
       pathname: "/account-pool/upstream-accounts/new",
       state: {
@@ -1855,13 +1974,13 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
           },
         },
       },
-    })
+    });
 
     await act(async () => {
-      await Promise.resolve()
-    })
+      await Promise.resolve();
+    });
 
-    expect(host?.textContent).toContain("Checking")
+    expect(host?.textContent).toContain("Checking");
 
     await act(async () => {
       releaseRefresh?.([
@@ -1874,10 +1993,10 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
           invited: false,
           error: null,
         },
-      ])
-      await Promise.resolve()
-    })
-  })
+      ]);
+      await Promise.resolve();
+    });
+  });
 
   it("auto refreshes the single mailbox status and shows received timestamps", async () => {
     vi.useFakeTimers();
@@ -2086,7 +2205,10 @@ describe("UpstreamAccountCreatePage api key", () => {
 
     setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
     setInputValue('input[name="apiKeyValue"]', "sk-gateway");
-    setInputValue('input[name="apiKeyUpstreamBaseUrl"]', "proxy.example.com/gateway");
+    setInputValue(
+      'input[name="apiKeyUpstreamBaseUrl"]',
+      "proxy.example.com/gateway",
+    );
 
     expect(document.body.textContent).toContain("Use an absolute http(s) URL");
     expect(findButton(/Create API Key account/i)?.disabled).toBe(true);
@@ -2095,38 +2217,110 @@ describe("UpstreamAccountCreatePage api key", () => {
 });
 
 describe("UpstreamAccountCreatePage imported oauth", () => {
-  it("opens import mode from the query string and validates selected files", async () => {
-    const fileContent = JSON.stringify({
+  function createImportedOauthFixture(index: number) {
+    const email = `mailbox-${index}@duckmail.sbs`;
+    const fileName = `${email}.json`;
+    const content = JSON.stringify({
       type: "codex",
-      email: "2q5q6m3ow4a@duckmail.sbs",
-      account_id: "acct_imported",
+      email,
+      account_id: `acct_${index}`,
       expired: "2026-03-20T00:00:00.000Z",
       access_token: "access",
       refresh_token: "refresh",
       id_token: "header.payload.signature",
     });
-    const file = new File([fileContent], "2q5q6m3ow4a@duckmail.sbs.json", {
+    const file = new File([content], fileName, {
       type: "application/json",
-      lastModified: 1,
+      lastModified: index,
     });
-    const sourceId = `${file.name}:${file.size}:${file.lastModified}:0`;
+    return {
+      file,
+      content,
+      fileName,
+      email,
+      chatgptAccountId: `acct_${index}`,
+    };
+  }
+
+  function getImportedOauthSourceId(
+    fixture: { file: File },
+    selectionIndex = 0,
+  ) {
+    return `${fixture.file.name}:${fixture.file.size}:${fixture.file.lastModified}:${selectionIndex}`;
+  }
+
+  function buildImportedOauthRow(
+    sourceId: string,
+    fileName: string,
+    email: string,
+    accountId: string,
+    status:
+      | "ok"
+      | "ok_exhausted"
+      | "invalid"
+      | "error"
+      | "duplicate_in_input" = "ok",
+    detail: string | null = null,
+  ) {
+    return {
+      sourceId,
+      fileName,
+      email,
+      chatgptAccountId: accountId,
+      displayName: email,
+      tokenExpiresAt: "2026-03-20T00:00:00.000Z",
+      matchedAccount: null,
+      status,
+      detail,
+      attempts: 1,
+    };
+  }
+
+  function buildImportedOauthRowFromItem(
+    item: { sourceId: string; fileName: string },
+    status:
+      | "ok"
+      | "ok_exhausted"
+      | "invalid"
+      | "error"
+      | "duplicate_in_input" = "ok",
+    detail: string | null = null,
+  ) {
+    const email = item.fileName.replace(/\.json$/i, "");
+    const indexMatch = /mailbox-(\d+)@/i.exec(email);
+    const accountId = indexMatch
+      ? `acct_${indexMatch[1]}`
+      : `acct_${item.sourceId}`;
+    return buildImportedOauthRow(
+      item.sourceId,
+      item.fileName,
+      email,
+      accountId,
+      status,
+      detail,
+    );
+  }
+
+  function getImportedOauthResultRowsText() {
+    return Array.from(document.querySelectorAll("tbody tr")).map(
+      (row) => row.textContent ?? "",
+    );
+  }
+
+  it("opens import mode from the query string and validates selected files", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = getImportedOauthSourceId(fixture);
     const runImportedOauthValidation = vi.fn().mockResolvedValue({
       inputFiles: 1,
       uniqueInInput: 1,
       duplicateInInput: 0,
       rows: [
-        {
+        buildImportedOauthRow(
           sourceId,
-          fileName: "2q5q6m3ow4a@duckmail.sbs.json",
-          email: "2q5q6m3ow4a@duckmail.sbs",
-          chatgptAccountId: "acct_imported",
-          displayName: "2q5q6m3ow4a@duckmail.sbs",
-          tokenExpiresAt: "2026-03-20T00:00:00.000Z",
-          matchedAccount: null,
-          status: "ok",
-          detail: null,
-          attempts: 1,
-        },
+          fixture.fileName,
+          fixture.email,
+          fixture.chatgptAccountId,
+        ),
       ],
     });
     mockUpstreamAccounts({ runImportedOauthValidation });
@@ -2134,16 +2328,12 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     expect(host?.textContent).toContain("Import Codex OAuth JSON");
 
-    const fileInput = host?.querySelector(
-      'input[name="importOauthFiles"]',
-    );
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
     if (!(fileInput instanceof HTMLInputElement)) {
       throw new Error("missing import file input");
     }
 
-    await setFileInputFiles(fileInput, [
-      file,
-    ]);
+    await setFileInputFiles(fileInput, [fixture.file]);
     await flushAsync();
 
     clickButton(/validate and review/i);
@@ -2152,74 +2342,40 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     expect(runImportedOauthValidation).toHaveBeenCalledWith({
       items: [
         expect.objectContaining({
-          fileName: "2q5q6m3ow4a@duckmail.sbs.json",
+          fileName: fixture.fileName,
           sourceId,
-          content: fileContent,
+          content: fixture.content,
         }),
       ],
     });
     expect(document.body.textContent).toContain("Import validation");
-    expect(document.body.textContent).toContain("2q5q6m3ow4a@duckmail.sbs.json");
+    expect(document.body.textContent).toContain(fixture.fileName);
   });
 
   it("removes imported rows from the validation list without navigating away", async () => {
-    const importedFileContent = JSON.stringify({
-      type: "codex",
-      email: "imported@duckmail.sbs",
-      account_id: "acct_imported",
-      expired: "2026-03-20T00:00:00.000Z",
-      access_token: "access",
-      refresh_token: "refresh",
-      id_token: "header.payload.signature",
-    });
-    const pendingFileContent = JSON.stringify({
-      type: "codex",
-      email: "broken@duckmail.sbs",
-      account_id: "acct_broken",
-      expired: "2026-03-20T00:00:00.000Z",
-      access_token: "access",
-      refresh_token: "refresh",
-      id_token: "header.payload.signature",
-    });
-    const importedFile = new File([importedFileContent], "imported@duckmail.sbs.json", {
-      type: "application/json",
-      lastModified: 1,
-    });
-    const pendingFile = new File([pendingFileContent], "broken@duckmail.sbs.json", {
-      type: "application/json",
-      lastModified: 2,
-    });
-    const importedSourceId = `${importedFile.name}:${importedFile.size}:${importedFile.lastModified}:0`;
-    const pendingSourceId = `${pendingFile.name}:${pendingFile.size}:${pendingFile.lastModified}:1`;
+    const importedFixture = createImportedOauthFixture(1);
+    const pendingFixture = createImportedOauthFixture(2);
+    const importedSourceId = getImportedOauthSourceId(importedFixture, 0);
+    const pendingSourceId = getImportedOauthSourceId(pendingFixture, 1);
     const runImportedOauthValidation = vi.fn().mockResolvedValue({
       inputFiles: 2,
       uniqueInInput: 2,
       duplicateInInput: 0,
       rows: [
-        {
-          sourceId: importedSourceId,
-          fileName: "imported@duckmail.sbs.json",
-          email: "imported@duckmail.sbs",
-          chatgptAccountId: "acct_imported",
-          displayName: "imported@duckmail.sbs",
-          tokenExpiresAt: "2026-03-20T00:00:00.000Z",
-          matchedAccount: null,
-          status: "ok",
-          detail: null,
-          attempts: 1,
-        },
-        {
-          sourceId: pendingSourceId,
-          fileName: "broken@duckmail.sbs.json",
-          email: "broken@duckmail.sbs",
-          chatgptAccountId: "acct_broken",
-          displayName: "broken@duckmail.sbs",
-          tokenExpiresAt: "2026-03-20T00:00:00.000Z",
-          matchedAccount: null,
-          status: "invalid",
-          detail: "Broken credential",
-          attempts: 1,
-        },
+        buildImportedOauthRow(
+          importedSourceId,
+          importedFixture.fileName,
+          importedFixture.email,
+          importedFixture.chatgptAccountId,
+        ),
+        buildImportedOauthRow(
+          pendingSourceId,
+          pendingFixture.fileName,
+          pendingFixture.email,
+          pendingFixture.chatgptAccountId,
+          "invalid",
+          "Broken credential",
+        ),
       ],
     });
     const importOauthAccounts = vi.fn().mockResolvedValue({
@@ -2233,9 +2389,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       results: [
         {
           sourceId: importedSourceId,
-          fileName: "imported@duckmail.sbs.json",
-          email: "imported@duckmail.sbs",
-          chatgptAccountId: "acct_imported",
+          fileName: importedFixture.fileName,
+          email: importedFixture.email,
+          chatgptAccountId: importedFixture.chatgptAccountId,
           accountId: 77,
           status: "created",
           detail: null,
@@ -2251,63 +2407,50 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       throw new Error("missing import file input");
     }
 
-    await setFileInputFiles(fileInput, [importedFile, pendingFile]);
+    await setFileInputFiles(fileInput, [
+      importedFixture.file,
+      pendingFixture.file,
+    ]);
     await flushAsync();
 
     clickButton(/validate and review/i);
     await flushAsync();
-
-    expect(document.body.textContent).toContain("imported@duckmail.sbs.json");
-    expect(document.body.textContent).toContain("broken@duckmail.sbs.json");
 
     clickBodyButton(/import usable files/i);
     await flushAsync();
 
     const importPayload = importOauthAccounts.mock.calls[0]?.[0];
     expect(importPayload).toBeDefined();
-    expect(importPayload.items).toHaveLength(2);
+    expect(importPayload.items).toHaveLength(1);
     expect(importPayload.selectedSourceIds).toEqual([importedSourceId]);
     expect(importPayload.groupName).toBeUndefined();
     expect(importPayload.groupNote).toBeUndefined();
     expect(importPayload.tagIds).toEqual([]);
 
-    expect(document.body.textContent).not.toContain("imported@duckmail.sbs.json");
-    expect(document.body.textContent).toContain("broken@duckmail.sbs.json");
+    expect(document.body.textContent).not.toContain(importedFixture.fileName);
+    expect(document.body.textContent).toContain(pendingFixture.fileName);
     expect(document.body.textContent).toContain("Broken credential");
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
   it("paginates validation results after every 100 rows", async () => {
-    const fileContent = JSON.stringify({
-      type: "codex",
-      email: "mailbox-1@duckmail.sbs",
-      account_id: "acct_1",
-      expired: "2026-03-20T00:00:00.000Z",
-      access_token: "access",
-      refresh_token: "refresh",
-      id_token: "header.payload.signature",
-    });
-    const file = new File([fileContent], "bulk.json", {
-      type: "application/json",
-      lastModified: 1,
-    });
-    const runImportedOauthValidation = vi.fn().mockResolvedValue({
-      inputFiles: 130,
-      uniqueInInput: 130,
-      duplicateInInput: 0,
-      rows: Array.from({ length: 130 }, (_, index) => ({
-        sourceId: `row-${index + 1}`,
-        fileName: `mailbox-${index + 1}@duckmail.sbs.json`,
-        email: `mailbox-${index + 1}@duckmail.sbs`,
-        chatgptAccountId: `acct_${index + 1}`,
-        displayName: `mailbox-${index + 1}@duckmail.sbs`,
-        tokenExpiresAt: "2026-03-20T00:00:00.000Z",
-        matchedAccount: null,
-        status: "ok" as const,
-        detail: null,
-        attempts: 1,
-      })),
-    });
+    const fixtures = Array.from({ length: 130 }, (_, index) =>
+      createImportedOauthFixture(index + 1),
+    );
+    const runImportedOauthValidation = vi
+      .fn()
+      .mockImplementation(
+        async ({
+          items,
+        }: {
+          items: Array<{ sourceId: string; fileName: string }>;
+        }) => ({
+          inputFiles: items.length,
+          uniqueInInput: items.length,
+          duplicateInInput: 0,
+          rows: items.map((item) => buildImportedOauthRowFromItem(item)),
+        }),
+      );
     mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
@@ -2316,23 +2459,233 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       throw new Error("missing import file input");
     }
 
-    await setFileInputFiles(fileInput, [file]);
+    await setFileInputFiles(
+      fileInput,
+      fixtures.map((fixture) => fixture.file),
+    );
     await flushAsync();
 
     clickButton(/validate and review/i);
     await flushAsync();
 
-    expect(document.body.textContent).toContain("mailbox-1@duckmail.sbs.json");
-    expect(document.body.textContent).toContain("mailbox-100@duckmail.sbs.json");
-    expect(document.body.textContent).not.toContain("mailbox-101@duckmail.sbs.json");
+    const pageOneRows = getImportedOauthResultRowsText().join("\n");
+    expect(runImportedOauthValidation).toHaveBeenCalledTimes(2);
+    expect(runImportedOauthValidation.mock.calls[0]?.[0]?.items).toHaveLength(
+      100,
+    );
+    expect(runImportedOauthValidation.mock.calls[1]?.[0]?.items).toHaveLength(
+      30,
+    );
+    expect(pageOneRows).toContain("mailbox-1@duckmail.sbs.json");
+    expect(pageOneRows).toContain("mailbox-100@duckmail.sbs.json");
+    expect(pageOneRows).not.toContain("mailbox-101@duckmail.sbs.json");
     expect(document.body.textContent).toContain("Page 1 / 2");
 
     clickBodyButton(/^next$/i);
     await flushAsync();
 
-    expect(document.body.textContent).toContain("mailbox-101@duckmail.sbs.json");
-    expect(document.body.textContent).toContain("mailbox-130@duckmail.sbs.json");
-    expect(document.body.textContent).not.toContain("mailbox-1@duckmail.sbs.json");
+    const pageTwoRows = getImportedOauthResultRowsText().join("\n");
+    expect(pageTwoRows).toContain("mailbox-101@duckmail.sbs.json");
+    expect(pageTwoRows).toContain("mailbox-130@duckmail.sbs.json");
+    expect(pageTwoRows).not.toContain("mailbox-1@duckmail.sbs.json");
     expect(document.body.textContent).toContain("Page 2 / 2");
+  });
+
+  it("keeps successful validation batches and marks only the failed batch as error", async () => {
+    const fixtures = Array.from({ length: 130 }, (_, index) =>
+      createImportedOauthFixture(index + 1),
+    );
+    const runImportedOauthValidation = vi
+      .fn()
+      .mockImplementationOnce(
+        async ({
+          items,
+        }: {
+          items: Array<{ sourceId: string; fileName: string }>;
+        }) => ({
+          inputFiles: items.length,
+          uniqueInInput: items.length,
+          duplicateInInput: 0,
+          rows: items.map((item) => buildImportedOauthRowFromItem(item)),
+        }),
+      )
+      .mockRejectedValueOnce(new Error("Batch exploded"));
+    mockUpstreamAccounts({ runImportedOauthValidation });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(
+      fileInput,
+      fixtures.map((fixture) => fixture.file),
+    );
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+
+    expect(runImportedOauthValidation).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain("Batch exploded");
+    expect(document.body.textContent).toContain("mailbox-1@duckmail.sbs.json");
+
+    clickBodyButton(/^next$/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain(
+      "mailbox-101@duckmail.sbs.json",
+    );
+    expect(document.body.textContent).toContain("Batch exploded");
+  });
+
+  it("imports validated oauth rows in batches of 100 and clears the dialog when all batches succeed", async () => {
+    const fixtures = Array.from({ length: 130 }, (_, index) =>
+      createImportedOauthFixture(index + 1),
+    );
+    const runImportedOauthValidation = vi
+      .fn()
+      .mockImplementation(
+        async ({
+          items,
+        }: {
+          items: Array<{ sourceId: string; fileName: string }>;
+        }) => ({
+          inputFiles: items.length,
+          uniqueInInput: items.length,
+          duplicateInInput: 0,
+          rows: items.map((item) => buildImportedOauthRowFromItem(item)),
+        }),
+      );
+    const importOauthAccounts = vi
+      .fn()
+      .mockImplementation(async ({ items, selectedSourceIds }) => ({
+        summary: {
+          inputFiles: items.length,
+          selectedFiles: selectedSourceIds.length,
+          created: selectedSourceIds.length,
+          updatedExisting: 0,
+          failed: 0,
+        },
+        results: selectedSourceIds.map((sourceId: string) => {
+          const item = items.find(
+            (candidate: { sourceId: string }) =>
+              candidate.sourceId === sourceId,
+          );
+          return {
+            sourceId,
+            fileName: item?.fileName ?? sourceId,
+            email: item?.fileName?.replace(/\\.json$/i, "") ?? sourceId,
+            chatgptAccountId: `acct_${sourceId}`,
+            accountId: 1,
+            status: "created",
+            detail: null,
+            matchedAccount: null,
+          };
+        }),
+      }));
+    mockUpstreamAccounts({ runImportedOauthValidation, importOauthAccounts });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(
+      fileInput,
+      fixtures.map((fixture) => fixture.file),
+    );
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+
+    clickBodyButton(/import usable files/i);
+    await flushAsync();
+
+    expect(importOauthAccounts).toHaveBeenCalledTimes(2);
+    expect(importOauthAccounts.mock.calls[0]?.[0]?.items).toHaveLength(100);
+    expect(
+      importOauthAccounts.mock.calls[0]?.[0]?.selectedSourceIds,
+    ).toHaveLength(100);
+    expect(importOauthAccounts.mock.calls[1]?.[0]?.items).toHaveLength(30);
+    expect(
+      importOauthAccounts.mock.calls[1]?.[0]?.selectedSourceIds,
+    ).toHaveLength(30);
+    expect(document.body.textContent).not.toContain("Import validation");
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps failed import batches in the list after earlier batches succeed", async () => {
+    const fixtures = Array.from({ length: 130 }, (_, index) =>
+      createImportedOauthFixture(index + 1),
+    );
+    const runImportedOauthValidation = vi
+      .fn()
+      .mockImplementation(
+        async ({
+          items,
+        }: {
+          items: Array<{ sourceId: string; fileName: string }>;
+        }) => ({
+          inputFiles: items.length,
+          uniqueInInput: items.length,
+          duplicateInInput: 0,
+          rows: items.map((item) => buildImportedOauthRowFromItem(item)),
+        }),
+      );
+    const importOauthAccounts = vi
+      .fn()
+      .mockImplementationOnce(async ({ items, selectedSourceIds }) => ({
+        summary: {
+          inputFiles: items.length,
+          selectedFiles: selectedSourceIds.length,
+          created: selectedSourceIds.length,
+          updatedExisting: 0,
+          failed: 0,
+        },
+        results: selectedSourceIds.map((sourceId: string) => ({
+          sourceId,
+          fileName: `${sourceId}.json`,
+          email: sourceId,
+          chatgptAccountId: `acct_${sourceId}`,
+          accountId: 1,
+          status: "created",
+          detail: null,
+          matchedAccount: null,
+        })),
+      }))
+      .mockRejectedValueOnce(new Error("Import batch exploded"));
+    mockUpstreamAccounts({ runImportedOauthValidation, importOauthAccounts });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(
+      fileInput,
+      fixtures.map((fixture) => fixture.file),
+    );
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+
+    clickBodyButton(/import usable files/i);
+    await flushAsync();
+
+    expect(importOauthAccounts).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain("Import batch exploded");
+    expect(document.body.textContent).not.toContain(
+      "mailbox-1@duckmail.sbs.json",
+    );
+    expect(document.body.textContent).toContain(
+      "mailbox-101@duckmail.sbs.json",
+    );
+    expect(document.body.textContent).not.toContain("Page 1 / 2");
   });
 });
