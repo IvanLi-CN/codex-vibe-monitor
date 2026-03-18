@@ -18,6 +18,7 @@ import {
   type CreateApiKeyAccountPayload,
   type CompleteOauthLoginSessionPayload,
   type CreateOauthLoginSessionPayload,
+  type FetchUpstreamAccountsQuery,
   type LoginSessionStatusResponse,
   type OauthMailboxSession,
   type OauthMailboxStatus,
@@ -33,10 +34,12 @@ import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
 
 const LOAD_LIST_FAILED = Symbol('load-list-failed')
+const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {}
 
-export function useUpstreamAccounts() {
+export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY) {
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
+  const [hasUngroupedAccounts, setHasUngroupedAccounts] = useState(false)
   const [writesEnabled, setWritesEnabled] = useState(true)
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -90,7 +93,7 @@ export function useUpstreamAccounts() {
       const requestSeq = listRequestSeqRef.current
       setIsLoading(true)
       try {
-        const response = await fetchUpstreamAccounts()
+        const response = await fetchUpstreamAccounts(query)
         if (requestSeq !== listRequestSeqRef.current) {
           return LOAD_LIST_FAILED
         }
@@ -107,6 +110,7 @@ export function useUpstreamAccounts() {
 
         setItems(response.items)
         setGroups(response.groups)
+        setHasUngroupedAccounts(response.hasUngroupedAccounts)
         setWritesEnabled(response.writesEnabled)
         setRouting(response.routing ?? null)
         setListError(null)
@@ -124,7 +128,7 @@ export function useUpstreamAccounts() {
         }
       }
     },
-    [setSelectedAccount],
+    [query, setSelectedAccount],
   )
 
   const loadDetail = useCallback(async (accountId: number | null) => {
@@ -394,6 +398,7 @@ export function useUpstreamAccounts() {
   return {
     items,
     groups,
+    hasUngroupedAccounts,
     writesEnabled,
     routing,
     selectedId,

@@ -171,6 +171,25 @@ function listTagSummaries(store: StoryStore): TagSummary[] {
     .sort((left, right) => left.name.localeCompare(right.name))
 }
 
+function filterAccountsForQuery(store: StoryStore, url: URL) {
+  const groupSearch = (url.searchParams.get('groupSearch') || '').trim().toLowerCase()
+  const groupUngrouped = url.searchParams.get('groupUngrouped') === 'true'
+  const tagIds = url.searchParams.getAll('tagIds').map((value) => Number(value)).filter(Number.isFinite)
+
+  return store.accounts.filter((account) => {
+    const normalizedGroup = normalizeGroupName(account.groupName)?.toLowerCase() ?? ''
+    const matchesGroup = groupUngrouped
+      ? !normalizeGroupName(account.groupName)
+      : groupSearch
+        ? normalizedGroup.includes(groupSearch)
+        : true
+    if (!matchesGroup) return false
+    if (tagIds.length === 0) return true
+    const accountTagIds = new Set(account.tags.map((tag) => tag.id))
+    return tagIds.every((tagId) => accountTagIds.has(tagId))
+  })
+}
+
 function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetail>): UpstreamAccountDetail {
   const detail: UpstreamAccountDetail = {
     id,
@@ -687,8 +706,9 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
           groups: listGroupSummaries(store),
+          hasUngroupedAccounts: store.accounts.some((account) => !normalizeGroupName(account.groupName)),
           routing: clone(store.routing),
-          items: store.accounts.map((item) => clone(item)),
+          items: filterAccountsForQuery(store, parsedUrl).map((item) => clone(item)),
         }
         return jsonResponse(payload)
       }

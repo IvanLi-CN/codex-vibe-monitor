@@ -373,6 +373,7 @@ function mockAccountsPage() {
         effectiveRoutingRule: defaultEffectiveRoutingRule,
       },
     ],
+    hasUngroupedAccounts: true,
     writesEnabled: true,
     selectedId: 5,
     selectedSummary: {
@@ -494,7 +495,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("team");
   });
 
-  it("filters the roster by requiring all selected tags to match", () => {
+  it("passes all-match tag filters to the roster hook", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
 
@@ -502,74 +503,28 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickCommandItem(/^vip$/i);
     clickCommandItem(/^burst-safe$/i);
 
-    expect(document.body.textContent).toContain("Existing OAuth");
-    expect(document.body.textContent).not.toContain("Another OAuth");
+    expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      tagIds: [1, 2],
+    });
   });
 
-  it("shows the empty roster state when no account matches every selected tag", () => {
-    hookMocks.useUpstreamAccounts.mockReturnValue({
-      items: [
-        {
-          id: 5,
-          kind: "oauth_codex",
-          provider: "codex",
-          displayName: "VIP only",
-          groupName: "prod",
-          status: "active",
-          enabled: true,
-          isMother: false,
-          tags: [{ id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule }],
-          effectiveRoutingRule: defaultEffectiveRoutingRule,
-        },
-        {
-          id: 9,
-          kind: "oauth_codex",
-          provider: "codex",
-          displayName: "Burst only",
-          groupName: "prod",
-          status: "active",
-          enabled: true,
-          isMother: false,
-          tags: [{ id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule }],
-          effectiveRoutingRule: defaultEffectiveRoutingRule,
-        },
-      ],
-      writesEnabled: true,
-      groups: [],
-      selectedId: 5,
-      selectedSummary: null,
-      detail: null,
-      isLoading: false,
-      isDetailLoading: false,
-      listError: null,
-      detailError: null,
-      error: null,
-      selectAccount: vi.fn(),
-      refresh: vi.fn(),
-      loadDetail: vi.fn(),
-      beginOauthLogin: vi.fn(),
-      beginRelogin: vi.fn(),
-      getLoginSession: vi.fn(),
-      completeOauthLogin: vi.fn(),
-      createApiKeyAccount: vi.fn(),
-      saveAccount: vi.fn(),
-      saveRouting: vi.fn(),
-      runSync: vi.fn(),
-      removeAccount: vi.fn(),
-      routing: { apiKeyConfigured: false, maskedApiKey: null },
-      saveGroupNote: vi.fn(),
-    });
-
+  it("passes ungrouped and tag filters to the roster hook together", () => {
+    mockAccountsPage();
     render("/account-pool/upstream-accounts");
 
+    clickCombobox(/account groups/i);
+    clickCommandItem(/^ungrouped$/i);
     clickCombobox(/filter accounts by tags/i);
     clickCommandItem(/^vip$/i);
     clickCommandItem(/^burst-safe$/i);
 
-    expect(document.body.textContent).toContain("No upstream account yet");
-    expect(document.body.textContent).toContain("Create an OAuth or API key account to start building the pool.");
-    expect(document.body.textContent).not.toContain("VIP only");
-    expect(document.body.textContent).not.toContain("Burst only");
+    expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      groupSearch: undefined,
+      groupUngrouped: true,
+      tagIds: [1, 2],
+    });
   });
 
   it("shows duplicate warnings in the roster and detail drawer", () => {
