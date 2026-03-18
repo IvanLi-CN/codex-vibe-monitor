@@ -47,7 +47,7 @@ function bubbleSurfaceColor(variant: BubbleVariant, theme: BubbleTheme) {
     case 'warning':
       return isDark
         ? 'color-mix(in oklab, oklch(var(--color-base-200)) 62%, oklch(var(--color-warning)) 38%)'
-        : 'color-mix(in oklab, oklch(var(--color-warning)) 72%, oklch(var(--color-warning-content)))'
+        : 'color-mix(in oklab, oklch(var(--color-base-100)) 68%, oklch(var(--color-warning)) 32%)'
     case 'error':
       return 'oklch(var(--color-error) / 0.40)'
     default:

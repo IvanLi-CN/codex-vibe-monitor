@@ -59,7 +59,7 @@ describe('FloatingFieldBubble', () => {
     expect(bubble).toBeInstanceOf(HTMLElement)
     expect(host?.querySelector('[role="status"]')).toBeNull()
     expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
-      'color-mix(in oklab, oklch(var(--color-warning)) 72%, oklch(var(--color-warning-content)))',
+      'color-mix(in oklab, oklch(var(--color-base-100)) 68%, oklch(var(--color-warning)) 32%)',
     )
     expect(bubble?.getAttribute('data-side')).not.toBeNull()
   })
