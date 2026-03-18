@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.15.2",
+  "base_stable_version": "1.15.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-18T21:03:41Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.15.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f472ab2bbce81c1ed5170230b811650ccbab6352",
+  "pr_number": 175,
+  "pr_title": "fix(web): unify anchored bubble components",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.15.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.15.2,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "ea4b9aa4d48d8e7e75af62e6d9b55ce7eb011a23",
+  "type_label": "type:patch"
+}
