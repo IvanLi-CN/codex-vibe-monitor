@@ -1,5 +1,11 @@
 import { useState } from 'react'
-import { bubbleArrowClassName, bubbleContentClassName, type BubbleVariant } from './bubble'
+import {
+  bubbleArrowClassName,
+  bubbleArrowStyle,
+  bubbleContentClassName,
+  bubbleSurfaceStyle,
+  type BubbleVariant,
+} from './bubble'
 import { Popover, PopoverAnchor, PopoverArrow, PopoverContent } from './popover'
 import { cn } from '../../lib/utils'
 import { usePortaledTheme } from './use-portaled-theme'
@@ -39,6 +45,7 @@ export function FloatingFieldBubble({
         </PopoverAnchor>
         <PopoverContent
           data-theme={portalTheme}
+          style={bubbleSurfaceStyle(variant, portalTheme)}
           role={role}
           aria-live="polite"
           side="left"
@@ -60,6 +67,7 @@ export function FloatingFieldBubble({
             width={14}
             height={7}
             className={bubbleArrowClassName(variant)}
+            style={bubbleArrowStyle(variant, portalTheme)}
           />
         </PopoverContent>
       </Popover>
@@ -77,6 +85,7 @@ export function FloatingFieldBubble({
       </PopoverAnchor>
       <PopoverContent
         data-theme={portalTheme}
+        style={bubbleSurfaceStyle(variant, portalTheme)}
         role={role}
         aria-live="polite"
         side="bottom"
@@ -99,6 +108,7 @@ export function FloatingFieldBubble({
           width={14}
           height={7}
           className={bubbleArrowClassName(variant)}
+          style={bubbleArrowStyle(variant, portalTheme)}
         />
       </PopoverContent>
     </Popover>

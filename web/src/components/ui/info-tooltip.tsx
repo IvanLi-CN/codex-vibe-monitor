@@ -1,7 +1,12 @@
 import { AppIcon } from '../AppIcon'
 import * as PopoverPrimitive from '@radix-ui/react-popover'
 import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
-import { bubbleArrowClassName, bubbleContentClassName } from './bubble'
+import {
+  bubbleArrowClassName,
+  bubbleArrowStyle,
+  bubbleContentClassName,
+  bubbleSurfaceStyle,
+} from './bubble'
 import { PopoverArrow, PopoverContent } from './popover'
 import { cn } from '../../lib/utils'
 import { usePortaledTheme } from './use-portaled-theme'
@@ -127,6 +132,7 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
       </span>
       <PopoverContent
         data-theme={portalTheme}
+        style={bubbleSurfaceStyle('neutral', portalTheme)}
         forceMount
         ref={tooltipRef}
         id={tooltipId}
@@ -151,6 +157,7 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
           width={14}
           height={7}
           className={bubbleArrowClassName('neutral')}
+          style={bubbleArrowStyle('neutral', portalTheme)}
         />
       </PopoverContent>
     </PopoverPrimitive.Root>

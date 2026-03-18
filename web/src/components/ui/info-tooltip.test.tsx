@@ -142,6 +142,12 @@ describe('InfoTooltip', () => {
     expect(tooltip).toBeInstanceOf(HTMLElement)
     expect(tooltip?.getAttribute('data-theme')).toBe('vibe-dark')
     expect(arrow?.getAttribute('data-theme')).toBe('vibe-dark')
+    expect((tooltip as HTMLElement | null)?.style.backgroundColor).toBe(
+      'color-mix(in oklab, oklch(var(--color-base-200)) 86%, oklch(var(--color-primary)) 14%)',
+    )
+    expect((arrow as SVGElement | null)?.style.fill).toBe(
+      'color-mix(in oklab, oklch(var(--color-base-200)) 86%, oklch(var(--color-primary)) 14%)',
+    )
   })
 
   it('keeps hover tooltips open while moving the pointer into the bubble content', () => {

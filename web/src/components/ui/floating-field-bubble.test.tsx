@@ -58,7 +58,9 @@ describe('FloatingFieldBubble', () => {
 
     expect(bubble).toBeInstanceOf(HTMLElement)
     expect(host?.querySelector('[role="status"]')).toBeNull()
-    expect(bubble?.className).toContain('color-mix(in_oklab,oklch(var(--color-warning))_72%,oklch(var(--color-warning-content)))')
+    expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
+      'color-mix(in oklab, oklch(var(--color-warning)) 72%, oklch(var(--color-warning-content)))',
+    )
     expect(bubble?.getAttribute('data-side')).not.toBeNull()
   })
 
@@ -72,12 +74,16 @@ describe('FloatingFieldBubble', () => {
     )
 
     const bubble = document.body.querySelector('[role="status"]')
+    const arrow = document.body.querySelector('[data-bubble-arrow="true"]')
 
     expect(bubble).toBeInstanceOf(HTMLElement)
     expect(host?.querySelector('[role="status"]')).toBeNull()
-    expect(bubble?.className).toContain('bg-success/40')
+    expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
+      'oklch(var(--color-success) / 0.40)',
+    )
     expect(bubble?.getAttribute('data-side')).toBe('left')
-    expect(bubble?.querySelector('[data-bubble-arrow="true"]')).toBeInstanceOf(SVGElement)
+    expect(arrow).toBeInstanceOf(SVGElement)
+    expect((arrow as SVGElement | null)?.style.fill).toBe('oklch(var(--color-success) / 0.40)')
   })
 
   it('gives neutral bubbles a subtle tinted surface instead of a plain transparent panel', () => {
@@ -92,7 +98,9 @@ describe('FloatingFieldBubble', () => {
     const bubble = document.body.querySelector('[role="status"]')
 
     expect(bubble).toBeInstanceOf(HTMLElement)
-    expect(bubble?.className).toContain('color-mix(in_oklab,oklch(var(--color-base-100))_88%,oklch(var(--color-primary))_12%)')
+    expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
+      'color-mix(in oklab, oklch(var(--color-base-100)) 88%, oklch(var(--color-primary)) 12%)',
+    )
   })
 
   it('inherits the nearest theme scope so dark panels do not render with light-theme bubble tokens', () => {
@@ -112,6 +120,12 @@ describe('FloatingFieldBubble', () => {
     expect(bubble).toBeInstanceOf(HTMLElement)
     expect(bubble?.getAttribute('data-theme')).toBe('vibe-dark')
     expect(arrow?.getAttribute('data-theme')).toBe('vibe-dark')
+    expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
+      'color-mix(in oklab, oklch(var(--color-base-200)) 62%, oklch(var(--color-warning)) 38%)',
+    )
+    expect((arrow as SVGElement | null)?.style.fill).toBe(
+      'color-mix(in oklab, oklch(var(--color-base-200)) 62%, oklch(var(--color-warning)) 38%)',
+    )
   })
 
   it('keeps FloatingFieldError as an error-variant compatibility wrapper', () => {
@@ -124,7 +138,9 @@ describe('FloatingFieldBubble', () => {
     const bubble = document.body.querySelector('[role="alert"]')
 
     expect(bubble).toBeInstanceOf(HTMLElement)
-    expect(bubble?.className).toContain('bg-error/40')
+    expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
+      'oklch(var(--color-error) / 0.40)',
+    )
     expect(bubble?.querySelector('[data-bubble-arrow="true"]')).toBeInstanceOf(SVGElement)
   })
 })
