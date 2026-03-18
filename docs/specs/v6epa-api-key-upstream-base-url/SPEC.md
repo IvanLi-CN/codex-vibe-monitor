@@ -105,7 +105,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: UI / FloatingFieldBubble / State Gallery
   state: light-theme-gallery
   evidence_note: 展示共享气泡组件在亮色主题下的状态矩阵，证明 neutral、info、success、warning、error 五种玻璃态气泡都使用同一套锚点与尾巴几何。
@@ -116,7 +116,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: UI / FloatingFieldBubble / State Gallery
   state: dark-theme-gallery
   evidence_note: 展示共享气泡组件在暗色主题下的状态矩阵，证明玻璃材质、主题透传与箭头连接关系在暗底上也保持一致。
