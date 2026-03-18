@@ -136,7 +136,7 @@ export function AccountTagContextChip({
         aria-expanded={menuOpen}
         disabled={disabled}
         className={cn(
-          'absolute right-0.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-base-300 bg-base-100/95 text-base-content shadow-sm transition-all',
+          'absolute right-0.5 top-1/2 hidden h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-base-300 bg-base-100/95 text-base-content shadow-sm transition-all sm:inline-flex',
           showActionButton || menuOpen
             ? 'pointer-events-auto opacity-100 scale-100'
             : 'pointer-events-none opacity-0 scale-95',
