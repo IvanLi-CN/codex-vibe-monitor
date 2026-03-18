@@ -1,11 +1,13 @@
 import { useLayoutEffect, useState } from 'react'
+import type { BubbleTheme } from './bubble'
 
 export function usePortaledTheme(anchor: HTMLElement | null) {
-  const [theme, setTheme] = useState<string | undefined>(() => {
+  const [theme, setTheme] = useState<BubbleTheme>(() => {
     if (typeof document === 'undefined') {
       return undefined
     }
-    return document.documentElement.getAttribute('data-theme') ?? undefined
+    const rootTheme = document.documentElement.getAttribute('data-theme')
+    return rootTheme === 'vibe-light' || rootTheme === 'vibe-dark' ? rootTheme : undefined
   })
 
   useLayoutEffect(() => {
@@ -16,7 +18,8 @@ export function usePortaledTheme(anchor: HTMLElement | null) {
     const scopedThemeNode = anchor?.closest<HTMLElement>('[data-theme]') ?? document.documentElement
 
     const syncTheme = () => {
-      setTheme(scopedThemeNode.getAttribute('data-theme') ?? undefined)
+      const scopedTheme = scopedThemeNode.getAttribute('data-theme')
+      setTheme(scopedTheme === 'vibe-light' || scopedTheme === 'vibe-dark' ? scopedTheme : undefined)
     }
 
     syncTheme()

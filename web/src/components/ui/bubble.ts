@@ -28,7 +28,7 @@ const bubbleVariants = cva(
 )
 
 export type BubbleVariant = NonNullable<VariantProps<typeof bubbleVariants>['variant']>
-type BubbleTheme = 'vibe-light' | 'vibe-dark' | undefined
+export type BubbleTheme = 'vibe-light' | 'vibe-dark' | undefined
 const bubbleShadowFilter =
   'drop-shadow(0 20px 30px rgba(15, 23, 42, 0.12)) drop-shadow(0 10px 18px rgba(15, 23, 42, 0.08))'
 const bubbleBackdropFilter = 'blur(18px) saturate(165%)'
@@ -68,7 +68,7 @@ export function bubbleContentClassName(variant?: BubbleVariant) {
   return bubbleVariants({ variant })
 }
 
-export function bubbleArrowClassName(variant?: BubbleVariant) {
+export function bubbleArrowClassName() {
   return ''
 }
 

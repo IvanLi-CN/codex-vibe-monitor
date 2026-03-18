@@ -156,7 +156,7 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
           data-bubble-arrow="true"
           width={14}
           height={7}
-          className={bubbleArrowClassName('neutral')}
+          className={bubbleArrowClassName()}
           style={bubbleArrowStyle('neutral', portalTheme)}
         />
       </PopoverContent>
