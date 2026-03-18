@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { Stories } from '@storybook/addon-docs/blocks'
+import type { BubbleVariant } from './bubble'
 import { Input } from './input'
 import { FormFieldFeedback } from './form-field-feedback'
 
@@ -17,25 +18,37 @@ function StorySurface({ children }: { children: ReactNode }) {
 function FieldHarness({
   label,
   message,
+  variant = 'error',
   placeholder,
 }: {
   label: string
   message?: string | null
+  variant?: BubbleVariant
   placeholder?: string
 }) {
+  const isError = variant === 'error'
+  const inputToneClass = variant === 'success'
+    ? 'border-success/70 focus-visible:ring-success'
+    : variant === 'warning'
+      ? 'border-warning/70 focus-visible:ring-warning'
+      : isError
+        ? 'border-error/70 focus-visible:ring-error'
+        : ''
+
   return (
     <label className="field">
       <FormFieldFeedback
         label={label}
         message={message}
+        variant={variant}
         messageClassName="md:max-w-[min(30rem,calc(100%-9rem))]"
       />
       <Input
         value={placeholder ?? ''}
         placeholder={placeholder}
         readOnly
-        aria-invalid={message ? 'true' : 'false'}
-        className={message ? 'border-error/70 focus-visible:ring-error' : ''}
+        aria-invalid={isError ? 'true' : 'false'}
+        className={message ? inputToneClass : ''}
       />
     </label>
   )
@@ -65,6 +78,10 @@ const meta = {
     ),
   ],
   argTypes: {
+    variant: {
+      control: 'radio',
+      options: ['error', 'warning', 'success', 'info', 'neutral'],
+    },
     label: {
       control: 'text',
     },
@@ -91,11 +108,13 @@ export const Default: Story = {
   args: {
     label: '上游地址',
     message: '请填写 http(s) 的绝对 URL，例如 https://proxy.example.com/gateway',
+    variant: 'error',
   },
   render: (args) => (
     <FieldHarness
       label={String(args.label)}
       message={typeof args.message === 'string' ? args.message : undefined}
+      variant={args.variant}
       placeholder="proxy.example.com/gateway"
     />
   ),
@@ -105,12 +124,30 @@ export const QuietField: Story = {
   args: {
     label: '上游地址',
     message: null,
+    variant: 'error',
   },
   render: (args) => (
     <FieldHarness
       label={String(args.label)}
       message={typeof args.message === 'string' ? args.message : undefined}
+      variant={args.variant}
       placeholder="https://proxy.example.com/gateway"
+    />
+  ),
+}
+
+export const SuccessField: Story = {
+  args: {
+    label: '回调地址',
+    message: '地址格式正确，授权完成后即可继续下一步。',
+    variant: 'success',
+  },
+  render: (args) => (
+    <FieldHarness
+      label={String(args.label)}
+      message={typeof args.message === 'string' ? args.message : undefined}
+      variant={args.variant}
+      placeholder="https://proxy.example.com/oauth/callback"
     />
   ),
 }

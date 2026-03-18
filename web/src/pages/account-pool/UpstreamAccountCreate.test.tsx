@@ -298,6 +298,10 @@ function getBatchRows() {
   return host?.querySelectorAll('[data-testid^="batch-oauth-row-"]') ?? [];
 }
 
+function pageTextContent() {
+  return document.body.textContent ?? "";
+}
+
 function setComboboxValue(nameSelector: string, value: string) {
   const hiddenInput = host?.querySelector(nameSelector);
   if (!(hiddenInput instanceof HTMLInputElement)) {
@@ -688,7 +692,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     });
     await flushAsync();
 
-    expect(host?.textContent).toContain("Display name must be unique.");
+    expect(pageTextContent()).toContain("Display name must be unique.");
   });
 
   it("attaches a supported mailbox from the batch popover editor", async () => {
@@ -1069,7 +1073,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     setInputValue('input[name="oauthDisplayName"]', " existing oauth ");
     await flushAsync();
 
-    expect(host?.textContent).toContain("Display name must be unique.");
+    expect(pageTextContent()).toContain("Display name must be unique.");
     expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(true);
     expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
     expect(beginOauthLogin).not.toHaveBeenCalled();
@@ -1149,7 +1153,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     setInputValue('input[name="apiKeyDisplayName"]', "Existing OAuth");
     await flushAsync();
 
-    expect(host?.textContent).toContain("Display name must be unique.");
+    expect(pageTextContent()).toContain("Display name must be unique.");
     expect(findButton(/Create API key account/i)?.disabled).toBe(true);
   });
 

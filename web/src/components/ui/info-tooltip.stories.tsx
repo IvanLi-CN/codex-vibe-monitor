@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, userEvent, within } from 'storybook/test'
 import { InfoTooltip } from './info-tooltip'
 
 function StorySurface({ children }: { children: React.ReactNode }) {
@@ -12,6 +13,7 @@ function StorySurface({ children }: { children: React.ReactNode }) {
 const meta = {
   title: 'UI/InfoTooltip',
   component: InfoTooltip,
+  tags: ['autodocs'],
   decorators: [
     (Story) => (
       <StorySurface>
@@ -53,3 +55,28 @@ export const MatchTextColor: Story = {
   ),
 }
 
+export const ViewportEdgePinned: Story = {
+  args: {
+    label: 'Help',
+    content: 'Pinned tooltips use the shared anchored bubble shell and stay within the viewport even at the edge.',
+  },
+  render: (args) => (
+    <div className="flex min-h-[70vh] items-start justify-end rounded-[1.6rem] border border-base-300/70 bg-base-100/35 px-4 py-6">
+      <div className="inline-flex items-center gap-2 rounded-full border border-info/35 bg-info/10 px-3 py-2 text-xs font-semibold text-info">
+        <span>边缘提示</span>
+        <InfoTooltip {...args} />
+      </div>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const doc = within(canvasElement.ownerDocument.body)
+    const trigger = canvas.getByRole('button', { name: /help/i })
+    await userEvent.click(trigger)
+    const tooltip = await doc.findByRole('tooltip')
+    const rect = tooltip.getBoundingClientRect()
+    await expect(trigger.getAttribute('aria-describedby')).toBe(tooltip.id)
+    await expect(rect.right <= window.innerWidth - 1).toBe(true)
+    await expect(rect.left >= 0).toBe(true)
+  },
+}
