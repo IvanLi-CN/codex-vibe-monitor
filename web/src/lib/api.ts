@@ -1253,6 +1253,82 @@ export interface UpdateUpstreamAccountPayload {
   tagIds?: number[];
 }
 
+export interface ImportOauthCredentialFilePayload {
+  sourceId: string;
+  fileName: string;
+  content: string;
+}
+
+export interface ValidateImportedOauthAccountsPayload {
+  items: ImportOauthCredentialFilePayload[];
+}
+
+export interface ImportedOauthMatchSummary {
+  accountId: number;
+  displayName: string;
+  groupName?: string | null;
+  status: string;
+}
+
+export interface ImportedOauthValidationRow {
+  sourceId: string;
+  fileName: string;
+  email?: string | null;
+  chatgptAccountId?: string | null;
+  displayName?: string | null;
+  tokenExpiresAt?: string | null;
+  matchedAccount?: ImportedOauthMatchSummary | null;
+  status:
+    | "pending"
+    | "duplicate_in_input"
+    | "ok"
+    | "ok_exhausted"
+    | "invalid"
+    | "error"
+    | string;
+  detail?: string | null;
+  attempts: number;
+}
+
+export interface ImportedOauthValidationResponse {
+  inputFiles: number;
+  uniqueInInput: number;
+  duplicateInInput: number;
+  rows: ImportedOauthValidationRow[];
+}
+
+export interface ImportValidatedOauthAccountsPayload {
+  items: ImportOauthCredentialFilePayload[];
+  selectedSourceIds: string[];
+  groupName?: string;
+  groupNote?: string;
+  tagIds?: number[];
+}
+
+export interface ImportedOauthImportResult {
+  sourceId: string;
+  fileName: string;
+  email?: string | null;
+  chatgptAccountId?: string | null;
+  accountId?: number | null;
+  status: "created" | "updated_existing" | "failed" | string;
+  detail?: string | null;
+  matchedAccount?: ImportedOauthMatchSummary | null;
+}
+
+export interface ImportedOauthImportSummary {
+  inputFiles: number;
+  selectedFiles: number;
+  created: number;
+  updatedExisting: number;
+  failed: number;
+}
+
+export interface ImportedOauthImportResponse {
+  summary: ImportedOauthImportSummary;
+  results: ImportedOauthImportResult[];
+}
+
 export interface CreateTagPayload extends TagRoutingRule {
   name: string;
 }
@@ -1569,6 +1645,110 @@ function normalizeLoginSessionStatusResponse(raw: unknown): LoginSessionStatusRe
     accountId: accountId == null ? null : accountId,
     error: typeof payload.error === "string" ? payload.error : null,
   };
+}
+
+function normalizeImportedOauthMatchSummary(raw: unknown): ImportedOauthMatchSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const accountId = normalizeFiniteNumber(payload.accountId)
+  const displayName = typeof payload.displayName === 'string' ? payload.displayName : ''
+  const status = typeof payload.status === 'string' ? payload.status : ''
+  if (accountId == null || !displayName || !status) return null
+  return {
+    accountId,
+    displayName,
+    groupName: typeof payload.groupName === 'string' ? payload.groupName : null,
+    status,
+  }
+}
+
+function normalizeImportedOauthValidationRow(raw: unknown): ImportedOauthValidationRow | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const sourceId = typeof payload.sourceId === 'string' ? payload.sourceId : ''
+  const fileName = typeof payload.fileName === 'string' ? payload.fileName : ''
+  const status = typeof payload.status === 'string' ? payload.status : ''
+  const attempts = normalizeFiniteNumber(payload.attempts)
+  if (!sourceId || !fileName || !status || attempts == null) return null
+  return {
+    sourceId,
+    fileName,
+    email: typeof payload.email === 'string' ? payload.email : null,
+    chatgptAccountId: typeof payload.chatgptAccountId === 'string' ? payload.chatgptAccountId : null,
+    displayName: typeof payload.displayName === 'string' ? payload.displayName : null,
+    tokenExpiresAt: typeof payload.tokenExpiresAt === 'string' ? payload.tokenExpiresAt : null,
+    matchedAccount: normalizeImportedOauthMatchSummary(payload.matchedAccount),
+    status,
+    detail: typeof payload.detail === 'string' ? payload.detail : null,
+    attempts,
+  }
+}
+
+function normalizeImportedOauthValidationResponse(raw: unknown): ImportedOauthValidationResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const inputFiles = normalizeFiniteNumber(payload.inputFiles)
+  const uniqueInInput = normalizeFiniteNumber(payload.uniqueInInput)
+  const duplicateInInput = normalizeFiniteNumber(payload.duplicateInInput)
+  const rowsRaw = Array.isArray(payload.rows) ? payload.rows : []
+  if (inputFiles == null || uniqueInInput == null || duplicateInInput == null) {
+    throw new Error('Request failed: invalid imported OAuth validation payload')
+  }
+  return {
+    inputFiles,
+    uniqueInInput,
+    duplicateInInput,
+    rows: rowsRaw
+      .map(normalizeImportedOauthValidationRow)
+      .filter((item): item is ImportedOauthValidationRow => item != null),
+  }
+}
+
+function normalizeImportedOauthImportResult(raw: unknown): ImportedOauthImportResult | null {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const sourceId = typeof payload.sourceId === 'string' ? payload.sourceId : ''
+  const fileName = typeof payload.fileName === 'string' ? payload.fileName : ''
+  const status = typeof payload.status === 'string' ? payload.status : ''
+  if (!sourceId || !fileName || !status) return null
+  return {
+    sourceId,
+    fileName,
+    email: typeof payload.email === 'string' ? payload.email : null,
+    chatgptAccountId: typeof payload.chatgptAccountId === 'string' ? payload.chatgptAccountId : null,
+    accountId: normalizeFiniteNumber(payload.accountId) ?? null,
+    status,
+    detail: typeof payload.detail === 'string' ? payload.detail : null,
+    matchedAccount: normalizeImportedOauthMatchSummary(payload.matchedAccount),
+  }
+}
+
+function normalizeImportedOauthImportResponse(raw: unknown): ImportedOauthImportResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>
+  const summaryPayload = (payload.summary ?? {}) as Record<string, unknown>
+  const inputFiles = normalizeFiniteNumber(summaryPayload.inputFiles)
+  const selectedFiles = normalizeFiniteNumber(summaryPayload.selectedFiles)
+  const created = normalizeFiniteNumber(summaryPayload.created)
+  const updatedExisting = normalizeFiniteNumber(summaryPayload.updatedExisting)
+  const failed = normalizeFiniteNumber(summaryPayload.failed)
+  const resultsRaw = Array.isArray(payload.results) ? payload.results : []
+  if (
+    inputFiles == null
+    || selectedFiles == null
+    || created == null
+    || updatedExisting == null
+    || failed == null
+  ) {
+    throw new Error('Request failed: invalid imported OAuth import payload')
+  }
+  return {
+    summary: {
+      inputFiles,
+      selectedFiles,
+      created,
+      updatedExisting,
+      failed,
+    },
+    results: resultsRaw
+      .map(normalizeImportedOauthImportResult)
+      .filter((item): item is ImportedOauthImportResult => item != null),
+  }
 }
 
 function normalizeOauthMailboxSession(raw: unknown): OauthMailboxSession {
@@ -1981,6 +2161,32 @@ export async function completeOauthLoginSession(
     },
   );
   return normalizeUpstreamAccountDetail(response);
+}
+
+export async function validateImportedOauthAccounts(
+  payload: ValidateImportedOauthAccountsPayload,
+): Promise<ImportedOauthValidationResponse> {
+  const response = await fetchJson<unknown>(
+    "/api/pool/upstream-accounts/oauth/imports/validate",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  )
+  return normalizeImportedOauthValidationResponse(response)
+}
+
+export async function importValidatedOauthAccounts(
+  payload: ImportValidatedOauthAccountsPayload,
+): Promise<ImportedOauthImportResponse> {
+  const response = await fetchJson<unknown>(
+    "/api/pool/upstream-accounts/oauth/imports",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  )
+  return normalizeImportedOauthImportResponse(response)
 }
 
 export async function createApiKeyUpstreamAccount(

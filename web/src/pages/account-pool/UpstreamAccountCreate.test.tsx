@@ -151,6 +151,18 @@ async function flushTimers() {
   });
 }
 
+async function setFileInputFiles(input: HTMLInputElement, files: File[]) {
+  Object.defineProperty(input, "files", {
+    configurable: true,
+    value: files,
+  });
+  await act(async () => {
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 function setInputValue(selector: string, value: string) {
   const input = host?.querySelector(selector);
   if (
@@ -398,6 +410,22 @@ function mockUpstreamAccounts(
     getOauthMailboxStatuses: vi.fn().mockResolvedValue([]),
     removeOauthMailboxSession: vi.fn().mockResolvedValue(undefined),
     createApiKeyAccount: vi.fn(),
+    runImportedOauthValidation: vi.fn().mockResolvedValue({
+      inputFiles: 0,
+      uniqueInInput: 0,
+      duplicateInInput: 0,
+      rows: [],
+    }),
+    importOauthAccounts: vi.fn().mockResolvedValue({
+      summary: {
+        inputFiles: 0,
+        selectedFiles: 0,
+        created: 0,
+        updatedExisting: 0,
+        failed: 0,
+      },
+      results: [],
+    }),
     saveGroupNote: vi.fn().mockResolvedValue({ groupName: "prod", note: "Saved note" }),
     ...overrides,
   });
@@ -2063,5 +2091,171 @@ describe("UpstreamAccountCreatePage api key", () => {
     expect(document.body.textContent).toContain("Use an absolute http(s) URL");
     expect(findButton(/Create API Key account/i)?.disabled).toBe(true);
     expect(createApiKeyAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe("UpstreamAccountCreatePage imported oauth", () => {
+  it("opens import mode from the query string and validates selected files", async () => {
+    const fileContent = JSON.stringify({
+      type: "codex",
+      email: "2q5q6m3ow4a@duckmail.sbs",
+      account_id: "acct_imported",
+      expired: "2026-03-20T00:00:00.000Z",
+      access_token: "access",
+      refresh_token: "refresh",
+      id_token: "header.payload.signature",
+    });
+    const file = new File([fileContent], "2q5q6m3ow4a@duckmail.sbs.json", {
+      type: "application/json",
+      lastModified: 1,
+    });
+    const sourceId = `${file.name}:${file.size}:${file.lastModified}:0`;
+    const runImportedOauthValidation = vi.fn().mockResolvedValue({
+      inputFiles: 1,
+      uniqueInInput: 1,
+      duplicateInInput: 0,
+      rows: [
+        {
+          sourceId,
+          fileName: "2q5q6m3ow4a@duckmail.sbs.json",
+          email: "2q5q6m3ow4a@duckmail.sbs",
+          chatgptAccountId: "acct_imported",
+          displayName: "2q5q6m3ow4a@duckmail.sbs",
+          tokenExpiresAt: "2026-03-20T00:00:00.000Z",
+          matchedAccount: null,
+          status: "ok",
+          detail: null,
+          attempts: 1,
+        },
+      ],
+    });
+    mockUpstreamAccounts({ runImportedOauthValidation });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    expect(host?.textContent).toContain("Import Codex OAuth JSON");
+
+    const fileInput = host?.querySelector(
+      'input[name="importOauthFiles"]',
+    );
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [
+      file,
+    ]);
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+
+    expect(runImportedOauthValidation).toHaveBeenCalledWith({
+      items: [
+        expect.objectContaining({
+          fileName: "2q5q6m3ow4a@duckmail.sbs.json",
+          sourceId,
+          content: fileContent,
+        }),
+      ],
+    });
+    expect(document.body.textContent).toContain("Import validation");
+    expect(document.body.textContent).toContain("2q5q6m3ow4a@duckmail.sbs.json");
+  });
+
+  it("imports validated files and navigates back to the roster", async () => {
+    const fileContent = JSON.stringify({
+      type: "codex",
+      email: "2q5q6m3ow4a@duckmail.sbs",
+      account_id: "acct_imported",
+      expired: "2026-03-20T00:00:00.000Z",
+      access_token: "access",
+      refresh_token: "refresh",
+      id_token: "header.payload.signature",
+    });
+    const file = new File([fileContent], "2q5q6m3ow4a@duckmail.sbs.json", {
+      type: "application/json",
+      lastModified: 1,
+    });
+    const sourceId = `${file.name}:${file.size}:${file.lastModified}:0`;
+    const runImportedOauthValidation = vi.fn().mockResolvedValue({
+      inputFiles: 1,
+      uniqueInInput: 1,
+      duplicateInInput: 0,
+      rows: [
+        {
+          sourceId,
+          fileName: "2q5q6m3ow4a@duckmail.sbs.json",
+          email: "2q5q6m3ow4a@duckmail.sbs",
+          chatgptAccountId: "acct_imported",
+          displayName: "2q5q6m3ow4a@duckmail.sbs",
+          tokenExpiresAt: "2026-03-20T00:00:00.000Z",
+          matchedAccount: null,
+          status: "ok",
+          detail: null,
+          attempts: 1,
+        },
+      ],
+    });
+    const importOauthAccounts = vi.fn().mockResolvedValue({
+      summary: {
+        inputFiles: 1,
+        selectedFiles: 1,
+        created: 1,
+        updatedExisting: 0,
+        failed: 0,
+      },
+      results: [
+        {
+          sourceId,
+          fileName: "2q5q6m3ow4a@duckmail.sbs.json",
+          email: "2q5q6m3ow4a@duckmail.sbs",
+          chatgptAccountId: "acct_imported",
+          accountId: 77,
+          status: "created",
+          detail: null,
+          matchedAccount: null,
+        },
+      ],
+    });
+    mockUpstreamAccounts({ runImportedOauthValidation, importOauthAccounts });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector(
+      'input[name="importOauthFiles"]',
+    );
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [
+      file,
+    ]);
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    clickBodyButton(/import usable files/i);
+    await flushAsync();
+
+    const importPayload = importOauthAccounts.mock.calls[0]?.[0];
+    expect(importPayload).toBeDefined();
+    expect(importPayload.items).toHaveLength(1);
+    expect(importPayload.items[0]).toEqual(
+      expect.objectContaining({
+        sourceId,
+        fileName: "2q5q6m3ow4a@duckmail.sbs.json",
+        content: fileContent,
+      }),
+    );
+    expect(importPayload.selectedSourceIds).toEqual([sourceId]);
+    expect(importPayload.groupName).toBeUndefined();
+    expect(importPayload.groupNote).toBeUndefined();
+    expect(importPayload.tagIds).toEqual([]);
+    expect(navigateMock).toHaveBeenCalledWith("/account-pool/upstream-accounts", {
+      state: {
+        selectedAccountId: 77,
+        openDetail: true,
+      },
+    });
   });
 });

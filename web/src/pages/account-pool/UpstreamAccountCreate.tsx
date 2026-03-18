@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { AppIcon } from '../../components/AppIcon'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../../components/ui/alert'
@@ -27,6 +27,10 @@ import { Spinner } from '../../components/ui/spinner'
 import { Tooltip } from '../../components/ui/tooltip'
 import { OauthMailboxChip } from '../../components/account-pool/OauthMailboxChip'
 import { AccountTagField } from '../../components/AccountTagField'
+import {
+  ImportedOauthValidationDialog,
+  type ImportedOauthValidationDialogState,
+} from '../../components/ImportedOauthValidationDialog'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
 import { MotherAccountToggle } from '../../components/MotherAccountToggle'
@@ -34,6 +38,8 @@ import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotific
 import { usePoolTags } from '../../hooks/usePoolTags'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import type {
+  ImportOauthCredentialFilePayload,
+  ImportedOauthValidationRow,
   LoginSessionStatusResponse,
   OauthMailboxSession,
   OauthMailboxSessionSupported,
@@ -56,7 +62,7 @@ import { applyMotherUpdateToItems, normalizeMotherGroupKey } from '../../lib/ups
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
-type CreateTab = 'oauth' | 'batchOauth' | 'apiKey'
+type CreateTab = 'oauth' | 'batchOauth' | 'apiKey' | 'import'
 type BatchOauthBusyAction = 'generate' | 'complete' | null
 type MailboxBusyAction = 'attach' | 'generate' | null
 type DuplicateWarningState = {
@@ -130,6 +136,10 @@ type CreatePageDraft = {
     tagIds?: number[]
     rows?: Array<Partial<BatchOauthRow> & { id?: string }>
   }
+  import?: {
+    defaultGroupName?: string
+    tagIds?: number[]
+  }
   apiKey?: {
     displayName?: string
     groupName?: string
@@ -191,6 +201,7 @@ function parseCreateMode(search: string): CreateTab {
   const value = new URLSearchParams(search).get('mode')
   if (value === 'batchOauth') return 'batchOauth'
   if (value === 'apiKey') return 'apiKey'
+  if (value === 'import') return 'import'
   return 'oauth'
 }
 
@@ -261,6 +272,53 @@ function hydrateBatchOauthRow(
     mailboxRefreshBusy: seed.mailboxRefreshBusy === true,
     mailboxNextRefreshAt: typeof seed.mailboxNextRefreshAt === 'number' ? seed.mailboxNextRefreshAt : null,
   }
+}
+
+function createImportedOauthSourceId(file: File, index: number) {
+  return `${file.name}:${file.size}:${file.lastModified}:${index}`
+}
+
+function buildImportedOauthPendingState(
+  items: ImportOauthCredentialFilePayload[],
+): ImportedOauthValidationDialogState {
+  return {
+    inputFiles: items.length,
+    uniqueInInput: items.length,
+    duplicateInInput: 0,
+    checking: true,
+    importing: false,
+    rows: items.map((item) => ({
+      sourceId: item.sourceId,
+      fileName: item.fileName,
+      email: null,
+      chatgptAccountId: null,
+      displayName: null,
+      tokenExpiresAt: null,
+      matchedAccount: null,
+      status: 'pending',
+      detail: null,
+      attempts: 0,
+    })),
+    importReport: null,
+    importError: null,
+  }
+}
+
+function mergeImportedOauthValidationRows(
+  currentRows: ImportedOauthValidationRow[],
+  nextRows: ImportedOauthValidationRow[],
+  retriedSourceIds: Set<string>,
+) {
+  const nextBySourceId = new Map(nextRows.map((row) => [row.sourceId, row] as const))
+  return currentRows.map((row) => {
+    const nextRow = nextBySourceId.get(row.sourceId)
+    if (!nextRow) return row
+    return {
+      ...row,
+      ...nextRow,
+      attempts: retriedSourceIds.has(row.sourceId) ? Math.max(nextRow.attempts, row.attempts + 1) : nextRow.attempts,
+    }
+  })
 }
 
 function getNextBatchRowIndex(rows: BatchOauthRow[]) {
@@ -503,7 +561,7 @@ function DuplicateWarningPopover({
         align="end"
         side={side}
         sideOffset={10}
-        onOpenAutoFocus={(event) => event.preventDefault()}
+        onOpenAutoFocus={(event: Event) => event.preventDefault()}
         className="w-[16.5rem] rounded-2xl border border-warning/45 bg-base-100 p-0 shadow-[0_16px_38px_rgba(15,23,42,0.16)]"
       >
         <div className="space-y-3 p-3">
@@ -599,7 +657,7 @@ function DuplicateAccountDetailDialog({
   }
 }) {
   return (
-    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+    <Dialog open={open} onOpenChange={(nextOpen: boolean) => !nextOpen && onClose()}>
       <DialogContent className="max-h-[85vh] overflow-hidden p-0 sm:max-w-[38rem]">
         <div className="flex items-start justify-between gap-4 border-b border-base-300/70 px-5 py-4">
           <DialogHeader className="min-w-0">
@@ -674,6 +732,8 @@ export default function UpstreamAccountCreatePage() {
     removeOauthMailboxSession,
     completeOauthLogin,
     createApiKeyAccount,
+    runImportedOauthValidation,
+    importOauthAccounts,
     saveGroupNote,
   } = useUpstreamAccounts()
   const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags()
@@ -749,6 +809,13 @@ export default function UpstreamAccountCreatePage() {
   const [batchManualCopyRowId, setBatchManualCopyRowId] = useState<string | null>(null)
   const [batchDefaultGroupName, setBatchDefaultGroupName] = useState(() => draft?.batchOauth?.defaultGroupName ?? '')
   const [batchTagIds, setBatchTagIds] = useState<number[]>(() => draft?.batchOauth?.tagIds ?? [])
+  const [importGroupName, setImportGroupName] = useState(() => draft?.import?.defaultGroupName ?? '')
+  const [importTagIds, setImportTagIds] = useState<number[]>(() => draft?.import?.tagIds ?? [])
+  const [importFiles, setImportFiles] = useState<ImportOauthCredentialFilePayload[]>([])
+  const [importSelectionLabel, setImportSelectionLabel] = useState<string | null>(null)
+  const [importValidationDialogOpen, setImportValidationDialogOpen] = useState(false)
+  const [importValidationState, setImportValidationState] = useState<ImportedOauthValidationDialogState | null>(null)
+  const [importInputKey, setImportInputKey] = useState(0)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(() => initialBatchRows)
   const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
@@ -1422,6 +1489,224 @@ export default function UpstreamAccountCreatePage() {
     const search = tab === 'oauth' ? '?mode=oauth' : `?mode=${tab}`
     navigate(`${location.pathname}${search}`, { replace: true })
   }
+
+  const runImportValidation = useCallback(
+    async (items: ImportOauthCredentialFilePayload[], options?: { merge?: boolean }) => {
+      if (items.length === 0) return
+      const merge = options?.merge === true
+      const retriedSourceIds = new Set(items.map((item) => item.sourceId))
+      setImportValidationDialogOpen(true)
+      if (merge) {
+        setImportValidationState((current) =>
+          current
+            ? {
+                ...current,
+                checking: true,
+                importing: false,
+                importError: null,
+                rows: current.rows.map((row) =>
+                  retriedSourceIds.has(row.sourceId)
+                    ? {
+                        ...row,
+                        status: 'pending',
+                        detail: null,
+                      }
+                    : row,
+                ),
+              }
+            : buildImportedOauthPendingState(items),
+        )
+      } else {
+        setImportValidationState(buildImportedOauthPendingState(items))
+      }
+      try {
+        const response = await runImportedOauthValidation({ items })
+        setImportValidationState((current) => {
+          if (!merge || !current) {
+            return {
+              ...response,
+              checking: false,
+              importing: false,
+              importReport: null,
+              importError: null,
+            }
+          }
+          return {
+            ...current,
+            checking: false,
+            importing: false,
+            importError: null,
+            rows: mergeImportedOauthValidationRows(current.rows, response.rows, retriedSourceIds),
+          }
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        setImportValidationState((current) =>
+          current
+            ? {
+                ...current,
+                checking: false,
+                importing: false,
+                importError: message,
+              }
+            : {
+                ...buildImportedOauthPendingState(items),
+                checking: false,
+                importError: message,
+              },
+        )
+      }
+    },
+    [runImportedOauthValidation],
+  )
+
+  const handleImportFilesChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const selectedFiles = Array.from(event.target.files ?? [])
+      setActionError(null)
+      setImportValidationDialogOpen(false)
+      setImportValidationState(null)
+      if (selectedFiles.length === 0) {
+        setImportFiles([])
+        setImportSelectionLabel(null)
+        return
+      }
+      try {
+        const items = await Promise.all(
+          selectedFiles.map(async (file, index) => ({
+            sourceId: createImportedOauthSourceId(file, index),
+            fileName: file.name,
+            content: await file.text(),
+          })),
+        )
+        setImportFiles(items)
+        setImportSelectionLabel(
+          selectedFiles.length === 1
+            ? selectedFiles[0]?.name ?? null
+            : t('accountPool.upstreamAccounts.import.filesSelected', { count: selectedFiles.length }),
+        )
+      } catch (err) {
+        setImportFiles([])
+        setImportSelectionLabel(null)
+        setActionError(err instanceof Error ? err.message : String(err))
+      }
+    },
+    [t],
+  )
+
+  const handleClearImportSelection = useCallback(() => {
+    setImportFiles([])
+    setImportSelectionLabel(null)
+    setImportValidationDialogOpen(false)
+    setImportValidationState(null)
+    setImportInputKey((current) => current + 1)
+  }, [])
+
+  const handleValidateImportedOauth = useCallback(async () => {
+    if (!writesEnabled || importFiles.length === 0) return
+    setActionError(null)
+    await runImportValidation(importFiles)
+  }, [importFiles, runImportValidation, writesEnabled])
+
+  const handleRetryImportedOauthOne = useCallback(
+    async (sourceId: string) => {
+      const item = importFiles.find((candidate) => candidate.sourceId === sourceId)
+      if (!item) return
+      await runImportValidation([item], { merge: true })
+    },
+    [importFiles, runImportValidation],
+  )
+
+  const handleRetryImportedOauthFailed = useCallback(async () => {
+    const failedSourceIds = new Set(
+      (importValidationState?.rows ?? [])
+        .filter((row) => row.status === 'invalid' || row.status === 'error')
+        .map((row) => row.sourceId),
+    )
+    if (failedSourceIds.size === 0) return
+    await runImportValidation(
+      importFiles.filter((item) => failedSourceIds.has(item.sourceId)),
+      { merge: true },
+    )
+  }, [importFiles, importValidationState?.rows, runImportValidation])
+
+  const handleImportValidatedOauth = useCallback(async () => {
+    const validSourceIds = (importValidationState?.rows ?? [])
+      .filter((row) => row.status === 'ok' || row.status === 'ok_exhausted')
+      .map((row) => row.sourceId)
+    if (validSourceIds.length === 0) return
+    const normalizedImportGroupName = normalizeGroupName(importGroupName)
+    const importGroupNote =
+      normalizedImportGroupName && !isExistingGroup(groups, normalizedImportGroupName)
+        ? groupDraftNotes[normalizedImportGroupName]?.trim() || undefined
+        : undefined
+    setImportValidationState((current) =>
+      current
+        ? {
+            ...current,
+            importing: true,
+            importError: null,
+          }
+        : current,
+    )
+    try {
+      const response = await importOauthAccounts({
+        items: importFiles,
+        selectedSourceIds: validSourceIds,
+        groupName: normalizedImportGroupName || undefined,
+        groupNote: importGroupNote,
+        tagIds: importTagIds,
+      })
+      setImportValidationState((current) => {
+        if (!current) return current
+        const resultsBySourceId = new Map(response.results.map((result) => [result.sourceId, result] as const))
+        return {
+          ...current,
+          checking: false,
+          importing: false,
+          importError: null,
+          importReport: response,
+          rows: current.rows.map((row) => {
+            const result = resultsBySourceId.get(row.sourceId)
+            if (!result) return row
+            if (result.status === 'failed') {
+              return {
+                ...row,
+                status: 'error',
+                detail: result.detail ?? row.detail,
+              }
+            }
+            return {
+              ...row,
+              detail: result.detail ?? row.detail,
+            }
+          }),
+        }
+      })
+      if (response.summary.failed === 0) {
+        const firstAccountId = response.results.find((result) => typeof result.accountId === 'number')?.accountId ?? null
+        navigate('/account-pool/upstream-accounts', {
+          state: firstAccountId
+            ? {
+                selectedAccountId: firstAccountId,
+                openDetail: true,
+              }
+            : undefined,
+        })
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setImportValidationState((current) =>
+        current
+          ? {
+              ...current,
+              importing: false,
+              importError: message,
+            }
+          : current,
+      )
+    }
+  }, [groupDraftNotes, groups, importFiles, importGroupName, importOauthAccounts, importTagIds, importValidationState?.rows, navigate])
 
   const invalidateOauthSession = useCallback(() => {
     invalidatePendingSingleOauthSession(
@@ -2256,7 +2541,7 @@ export default function UpstreamAccountCreatePage() {
 
           {!isRelinking ? (
             <div className="segment-group self-start" role="tablist" aria-label={t('accountPool.upstreamAccounts.createPage.tabsLabel')}>
-              {(['oauth', 'batchOauth', 'apiKey'] as const).map((tab) => (
+              {(['oauth', 'batchOauth', 'import', 'apiKey'] as const).map((tab) => (
                 <button
                   key={tab}
                   type="button"
@@ -2270,7 +2555,9 @@ export default function UpstreamAccountCreatePage() {
                     ? t('accountPool.upstreamAccounts.createPage.tabs.oauth')
                     : tab === 'batchOauth'
                       ? t('accountPool.upstreamAccounts.createPage.tabs.batchOauth')
-                      : t('accountPool.upstreamAccounts.createPage.tabs.apiKey')}
+                      : tab === 'import'
+                        ? t('accountPool.upstreamAccounts.createPage.tabs.import')
+                        : t('accountPool.upstreamAccounts.createPage.tabs.apiKey')}
                 </button>
               ))}
             </div>
@@ -2351,11 +2638,15 @@ export default function UpstreamAccountCreatePage() {
                   <CardTitle>
                     {activeTab === 'oauth'
                       ? t('accountPool.upstreamAccounts.oauth.createTitle')
+                      : activeTab === 'import'
+                        ? t('accountPool.upstreamAccounts.import.createTitle')
                       : t('accountPool.upstreamAccounts.apiKey.createTitle')}
                   </CardTitle>
                   <CardDescription>
                     {activeTab === 'oauth'
                       ? t('accountPool.upstreamAccounts.oauth.createDescription')
+                      : activeTab === 'import'
+                        ? t('accountPool.upstreamAccounts.import.createDescription')
                       : t('accountPool.upstreamAccounts.apiKey.createDescription')}
                   </CardDescription>
                 </>
@@ -3063,7 +3354,7 @@ export default function UpstreamAccountCreatePage() {
                                           >
                                             <Popover
                                               open={batchManualCopyRowId === row.id}
-                                              onOpenChange={(nextOpen) => {
+                                              onOpenChange={(nextOpen: boolean) => {
                                                 setBatchManualCopyRowId(nextOpen ? row.id : null)
                                               }}
                                             >
@@ -3292,6 +3583,108 @@ export default function UpstreamAccountCreatePage() {
                   <p className="text-sm text-base-content/65">{t('accountPool.upstreamAccounts.batchOauth.footerHint')}</p>
 
                 </>
+              ) : activeTab === 'import' ? (
+                <>
+                  <label className="field md:col-span-2">
+                    <span className="field-label">{t('accountPool.upstreamAccounts.import.fileInputLabel')}</span>
+                    <Input
+                      key={importInputKey}
+                      type="file"
+                      name="importOauthFiles"
+                      accept=".json,application/json"
+                      multiple
+                      onChange={(event) => void handleImportFilesChange(event)}
+                      disabled={!writesEnabled}
+                    />
+                  </label>
+                  <div className="md:col-span-2 rounded-2xl border border-base-300/80 bg-base-200/35 p-4">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-base-content">
+                          {t('accountPool.upstreamAccounts.import.selectedFilesTitle')}
+                        </p>
+                        <p className="mt-1 text-sm text-base-content/65">
+                          {importSelectionLabel ?? t('accountPool.upstreamAccounts.import.selectedFilesEmpty')}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleClearImportSelection}
+                        disabled={importFiles.length === 0}
+                      >
+                        {t('accountPool.upstreamAccounts.import.clearSelection')}
+                      </Button>
+                    </div>
+                    {importFiles.length > 0 ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {importFiles.map((item) => (
+                          <Badge key={item.sourceId} variant="secondary" className="max-w-full">
+                            <span className="truncate">{item.fileName}</span>
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <label className="field md:col-span-2">
+                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
+                    <div className="flex items-center gap-2">
+                      <UpstreamAccountGroupCombobox
+                        name="importGroupName"
+                        value={importGroupName}
+                        suggestions={groupSuggestions}
+                        placeholder={t('accountPool.upstreamAccounts.import.defaultGroupPlaceholder')}
+                        searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                        emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                        createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                        onValueChange={setImportGroupName}
+                        className="min-w-0 flex-1"
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant={hasGroupNote(importGroupName) ? 'secondary' : 'outline'}
+                        className="shrink-0 rounded-full"
+                        aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                        title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                        onClick={() => openGroupNoteEditor(importGroupName)}
+                        disabled={!writesEnabled || !normalizeGroupName(importGroupName)}
+                      >
+                        <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                      </Button>
+                    </div>
+                    <p className="mt-2 text-xs text-base-content/65">
+                      {t('accountPool.upstreamAccounts.import.defaultMetadataHint')}
+                    </p>
+                  </label>
+                  <div className="md:col-span-2">
+                    <AccountTagField
+                      tags={tagItems}
+                      selectedTagIds={importTagIds}
+                      writesEnabled={writesEnabled}
+                      pageCreatedTagIds={pageCreatedTagIds}
+                      labels={tagFieldLabels}
+                      onChange={setImportTagIds}
+                      onCreateTag={handleCreateTag}
+                      onUpdateTag={updateTag}
+                      onDeleteTag={handleDeleteTag}
+                    />
+                  </div>
+                  <div className="md:col-span-2 flex flex-wrap justify-end gap-2">
+                    <Button asChild type="button" variant="ghost">
+                      <Link to="/account-pool/upstream-accounts">{t('accountPool.upstreamAccounts.actions.cancel')}</Link>
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={() => void handleValidateImportedOauth()}
+                      disabled={!writesEnabled || importFiles.length === 0}
+                    >
+                      <AppIcon name="check-decagram-outline" className="mr-2 h-4 w-4" aria-hidden />
+                      {t('accountPool.upstreamAccounts.import.validateAction')}
+                    </Button>
+                  </div>
+                </>
               ) : (
                 <>
                   <label className="field md:col-span-2">
@@ -3448,6 +3841,17 @@ export default function UpstreamAccountCreatePage() {
           </Card>
         </div>
       </section>
+      <ImportedOauthValidationDialog
+        open={importValidationDialogOpen}
+        state={importValidationState}
+        onClose={() => {
+          if (importValidationState?.checking || importValidationState?.importing) return
+          setImportValidationDialogOpen(false)
+        }}
+        onRetryFailed={() => void handleRetryImportedOauthFailed()}
+        onRetryOne={(sourceId) => void handleRetryImportedOauthOne(sourceId)}
+        onImportValid={() => void handleImportValidatedOauth()}
+      />
       <UpstreamAccountGroupNoteDialog
         open={groupNoteEditor.open}
         groupName={groupNoteEditor.groupName}

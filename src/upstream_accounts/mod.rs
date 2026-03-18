@@ -56,6 +56,14 @@ const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
 const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
 const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
 const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
+const IMPORT_VALIDATION_STATUS_OK: &str = "ok";
+const IMPORT_VALIDATION_STATUS_OK_EXHAUSTED: &str = "ok_exhausted";
+const IMPORT_VALIDATION_STATUS_INVALID: &str = "invalid";
+const IMPORT_VALIDATION_STATUS_ERROR: &str = "error";
+const IMPORT_VALIDATION_STATUS_DUPLICATE_IN_INPUT: &str = "duplicate_in_input";
+const IMPORT_RESULT_STATUS_CREATED: &str = "created";
+const IMPORT_RESULT_STATUS_UPDATED_EXISTING: &str = "updated_existing";
+const IMPORT_RESULT_STATUS_FAILED: &str = "failed";
 const DEFAULT_OAUTH_SCOPE: &str = "openid profile email offline_access";
 const DEFAULT_OAUTH_AUDIENCE: &str = "https://api.openai.com/v1";
 const DEFAULT_OAUTH_PROMPT: &str = "login";
@@ -461,6 +469,97 @@ pub(crate) struct CreateApiKeyAccountRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ImportOauthCredentialFileRequest {
+    source_id: String,
+    file_name: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ValidateImportedOauthAccountsRequest {
+    #[serde(default)]
+    items: Vec<ImportOauthCredentialFileRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportValidatedOauthAccountsRequest {
+    #[serde(default)]
+    items: Vec<ImportOauthCredentialFileRequest>,
+    #[serde(default)]
+    selected_source_ids: Vec<String>,
+    group_name: Option<String>,
+    group_note: Option<String>,
+    #[serde(default)]
+    tag_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthMatchSummary {
+    account_id: i64,
+    display_name: String,
+    group_name: Option<String>,
+    status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthValidationRow {
+    source_id: String,
+    file_name: String,
+    email: Option<String>,
+    chatgpt_account_id: Option<String>,
+    display_name: Option<String>,
+    token_expires_at: Option<String>,
+    matched_account: Option<ImportedOauthMatchSummary>,
+    status: String,
+    detail: Option<String>,
+    attempts: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthValidationResponse {
+    input_files: usize,
+    unique_in_input: usize,
+    duplicate_in_input: usize,
+    rows: Vec<ImportedOauthValidationRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthImportResult {
+    source_id: String,
+    file_name: String,
+    email: Option<String>,
+    chatgpt_account_id: Option<String>,
+    account_id: Option<i64>,
+    status: String,
+    detail: Option<String>,
+    matched_account: Option<ImportedOauthMatchSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthImportSummary {
+    input_files: usize,
+    selected_files: usize,
+    created: usize,
+    updated_existing: usize,
+    failed: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthImportResponse {
+    summary: ImportedOauthImportSummary,
+    results: Vec<ImportedOauthImportResult>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateUpstreamAccountRequest {
     display_name: Option<String>,
     group_name: Option<String>,
@@ -593,6 +692,43 @@ struct ChatgptJwtClaims {
     chatgpt_plan_type: Option<String>,
     chatgpt_user_id: Option<String>,
     chatgpt_account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportedOauthCredentialsFile {
+    #[serde(rename = "type")]
+    source_type: String,
+    email: String,
+    account_id: String,
+    expired: String,
+    access_token: String,
+    refresh_token: String,
+    id_token: String,
+    #[serde(default)]
+    #[serde(rename = "last_refresh")]
+    _last_refresh: Option<String>,
+    #[serde(default)]
+    token_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedImportedOauthCredentials {
+    source_id: String,
+    file_name: String,
+    email: String,
+    display_name: String,
+    chatgpt_account_id: String,
+    token_expires_at: String,
+    credentials: StoredOauthCredentials,
+    claims: ChatgptJwtClaims,
+}
+
+#[derive(Debug, Clone)]
+struct ImportedOauthProbeOutcome {
+    token_expires_at: String,
+    credentials: StoredOauthCredentials,
+    claims: ChatgptJwtClaims,
+    exhausted: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1437,6 +1573,377 @@ pub(crate) async fn get_upstream_account(
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
     Ok(Json(detail))
+}
+
+async fn build_imported_oauth_validation_response(
+    state: &AppState,
+    items: &[ImportOauthCredentialFileRequest],
+) -> ImportedOauthValidationResponse {
+    let mut seen_keys = HashSet::new();
+    let mut unique_in_input = 0usize;
+    let mut duplicate_in_input = 0usize;
+    let mut rows = Vec::with_capacity(items.len());
+
+    for item in items {
+        let normalized = match normalize_imported_oauth_credentials(item) {
+            Ok(value) => value,
+            Err(message) => {
+                rows.push(ImportedOauthValidationRow {
+                    source_id: item.source_id.clone(),
+                    file_name: item.file_name.clone(),
+                    email: None,
+                    chatgpt_account_id: None,
+                    display_name: None,
+                    token_expires_at: None,
+                    matched_account: None,
+                    status: IMPORT_VALIDATION_STATUS_INVALID.to_string(),
+                    detail: Some(message),
+                    attempts: 0,
+                });
+                continue;
+            }
+        };
+
+        let match_key = imported_match_key(&normalized.email, &normalized.chatgpt_account_id);
+        if !seen_keys.insert(match_key) {
+            duplicate_in_input += 1;
+            rows.push(ImportedOauthValidationRow {
+                source_id: normalized.source_id,
+                file_name: normalized.file_name,
+                email: Some(normalized.email),
+                chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                display_name: Some(normalized.display_name),
+                token_expires_at: Some(normalized.token_expires_at),
+                matched_account: None,
+                status: IMPORT_VALIDATION_STATUS_DUPLICATE_IN_INPUT.to_string(),
+                detail: Some("duplicate credential in current import selection".to_string()),
+                attempts: 0,
+            });
+            continue;
+        }
+        unique_in_input += 1;
+
+        let matched_account = match find_existing_import_match(
+            &state.pool,
+            &normalized.chatgpt_account_id,
+            &normalized.email,
+        )
+        .await
+        {
+            Ok(value) => value.map(|row| import_match_summary_from_row(&row)),
+            Err(err) => {
+                rows.push(ImportedOauthValidationRow {
+                    source_id: normalized.source_id,
+                    file_name: normalized.file_name,
+                    email: Some(normalized.email),
+                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                    display_name: Some(normalized.display_name),
+                    token_expires_at: Some(normalized.token_expires_at),
+                    matched_account: None,
+                    status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
+                    detail: Some(err.to_string()),
+                    attempts: 0,
+                });
+                continue;
+            }
+        };
+
+        match probe_imported_oauth_credentials(state, &normalized).await {
+            Ok(outcome) => rows.push(ImportedOauthValidationRow {
+                source_id: normalized.source_id,
+                file_name: normalized.file_name,
+                email: Some(normalized.email),
+                chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                display_name: Some(normalized.display_name),
+                token_expires_at: Some(outcome.token_expires_at),
+                matched_account,
+                status: if outcome.exhausted {
+                    IMPORT_VALIDATION_STATUS_OK_EXHAUSTED.to_string()
+                } else {
+                    IMPORT_VALIDATION_STATUS_OK.to_string()
+                },
+                detail: if outcome.exhausted {
+                    Some("usage snapshot indicates the account is currently exhausted".to_string())
+                } else {
+                    None
+                },
+                attempts: 1,
+            }),
+            Err(err) => rows.push(ImportedOauthValidationRow {
+                source_id: normalized.source_id,
+                file_name: normalized.file_name,
+                email: Some(normalized.email),
+                chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                display_name: Some(normalized.display_name),
+                token_expires_at: Some(normalized.token_expires_at),
+                matched_account,
+                status: if is_import_invalid_error_message(&err.to_string()) {
+                    IMPORT_VALIDATION_STATUS_INVALID.to_string()
+                } else {
+                    IMPORT_VALIDATION_STATUS_ERROR.to_string()
+                },
+                detail: Some(err.to_string()),
+                attempts: 1,
+            }),
+        }
+    }
+
+    ImportedOauthValidationResponse {
+        input_files: items.len(),
+        unique_in_input,
+        duplicate_in_input,
+        rows,
+    }
+}
+
+pub(crate) async fn validate_imported_oauth_accounts(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ValidateImportedOauthAccountsRequest>,
+) -> Result<Json<ImportedOauthValidationResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    Ok(Json(
+        build_imported_oauth_validation_response(state.as_ref(), &payload.items).await,
+    ))
+}
+
+pub(crate) async fn import_validated_oauth_accounts(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ImportValidatedOauthAccountsRequest>,
+) -> Result<Json<ImportedOauthImportResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let crypto_key = state.upstream_accounts.require_crypto_key()?;
+    let selected_source_ids = payload
+        .selected_source_ids
+        .into_iter()
+        .filter_map(|value| normalize_optional_text(Some(value)))
+        .collect::<HashSet<_>>();
+    if selected_source_ids.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "selectedSourceIds must not be empty".to_string(),
+        ));
+    }
+    let group_name = normalize_optional_text(payload.group_name);
+    let group_note = normalize_optional_text(payload.group_note);
+    validate_group_note_target(group_name.as_deref(), group_note.is_some())?;
+    let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
+    let input_files = payload.items.len();
+    let selected_files = selected_source_ids.len();
+
+    let mut created = 0usize;
+    let mut updated_existing = 0usize;
+    let mut failed = 0usize;
+    let mut seen_keys = HashSet::new();
+    let mut results = Vec::new();
+
+    for item in payload.items {
+        if !selected_source_ids.contains(&item.source_id) {
+            continue;
+        }
+
+        let normalized = match normalize_imported_oauth_credentials(&item) {
+            Ok(value) => value,
+            Err(message) => {
+                failed += 1;
+                results.push(ImportedOauthImportResult {
+                    source_id: item.source_id,
+                    file_name: item.file_name,
+                    email: None,
+                    chatgpt_account_id: None,
+                    account_id: None,
+                    status: IMPORT_RESULT_STATUS_FAILED.to_string(),
+                    detail: Some(message),
+                    matched_account: None,
+                });
+                continue;
+            }
+        };
+
+        let match_key = imported_match_key(&normalized.email, &normalized.chatgpt_account_id);
+        if !seen_keys.insert(match_key) {
+            failed += 1;
+            results.push(ImportedOauthImportResult {
+                source_id: normalized.source_id,
+                file_name: normalized.file_name,
+                email: Some(normalized.email),
+                chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                account_id: None,
+                status: IMPORT_RESULT_STATUS_FAILED.to_string(),
+                detail: Some("duplicate credential in selected import set".to_string()),
+                matched_account: None,
+            });
+            continue;
+        }
+
+        let existing_match = match find_existing_import_match(
+            &state.pool,
+            &normalized.chatgpt_account_id,
+            &normalized.email,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                failed += 1;
+                results.push(ImportedOauthImportResult {
+                    source_id: normalized.source_id,
+                    file_name: normalized.file_name,
+                    email: Some(normalized.email),
+                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                    account_id: None,
+                    status: IMPORT_RESULT_STATUS_FAILED.to_string(),
+                    detail: Some(err.to_string()),
+                    matched_account: None,
+                });
+                continue;
+            }
+        };
+        let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
+
+        let probe = match probe_imported_oauth_credentials(state.as_ref(), &normalized).await {
+            Ok(value) => value,
+            Err(err) => {
+                failed += 1;
+                results.push(ImportedOauthImportResult {
+                    source_id: normalized.source_id,
+                    file_name: normalized.file_name,
+                    email: Some(normalized.email),
+                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                    account_id: existing_match.as_ref().map(|row| row.id),
+                    status: IMPORT_RESULT_STATUS_FAILED.to_string(),
+                    detail: Some(err.to_string()),
+                    matched_account,
+                });
+                continue;
+            }
+        };
+
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(probe.credentials.clone()),
+        )
+        .map_err(internal_error_tuple)?;
+        let persisted_account_id = {
+            let _guard = state.upstream_accounts.sync_lock.lock().await;
+            let mut tx = state
+                .pool
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .map_err(internal_error_tuple)?;
+            let account_id = if let Some(existing_row) = existing_match.as_ref() {
+                let existing_tag_ids = load_account_tag_map(&state.pool, &[existing_row.id])
+                    .await
+                    .map_err(internal_error_tuple)?
+                    .remove(&existing_row.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|tag| tag.id)
+                    .collect::<Vec<_>>();
+                ensure_display_name_available(
+                    &mut *tx,
+                    &existing_row.display_name,
+                    Some(existing_row.id),
+                )
+                .await?;
+                upsert_oauth_account(
+                    &mut tx,
+                    OauthAccountUpsert {
+                        account_id: Some(existing_row.id),
+                        display_name: &existing_row.display_name,
+                        group_name: existing_row.group_name.clone(),
+                        is_mother: existing_row.is_mother != 0,
+                        note: existing_row.note.clone(),
+                        tag_ids: existing_tag_ids,
+                        group_note: None,
+                        claims: &probe.claims,
+                        encrypted_credentials,
+                        token_expires_at: &probe.token_expires_at,
+                    },
+                )
+                .await
+                .map_err(internal_error_tuple)?
+            } else {
+                ensure_display_name_available(&mut *tx, &normalized.display_name, None).await?;
+                upsert_oauth_account(
+                    &mut tx,
+                    OauthAccountUpsert {
+                        account_id: None,
+                        display_name: &normalized.display_name,
+                        group_name: group_name.clone(),
+                        is_mother: false,
+                        note: None,
+                        tag_ids: tag_ids.clone(),
+                        group_note: group_note.clone(),
+                        claims: &probe.claims,
+                        encrypted_credentials,
+                        token_expires_at: &probe.token_expires_at,
+                    },
+                )
+                .await
+                .map_err(internal_error_tuple)?
+            };
+            tx.commit().await.map_err(internal_error_tuple)?;
+            account_id
+        };
+
+        let sync_warning =
+            match sync_upstream_account_by_id(state.as_ref(), persisted_account_id, false).await {
+                Ok(_) => None,
+                Err(err) => {
+                    warn!(
+                        account_id = persisted_account_id,
+                        source_id = %normalized.source_id,
+                        error = %err,
+                        "imported OAuth credential persisted but initial sync failed"
+                    );
+                    Some(format!("Imported, but initial sync failed: {err}"))
+                }
+            };
+
+        if existing_match.is_some() {
+            updated_existing += 1;
+        } else {
+            created += 1;
+        }
+        results.push(ImportedOauthImportResult {
+            source_id: normalized.source_id,
+            file_name: normalized.file_name,
+            email: Some(normalized.email),
+            chatgpt_account_id: Some(normalized.chatgpt_account_id),
+            account_id: Some(persisted_account_id),
+            status: if existing_match.is_some() {
+                IMPORT_RESULT_STATUS_UPDATED_EXISTING.to_string()
+            } else {
+                IMPORT_RESULT_STATUS_CREATED.to_string()
+            },
+            detail: sync_warning,
+            matched_account,
+        });
+    }
+
+    Ok(Json(ImportedOauthImportResponse {
+        summary: ImportedOauthImportSummary {
+            input_files,
+            selected_files,
+            created,
+            updated_existing,
+            failed,
+        },
+        results,
+    }))
 }
 
 pub(crate) async fn get_pool_routing_settings(
@@ -2749,6 +3256,166 @@ fn should_maintain_account(row: &UpstreamAccountRow, state: &AppState) -> bool {
         })
         .unwrap_or(true);
     sync_due || refresh_due || row.status == UPSTREAM_ACCOUNT_STATUS_ERROR
+}
+
+async fn find_existing_import_match(
+    pool: &Pool<Sqlite>,
+    chatgpt_account_id: &str,
+    email: &str,
+) -> Result<Option<UpstreamAccountRow>> {
+    let account_id_matches = sqlx::query_as::<_, UpstreamAccountRow>(
+        r#"
+        SELECT
+            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
+            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
+            encrypted_credentials, token_expires_at, last_refreshed_at,
+            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
+            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
+            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
+            created_at, updated_at
+        FROM pool_upstream_accounts
+        WHERE kind = ?1
+          AND chatgpt_account_id = ?2
+        ORDER BY updated_at DESC, id DESC
+        "#,
+    )
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    .bind(chatgpt_account_id)
+    .fetch_all(pool)
+    .await?;
+    if account_id_matches.len() > 1 {
+        bail!(
+            "multiple existing OAuth accounts match account_id {}",
+            chatgpt_account_id
+        );
+    }
+    if let Some(row) = account_id_matches.into_iter().next() {
+        return Ok(Some(row));
+    }
+
+    let email_matches = sqlx::query_as::<_, UpstreamAccountRow>(
+        r#"
+        SELECT
+            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
+            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
+            encrypted_credentials, token_expires_at, last_refreshed_at,
+            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
+            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
+            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
+            created_at, updated_at
+        FROM pool_upstream_accounts
+        WHERE kind = ?1
+          AND lower(trim(COALESCE(email, ''))) = lower(trim(?2))
+        ORDER BY updated_at DESC, id DESC
+        "#,
+    )
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    .bind(email)
+    .fetch_all(pool)
+    .await?;
+    if email_matches.len() > 1 {
+        bail!("multiple existing OAuth accounts match email {}", email);
+    }
+    Ok(email_matches.into_iter().next())
+}
+
+async fn probe_imported_oauth_credentials(
+    state: &AppState,
+    imported: &NormalizedImportedOauthCredentials,
+) -> Result<ImportedOauthProbeOutcome, anyhow::Error> {
+    let mut credentials = imported.credentials.clone();
+    let mut claims = imported.claims.clone();
+    let mut token_expires_at = imported.token_expires_at.clone();
+    let expires_at = parse_rfc3339_utc(&token_expires_at);
+    let refresh_due = expires_at
+        .map(|expires| {
+            expires
+                <= Utc::now()
+                    + ChronoDuration::seconds(
+                        state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
+                    )
+        })
+        .unwrap_or(true);
+
+    if refresh_due {
+        let response = refresh_oauth_tokens(
+            &state.http_clients.shared,
+            &state.config,
+            &credentials.refresh_token,
+        )
+        .await?;
+        credentials.access_token = response.access_token;
+        if let Some(refresh_token) = response.refresh_token {
+            credentials.refresh_token = refresh_token;
+        }
+        if let Some(id_token) = response.id_token {
+            credentials.id_token = id_token;
+            claims = parse_chatgpt_jwt_claims(&credentials.id_token)?;
+            claims.email = claims.email.or_else(|| Some(imported.email.clone()));
+            claims.chatgpt_account_id = claims
+                .chatgpt_account_id
+                .or_else(|| Some(imported.chatgpt_account_id.clone()));
+        }
+        credentials.token_type = response.token_type;
+        token_expires_at =
+            format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
+    }
+
+    let usage_result = fetch_usage_snapshot(
+        &state.http_clients.shared,
+        &state.config,
+        &credentials.access_token,
+        claims
+            .chatgpt_account_id
+            .as_deref()
+            .or(Some(imported.chatgpt_account_id.as_str())),
+    )
+    .await;
+    let snapshot = match usage_result {
+        Ok(snapshot) => snapshot,
+        Err(err) if is_import_invalid_error_message(&err.to_string()) => return Err(err),
+        Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
+            let response = refresh_oauth_tokens(
+                &state.http_clients.shared,
+                &state.config,
+                &credentials.refresh_token,
+            )
+            .await?;
+            credentials.access_token = response.access_token;
+            if let Some(refresh_token) = response.refresh_token {
+                credentials.refresh_token = refresh_token;
+            }
+            if let Some(id_token) = response.id_token {
+                credentials.id_token = id_token;
+                claims = parse_chatgpt_jwt_claims(&credentials.id_token)?;
+                claims.email = claims.email.or_else(|| Some(imported.email.clone()));
+                claims.chatgpt_account_id = claims
+                    .chatgpt_account_id
+                    .or_else(|| Some(imported.chatgpt_account_id.clone()));
+            }
+            credentials.token_type = response.token_type;
+            token_expires_at =
+                format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
+            fetch_usage_snapshot(
+                &state.http_clients.shared,
+                &state.config,
+                &credentials.access_token,
+                claims
+                    .chatgpt_account_id
+                    .as_deref()
+                    .or(Some(imported.chatgpt_account_id.as_str())),
+            )
+            .await?
+        }
+        Err(err) => return Err(err),
+    };
+
+    Ok(ImportedOauthProbeOutcome {
+        token_expires_at,
+        credentials,
+        claims,
+        exhausted: imported_snapshot_is_exhausted(&snapshot),
+    })
 }
 
 async fn sync_upstream_account_by_id(
@@ -6175,6 +6842,112 @@ fn validate_local_limits(
     Ok(())
 }
 
+fn is_import_invalid_error_message(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    is_explicit_reauth_error_message(message)
+        || is_scope_permission_error_message(message)
+        || normalized.contains("returned 400")
+        || normalized.contains("returned 401")
+        || normalized.contains("returned 403")
+}
+
+fn imported_snapshot_is_exhausted(snapshot: &NormalizedUsageSnapshot) -> bool {
+    let primary_exhausted = snapshot
+        .primary
+        .as_ref()
+        .is_some_and(|window| window.used_percent >= 100.0);
+    let secondary_exhausted = snapshot
+        .secondary
+        .as_ref()
+        .is_some_and(|window| window.used_percent >= 100.0);
+    let credits_exhausted = snapshot.credits.as_ref().is_some_and(|credits| {
+        credits.has_credits
+            && !credits.unlimited
+            && credits
+                .balance
+                .as_deref()
+                .and_then(|value| value.parse::<f64>().ok())
+                .is_some_and(|value| value <= 0.0)
+    });
+    primary_exhausted || secondary_exhausted || credits_exhausted
+}
+
+fn imported_match_key(email: &str, account_id: &str) -> String {
+    let normalized_account_id = account_id.trim().to_ascii_lowercase();
+    if !normalized_account_id.is_empty() {
+        return format!("account:{normalized_account_id}");
+    }
+    format!("email:{}", email.trim().to_ascii_lowercase())
+}
+
+fn import_match_summary_from_row(row: &UpstreamAccountRow) -> ImportedOauthMatchSummary {
+    ImportedOauthMatchSummary {
+        account_id: row.id,
+        display_name: row.display_name.clone(),
+        group_name: row.group_name.clone(),
+        status: effective_account_status(row),
+    }
+}
+
+fn normalize_imported_oauth_credentials(
+    item: &ImportOauthCredentialFileRequest,
+) -> Result<NormalizedImportedOauthCredentials, String> {
+    let source_id = normalize_optional_text(Some(item.source_id.clone()))
+        .ok_or_else(|| "sourceId is required".to_string())?;
+    let file_name = normalize_optional_text(Some(item.file_name.clone()))
+        .ok_or_else(|| "fileName is required".to_string())?;
+    let content = normalize_optional_text(Some(item.content.clone()))
+        .ok_or_else(|| "content is required".to_string())?;
+    let parsed: ImportedOauthCredentialsFile =
+        serde_json::from_str(&content).map_err(|err| format!("invalid JSON: {err}"))?;
+    if !parsed.source_type.eq_ignore_ascii_case("codex") {
+        return Err("type must be codex".to_string());
+    }
+    let email =
+        normalize_required_secret(&parsed.email, "email").map_err(|(_, message)| message)?;
+    let chatgpt_account_id = normalize_required_secret(&parsed.account_id, "account_id")
+        .map_err(|(_, message)| message)?;
+    let access_token = normalize_required_secret(&parsed.access_token, "access_token")
+        .map_err(|(_, message)| message)?;
+    let refresh_token = normalize_required_secret(&parsed.refresh_token, "refresh_token")
+        .map_err(|(_, message)| message)?;
+    let id_token =
+        normalize_required_secret(&parsed.id_token, "id_token").map_err(|(_, message)| message)?;
+    let token_expires_at = parse_rfc3339_utc(&parsed.expired)
+        .map(format_utc_iso)
+        .ok_or_else(|| "expired must be a valid RFC3339 timestamp".to_string())?;
+    let mut claims = parse_chatgpt_jwt_claims(&id_token)
+        .map_err(|err| format!("failed to parse id_token: {err}"))?;
+    if let Some(jwt_email) = claims.email.as_deref()
+        && !jwt_email.trim().eq_ignore_ascii_case(&email)
+    {
+        return Err("email does not match id_token".to_string());
+    }
+    if let Some(jwt_account_id) = claims.chatgpt_account_id.as_deref()
+        && jwt_account_id.trim() != chatgpt_account_id.trim()
+    {
+        return Err("account_id does not match id_token".to_string());
+    }
+    claims.email = Some(email.clone());
+    claims.chatgpt_account_id = Some(chatgpt_account_id.clone());
+    Ok(NormalizedImportedOauthCredentials {
+        source_id,
+        file_name,
+        email: email.clone(),
+        display_name: email,
+        chatgpt_account_id,
+        token_expires_at,
+        credentials: StoredOauthCredentials {
+            access_token,
+            refresh_token,
+            id_token,
+            token_type: normalize_optional_text(parsed.token_type)
+                .or_else(|| Some("Bearer".to_string())),
+        },
+        claims,
+    })
+}
+
 fn parse_rfc3339_utc(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
@@ -7331,6 +8104,108 @@ mod tests {
             string_value.upstream_base_url,
             OptionalField::Value("https://proxy.example.com/gateway".to_string())
         );
+    }
+
+    #[test]
+    fn normalize_imported_oauth_credentials_accepts_codex_export_json() {
+        let item = ImportOauthCredentialFileRequest {
+            source_id: "file-1".to_string(),
+            file_name: "2q5q6m3ow4a@duckmail.sbs.json".to_string(),
+            content: json!({
+                "type": "codex",
+                "email": "2q5q6m3ow4a@duckmail.sbs",
+                "account_id": "acct_imported",
+                "expired": "2026-03-20T00:00:00Z",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "id_token": test_id_token(
+                    "2q5q6m3ow4a@duckmail.sbs",
+                    Some("acct_imported"),
+                    Some("user_imported"),
+                    Some("team"),
+                ),
+                "last_refresh": "2026-03-18T00:00:00Z"
+            })
+            .to_string(),
+        };
+
+        let normalized = normalize_imported_oauth_credentials(&item)
+            .expect("normalize imported oauth credentials");
+        assert_eq!(normalized.source_id, "file-1");
+        assert_eq!(normalized.file_name, "2q5q6m3ow4a@duckmail.sbs.json");
+        assert_eq!(normalized.email, "2q5q6m3ow4a@duckmail.sbs");
+        assert_eq!(normalized.chatgpt_account_id, "acct_imported");
+        assert_eq!(normalized.display_name, "2q5q6m3ow4a@duckmail.sbs");
+        assert_eq!(
+            normalized.claims.chatgpt_user_id.as_deref(),
+            Some("user_imported")
+        );
+    }
+
+    #[test]
+    fn normalize_imported_oauth_credentials_rejects_id_token_mismatch() {
+        let item = ImportOauthCredentialFileRequest {
+            source_id: "file-2".to_string(),
+            file_name: "mismatch.json".to_string(),
+            content: json!({
+                "type": "codex",
+                "email": "mismatch@duckmail.sbs",
+                "account_id": "acct_imported",
+                "expired": "2026-03-20T00:00:00Z",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "id_token": test_id_token(
+                    "different@duckmail.sbs",
+                    Some("acct_imported"),
+                    Some("user_imported"),
+                    Some("team"),
+                )
+            })
+            .to_string(),
+        };
+
+        let error = normalize_imported_oauth_credentials(&item)
+            .expect_err("expected imported oauth mismatch");
+        assert_eq!(error, "email does not match id_token");
+    }
+
+    #[test]
+    fn imported_snapshot_is_exhausted_when_any_limit_is_full_or_credits_are_empty() {
+        let primary_exhausted = NormalizedUsageSnapshot {
+            plan_type: Some("team".to_string()),
+            limit_id: "limit-primary".to_string(),
+            limit_name: Some("Primary".to_string()),
+            primary: Some(NormalizedUsageWindow {
+                used_percent: 100.0,
+                window_duration_mins: 300,
+                resets_at: Some("2026-03-20T05:00:00Z".to_string()),
+            }),
+            secondary: None,
+            credits: None,
+        };
+        assert!(imported_snapshot_is_exhausted(&primary_exhausted));
+
+        let credits_exhausted = NormalizedUsageSnapshot {
+            plan_type: Some("team".to_string()),
+            limit_id: "limit-credits".to_string(),
+            limit_name: Some("Credits".to_string()),
+            primary: Some(NormalizedUsageWindow {
+                used_percent: 42.0,
+                window_duration_mins: 300,
+                resets_at: Some("2026-03-20T05:00:00Z".to_string()),
+            }),
+            secondary: Some(NormalizedUsageWindow {
+                used_percent: 12.0,
+                window_duration_mins: 10_080,
+                resets_at: Some("2026-03-27T00:00:00Z".to_string()),
+            }),
+            credits: Some(CreditsSnapshot {
+                has_credits: true,
+                unlimited: false,
+                balance: Some("0".to_string()),
+            }),
+        };
+        assert!(imported_snapshot_is_exhausted(&credits_exhausted));
     }
 
     #[tokio::test]
