@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import type { JSX } from 'react'
 import { SystemNotificationProvider } from './ui/system-notifications'
 import { I18nProvider } from '../i18n'
