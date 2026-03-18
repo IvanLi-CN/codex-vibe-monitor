@@ -101,6 +101,28 @@
   image:
   ![Detail drawer invalid upstream URL](./assets/detail-api-key-invalid-upstream-url.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: UI / FloatingFieldBubble / State Gallery
+  state: light-theme-gallery
+  evidence_note: 展示共享气泡组件在亮色主题下的状态矩阵，证明 neutral、info、success、warning、error 五种玻璃态气泡都使用同一套锚点与尾巴几何。
+  image:
+  ![FloatingFieldBubble state gallery light](./assets/floating-field-bubble-state-gallery-light.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: UI / FloatingFieldBubble / State Gallery
+  state: dark-theme-gallery
+  evidence_note: 展示共享气泡组件在暗色主题下的状态矩阵，证明玻璃材质、主题透传与箭头连接关系在暗底上也保持一致。
+  image:
+  ![FloatingFieldBubble state gallery dark](./assets/floating-field-bubble-state-gallery-dark.png)
+
 ## 变更记录
 
 - 2026-03-15: 创建增量 spec，冻结 API Key 账号级上游地址的数据模型、运行时生效规则与验收口径。
