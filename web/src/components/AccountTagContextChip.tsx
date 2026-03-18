@@ -162,21 +162,21 @@ export function AccountTagContextChip({
         <div
           role="menu"
           className={cn(
-            'absolute right-0 top-full z-30 mt-1.5 w-44 rounded-[1rem] border border-base-300/90 bg-base-100/97 p-1.5 shadow-lg backdrop-blur',
+            'absolute right-0 top-full z-30 mt-1 inline-flex min-w-[9.5rem] flex-col rounded-[0.85rem] border border-base-300/90 bg-base-100/97 p-1 shadow-lg backdrop-blur',
             'animate-in fade-in-0 zoom-in-95',
           )}
         >
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             <Button
               type="button"
               variant="ghost"
-              className="h-8.5 w-full justify-start rounded-[0.85rem] px-2.5 text-[0.9rem] whitespace-nowrap"
+              className="h-7.5 w-full justify-start rounded-[0.7rem] px-2 text-[0.82rem] whitespace-nowrap"
               disabled={busyAction === 'remove'}
               onClick={() => void handleRemove()}
             >
               <AppIcon
                 name={currentPageCreated ? 'delete-outline' : 'link-variant-off'}
-                className="mr-2 h-[0.9rem] w-[0.9rem]"
+                className="mr-1.5 h-3.5 w-3.5"
                 aria-hidden
               />
               {currentPageCreated ? labels.deleteAndRemove : labels.remove}
@@ -184,13 +184,13 @@ export function AccountTagContextChip({
             <Button
               type="button"
               variant="ghost"
-              className="h-8.5 w-full justify-start rounded-[0.85rem] px-2.5 text-[0.9rem] whitespace-nowrap"
+              className="h-7.5 w-full justify-start rounded-[0.7rem] px-2 text-[0.82rem] whitespace-nowrap"
               onClick={() => {
                 setMenuOpen(false)
                 onEdit()
               }}
             >
-              <AppIcon name="pencil-outline" className="mr-2 h-[0.9rem] w-[0.9rem]" aria-hidden />
+              <AppIcon name="pencil-outline" className="mr-1.5 h-3.5 w-3.5" aria-hidden />
               {labels.edit}
             </Button>
           </div>
