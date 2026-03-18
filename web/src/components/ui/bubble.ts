@@ -40,27 +40,27 @@ function bubbleSurfaceColor(variant: BubbleVariant, theme: BubbleTheme) {
     case 'neutral':
       return isDark
         ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.78) 84%, oklch(var(--color-primary) / 0.22) 16%)'
-        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.82) 86%, oklch(var(--color-primary) / 0.24) 14%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.64) 84%, oklch(var(--color-primary) / 0.18) 16%)'
     case 'info':
       return isDark
         ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.66) 54%, oklch(var(--color-info) / 0.34) 46%)'
-        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.78) 58%, oklch(var(--color-info) / 0.38) 42%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.58) 54%, oklch(var(--color-info) / 0.28) 46%)'
     case 'success':
       return isDark
         ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.66) 56%, oklch(var(--color-success) / 0.34) 44%)'
-        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.78) 60%, oklch(var(--color-success) / 0.38) 40%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.58) 56%, oklch(var(--color-success) / 0.28) 44%)'
     case 'warning':
       return isDark
         ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.7) 62%, oklch(var(--color-warning) / 0.32) 38%)'
-        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.8) 66%, oklch(var(--color-warning) / 0.36) 34%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.62) 62%, oklch(var(--color-warning) / 0.26) 38%)'
     case 'error':
       return isDark
         ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.66) 56%, oklch(var(--color-error) / 0.34) 44%)'
-        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.78) 58%, oklch(var(--color-error) / 0.38) 42%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.58) 54%, oklch(var(--color-error) / 0.28) 46%)'
     default:
       return isDark
         ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.66) 56%, oklch(var(--color-error) / 0.34) 44%)'
-        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.78) 58%, oklch(var(--color-error) / 0.38) 42%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.58) 54%, oklch(var(--color-error) / 0.28) 46%)'
   }
 }
 
