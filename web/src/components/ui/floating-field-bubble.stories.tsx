@@ -98,11 +98,9 @@ function InlineBubblePreview({
           message={message}
           variant={variant}
           placement="label-inline"
-        />
-        <span
-          aria-hidden
-          className={cn(
-            '-ml-1 inline-flex h-7 items-center rounded-full border bg-base-100 px-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] shadow-sm',
+          anchor="Anchor"
+          anchorClassName={cn(
+            'inline-flex h-7 items-center rounded-full border bg-base-100 px-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] shadow-sm',
             variant === 'neutral'
               ? 'border-base-300/80 text-base-content/60'
               : variant === 'info'
@@ -113,9 +111,7 @@ function InlineBubblePreview({
                     ? 'border-warning/35 text-warning'
                     : 'border-error/35 text-error',
           )}
-        >
-          Anchor
-        </span>
+        />
       </div>
     </div>
   )

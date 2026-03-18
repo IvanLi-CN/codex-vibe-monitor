@@ -86,6 +86,23 @@ describe('FloatingFieldBubble', () => {
     expect((arrow as SVGElement | null)?.style.fill).toBe('oklch(var(--color-success) / 0.40)')
   })
 
+  it('can use a visible inline anchor so stories and real layouts share the same anchor geometry', () => {
+    render(
+      <FloatingFieldBubble
+        message="Anchored"
+        variant="info"
+        placement="label-inline"
+        anchor="Anchor"
+        anchorClassName="story-anchor"
+      />,
+    )
+
+    const bubble = document.body.querySelector('[role="status"]')
+
+    expect(bubble).toBeInstanceOf(HTMLElement)
+    expect(host?.querySelector('.story-anchor')?.textContent).toBe('Anchor')
+  })
+
   it('gives neutral bubbles a subtle tinted surface instead of a plain transparent panel', () => {
     render(
       <FloatingFieldBubble

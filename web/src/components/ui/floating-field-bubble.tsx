@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   bubbleArrowClassName,
   bubbleArrowStyle,
@@ -17,6 +17,8 @@ interface FloatingFieldBubbleProps {
   variant?: BubbleVariant
   className?: string
   placement?: FloatingFieldBubblePlacement
+  anchor?: ReactNode
+  anchorClassName?: string
 }
 
 function statusRole(variant: BubbleVariant) {
@@ -28,6 +30,8 @@ export function FloatingFieldBubble({
   variant = 'error',
   className,
   placement = 'input-corner',
+  anchor,
+  anchorClassName,
 }: FloatingFieldBubbleProps) {
   const role = statusRole(variant)
   const [anchorElement, setAnchorElement] = useState<HTMLSpanElement | null>(null)
@@ -39,9 +43,16 @@ export function FloatingFieldBubble({
         <PopoverAnchor asChild>
           <span
             ref={setAnchorElement}
-            aria-hidden
-            className="inline-flex h-4 w-4 shrink-0 translate-y-0.5"
-          />
+            aria-hidden={anchor ? undefined : true}
+            className={cn(
+              anchor
+                ? 'inline-flex shrink-0 items-center'
+                : 'inline-flex h-4 w-4 shrink-0 translate-y-0.5',
+              anchorClassName,
+            )}
+          >
+            {anchor}
+          </span>
         </PopoverAnchor>
         <PopoverContent
           data-theme={portalTheme}
