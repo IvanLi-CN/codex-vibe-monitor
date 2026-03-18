@@ -10,15 +10,20 @@ import {
   fetchOauthLoginSession,
   fetchUpstreamAccountDetail,
   fetchUpstreamAccounts,
+  importValidatedOauthAccounts,
   reloginUpstreamAccount,
   syncUpstreamAccount,
   updateUpstreamAccountGroup,
   updatePoolRoutingSettings,
   updateUpstreamAccount,
+  validateImportedOauthAccounts,
   type CreateApiKeyAccountPayload,
   type CompleteOauthLoginSessionPayload,
   type CreateOauthLoginSessionPayload,
   type FetchUpstreamAccountsQuery,
+  type ImportValidatedOauthAccountsPayload,
+  type ImportedOauthImportResponse,
+  type ImportedOauthValidationResponse,
   type LoginSessionStatusResponse,
   type OauthMailboxSession,
   type OauthMailboxStatus,
@@ -29,6 +34,7 @@ import {
   type UpdateUpstreamAccountPayload,
   type UpstreamAccountDetail,
   type UpstreamAccountSummary,
+  type ValidateImportedOauthAccountsPayload,
 } from '../lib/api'
 import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
@@ -301,6 +307,28 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     [clearDetailError, invalidateListRequest, loadDetail, loadList, setSelectedAccount],
   )
 
+  const runImportedOauthValidation = useCallback(
+    async (payload: ValidateImportedOauthAccountsPayload): Promise<ImportedOauthValidationResponse> => {
+      return validateImportedOauthAccounts(payload)
+    },
+    [],
+  )
+
+  const importOauthAccounts = useCallback(
+    async (payload: ImportValidatedOauthAccountsPayload): Promise<ImportedOauthImportResponse> => {
+      const response = await importValidatedOauthAccounts(payload)
+      invalidateListRequest()
+      await loadList(selectedIdRef.current, {
+        respectCurrentSelection: true,
+        selectionAnchorId: selectedIdRef.current,
+      })
+      await refreshCurrentSelectedDetail()
+      emitUpstreamAccountsChanged()
+      return response
+    },
+    [invalidateListRequest, loadList, refreshCurrentSelectedDetail],
+  )
+
   const saveAccount = useCallback(
     async (accountId: number, payload: UpdateUpstreamAccountPayload) => {
       const response = await updateUpstreamAccount(accountId, payload)
@@ -421,6 +449,8 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     removeOauthMailboxSession,
     completeOauthLogin,
     createApiKeyAccount,
+    runImportedOauthValidation,
+    importOauthAccounts,
     saveAccount,
     saveRouting,
     saveGroupNote,

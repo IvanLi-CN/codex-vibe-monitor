@@ -4327,6 +4327,14 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             post(create_oauth_login_session),
         )
         .route(
+            "/api/pool/upstream-accounts/oauth/imports/validate",
+            post(validate_imported_oauth_accounts),
+        )
+        .route(
+            "/api/pool/upstream-accounts/oauth/imports",
+            post(import_validated_oauth_accounts),
+        )
+        .route(
             "/api/pool/upstream-accounts/oauth/mailbox-sessions",
             post(create_oauth_mailbox_session),
         )
