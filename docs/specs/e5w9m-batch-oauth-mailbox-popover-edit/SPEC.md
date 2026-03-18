@@ -65,7 +65,46 @@
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
 
+## Visual Evidence (PR)
+
+- source_type: `storybook_canvas`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `N/A`
+  submission_gate: `pending-owner-approval`
+  story_id_or_title: `account-pool-pages-upstream-account-create-oauth--mailbox-attach-flow`
+  state: `attach pending`
+  evidence_note: 验证单账号 OAuth 在 `Use address` 进行中时，邮箱动作区进入等待锁定态，当前动作按钮承担 busy 反馈。
+  image:
+  ![Single OAuth mailbox attach pending](./assets/oauth-mailbox-attach-flow-pending.png)
+
+- source_type: `storybook_canvas`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `N/A`
+  submission_gate: `pending-owner-approval`
+  story_id_or_title: `account-pool-pages-upstream-account-create-batch-oauth--mailbox-generate-flow`
+  state: `batch generate pending`
+  evidence_note: 验证批量 OAuth 行级邮箱生成操作可在表格内直接触发，并保留等待期下的行内动作布局。
+  image:
+  ![Batch OAuth mailbox generate pending](./assets/batch-oauth-mailbox-generate-flow-pending.png)
+
+- source_type: `storybook_canvas`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `N/A`
+  submission_gate: `pending-owner-approval`
+  story_id_or_title: `account-pool-pages-upstream-account-create-mailbox-chip--editable-popover`
+  state: `editable popover`
+  evidence_note: 验证邮箱胶囊组件使用 UI 库气泡承载复制提示与编辑入口，支持在组件级单独复查交互外观。
+  image:
+  ![OAuth mailbox chip editable popover](./assets/oauth-mailbox-chip-editable-popover.png)
+
 ## 实现备注
 
 - 主要变更位于 `web/src/pages/account-pool/UpstreamAccountCreate.tsx`、`web/src/components/account-pool/OauthMailboxChip.tsx`、`web/src/i18n/translations.ts` 与相应的 Storybook / Vitest 文件。
 - 本增量显式覆盖 `m7a9k` 中“批量 OAuth 不扩展手动邮箱输入”的旧边界；单账号邮箱契约与服务端 `mailboxAddress` 语义保持不变。
+
+## 变更记录（Change log）
+
+- 2026-03-18: 补充 Storybook 画布截图到 spec 资产目录，覆盖单账号邮箱附着等待态、批量邮箱生成等待态与邮箱胶囊组件级编辑气泡。
