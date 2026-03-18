@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { InfoTooltip } from './info-tooltip'
+import { bubbleArrowStyle, bubbleSurfaceStyle } from './bubble'
 
 let host: HTMLDivElement | null = null
 let root: Root | null = null
@@ -143,10 +144,13 @@ describe('InfoTooltip', () => {
     expect(tooltip?.getAttribute('data-theme')).toBe('vibe-dark')
     expect(arrow?.getAttribute('data-theme')).toBe('vibe-dark')
     expect((tooltip as HTMLElement | null)?.style.backgroundColor).toBe(
-      'color-mix(in oklab, oklch(var(--color-base-200)) 86%, oklch(var(--color-primary)) 14%)',
+      bubbleSurfaceStyle('neutral', 'vibe-dark').backgroundColor,
     )
     expect((arrow as SVGElement | null)?.style.fill).toBe(
-      'color-mix(in oklab, oklch(var(--color-base-200)) 86%, oklch(var(--color-primary)) 14%)',
+      bubbleArrowStyle('neutral', 'vibe-dark').fill,
+    )
+    expect((tooltip as HTMLElement | null)?.style.backdropFilter).toBe(
+      bubbleSurfaceStyle('neutral', 'vibe-dark').backdropFilter,
     )
   })
 

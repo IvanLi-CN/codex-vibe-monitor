@@ -30,7 +30,8 @@ const bubbleVariants = cva(
 export type BubbleVariant = NonNullable<VariantProps<typeof bubbleVariants>['variant']>
 type BubbleTheme = 'vibe-light' | 'vibe-dark' | undefined
 const bubbleShadowFilter =
-  'drop-shadow(0 24px 32px rgba(15, 23, 42, 0.14)) drop-shadow(0 12px 18px rgba(15, 23, 42, 0.10))'
+  'drop-shadow(0 20px 30px rgba(15, 23, 42, 0.12)) drop-shadow(0 10px 18px rgba(15, 23, 42, 0.08))'
+const bubbleBackdropFilter = 'blur(12px) saturate(145%)'
 
 function bubbleSurfaceColor(variant: BubbleVariant, theme: BubbleTheme) {
   const isDark = theme === 'vibe-dark'
@@ -38,20 +39,28 @@ function bubbleSurfaceColor(variant: BubbleVariant, theme: BubbleTheme) {
   switch (variant) {
     case 'neutral':
       return isDark
-        ? 'color-mix(in oklab, oklch(var(--color-base-200)) 86%, oklch(var(--color-primary)) 14%)'
-        : 'color-mix(in oklab, oklch(var(--color-base-100)) 88%, oklch(var(--color-primary)) 12%)'
+        ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.78) 84%, oklch(var(--color-primary) / 0.22) 16%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.82) 86%, oklch(var(--color-primary) / 0.24) 14%)'
     case 'info':
-      return 'oklch(var(--color-info) / 0.40)'
+      return isDark
+        ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.66) 54%, oklch(var(--color-info) / 0.34) 46%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.78) 58%, oklch(var(--color-info) / 0.38) 42%)'
     case 'success':
-      return 'oklch(var(--color-success) / 0.40)'
+      return isDark
+        ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.66) 56%, oklch(var(--color-success) / 0.34) 44%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.78) 60%, oklch(var(--color-success) / 0.38) 40%)'
     case 'warning':
       return isDark
-        ? 'color-mix(in oklab, oklch(var(--color-base-200)) 62%, oklch(var(--color-warning)) 38%)'
-        : 'color-mix(in oklab, oklch(var(--color-base-100)) 68%, oklch(var(--color-warning)) 32%)'
+        ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.7) 62%, oklch(var(--color-warning) / 0.32) 38%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.8) 66%, oklch(var(--color-warning) / 0.36) 34%)'
     case 'error':
-      return 'oklch(var(--color-error) / 0.40)'
+      return isDark
+        ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.66) 56%, oklch(var(--color-error) / 0.34) 44%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.78) 58%, oklch(var(--color-error) / 0.38) 42%)'
     default:
-      return 'oklch(var(--color-error) / 0.40)'
+      return isDark
+        ? 'color-mix(in oklab, oklch(var(--color-base-200) / 0.66) 56%, oklch(var(--color-error) / 0.34) 44%)'
+        : 'color-mix(in oklab, oklch(var(--color-base-100) / 0.78) 58%, oklch(var(--color-error) / 0.38) 42%)'
   }
 }
 
@@ -70,6 +79,8 @@ export function bubbleSurfaceStyle(
   return {
     backgroundColor: bubbleSurfaceColor(variant, theme),
     filter: bubbleShadowFilter,
+    backdropFilter: bubbleBackdropFilter,
+    WebkitBackdropFilter: bubbleBackdropFilter,
   }
 }
 

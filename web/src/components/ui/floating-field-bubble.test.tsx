@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { FloatingFieldBubble } from './floating-field-bubble'
 import { FloatingFieldError } from './floating-field-error'
+import { bubbleArrowStyle, bubbleSurfaceStyle } from './bubble'
 
 let host: HTMLDivElement | null = null
 let root: Root | null = null
@@ -59,7 +60,10 @@ describe('FloatingFieldBubble', () => {
     expect(bubble).toBeInstanceOf(HTMLElement)
     expect(host?.querySelector('[role="status"]')).toBeNull()
     expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
-      'color-mix(in oklab, oklch(var(--color-base-100)) 68%, oklch(var(--color-warning)) 32%)',
+      bubbleSurfaceStyle('warning').backgroundColor,
+    )
+    expect((bubble as HTMLElement | null)?.style.backdropFilter).toBe(
+      bubbleSurfaceStyle('warning').backdropFilter,
     )
     expect(bubble?.getAttribute('data-side')).not.toBeNull()
   })
@@ -79,11 +83,14 @@ describe('FloatingFieldBubble', () => {
     expect(bubble).toBeInstanceOf(HTMLElement)
     expect(host?.querySelector('[role="status"]')).toBeNull()
     expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
-      'oklch(var(--color-success) / 0.40)',
+      bubbleSurfaceStyle('success').backgroundColor,
+    )
+    expect((bubble as HTMLElement | null)?.style.backdropFilter).toBe(
+      bubbleSurfaceStyle('success').backdropFilter,
     )
     expect(bubble?.getAttribute('data-side')).toBe('left')
     expect(arrow).toBeInstanceOf(SVGElement)
-    expect((arrow as SVGElement | null)?.style.fill).toBe('oklch(var(--color-success) / 0.40)')
+    expect((arrow as SVGElement | null)?.style.fill).toBe(bubbleArrowStyle('success').fill)
   })
 
   it('can use a visible inline anchor so stories and real layouts share the same anchor geometry', () => {
@@ -116,7 +123,10 @@ describe('FloatingFieldBubble', () => {
 
     expect(bubble).toBeInstanceOf(HTMLElement)
     expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
-      'color-mix(in oklab, oklch(var(--color-base-100)) 88%, oklch(var(--color-primary)) 12%)',
+      bubbleSurfaceStyle('neutral').backgroundColor,
+    )
+    expect((bubble as HTMLElement | null)?.style.backdropFilter).toBe(
+      bubbleSurfaceStyle('neutral').backdropFilter,
     )
   })
 
@@ -138,10 +148,13 @@ describe('FloatingFieldBubble', () => {
     expect(bubble?.getAttribute('data-theme')).toBe('vibe-dark')
     expect(arrow?.getAttribute('data-theme')).toBe('vibe-dark')
     expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
-      'color-mix(in oklab, oklch(var(--color-base-200)) 62%, oklch(var(--color-warning)) 38%)',
+      bubbleSurfaceStyle('warning', 'vibe-dark').backgroundColor,
     )
     expect((arrow as SVGElement | null)?.style.fill).toBe(
-      'color-mix(in oklab, oklch(var(--color-base-200)) 62%, oklch(var(--color-warning)) 38%)',
+      bubbleArrowStyle('warning', 'vibe-dark').fill,
+    )
+    expect((bubble as HTMLElement | null)?.style.backdropFilter).toBe(
+      bubbleSurfaceStyle('warning', 'vibe-dark').backdropFilter,
     )
   })
 
@@ -156,7 +169,10 @@ describe('FloatingFieldBubble', () => {
 
     expect(bubble).toBeInstanceOf(HTMLElement)
     expect((bubble as HTMLElement | null)?.style.backgroundColor).toBe(
-      'oklch(var(--color-error) / 0.40)',
+      bubbleSurfaceStyle('error').backgroundColor,
+    )
+    expect((bubble as HTMLElement | null)?.style.backdropFilter).toBe(
+      bubbleSurfaceStyle('error').backdropFilter,
     )
     expect(bubble?.querySelector('[data-bubble-arrow="true"]')).toBeInstanceOf(SVGElement)
   })
