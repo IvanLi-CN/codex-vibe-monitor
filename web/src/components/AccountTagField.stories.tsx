@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { AccountTagField } from './AccountTagField'
 import type { CreateTagPayload, TagDetail, TagSummary, UpdateTagPayload } from '../lib/api'
 
@@ -83,11 +83,6 @@ function FieldHarness({
   const [tags, setTags] = useState<TagSummary[]>(baseTags)
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>(initialSelectedTagIds)
 
-  const selectedNames = useMemo(
-    () => tags.filter((tag) => selectedTagIds.includes(tag.id)).map((tag) => tag.name),
-    [selectedTagIds, tags],
-  )
-
   const createTag = async (payload: CreateTagPayload) => {
     const detail: TagDetail = {
       id: Math.max(...tags.map((item) => item.id)) + 1,
@@ -138,7 +133,7 @@ function FieldHarness({
 
   return (
     <StorySurface>
-      <div className="space-y-4 rounded-[1.8rem] border border-base-300/70 bg-base-100/75 p-6">
+      <div className="rounded-[1.8rem] border border-base-300/70 bg-base-100/75 p-6">
         <AccountTagField
           tags={tags}
           selectedTagIds={selectedTagIds}
@@ -150,9 +145,6 @@ function FieldHarness({
           onUpdateTag={updateTag}
           onDeleteTag={deleteTag}
         />
-        <div className="rounded-xl border border-base-300/70 bg-base-100/60 px-4 py-3 text-sm text-base-content/70">
-          Linked tags: <span className="font-mono text-base-content">{selectedNames.join(', ') || '—'}</span>
-        </div>
       </div>
     </StorySurface>
   )
