@@ -64,10 +64,13 @@ export function FloatingFieldBubble({
           <PopoverArrow
             data-theme={portalTheme}
             data-bubble-arrow="true"
-            width={14}
-            height={7}
+            width={18}
+            height={10}
             className={bubbleArrowClassName(variant)}
-            style={bubbleArrowStyle(variant, portalTheme)}
+            style={{
+              ...bubbleArrowStyle(variant, portalTheme),
+              transform: 'translateX(-1px)',
+            }}
           />
         </PopoverContent>
       </Popover>
@@ -105,10 +108,13 @@ export function FloatingFieldBubble({
         <PopoverArrow
           data-theme={portalTheme}
           data-bubble-arrow="true"
-          width={14}
-          height={7}
+          width={16}
+          height={9}
           className={bubbleArrowClassName(variant)}
-          style={bubbleArrowStyle(variant, portalTheme)}
+          style={{
+            ...bubbleArrowStyle(variant, portalTheme),
+            transform: 'translateY(1px)',
+          }}
         />
       </PopoverContent>
     </Popover>
