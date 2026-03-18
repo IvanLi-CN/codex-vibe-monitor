@@ -19935,6 +19935,156 @@ async fn http_server_graceful_shutdown_stops_accepting_new_connections() {
     assert!(err.is_connect() || err.is_timeout());
 }
 
+fn build_large_imported_oauth_validate_body(item_count: usize, padding_len: usize) -> String {
+    let items = (0..item_count)
+        .map(|index| {
+            json!({
+                "sourceId": format!("source-{index}"),
+                "fileName": format!("user-{index}@duckmail.sbs.json"),
+                "content": json!({
+                    "type": "codex",
+                    "email": format!("user-{index}@duckmail.sbs"),
+                    "account_id": format!("acct_{index}"),
+                    "expired": "2026-03-20T00:00:00.000Z",
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "id_token": "header.payload.signature",
+                    "padding": "x".repeat(padding_len),
+                })
+                .to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "items": items }).to_string()
+}
+
+fn build_large_imported_oauth_import_body(item_count: usize, padding_len: usize) -> String {
+    let mut selected_source_ids = Vec::with_capacity(item_count);
+    let items = (0..item_count)
+        .map(|index| {
+            let source_id = format!("source-{index}");
+            selected_source_ids.push(source_id.clone());
+            json!({
+                "sourceId": source_id,
+                "fileName": format!("user-{index}@duckmail.sbs.json"),
+                "content": json!({
+                    "type": "codex",
+                    "email": format!("user-{index}@duckmail.sbs"),
+                    "account_id": format!("acct_{index}"),
+                    "expired": "2026-03-20T00:00:00.000Z",
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "id_token": "header.payload.signature",
+                    "padding": "x".repeat(padding_len),
+                })
+                .to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "items": items,
+        "selectedSourceIds": selected_source_ids,
+        "tagIds": [],
+    })
+    .to_string()
+}
+
+async fn post_same_origin_json(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    path: &str,
+    body: String,
+) -> reqwest::Response {
+    let origin = format!("http://{addr}");
+    client
+        .post(format!("{origin}{path}"))
+        .header(reqwest::header::ORIGIN, &origin)
+        .header(reqwest::header::REFERER, format!("{origin}/"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await
+        .expect("request should succeed")
+}
+
+#[tokio::test]
+async fn imported_oauth_validate_route_accepts_large_request_body() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (addr, server_handle) = spawn_http_server(state.clone())
+        .await
+        .expect("spawn http server");
+    state.startup_ready.store(true, Ordering::Release);
+
+    let client = reqwest::Client::new();
+    let small_body = build_large_imported_oauth_validate_body(1, 64);
+    let small_response = post_same_origin_json(
+        &client,
+        addr,
+        "/api/pool/upstream-accounts/oauth/imports/validate",
+        small_body,
+    )
+    .await;
+    assert_eq!(small_response.status(), StatusCode::OK);
+
+    let large_body = build_large_imported_oauth_validate_body(934, 4096);
+    assert!(
+        large_body.len() > 4_000_000,
+        "expected test payload to exceed 4 MiB, got {} bytes",
+        large_body.len()
+    );
+    let large_response = post_same_origin_json(
+        &client,
+        addr,
+        "/api/pool/upstream-accounts/oauth/imports/validate",
+        large_body,
+    )
+    .await;
+    assert_eq!(large_response.status(), StatusCode::OK);
+    let large_text = large_response.text().await.expect("read validate body");
+    assert!(
+        !large_text.contains("Failed to buffer the request body"),
+        "validate route should no longer reject large import payloads before business handling"
+    );
+    assert!(large_text.contains("\"rows\""));
+
+    state.shutdown.cancel();
+    server_handle.await.expect("http server task should join");
+}
+
+#[tokio::test]
+async fn imported_oauth_import_route_accepts_large_request_body() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (addr, server_handle) = spawn_http_server(state.clone())
+        .await
+        .expect("spawn http server");
+    state.startup_ready.store(true, Ordering::Release);
+
+    let client = reqwest::Client::new();
+    let large_body = build_large_imported_oauth_import_body(934, 4096);
+    assert!(
+        large_body.len() > 4_000_000,
+        "expected test payload to exceed 4 MiB, got {} bytes",
+        large_body.len()
+    );
+    let response = post_same_origin_json(
+        &client,
+        addr,
+        "/api/pool/upstream-accounts/oauth/imports",
+        large_body,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = response.text().await.expect("read import body");
+    assert!(
+        !text.contains("Failed to buffer the request body"),
+        "import route should no longer reject large import payloads before business handling"
+    );
+    assert!(text.contains("\"summary\""));
+
+    state.shutdown.cancel();
+    server_handle.await.expect("http server task should join");
+}
+
 #[tokio::test]
 async fn run_runtime_until_shutdown_waits_for_inflight_scheduler_poll() {
     let release_request = Arc::new(Notify::new());
