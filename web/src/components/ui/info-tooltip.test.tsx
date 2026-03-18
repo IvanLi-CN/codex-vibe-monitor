@@ -213,4 +213,21 @@ describe('InfoTooltip', () => {
     expect(tooltip?.getAttribute('aria-hidden')).toBe('false')
     expect(button?.getAttribute('aria-describedby')).toBe(tooltip?.id)
   })
+
+  it('keeps focus on the trigger when the tooltip opens', () => {
+    render(<InfoTooltip label="Explain notice" content="Current results stay on the latest searched snapshot." />)
+
+    const button = host?.querySelector('button') as HTMLButtonElement | null
+
+    button?.focus()
+
+    expect(document.activeElement).toBe(button)
+
+    act(() => {
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(document.activeElement).toBe(button)
+    expect(document.body.querySelector('[role="tooltip"]')?.getAttribute('aria-hidden')).toBe('false')
+  })
 })

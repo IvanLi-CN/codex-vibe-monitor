@@ -138,6 +138,8 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
         id={tooltipId}
         role="tooltip"
         aria-hidden={open ? 'false' : 'true'}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => event.preventDefault()}
         side="top"
         sideOffset={4}
         avoidCollisions

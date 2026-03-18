@@ -176,4 +176,19 @@ describe('FloatingFieldBubble', () => {
     )
     expect(bubble?.querySelector('[data-bubble-arrow="true"]')).toBeInstanceOf(SVGElement)
   })
+
+  it('does not steal focus from an already active input when the bubble mounts', () => {
+    render(
+      <div className="relative">
+        <input data-testid="field" />
+        <FloatingFieldBubble message="Current value must stay in view." variant="error" />
+      </div>,
+    )
+
+    const input = host?.querySelector('[data-testid="field"]') as HTMLInputElement | null
+
+    input?.focus()
+
+    expect(document.activeElement).toBe(input)
+  })
 })

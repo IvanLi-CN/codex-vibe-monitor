@@ -65,6 +65,8 @@ export function FloatingFieldBubble({
           style={bubbleSurfaceStyle(variant, portalTheme)}
           role={role}
           aria-live="polite"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+          onCloseAutoFocus={(event) => event.preventDefault()}
           side="left"
           align="center"
           sideOffset={2}
@@ -109,6 +111,8 @@ export function FloatingFieldBubble({
         style={bubbleSurfaceStyle(variant, portalTheme)}
         role={role}
         aria-live="polite"
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => event.preventDefault()}
         side="bottom"
         align="end"
         sideOffset={4}
