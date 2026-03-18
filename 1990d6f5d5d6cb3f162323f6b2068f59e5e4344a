@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.15.1",
+  "base_stable_version": "1.15.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-18T17:05:01Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.15.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "525c23a8b31a39e825bdaba6d97dd1de7aee02a0",
+  "pr_number": 180,
+  "pr_title": "fix: restore oauth /v1/responses header forwarding",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.15.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.15.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "1990d6f5d5d6cb3f162323f6b2068f59e5e4344a",
+  "type_label": "type:patch"
+}
