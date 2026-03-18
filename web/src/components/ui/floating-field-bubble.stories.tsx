@@ -56,6 +56,7 @@ function backdropImage(theme: 'vibe-light' | 'vibe-dark') {
         line: 'rgba(139, 157, 189, 0.26)',
         orbA: 'rgba(124, 58, 237, 0.12)',
         orbB: 'rgba(16, 185, 129, 0.10)',
+        orbC: 'rgba(56, 189, 248, 0.10)',
       }
     : {
         base: '#1a2231',
@@ -63,6 +64,7 @@ function backdropImage(theme: 'vibe-light' | 'vibe-dark') {
         line: 'rgba(166, 180, 204, 0.16)',
         orbA: 'rgba(56, 189, 248, 0.12)',
         orbB: 'rgba(52, 211, 153, 0.10)',
+        orbC: 'rgba(129, 140, 248, 0.12)',
       }
 
   const svg = `
@@ -79,23 +81,137 @@ function backdropImage(theme: 'vibe-light' | 'vibe-dark') {
       </g>
       <circle cx="1030" cy="130" r="170" fill="${palette.orbA}"/>
       <circle cx="180" cy="720" r="210" fill="${palette.orbB}"/>
+      <circle cx="760" cy="540" r="120" fill="${palette.orbC}"/>
     </svg>
   `
 
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`
 }
 
+function motionPalette(theme: 'vibe-light' | 'vibe-dark') {
+  return theme === 'vibe-light'
+    ? {
+        mist: 'rgba(255,255,255,0.58)',
+        beam: 'rgba(255,255,255,0.42)',
+        orbA: 'rgba(99,102,241,0.22)',
+        orbB: 'rgba(45,212,191,0.18)',
+        orbC: 'rgba(56,189,248,0.14)',
+        ripple: 'rgba(255,255,255,0.34)',
+      }
+    : {
+        mist: 'rgba(255,255,255,0.08)',
+        beam: 'rgba(96,165,250,0.16)',
+        orbA: 'rgba(59,130,246,0.22)',
+        orbB: 'rgba(16,185,129,0.16)',
+        orbC: 'rgba(129,140,248,0.18)',
+        ripple: 'rgba(148,163,184,0.12)',
+      }
+}
+
+function StoryMotionStyles() {
+  return (
+    <style>
+      {`
+        @keyframes bubble-aurora-float {
+          0% { transform: translate3d(-6%, -4%, 0) scale(0.96); opacity: 0.42; }
+          50% { transform: translate3d(7%, 4%, 0) scale(1.05); opacity: 0.72; }
+          100% { transform: translate3d(14%, -3%, 0) scale(1.1); opacity: 0.54; }
+        }
+
+        @keyframes bubble-aurora-drift {
+          0% { transform: translate3d(0, 0, 0) scale(0.94); opacity: 0.34; }
+          50% { transform: translate3d(-8%, -5%, 0) scale(1.08); opacity: 0.58; }
+          100% { transform: translate3d(10%, 6%, 0) scale(1.02); opacity: 0.4; }
+        }
+
+        @keyframes bubble-ribbon-shift {
+          0% { transform: translate3d(-8%, 0, 0) scaleX(0.94); opacity: 0.16; }
+          50% { transform: translate3d(2%, 0, 0) scaleX(1.06); opacity: 0.3; }
+          100% { transform: translate3d(12%, 0, 0) scaleX(1.18); opacity: 0.2; }
+        }
+
+        @keyframes bubble-grid-pan {
+          0% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.22; }
+          100% { transform: translate3d(-2.5%, 1.5%, 0) scale(1.04); opacity: 0.34; }
+        }
+      `}
+    </style>
+  )
+}
+
+function AmbientBackdrop({
+  theme,
+  panel = false,
+}: {
+  theme: 'vibe-light' | 'vibe-dark'
+  panel?: boolean
+}) {
+  const palette = motionPalette(theme)
+
+  return (
+    <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit]">
+      <div
+        className="absolute inset-[-8%]"
+        style={{
+          backgroundImage: `
+            linear-gradient(115deg, transparent 0%, ${palette.beam} 32%, transparent 68%),
+            radial-gradient(circle at 20% 18%, ${palette.mist} 0%, transparent 42%)
+          `,
+          filter: 'blur(28px)',
+          animation: 'bubble-grid-pan 22s ease-in-out infinite alternate',
+        }}
+      />
+      <div
+        className="absolute -right-24 -top-20 h-[24rem] w-[24rem] rounded-full"
+        style={{
+          background: `radial-gradient(circle, ${palette.orbA} 0%, transparent 70%)`,
+          filter: 'blur(46px)',
+          animation: 'bubble-aurora-float 20s ease-in-out infinite alternate',
+        }}
+      />
+      <div
+        className="absolute -left-24 bottom-[-6rem] h-[26rem] w-[26rem] rounded-full"
+        style={{
+          background: `radial-gradient(circle, ${palette.orbB} 0%, transparent 72%)`,
+          filter: 'blur(52px)',
+          animation: 'bubble-aurora-drift 24s ease-in-out infinite alternate',
+        }}
+      />
+      <div
+        className="absolute inset-x-[-16%] top-[28%] h-24"
+        style={{
+          background: `linear-gradient(90deg, transparent 0%, ${palette.ripple} 18%, ${palette.beam} 48%, transparent 84%)`,
+          filter: 'blur(28px)',
+          animation: 'bubble-ribbon-shift 17s ease-in-out infinite alternate',
+        }}
+      />
+      {panel ? (
+        <div
+          className="absolute inset-x-[8%] top-[38%] h-28 rounded-full"
+          style={{
+            background: `radial-gradient(circle at 35% 50%, ${palette.orbC} 0%, transparent 70%)`,
+            filter: 'blur(34px)',
+            animation: 'bubble-aurora-float 16s ease-in-out infinite alternate-reverse',
+          }}
+        />
+      ) : null}
+    </div>
+  )
+}
+
 function StorySurface({ children }: { children: ReactNode }) {
   return (
     <div
-      className="min-h-screen px-4 py-6 text-base-content"
+      className="relative isolate min-h-screen overflow-hidden px-4 py-6 text-base-content"
       style={{
         backgroundImage: backdropImage('vibe-light'),
         backgroundSize: 'cover',
         backgroundPosition: 'center',
       }}
     >
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 rounded-[1.75rem] border border-base-300/70 bg-base-100/66 p-6 shadow-[0_24px_70px_rgba(15,23,42,0.12)] backdrop-blur-md">
+      <StoryMotionStyles />
+      <AmbientBackdrop theme="vibe-light" />
+      <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-6 rounded-[1.75rem] border border-base-300/70 bg-base-100/58 p-6 shadow-[0_24px_70px_rgba(15,23,42,0.12)] backdrop-blur-md">
         {children}
       </div>
     </div>
@@ -127,7 +243,7 @@ function InlineBubblePreview({
   message: string
 }) {
   return (
-    <div className="grid min-h-[6.25rem] grid-cols-[9rem_1fr] items-start gap-4 rounded-[1.1rem] border border-base-300/55 bg-base-100/32 px-4 py-4 backdrop-blur-sm">
+    <div className="grid min-h-[6.25rem] grid-cols-[9rem_1fr] items-start gap-4 rounded-[1.1rem] border border-base-300/50 bg-base-100/24 px-4 py-4 backdrop-blur-sm">
       <div className="flex items-center gap-3 pt-1">
         <span className={cn('inline-flex h-3 w-3 shrink-0 rounded-full border', variantDotClass(variant))} />
         <span className="text-xs font-semibold uppercase tracking-[0.14em] text-base-content/60">
@@ -162,14 +278,15 @@ function ThemeBubblePanel({ theme, title }: { theme: 'vibe-light' | 'vibe-dark';
   return (
     <section
       data-theme={theme}
-      className="rounded-[1.5rem] border border-base-300/75 p-5 text-base-content shadow-[0_18px_48px_rgba(15,23,42,0.12)]"
+      className="relative isolate overflow-hidden rounded-[1.5rem] border border-base-300/75 p-5 text-base-content shadow-[0_18px_48px_rgba(15,23,42,0.12)]"
       style={{
         backgroundImage: backdropImage(theme),
         backgroundSize: 'cover',
         backgroundPosition: 'center',
       }}
     >
-      <div className="mb-4 flex items-center justify-between gap-3">
+      <AmbientBackdrop theme={theme} panel />
+      <div className="relative z-10 mb-4 flex items-center justify-between gap-3">
         <div>
           <p className="text-sm font-semibold">{title}</p>
           <p className="text-xs text-base-content/65">Shared surface tokens across bubble variants.</p>
@@ -178,7 +295,7 @@ function ThemeBubblePanel({ theme, title }: { theme: 'vibe-light' | 'vibe-dark';
           {theme === 'vibe-light' ? 'Light' : 'Dark'}
         </span>
       </div>
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+      <div className="relative z-10 mx-auto flex w-full max-w-3xl flex-col gap-5">
         <InlineBubblePreview
           variant="neutral"
           label="Neutral"
