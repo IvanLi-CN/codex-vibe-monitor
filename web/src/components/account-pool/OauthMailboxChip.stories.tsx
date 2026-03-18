@@ -97,3 +97,56 @@ export const ManualCopy: Story = {
     tone: 'manual',
   },
 }
+
+export const EditablePopover: Story = {
+  args: {
+    ...baseArgs,
+    emailAddress: 'editable-preview@mail-tw.707079.xyz',
+    editor: {
+      draftValue: 'editable-preview@mail-tw.707079.xyz',
+      inputAriaLabel: 'Mailbox address',
+      inputPlaceholder: 'mailbox@example.com',
+      editAriaLabel: 'Edit mailbox',
+      editHintLabel: 'Unused helper copy',
+      submitAriaLabel: 'Submit mailbox',
+      cancelAriaLabel: 'Cancel mailbox edit',
+      startEditing: () => undefined,
+      onDraftValueChange: () => undefined,
+      onSubmit: () => undefined,
+      onCancel: () => undefined,
+      editing: false,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
+
+    await userEvent.hover(copyMailboxButton)
+
+    const popover = within(document.body)
+    await expect(popover.getByText(/click to copy/i)).toBeInTheDocument()
+    await expect(popover.getByRole('button', { name: /edit mailbox/i })).toBeInTheDocument()
+  },
+}
+
+export const EditableCopiedFeedback: Story = {
+  args: {
+    ...baseArgs,
+    emailAddress: 'copied-editor@mail-tw.707079.xyz',
+    tone: 'copied',
+    editor: {
+      draftValue: 'copied-editor@mail-tw.707079.xyz',
+      inputAriaLabel: 'Mailbox address',
+      inputPlaceholder: 'mailbox@example.com',
+      editAriaLabel: 'Edit mailbox',
+      editHintLabel: 'Unused helper copy',
+      submitAriaLabel: 'Submit mailbox',
+      cancelAriaLabel: 'Cancel mailbox edit',
+      startEditing: () => undefined,
+      onDraftValueChange: () => undefined,
+      onSubmit: () => undefined,
+      onCancel: () => undefined,
+      editing: false,
+    },
+  },
+}

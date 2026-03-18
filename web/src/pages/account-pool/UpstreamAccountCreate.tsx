@@ -58,6 +58,7 @@ import { useTranslation } from '../../i18n'
 
 type CreateTab = 'oauth' | 'batchOauth' | 'apiKey'
 type BatchOauthBusyAction = 'generate' | 'complete' | null
+type MailboxBusyAction = 'attach' | 'generate' | null
 type DuplicateWarningState = {
   accountId: number
   displayName: string
@@ -94,7 +95,10 @@ type BatchOauthRow = {
   mailboxError: string | null
   mailboxTone: MailboxCopyTone
   mailboxCodeTone: MailboxCopyTone
-  mailboxBusy: boolean
+  mailboxBusyAction: MailboxBusyAction
+  mailboxEditorOpen: boolean
+  mailboxEditorValue: string
+  mailboxEditorError: string | null
   mailboxRefreshBusy: boolean
   mailboxNextRefreshAt: number | null
 }
@@ -117,6 +121,7 @@ type CreatePageDraft = {
     mailboxError?: string | null
     mailboxTone?: MailboxCopyTone
     mailboxCodeTone?: MailboxCopyTone
+    mailboxBusyAction?: MailboxBusyAction
     mailboxRefreshBusy?: boolean
     mailboxNextRefreshAt?: number | null
   }
@@ -210,7 +215,10 @@ function createBatchOauthRow(id: string, groupName = ''): BatchOauthRow {
     mailboxError: null,
     mailboxTone: 'idle',
     mailboxCodeTone: 'idle',
-    mailboxBusy: false,
+    mailboxBusyAction: null,
+    mailboxEditorOpen: false,
+    mailboxEditorValue: '',
+    mailboxEditorError: null,
     mailboxRefreshBusy: false,
     mailboxNextRefreshAt: null,
   }
@@ -238,7 +246,18 @@ function hydrateBatchOauthRow(
     mailboxError: typeof seed.mailboxError === 'string' ? seed.mailboxError : null,
     mailboxTone: seed.mailboxTone === 'copied' || seed.mailboxTone === 'manual' ? seed.mailboxTone : 'idle',
     mailboxCodeTone: seed.mailboxCodeTone === 'copied' ? 'copied' : 'idle',
-    mailboxBusy: seed.mailboxBusy === true,
+    mailboxBusyAction:
+      seed.mailboxBusyAction === 'attach' || seed.mailboxBusyAction === 'generate'
+        ? seed.mailboxBusyAction
+        : null,
+    mailboxEditorOpen: seed.mailboxEditorOpen === true,
+    mailboxEditorValue:
+      typeof seed.mailboxEditorValue === 'string'
+        ? seed.mailboxEditorValue
+        : typeof seed.mailboxInput === 'string'
+          ? seed.mailboxInput
+          : seed.mailboxSession?.emailAddress ?? '',
+    mailboxEditorError: typeof seed.mailboxEditorError === 'string' ? seed.mailboxEditorError : null,
     mailboxRefreshBusy: seed.mailboxRefreshBusy === true,
     mailboxNextRefreshAt: typeof seed.mailboxNextRefreshAt === 'number' ? seed.mailboxNextRefreshAt : null,
   }
@@ -263,6 +282,10 @@ function normalizeMailboxAddressKey(value: string) {
 function mailboxInputMatchesSession(input: string, session: OauthMailboxSessionSupported | null) {
   if (!session) return false
   return normalizeMailboxAddressKey(input) === normalizeMailboxAddressKey(session.emailAddress)
+}
+
+function isProbablyValidEmailAddress(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
 
 function findDisplayNameConflict(
@@ -695,7 +718,11 @@ export default function UpstreamAccountCreatePage() {
   const [oauthMailboxCodeTone, setOauthMailboxCodeTone] = useState<MailboxCopyTone>(
     () => draft?.oauth?.mailboxCodeTone ?? 'idle',
   )
-  const [oauthMailboxBusy, setOauthMailboxBusy] = useState(false)
+  const [oauthMailboxBusyAction, setOauthMailboxBusyAction] = useState<MailboxBusyAction>(() =>
+    draft?.oauth?.mailboxBusyAction === 'attach' || draft?.oauth?.mailboxBusyAction === 'generate'
+      ? draft.oauth.mailboxBusyAction
+      : null,
+  )
   const [oauthMailboxRefreshBusy, setOauthMailboxRefreshBusy] = useState(false)
   const [refreshClockMs, setRefreshClockMs] = useState(() => Date.now())
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState(() => draft?.apiKey?.displayName ?? '')
@@ -735,6 +762,7 @@ export default function UpstreamAccountCreatePage() {
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
   const oauthMailboxToneResetRef = useRef<number | null>(null)
   const batchMailboxToneResetRef = useRef<Record<string, number>>({})
+  const batchRowsRef = useRef<BatchOauthRow[]>(initialBatchRows)
   const activeOauthMailboxSession = useMemo(
     () =>
       isSupportedMailboxSession(oauthMailboxSession) && mailboxInputMatchesSession(oauthMailboxInput, oauthMailboxSession)
@@ -778,6 +806,12 @@ export default function UpstreamAccountCreatePage() {
       })
     }
   }, [])
+  useEffect(() => {
+    batchRowsRef.current = batchRows
+  }, [batchRows])
+  useEffect(() => {
+    batchRowsRef.current = batchRows
+  }, [batchRows])
   useEffect(() => {
     const timer = window.setInterval(() => {
       setRefreshClockMs(Date.now())
@@ -1029,6 +1063,9 @@ export default function UpstreamAccountCreatePage() {
                     : t('accountPool.upstreamAccounts.oauth.mailboxStatusUnavailable'))
             const previousCode = row.mailboxStatus?.latestCode?.value ?? null
             const nextCode = nextStatus?.latestCode?.value ?? null
+            if (row.mailboxStatus === (nextStatus ?? null) && row.mailboxError === nextError) {
+              return row
+            }
             return {
               ...row,
               mailboxStatus: nextStatus ?? null,
@@ -1286,6 +1323,7 @@ export default function UpstreamAccountCreatePage() {
                 sessionHint: t('accountPool.upstreamAccounts.batchOauth.regenerateRequired'),
                 actionError: null,
                 busyAction: null,
+                mailboxEditorOpen: false,
               }
             : row,
         ),
@@ -1320,7 +1358,7 @@ export default function UpstreamAccountCreatePage() {
     value: string,
   ) => {
     updateBatchRow(rowId, (row) => {
-      if (row.busyAction || row.session?.status === 'completed') {
+      if (row.busyAction || row.mailboxBusyAction || row.session?.status === 'completed') {
         return row
       }
       const nextRow = {
@@ -1352,7 +1390,7 @@ export default function UpstreamAccountCreatePage() {
       setBatchRows((current) =>
         enforceBatchMotherDraftUniqueness(
           current.map((row) => {
-            if (row.busyAction || row.session?.status === 'completed') return row
+            if (row.busyAction || row.mailboxBusyAction || row.session?.status === 'completed') return row
             const inheritsDefault = !row.groupName.trim() || row.groupName === previousTrimmed
             if (!inheritsDefault) return row
             if (!row.session) {
@@ -1432,7 +1470,7 @@ export default function UpstreamAccountCreatePage() {
 
   const handleGenerateOauthMailbox = async () => {
     const previousSessionId = isSupportedMailboxSession(oauthMailboxSession) ? oauthMailboxSession.sessionId : null
-    setOauthMailboxBusy(true)
+    setOauthMailboxBusyAction('generate')
     setActionError(null)
     setOauthMailboxError(null)
     try {
@@ -1468,7 +1506,7 @@ export default function UpstreamAccountCreatePage() {
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setOauthMailboxBusy(false)
+      setOauthMailboxBusyAction(null)
     }
   }
 
@@ -1482,7 +1520,7 @@ export default function UpstreamAccountCreatePage() {
       return
     }
     const previousSessionId = isSupportedMailboxSession(oauthMailboxSession) ? oauthMailboxSession.sessionId : null
-    setOauthMailboxBusy(true)
+    setOauthMailboxBusyAction('attach')
     setActionError(null)
     setOauthMailboxError(null)
     try {
@@ -1524,7 +1562,7 @@ export default function UpstreamAccountCreatePage() {
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
     } finally {
-      setOauthMailboxBusy(false)
+      setOauthMailboxBusyAction(null)
     }
   }
 
@@ -1699,7 +1737,9 @@ export default function UpstreamAccountCreatePage() {
 
     updateBatchRow(rowId, (current) => ({
       ...current,
-      mailboxBusy: true,
+      mailboxBusyAction: 'generate',
+      mailboxEditorOpen: false,
+      mailboxEditorValue: current.mailboxInput,
       actionError: null,
     }))
 
@@ -1708,7 +1748,7 @@ export default function UpstreamAccountCreatePage() {
       if (!isSupportedMailboxSession(response)) {
         updateBatchRow(rowId, (current) => ({
           ...current,
-          mailboxBusy: false,
+          mailboxBusyAction: null,
           mailboxError: t('accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable'),
           actionError: null,
         }))
@@ -1717,9 +1757,10 @@ export default function UpstreamAccountCreatePage() {
       const previousSessionId = row.mailboxSession?.sessionId
       updateBatchRow(rowId, (current) => ({
         ...current,
-        mailboxBusy: false,
+        mailboxBusyAction: null,
         mailboxSession: response,
         mailboxInput: response.emailAddress,
+        mailboxEditorValue: response.emailAddress,
         displayName: current.displayName.trim() ? current.displayName : response.emailAddress,
         mailboxStatus: null,
         mailboxError: null,
@@ -1736,8 +1777,109 @@ export default function UpstreamAccountCreatePage() {
     } catch (err) {
       updateBatchRow(rowId, (current) => ({
         ...current,
-        mailboxBusy: false,
+        mailboxBusyAction: null,
         mailboxError: null,
+        actionError: err instanceof Error ? err.message : String(err),
+      }))
+    }
+  }
+
+  const handleBatchStartMailboxEdit = (rowId: string) => {
+    updateBatchRow(rowId, (current) => {
+      if (current.busyAction || current.mailboxBusyAction || current.session?.status === 'completed' || current.needsRefresh) {
+        return current
+      }
+      const baseValue = current.mailboxInput || current.mailboxSession?.emailAddress || ''
+      return {
+        ...current,
+        mailboxEditorOpen: true,
+        mailboxEditorValue: baseValue,
+        mailboxEditorError: null,
+        actionError: null,
+      }
+    })
+  }
+
+  const handleBatchMailboxEditorValueChange = (rowId: string, value: string) => {
+    updateBatchRow(rowId, (current) => ({
+      ...current,
+      mailboxEditorValue: value,
+      mailboxEditorError: null,
+    }))
+  }
+
+  const handleBatchCancelMailboxEdit = (rowId: string) => {
+    updateBatchRow(rowId, (current) => ({
+      ...current,
+      mailboxEditorOpen: false,
+      mailboxEditorValue: current.mailboxInput || current.mailboxSession?.emailAddress || '',
+      mailboxEditorError: null,
+    }))
+  }
+
+  const handleBatchAttachMailbox = async (rowId: string) => {
+    const row = batchRows.find((item) => item.id === rowId)
+    if (!row) return
+    const normalizedAddress = row.mailboxEditorValue.trim()
+    if (!normalizedAddress) return
+    if (!isProbablyValidEmailAddress(normalizedAddress)) {
+      updateBatchRow(rowId, (current) => ({
+        ...current,
+        mailboxEditorError: t('accountPool.upstreamAccounts.batchOauth.validation.mailboxFormat'),
+      }))
+      return
+    }
+
+    updateBatchRow(rowId, (current) => ({
+      ...current,
+      mailboxBusyAction: 'attach',
+      actionError: null,
+      mailboxError: null,
+      mailboxEditorError: null,
+    }))
+
+    const previousSessionId = row.mailboxSession?.sessionId ?? null
+    try {
+      const response = await beginOauthMailboxSessionForAddress(normalizedAddress)
+      const shouldInvalidateSession =
+        isSupportedMailboxSession(response)
+          ? (!previousSessionId || previousSessionId !== response.sessionId)
+          : Boolean(previousSessionId)
+      const unsupportedError = isSupportedMailboxSession(response)
+        ? null
+        : resolveMailboxIssue(response, null, null, null, t)
+
+      updateBatchRow(rowId, (current) => ({
+        ...current,
+        mailboxBusyAction: null,
+        mailboxEditorOpen: false,
+        mailboxEditorValue: response.emailAddress,
+        mailboxEditorError: null,
+        mailboxSession: isSupportedMailboxSession(response) ? response : null,
+        mailboxInput: response.emailAddress,
+        mailboxStatus: null,
+        mailboxError: unsupportedError,
+        mailboxTone: 'idle',
+        mailboxCodeTone: 'idle',
+        displayName:
+          isSupportedMailboxSession(response) && !current.displayName.trim()
+            ? response.emailAddress
+            : current.displayName,
+        callbackUrl: shouldInvalidateSession ? '' : current.callbackUrl,
+        session: shouldInvalidateSession ? null : current.session,
+        sessionHint: shouldInvalidateSession
+          ? t('accountPool.upstreamAccounts.batchOauth.regenerateRequired')
+          : current.sessionHint,
+        actionError: null,
+      }))
+
+      if (previousSessionId && (!isSupportedMailboxSession(response) || previousSessionId !== response.sessionId)) {
+        void removeOauthMailboxSession(previousSessionId).catch(() => undefined)
+      }
+    } catch (err) {
+      updateBatchRow(rowId, (current) => ({
+        ...current,
+        mailboxBusyAction: null,
         actionError: err instanceof Error ? err.message : String(err),
       }))
     }
@@ -2267,29 +2409,60 @@ export default function UpstreamAccountCreatePage() {
                               )
                             }
                           }}
-                          disabled={!writesEnabled || session?.status === 'completed'}
+                          disabled={!writesEnabled || oauthMailboxBusyAction != null || session?.status === 'completed'}
                         />
                         <div className="flex gap-2">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            className="h-10 shrink-0 rounded-lg px-3"
-                            onClick={() => void handleAttachOauthMailbox()}
-                            disabled={!writesEnabled || oauthMailboxBusy || session?.status === 'completed' || !oauthMailboxInput.trim()}
+                          <Tooltip
+                            content={buildActionTooltip(
+                              t('accountPool.upstreamAccounts.actions.useMailboxAddress'),
+                              t('accountPool.upstreamAccounts.oauth.mailboxHint'),
+                            )}
                           >
-                            {oauthMailboxBusy ? <Spinner size="sm" /> : t('accountPool.upstreamAccounts.actions.useMailboxAddress')}
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            className="h-10 shrink-0 rounded-lg px-3"
-                            onClick={() => void handleGenerateOauthMailbox()}
-                            disabled={!writesEnabled || oauthMailboxBusy || session?.status === 'completed'}
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="secondary"
+                              className="h-10 w-10 shrink-0 rounded-full"
+                              aria-label={t('accountPool.upstreamAccounts.actions.useMailboxAddress')}
+                              title={t('accountPool.upstreamAccounts.actions.useMailboxAddress')}
+                              onClick={() => void handleAttachOauthMailbox()}
+                              disabled={
+                                !writesEnabled
+                                || oauthMailboxBusyAction != null
+                                || session?.status === 'completed'
+                                || !oauthMailboxInput.trim()
+                              }
+                            >
+                              {oauthMailboxBusyAction === 'attach' ? (
+                                <AppIcon name="loading" className="h-4 w-4 animate-spin" aria-hidden />
+                              ) : (
+                                <AppIcon name="check-bold" className="h-4 w-4" aria-hidden />
+                              )}
+                            </Button>
+                          </Tooltip>
+                          <Tooltip
+                            content={buildActionTooltip(
+                              t('accountPool.upstreamAccounts.actions.generateMailbox'),
+                              t('accountPool.upstreamAccounts.oauth.mailboxHint'),
+                            )}
                           >
-                            {oauthMailboxBusy ? <Spinner size="sm" /> : t('accountPool.upstreamAccounts.actions.generateMailbox')}
-                          </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="secondary"
+                              className="h-10 w-10 shrink-0 rounded-full"
+                              aria-label={t('accountPool.upstreamAccounts.actions.generateMailbox')}
+                              title={t('accountPool.upstreamAccounts.actions.generateMailbox')}
+                              onClick={() => void handleGenerateOauthMailbox()}
+                              disabled={!writesEnabled || oauthMailboxBusyAction != null || session?.status === 'completed'}
+                            >
+                              {oauthMailboxBusyAction === 'generate' ? (
+                                <AppIcon name="loading" className="h-4 w-4 animate-spin" aria-hidden />
+                              ) : (
+                                <AppIcon name="auto-fix" className="h-4 w-4" aria-hidden />
+                              )}
+                            </Button>
+                          </Tooltip>
                         </div>
                       </div>
                       <p className="text-xs text-base-content/65">{t('accountPool.upstreamAccounts.oauth.mailboxHint')}</p>
@@ -2671,7 +2844,9 @@ export default function UpstreamAccountCreatePage() {
                             const isRecoveredNeedsRefresh = status === 'completedNeedsRefresh'
                             const isPending = status === 'pending'
                             const isBusy = row.busyAction != null
+                            const isMailboxBusy = row.mailboxBusyAction != null
                             const rowLocked = isBusy || isCompleted || isRecoveredNeedsRefresh
+                            const actionLocked = rowLocked || isMailboxBusy
                             const authUrl = row.session?.authUrl ?? ''
                             const rowMailboxAddress = row.mailboxSession?.emailAddress ?? row.mailboxInput
                             const rowInvited = row.mailboxStatus?.invited
@@ -2731,17 +2906,50 @@ export default function UpstreamAccountCreatePage() {
                                             manualBadgeLabel={t('accountPool.upstreamAccounts.actions.manual')}
                                             tone={row.mailboxTone}
                                             onCopy={() => void handleBatchCopyMailbox(row.id)}
+                                            editor={{
+                                              draftValue: row.mailboxEditorValue,
+                                              inputName: `batchOauthMailboxEditor-${row.id}`,
+                                              inputAriaLabel: t('accountPool.upstreamAccounts.fields.mailboxAddress'),
+                                              inputPlaceholder: t('accountPool.upstreamAccounts.oauth.mailboxInputPlaceholder'),
+                                              editAriaLabel: t('accountPool.upstreamAccounts.batchOauth.actions.editMailbox'),
+                                              editHintLabel: t('accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxBody'),
+                                              submitAriaLabel: t('accountPool.upstreamAccounts.batchOauth.actions.submitMailbox'),
+                                              cancelAriaLabel: t('accountPool.upstreamAccounts.batchOauth.actions.cancelMailboxEdit'),
+                                              startEditing: () => handleBatchStartMailboxEdit(row.id),
+                                              onDraftValueChange: (value) => handleBatchMailboxEditorValueChange(row.id, value),
+                                              onSubmit: () => void handleBatchAttachMailbox(row.id),
+                                              onCancel: () => handleBatchCancelMailboxEdit(row.id),
+                                              editing: row.mailboxEditorOpen,
+                                              busy: row.mailboxBusyAction === 'attach',
+                                              inputInvalid: row.mailboxEditorError != null,
+                                              inputError: row.mailboxEditorError,
+                                              disabled: actionLocked || !writesEnabled,
+                                              submitDisabled: !row.mailboxEditorValue.trim() || row.mailboxEditorError != null,
+                                            }}
                                           />
-                                          <Button
-                                            type="button"
-                                            size="sm"
-                                            variant="secondary"
-                                            className="h-7 shrink-0 rounded-full px-3"
-                                            onClick={() => void handleBatchGenerateMailbox(row.id)}
-                                            disabled={!writesEnabled || rowLocked || row.mailboxBusy}
+                                          <Tooltip
+                                            content={buildActionTooltip(
+                                              t('accountPool.upstreamAccounts.actions.generateMailbox'),
+                                              t('accountPool.upstreamAccounts.oauth.mailboxHint'),
+                                            )}
                                           >
-                                            {row.mailboxBusy ? <Spinner size="sm" /> : t('accountPool.upstreamAccounts.actions.generateMailbox')}
-                                          </Button>
+                                            <Button
+                                              type="button"
+                                              size="icon"
+                                              variant="secondary"
+                                              className="h-7 w-7 shrink-0 rounded-full"
+                                              aria-label={t('accountPool.upstreamAccounts.actions.generateMailbox')}
+                                              title={t('accountPool.upstreamAccounts.actions.generateMailbox')}
+                                              onClick={() => void handleBatchGenerateMailbox(row.id)}
+                                              disabled={!writesEnabled || actionLocked}
+                                            >
+                                              {row.mailboxBusyAction === 'generate' ? (
+                                                <AppIcon name="loading" className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                                              ) : (
+                                                <AppIcon name="auto-fix" className="h-3.5 w-3.5" aria-hidden />
+                                              )}
+                                            </Button>
+                                          </Tooltip>
                                         </div>
                                       </div>
                                       <div className="relative">
@@ -2749,7 +2957,7 @@ export default function UpstreamAccountCreatePage() {
                                           id={`batch-oauth-display-name-${row.id}`}
                                           name={`batchOauthDisplayName-${row.id}`}
                                           value={row.displayName}
-                                          disabled={rowLocked}
+                                          disabled={actionLocked}
                                           aria-invalid={duplicateNameError != null}
                                           className="min-w-0"
                                           onChange={(event) => handleBatchMetadataChange(row.id, 'displayName', event.target.value)}
@@ -2771,7 +2979,7 @@ export default function UpstreamAccountCreatePage() {
                                           emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
                                           createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
                                           onValueChange={(value) => handleBatchMetadataChange(row.id, 'groupName', value)}
-                                          disabled={rowLocked}
+                                          disabled={actionLocked}
                                           className="min-w-0 flex-1"
                                           triggerClassName="min-w-0 whitespace-nowrap"
                                         />
@@ -2783,7 +2991,7 @@ export default function UpstreamAccountCreatePage() {
                                           aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                                           title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                                           onClick={() => openGroupNoteEditor(row.groupName)}
-                                          disabled={!writesEnabled || !normalizeGroupName(row.groupName)}
+                                          disabled={!writesEnabled || actionLocked || !normalizeGroupName(row.groupName)}
                                         >
                                           <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
                                         </Button>
@@ -2795,8 +3003,8 @@ export default function UpstreamAccountCreatePage() {
                                         <Input
                                           name={`batchOauthNote-${row.id}`}
                                           value={row.note}
-                                          disabled={rowLocked}
-                                        className="min-w-0"
+                                          disabled={actionLocked}
+                                          className="min-w-0"
                                           onChange={(event) => handleBatchMetadataChange(row.id, 'note', event.target.value)}
                                         />
                                       </label>
@@ -2810,7 +3018,7 @@ export default function UpstreamAccountCreatePage() {
                                       <Input
                                         name={`batchOauthCallbackUrl-${row.id}`}
                                         value={row.callbackUrl}
-                                        disabled={rowLocked}
+                                        disabled={actionLocked}
                                         placeholder={t('accountPool.upstreamAccounts.oauth.callbackUrlPlaceholder')}
                                         className="min-w-0"
                                         onChange={(event) => handleBatchMetadataChange(row.id, 'callbackUrl', event.target.value)}
@@ -2838,7 +3046,7 @@ export default function UpstreamAccountCreatePage() {
                                                 ? t('accountPool.upstreamAccounts.actions.regenerateOauthUrl')
                                                 : t('accountPool.upstreamAccounts.actions.generateOauthUrl')}
                                               onClick={() => void handleBatchGenerateOauthUrl(row.id)}
-                                              disabled={isBusy || isCompleted || isRecoveredNeedsRefresh || !writesEnabled}
+                                              disabled={actionLocked || !writesEnabled}
                                             >
                                               {row.busyAction === 'generate' ? (
                                                 <Spinner size="sm" />
@@ -2867,7 +3075,7 @@ export default function UpstreamAccountCreatePage() {
                                                   className="h-9 w-9 shrink-0 rounded-full"
                                                   aria-label={t('accountPool.upstreamAccounts.actions.copyOauthUrl')}
                                                   onClick={() => void handleBatchCopyOauthUrl(row.id)}
-                                                  disabled={!authUrl || isBusy}
+                                                  disabled={!authUrl || actionLocked}
                                                 >
                                                   <AppIcon name="content-copy" className="h-4 w-4" aria-hidden />
                                                 </Button>
@@ -2984,11 +3192,11 @@ export default function UpstreamAccountCreatePage() {
                                             type="button"
                                             size="icon"
                                             className="h-9 w-9 shrink-0 rounded-full"
-                                            aria-label={t('accountPool.upstreamAccounts.actions.completeOauth')}
-                                            onClick={() => void handleBatchCompleteOauth(row.id)}
-                                            disabled={
-                                              !writesEnabled ||
-                                              isBusy ||
+                                              aria-label={t('accountPool.upstreamAccounts.actions.completeOauth')}
+                                              onClick={() => void handleBatchCompleteOauth(row.id)}
+                                              disabled={
+                                                !writesEnabled ||
+                                              actionLocked ||
                                               isCompleted ||
                                               !isPending ||
                                               !row.callbackUrl.trim() ||
@@ -3010,7 +3218,7 @@ export default function UpstreamAccountCreatePage() {
                                         >
                                           <MotherAccountToggle
                                             checked={row.isMother}
-                                            disabled={rowLocked || !writesEnabled}
+                                            disabled={actionLocked || !writesEnabled}
                                             iconOnly
                                             label={t('accountPool.upstreamAccounts.mother.badge')}
                                             ariaLabel={t('accountPool.upstreamAccounts.batchOauth.actions.toggleMother')}
@@ -3052,7 +3260,7 @@ export default function UpstreamAccountCreatePage() {
                                             className="h-9 w-9 shrink-0 rounded-full"
                                             aria-label={t('accountPool.upstreamAccounts.batchOauth.actions.removeRow')}
                                             onClick={() => removeBatchRow(row.id)}
-                                            disabled={isBusy || isCompleted}
+                                            disabled={actionLocked || isCompleted}
                                           >
                                             <AppIcon name="delete-outline" className="h-4 w-4" aria-hidden />
                                           </Button>
