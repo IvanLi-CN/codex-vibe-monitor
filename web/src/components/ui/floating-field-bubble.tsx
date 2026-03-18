@@ -62,6 +62,7 @@ export function FloatingFieldBubble({
           side="left"
           align="center"
           sideOffset={2}
+          arrowPadding={12}
           avoidCollisions
           collisionPadding={12}
           sticky="partial"
