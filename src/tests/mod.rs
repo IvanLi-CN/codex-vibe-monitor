@@ -9518,6 +9518,12 @@ async fn spawn_oauth_codex_http_failure(
 
 async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Response {
     let path = request.uri().path().to_string();
+    let mut forwarded_header_names = request
+        .headers()
+        .keys()
+        .map(|name| name.as_str().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    forwarded_header_names.sort();
     let authorization = request
         .headers()
         .get(http_header::AUTHORIZATION)
@@ -9538,6 +9544,16 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         .get("x-prompt-cache-key")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let x_openai_prompt_cache_key_header = request
+        .headers()
+        .get("x-openai-prompt-cache-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let client_trace_id = request
+        .headers()
+        .get("x-client-trace-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let forwarded_for = request
         .headers()
         .get("x-forwarded-for")
@@ -9554,7 +9570,10 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
             "chatgptAccountId": chatgpt_account_id,
             "stickyKeyHeader": sticky_key_header,
             "promptCacheKeyHeader": prompt_cache_key_header,
+            "xOpenAiPromptCacheKeyHeader": x_openai_prompt_cache_key_header,
+            "clientTraceId": client_trace_id,
             "forwardedFor": forwarded_for,
+            "forwardedHeaderNames": forwarded_header_names,
             "bodyLength": body.len(),
         })),
     )
@@ -9582,6 +9601,12 @@ async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
 
 async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request) -> Response {
     let path = request.uri().path().to_string();
+    let mut forwarded_header_names = request
+        .headers()
+        .keys()
+        .map(|name| name.as_str().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    forwarded_header_names.sort();
     let authorization = request
         .headers()
         .get(http_header::AUTHORIZATION)
@@ -9590,6 +9615,21 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
     let chatgpt_account_id = request
         .headers()
         .get("ChatGPT-Account-Id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let x_openai_prompt_cache_key_header = request
+        .headers()
+        .get("x-openai-prompt-cache-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let prompt_cache_key_header = request
+        .headers()
+        .get("x-prompt-cache-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let client_trace_id = request
+        .headers()
+        .get("x-client-trace-id")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
     let body = to_bytes(request.into_body(), usize::MAX)
@@ -9605,6 +9645,10 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
             "path": path,
             "authorization": authorization,
             "chatgptAccountId": chatgpt_account_id,
+            "xOpenAiPromptCacheKeyHeader": x_openai_prompt_cache_key_header,
+            "promptCacheKeyHeader": prompt_cache_key_header,
+            "clientTraceId": client_trace_id,
+            "forwardedHeaderNames": forwarded_header_names,
             "received": body_value,
             "usage": {
                 "input_tokens": 12,
@@ -10524,10 +10568,24 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
         State(state.clone()),
         OriginalUri("/v1/responses".parse().expect("valid uri")),
         Method::POST,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-openai-prompt-cache-key"),
+                HeaderValue::from_static("prompt-cache-oauth-responses"),
+            ),
+            (
+                HeaderName::from_static("x-client-trace-id"),
+                HeaderValue::from_static("trace-oauth-responses"),
+            ),
+            (
+                HeaderName::from_static("chatgpt-account-id"),
+                HeaderValue::from_static("client-should-not-win"),
+            ),
+        ]),
         Body::from(
             serde_json::to_vec(&json!({
                 "model": "gpt-5.4",
@@ -10551,6 +10609,30 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
     assert_eq!(
         payload["chatgptAccountId"].as_str(),
         Some("02355c9d-fb23-4517-a96d-35e5f6758e9e")
+    );
+    assert_eq!(
+        payload["xOpenAiPromptCacheKeyHeader"].as_str(),
+        Some("prompt-cache-oauth-responses")
+    );
+    assert_eq!(
+        payload["clientTraceId"].as_str(),
+        Some("trace-oauth-responses")
+    );
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "x-openai-prompt-cache-key")
+    );
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "x-client-trace-id")
     );
     assert_eq!(payload["received"]["stream"], true);
     assert_eq!(payload["received"]["store"], false);
@@ -10578,6 +10660,43 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
     assert_eq!(payload_json["oauthAccountHeaderAttached"], true);
     assert_eq!(payload_json["oauthAccountIdShape"].as_str(), Some("uuid"));
     assert_eq!(payload_json["endpoint"].as_str(), Some("/v1/responses"));
+    assert_eq!(payload_json["oauthPromptCacheHeaderForwarded"], true);
+    assert!(
+        payload_json["oauthForwardedHeaderCount"]
+            .as_u64()
+            .expect("forwarded header count")
+            >= 2
+    );
+    assert!(
+        payload_json["oauthForwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "x-openai-prompt-cache-key")
+    );
+    assert!(
+        payload_json["oauthForwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "x-client-trace-id")
+    );
+    assert_eq!(payload_json["oauthResponsesRewrite"]["applied"], true);
+    assert_eq!(
+        payload_json["oauthResponsesRewrite"]["addedInstructions"],
+        true
+    );
+    assert_eq!(payload_json["oauthResponsesRewrite"]["addedStore"], true);
+    assert_eq!(
+        payload_json["oauthResponsesRewrite"]["forcedStreamTrue"],
+        true
+    );
+    assert_eq!(
+        payload_json["oauthResponsesRewrite"]["removedMaxOutputTokens"],
+        false
+    );
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
@@ -10635,6 +10754,14 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
                 HeaderValue::from_static("prompt-cache-oauth-stream"),
             ),
             (
+                HeaderName::from_static("x-openai-prompt-cache-key"),
+                HeaderValue::from_static("prompt-cache-oauth-stream-openai"),
+            ),
+            (
+                HeaderName::from_static("x-client-trace-id"),
+                HeaderValue::from_static("trace-oauth-stream"),
+            ),
+            (
                 HeaderName::from_static("x-forwarded-for"),
                 HeaderValue::from_static("203.0.113.8"),
             ),
@@ -10665,8 +10792,35 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
         Some("Bearer oauth-streaming")
     );
     assert!(payload["stickyKeyHeader"].is_null());
-    assert!(payload["promptCacheKeyHeader"].is_null());
+    assert_eq!(
+        payload["promptCacheKeyHeader"].as_str(),
+        Some("prompt-cache-oauth-stream")
+    );
+    assert_eq!(
+        payload["xOpenAiPromptCacheKeyHeader"].as_str(),
+        Some("prompt-cache-oauth-stream-openai")
+    );
+    assert_eq!(
+        payload["clientTraceId"].as_str(),
+        Some("trace-oauth-stream")
+    );
     assert!(payload["forwardedFor"].is_null());
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "x-openai-prompt-cache-key")
+    );
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "x-client-trace-id")
+    );
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
@@ -10755,6 +10909,81 @@ async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
     assert!(
         selected_at[1].1.is_some(),
         "sticky-selected oauth account should be marked"
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_compact_passthrough_preserves_prompt_cache_headers() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_oauth_account(&state, "Compact OAuth", "oauth-compact").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses/compact".parse().expect("valid compact uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-openai-prompt-cache-key"),
+                HeaderValue::from_static("prompt-cache-oauth-compact"),
+            ),
+            (
+                HeaderName::from_static("x-client-trace-id"),
+                HeaderValue::from_static("trace-oauth-compact"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.4",
+                "input": [{"role": "user", "content": "compact me"}]
+            }))
+            .expect("serialize oauth compact body"),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read oauth compact response"),
+    )
+    .expect("decode oauth compact response");
+    assert_eq!(
+        payload["path"].as_str(),
+        Some("/backend-api/codex/responses/compact")
+    );
+    assert_eq!(
+        payload["xOpenAiPromptCacheKeyHeader"].as_str(),
+        Some("prompt-cache-oauth-compact")
+    );
+    assert_eq!(
+        payload["clientTraceId"].as_str(),
+        Some("trace-oauth-compact")
     );
 
     upstream_handle.abort();

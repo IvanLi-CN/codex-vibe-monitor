@@ -7,9 +7,12 @@ use axum::{
 };
 use futures_util::TryStreamExt;
 use reqwest::{Body as ReqwestBody, Client, Url};
+use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::time::{Instant, timeout};
+use tracing::info;
 
 #[cfg(test)]
 use once_cell::sync::Lazy;
@@ -18,6 +21,17 @@ use std::sync::Mutex as StdMutex;
 
 const OAUTH_CODEX_UPSTREAM_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OAUTH_CODEX_MODELS_CLIENT_VERSION: &str = "0.111.0";
+const OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES: &[&str] = &[
+    "content-type",
+    "content-length",
+    "openai-beta",
+    "chatgpt-account-id",
+];
+const PROMPT_CACHE_HEADER_NAMES: &[&str] = &[
+    "x-prompt-cache-key",
+    "prompt-cache-key",
+    "x-openai-prompt-cache-key",
+];
 
 #[cfg(test)]
 static TEST_OAUTH_CODEX_UPSTREAM_BASE_URL: Lazy<StdMutex<Option<Url>>> =
@@ -61,6 +75,41 @@ pub(crate) enum OauthUpstreamRequestBody {
     Stream(ReqwestBody),
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OauthResponsesRewriteSummary {
+    pub(crate) applied: bool,
+    pub(crate) added_instructions: bool,
+    pub(crate) added_store: bool,
+    pub(crate) forced_stream_true: bool,
+    pub(crate) removed_max_output_tokens: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OauthForwardedHeaderSummary {
+    pub(crate) names: Vec<String>,
+    pub(crate) prompt_cache_header_forwarded: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OauthResponsesDebugInfo {
+    pub(crate) forwarded_header_names: Vec<String>,
+    pub(crate) prompt_cache_header_forwarded: bool,
+    pub(crate) rewrite: OauthResponsesRewriteSummary,
+}
+
+pub(crate) struct OauthUpstreamResponse {
+    pub(crate) response: Response,
+    pub(crate) responses_debug: Option<OauthResponsesDebugInfo>,
+}
+
+struct PreparedResponsesRequestBody {
+    wants_stream: bool,
+    body: Vec<u8>,
+    rewrite: OauthResponsesRewriteSummary,
+}
+
 pub(crate) async fn send_oauth_upstream_request(
     client: &Client,
     method: Method,
@@ -69,9 +118,10 @@ pub(crate) async fn send_oauth_upstream_request(
     body: OauthUpstreamRequestBody,
     handshake_timeout: Duration,
     response_timeout: Duration,
+    account_id: Option<i64>,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
-) -> Response {
+) -> OauthUpstreamResponse {
     match original_uri.path() {
         "/v1/models" => {
             oauth_models(
@@ -86,19 +136,24 @@ pub(crate) async fn send_oauth_upstream_request(
         "/v1/responses" => {
             oauth_responses(
                 client,
+                headers,
                 handshake_timeout,
                 response_timeout,
+                account_id,
                 access_token,
                 chatgpt_account_id,
                 match body {
                     OauthUpstreamRequestBody::Empty => Bytes::new(),
                     OauthUpstreamRequestBody::Bytes(bytes) => bytes,
                     OauthUpstreamRequestBody::Stream(_) => {
-                        return error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "streamed request bodies are not supported for /v1/responses",
-                            "server_error",
-                        );
+                        return OauthUpstreamResponse {
+                            response: error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "streamed request bodies are not supported for /v1/responses",
+                                "server_error",
+                            ),
+                            responses_debug: None,
+                        };
                     }
                 },
             )
@@ -121,14 +176,17 @@ pub(crate) async fn send_oauth_upstream_request(
             )
             .await
         }
-        _ => error_response(
-            StatusCode::NOT_FOUND,
-            &format!(
-                "oauth upstream route is not supported: {}",
-                original_uri.path()
+        _ => OauthUpstreamResponse {
+            response: error_response(
+                StatusCode::NOT_FOUND,
+                &format!(
+                    "oauth upstream route is not supported: {}",
+                    original_uri.path()
+                ),
+                "oauth_unsupported_route",
             ),
-            "oauth_unsupported_route",
-        ),
+            responses_debug: None,
+        },
     }
 }
 
@@ -142,15 +200,18 @@ async fn oauth_models(
     response_timeout: Duration,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
-) -> Response {
+) -> OauthUpstreamResponse {
     let mut upstream_url = match oauth_codex_upstream_base_url() {
         Ok(url) => url,
         Err(err) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("invalid oauth codex models url: {err}"),
-                "server_error",
-            );
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("invalid oauth codex models url: {err}"),
+                    "server_error",
+                ),
+                responses_debug: None,
+            };
         }
     };
     upstream_url.set_path(&format!(
@@ -170,21 +231,27 @@ async fn oauth_models(
     let upstream = match timeout(handshake_timeout, request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("failed to contact oauth codex upstream: {err}"),
-                "oauth_upstream_unavailable",
-            );
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("failed to contact oauth codex upstream: {err}"),
+                    "oauth_upstream_unavailable",
+                ),
+                responses_debug: None,
+            };
         }
         Err(_) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!(
-                    "oauth codex upstream handshake timed out after {}ms",
-                    handshake_timeout.as_millis()
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!(
+                        "oauth codex upstream handshake timed out after {}ms",
+                        handshake_timeout.as_millis()
+                    ),
+                    "oauth_upstream_handshake_timeout",
                 ),
-                "oauth_upstream_handshake_timeout",
-            );
+                responses_debug: None,
+            };
         }
     };
     let status = upstream.status();
@@ -198,80 +265,132 @@ async fn oauth_models(
     {
         Ok(bytes) => bytes,
         Err(err) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("failed to read oauth codex models response: {err}"),
-                "oauth_upstream_read_failed",
-            );
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("failed to read oauth codex models response: {err}"),
+                    "oauth_upstream_read_failed",
+                ),
+                responses_debug: None,
+            };
         }
     };
     if !status.is_success() {
-        return json_or_plain_error_response(status, &bytes, "oauth_upstream_rejected_request");
+        return OauthUpstreamResponse {
+            response: json_or_plain_error_response(
+                status,
+                &bytes,
+                "oauth_upstream_rejected_request",
+            ),
+            responses_debug: None,
+        };
     }
     match transform_models_payload(&bytes) {
-        Ok(value) => (status, Json(value)).into_response(),
-        Err(err) => error_response(
-            StatusCode::BAD_GATEWAY,
-            &format!("oauth codex returned malformed models payload: {err}"),
-            "oauth_upstream_invalid_models",
-        ),
+        Ok(value) => OauthUpstreamResponse {
+            response: (status, Json(value)).into_response(),
+            responses_debug: None,
+        },
+        Err(err) => OauthUpstreamResponse {
+            response: error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("oauth codex returned malformed models payload: {err}"),
+                "oauth_upstream_invalid_models",
+            ),
+            responses_debug: None,
+        },
     }
 }
 
 async fn oauth_responses(
     client: &Client,
+    headers: &HeaderMap,
     handshake_timeout: Duration,
     response_timeout: Duration,
+    account_id: Option<i64>,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
     body: Bytes,
-) -> Response {
-    let (wants_stream, upstream_body) = match prepare_responses_request_body(&body) {
+) -> OauthUpstreamResponse {
+    let prepared = match prepare_responses_request_body(&body) {
         Ok(value) => value,
         Err(err) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                &err.to_string(),
-                "invalid_request_error",
-            );
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_REQUEST,
+                    &err.to_string(),
+                    "invalid_request_error",
+                ),
+                responses_debug: None,
+            };
         }
     };
     let upstream_url = match build_oauth_upstream_url("/responses", None) {
         Ok(url) => url,
         Err(err) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("invalid oauth codex responses url: {err}"),
-                "server_error",
-            );
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("invalid oauth codex responses url: {err}"),
+                    "server_error",
+                ),
+                responses_debug: None,
+            };
         }
     };
-    let request = client
-        .post(upstream_url)
+    let (request, forwarded_headers) = copy_forwardable_headers(
+        client.post(upstream_url),
+        headers,
+        OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES,
+    );
+    let request = request
         .header(header::CONTENT_TYPE, "application/json")
         .bearer_auth(access_token)
         .header("OpenAI-Beta", "responses=experimental")
-        .body(upstream_body);
+        .body(prepared.body);
     let request = attach_account_header(request, chatgpt_account_id);
+    let responses_debug = OauthResponsesDebugInfo {
+        forwarded_header_names: forwarded_headers.names.clone(),
+        prompt_cache_header_forwarded: forwarded_headers.prompt_cache_header_forwarded,
+        rewrite: prepared.rewrite.clone(),
+    };
+    info!(
+        account_id,
+        path = "/v1/responses",
+        forwarded_header_count = responses_debug.forwarded_header_names.len(),
+        forwarded_header_names = ?responses_debug.forwarded_header_names,
+        prompt_cache_header_forwarded = responses_debug.prompt_cache_header_forwarded,
+        rewrite_applied = responses_debug.rewrite.applied,
+        rewrite_added_instructions = responses_debug.rewrite.added_instructions,
+        rewrite_added_store = responses_debug.rewrite.added_store,
+        rewrite_forced_stream_true = responses_debug.rewrite.forced_stream_true,
+        rewrite_removed_max_output_tokens = responses_debug.rewrite.removed_max_output_tokens,
+        "forwarding oauth responses request"
+    );
     let request_started = Instant::now();
     let upstream = match timeout(handshake_timeout, request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("failed to contact oauth codex upstream: {err}"),
-                "oauth_upstream_unavailable",
-            );
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("failed to contact oauth codex upstream: {err}"),
+                    "oauth_upstream_unavailable",
+                ),
+                responses_debug: Some(responses_debug),
+            };
         }
         Err(_) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!(
-                    "oauth codex upstream handshake timed out after {}ms",
-                    handshake_timeout.as_millis()
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!(
+                        "oauth codex upstream handshake timed out after {}ms",
+                        handshake_timeout.as_millis()
+                    ),
+                    "oauth_upstream_handshake_timeout",
                 ),
-                "oauth_upstream_handshake_timeout",
-            );
+                responses_debug: Some(responses_debug),
+            };
         }
     };
     if !upstream.status().is_success() {
@@ -286,17 +405,30 @@ async fn oauth_responses(
         {
             Ok(bytes) => bytes,
             Err(err) => {
-                return error_response(
-                    StatusCode::BAD_GATEWAY,
-                    &format!("failed to read oauth codex error response: {err}"),
-                    "oauth_upstream_read_failed",
-                );
+                return OauthUpstreamResponse {
+                    response: error_response(
+                        StatusCode::BAD_GATEWAY,
+                        &format!("failed to read oauth codex error response: {err}"),
+                        "oauth_upstream_read_failed",
+                    ),
+                    responses_debug: Some(responses_debug),
+                };
             }
         };
-        return json_or_plain_error_response(status, &bytes, "oauth_upstream_rejected_request");
+        return OauthUpstreamResponse {
+            response: json_or_plain_error_response(
+                status,
+                &bytes,
+                "oauth_upstream_rejected_request",
+            ),
+            responses_debug: Some(responses_debug),
+        };
     }
-    if wants_stream {
-        return reqwest_response_to_axum_response(upstream);
+    if prepared.wants_stream {
+        return OauthUpstreamResponse {
+            response: reqwest_response_to_axum_response(upstream),
+            responses_debug: Some(responses_debug),
+        };
     }
     let bytes = match read_oauth_upstream_bytes_with_timeout(
         upstream,
@@ -308,20 +440,29 @@ async fn oauth_responses(
     {
         Ok(bytes) => bytes,
         Err(err) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("failed to read oauth codex responses stream: {err}"),
-                "oauth_upstream_read_failed",
-            );
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("failed to read oauth codex responses stream: {err}"),
+                    "oauth_upstream_read_failed",
+                ),
+                responses_debug: Some(responses_debug),
+            };
         }
     };
     match extract_completed_response_from_sse(&bytes) {
-        Ok(response_value) => (StatusCode::OK, Json(response_value)).into_response(),
-        Err(err) => error_response(
-            StatusCode::BAD_GATEWAY,
-            &format!("failed to decode oauth codex response stream: {err}"),
-            "oauth_upstream_invalid_response",
-        ),
+        Ok(response_value) => OauthUpstreamResponse {
+            response: (StatusCode::OK, Json(response_value)).into_response(),
+            responses_debug: Some(responses_debug),
+        },
+        Err(err) => OauthUpstreamResponse {
+            response: error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("failed to decode oauth codex response stream: {err}"),
+                "oauth_upstream_invalid_response",
+            ),
+            responses_debug: Some(responses_debug),
+        },
     }
 }
 
@@ -334,7 +475,7 @@ async fn oauth_passthrough(
     handshake_timeout: Duration,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
-) -> Response {
+) -> OauthUpstreamResponse {
     let suffix = original_uri
         .path()
         .strip_prefix("/v1")
@@ -342,11 +483,14 @@ async fn oauth_passthrough(
     let upstream_url = match build_oauth_upstream_url(suffix, original_uri.query()) {
         Ok(url) => url,
         Err(err) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("invalid oauth codex upstream url: {err}"),
-                "server_error",
-            );
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("invalid oauth codex upstream url: {err}"),
+                    "server_error",
+                ),
+                responses_debug: None,
+            };
         }
     };
     let mut builder = client
@@ -354,28 +498,37 @@ async fn oauth_passthrough(
         .bearer_auth(access_token)
         .header("OpenAI-Beta", "responses=experimental");
     builder = attach_account_header(builder, chatgpt_account_id);
-    builder = copy_forwardable_headers(builder, headers);
+    let (builder, _) = copy_forwardable_headers(builder, headers, &[]);
     let upstream = match timeout(handshake_timeout, builder.body(body).send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("failed to contact oauth codex upstream: {err}"),
-                "oauth_upstream_unavailable",
-            );
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("failed to contact oauth codex upstream: {err}"),
+                    "oauth_upstream_unavailable",
+                ),
+                responses_debug: None,
+            };
         }
         Err(_) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!(
-                    "oauth codex upstream handshake timed out after {}ms",
-                    handshake_timeout.as_millis()
+            return OauthUpstreamResponse {
+                response: error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!(
+                        "oauth codex upstream handshake timed out after {}ms",
+                        handshake_timeout.as_millis()
+                    ),
+                    "oauth_upstream_handshake_timeout",
                 ),
-                "oauth_upstream_handshake_timeout",
-            );
+                responses_debug: None,
+            };
         }
     };
-    reqwest_response_to_axum_response(upstream)
+    OauthUpstreamResponse {
+        response: reqwest_response_to_axum_response(upstream),
+        responses_debug: None,
+    }
 }
 
 fn build_oauth_upstream_url(path_suffix: &str, query: Option<&str>) -> Result<Url> {
@@ -395,29 +548,44 @@ fn build_oauth_upstream_url(path_suffix: &str, query: Option<&str>) -> Result<Ur
 fn copy_forwardable_headers(
     mut builder: reqwest::RequestBuilder,
     headers: &HeaderMap,
-) -> reqwest::RequestBuilder {
+    excluded_names: &[&str],
+) -> (reqwest::RequestBuilder, OauthForwardedHeaderSummary) {
     let connection_scoped = crate::connection_scoped_header_names(headers);
+    let mut forwarded_names = BTreeSet::new();
     for (name, value) in headers {
         if *name == header::AUTHORIZATION
+            || excluded_names
+                .iter()
+                .any(|candidate| name.as_str().eq_ignore_ascii_case(candidate))
             || !crate::should_forward_proxy_header(name, &connection_scoped)
             || is_internal_proxy_metadata_header(name)
         {
             continue;
         }
         builder = builder.header(name, value);
+        forwarded_names.insert(name.as_str().to_ascii_lowercase());
     }
-    builder
+    let names = forwarded_names.into_iter().collect::<Vec<_>>();
+    let prompt_cache_header_forwarded = names
+        .iter()
+        .any(|name| is_prompt_cache_header_name(name.as_str()));
+    (
+        builder,
+        OauthForwardedHeaderSummary {
+            names,
+            prompt_cache_header_forwarded,
+        },
+    )
 }
 
 fn is_internal_proxy_metadata_header(name: &header::HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "x-sticky-key"
-            | "sticky-key"
-            | "x-prompt-cache-key"
-            | "prompt-cache-key"
-            | "x-openai-prompt-cache-key"
-    )
+    matches!(name.as_str(), "x-sticky-key" | "sticky-key")
+}
+
+fn is_prompt_cache_header_name(name: &str) -> bool {
+    PROMPT_CACHE_HEADER_NAMES
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
 }
 
 fn attach_account_header(
@@ -481,22 +649,34 @@ fn reqwest_response_to_axum_response(response: reqwest::Response) -> Response {
         })
 }
 
-fn prepare_responses_request_body(body: &[u8]) -> Result<(bool, Vec<u8>)> {
+fn prepare_responses_request_body(body: &[u8]) -> Result<PreparedResponsesRequestBody> {
     let mut value: Value =
         serde_json::from_slice(body).context("request body must be valid JSON")?;
     let Value::Object(ref mut map) = value else {
         bail!("request body must be a JSON object");
     };
     let wants_stream = map.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let mut rewrite = OauthResponsesRewriteSummary::default();
     if !map.contains_key("instructions") {
         map.insert("instructions".to_string(), Value::String(String::new()));
+        rewrite.added_instructions = true;
     }
     if !map.contains_key("store") {
         map.insert("store".to_string(), Value::Bool(false));
+        rewrite.added_store = true;
     }
+    rewrite.forced_stream_true = map.get("stream").and_then(Value::as_bool) != Some(true);
     map.insert("stream".to_string(), Value::Bool(true));
-    map.remove("max_output_tokens");
-    Ok((wants_stream, serde_json::to_vec(&value)?))
+    rewrite.removed_max_output_tokens = map.remove("max_output_tokens").is_some();
+    rewrite.applied = rewrite.added_instructions
+        || rewrite.added_store
+        || rewrite.forced_stream_true
+        || rewrite.removed_max_output_tokens;
+    Ok(PreparedResponsesRequestBody {
+        wants_stream,
+        body: serde_json::to_vec(&value)?,
+        rewrite,
+    })
 }
 
 fn extract_completed_response_from_sse(bytes: &[u8]) -> Result<Value> {
@@ -701,17 +881,158 @@ mod tests {
 
     #[test]
     fn prepare_responses_request_body_preserves_previous_response_id() {
-        let (wants_stream, rewritten) = prepare_responses_request_body(
+        let prepared = prepare_responses_request_body(
             br#"{"model":"gpt-5.4","stream":false,"max_output_tokens":256,"previous_response_id":"resp_prev_001"}"#,
         )
         .expect("rewrite responses request");
 
-        assert!(!wants_stream);
-        let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
+        assert!(!prepared.wants_stream);
+        let payload: Value = serde_json::from_slice(&prepared.body).expect("decode rewritten body");
         assert_eq!(payload["previous_response_id"], "resp_prev_001");
         assert_eq!(payload["instructions"], "");
         assert_eq!(payload["store"], false);
         assert_eq!(payload["stream"], true);
         assert!(payload.get("max_output_tokens").is_none());
+        assert_eq!(
+            prepared.rewrite,
+            OauthResponsesRewriteSummary {
+                applied: true,
+                added_instructions: true,
+                added_store: true,
+                forced_stream_true: true,
+                removed_max_output_tokens: true,
+            }
+        );
+    }
+
+    #[test]
+    fn copy_forwardable_headers_keeps_prompt_cache_headers_but_strips_sticky_headers() {
+        let client = Client::new();
+        let headers = HeaderMap::from_iter([
+            (
+                header::HeaderName::from_static("x-prompt-cache-key"),
+                "prompt-cache-alpha".parse().expect("x prompt cache value"),
+            ),
+            (
+                header::HeaderName::from_static("x-openai-prompt-cache-key"),
+                "prompt-cache-beta"
+                    .parse()
+                    .expect("openai prompt cache value"),
+            ),
+            (
+                header::HeaderName::from_static("x-client-trace-id"),
+                "trace-123".parse().expect("client trace id"),
+            ),
+            (
+                header::HeaderName::from_static("x-sticky-key"),
+                "sticky-should-not-forward".parse().expect("sticky key"),
+            ),
+        ]);
+
+        let (builder, summary) =
+            copy_forwardable_headers(client.get("https://example.com"), &headers, &[]);
+        let request = builder.build().expect("build request");
+
+        assert_eq!(
+            request
+                .headers()
+                .get("x-prompt-cache-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("prompt-cache-alpha")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-openai-prompt-cache-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("prompt-cache-beta")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-client-trace-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("trace-123")
+        );
+        assert!(request.headers().get("x-sticky-key").is_none());
+        assert!(summary.prompt_cache_header_forwarded);
+        assert_eq!(
+            summary.names,
+            vec![
+                "x-client-trace-id".to_string(),
+                "x-openai-prompt-cache-key".to_string(),
+                "x-prompt-cache-key".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn oauth_responses_request_overrides_security_headers_after_forwarding() {
+        let client = Client::new();
+        let headers = HeaderMap::from_iter([
+            (
+                header::AUTHORIZATION,
+                "Bearer client-token".parse().expect("authorization"),
+            ),
+            (
+                header::CONTENT_TYPE,
+                "application/custom+json".parse().expect("content type"),
+            ),
+            (
+                header::CONTENT_LENGTH,
+                "999".parse().expect("content length"),
+            ),
+            (
+                header::HeaderName::from_static("chatgpt-account-id"),
+                "client-account".parse().expect("chatgpt account id"),
+            ),
+            (
+                header::HeaderName::from_static("x-openai-prompt-cache-key"),
+                "prompt-cache-gamma".parse().expect("prompt cache key"),
+            ),
+        ]);
+
+        let builder = client.post("https://example.com");
+        let (builder, _) =
+            copy_forwardable_headers(builder, &headers, OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES);
+        let request = attach_account_header(
+            builder
+                .bearer_auth("oauth-upstream-token")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("OpenAI-Beta", "responses=experimental"),
+            Some("server-account"),
+        )
+        .build()
+        .expect("build oauth responses request");
+
+        assert_eq!(
+            request
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer oauth-upstream-token")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        assert!(request.headers().get(header::CONTENT_LENGTH).is_none());
+        assert_eq!(
+            request
+                .headers()
+                .get("ChatGPT-Account-Id")
+                .and_then(|value| value.to_str().ok()),
+            Some("server-account")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-openai-prompt-cache-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("prompt-cache-gamma")
+        );
     }
 }
