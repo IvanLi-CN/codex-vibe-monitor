@@ -75,8 +75,8 @@ export function FloatingFieldBubble({
           <PopoverArrow
             data-theme={portalTheme}
             data-bubble-arrow="true"
-            width={18}
-            height={10}
+            width={12}
+            height={8}
             className={bubbleArrowClassName(variant)}
             style={{
               ...bubbleArrowStyle(variant, portalTheme),
