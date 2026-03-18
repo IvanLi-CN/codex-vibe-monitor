@@ -194,15 +194,28 @@ function setFieldValue(
   return input;
 }
 
+function setBodyInputValue(selector: string, value: string) {
+  const input = document.body.querySelector(selector);
+  if (
+    !(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)
+  ) {
+    throw new Error(`missing body input: ${selector}`);
+  }
+  return setFieldValue(input, value);
+}
+
 function clickButton(matcher: RegExp) {
   const button = Array.from(host?.querySelectorAll("button") ?? []).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
       matcher.test(
-        candidate.textContent ||
-          candidate.getAttribute("aria-label") ||
-          candidate.title ||
-          "",
+        [
+          candidate.textContent,
+          candidate.getAttribute("aria-label"),
+          candidate.title,
+        ]
+          .filter(Boolean)
+          .join(" "),
       ),
   );
   if (!(button instanceof HTMLButtonElement)) {
@@ -219,10 +232,13 @@ function clickBodyButton(matcher: RegExp) {
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
       matcher.test(
-        candidate.textContent ||
-          candidate.getAttribute("aria-label") ||
-          candidate.title ||
-          "",
+        [
+          candidate.textContent,
+          candidate.getAttribute("aria-label"),
+          candidate.title,
+        ]
+          .filter(Boolean)
+          .join(" "),
       ),
   );
   if (!(button instanceof HTMLButtonElement)) {
@@ -239,10 +255,29 @@ function findButton(matcher: RegExp) {
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
       matcher.test(
-        candidate.textContent ||
-          candidate.getAttribute("aria-label") ||
-          candidate.title ||
-          "",
+        [
+          candidate.textContent,
+          candidate.getAttribute("aria-label"),
+          candidate.title,
+        ]
+          .filter(Boolean)
+          .join(" "),
+      ),
+  ) as HTMLButtonElement | undefined;
+}
+
+function findBodyButton(matcher: RegExp) {
+  return Array.from(document.body.querySelectorAll("button")).find(
+    (candidate) =>
+      candidate instanceof HTMLButtonElement &&
+      matcher.test(
+        [
+          candidate.textContent,
+          candidate.getAttribute("aria-label"),
+          candidate.title,
+        ]
+          .filter(Boolean)
+          .join(" "),
       ),
   ) as HTMLButtonElement | undefined;
 }
@@ -350,14 +385,14 @@ function mockUpstreamAccounts(
       supported: true,
       sessionId: "mailbox-1",
       emailAddress: "mailbox-1@example.com",
-      expiresAt: "2026-03-13T10:00:00.000Z",
+      expiresAt: "2026-04-13T10:00:00.000Z",
       source: "generated",
     }),
     beginOauthMailboxSessionForAddress: vi.fn().mockResolvedValue({
       supported: true,
       sessionId: "mailbox-attached-1",
       emailAddress: "mailbox-1@example.com",
-      expiresAt: "2026-03-13T10:00:00.000Z",
+      expiresAt: "2026-04-13T10:00:00.000Z",
       source: "attached",
     }),
     getOauthMailboxStatuses: vi.fn().mockResolvedValue([]),
@@ -626,6 +661,294 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     await flushAsync();
 
     expect(host?.textContent).toContain("Display name must be unique.");
+  });
+
+  it("attaches a supported mailbox from the batch popover editor", async () => {
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: true,
+      sessionId: "mailbox-attached-row-1",
+      emailAddress: "edited-batch@mail-tw.707079.xyz",
+      expiresAt: "2026-04-13T10:00:00.000Z",
+      source: "attached",
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-batch-mailbox",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=batch-mailbox",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthMailboxSessionForAddress, beginOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              {
+                id: "row-1",
+                displayName: "Batch Row",
+                groupName: "prod",
+                mailboxSession: {
+                  supported: true,
+                  sessionId: "mailbox-original-row-1",
+                  emailAddress: "original-batch@mail-tw.707079.xyz",
+                  expiresAt: "2026-04-13T10:00:00.000Z",
+                  source: "generated",
+                },
+                mailboxInput: "original-batch@mail-tw.707079.xyz",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Copy mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    setBodyInputValue('input[name="batchOauthMailboxEditor-row-1"]', "edited-batch@mail-tw.707079.xyz");
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("edited-batch@mail-tw.707079.xyz");
+    expect(host?.textContent).toContain("edited-batch@mail-tw.707079.xyz");
+
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "Batch Row",
+      groupName: "prod",
+      note: undefined,
+      tagIds: [],
+      groupNote: undefined,
+      isMother: false,
+      mailboxSessionId: "mailbox-attached-row-1",
+      mailboxAddress: "edited-batch@mail-tw.707079.xyz",
+    });
+  });
+
+  it("keeps batch oauth actions available when the edited mailbox is unsupported", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-batch-unsupported",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=batch-unsupported",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: false,
+      emailAddress: "unsupported@example.com",
+      reason: "not_readable",
+    });
+    mockUpstreamAccounts({ beginOauthLogin, beginOauthMailboxSessionForAddress });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+    await flushAsync();
+
+    setInputValue('input[name^="batchOauthDisplayName-"]', "Batch Unsupported");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Edit mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    setBodyInputValue('input[name^="batchOauthMailboxEditor-"]', "unsupported@example.com");
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith("unsupported@example.com");
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(host?.textContent).toContain(
+      "This mailbox is not readable through the current MoeMail integration, so mailbox enhancements stay disabled.",
+    );
+  });
+
+  it("validates the batch mailbox editor before attaching", async () => {
+    const beginOauthMailboxSessionForAddress = vi.fn();
+    mockUpstreamAccounts({ beginOauthMailboxSessionForAddress });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Edit mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    setBodyInputValue('input[name^="batchOauthMailboxEditor-"]', "not-an-email");
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Enter a valid email address before attaching it.");
+  });
+
+  it("cancels batch mailbox editing without mutating the row mailbox value", async () => {
+    mockUpstreamAccounts();
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              {
+                id: "row-1",
+                displayName: "Batch Row",
+                mailboxSession: {
+                  supported: true,
+                  sessionId: "mailbox-original-row-1",
+                  emailAddress: "original-batch@mail-tw.707079.xyz",
+                  expiresAt: "2026-04-13T10:00:00.000Z",
+                  source: "generated",
+                },
+                mailboxInput: "original-batch@mail-tw.707079.xyz",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Copy mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    setBodyInputValue('input[name="batchOauthMailboxEditor-row-1"]', "edited-batch@mail-tw.707079.xyz");
+    clickBodyButton(/Cancel mailbox edit/i);
+    await flushAsync();
+
+    expect(host?.textContent).toContain("original-batch@mail-tw.707079.xyz");
+    expect(host?.textContent).not.toContain("edited-batch@mail-tw.707079.xyz");
+  });
+
+  it("invalidates an existing batch oauth URL after attaching a new supported mailbox", async () => {
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: true,
+      sessionId: "mailbox-attached-row-1",
+      emailAddress: "edited-batch@mail-tw.707079.xyz",
+      expiresAt: "2026-04-13T10:00:00.000Z",
+      source: "attached",
+    });
+    mockUpstreamAccounts({ beginOauthMailboxSessionForAddress });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              {
+                id: "row-1",
+                displayName: "Batch Row",
+                mailboxSession: {
+                  supported: true,
+                  sessionId: "mailbox-original-row-1",
+                  emailAddress: "original-batch@mail-tw.707079.xyz",
+                  expiresAt: "2026-04-13T10:00:00.000Z",
+                  source: "generated",
+                },
+                mailboxInput: "original-batch@mail-tw.707079.xyz",
+                session: {
+                  loginId: "login-existing-row-1",
+                  status: "pending",
+                  authUrl: "https://auth.openai.com/authorize?login=existing-row-1",
+                  redirectUri: "http://localhost:1455/oauth/callback",
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: null,
+                  error: null,
+                },
+                sessionHint: "OAuth URL ready",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+
+    const mailboxChip = findBodyButton(/Copy mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+      mailboxChip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector('button[title="Edit mailbox"]');
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    setBodyInputValue('input[name="batchOauthMailboxEditor-row-1"]', "edited-batch@mail-tw.707079.xyz");
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
+    expect((host?.querySelector('input[name="batchOauthCallbackUrl-row-1"]') as HTMLInputElement | null)?.value).toBe("");
   });
 });
 
@@ -1081,16 +1404,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     ) as HTMLInputElement | null;
     expect(displayNameInput).toBeInstanceOf(HTMLInputElement);
 
-    const generateButton = Array.from(host?.querySelectorAll("button") ?? []).find(
-      (candidate) =>
-        candidate instanceof HTMLButtonElement &&
-        /Generate/.test(candidate.textContent || ""),
-    ) as HTMLButtonElement | undefined;
-    expect(generateButton).toBeInstanceOf(HTMLButtonElement);
-
-    act(() => {
-      generateButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    clickButton(/Generate/i);
     await flushAsync();
 
     expect(beginOauthMailboxSession).toHaveBeenCalledTimes(1);
@@ -1120,16 +1434,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
 
     const displayNameInput = setInputValue('input[name="oauthDisplayName"]', "Manual Alias");
 
-    const generateButton = Array.from(host?.querySelectorAll("button") ?? []).find(
-      (candidate) =>
-        candidate instanceof HTMLButtonElement &&
-        /Generate/.test(candidate.textContent || ""),
-    ) as HTMLButtonElement | undefined;
-    expect(generateButton).toBeInstanceOf(HTMLButtonElement);
-
-    act(() => {
-      generateButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    clickButton(/Generate/i);
     await flushAsync();
 
     expect(beginOauthMailboxSession).toHaveBeenCalledTimes(1);

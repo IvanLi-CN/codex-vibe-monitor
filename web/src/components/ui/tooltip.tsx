@@ -9,6 +9,7 @@ interface TooltipProps {
   children: React.ReactNode
   className?: string
   contentClassName?: string
+  arrowClassName?: string
   side?: 'top' | 'right' | 'bottom' | 'left'
   sideOffset?: number
   open?: boolean
@@ -20,6 +21,7 @@ export function Tooltip({
   children,
   className,
   contentClassName,
+  arrowClassName,
   side = 'top',
   sideOffset = 10,
   open,
@@ -93,7 +95,11 @@ export function Tooltip({
             )}
           >
             {content}
-            <TooltipPrimitive.Arrow className="fill-base-100/96 stroke-base-300/80 stroke-[0.6]" width={14} height={8} />
+            <TooltipPrimitive.Arrow
+              className={cn('fill-base-100/96 stroke-base-300/80 stroke-[0.6]', arrowClassName)}
+              width={14}
+              height={8}
+            />
           </TooltipPrimitive.Content>
         </TooltipPrimitive.Portal>
       </TooltipPrimitive.Root>
