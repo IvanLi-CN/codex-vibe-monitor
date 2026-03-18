@@ -102,7 +102,7 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
         onMouseEnter={handlePointerEnter}
         onMouseLeave={handlePointerLeave}
       >
-        <PopoverPrimitive.Trigger asChild>
+        <PopoverPrimitive.Anchor asChild>
           <button
             type="button"
             aria-label={label}
@@ -128,7 +128,7 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
               <AppIcon name="help-circle-outline" className="h-full w-full" />
             </span>
           </button>
-        </PopoverPrimitive.Trigger>
+        </PopoverPrimitive.Anchor>
       </span>
       <PopoverContent
         data-theme={portalTheme}

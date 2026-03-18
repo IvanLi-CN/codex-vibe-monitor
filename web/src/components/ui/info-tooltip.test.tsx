@@ -190,4 +190,27 @@ describe('InfoTooltip', () => {
 
     vi.useRealTimers()
   })
+
+  it('keeps the tooltip open when a hovered trigger is clicked to pin it', () => {
+    render(<InfoTooltip label="Explain notice" content="Current results stay on the latest searched snapshot." />)
+
+    const button = host?.querySelector('button')
+
+    expect(button).toBeInstanceOf(HTMLButtonElement)
+
+    act(() => {
+      button?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    })
+
+    const tooltip = document.body.querySelector('[role="tooltip"]')
+
+    expect(tooltip?.getAttribute('aria-hidden')).toBe('false')
+
+    act(() => {
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(tooltip?.getAttribute('aria-hidden')).toBe('false')
+    expect(button?.getAttribute('aria-describedby')).toBe(tooltip?.id)
+  })
 })
