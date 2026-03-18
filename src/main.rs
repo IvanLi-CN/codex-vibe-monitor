@@ -6907,6 +6907,20 @@ impl PoolReplayBodySnapshot {
             Self::File { temp_file, .. } => tokio::fs::read(&temp_file.path).await.map(Bytes::from),
         }
     }
+
+    async fn to_prefix_bytes(&self, limit: usize) -> io::Result<Bytes> {
+        match self {
+            Self::Empty => Ok(Bytes::new()),
+            Self::Memory(bytes) => Ok(bytes.slice(..bytes.len().min(limit))),
+            Self::File { temp_file, .. } => {
+                let mut file = tokio::fs::File::open(&temp_file.path).await?;
+                let mut buf = vec![0_u8; limit];
+                let read_len = file.read(&mut buf).await?;
+                buf.truncate(read_len);
+                Ok(Bytes::from(buf))
+            }
+        }
+    }
 }
 
 fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
@@ -7296,9 +7310,29 @@ async fn send_pool_request_with_failover(
                                 })?,
                             )
                         }
-                        Some(snapshot) => oauth_bridge::OauthUpstreamRequestBody::Stream(
-                            snapshot.to_reqwest_body(),
-                        ),
+                        Some(snapshot) => oauth_bridge::OauthUpstreamRequestBody::Stream {
+                            debug_body_prefix: Some(
+                                snapshot
+                                    .to_prefix_bytes(
+                                        oauth_bridge::OAUTH_REQUEST_BODY_PREFIX_FINGERPRINT_MAX_BYTES,
+                                    )
+                                    .await
+                                    .map_err(|err| PoolUpstreamError {
+                                        account: Some(account.clone()),
+                                        status: StatusCode::BAD_GATEWAY,
+                                        message: format!(
+                                            "failed to replay oauth request body prefix: {err}"
+                                        ),
+                                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                        connect_latency_ms: 0.0,
+                                        upstream_error_code: None,
+                                        upstream_error_message: None,
+                                        upstream_request_id: None,
+                                        oauth_responses_debug: None,
+                                    })?,
+                            ),
+                            body: snapshot.to_reqwest_body(),
+                        },
                         None => oauth_bridge::OauthUpstreamRequestBody::Empty,
                     };
                     if let Err(route_err) =
@@ -7322,11 +7356,12 @@ async fn send_pool_request_with_failover(
                             Some(account.account_id),
                             access_token,
                             chatgpt_account_id.as_deref(),
+                            state.upstream_accounts.crypto_key.as_ref(),
                         )
                         .await;
                         (
                             ProxyUpstreamResponseBody::Axum(oauth_response.response),
-                            oauth_response.responses_debug,
+                            oauth_response.request_debug,
                         )
                     }
                 }
@@ -7596,6 +7631,37 @@ async fn continue_or_retry_pool_live_request(
     }
 }
 
+async fn maybe_backfill_oauth_request_debug_from_replay_status(
+    debug: &mut Option<oauth_bridge::OauthResponsesDebugInfo>,
+    original_uri: &Uri,
+    replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
+    crypto_key: Option<&[u8; 32]>,
+) {
+    let Some(debug) = debug.as_mut() else {
+        return;
+    };
+    if debug.request_body_prefix_fingerprint.is_some() || crypto_key.is_none() {
+        return;
+    }
+
+    let replay_status = { replay_status_rx.borrow().clone() };
+    let PoolReplayBodyStatus::Complete(snapshot) = replay_status else {
+        return;
+    };
+    let Ok(prefix) = snapshot
+        .to_prefix_bytes(oauth_bridge::OAUTH_REQUEST_BODY_PREFIX_FINGERPRINT_MAX_BYTES)
+        .await
+    else {
+        return;
+    };
+    oauth_bridge::backfill_oauth_request_debug_body_prefix(
+        debug,
+        original_uri.path(),
+        prefix.as_ref(),
+        crypto_key,
+    );
+}
+
 async fn proxy_openai_v1_via_pool(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -7752,16 +7818,20 @@ async fn proxy_openai_v1_via_pool(
                         method.clone(),
                         original_uri,
                         &headers,
-                        oauth_bridge::OauthUpstreamRequestBody::Stream(replayable.body),
+                        oauth_bridge::OauthUpstreamRequestBody::Stream {
+                            body: replayable.body,
+                            debug_body_prefix: None,
+                        },
                         handshake_timeout,
                         state.config.request_timeout,
                         Some(initial_account.account_id),
                         access_token,
                         chatgpt_account_id.as_deref(),
+                        state.upstream_accounts.crypto_key.as_ref(),
                     )
                     .await;
                     let response = ProxyUpstreamResponseBody::Axum(oauth_response.response);
-                    let oauth_responses_debug = oauth_response.responses_debug;
+                    let mut oauth_responses_debug = oauth_response.request_debug;
                     let connect_latency_ms = elapsed_ms(connect_started);
                     let status = response.status();
                     let upstream = if status == StatusCode::TOO_MANY_REQUESTS
@@ -7810,6 +7880,13 @@ async fn proxy_openai_v1_via_pool(
                         } else {
                             PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
                         };
+                        maybe_backfill_oauth_request_debug_from_replay_status(
+                            &mut oauth_responses_debug,
+                            original_uri,
+                            &replay_status_rx,
+                            state.upstream_accounts.crypto_key.as_ref(),
+                        )
+                        .await;
                         let first_error = PoolUpstreamError {
                             account: Some(initial_account.clone()),
                             status,
@@ -7844,15 +7921,31 @@ async fn proxy_openai_v1_via_pool(
                         )
                         .await
                         {
-                            Ok((response, first_chunk)) => PoolUpstreamResponse {
-                                account: initial_account,
-                                response,
-                                oauth_responses_debug,
-                                connect_latency_ms,
-                                first_byte_latency_ms: elapsed_ms(first_byte_started),
-                                first_chunk,
-                            },
+                            Ok((response, first_chunk)) => {
+                                maybe_backfill_oauth_request_debug_from_replay_status(
+                                    &mut oauth_responses_debug,
+                                    original_uri,
+                                    &replay_status_rx,
+                                    state.upstream_accounts.crypto_key.as_ref(),
+                                )
+                                .await;
+                                PoolUpstreamResponse {
+                                    account: initial_account,
+                                    response,
+                                    oauth_responses_debug,
+                                    connect_latency_ms,
+                                    first_byte_latency_ms: elapsed_ms(first_byte_started),
+                                    first_chunk,
+                                }
+                            }
                             Err(err) => {
+                                maybe_backfill_oauth_request_debug_from_replay_status(
+                                    &mut oauth_responses_debug,
+                                    original_uri,
+                                    &replay_status_rx,
+                                    state.upstream_accounts.crypto_key.as_ref(),
+                                )
+                                .await;
                                 let first_error = PoolUpstreamError {
                                     account: Some(initial_account.clone()),
                                     status: StatusCode::BAD_GATEWAY,
@@ -9027,7 +9120,11 @@ async fn proxy_openai_v1_capture_target(
                     oauth_account_id_shape: None,
                     oauth_forwarded_header_count: None,
                     oauth_forwarded_header_names: None,
+                    oauth_fingerprint_version: None,
+                    oauth_forwarded_header_fingerprints: None,
                     oauth_prompt_cache_header_forwarded: None,
+                    oauth_request_body_prefix_fingerprint: None,
+                    oauth_request_body_prefix_bytes: None,
                     oauth_responses_rewrite: None,
                     service_tier: None,
                     stream_terminal_event: None,
@@ -9213,10 +9310,26 @@ async fn proxy_openai_v1_capture_target(
                             .oauth_responses_debug
                             .as_ref()
                             .map(|debug| debug.forwarded_header_names.as_slice()),
+                        oauth_fingerprint_version: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .and_then(|debug| debug.fingerprint_version),
+                        oauth_forwarded_header_fingerprints: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .and_then(|debug| debug.forwarded_header_fingerprints.as_ref()),
                         oauth_prompt_cache_header_forwarded: err
                             .oauth_responses_debug
                             .as_ref()
                             .map(|debug| debug.prompt_cache_header_forwarded),
+                        oauth_request_body_prefix_fingerprint: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .and_then(|debug| debug.request_body_prefix_fingerprint.as_deref()),
+                        oauth_request_body_prefix_bytes: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .and_then(|debug| debug.request_body_prefix_bytes),
                         oauth_responses_rewrite: err
                             .oauth_responses_debug
                             .as_ref()
@@ -9332,7 +9445,11 @@ async fn proxy_openai_v1_capture_target(
                         oauth_account_id_shape: None,
                         oauth_forwarded_header_count: None,
                         oauth_forwarded_header_names: None,
+                        oauth_fingerprint_version: None,
+                        oauth_forwarded_header_fingerprints: None,
                         oauth_prompt_cache_header_forwarded: None,
+                        oauth_request_body_prefix_fingerprint: None,
+                        oauth_request_body_prefix_bytes: None,
                         oauth_responses_rewrite: None,
                         service_tier: None,
                         stream_terminal_event: None,
@@ -9449,7 +9566,11 @@ async fn proxy_openai_v1_capture_target(
                     ),
                     oauth_forwarded_header_count: None,
                     oauth_forwarded_header_names: None,
+                    oauth_fingerprint_version: None,
+                    oauth_forwarded_header_fingerprints: None,
                     oauth_prompt_cache_header_forwarded: None,
+                    oauth_request_body_prefix_fingerprint: None,
+                    oauth_request_body_prefix_bytes: None,
                     oauth_responses_rewrite: None,
                     service_tier: None,
                     stream_terminal_event: None,
@@ -9852,9 +9973,21 @@ async fn proxy_openai_v1_capture_target(
             oauth_forwarded_header_names: oauth_responses_debug_for_task
                 .as_ref()
                 .map(|debug| debug.forwarded_header_names.as_slice()),
+            oauth_fingerprint_version: oauth_responses_debug_for_task
+                .as_ref()
+                .and_then(|debug| debug.fingerprint_version),
+            oauth_forwarded_header_fingerprints: oauth_responses_debug_for_task
+                .as_ref()
+                .and_then(|debug| debug.forwarded_header_fingerprints.as_ref()),
             oauth_prompt_cache_header_forwarded: oauth_responses_debug_for_task
                 .as_ref()
                 .map(|debug| debug.prompt_cache_header_forwarded),
+            oauth_request_body_prefix_fingerprint: oauth_responses_debug_for_task
+                .as_ref()
+                .and_then(|debug| debug.request_body_prefix_fingerprint.as_deref()),
+            oauth_request_body_prefix_bytes: oauth_responses_debug_for_task
+                .as_ref()
+                .and_then(|debug| debug.request_body_prefix_bytes),
             oauth_responses_rewrite: oauth_responses_debug_for_task
                 .as_ref()
                 .map(|debug| &debug.rewrite),
@@ -10917,7 +11050,11 @@ struct ProxyPayloadSummary<'a> {
     oauth_account_id_shape: Option<&'a str>,
     oauth_forwarded_header_count: Option<usize>,
     oauth_forwarded_header_names: Option<&'a [String]>,
+    oauth_fingerprint_version: Option<&'a str>,
+    oauth_forwarded_header_fingerprints: Option<&'a BTreeMap<String, String>>,
     oauth_prompt_cache_header_forwarded: Option<bool>,
+    oauth_request_body_prefix_fingerprint: Option<&'a str>,
+    oauth_request_body_prefix_bytes: Option<usize>,
     oauth_responses_rewrite: Option<&'a oauth_bridge::OauthResponsesRewriteSummary>,
     service_tier: Option<&'a str>,
     stream_terminal_event: Option<&'a str>,
@@ -10952,7 +11089,11 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         oauth_account_id_shape,
         oauth_forwarded_header_count,
         oauth_forwarded_header_names,
+        oauth_fingerprint_version,
+        oauth_forwarded_header_fingerprints,
         oauth_prompt_cache_header_forwarded,
+        oauth_request_body_prefix_fingerprint,
+        oauth_request_body_prefix_bytes,
         oauth_responses_rewrite,
         service_tier,
         stream_terminal_event,
@@ -10985,7 +11126,11 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         "oauthAccountIdShape": oauth_account_id_shape,
         "oauthForwardedHeaderCount": oauth_forwarded_header_count,
         "oauthForwardedHeaderNames": oauth_forwarded_header_names,
+        "oauthFingerprintVersion": oauth_fingerprint_version,
+        "oauthForwardedHeaderFingerprints": oauth_forwarded_header_fingerprints,
         "oauthPromptCacheHeaderForwarded": oauth_prompt_cache_header_forwarded,
+        "oauthRequestBodyPrefixFingerprint": oauth_request_body_prefix_fingerprint,
+        "oauthRequestBodyPrefixBytes": oauth_request_body_prefix_bytes,
         "oauthResponsesRewrite": oauth_responses_rewrite,
         "serviceTier": service_tier,
         "streamTerminalEvent": stream_terminal_event,
@@ -11212,7 +11357,11 @@ fn build_running_proxy_capture_record(
             oauth_account_id_shape: None,
             oauth_forwarded_header_count: None,
             oauth_forwarded_header_names: None,
+            oauth_fingerprint_version: None,
+            oauth_forwarded_header_fingerprints: None,
             oauth_prompt_cache_header_forwarded: None,
+            oauth_request_body_prefix_fingerprint: None,
+            oauth_request_body_prefix_bytes: None,
             oauth_responses_rewrite: None,
             service_tier: None,
             stream_terminal_event: None,

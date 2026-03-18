@@ -9554,6 +9554,31 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
         .get("x-client-trace-id")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let session_id = request
+        .headers()
+        .get("session_id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let traceparent = request
+        .headers()
+        .get("traceparent")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let x_client_request_id = request
+        .headers()
+        .get("x-client-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let x_codex_turn_metadata = request
+        .headers()
+        .get("x-codex-turn-metadata")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let originator = request
+        .headers()
+        .get("originator")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let forwarded_for = request
         .headers()
         .get("x-forwarded-for")
@@ -9572,6 +9597,11 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
             "promptCacheKeyHeader": prompt_cache_key_header,
             "xOpenAiPromptCacheKeyHeader": x_openai_prompt_cache_key_header,
             "clientTraceId": client_trace_id,
+            "sessionIdHeader": session_id,
+            "traceparentHeader": traceparent,
+            "xClientRequestIdHeader": x_client_request_id,
+            "xCodexTurnMetadataHeader": x_codex_turn_metadata,
+            "originatorHeader": originator,
             "forwardedFor": forwarded_for,
             "forwardedHeaderNames": forwarded_header_names,
             "bodyLength": body.len(),
@@ -9632,6 +9662,31 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
         .get("x-client-trace-id")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let session_id = request
+        .headers()
+        .get("session_id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let traceparent = request
+        .headers()
+        .get("traceparent")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let x_client_request_id = request
+        .headers()
+        .get("x-client-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let x_codex_turn_metadata = request
+        .headers()
+        .get("x-codex-turn-metadata")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let originator = request
+        .headers()
+        .get("originator")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let body = to_bytes(request.into_body(), usize::MAX)
         .await
         .expect("read oauth codex responses capture request body");
@@ -9648,6 +9703,11 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
             "xOpenAiPromptCacheKeyHeader": x_openai_prompt_cache_key_header,
             "promptCacheKeyHeader": prompt_cache_key_header,
             "clientTraceId": client_trace_id,
+            "sessionIdHeader": session_id,
+            "traceparentHeader": traceparent,
+            "xClientRequestIdHeader": x_client_request_id,
+            "xCodexTurnMetadataHeader": x_codex_turn_metadata,
+            "originatorHeader": originator,
             "forwardedHeaderNames": forwarded_header_names,
             "received": body_value,
             "usage": {
@@ -10582,6 +10642,26 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
                 HeaderValue::from_static("trace-oauth-responses"),
             ),
             (
+                HeaderName::from_static("session_id"),
+                HeaderValue::from_static("session-oauth-responses"),
+            ),
+            (
+                HeaderName::from_static("traceparent"),
+                HeaderValue::from_static("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00"),
+            ),
+            (
+                HeaderName::from_static("x-client-request-id"),
+                HeaderValue::from_static("client-request-oauth-responses"),
+            ),
+            (
+                HeaderName::from_static("x-codex-turn-metadata"),
+                HeaderValue::from_static("{\"turn\":42}"),
+            ),
+            (
+                HeaderName::from_static("originator"),
+                HeaderValue::from_static("Codex Desktop"),
+            ),
+            (
                 HeaderName::from_static("chatgpt-account-id"),
                 HeaderValue::from_static("client-should-not-win"),
             ),
@@ -10618,6 +10698,23 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
         payload["clientTraceId"].as_str(),
         Some("trace-oauth-responses")
     );
+    assert_eq!(
+        payload["sessionIdHeader"].as_str(),
+        Some("session-oauth-responses")
+    );
+    assert_eq!(
+        payload["traceparentHeader"].as_str(),
+        Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
+    );
+    assert_eq!(
+        payload["xClientRequestIdHeader"].as_str(),
+        Some("client-request-oauth-responses")
+    );
+    assert_eq!(
+        payload["xCodexTurnMetadataHeader"].as_str(),
+        Some("{\"turn\":42}")
+    );
+    assert_eq!(payload["originatorHeader"].as_str(), Some("Codex Desktop"));
     assert!(
         payload["forwardedHeaderNames"]
             .as_array()
@@ -10633,6 +10730,30 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
             .iter()
             .filter_map(Value::as_str)
             .any(|name| name == "x-client-trace-id")
+    );
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "session_id")
+    );
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "traceparent")
+    );
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "x-client-request-id")
     );
     assert_eq!(payload["received"]["stream"], true);
     assert_eq!(payload["received"]["store"], false);
@@ -10660,6 +10781,7 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
     assert_eq!(payload_json["oauthAccountHeaderAttached"], true);
     assert_eq!(payload_json["oauthAccountIdShape"].as_str(), Some("uuid"));
     assert_eq!(payload_json["endpoint"].as_str(), Some("/v1/responses"));
+    assert_eq!(payload_json["oauthFingerprintVersion"].as_str(), Some("v1"));
     assert_eq!(payload_json["oauthPromptCacheHeaderForwarded"], true);
     assert!(
         payload_json["oauthForwardedHeaderCount"]
@@ -10682,6 +10804,56 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
             .iter()
             .filter_map(Value::as_str)
             .any(|name| name == "x-client-trace-id")
+    );
+    assert!(
+        payload_json["oauthRequestBodyPrefixBytes"]
+            .as_u64()
+            .expect("body prefix byte count")
+            > 0
+    );
+    assert!(
+        payload_json["oauthRequestBodyPrefixFingerprint"]
+            .as_str()
+            .expect("body prefix fingerprint")
+            .len()
+            == 16
+    );
+    assert_eq!(
+        payload_json["oauthForwardedHeaderFingerprints"]["session_id"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    assert_eq!(
+        payload_json["oauthForwardedHeaderFingerprints"]["traceparent"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    assert_eq!(
+        payload_json["oauthForwardedHeaderFingerprints"]["x-client-request-id"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    assert_eq!(
+        payload_json["oauthForwardedHeaderFingerprints"]["x-codex-turn-metadata"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    assert_eq!(
+        payload_json["oauthForwardedHeaderFingerprints"]["originator"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    assert!(payload_json["oauthForwardedHeaderFingerprints"]["x-client-trace-id"].is_null());
+    assert!(
+        !row.payload
+            .as_deref()
+            .expect("persisted payload text")
+            .contains("session-oauth-responses")
     );
     assert_eq!(payload_json["oauthResponsesRewrite"]["applied"], true);
     assert_eq!(
@@ -10762,6 +10934,26 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
                 HeaderValue::from_static("trace-oauth-stream"),
             ),
             (
+                HeaderName::from_static("session_id"),
+                HeaderValue::from_static("session-oauth-stream"),
+            ),
+            (
+                HeaderName::from_static("traceparent"),
+                HeaderValue::from_static("00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01"),
+            ),
+            (
+                HeaderName::from_static("x-client-request-id"),
+                HeaderValue::from_static("client-request-oauth-stream"),
+            ),
+            (
+                HeaderName::from_static("x-codex-turn-metadata"),
+                HeaderValue::from_static("{\"stream\":true}"),
+            ),
+            (
+                HeaderName::from_static("originator"),
+                HeaderValue::from_static("Codex Desktop"),
+            ),
+            (
                 HeaderName::from_static("x-forwarded-for"),
                 HeaderValue::from_static("203.0.113.8"),
             ),
@@ -10821,9 +11013,75 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
             .filter_map(Value::as_str)
             .any(|name| name == "x-client-trace-id")
     );
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "session_id")
+    );
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "x-client-request-id")
+    );
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn oauth_streaming_passthrough_backfills_body_prefix_from_replay_status() {
+    let crypto_key: [u8; 32] = Sha256::digest(b"test-upstream-account-secret").into();
+    let mut debug = Some(oauth_bridge::OauthResponsesDebugInfo {
+        fingerprint_version: Some("v1"),
+        forwarded_header_names: vec!["session_id".to_string()],
+        forwarded_header_fingerprints: Some(BTreeMap::from([(
+            "session_id".to_string(),
+            "0123456789abcdef".to_string(),
+        )])),
+        prompt_cache_header_forwarded: false,
+        request_body_prefix_fingerprint: None,
+        request_body_prefix_bytes: None,
+        rewrite: oauth_bridge::OauthResponsesRewriteSummary::default(),
+    });
+    let (status_tx, status_rx) = watch::channel(PoolReplayBodyStatus::Reading);
+    status_tx
+        .send(PoolReplayBodyStatus::Complete(
+            PoolReplayBodySnapshot::Memory(Bytes::from_static(
+                br#"{"messages":[{"role":"user","content":"hello"}]}"#,
+            )),
+        ))
+        .expect("send replay completion");
+
+    maybe_backfill_oauth_request_debug_from_replay_status(
+        &mut debug,
+        &"/v1/chat/completions"
+            .parse()
+            .expect("valid chat completions uri"),
+        &status_rx,
+        Some(&crypto_key),
+    )
+    .await;
+
+    let debug = debug.expect("debug should remain present");
+    assert!(
+        debug
+            .request_body_prefix_bytes
+            .expect("body prefix bytes should be backfilled")
+            > 0
+    );
+    assert_eq!(
+        debug
+            .request_body_prefix_fingerprint
+            .as_ref()
+            .map(String::len),
+        Some(16)
+    );
 }
 
 #[tokio::test]
@@ -10917,6 +11175,11 @@ async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
 
 #[tokio::test]
 async fn pool_route_oauth_compact_passthrough_preserves_prompt_cache_headers() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedRow {
+        payload: Option<String>,
+    }
+
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
         .await;
@@ -10932,10 +11195,10 @@ async fn pool_route_oauth_compact_passthrough_preserves_prompt_cache_headers() {
     )
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_oauth_account(&state, "Compact OAuth", "oauth-compact").await;
+    let account_id = insert_test_pool_oauth_account(&state, "Compact OAuth", "oauth-compact").await;
 
     let response = proxy_openai_v1(
-        State(state),
+        State(state.clone()),
         OriginalUri("/v1/responses/compact".parse().expect("valid compact uri")),
         Method::POST,
         HeaderMap::from_iter([
@@ -10950,6 +11213,26 @@ async fn pool_route_oauth_compact_passthrough_preserves_prompt_cache_headers() {
             (
                 HeaderName::from_static("x-client-trace-id"),
                 HeaderValue::from_static("trace-oauth-compact"),
+            ),
+            (
+                HeaderName::from_static("session_id"),
+                HeaderValue::from_static("session-oauth-compact"),
+            ),
+            (
+                HeaderName::from_static("traceparent"),
+                HeaderValue::from_static("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"),
+            ),
+            (
+                HeaderName::from_static("x-client-request-id"),
+                HeaderValue::from_static("client-request-oauth-compact"),
+            ),
+            (
+                HeaderName::from_static("x-codex-turn-metadata"),
+                HeaderValue::from_static("{\"compact\":true}"),
+            ),
+            (
+                HeaderName::from_static("originator"),
+                HeaderValue::from_static("Codex Desktop"),
             ),
             (
                 http_header::CONTENT_TYPE,
@@ -10984,6 +11267,178 @@ async fn pool_route_oauth_compact_passthrough_preserves_prompt_cache_headers() {
     assert_eq!(
         payload["clientTraceId"].as_str(),
         Some("trace-oauth-compact")
+    );
+    assert_eq!(
+        payload["sessionIdHeader"].as_str(),
+        Some("session-oauth-compact")
+    );
+    assert_eq!(
+        payload["traceparentHeader"].as_str(),
+        Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
+    );
+    assert_eq!(
+        payload["xClientRequestIdHeader"].as_str(),
+        Some("client-request-oauth-compact")
+    );
+    assert_eq!(
+        payload["xCodexTurnMetadataHeader"].as_str(),
+        Some("{\"compact\":true}")
+    );
+    assert_eq!(payload["originatorHeader"].as_str(), Some("Codex Desktop"));
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "session_id")
+    );
+    assert!(
+        payload["forwardedHeaderNames"]
+            .as_array()
+            .expect("forwarded header names")
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| name == "x-client-request-id")
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let row = sqlx::query_as::<_, PersistedRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted invocation payload");
+    let payload_json: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("payload should be persisted for oauth compact"),
+    )
+    .expect("decode persisted invocation payload");
+    assert_eq!(payload_json["upstreamAccountId"].as_i64(), Some(account_id));
+    assert_eq!(
+        payload_json["endpoint"].as_str(),
+        Some("/v1/responses/compact")
+    );
+    assert_eq!(payload_json["oauthFingerprintVersion"].as_str(), Some("v1"));
+    assert_eq!(payload_json["oauthPromptCacheHeaderForwarded"], true);
+    assert_eq!(payload_json["oauthResponsesRewrite"]["applied"], false);
+    assert_eq!(
+        payload_json["oauthForwardedHeaderFingerprints"]["session_id"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    assert_eq!(
+        payload_json["oauthForwardedHeaderFingerprints"]["traceparent"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    assert_eq!(
+        payload_json["oauthForwardedHeaderFingerprints"]["x-client-request-id"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    assert_eq!(
+        payload_json["oauthForwardedHeaderFingerprints"]["x-codex-turn-metadata"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    assert_eq!(
+        payload_json["oauthForwardedHeaderFingerprints"]["originator"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    assert!(
+        payload_json["oauthRequestBodyPrefixBytes"]
+            .as_u64()
+            .expect("compact body prefix byte count")
+            > 0
+    );
+    assert!(
+        payload_json["oauthRequestBodyPrefixFingerprint"]
+            .as_str()
+            .expect("compact body fingerprint")
+            .len()
+            == 16
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let oauth_response = oauth_bridge::send_oauth_upstream_request(
+        &reqwest::Client::new(),
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([
+            (
+                HeaderName::from_static("session_id"),
+                HeaderValue::from_static("session-no-crypto"),
+            ),
+            (
+                HeaderName::from_static("traceparent"),
+                HeaderValue::from_static("00-11111111111111111111111111111111-2222222222222222-01"),
+            ),
+        ]),
+        oauth_bridge::OauthUpstreamRequestBody::Bytes(Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.4",
+                "input": "hello"
+            }))
+            .expect("serialize oauth responses body"),
+        )),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        Some(7),
+        "oauth-no-crypto",
+        Some("02355c9d-fb23-4517-a96d-35e5f6758e9e"),
+        None,
+    )
+    .await;
+
+    assert_eq!(oauth_response.response.status(), StatusCode::OK);
+    let body = to_bytes(oauth_response.response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth response body");
+    let payload_json: Value = serde_json::from_slice(&body).expect("decode oauth response body");
+    assert_eq!(
+        payload_json["path"].as_str(),
+        Some("/backend-api/codex/responses")
+    );
+
+    let request_debug = oauth_response
+        .request_debug
+        .expect("oauth request debug should be present");
+    assert!(request_debug.fingerprint_version.is_none());
+    assert!(request_debug.forwarded_header_fingerprints.is_none());
+    assert!(request_debug.request_body_prefix_fingerprint.is_none());
+    assert!(request_debug.request_body_prefix_bytes.is_none());
+    let serialized_debug = serde_json::to_string(&request_debug).expect("serialize request debug");
+    assert!(
+        !serialized_debug.contains("session-no-crypto"),
+        "request debug should not leak raw header values"
     );
 
     upstream_handle.abort();
