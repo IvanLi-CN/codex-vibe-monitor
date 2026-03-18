@@ -117,6 +117,7 @@ type CreatePageDraft = {
     mailboxError?: string | null
     mailboxTone?: MailboxCopyTone
     mailboxCodeTone?: MailboxCopyTone
+    mailboxBusyAction?: MailboxBusyAction
   }
   batchOauth?: {
     defaultGroupName?: string
@@ -651,7 +652,11 @@ export default function UpstreamAccountCreatePage() {
   const [oauthMailboxCodeTone, setOauthMailboxCodeTone] = useState<MailboxCopyTone>(
     () => draft?.oauth?.mailboxCodeTone ?? 'idle',
   )
-  const [oauthMailboxBusyAction, setOauthMailboxBusyAction] = useState<MailboxBusyAction>(null)
+  const [oauthMailboxBusyAction, setOauthMailboxBusyAction] = useState<MailboxBusyAction>(() =>
+    draft?.oauth?.mailboxBusyAction === 'attach' || draft?.oauth?.mailboxBusyAction === 'generate'
+      ? draft.oauth.mailboxBusyAction
+      : null,
+  )
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState(() => draft?.apiKey?.displayName ?? '')
   const [apiKeyGroupName, setApiKeyGroupName] = useState(() => draft?.apiKey?.groupName ?? '')
   const [apiKeyIsMother, setApiKeyIsMother] = useState(() => draft?.apiKey?.isMother === true)

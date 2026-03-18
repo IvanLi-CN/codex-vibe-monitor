@@ -47,6 +47,103 @@ export const MailboxGenerated: Story = {
   },
 }
 
+export const MailboxAttachFlow: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        state: {
+          draft: {
+            oauth: {
+              displayName: 'Attach Mailbox Flow',
+              groupName: 'production',
+              mailboxInput: 'flow-oauth@mail-tw.707079.xyz',
+            },
+          },
+        },
+      }}
+    />
+  ),
+}
+
+export const MailboxAttachPending: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        state: {
+          draft: {
+            oauth: {
+              displayName: 'Pending Attached Mailbox',
+              groupName: 'production',
+              mailboxInput: 'pending-oauth@mail-tw.707079.xyz',
+              mailboxBusyAction: 'attach',
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const useAddressButton = canvas.getByRole('button', { name: /use address/i })
+    const generateButton = canvas.getByRole('button', { name: /^generate$/i })
+
+    await expect(useAddressButton).toBeDisabled()
+    await expect(generateButton).toBeDisabled()
+    await expect(useAddressButton.querySelector('.animate-spin')).not.toBeNull()
+    await expect(generateButton.querySelector('.animate-spin')).toBeNull()
+  },
+}
+
+export const MailboxGenerateFlow: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        state: {
+          draft: {
+            oauth: {
+              displayName: 'Generate Mailbox Flow',
+              groupName: 'production',
+            },
+          },
+        },
+      }}
+    />
+  ),
+}
+
+export const MailboxGeneratePending: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        state: {
+          draft: {
+            oauth: {
+              displayName: 'Pending Generated Mailbox',
+              groupName: 'production',
+              mailboxInput: 'pending-generated@mail-tw.707079.xyz',
+              mailboxBusyAction: 'generate',
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const useAddressButton = canvas.getByRole('button', { name: /use address/i })
+    const generateButton = canvas.getByRole('button', { name: /^generate$/i })
+
+    await expect(useAddressButton).toBeDisabled()
+    await expect(generateButton).toBeDisabled()
+    await expect(generateButton.querySelector('.animate-spin')).not.toBeNull()
+    await expect(useAddressButton.querySelector('.animate-spin')).toBeNull()
+  },
+}
+
 export const ManualMailboxUnsupported: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
   play: async ({ canvasElement }) => {

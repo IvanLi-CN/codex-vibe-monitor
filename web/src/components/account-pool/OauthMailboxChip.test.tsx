@@ -143,7 +143,7 @@ describe('OauthMailboxChip', () => {
     )
 
     expect(getTooltip()?.textContent).toContain('Copied')
-    expect(getCopyButton().className).toContain('border-success/55')
+    expect(getCopyButton().className).not.toContain('border-success/55')
   })
 
   it('keeps the tooltip open with manual copy guidance after copy failure state', () => {
@@ -161,10 +161,44 @@ describe('OauthMailboxChip', () => {
       />,
     )
 
-    expect(getCopyButton().className).toContain('border-warning/45')
+    expect(getCopyButton().className).toContain('border-warning/35')
     expect(getTooltip()?.textContent).toContain('Auto copy failed. Please copy the mailbox below manually.')
     const manualValue = document.body.querySelector('[role="textbox"][aria-readonly="true"]') as HTMLDivElement | null
     expect(manualValue?.textContent).toContain('manual-chip@mail-tw.707079.xyz')
     expect(manualValue?.getAttribute('data-lpignore')).toBe('true')
+  })
+
+  it('uses a popover panel for editable mailbox preview without repainting the chip on copied feedback', () => {
+    render(
+      <OauthMailboxChip
+        emailAddress="editor-chip@mail-tw.707079.xyz"
+        emptyLabel="No mailbox yet"
+        copyAriaLabel="Copy mailbox"
+        copyHintLabel="Click to copy"
+        copiedLabel="Copied"
+        manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+        manualBadgeLabel="Manual"
+        tone="copied"
+        onCopy={() => undefined}
+        editor={{
+          draftValue: 'editor-chip@mail-tw.707079.xyz',
+          inputAriaLabel: 'Mailbox address',
+          inputPlaceholder: 'mailbox@example.com',
+          editAriaLabel: 'Edit mailbox',
+          editHintLabel: 'Unused helper copy',
+          submitAriaLabel: 'Submit mailbox',
+          cancelAriaLabel: 'Cancel mailbox edit',
+          startEditing: () => undefined,
+          onDraftValueChange: () => undefined,
+          onSubmit: () => undefined,
+          onCancel: () => undefined,
+          editing: false,
+        }}
+      />,
+    )
+
+    expect(getTooltip()?.textContent).toContain('Copied')
+    expect(getTooltip()?.textContent).not.toContain('Edit mailbox')
+    expect(getCopyButton().className).not.toContain('border-success/55')
   })
 })

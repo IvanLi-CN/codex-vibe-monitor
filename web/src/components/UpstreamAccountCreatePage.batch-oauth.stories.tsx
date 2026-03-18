@@ -90,6 +90,33 @@ export const MailboxPopoverEdit: Story = {
   },
 }
 
+export const MailboxAttachFlow: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              rows: [
+                {
+                  id: 'row-1',
+                  displayName: 'Batch Attach Mailbox Flow',
+                  groupName: 'production',
+                  mailboxInput: 'flow-batch@mail-tw.707079.xyz',
+                  mailboxEditorOpen: true,
+                  mailboxEditorValue: 'flow-batch@mail-tw.707079.xyz',
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+}
+
 export const MailboxAttachPending: Story = {
   render: () => (
     <AccountPoolStoryRouter
@@ -120,6 +147,65 @@ export const MailboxAttachPending: Story = {
     const canvas = within(canvasElement)
     await expect(within(document.body).getByRole('button', { name: /submit mailbox/i })).toBeDisabled()
     await expect(canvas.getAllByRole('button', { name: /^generate$/i })[0]).toBeDisabled()
+  },
+}
+
+export const MailboxGenerateFlow: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              rows: [
+                {
+                  id: 'row-1',
+                  displayName: 'Batch Generate Mailbox Flow',
+                  groupName: 'production',
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+}
+
+export const MailboxGeneratePending: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              rows: [
+                {
+                  id: 'row-1',
+                  displayName: 'Batch Pending Mailbox Generate',
+                  groupName: 'production',
+                  mailboxInput: 'pending-generate@mail-tw.707079.xyz',
+                  mailboxBusyAction: 'generate',
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const generateButton = canvas.getAllByRole('button', { name: /^generate$/i })[0]
+    const mailboxChipButton = canvas.getByRole('button', { name: /copy mailbox/i })
+
+    await expect(generateButton).toBeDisabled()
+    await expect(generateButton.querySelector('.animate-spin')).not.toBeNull()
+    await expect(mailboxChipButton).toBeDisabled()
   },
 }
 

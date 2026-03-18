@@ -676,9 +676,20 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         const body = parseBody<{ emailAddress?: string }>(init?.body, {})
         const requestedAddress = body.emailAddress?.trim().toLowerCase() ?? ''
         const shouldDelayMailboxAttach =
+          storyId === 'account-pool-pages-upstream-account-create-oauth--mailbox-attach-flow' ||
+          storyId === 'account-pool-pages-upstream-account-create-oauth--mailbox-attach-pending' ||
+          storyId === 'account-pool-pages-upstream-account-create-batch-oauth--mailbox-attach-flow' ||
           storyId === 'account-pool-pages-upstream-account-create-batch-oauth--mailbox-popover-edit' ||
           storyId === 'account-pool-pages-upstream-account-create-batch-oauth--mailbox-attach-pending'
+        const shouldDelayMailboxGenerate =
+          storyId === 'account-pool-pages-upstream-account-create-oauth--mailbox-generate-flow' ||
+          storyId === 'account-pool-pages-upstream-account-create-oauth--mailbox-generate-pending' ||
+          storyId === 'account-pool-pages-upstream-account-create-batch-oauth--mailbox-generate-flow' ||
+          storyId === 'account-pool-pages-upstream-account-create-batch-oauth--mailbox-generate-pending'
         if (requestedAddress && shouldDelayMailboxAttach) {
+          await wait(900)
+        }
+        if (!requestedAddress && shouldDelayMailboxGenerate) {
           await wait(900)
         }
         if (requestedAddress) {
