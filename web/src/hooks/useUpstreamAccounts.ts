@@ -10,14 +10,20 @@ import {
   fetchOauthLoginSession,
   fetchUpstreamAccountDetail,
   fetchUpstreamAccounts,
+  importValidatedOauthAccounts,
   reloginUpstreamAccount,
   syncUpstreamAccount,
   updateUpstreamAccountGroup,
   updatePoolRoutingSettings,
   updateUpstreamAccount,
+  validateImportedOauthAccounts,
   type CreateApiKeyAccountPayload,
   type CompleteOauthLoginSessionPayload,
   type CreateOauthLoginSessionPayload,
+  type FetchUpstreamAccountsQuery,
+  type ImportValidatedOauthAccountsPayload,
+  type ImportedOauthImportResponse,
+  type ImportedOauthValidationResponse,
   type LoginSessionStatusResponse,
   type OauthMailboxSession,
   type OauthMailboxStatus,
@@ -28,15 +34,18 @@ import {
   type UpdateUpstreamAccountPayload,
   type UpstreamAccountDetail,
   type UpstreamAccountSummary,
+  type ValidateImportedOauthAccountsPayload,
 } from '../lib/api'
 import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
 
 const LOAD_LIST_FAILED = Symbol('load-list-failed')
+const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {}
 
-export function useUpstreamAccounts() {
+export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY) {
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
+  const [hasUngroupedAccounts, setHasUngroupedAccounts] = useState(false)
   const [writesEnabled, setWritesEnabled] = useState(true)
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -90,7 +99,7 @@ export function useUpstreamAccounts() {
       const requestSeq = listRequestSeqRef.current
       setIsLoading(true)
       try {
-        const response = await fetchUpstreamAccounts()
+        const response = await fetchUpstreamAccounts(query)
         if (requestSeq !== listRequestSeqRef.current) {
           return LOAD_LIST_FAILED
         }
@@ -107,6 +116,7 @@ export function useUpstreamAccounts() {
 
         setItems(response.items)
         setGroups(response.groups)
+        setHasUngroupedAccounts(response.hasUngroupedAccounts)
         setWritesEnabled(response.writesEnabled)
         setRouting(response.routing ?? null)
         setListError(null)
@@ -124,7 +134,7 @@ export function useUpstreamAccounts() {
         }
       }
     },
-    [setSelectedAccount],
+    [query, setSelectedAccount],
   )
 
   const loadDetail = useCallback(async (accountId: number | null) => {
@@ -297,6 +307,28 @@ export function useUpstreamAccounts() {
     [clearDetailError, invalidateListRequest, loadDetail, loadList, setSelectedAccount],
   )
 
+  const runImportedOauthValidation = useCallback(
+    async (payload: ValidateImportedOauthAccountsPayload): Promise<ImportedOauthValidationResponse> => {
+      return validateImportedOauthAccounts(payload)
+    },
+    [],
+  )
+
+  const importOauthAccounts = useCallback(
+    async (payload: ImportValidatedOauthAccountsPayload): Promise<ImportedOauthImportResponse> => {
+      const response = await importValidatedOauthAccounts(payload)
+      invalidateListRequest()
+      await loadList(selectedIdRef.current, {
+        respectCurrentSelection: true,
+        selectionAnchorId: selectedIdRef.current,
+      })
+      await refreshCurrentSelectedDetail()
+      emitUpstreamAccountsChanged()
+      return response
+    },
+    [invalidateListRequest, loadList, refreshCurrentSelectedDetail],
+  )
+
   const saveAccount = useCallback(
     async (accountId: number, payload: UpdateUpstreamAccountPayload) => {
       const response = await updateUpstreamAccount(accountId, payload)
@@ -394,6 +426,7 @@ export function useUpstreamAccounts() {
   return {
     items,
     groups,
+    hasUngroupedAccounts,
     writesEnabled,
     routing,
     selectedId,
@@ -416,6 +449,8 @@ export function useUpstreamAccounts() {
     removeOauthMailboxSession,
     completeOauthLogin,
     createApiKeyAccount,
+    runImportedOauthValidation,
+    importOauthAccounts,
     saveAccount,
     saveRouting,
     saveGroupNote,

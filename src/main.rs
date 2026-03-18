@@ -4327,6 +4327,14 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             post(create_oauth_login_session),
         )
         .route(
+            "/api/pool/upstream-accounts/oauth/imports/validate",
+            post(validate_imported_oauth_accounts),
+        )
+        .route(
+            "/api/pool/upstream-accounts/oauth/imports",
+            post(import_validated_oauth_accounts),
+        )
+        .route(
             "/api/pool/upstream-accounts/oauth/mailbox-sessions",
             post(create_oauth_mailbox_session),
         )
@@ -6680,6 +6688,7 @@ async fn read_pool_upstream_first_chunk_with_timeout(
 pub(crate) struct PoolUpstreamResponse {
     pub(crate) account: PoolResolvedAccount,
     pub(crate) response: ProxyUpstreamResponseBody,
+    pub(crate) oauth_responses_debug: Option<oauth_bridge::OauthResponsesDebugInfo>,
     pub(crate) connect_latency_ms: f64,
     pub(crate) first_byte_latency_ms: f64,
     pub(crate) first_chunk: Option<Bytes>,
@@ -6695,6 +6704,7 @@ pub(crate) struct PoolUpstreamError {
     pub(crate) upstream_error_code: Option<String>,
     pub(crate) upstream_error_message: Option<String>,
     pub(crate) upstream_request_id: Option<String>,
+    pub(crate) oauth_responses_debug: Option<oauth_bridge::OauthResponsesDebugInfo>,
 }
 
 #[derive(Debug)]
@@ -7054,6 +7064,7 @@ async fn send_pool_request_with_failover(
                         upstream_error_code: None,
                         upstream_error_message: None,
                         upstream_request_id: None,
+                        oauth_responses_debug: None,
                     }));
                 }
                 Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
@@ -7066,6 +7077,7 @@ async fn send_pool_request_with_failover(
                         upstream_error_code: None,
                         upstream_error_message: None,
                         upstream_request_id: None,
+                        oauth_responses_debug: None,
                     });
                 }
                 Err(err) => {
@@ -7078,6 +7090,7 @@ async fn send_pool_request_with_failover(
                         upstream_error_code: None,
                         upstream_error_message: None,
                         upstream_request_id: None,
+                        oauth_responses_debug: None,
                     });
                 }
             }
@@ -7098,6 +7111,7 @@ async fn send_pool_request_with_failover(
                             upstream_error_code: None,
                             upstream_error_message: None,
                             upstream_request_id: None,
+                            oauth_responses_debug: None,
                         });
                     }
                 }
@@ -7108,7 +7122,7 @@ async fn send_pool_request_with_failover(
 
         for same_account_attempt in 0..same_account_attempts {
             let connect_started = Instant::now();
-            let response = match &account.auth {
+            let (response, oauth_responses_debug) = match &account.auth {
                 PoolResolvedAuth::ApiKey { authorization } => {
                     let mut request = client.request(
                         method.clone(),
@@ -7139,7 +7153,7 @@ async fn send_pool_request_with_failover(
                     }
 
                     match timeout(handshake_timeout, request.send()).await {
-                        Ok(Ok(response)) => ProxyUpstreamResponseBody::Reqwest(response),
+                        Ok(Ok(response)) => (ProxyUpstreamResponseBody::Reqwest(response), None),
                         Ok(Err(err)) => {
                             let message = format!("failed to contact upstream: {err}");
                             let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
@@ -7176,6 +7190,7 @@ async fn send_pool_request_with_failover(
                                 upstream_error_code: None,
                                 upstream_error_message: None,
                                 upstream_request_id: None,
+                                oauth_responses_debug: None,
                             });
                             if excluded_ids.len() >= 64 {
                                 return Err(
@@ -7223,6 +7238,7 @@ async fn send_pool_request_with_failover(
                                 upstream_error_code: None,
                                 upstream_error_message: None,
                                 upstream_request_id: None,
+                                oauth_responses_debug: None,
                             });
                             if excluded_ids.len() >= 64 {
                                 return Err(
@@ -7254,6 +7270,7 @@ async fn send_pool_request_with_failover(
                                 upstream_error_code: None,
                                 upstream_error_message: None,
                                 upstream_request_id: None,
+                                oauth_responses_debug: None,
                             });
                             if excluded_ids.len() >= 64 {
                                 return Err(last_error
@@ -7272,6 +7289,7 @@ async fn send_pool_request_with_failover(
                                     upstream_error_code: None,
                                     upstream_error_message: None,
                                     upstream_request_id: None,
+                                    oauth_responses_debug: None,
                                 })?,
                             )
                         }
@@ -7289,8 +7307,8 @@ async fn send_pool_request_with_failover(
                             "failed to record selected pool account"
                         );
                     }
-                    ProxyUpstreamResponseBody::Axum(
-                        oauth_bridge::send_oauth_upstream_request(
+                    {
+                        let oauth_response = oauth_bridge::send_oauth_upstream_request(
                             &client,
                             method.clone(),
                             original_uri,
@@ -7298,11 +7316,16 @@ async fn send_pool_request_with_failover(
                             oauth_body,
                             handshake_timeout,
                             state.config.request_timeout,
+                            Some(account.account_id),
                             access_token,
                             chatgpt_account_id.as_deref(),
                         )
-                        .await,
-                    )
+                        .await;
+                        (
+                            ProxyUpstreamResponseBody::Axum(oauth_response.response),
+                            oauth_response.responses_debug,
+                        )
+                    }
                 }
             };
 
@@ -7396,6 +7419,7 @@ async fn send_pool_request_with_failover(
                     upstream_error_code,
                     upstream_error_message,
                     upstream_request_id,
+                    oauth_responses_debug: oauth_responses_debug.clone(),
                 });
                 if excluded_ids.len() >= 64 {
                     return Err(last_error.expect("pool http failure should be recorded"));
@@ -7447,6 +7471,7 @@ async fn send_pool_request_with_failover(
                         upstream_error_code: None,
                         upstream_error_message: None,
                         upstream_request_id: None,
+                        oauth_responses_debug: oauth_responses_debug.clone(),
                     });
                     if excluded_ids.len() >= 64 {
                         return Err(
@@ -7460,6 +7485,7 @@ async fn send_pool_request_with_failover(
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
                 response,
+                oauth_responses_debug,
                 connect_latency_ms,
                 first_byte_latency_ms: elapsed_ms(first_byte_started),
                 first_chunk,
@@ -7547,6 +7573,7 @@ async fn continue_or_retry_pool_live_request(
             upstream_error_code: None,
             upstream_error_message: None,
             upstream_request_id: None,
+            oauth_responses_debug: None,
         }),
         PoolReplayBodyStatus::InternalError(message) => Err(PoolUpstreamError {
             account: Some(initial_account),
@@ -7557,6 +7584,7 @@ async fn continue_or_retry_pool_live_request(
             upstream_error_code: None,
             upstream_error_message: None,
             upstream_request_id: None,
+            oauth_responses_debug: None,
         }),
         PoolReplayBodyStatus::Reading | PoolReplayBodyStatus::Incomplete => {
             replay_cancel.cancel();
@@ -7716,20 +7744,21 @@ async fn proxy_openai_v1_via_pool(
                     let replay_status_rx = replayable.status_rx.clone();
                     let replay_cancel = replayable.cancel.clone();
                     let connect_started = Instant::now();
-                    let response = ProxyUpstreamResponseBody::Axum(
-                        oauth_bridge::send_oauth_upstream_request(
-                            &state.http_clients.client_for_pool_upstream(),
-                            method.clone(),
-                            original_uri,
-                            &headers,
-                            oauth_bridge::OauthUpstreamRequestBody::Stream(replayable.body),
-                            handshake_timeout,
-                            state.config.request_timeout,
-                            access_token,
-                            chatgpt_account_id.as_deref(),
-                        )
-                        .await,
-                    );
+                    let oauth_response = oauth_bridge::send_oauth_upstream_request(
+                        &state.http_clients.client_for_pool_upstream(),
+                        method.clone(),
+                        original_uri,
+                        &headers,
+                        oauth_bridge::OauthUpstreamRequestBody::Stream(replayable.body),
+                        handshake_timeout,
+                        state.config.request_timeout,
+                        Some(initial_account.account_id),
+                        access_token,
+                        chatgpt_account_id.as_deref(),
+                    )
+                    .await;
+                    let response = ProxyUpstreamResponseBody::Axum(oauth_response.response);
+                    let oauth_responses_debug = oauth_response.responses_debug;
                     let connect_latency_ms = elapsed_ms(connect_started);
                     let status = response.status();
                     let upstream = if status == StatusCode::TOO_MANY_REQUESTS
@@ -7787,6 +7816,7 @@ async fn proxy_openai_v1_via_pool(
                             upstream_error_code,
                             upstream_error_message,
                             upstream_request_id,
+                            oauth_responses_debug: oauth_responses_debug.clone(),
                         };
                         continue_or_retry_pool_live_request(
                             state.clone(),
@@ -7814,6 +7844,7 @@ async fn proxy_openai_v1_via_pool(
                             Ok((response, first_chunk)) => PoolUpstreamResponse {
                                 account: initial_account,
                                 response,
+                                oauth_responses_debug,
                                 connect_latency_ms,
                                 first_byte_latency_ms: elapsed_ms(first_byte_started),
                                 first_chunk,
@@ -7830,6 +7861,7 @@ async fn proxy_openai_v1_via_pool(
                                     upstream_error_code: None,
                                     upstream_error_message: None,
                                     upstream_request_id: None,
+                                    oauth_responses_debug: oauth_responses_debug.clone(),
                                 };
                                 continue_or_retry_pool_live_request(
                                     state.clone(),
@@ -7957,6 +7989,7 @@ async fn proxy_openai_v1_via_pool(
                                 upstream_error_code,
                                 upstream_error_message,
                                 upstream_request_id,
+                                oauth_responses_debug: None,
                             };
                             continue_or_retry_pool_live_request(
                                 state.clone(),
@@ -7984,6 +8017,7 @@ async fn proxy_openai_v1_via_pool(
                                 Ok((response, first_chunk)) => PoolUpstreamResponse {
                                     account: initial_account,
                                     response,
+                                    oauth_responses_debug: None,
                                     connect_latency_ms,
                                     first_byte_latency_ms: elapsed_ms(first_byte_started),
                                     first_chunk,
@@ -8000,6 +8034,7 @@ async fn proxy_openai_v1_via_pool(
                                         upstream_error_code: None,
                                         upstream_error_message: None,
                                         upstream_request_id: None,
+                                        oauth_responses_debug: None,
                                     };
                                     continue_or_retry_pool_live_request(
                                         state.clone(),
@@ -8029,6 +8064,7 @@ async fn proxy_openai_v1_via_pool(
                             upstream_error_code: None,
                             upstream_error_message: None,
                             upstream_request_id: None,
+                            oauth_responses_debug: None,
                         };
                         continue_or_retry_pool_live_request(
                             state.clone(),
@@ -8058,6 +8094,7 @@ async fn proxy_openai_v1_via_pool(
                             upstream_error_code: None,
                             upstream_error_message: None,
                             upstream_request_id: None,
+                            oauth_responses_debug: None,
                         };
                         continue_or_retry_pool_live_request(
                             state.clone(),
@@ -8985,6 +9022,10 @@ async fn proxy_openai_v1_capture_target(
                     upstream_account_name: None,
                     oauth_account_header_attached: None,
                     oauth_account_id_shape: None,
+                    oauth_forwarded_header_count: None,
+                    oauth_forwarded_header_names: None,
+                    oauth_prompt_cache_header_forwarded: None,
+                    oauth_responses_rewrite: None,
                     service_tier: None,
                     stream_terminal_event: None,
                     upstream_error_code: None,
@@ -9079,6 +9120,7 @@ async fn proxy_openai_v1_capture_target(
         t_upstream_connect_ms,
         prefetched_first_chunk,
         prefetched_ttfb_ms,
+        oauth_responses_debug,
         attempt_already_recorded,
         final_attempt_update,
         upstream_response,
@@ -9102,6 +9144,7 @@ async fn proxy_openai_v1_capture_target(
                 response.connect_latency_ms,
                 response.first_chunk,
                 response.first_byte_latency_ms,
+                response.oauth_responses_debug,
                 true,
                 None,
                 response.response,
@@ -9159,6 +9202,22 @@ async fn proxy_openai_v1_capture_target(
                         oauth_account_id_shape: oauth_account_id_shape_for_account(
                             err.account.as_ref(),
                         ),
+                        oauth_forwarded_header_count: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .map(|debug| debug.forwarded_header_names.len()),
+                        oauth_forwarded_header_names: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .map(|debug| debug.forwarded_header_names.as_slice()),
+                        oauth_prompt_cache_header_forwarded: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .map(|debug| debug.prompt_cache_header_forwarded),
+                        oauth_responses_rewrite: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .map(|debug| &debug.rewrite),
                         service_tier: None,
                         stream_terminal_event: None,
                         upstream_error_code: err.upstream_error_code.as_deref(),
@@ -9209,6 +9268,7 @@ async fn proxy_openai_v1_capture_target(
                 response.connect_latency_ms,
                 None,
                 0.0,
+                None,
                 response.attempt_recorded,
                 response.attempt_update,
                 response.response,
@@ -9267,6 +9327,10 @@ async fn proxy_openai_v1_capture_target(
                         upstream_account_name: None,
                         oauth_account_header_attached: None,
                         oauth_account_id_shape: None,
+                        oauth_forwarded_header_count: None,
+                        oauth_forwarded_header_names: None,
+                        oauth_prompt_cache_header_forwarded: None,
+                        oauth_responses_rewrite: None,
                         service_tier: None,
                         stream_terminal_event: None,
                         upstream_error_code: None,
@@ -9380,6 +9444,10 @@ async fn proxy_openai_v1_capture_target(
                     oauth_account_id_shape: oauth_account_id_shape_for_account(
                         pool_account.as_ref(),
                     ),
+                    oauth_forwarded_header_count: None,
+                    oauth_forwarded_header_names: None,
+                    oauth_prompt_cache_header_forwarded: None,
+                    oauth_responses_rewrite: None,
                     service_tier: None,
                     stream_terminal_event: None,
                     upstream_error_code: None,
@@ -9488,6 +9556,7 @@ async fn proxy_openai_v1_capture_target(
     let selected_proxy_for_task = selected_proxy.clone();
     let selected_proxy_display_name_for_task = selected_proxy_display_name.clone();
     let pool_account_for_task = pool_account.clone();
+    let oauth_responses_debug_for_task = oauth_responses_debug.clone();
     let attempt_already_recorded_for_task = attempt_already_recorded;
     let final_attempt_update_for_task = final_attempt_update;
     let prefetched_first_chunk_for_task = prefetched_first_chunk;
@@ -9774,6 +9843,18 @@ async fn proxy_openai_v1_capture_target(
             oauth_account_id_shape: oauth_account_id_shape_for_account(
                 pool_account_for_task.as_ref(),
             ),
+            oauth_forwarded_header_count: oauth_responses_debug_for_task
+                .as_ref()
+                .map(|debug| debug.forwarded_header_names.len()),
+            oauth_forwarded_header_names: oauth_responses_debug_for_task
+                .as_ref()
+                .map(|debug| debug.forwarded_header_names.as_slice()),
+            oauth_prompt_cache_header_forwarded: oauth_responses_debug_for_task
+                .as_ref()
+                .map(|debug| debug.prompt_cache_header_forwarded),
+            oauth_responses_rewrite: oauth_responses_debug_for_task
+                .as_ref()
+                .map(|debug| &debug.rewrite),
             service_tier: response_info.service_tier.as_deref(),
             stream_terminal_event: response_info.stream_terminal_event.as_deref(),
             upstream_error_code: response_info.upstream_error_code.as_deref(),
@@ -10831,6 +10912,10 @@ struct ProxyPayloadSummary<'a> {
     upstream_account_name: Option<&'a str>,
     oauth_account_header_attached: Option<bool>,
     oauth_account_id_shape: Option<&'a str>,
+    oauth_forwarded_header_count: Option<usize>,
+    oauth_forwarded_header_names: Option<&'a [String]>,
+    oauth_prompt_cache_header_forwarded: Option<bool>,
+    oauth_responses_rewrite: Option<&'a oauth_bridge::OauthResponsesRewriteSummary>,
     service_tier: Option<&'a str>,
     stream_terminal_event: Option<&'a str>,
     upstream_error_code: Option<&'a str>,
@@ -10862,6 +10947,10 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         upstream_account_name,
         oauth_account_header_attached,
         oauth_account_id_shape,
+        oauth_forwarded_header_count,
+        oauth_forwarded_header_names,
+        oauth_prompt_cache_header_forwarded,
+        oauth_responses_rewrite,
         service_tier,
         stream_terminal_event,
         upstream_error_code,
@@ -10891,6 +10980,10 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         "upstreamAccountName": upstream_account_name,
         "oauthAccountHeaderAttached": oauth_account_header_attached,
         "oauthAccountIdShape": oauth_account_id_shape,
+        "oauthForwardedHeaderCount": oauth_forwarded_header_count,
+        "oauthForwardedHeaderNames": oauth_forwarded_header_names,
+        "oauthPromptCacheHeaderForwarded": oauth_prompt_cache_header_forwarded,
+        "oauthResponsesRewrite": oauth_responses_rewrite,
         "serviceTier": service_tier,
         "streamTerminalEvent": stream_terminal_event,
         "upstreamErrorCode": upstream_error_code,
@@ -11114,6 +11207,10 @@ fn build_running_proxy_capture_record(
             upstream_account_name,
             oauth_account_header_attached: None,
             oauth_account_id_shape: None,
+            oauth_forwarded_header_count: None,
+            oauth_forwarded_header_names: None,
+            oauth_prompt_cache_header_forwarded: None,
+            oauth_responses_rewrite: None,
             service_tier: None,
             stream_terminal_event: None,
             upstream_error_code: None,

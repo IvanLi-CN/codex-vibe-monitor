@@ -2,6 +2,14 @@
 
 ## `GET /api/pool/upstream-accounts`
 
+支持列表筛选 query 参数：
+
+- `groupSearch`：按分组名模糊匹配；空值表示不过滤。
+- `groupUngrouped=true`：只返回未分组账号。
+- `tagIds=1&tagIds=2...`：标签多选全匹配；只有同时包含全部已选 tag 的账号才返回。
+
+上述筛选均由后端执行；前端只负责透传当前筛选状态。
+
 返回账号列表：
 
 ```json
@@ -46,7 +54,8 @@
         "balance": "9.99"
       }
     }
-  ]
+  ],
+  "hasUngroupedAccounts": true
 }
 ```
 
