@@ -208,6 +208,17 @@
   capture_scope: element
   sensitive_exclusion: N/A
   submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Tag Filter All Match
+  state: group-and-tag-combined-filter
+  evidence_note: 验证账号列表的分组筛选与标签筛选可同时生效；当分组为 `production` 且标签为 `vip + burst-safe` 时，列表只保留满足两类条件的账号。
+  image:
+  ![Upstream accounts group and tag combined filter](./assets/upstream-accounts-group-tag-filter-combined-storybook.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
   story_id_or_title: Account Pool / Pages / Upstream Accounts / Detail Drawer
   state: idle-sync-button
   evidence_note: 验证账号详情抽屉里的 `立即同步` 按钮空闲态为 outline 风格同步图标，而不是 spinner 或实心刷新图标。
