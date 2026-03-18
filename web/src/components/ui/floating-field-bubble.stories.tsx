@@ -26,6 +26,11 @@ function expectBubbleArrowInsideFlatSegment(bubble: Element | null) {
 
     expect(arrowRect.top >= flatTop - 1).toBe(true)
     expect(arrowRect.bottom <= flatBottom + 1).toBe(true)
+    if (side === 'left') {
+      expect(arrowRect.left - bubbleRect.right <= 0.5).toBe(true)
+    } else {
+      expect(bubbleRect.left - arrowRect.right <= 0.5).toBe(true)
+    }
     return
   }
 
@@ -35,6 +40,11 @@ function expectBubbleArrowInsideFlatSegment(bubble: Element | null) {
 
     expect(arrowRect.left >= flatLeft - 1).toBe(true)
     expect(arrowRect.right <= flatRight + 1).toBe(true)
+    if (side === 'bottom') {
+      expect(bubbleRect.top - arrowRect.bottom <= 0.5).toBe(true)
+    } else {
+      expect(arrowRect.top - bubbleRect.bottom <= 0.5).toBe(true)
+    }
   }
 }
 

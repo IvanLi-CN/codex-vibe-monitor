@@ -129,10 +129,7 @@ export function FloatingFieldBubble({
           width={CORNER_ARROW_WIDTH}
           height={CORNER_ARROW_HEIGHT}
           className={bubbleArrowClassName(variant)}
-          style={{
-            ...bubbleArrowStyle(variant, portalTheme),
-            transform: 'translateY(1px)',
-          }}
+          style={bubbleArrowStyle(variant, portalTheme)}
         />
       </PopoverContent>
     </Popover>
