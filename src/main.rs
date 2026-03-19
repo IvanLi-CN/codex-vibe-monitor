@@ -4333,6 +4333,19 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
                 .layer(DefaultBodyLimit::max(IMPORTED_OAUTH_ROUTE_MAX_BODY_BYTES)),
         )
         .route(
+            "/api/pool/upstream-accounts/oauth/imports/validation-jobs",
+            post(create_imported_oauth_validation_job)
+                .layer(DefaultBodyLimit::max(IMPORTED_OAUTH_ROUTE_MAX_BODY_BYTES)),
+        )
+        .route(
+            "/api/pool/upstream-accounts/oauth/imports/validation-jobs/:jobId/events",
+            get(stream_imported_oauth_validation_job_events),
+        )
+        .route(
+            "/api/pool/upstream-accounts/oauth/imports/validation-jobs/:jobId",
+            delete(cancel_imported_oauth_validation_job),
+        )
+        .route(
             "/api/pool/upstream-accounts/oauth/imports",
             post(import_validated_oauth_accounts)
                 .layer(DefaultBodyLimit::max(IMPORTED_OAUTH_ROUTE_MAX_BODY_BYTES)),

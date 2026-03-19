@@ -80,6 +80,7 @@ const UPSTREAM_USAGE_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel M
 pub(crate) struct UpstreamAccountsRuntime {
     pub(crate) crypto_key: Option<[u8; 32]>,
     sync_lock: Arc<Mutex<()>>,
+    validation_jobs: Arc<Mutex<HashMap<String, Arc<ImportedOauthValidationJob>>>>,
 }
 
 impl UpstreamAccountsRuntime {
@@ -104,6 +105,7 @@ impl UpstreamAccountsRuntime {
         Ok(Self {
             crypto_key,
             sync_lock: Arc::new(Mutex::new(())),
+            validation_jobs: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -128,7 +130,20 @@ impl UpstreamAccountsRuntime {
         Self {
             crypto_key: Some(derive_secret_key("test-upstream-account-secret")),
             sync_lock: Arc::new(Mutex::new(())),
+            validation_jobs: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    async fn insert_validation_job(&self, job_id: String, job: Arc<ImportedOauthValidationJob>) {
+        self.validation_jobs.lock().await.insert(job_id, job);
+    }
+
+    async fn get_validation_job(&self, job_id: &str) -> Option<Arc<ImportedOauthValidationJob>> {
+        self.validation_jobs.lock().await.get(job_id).cloned()
+    }
+
+    async fn remove_validation_job(&self, job_id: &str) -> Option<Arc<ImportedOauthValidationJob>> {
+        self.validation_jobs.lock().await.remove(job_id)
     }
 }
 
@@ -537,6 +552,82 @@ pub(crate) struct ImportedOauthValidationResponse {
     unique_in_input: usize,
     duplicate_in_input: usize,
     rows: Vec<ImportedOauthValidationRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthValidationCounts {
+    pending: usize,
+    duplicate_in_input: usize,
+    ok: usize,
+    ok_exhausted: usize,
+    invalid: usize,
+    error: usize,
+    checked: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthValidationJobResponse {
+    job_id: String,
+    snapshot: ImportedOauthValidationResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthValidationSnapshotEvent {
+    snapshot: ImportedOauthValidationResponse,
+    counts: ImportedOauthValidationCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthValidationRowEvent {
+    row: ImportedOauthValidationRow,
+    counts: ImportedOauthValidationCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportedOauthValidationFailedEvent {
+    snapshot: ImportedOauthValidationResponse,
+    counts: ImportedOauthValidationCounts,
+    error: String,
+}
+
+#[derive(Debug, Clone)]
+enum ImportedOauthValidationTerminalEvent {
+    Completed(ImportedOauthValidationSnapshotEvent),
+    Failed(ImportedOauthValidationFailedEvent),
+    Cancelled(ImportedOauthValidationSnapshotEvent),
+}
+
+#[derive(Debug, Clone)]
+enum ImportedOauthValidationJobEvent {
+    Row(ImportedOauthValidationRowEvent),
+    Completed(ImportedOauthValidationSnapshotEvent),
+    Failed(ImportedOauthValidationFailedEvent),
+    Cancelled(ImportedOauthValidationSnapshotEvent),
+}
+
+#[derive(Debug)]
+struct ImportedOauthValidationJob {
+    snapshot: Mutex<ImportedOauthValidationResponse>,
+    broadcaster: broadcast::Sender<ImportedOauthValidationJobEvent>,
+    cancel: CancellationToken,
+    terminal_event: Mutex<Option<ImportedOauthValidationTerminalEvent>>,
+}
+
+impl ImportedOauthValidationJob {
+    fn new(snapshot: ImportedOauthValidationResponse) -> Self {
+        let (broadcaster, _rx) = broadcast::channel(256);
+        Self {
+            snapshot: Mutex::new(snapshot),
+            broadcaster,
+            cancel: CancellationToken::new(),
+            terminal_event: Mutex::new(None),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1597,8 +1688,6 @@ async fn build_imported_oauth_validation_response(
     items: &[ImportOauthCredentialFileRequest],
 ) -> ImportedOauthValidationResponse {
     let mut seen_keys = HashSet::new();
-    let mut unique_in_input = 0usize;
-    let mut duplicate_in_input = 0usize;
     let mut rows = Vec::with_capacity(items.len());
 
     for item in items {
@@ -1623,7 +1712,6 @@ async fn build_imported_oauth_validation_response(
 
         let match_key = imported_match_key(&normalized.email, &normalized.chatgpt_account_id);
         if !seen_keys.insert(match_key) {
-            duplicate_in_input += 1;
             rows.push(ImportedOauthValidationRow {
                 source_id: normalized.source_id,
                 file_name: normalized.file_name,
@@ -1638,79 +1726,521 @@ async fn build_imported_oauth_validation_response(
             });
             continue;
         }
-        unique_in_input += 1;
+        rows.push(build_imported_oauth_validation_row(state, normalized).await);
+    }
 
-        let matched_account = match find_existing_import_match(
-            &state.pool,
-            &normalized.chatgpt_account_id,
-            &normalized.email,
-        )
-        .await
-        {
-            Ok(value) => value.map(|row| import_match_summary_from_row(&row)),
-            Err(err) => {
-                rows.push(ImportedOauthValidationRow {
-                    source_id: normalized.source_id,
-                    file_name: normalized.file_name,
-                    email: Some(normalized.email),
-                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                    display_name: Some(normalized.display_name),
-                    token_expires_at: Some(normalized.token_expires_at),
-                    matched_account: None,
-                    status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
-                    detail: Some(err.to_string()),
-                    attempts: 0,
-                });
-                continue;
-            }
-        };
+    build_imported_oauth_validation_response_from_rows(items.len(), rows)
+}
 
-        match probe_imported_oauth_credentials(state, &normalized).await {
-            Ok(outcome) => rows.push(ImportedOauthValidationRow {
-                source_id: normalized.source_id,
-                file_name: normalized.file_name,
-                email: Some(normalized.email),
-                chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                display_name: Some(normalized.display_name),
-                token_expires_at: Some(outcome.token_expires_at),
-                matched_account,
-                status: if outcome.exhausted {
-                    IMPORT_VALIDATION_STATUS_OK_EXHAUSTED.to_string()
-                } else {
-                    IMPORT_VALIDATION_STATUS_OK.to_string()
-                },
-                detail: if outcome.exhausted {
-                    Some("usage snapshot indicates the account is currently exhausted".to_string())
-                } else {
-                    outcome.usage_snapshot_warning
-                },
-                attempts: 1,
-            }),
-            Err(err) => rows.push(ImportedOauthValidationRow {
+fn build_imported_oauth_pending_response(
+    items: &[ImportOauthCredentialFileRequest],
+) -> ImportedOauthValidationResponse {
+    ImportedOauthValidationResponse {
+        input_files: items.len(),
+        unique_in_input: items.len(),
+        duplicate_in_input: 0,
+        rows: items
+            .iter()
+            .map(|item| ImportedOauthValidationRow {
+                source_id: item.source_id.clone(),
+                file_name: item.file_name.clone(),
+                email: None,
+                chatgpt_account_id: None,
+                display_name: None,
+                token_expires_at: None,
+                matched_account: None,
+                status: "pending".to_string(),
+                detail: None,
+                attempts: 0,
+            })
+            .collect(),
+    }
+}
+
+fn build_imported_oauth_validation_response_from_rows(
+    input_files: usize,
+    rows: Vec<ImportedOauthValidationRow>,
+) -> ImportedOauthValidationResponse {
+    let duplicate_in_input = rows
+        .iter()
+        .filter(|row| row.status == IMPORT_VALIDATION_STATUS_DUPLICATE_IN_INPUT)
+        .count();
+    ImportedOauthValidationResponse {
+        input_files,
+        unique_in_input: rows.len().saturating_sub(duplicate_in_input),
+        duplicate_in_input,
+        rows,
+    }
+}
+
+fn compute_imported_oauth_validation_counts(
+    rows: &[ImportedOauthValidationRow],
+) -> ImportedOauthValidationCounts {
+    let mut counts = ImportedOauthValidationCounts::default();
+    for row in rows {
+        match row.status.as_str() {
+            IMPORT_VALIDATION_STATUS_DUPLICATE_IN_INPUT => counts.duplicate_in_input += 1,
+            IMPORT_VALIDATION_STATUS_OK => counts.ok += 1,
+            IMPORT_VALIDATION_STATUS_OK_EXHAUSTED => counts.ok_exhausted += 1,
+            IMPORT_VALIDATION_STATUS_INVALID => counts.invalid += 1,
+            IMPORT_VALIDATION_STATUS_ERROR => counts.error += 1,
+            "pending" => counts.pending += 1,
+            _ => counts.error += 1,
+        }
+    }
+    counts.checked =
+        counts.duplicate_in_input + counts.ok + counts.ok_exhausted + counts.invalid + counts.error;
+    counts
+}
+
+fn build_imported_oauth_snapshot_event(
+    snapshot: ImportedOauthValidationResponse,
+) -> ImportedOauthValidationSnapshotEvent {
+    let counts = compute_imported_oauth_validation_counts(&snapshot.rows);
+    ImportedOauthValidationSnapshotEvent { snapshot, counts }
+}
+
+fn imported_oauth_sse_event<T: Serialize>(event_name: &str, payload: &T) -> Option<Event> {
+    match Event::default().event(event_name).json_data(payload) {
+        Ok(event) => Some(event),
+        Err(err) => {
+            warn!(
+                ?err,
+                event_name, "failed to serialize imported oauth validation event"
+            );
+            None
+        }
+    }
+}
+
+fn imported_oauth_terminal_event_to_sse(
+    terminal: &ImportedOauthValidationTerminalEvent,
+) -> Option<Event> {
+    match terminal {
+        ImportedOauthValidationTerminalEvent::Completed(payload) => {
+            imported_oauth_sse_event("completed", payload)
+        }
+        ImportedOauthValidationTerminalEvent::Failed(payload) => {
+            imported_oauth_sse_event("failed", payload)
+        }
+        ImportedOauthValidationTerminalEvent::Cancelled(payload) => {
+            imported_oauth_sse_event("cancelled", payload)
+        }
+    }
+}
+
+async fn build_imported_oauth_validation_row(
+    state: &AppState,
+    normalized: NormalizedImportedOauthCredentials,
+) -> ImportedOauthValidationRow {
+    let matched_account = match find_existing_import_match(
+        &state.pool,
+        &normalized.chatgpt_account_id,
+        &normalized.email,
+    )
+    .await
+    {
+        Ok(value) => value.map(|row| import_match_summary_from_row(&row)),
+        Err(err) => {
+            return ImportedOauthValidationRow {
                 source_id: normalized.source_id,
                 file_name: normalized.file_name,
                 email: Some(normalized.email),
                 chatgpt_account_id: Some(normalized.chatgpt_account_id),
                 display_name: Some(normalized.display_name),
                 token_expires_at: Some(normalized.token_expires_at),
-                matched_account,
-                status: if is_import_invalid_error_message(&err.to_string()) {
-                    IMPORT_VALIDATION_STATUS_INVALID.to_string()
-                } else {
-                    IMPORT_VALIDATION_STATUS_ERROR.to_string()
-                },
+                matched_account: None,
+                status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
                 detail: Some(err.to_string()),
-                attempts: 1,
-            }),
+                attempts: 0,
+            };
         }
+    };
+
+    match probe_imported_oauth_credentials(state, &normalized).await {
+        Ok(outcome) => ImportedOauthValidationRow {
+            source_id: normalized.source_id,
+            file_name: normalized.file_name,
+            email: Some(normalized.email),
+            chatgpt_account_id: Some(normalized.chatgpt_account_id),
+            display_name: Some(normalized.display_name),
+            token_expires_at: Some(outcome.token_expires_at),
+            matched_account,
+            status: if outcome.exhausted {
+                IMPORT_VALIDATION_STATUS_OK_EXHAUSTED.to_string()
+            } else {
+                IMPORT_VALIDATION_STATUS_OK.to_string()
+            },
+            detail: if outcome.exhausted {
+                Some("usage snapshot indicates the account is currently exhausted".to_string())
+            } else {
+                outcome.usage_snapshot_warning
+            },
+            attempts: 1,
+        },
+        Err(err) => ImportedOauthValidationRow {
+            source_id: normalized.source_id,
+            file_name: normalized.file_name,
+            email: Some(normalized.email),
+            chatgpt_account_id: Some(normalized.chatgpt_account_id),
+            display_name: Some(normalized.display_name),
+            token_expires_at: Some(normalized.token_expires_at),
+            matched_account,
+            status: if is_import_invalid_error_message(&err.to_string()) {
+                IMPORT_VALIDATION_STATUS_INVALID.to_string()
+            } else {
+                IMPORT_VALIDATION_STATUS_ERROR.to_string()
+            },
+            detail: Some(err.to_string()),
+            attempts: 1,
+        },
+    }
+}
+
+async fn update_imported_oauth_validation_job_row(
+    job: &Arc<ImportedOauthValidationJob>,
+    row_index: usize,
+    row: ImportedOauthValidationRow,
+) {
+    let counts = {
+        let mut snapshot = job.snapshot.lock().await;
+        if let Some(target) = snapshot.rows.get_mut(row_index) {
+            *target = row.clone();
+        } else {
+            return;
+        }
+        snapshot.duplicate_in_input = snapshot
+            .rows
+            .iter()
+            .filter(|candidate| candidate.status == IMPORT_VALIDATION_STATUS_DUPLICATE_IN_INPUT)
+            .count();
+        snapshot.unique_in_input = snapshot
+            .rows
+            .len()
+            .saturating_sub(snapshot.duplicate_in_input);
+        compute_imported_oauth_validation_counts(&snapshot.rows)
+    };
+    let _ = job.broadcaster.send(ImportedOauthValidationJobEvent::Row(
+        ImportedOauthValidationRowEvent { row, counts },
+    ));
+}
+
+async fn set_imported_oauth_validation_job_terminal(
+    job: &Arc<ImportedOauthValidationJob>,
+    terminal: ImportedOauthValidationTerminalEvent,
+) {
+    {
+        let mut guard = job.terminal_event.lock().await;
+        if guard.is_some() {
+            return;
+        }
+        *guard = Some(terminal.clone());
+    }
+    let _ = job.broadcaster.send(match terminal {
+        ImportedOauthValidationTerminalEvent::Completed(payload) => {
+            ImportedOauthValidationJobEvent::Completed(payload)
+        }
+        ImportedOauthValidationTerminalEvent::Failed(payload) => {
+            ImportedOauthValidationJobEvent::Failed(payload)
+        }
+        ImportedOauthValidationTerminalEvent::Cancelled(payload) => {
+            ImportedOauthValidationJobEvent::Cancelled(payload)
+        }
+    });
+}
+
+async fn finish_imported_oauth_validation_job_completed(job: &Arc<ImportedOauthValidationJob>) {
+    let snapshot = { job.snapshot.lock().await.clone() };
+    set_imported_oauth_validation_job_terminal(
+        job,
+        ImportedOauthValidationTerminalEvent::Completed(build_imported_oauth_snapshot_event(
+            snapshot,
+        )),
+    )
+    .await;
+}
+
+async fn finish_imported_oauth_validation_job_failed(
+    job: &Arc<ImportedOauthValidationJob>,
+    error: String,
+) {
+    let snapshot = { job.snapshot.lock().await.clone() };
+    set_imported_oauth_validation_job_terminal(
+        job,
+        ImportedOauthValidationTerminalEvent::Failed(ImportedOauthValidationFailedEvent {
+            counts: compute_imported_oauth_validation_counts(&snapshot.rows),
+            snapshot,
+            error,
+        }),
+    )
+    .await;
+}
+
+async fn finish_imported_oauth_validation_job_cancelled(job: &Arc<ImportedOauthValidationJob>) {
+    let snapshot = { job.snapshot.lock().await.clone() };
+    set_imported_oauth_validation_job_terminal(
+        job,
+        ImportedOauthValidationTerminalEvent::Cancelled(build_imported_oauth_snapshot_event(
+            snapshot,
+        )),
+    )
+    .await;
+}
+
+fn schedule_imported_oauth_validation_job_cleanup(
+    runtime: Arc<UpstreamAccountsRuntime>,
+    job_id: String,
+) {
+    tokio::spawn(async move {
+        sleep(Duration::from_secs(60)).await;
+        let should_remove = match runtime.get_validation_job(&job_id).await {
+            Some(job) => job.terminal_event.lock().await.is_some(),
+            None => false,
+        };
+        if should_remove {
+            runtime.remove_validation_job(&job_id).await;
+        }
+    });
+}
+
+fn spawn_imported_oauth_validation_job(
+    state: Arc<AppState>,
+    runtime: Arc<UpstreamAccountsRuntime>,
+    job_id: String,
+    items: Vec<ImportOauthCredentialFileRequest>,
+    job: Arc<ImportedOauthValidationJob>,
+) {
+    tokio::spawn(async move {
+        let run_result: Result<(), String> = async {
+            let mut prepared = Vec::new();
+            let mut seen_keys = HashSet::new();
+
+            for (row_index, item) in items.iter().enumerate() {
+                if job.cancel.is_cancelled() {
+                    finish_imported_oauth_validation_job_cancelled(&job).await;
+                    return Ok(());
+                }
+
+                let normalized = match normalize_imported_oauth_credentials(item) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        update_imported_oauth_validation_job_row(
+                            &job,
+                            row_index,
+                            ImportedOauthValidationRow {
+                                source_id: item.source_id.clone(),
+                                file_name: item.file_name.clone(),
+                                email: None,
+                                chatgpt_account_id: None,
+                                display_name: None,
+                                token_expires_at: None,
+                                matched_account: None,
+                                status: IMPORT_VALIDATION_STATUS_INVALID.to_string(),
+                                detail: Some(message),
+                                attempts: 0,
+                            },
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+
+                let match_key = imported_match_key(&normalized.email, &normalized.chatgpt_account_id);
+                if !seen_keys.insert(match_key) {
+                    update_imported_oauth_validation_job_row(
+                        &job,
+                        row_index,
+                        ImportedOauthValidationRow {
+                            source_id: normalized.source_id,
+                            file_name: normalized.file_name,
+                            email: Some(normalized.email),
+                            chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                            display_name: Some(normalized.display_name),
+                            token_expires_at: Some(normalized.token_expires_at),
+                            matched_account: None,
+                            status: IMPORT_VALIDATION_STATUS_DUPLICATE_IN_INPUT.to_string(),
+                            detail: Some(
+                                "duplicate credential in current import selection".to_string(),
+                            ),
+                            attempts: 0,
+                        },
+                    )
+                    .await;
+                    continue;
+                }
+
+                prepared.push((row_index, normalized));
+            }
+
+            let validations = stream::iter(prepared.into_iter().map(|(row_index, normalized)| {
+                let state = state.clone();
+                async move {
+                    (
+                        row_index,
+                        build_imported_oauth_validation_row(state.as_ref(), normalized).await,
+                    )
+                }
+            }))
+            .buffer_unordered(4);
+            tokio::pin!(validations);
+
+            loop {
+                tokio::select! {
+                    _ = job.cancel.cancelled() => {
+                        finish_imported_oauth_validation_job_cancelled(&job).await;
+                        return Ok(());
+                    }
+                    next = validations.next() => {
+                        match next {
+                            Some((row_index, row)) => {
+                                update_imported_oauth_validation_job_row(&job, row_index, row).await;
+                            }
+                            None => break,
+                        }
+                    }
+                }
+            }
+
+            if job.cancel.is_cancelled() {
+                finish_imported_oauth_validation_job_cancelled(&job).await;
+                return Ok(());
+            }
+
+            finish_imported_oauth_validation_job_completed(&job).await;
+            Ok(())
+        }
+        .await;
+
+        if let Err(error) = run_result {
+            finish_imported_oauth_validation_job_failed(&job, error).await;
+        }
+
+        schedule_imported_oauth_validation_job_cleanup(runtime, job_id);
+    });
+}
+
+pub(crate) async fn create_imported_oauth_validation_job(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ValidateImportedOauthAccountsRequest>,
+) -> Result<Json<ImportedOauthValidationJobResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    let snapshot = build_imported_oauth_pending_response(&payload.items);
+    let job_id = random_hex(16)?;
+    let job = Arc::new(ImportedOauthValidationJob::new(snapshot.clone()));
+    state
+        .upstream_accounts
+        .insert_validation_job(job_id.clone(), job.clone())
+        .await;
+    spawn_imported_oauth_validation_job(
+        state.clone(),
+        state.upstream_accounts.clone(),
+        job_id.clone(),
+        payload.items,
+        job,
+    );
+    Ok(Json(ImportedOauthValidationJobResponse {
+        job_id,
+        snapshot,
+    }))
+}
+
+pub(crate) async fn stream_imported_oauth_validation_job_events(
+    State(state): State<Arc<AppState>>,
+    AxumPath(job_id): AxumPath<String>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)>
+{
+    let job = state
+        .upstream_accounts
+        .get_validation_job(&job_id)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "validation job not found".to_string(),
+            )
+        })?;
+    let snapshot = { job.snapshot.lock().await.clone() };
+    let terminal = { job.terminal_event.lock().await.clone() };
+    let initial_events = {
+        let mut events = Vec::new();
+        if let Some(event) =
+            imported_oauth_sse_event("snapshot", &build_imported_oauth_snapshot_event(snapshot))
+        {
+            events.push(Ok(event));
+        }
+        if let Some(terminal_event) = terminal
+            .as_ref()
+            .and_then(imported_oauth_terminal_event_to_sse)
+        {
+            events.push(Ok(terminal_event));
+        }
+        stream::iter(events)
+    };
+    let job_id_for_updates = job_id.clone();
+    let updates = BroadcastStream::new(job.broadcaster.subscribe()).filter_map(move |message| {
+        let lagged_job_id = job_id_for_updates.clone();
+        async move {
+            match message {
+                Ok(ImportedOauthValidationJobEvent::Row(payload)) => {
+                    imported_oauth_sse_event("row", &payload).map(Ok)
+                }
+                Ok(ImportedOauthValidationJobEvent::Completed(payload)) => {
+                    imported_oauth_sse_event("completed", &payload).map(Ok)
+                }
+                Ok(ImportedOauthValidationJobEvent::Failed(payload)) => {
+                    imported_oauth_sse_event("failed", &payload).map(Ok)
+                }
+                Ok(ImportedOauthValidationJobEvent::Cancelled(payload)) => {
+                    imported_oauth_sse_event("cancelled", &payload).map(Ok)
+                }
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        job_id = lagged_job_id,
+                        "imported oauth validation sse lagging"
+                    );
+                    None
+                }
+            }
+        }
+    });
+
+    Ok(Sse::new(initial_events.chain(updates))
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
+pub(crate) async fn cancel_imported_oauth_validation_job(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(job_id): AxumPath<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let Some(job) = state.upstream_accounts.get_validation_job(&job_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "validation job not found".to_string(),
+        ));
+    };
+
+    if job.terminal_event.lock().await.is_some() {
+        state.upstream_accounts.remove_validation_job(&job_id).await;
+        return Ok(StatusCode::NO_CONTENT);
     }
 
-    ImportedOauthValidationResponse {
-        input_files: items.len(),
-        unique_in_input,
-        duplicate_in_input,
-        rows,
-    }
+    job.cancel.cancel();
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn validate_imported_oauth_accounts(
