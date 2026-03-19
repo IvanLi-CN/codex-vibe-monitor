@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.16.1",
+  "base_stable_version": "1.16.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-19T17:15:49Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.16.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "dcc7f48a15c6c5900e87ccdccefa9c3ca2baa3f3",
+  "pr_number": 190,
+  "pr_title": "fix: cap prompt cache chart window to 24h",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.16.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.16.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "968d7577aec7842c66eab9076173193a3b089e76",
+  "type_label": "type:patch"
+}
