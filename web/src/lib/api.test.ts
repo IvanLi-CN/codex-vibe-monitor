@@ -3,6 +3,7 @@ import {
   createOauthMailboxSession,
   fetchInvocationRecords,
   fetchForwardProxyLiveStats,
+  fetchPromptCacheConversations,
   fetchSettings,
   fetchSummary,
   fetchUpstreamAccounts,
@@ -274,7 +275,9 @@ describe("createOauthMailboxSession", () => {
       }) as typeof fetch,
     );
 
-    await expect(createOauthMailboxSession({ emailAddress: "" })).resolves.toEqual({
+    await expect(
+      createOauthMailboxSession({ emailAddress: "" }),
+    ).resolves.toEqual({
       supported: false,
       emailAddress: "",
       reason: "invalid_format",
@@ -498,7 +501,9 @@ describe("account pool frontend API helpers", () => {
 
   it("serializes upstream account roster filters into the query string", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
-      expect(String(_input)).toContain("/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&tagIds=1&tagIds=2");
+      expect(String(_input)).toContain(
+        "/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&tagIds=1&tagIds=2",
+      );
       return new Response(
         JSON.stringify({
           writesEnabled: true,
@@ -590,5 +595,50 @@ describe("account pool frontend API helpers", () => {
     expect(
       response.conversations[0]?.last24hRequests[0]?.cumulativeTokens,
     ).toBe(30);
+  });
+
+  it("sends activity-window prompt cache conversation queries and normalizes metadata", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toContain(
+        "/api/stats/prompt-cache-conversations?activityHours=3",
+      );
+      return new Response(
+        JSON.stringify({
+          rangeStart: "2026-03-10T21:00:00Z",
+          rangeEnd: "2026-03-11T00:00:00Z",
+          selectionMode: "activityWindow",
+          selectedLimit: null,
+          selectedActivityHours: 3,
+          implicitFilter: {
+            kind: "cappedTo50",
+            filteredCount: 7,
+          },
+          conversations: [
+            {
+              promptCacheKey: "pck-001",
+              requestCount: 2,
+              totalTokens: 30,
+              totalCost: 0.12,
+              createdAt: "2026-03-10T22:00:00Z",
+              lastActivityAt: "2026-03-10T23:00:00Z",
+              last24hRequests: [],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const response = await fetchPromptCacheConversations({
+      mode: "activityWindow",
+      activityHours: 3,
+    });
+
+    expect(response.selectionMode).toBe("activityWindow");
+    expect(response.selectedActivityHours).toBe(3);
+    expect(response.implicitFilter.kind).toBe("cappedTo50");
+    expect(response.implicitFilter.filteredCount).toBe(7);
+    expect(response.conversations[0]?.promptCacheKey).toBe("pck-001");
   });
 });

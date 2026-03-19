@@ -563,9 +563,28 @@ export interface PromptCacheConversation {
   last24hRequests: PromptCacheConversationRequestPoint[];
 }
 
+export type PromptCacheConversationSelectionMode = "count" | "activityWindow";
+
+export type PromptCacheConversationImplicitFilterKind =
+  | "inactiveOutside24h"
+  | "cappedTo50";
+
+export interface PromptCacheConversationImplicitFilter {
+  kind: PromptCacheConversationImplicitFilterKind | null;
+  filteredCount: number;
+}
+
+export type PromptCacheConversationSelection =
+  | { mode: "count"; limit: number }
+  | { mode: "activityWindow"; activityHours: number };
+
 export interface PromptCacheConversationsResponse {
   rangeStart: string;
   rangeEnd: string;
+  selectionMode: PromptCacheConversationSelectionMode;
+  selectedLimit: number | null;
+  selectedActivityHours: number | null;
+  implicitFilter: PromptCacheConversationImplicitFilter;
   conversations: PromptCacheConversation[];
 }
 
@@ -980,10 +999,40 @@ function normalizePromptCacheConversationsResponse(
   const conversationsRaw = Array.isArray(payload.conversations)
     ? payload.conversations
     : [];
+  const implicitFilterPayload =
+    payload.implicitFilter && typeof payload.implicitFilter === "object"
+      ? (payload.implicitFilter as Record<string, unknown>)
+      : null;
+  const implicitFilterKindRaw =
+    typeof implicitFilterPayload?.kind === "string"
+      ? implicitFilterPayload.kind
+      : null;
+  const implicitFilterKind: PromptCacheConversationImplicitFilterKind | null =
+    implicitFilterKindRaw === "inactiveOutside24h" ||
+    implicitFilterKindRaw === "cappedTo50"
+      ? implicitFilterKindRaw
+      : null;
+  const selectionModeRaw =
+    payload.selectionMode === "activityWindow" ? "activityWindow" : "count";
   return {
     rangeStart:
       typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    selectionMode: selectionModeRaw,
+    selectedLimit:
+      selectionModeRaw === "count"
+        ? (normalizeFiniteNumber(payload.selectedLimit) ??
+          DEFAULT_PROMPT_CACHE_CONVERSATION_LIMIT)
+        : (normalizeFiniteNumber(payload.selectedLimit) ?? null),
+    selectedActivityHours:
+      selectionModeRaw === "activityWindow"
+        ? (normalizeFiniteNumber(payload.selectedActivityHours) ?? null)
+        : (normalizeFiniteNumber(payload.selectedActivityHours) ?? null),
+    implicitFilter: {
+      kind: implicitFilterKind,
+      filteredCount:
+        normalizeFiniteNumber(implicitFilterPayload?.filteredCount) ?? 0,
+    },
     conversations: conversationsRaw
       .map(normalizePromptCacheConversation)
       .filter((item): item is PromptCacheConversation => item != null),
@@ -1051,46 +1100,46 @@ export interface UpstreamAccountDuplicateInfo {
 }
 
 export interface TagRoutingRule {
-  guardEnabled: boolean
-  lookbackHours?: number | null
-  maxConversations?: number | null
-  allowCutOut: boolean
-  allowCutIn: boolean
+  guardEnabled: boolean;
+  lookbackHours?: number | null;
+  maxConversations?: number | null;
+  allowCutOut: boolean;
+  allowCutIn: boolean;
 }
 
 export interface EffectiveConversationGuard {
-  tagId: number
-  tagName: string
-  lookbackHours: number
-  maxConversations: number
+  tagId: number;
+  tagName: string;
+  lookbackHours: number;
+  maxConversations: number;
 }
 
 export interface EffectiveRoutingRule extends TagRoutingRule {
-  sourceTagIds: number[]
-  sourceTagNames: string[]
-  guardRules: EffectiveConversationGuard[]
+  sourceTagIds: number[];
+  sourceTagNames: string[];
+  guardRules: EffectiveConversationGuard[];
 }
 
 export interface AccountTagSummary {
-  id: number
-  name: string
-  routingRule: TagRoutingRule
+  id: number;
+  name: string;
+  routingRule: TagRoutingRule;
 }
 
 export interface TagSummary {
-  id: number
-  name: string
-  routingRule: TagRoutingRule
-  accountCount: number
-  groupCount: number
-  updatedAt: string
+  id: number;
+  name: string;
+  routingRule: TagRoutingRule;
+  accountCount: number;
+  groupCount: number;
+  updatedAt: string;
 }
 
-export type TagDetail = TagSummary
+export type TagDetail = TagSummary;
 
 export interface TagListResponse {
-  writesEnabled: boolean
-  items: TagSummary[]
+  writesEnabled: boolean;
+  items: TagSummary[];
 }
 
 export interface UpstreamAccountSummary {
@@ -1130,8 +1179,8 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
 }
 
 export interface UpstreamAccountGroupSummary {
-  groupName: string
-  note?: string | null
+  groupName: string;
+  note?: string | null;
 }
 
 export interface PoolRoutingSettings {
@@ -1386,7 +1435,7 @@ export interface FetchTagsQuery {
 }
 
 export interface UpdateUpstreamAccountGroupPayload {
-  note?: string
+  note?: string;
 }
 
 function normalizeRateWindowSnapshot(raw: unknown): RateWindowSnapshot | null {
@@ -1440,65 +1489,87 @@ function normalizeLocalLimitSnapshot(raw: unknown): LocalLimitSnapshot | null {
 }
 
 function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
-  const payload = (raw ?? {}) as Record<string, unknown>
+  const payload = (raw ?? {}) as Record<string, unknown>;
   return {
     guardEnabled: payload.guardEnabled === true,
     lookbackHours: normalizeFiniteNumber(payload.lookbackHours) ?? null,
     maxConversations: normalizeFiniteNumber(payload.maxConversations) ?? null,
     allowCutOut: payload.allowCutOut !== false,
     allowCutIn: payload.allowCutIn !== false,
-  }
+  };
 }
 
-function normalizeEffectiveConversationGuard(raw: unknown): EffectiveConversationGuard | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const tagId = normalizeFiniteNumber(payload.tagId)
-  const tagName = typeof payload.tagName === 'string' ? payload.tagName : ''
-  const lookbackHours = normalizeFiniteNumber(payload.lookbackHours)
-  const maxConversations = normalizeFiniteNumber(payload.maxConversations)
-  if (tagId == null || !tagName || lookbackHours == null || maxConversations == null) return null
-  return { tagId, tagName, lookbackHours, maxConversations }
+function normalizeEffectiveConversationGuard(
+  raw: unknown,
+): EffectiveConversationGuard | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const tagId = normalizeFiniteNumber(payload.tagId);
+  const tagName = typeof payload.tagName === "string" ? payload.tagName : "";
+  const lookbackHours = normalizeFiniteNumber(payload.lookbackHours);
+  const maxConversations = normalizeFiniteNumber(payload.maxConversations);
+  if (
+    tagId == null ||
+    !tagName ||
+    lookbackHours == null ||
+    maxConversations == null
+  )
+    return null;
+  return { tagId, tagName, lookbackHours, maxConversations };
 }
 
 function normalizeAccountTagSummary(raw: unknown): AccountTagSummary | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const id = normalizeFiniteNumber(payload.id)
-  const name = typeof payload.name === 'string' ? payload.name : ''
-  if (id == null || !name) return null
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const id = normalizeFiniteNumber(payload.id);
+  const name = typeof payload.name === "string" ? payload.name : "";
+  if (id == null || !name) return null;
   return {
     id,
     name,
     routingRule: normalizeTagRoutingRule(payload.routingRule),
-  }
+  };
 }
 
 function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
-  const payload = (raw ?? {}) as Record<string, unknown>
+  const payload = (raw ?? {}) as Record<string, unknown>;
   const sourceTagIds = Array.isArray(payload.sourceTagIds)
-    ? payload.sourceTagIds.map(normalizeFiniteNumber).filter((value): value is number => value != null)
-    : []
+    ? payload.sourceTagIds
+        .map(normalizeFiniteNumber)
+        .filter((value): value is number => value != null)
+    : [];
   const sourceTagNames = Array.isArray(payload.sourceTagNames)
-    ? payload.sourceTagNames.filter((value): value is string => typeof value === 'string')
-    : []
+    ? payload.sourceTagNames.filter(
+        (value): value is string => typeof value === "string",
+      )
+    : [];
   const guardRules = Array.isArray(payload.guardRules)
-    ? payload.guardRules.map(normalizeEffectiveConversationGuard).filter((value): value is EffectiveConversationGuard => value != null)
-    : []
+    ? payload.guardRules
+        .map(normalizeEffectiveConversationGuard)
+        .filter((value): value is EffectiveConversationGuard => value != null)
+    : [];
   return {
     ...normalizeTagRoutingRule(payload),
     sourceTagIds,
     sourceTagNames,
     guardRules,
-  }
+  };
 }
 
 function normalizeTagSummary(raw: unknown): TagSummary | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const id = normalizeFiniteNumber(payload.id)
-  const name = typeof payload.name === 'string' ? payload.name : ''
-  const accountCount = normalizeFiniteNumber(payload.accountCount)
-  const groupCount = normalizeFiniteNumber(payload.groupCount)
-  const updatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt : ''
-  if (id == null || !name || accountCount == null || groupCount == null || !updatedAt) return null
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const id = normalizeFiniteNumber(payload.id);
+  const name = typeof payload.name === "string" ? payload.name : "";
+  const accountCount = normalizeFiniteNumber(payload.accountCount);
+  const groupCount = normalizeFiniteNumber(payload.groupCount);
+  const updatedAt =
+    typeof payload.updatedAt === "string" ? payload.updatedAt : "";
+  if (
+    id == null ||
+    !name ||
+    accountCount == null ||
+    groupCount == null ||
+    !updatedAt
+  )
+    return null;
   return {
     id,
     name,
@@ -1506,17 +1577,20 @@ function normalizeTagSummary(raw: unknown): TagSummary | null {
     accountCount,
     groupCount,
     updatedAt,
-  }
+  };
 }
 
-function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const id = normalizeFiniteNumber(payload.id)
-  const displayName = typeof payload.displayName === 'string' ? payload.displayName : ''
-  const kind = typeof payload.kind === 'string' ? payload.kind : ''
-  const provider = typeof payload.provider === 'string' ? payload.provider : ''
-  const status = typeof payload.status === 'string' ? payload.status : 'error'
-  if (id == null || !displayName || !kind || !provider) return null
+function normalizeUpstreamAccountSummary(
+  raw: unknown,
+): UpstreamAccountSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const id = normalizeFiniteNumber(payload.id);
+  const displayName =
+    typeof payload.displayName === "string" ? payload.displayName : "";
+  const kind = typeof payload.kind === "string" ? payload.kind : "";
+  const provider = typeof payload.provider === "string" ? payload.provider : "";
+  const status = typeof payload.status === "string" ? payload.status : "error";
+  if (id == null || !displayName || !kind || !provider) return null;
   return {
     id,
     kind,
@@ -1541,7 +1615,9 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
         ? payload.lastSuccessfulSyncAt
         : null,
     lastActivityAt:
-      typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : null,
+      typeof payload.lastActivityAt === "string"
+        ? payload.lastActivityAt
+        : null,
     lastError: typeof payload.lastError === "string" ? payload.lastError : null,
     lastErrorAt:
       typeof payload.lastErrorAt === "string" ? payload.lastErrorAt : null,
@@ -1555,9 +1631,13 @@ function normalizeUpstreamAccountSummary(raw: unknown): UpstreamAccountSummary |
     localLimits: normalizeLocalLimitSnapshot(payload.localLimits),
     duplicateInfo: normalizeUpstreamAccountDuplicateInfo(payload.duplicateInfo),
     tags: Array.isArray(payload.tags)
-      ? payload.tags.map(normalizeAccountTagSummary).filter((item): item is AccountTagSummary => item != null)
+      ? payload.tags
+          .map(normalizeAccountTagSummary)
+          .filter((item): item is AccountTagSummary => item != null)
       : [],
-    effectiveRoutingRule: normalizeEffectiveRoutingRule(payload.effectiveRoutingRule),
+    effectiveRoutingRule: normalizeEffectiveRoutingRule(
+      payload.effectiveRoutingRule,
+    ),
   };
 }
 
@@ -1662,18 +1742,23 @@ function normalizeUpstreamAccountListResponse(
 }
 
 function normalizeTagListResponse(raw: unknown): TagListResponse {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const itemsRaw = Array.isArray(payload.items) ? payload.items : []
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
   return {
     writesEnabled: payload.writesEnabled !== false,
-    items: itemsRaw.map(normalizeTagSummary).filter((item): item is TagSummary => item != null),
-  }
+    items: itemsRaw
+      .map(normalizeTagSummary)
+      .filter((item): item is TagSummary => item != null),
+  };
 }
 
-function normalizeLoginSessionStatusResponse(raw: unknown): LoginSessionStatusResponse {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const loginId = typeof payload.loginId === 'string' ? payload.loginId : ''
-  const expiresAt = typeof payload.expiresAt === 'string' ? payload.expiresAt : ''
+function normalizeLoginSessionStatusResponse(
+  raw: unknown,
+): LoginSessionStatusResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const loginId = typeof payload.loginId === "string" ? payload.loginId : "";
+  const expiresAt =
+    typeof payload.expiresAt === "string" ? payload.expiresAt : "";
   if (!loginId || !expiresAt) {
     throw new Error("Request failed: invalid login session payload");
   }
@@ -1690,49 +1775,65 @@ function normalizeLoginSessionStatusResponse(raw: unknown): LoginSessionStatusRe
   };
 }
 
-function normalizeImportedOauthMatchSummary(raw: unknown): ImportedOauthMatchSummary | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const accountId = normalizeFiniteNumber(payload.accountId)
-  const displayName = typeof payload.displayName === 'string' ? payload.displayName : ''
-  const status = typeof payload.status === 'string' ? payload.status : ''
-  if (accountId == null || !displayName || !status) return null
+function normalizeImportedOauthMatchSummary(
+  raw: unknown,
+): ImportedOauthMatchSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const accountId = normalizeFiniteNumber(payload.accountId);
+  const displayName =
+    typeof payload.displayName === "string" ? payload.displayName : "";
+  const status = typeof payload.status === "string" ? payload.status : "";
+  if (accountId == null || !displayName || !status) return null;
   return {
     accountId,
     displayName,
-    groupName: typeof payload.groupName === 'string' ? payload.groupName : null,
+    groupName: typeof payload.groupName === "string" ? payload.groupName : null,
     status,
-  }
+  };
 }
 
-function normalizeImportedOauthValidationRow(raw: unknown): ImportedOauthValidationRow | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const sourceId = typeof payload.sourceId === 'string' ? payload.sourceId : ''
-  const fileName = typeof payload.fileName === 'string' ? payload.fileName : ''
-  const status = typeof payload.status === 'string' ? payload.status : ''
-  const attempts = normalizeFiniteNumber(payload.attempts)
-  if (!sourceId || !fileName || !status || attempts == null) return null
+function normalizeImportedOauthValidationRow(
+  raw: unknown,
+): ImportedOauthValidationRow | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const sourceId = typeof payload.sourceId === "string" ? payload.sourceId : "";
+  const fileName = typeof payload.fileName === "string" ? payload.fileName : "";
+  const status = typeof payload.status === "string" ? payload.status : "";
+  const attempts = normalizeFiniteNumber(payload.attempts);
+  if (!sourceId || !fileName || !status || attempts == null) return null;
   return {
     sourceId,
     fileName,
-    email: typeof payload.email === 'string' ? payload.email : null,
-    chatgptAccountId: typeof payload.chatgptAccountId === 'string' ? payload.chatgptAccountId : null,
-    displayName: typeof payload.displayName === 'string' ? payload.displayName : null,
-    tokenExpiresAt: typeof payload.tokenExpiresAt === 'string' ? payload.tokenExpiresAt : null,
+    email: typeof payload.email === "string" ? payload.email : null,
+    chatgptAccountId:
+      typeof payload.chatgptAccountId === "string"
+        ? payload.chatgptAccountId
+        : null,
+    displayName:
+      typeof payload.displayName === "string" ? payload.displayName : null,
+    tokenExpiresAt:
+      typeof payload.tokenExpiresAt === "string"
+        ? payload.tokenExpiresAt
+        : null,
     matchedAccount: normalizeImportedOauthMatchSummary(payload.matchedAccount),
     status,
-    detail: typeof payload.detail === 'string' ? payload.detail : null,
+    detail: typeof payload.detail === "string" ? payload.detail : null,
     attempts,
-  }
+  };
 }
 
-function normalizeImportedOauthValidationResponse(raw: unknown): ImportedOauthValidationResponse {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const inputFiles = normalizeFiniteNumber(payload.inputFiles)
-  const uniqueInInput = normalizeFiniteNumber(payload.uniqueInInput)
-  const duplicateInInput = normalizeFiniteNumber(payload.duplicateInInput)
-  const rowsRaw = Array.isArray(payload.rows) ? payload.rows : []
+function normalizeImportedOauthValidationResponse(
+  raw: unknown,
+): ImportedOauthValidationResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const inputFiles = normalizeFiniteNumber(payload.inputFiles);
+  const uniqueInInput = normalizeFiniteNumber(payload.uniqueInInput);
+  const duplicateInInput = normalizeFiniteNumber(payload.duplicateInInput);
+  const rowsRaw = Array.isArray(payload.rows) ? payload.rows : [];
   if (inputFiles == null || uniqueInInput == null || duplicateInInput == null) {
-    throw new Error('Request failed: invalid imported OAuth validation payload')
+    throw new Error(
+      "Request failed: invalid imported OAuth validation payload",
+    );
   }
   return {
     inputFiles,
@@ -1741,20 +1842,43 @@ function normalizeImportedOauthValidationResponse(raw: unknown): ImportedOauthVa
     rows: rowsRaw
       .map(normalizeImportedOauthValidationRow)
       .filter((item): item is ImportedOauthValidationRow => item != null),
-  }
+  };
+}
+
+function normalizeImportedOauthImportResult(
+  raw: unknown,
+): ImportedOauthImportResult | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const sourceId = typeof payload.sourceId === "string" ? payload.sourceId : "";
+  const fileName = typeof payload.fileName === "string" ? payload.fileName : "";
+  const status = typeof payload.status === "string" ? payload.status : "";
+  if (!sourceId || !fileName || !status) return null;
+  return {
+    sourceId,
+    fileName,
+    email: typeof payload.email === "string" ? payload.email : null,
+    chatgptAccountId:
+      typeof payload.chatgptAccountId === "string"
+        ? payload.chatgptAccountId
+        : null,
+    accountId: normalizeFiniteNumber(payload.accountId) ?? null,
+    status,
+    detail: typeof payload.detail === "string" ? payload.detail : null,
+    matchedAccount: normalizeImportedOauthMatchSummary(payload.matchedAccount),
+  };
 }
 
 function normalizeImportedOauthValidationCounts(
   raw: unknown,
 ): ImportedOauthValidationCounts {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const pending = normalizeFiniteNumber(payload.pending)
-  const duplicateInInput = normalizeFiniteNumber(payload.duplicateInInput)
-  const ok = normalizeFiniteNumber(payload.ok)
-  const okExhausted = normalizeFiniteNumber(payload.okExhausted)
-  const invalid = normalizeFiniteNumber(payload.invalid)
-  const error = normalizeFiniteNumber(payload.error)
-  const checked = normalizeFiniteNumber(payload.checked)
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const pending = normalizeFiniteNumber(payload.pending);
+  const duplicateInInput = normalizeFiniteNumber(payload.duplicateInInput);
+  const ok = normalizeFiniteNumber(payload.ok);
+  const okExhausted = normalizeFiniteNumber(payload.okExhausted);
+  const invalid = normalizeFiniteNumber(payload.invalid);
+  const error = normalizeFiniteNumber(payload.error);
+  const checked = normalizeFiniteNumber(payload.checked);
   if (
     pending == null ||
     duplicateInInput == null ||
@@ -1764,7 +1888,9 @@ function normalizeImportedOauthValidationCounts(
     error == null ||
     checked == null
   ) {
-    throw new Error('Request failed: invalid imported OAuth validation counts payload')
+    throw new Error(
+      "Request failed: invalid imported OAuth validation counts payload",
+    );
   }
   return {
     pending,
@@ -1774,97 +1900,87 @@ function normalizeImportedOauthValidationCounts(
     invalid,
     error,
     checked,
-  }
+  };
 }
 
 function normalizeImportedOauthValidationJobResponse(
   raw: unknown,
 ): ImportedOauthValidationJobResponse {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const jobId = typeof payload.jobId === 'string' ? payload.jobId : ''
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
   if (!jobId) {
-    throw new Error('Request failed: invalid imported OAuth validation job payload')
+    throw new Error(
+      "Request failed: invalid imported OAuth validation job payload",
+    );
   }
   return {
     jobId,
     snapshot: normalizeImportedOauthValidationResponse(payload.snapshot),
-  }
+  };
 }
 
 export function normalizeImportedOauthValidationSnapshotEventPayload(
   raw: unknown,
 ): ImportedOauthValidationSnapshotEventPayload {
-  const payload = (raw ?? {}) as Record<string, unknown>
+  const payload = (raw ?? {}) as Record<string, unknown>;
   return {
     snapshot: normalizeImportedOauthValidationResponse(payload.snapshot),
     counts: normalizeImportedOauthValidationCounts(payload.counts),
-  }
+  };
 }
 
 export function normalizeImportedOauthValidationRowEventPayload(
   raw: unknown,
 ): ImportedOauthValidationRowEventPayload {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const row = normalizeImportedOauthValidationRow(payload.row)
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const row = normalizeImportedOauthValidationRow(payload.row);
   if (!row) {
-    throw new Error('Request failed: invalid imported OAuth validation row event payload')
+    throw new Error(
+      "Request failed: invalid imported OAuth validation row event payload",
+    );
   }
   return {
     row,
     counts: normalizeImportedOauthValidationCounts(payload.counts),
-  }
+  };
 }
 
 export function normalizeImportedOauthValidationFailedEventPayload(
   raw: unknown,
 ): ImportedOauthValidationFailedEventPayload {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const error = typeof payload.error === 'string' ? payload.error : ''
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const error = typeof payload.error === "string" ? payload.error : "";
   if (!error) {
-    throw new Error('Request failed: invalid imported OAuth validation failed event payload')
+    throw new Error(
+      "Request failed: invalid imported OAuth validation failed event payload",
+    );
   }
   return {
     snapshot: normalizeImportedOauthValidationResponse(payload.snapshot),
     counts: normalizeImportedOauthValidationCounts(payload.counts),
     error,
-  }
+  };
 }
 
-function normalizeImportedOauthImportResult(raw: unknown): ImportedOauthImportResult | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const sourceId = typeof payload.sourceId === 'string' ? payload.sourceId : ''
-  const fileName = typeof payload.fileName === 'string' ? payload.fileName : ''
-  const status = typeof payload.status === 'string' ? payload.status : ''
-  if (!sourceId || !fileName || !status) return null
-  return {
-    sourceId,
-    fileName,
-    email: typeof payload.email === 'string' ? payload.email : null,
-    chatgptAccountId: typeof payload.chatgptAccountId === 'string' ? payload.chatgptAccountId : null,
-    accountId: normalizeFiniteNumber(payload.accountId) ?? null,
-    status,
-    detail: typeof payload.detail === 'string' ? payload.detail : null,
-    matchedAccount: normalizeImportedOauthMatchSummary(payload.matchedAccount),
-  }
-}
-
-function normalizeImportedOauthImportResponse(raw: unknown): ImportedOauthImportResponse {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const summaryPayload = (payload.summary ?? {}) as Record<string, unknown>
-  const inputFiles = normalizeFiniteNumber(summaryPayload.inputFiles)
-  const selectedFiles = normalizeFiniteNumber(summaryPayload.selectedFiles)
-  const created = normalizeFiniteNumber(summaryPayload.created)
-  const updatedExisting = normalizeFiniteNumber(summaryPayload.updatedExisting)
-  const failed = normalizeFiniteNumber(summaryPayload.failed)
-  const resultsRaw = Array.isArray(payload.results) ? payload.results : []
+function normalizeImportedOauthImportResponse(
+  raw: unknown,
+): ImportedOauthImportResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const summaryPayload = (payload.summary ?? {}) as Record<string, unknown>;
+  const inputFiles = normalizeFiniteNumber(summaryPayload.inputFiles);
+  const selectedFiles = normalizeFiniteNumber(summaryPayload.selectedFiles);
+  const created = normalizeFiniteNumber(summaryPayload.created);
+  const updatedExisting = normalizeFiniteNumber(summaryPayload.updatedExisting);
+  const failed = normalizeFiniteNumber(summaryPayload.failed);
+  const resultsRaw = Array.isArray(payload.results) ? payload.results : [];
   if (
-    inputFiles == null
-    || selectedFiles == null
-    || created == null
-    || updatedExisting == null
-    || failed == null
+    inputFiles == null ||
+    selectedFiles == null ||
+    created == null ||
+    updatedExisting == null ||
+    failed == null
   ) {
-    throw new Error('Request failed: invalid imported OAuth import payload')
+    throw new Error("Request failed: invalid imported OAuth import payload");
   }
   return {
     summary: {
@@ -1877,67 +1993,85 @@ function normalizeImportedOauthImportResponse(raw: unknown): ImportedOauthImport
     results: resultsRaw
       .map(normalizeImportedOauthImportResult)
       .filter((item): item is ImportedOauthImportResult => item != null),
-  }
+  };
 }
 
 function normalizeOauthMailboxSession(raw: unknown): OauthMailboxSession {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const supported = payload.supported !== false
-  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
-  const emailAddress = typeof payload.emailAddress === 'string' ? payload.emailAddress : ''
-  const expiresAt = typeof payload.expiresAt === 'string' ? payload.expiresAt : ''
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const supported = payload.supported !== false;
+  const sessionId =
+    typeof payload.sessionId === "string" ? payload.sessionId : "";
+  const emailAddress =
+    typeof payload.emailAddress === "string" ? payload.emailAddress : "";
+  const expiresAt =
+    typeof payload.expiresAt === "string" ? payload.expiresAt : "";
   if (!supported) {
     return {
       supported: false,
       emailAddress,
-      reason: typeof payload.reason === 'string' && payload.reason.trim() ? payload.reason : 'not_readable',
-    }
+      reason:
+        typeof payload.reason === "string" && payload.reason.trim()
+          ? payload.reason
+          : "not_readable",
+    };
   }
   if (!emailAddress) {
-    throw new Error('Request failed: invalid OAuth mailbox session payload')
+    throw new Error("Request failed: invalid OAuth mailbox session payload");
   }
   if (!sessionId || !expiresAt) {
-    throw new Error('Request failed: invalid OAuth mailbox session payload')
+    throw new Error("Request failed: invalid OAuth mailbox session payload");
   }
   return {
     supported: true,
     sessionId,
     emailAddress,
     expiresAt,
-    source: typeof payload.source === 'string' && payload.source.trim() ? payload.source : 'generated',
-  }
+    source:
+      typeof payload.source === "string" && payload.source.trim()
+        ? payload.source
+        : "generated",
+  };
 }
 
-function normalizeOauthMailboxCodeSummary(raw: unknown): OauthMailboxCodeSummary | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const value = typeof payload.value === 'string' ? payload.value : ''
-  const source = typeof payload.source === 'string' ? payload.source : ''
-  const updatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt : ''
-  if (!value || !source || !updatedAt) return null
-  return { value, source, updatedAt }
+function normalizeOauthMailboxCodeSummary(
+  raw: unknown,
+): OauthMailboxCodeSummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const value = typeof payload.value === "string" ? payload.value : "";
+  const source = typeof payload.source === "string" ? payload.source : "";
+  const updatedAt =
+    typeof payload.updatedAt === "string" ? payload.updatedAt : "";
+  if (!value || !source || !updatedAt) return null;
+  return { value, source, updatedAt };
 }
 
 function normalizeOauthInviteSummary(raw: unknown): OauthInviteSummary | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const subject = typeof payload.subject === 'string' ? payload.subject : ''
-  const copyValue = typeof payload.copyValue === 'string' ? payload.copyValue : ''
-  const copyLabel = typeof payload.copyLabel === 'string' ? payload.copyLabel : ''
-  const updatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt : ''
-  if (!subject || !copyValue || !copyLabel || !updatedAt) return null
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const subject = typeof payload.subject === "string" ? payload.subject : "";
+  const copyValue =
+    typeof payload.copyValue === "string" ? payload.copyValue : "";
+  const copyLabel =
+    typeof payload.copyLabel === "string" ? payload.copyLabel : "";
+  const updatedAt =
+    typeof payload.updatedAt === "string" ? payload.updatedAt : "";
+  if (!subject || !copyValue || !copyLabel || !updatedAt) return null;
   return {
     subject,
     copyValue,
     copyLabel,
     updatedAt,
-  }
+  };
 }
 
 function normalizeOauthMailboxStatus(raw: unknown): OauthMailboxStatus | null {
-  const payload = (raw ?? {}) as Record<string, unknown>
-  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
-  const emailAddress = typeof payload.emailAddress === 'string' ? payload.emailAddress : ''
-  const expiresAt = typeof payload.expiresAt === 'string' ? payload.expiresAt : ''
-  if (!sessionId || !emailAddress || !expiresAt) return null
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const sessionId =
+    typeof payload.sessionId === "string" ? payload.sessionId : "";
+  const emailAddress =
+    typeof payload.emailAddress === "string" ? payload.emailAddress : "";
+  const expiresAt =
+    typeof payload.expiresAt === "string" ? payload.expiresAt : "";
+  if (!sessionId || !emailAddress || !expiresAt) return null;
   return {
     sessionId,
     emailAddress,
@@ -1945,8 +2079,11 @@ function normalizeOauthMailboxStatus(raw: unknown): OauthMailboxStatus | null {
     latestCode: normalizeOauthMailboxCodeSummary(payload.latestCode),
     invite: normalizeOauthInviteSummary(payload.invite),
     invited: payload.invited === true,
-    error: typeof payload.error === 'string' && payload.error.trim() ? payload.error : null,
-  }
+    error:
+      typeof payload.error === "string" && payload.error.trim()
+        ? payload.error
+        : null,
+  };
 }
 
 export async function fetchVersion(): Promise<VersionResponse> {
@@ -2044,11 +2181,23 @@ export async function fetchForwardProxyLiveStats() {
   return normalizeForwardProxyLiveStatsResponse(response);
 }
 
-export async function fetchPromptCacheConversations(limit: number) {
+const DEFAULT_PROMPT_CACHE_CONVERSATION_LIMIT = 50;
+
+export async function fetchPromptCacheConversations(
+  selection: PromptCacheConversationSelection,
+  signal?: AbortSignal,
+) {
   const search = new URLSearchParams();
-  search.set("limit", String(limit));
+  if (selection.mode === "count") {
+    search.set("limit", String(selection.limit));
+  } else {
+    search.set("activityHours", String(selection.activityHours));
+  }
   const response = await fetchJson<unknown>(
     `/api/stats/prompt-cache-conversations?${search.toString()}`,
+    {
+      signal,
+    },
   );
   return normalizePromptCacheConversationsResponse(response);
 }
@@ -2126,49 +2275,63 @@ export async function fetchUpstreamAccounts(
 ): Promise<UpstreamAccountListResponse> {
   const search = new URLSearchParams();
   if (query?.groupSearch) search.set("groupSearch", query.groupSearch);
-  if (query?.groupUngrouped != null) search.set("groupUngrouped", String(query.groupUngrouped));
+  if (query?.groupUngrouped != null)
+    search.set("groupUngrouped", String(query.groupUngrouped));
   for (const tagId of query?.tagIds ?? []) {
     search.append("tagIds", String(tagId));
   }
   const response = await fetchJson<unknown>(
-    search.size ? `/api/pool/upstream-accounts?${search.toString()}` : "/api/pool/upstream-accounts",
+    search.size
+      ? `/api/pool/upstream-accounts?${search.toString()}`
+      : "/api/pool/upstream-accounts",
   );
   return normalizeUpstreamAccountListResponse(response);
 }
 
-export async function fetchTags(query?: FetchTagsQuery): Promise<TagListResponse> {
-  const search = new URLSearchParams()
-  if (query?.search) search.set('search', query.search)
-  if (query?.hasAccounts != null) search.set('hasAccounts', String(query.hasAccounts))
-  if (query?.guardEnabled != null) search.set('guardEnabled', String(query.guardEnabled))
-  if (query?.allowCutIn != null) search.set('allowCutIn', String(query.allowCutIn))
-  if (query?.allowCutOut != null) search.set('allowCutOut', String(query.allowCutOut))
-  const response = await fetchJson<unknown>(search.size ? `/api/pool/tags?${search.toString()}` : '/api/pool/tags')
-  return normalizeTagListResponse(response)
+export async function fetchTags(
+  query?: FetchTagsQuery,
+): Promise<TagListResponse> {
+  const search = new URLSearchParams();
+  if (query?.search) search.set("search", query.search);
+  if (query?.hasAccounts != null)
+    search.set("hasAccounts", String(query.hasAccounts));
+  if (query?.guardEnabled != null)
+    search.set("guardEnabled", String(query.guardEnabled));
+  if (query?.allowCutIn != null)
+    search.set("allowCutIn", String(query.allowCutIn));
+  if (query?.allowCutOut != null)
+    search.set("allowCutOut", String(query.allowCutOut));
+  const response = await fetchJson<unknown>(
+    search.size ? `/api/pool/tags?${search.toString()}` : "/api/pool/tags",
+  );
+  return normalizeTagListResponse(response);
 }
 
 export async function createTag(payload: CreateTagPayload): Promise<TagDetail> {
-  const response = await fetchJson<unknown>('/api/pool/tags', {
-    method: 'POST',
+  const response = await fetchJson<unknown>("/api/pool/tags", {
+    method: "POST",
     body: JSON.stringify(payload),
-  })
-  const normalized = normalizeTagSummary(response)
-  if (!normalized) throw new Error('Request failed: invalid tag payload')
-  return normalized
+  });
+  const normalized = normalizeTagSummary(response);
+  if (!normalized) throw new Error("Request failed: invalid tag payload");
+  return normalized;
 }
 
-export async function updateTag(tagId: number, payload: UpdateTagPayload): Promise<TagDetail> {
+export async function updateTag(
+  tagId: number,
+  payload: UpdateTagPayload,
+): Promise<TagDetail> {
   const response = await fetchJson<unknown>(`/api/pool/tags/${tagId}`, {
-    method: 'PATCH',
+    method: "PATCH",
     body: JSON.stringify(payload),
-  })
-  const normalized = normalizeTagSummary(response)
-  if (!normalized) throw new Error('Request failed: invalid tag payload')
-  return normalized
+  });
+  const normalized = normalizeTagSummary(response);
+  if (!normalized) throw new Error("Request failed: invalid tag payload");
+  return normalized;
 }
 
 export async function deleteTag(tagId: number): Promise<void> {
-  await fetchJson(`/api/pool/tags/${tagId}`, { method: 'DELETE' })
+  await fetchJson(`/api/pool/tags/${tagId}`, { method: "DELETE" });
 }
 
 export async function updatePoolRoutingSettings(
@@ -2250,7 +2413,9 @@ export async function fetchOauthMailboxStatuses(
       body: JSON.stringify(payload),
     },
   );
-  const items = Array.isArray((response as Record<string, unknown> | null)?.items)
+  const items = Array.isArray(
+    (response as Record<string, unknown> | null)?.items,
+  )
     ? ((response as Record<string, unknown>).items as unknown[])
     : [];
   return items
@@ -2258,7 +2423,9 @@ export async function fetchOauthMailboxStatuses(
     .filter((item): item is OauthMailboxStatus => item != null);
 }
 
-export async function deleteOauthMailboxSession(sessionId: string): Promise<void> {
+export async function deleteOauthMailboxSession(
+  sessionId: string,
+): Promise<void> {
   await fetchJson(
     `/api/pool/upstream-accounts/oauth/mailbox-sessions/${encodeURIComponent(sessionId)}`,
     {
@@ -2311,8 +2478,8 @@ export async function validateImportedOauthAccounts(
       method: "POST",
       body: JSON.stringify(payload),
     },
-  )
-  return normalizeImportedOauthValidationResponse(response)
+  );
+  return normalizeImportedOauthValidationResponse(response);
 }
 
 export async function createImportedOauthValidationJob(
@@ -2348,8 +2515,8 @@ export async function importValidatedOauthAccounts(
       method: "POST",
       body: JSON.stringify(payload),
     },
-  )
-  return normalizeImportedOauthImportResponse(response)
+  );
+  return normalizeImportedOauthImportResponse(response);
 }
 
 export async function createApiKeyUpstreamAccount(
@@ -2386,15 +2553,15 @@ export async function updateUpstreamAccountGroup(
   const response = await fetchJson<unknown>(
     `/api/pool/upstream-account-groups/${encodeURIComponent(groupName)}`,
     {
-      method: 'PUT',
+      method: "PUT",
       body: JSON.stringify(payload),
     },
-  )
-  const normalized = normalizeUpstreamAccountGroupSummary(response)
+  );
+  const normalized = normalizeUpstreamAccountGroupSummary(response);
   if (!normalized) {
-    throw new Error('Request failed: invalid upstream account group payload')
+    throw new Error("Request failed: invalid upstream account group payload");
   }
-  return normalized
+  return normalized;
 }
 
 export async function deleteUpstreamAccount(accountId: number): Promise<void> {
