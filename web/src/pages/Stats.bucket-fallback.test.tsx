@@ -177,6 +177,75 @@ function createFailureSummary(): FailureSummaryResponse {
 }
 
 describe('StatsPage archived bucket fallback', () => {
+  it('keeps the newly requested bucket selected while an older response is still rendered', async () => {
+    hookMocks.useSummary.mockReturnValue({
+      summary: null,
+      isLoading: false,
+      error: null,
+    })
+    hookMocks.useErrorDistribution.mockReturnValue({
+      data: { items: [] },
+      isLoading: false,
+      error: null,
+    })
+    hookMocks.useFailureSummary.mockReturnValue({
+      data: createFailureSummary(),
+      isLoading: false,
+      error: null,
+    })
+    hookMocks.useTimeseries.mockImplementation(
+      (range: string, options?: { bucket?: string }) => {
+        if (range === '7d') {
+          return {
+            data: createTimeseriesResponse({
+              bucketSeconds: 3600,
+              effectiveBucket: options?.bucket === '1d' ? '1h' : (options?.bucket ?? '1h'),
+              availableBuckets: ['1h', '6h', '12h', '1d'],
+            }),
+            isLoading: false,
+            error: null,
+          }
+        }
+
+        return {
+          data: createTimeseriesResponse({
+            effectiveBucket: options?.bucket ?? '15m',
+          }),
+          isLoading: false,
+          error: null,
+        }
+      },
+    )
+
+    render(<StatsPage />)
+
+    const rangeItem = host?.querySelector('[data-testid="select-item-7d"]')
+    if (!(rangeItem instanceof HTMLButtonElement)) {
+      throw new Error('missing 7d range item')
+    }
+    act(() => {
+      rangeItem.click()
+    })
+    await flushAsync()
+
+    const bucketItems = host?.querySelectorAll('[data-testid="select-item-1d"]')
+    const bucketItem = bucketItems?.[1]
+    if (!(bucketItem instanceof HTMLButtonElement)) {
+      throw new Error('missing 1d bucket item for the bucket select')
+    }
+    act(() => {
+      bucketItem.click()
+    })
+    await flushAsync()
+
+    const bucketTrigger = host?.querySelector('[data-testid="stats-bucket-select-trigger"]')
+    if (!(bucketTrigger instanceof HTMLButtonElement)) {
+      throw new Error('missing bucket trigger')
+    }
+
+    expect(bucketTrigger.getAttribute('data-value')).toBe('1d')
+  })
+
   it('re-requests daily buckets after the backend limits an archived range to daily granularity', async () => {
     const calls: Array<{ range: string; bucket?: string }> = []
 

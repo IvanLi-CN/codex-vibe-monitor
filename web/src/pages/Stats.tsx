@@ -65,7 +65,15 @@ export default function StatsPage() {
     [range, timeseries?.availableBuckets],
   )
   const effectiveBucket = useMemo(
-    () => resolveStatsBucketValue(timeseries?.effectiveBucket ?? requestedBucket, rawBucketOptions),
+    () => {
+      const serverBucket = timeseries?.effectiveBucket
+      const requestedStillAllowed = rawBucketOptions.some((option) => option.value === requestedBucket)
+      // Keep the user's in-flight selection visible until the server explicitly narrows it.
+      if (requestedStillAllowed) {
+        return requestedBucket
+      }
+      return resolveStatsBucketValue(serverBucket ?? requestedBucket, rawBucketOptions)
+    },
     [rawBucketOptions, requestedBucket, timeseries?.effectiveBucket],
   )
   const bucketOptions = useMemo(
