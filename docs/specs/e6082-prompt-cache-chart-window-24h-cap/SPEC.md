@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中
+- Status: 已完成（4/4）
 - Created: 2026-03-20
 - Last: 2026-03-20
 
@@ -83,7 +83,7 @@
 - [x] M1: 收敛问题根因，确认当前图表窗口实现缺少 24 小时封顶。
 - [x] M2: 后端图表事件查询窗口与前端共享时间轴同时加上 `24h` 封顶。
 - [x] M3: 补齐前后端回归测试并完成本地验证。
-- [ ] M4: fast-flow 推送、PR、checks 与 review-loop 收敛到 merge-ready。
+- [x] M4: fast-flow 推送、PR、checks 与 review-loop 收敛到 merge-ready。
 
 ## 风险 / 假设
 
@@ -93,3 +93,4 @@
 ## 变更记录（Change log）
 
 - 2026-03-20: 新建热修 spec，冻结 Prompt Cache 图表时间轴必须封顶 24 小时的修复边界与验证要求。
+- 2026-03-20: 实现前后端 24 小时封顶修复，并同步收齐 fast-flow 的 PR / spec 门禁记录。
