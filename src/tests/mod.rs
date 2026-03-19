@@ -16047,7 +16047,8 @@ async fn prompt_cache_conversations_count_mode_reports_all_skipped_newer_inactiv
 }
 
 #[tokio::test]
-async fn prompt_cache_conversations_count_mode_clamps_sparse_inactive_hidden_rows_to_top_n_window() {
+async fn prompt_cache_conversations_count_mode_clamps_sparse_inactive_hidden_rows_to_top_n_window()
+{
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
