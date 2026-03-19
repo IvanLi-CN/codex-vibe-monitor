@@ -12372,7 +12372,10 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state.clone()),
-        Query(PromptCacheConversationsQuery { limit: Some(20) }),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
     )
     .await
     .expect("prompt cache conversations should succeed");
@@ -15679,6 +15682,59 @@ fn normalize_prompt_cache_conversation_limit_accepts_whitelist_values_only() {
     assert_eq!(normalize_prompt_cache_conversation_limit(Some(200)), 50);
 }
 
+#[test]
+fn normalize_prompt_cache_conversation_activity_hours_accepts_whitelist_values_only() {
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_hours(None),
+        None
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_hours(Some(1)),
+        Some(1)
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_hours(Some(3)),
+        Some(3)
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_hours(Some(6)),
+        Some(6)
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_hours(Some(12)),
+        Some(12)
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_hours(Some(24)),
+        Some(24)
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_hours(Some(2)),
+        None
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_hours(Some(48)),
+        None
+    );
+}
+
+#[test]
+fn resolve_prompt_cache_conversation_selection_rejects_mutually_exclusive_params() {
+    let err = resolve_prompt_cache_conversation_selection(PromptCacheConversationsQuery {
+        limit: Some(20),
+        activity_hours: Some(3),
+    })
+    .expect_err("selection should reject mutually exclusive params");
+
+    match err {
+        ApiError::BadRequest(inner) => {
+            let message = inner.to_string();
+            assert!(message.contains("mutually exclusive"));
+        }
+        other => panic!("expected bad request, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals() {
     let state = test_state_with_openai_base(
@@ -15793,11 +15849,25 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state.clone()),
-        Query(PromptCacheConversationsQuery { limit: Some(20) }),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
     )
     .await
     .expect("prompt cache conversation stats should succeed");
 
+    assert_eq!(
+        response.selection_mode,
+        PromptCacheConversationSelectionMode::Count
+    );
+    assert_eq!(response.selected_limit, Some(20));
+    assert_eq!(response.selected_activity_hours, None);
+    assert_eq!(
+        response.implicit_filter.kind,
+        Some(PromptCacheConversationImplicitFilterKind::InactiveOutside24h)
+    );
+    assert_eq!(response.implicit_filter.filtered_count, 1);
     assert_eq!(response.conversations.len(), 2);
     assert_eq!(response.conversations[0].prompt_cache_key, "pck-b");
     assert_eq!(response.conversations[1].prompt_cache_key, "pck-a");
@@ -15810,13 +15880,146 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
     assert_eq!(key_a.request_count, 3);
     assert_eq!(key_a.total_tokens, 150);
     assert!((key_a.total_cost - 1.5).abs() < 1e-9);
-    assert_eq!(key_a.last24h_requests.len(), 2);
-    assert_eq!(key_a.last24h_requests[0].request_tokens, 20);
-    assert_eq!(key_a.last24h_requests[0].cumulative_tokens, 20);
+    assert_eq!(key_a.last24h_requests.len(), 3);
+    assert_eq!(key_a.last24h_requests[0].request_tokens, 100);
+    assert_eq!(key_a.last24h_requests[0].cumulative_tokens, 100);
     assert!(key_a.last24h_requests[0].is_success);
-    assert_eq!(key_a.last24h_requests[1].request_tokens, 30);
-    assert_eq!(key_a.last24h_requests[1].cumulative_tokens, 50);
-    assert!(!key_a.last24h_requests[1].is_success);
+    assert_eq!(key_a.last24h_requests[1].request_tokens, 20);
+    assert_eq!(key_a.last24h_requests[1].cumulative_tokens, 120);
+    assert!(key_a.last24h_requests[1].is_success);
+    assert_eq!(key_a.last24h_requests[2].request_tokens, 30);
+    assert_eq!(key_a.last24h_requests[2].cumulative_tokens, 150);
+    assert!(!key_a.last24h_requests[2].is_success);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_filter() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10)
+        .bind(0.01)
+        .bind(json!({ "promptCacheKey": key }).to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    for index in 0..19 {
+        insert_row(
+            &state.pool,
+            &format!("count-active-{index}"),
+            now - ChronoDuration::hours(23) + ChronoDuration::minutes(index as i64),
+            &format!("count-active-{index}"),
+        )
+        .await;
+    }
+    insert_row(
+        &state.pool,
+        "count-inactive",
+        now - ChronoDuration::hours(72),
+        "count-inactive",
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversations should succeed");
+
+    assert_eq!(
+        response.implicit_filter.kind,
+        Some(PromptCacheConversationImplicitFilterKind::InactiveOutside24h)
+    );
+    assert_eq!(response.implicit_filter.filtered_count, 1);
+    assert_eq!(response.conversations.len(), 19);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    for index in 0..55 {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(format!("window-{index}"))
+        .bind(format_naive(
+            (now - ChronoDuration::minutes(index as i64))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10)
+        .bind(0.01)
+        .bind(json!({ "promptCacheKey": format!("window-key-{index}") }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: Some(3),
+        }),
+    )
+    .await
+    .expect("activity-window prompt cache conversations should succeed");
+
+    assert_eq!(
+        response.selection_mode,
+        PromptCacheConversationSelectionMode::ActivityWindow
+    );
+    assert_eq!(response.selected_limit, None);
+    assert_eq!(response.selected_activity_hours, Some(3));
+    assert_eq!(response.conversations.len(), 50);
+    assert_eq!(
+        response.implicit_filter.kind,
+        Some(PromptCacheConversationImplicitFilterKind::CappedTo50)
+    );
+    assert_eq!(response.implicit_filter.filtered_count, 5);
 }
 
 #[tokio::test]
@@ -15859,7 +16062,10 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
 
     let Json(first) = fetch_prompt_cache_conversations(
         State(state.clone()),
-        Query(PromptCacheConversationsQuery { limit: Some(20) }),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
     )
     .await
     .expect("first fetch should succeed");
@@ -15893,7 +16099,10 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
 
     let Json(second) = fetch_prompt_cache_conversations(
         State(state),
-        Query(PromptCacheConversationsQuery { limit: Some(20) }),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
     )
     .await
     .expect("second fetch should use cached result");
@@ -15947,7 +16156,10 @@ async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall(
                 Duration::from_secs(2),
                 fetch_prompt_cache_conversations(
                     State(state_clone),
-                    Query(PromptCacheConversationsQuery { limit: Some(20) }),
+                    Query(PromptCacheConversationsQuery {
+                        limit: Some(20),
+                        activity_hours: None,
+                    }),
                 ),
             )
             .await
@@ -15977,20 +16189,26 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
     let (signal, _receiver) = watch::channel(false);
     {
         let mut state = cache.lock().await;
-        state
-            .in_flight
-            .insert(20, PromptCacheConversationInFlight { signal });
+        state.in_flight.insert(
+            PromptCacheConversationSelection::Count(20),
+            PromptCacheConversationInFlight { signal },
+        );
     }
 
     {
-        let _guard = PromptCacheConversationFlightGuard::new(cache.clone(), 20);
+        let _guard = PromptCacheConversationFlightGuard::new(
+            cache.clone(),
+            PromptCacheConversationSelection::Count(20),
+        );
     }
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             let has_entry = {
                 let state = cache.lock().await;
-                state.in_flight.contains_key(&20)
+                state
+                    .in_flight
+                    .contains_key(&PromptCacheConversationSelection::Count(20))
             };
             if !has_entry {
                 break;

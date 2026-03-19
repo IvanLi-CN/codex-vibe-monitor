@@ -1413,8 +1413,8 @@ pub(crate) async fn fetch_prompt_cache_conversations(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PromptCacheConversationsQuery>,
 ) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
-    let limit = normalize_prompt_cache_conversation_limit(params.limit);
-    let response = fetch_prompt_cache_conversations_cached(state.as_ref(), limit).await?;
+    let selection = resolve_prompt_cache_conversation_selection(params)?;
+    let response = fetch_prompt_cache_conversations_cached(state.as_ref(), selection).await?;
     Ok(Json(response))
 }
 
@@ -1425,32 +1425,57 @@ pub(crate) fn normalize_prompt_cache_conversation_limit(raw: Option<i64>) -> i64
     }
 }
 
+pub(crate) fn normalize_prompt_cache_conversation_activity_hours(raw: Option<i64>) -> Option<i64> {
+    match raw {
+        Some(value @ (1 | 3 | 6 | 12 | 24)) => Some(value),
+        _ => None,
+    }
+}
+
+pub(crate) fn resolve_prompt_cache_conversation_selection(
+    params: PromptCacheConversationsQuery,
+) -> Result<PromptCacheConversationSelection, ApiError> {
+    if params.limit.is_some() && params.activity_hours.is_some() {
+        return Err(ApiError::bad_request(anyhow!(
+            "limit and activityHours are mutually exclusive"
+        )));
+    }
+
+    if let Some(hours) = normalize_prompt_cache_conversation_activity_hours(params.activity_hours) {
+        return Ok(PromptCacheConversationSelection::ActivityWindow(hours));
+    }
+
+    Ok(PromptCacheConversationSelection::Count(
+        normalize_prompt_cache_conversation_limit(params.limit),
+    ))
+}
+
 pub(crate) async fn fetch_prompt_cache_conversations_cached(
     state: &AppState,
-    limit: i64,
+    selection: PromptCacheConversationSelection,
 ) -> Result<PromptCacheConversationsResponse> {
     loop {
         let mut wait_on: Option<watch::Receiver<bool>> = None;
         let mut flight_guard: Option<PromptCacheConversationFlightGuard> = None;
         {
             let mut cache = state.prompt_cache_conversation_cache.lock().await;
-            if let Some(entry) = cache.entries.get(&limit)
+            if let Some(entry) = cache.entries.get(&selection)
                 && entry.cached_at.elapsed()
                     <= Duration::from_secs(PROMPT_CACHE_CONVERSATION_CACHE_TTL_SECS)
             {
                 return Ok(entry.response.clone());
             }
 
-            if let Some(in_flight) = cache.in_flight.get(&limit) {
+            if let Some(in_flight) = cache.in_flight.get(&selection) {
                 wait_on = Some(in_flight.signal.subscribe());
             } else {
                 let (signal, _receiver) = watch::channel(false);
                 cache
                     .in_flight
-                    .insert(limit, PromptCacheConversationInFlight { signal });
+                    .insert(selection, PromptCacheConversationInFlight { signal });
                 flight_guard = Some(PromptCacheConversationFlightGuard::new(
                     state.prompt_cache_conversation_cache.clone(),
-                    limit,
+                    selection,
                 ));
             }
         }
@@ -1462,17 +1487,17 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
             continue;
         }
 
-        let result = build_prompt_cache_conversations_response(state, limit).await;
+        let result = build_prompt_cache_conversations_response(state, selection).await;
 
         if let Some(guard) = flight_guard.as_mut() {
             guard.disarm();
         }
 
         let mut cache = state.prompt_cache_conversation_cache.lock().await;
-        if let Some(in_flight) = cache.in_flight.remove(&limit) {
+        if let Some(in_flight) = cache.in_flight.remove(&selection) {
             if let Ok(response) = &result {
                 cache.entries.insert(
-                    limit,
+                    selection,
                     PromptCacheConversationsCacheEntry {
                         cached_at: Instant::now(),
                         response: response.clone(),
@@ -1488,24 +1513,60 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
 
 pub(crate) async fn build_prompt_cache_conversations_response(
     state: &AppState,
-    limit: i64,
+    selection: PromptCacheConversationSelection,
 ) -> Result<PromptCacheConversationsResponse> {
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let range_end = Utc::now();
-    let range_start = range_end - ChronoDuration::hours(24);
+    let range_start = range_end - ChronoDuration::hours(selection.activity_window_hours());
     let range_start_bound = db_occurred_at_lower_bound(range_start);
+    let display_limit = selection.display_limit();
 
     let aggregates = query_prompt_cache_conversation_aggregates(
         &state.pool,
         &range_start_bound,
         source_scope,
-        limit,
+        display_limit,
     )
     .await?;
+    let active_filtered_count = match selection {
+        PromptCacheConversationSelection::Count(limit) => {
+            let active_keys = query_active_prompt_cache_conversation_keys(
+                &state.pool,
+                &range_start_bound,
+                source_scope,
+            )
+            .await?;
+            let history_keys = query_prompt_cache_conversation_recent_history_keys(
+                &state.pool,
+                source_scope,
+                limit,
+            )
+            .await?;
+            history_keys
+                .into_iter()
+                .filter(|key| !active_keys.contains(key))
+                .count() as i64
+        }
+        PromptCacheConversationSelection::ActivityWindow(_) => {
+            let matched_count = query_active_prompt_cache_conversation_count(
+                &state.pool,
+                &range_start_bound,
+                source_scope,
+            )
+            .await?;
+            matched_count.saturating_sub(display_limit)
+        }
+    };
+    let implicit_filter = selection.implicit_filter(active_filtered_count);
+
     if aggregates.is_empty() {
         return Ok(PromptCacheConversationsResponse {
             range_start: format_utc_iso(range_start),
             range_end: format_utc_iso(range_end),
+            selection_mode: selection.selection_mode(),
+            selected_limit: selection.selected_limit(),
+            selected_activity_hours: selection.selected_activity_hours(),
+            implicit_filter,
             conversations: Vec::new(),
         });
     }
@@ -1514,9 +1575,15 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         .iter()
         .map(|row| row.prompt_cache_key.clone())
         .collect::<Vec<_>>();
+    let chart_range_start_bound = aggregates
+        .iter()
+        .map(|row| row.created_at.as_str())
+        .min()
+        .unwrap_or(range_start_bound.as_str())
+        .to_string();
     let events = query_prompt_cache_conversation_events(
         &state.pool,
-        &range_start_bound,
+        &chart_range_start_bound,
         source_scope,
         &selected_keys,
     )
@@ -1566,6 +1633,10 @@ pub(crate) async fn build_prompt_cache_conversations_response(
     Ok(PromptCacheConversationsResponse {
         range_start: format_utc_iso(range_start),
         range_end: format_utc_iso(range_end),
+        selection_mode: selection.selection_mode(),
+        selected_limit: selection.selected_limit(),
+        selected_activity_hours: selection.selected_activity_hours(),
+        implicit_filter,
         conversations,
     })
 }
@@ -1640,6 +1711,98 @@ pub(crate) async fn query_prompt_cache_conversation_aggregates(
         .fetch_all(pool)
         .await
         .map_err(Into::into)
+}
+
+pub(crate) async fn query_active_prompt_cache_conversation_keys(
+    pool: &Pool<Sqlite>,
+    range_start_bound: &str,
+    source_scope: InvocationSourceScope,
+) -> Result<HashSet<String>> {
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT DISTINCT ");
+    query.push(KEY_EXPR).push(
+        " AS prompt_cache_key \
+         FROM codex_invocations \
+         WHERE occurred_at >= ",
+    );
+    query.push_bind(range_start_bound);
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(KEY_EXPR)
+        .push(" <> ''");
+
+    let rows = query
+        .build_query_as::<PromptCacheConversationKeyRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| row.prompt_cache_key)
+        .collect::<HashSet<_>>())
+}
+
+pub(crate) async fn query_active_prompt_cache_conversation_count(
+    pool: &Pool<Sqlite>,
+    range_start_bound: &str,
+    source_scope: InvocationSourceScope,
+) -> Result<i64> {
+    Ok(
+        query_active_prompt_cache_conversation_keys(pool, range_start_bound, source_scope)
+            .await?
+            .len() as i64,
+    )
+}
+
+pub(crate) async fn query_prompt_cache_conversation_recent_history_keys(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    limit: i64,
+) -> Result<Vec<String>> {
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT prompt_cache_key \
+         FROM (\
+            SELECT ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(
+            " AS prompt_cache_key, MIN(occurred_at) AS created_at \
+             FROM codex_invocations \
+             WHERE ",
+        )
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(KEY_EXPR)
+        .push(" <> ''");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query
+        .push(
+            " GROUP BY prompt_cache_key\
+         ) \
+         ORDER BY created_at DESC \
+         LIMIT ",
+        )
+        .push_bind(limit);
+
+    let rows = query
+        .build_query_as::<PromptCacheConversationKeyRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|row| row.prompt_cache_key).collect())
 }
 
 pub(crate) async fn query_prompt_cache_conversation_events(
@@ -3398,7 +3561,94 @@ impl QuotaSnapshotResponse {
 pub(crate) struct PromptCacheConversationsResponse {
     pub(crate) range_start: String,
     pub(crate) range_end: String,
+    pub(crate) selection_mode: PromptCacheConversationSelectionMode,
+    pub(crate) selected_limit: Option<i64>,
+    pub(crate) selected_activity_hours: Option<i64>,
+    pub(crate) implicit_filter: PromptCacheConversationImplicitFilter,
     pub(crate) conversations: Vec<PromptCacheConversationResponse>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PromptCacheConversationSelectionMode {
+    Count,
+    ActivityWindow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PromptCacheConversationSelection {
+    Count(i64),
+    ActivityWindow(i64),
+}
+
+impl PromptCacheConversationSelection {
+    pub(crate) fn selection_mode(self) -> PromptCacheConversationSelectionMode {
+        match self {
+            Self::Count(_) => PromptCacheConversationSelectionMode::Count,
+            Self::ActivityWindow(_) => PromptCacheConversationSelectionMode::ActivityWindow,
+        }
+    }
+
+    pub(crate) fn activity_window_hours(self) -> i64 {
+        match self {
+            Self::Count(_) => 24,
+            Self::ActivityWindow(hours) => hours,
+        }
+    }
+
+    pub(crate) fn display_limit(self) -> i64 {
+        match self {
+            Self::Count(limit) => limit,
+            Self::ActivityWindow(_) => PROMPT_CACHE_CONVERSATION_ACTIVITY_MODE_LIMIT,
+        }
+    }
+
+    pub(crate) fn selected_limit(self) -> Option<i64> {
+        match self {
+            Self::Count(limit) => Some(limit),
+            Self::ActivityWindow(_) => None,
+        }
+    }
+
+    pub(crate) fn selected_activity_hours(self) -> Option<i64> {
+        match self {
+            Self::Count(_) => None,
+            Self::ActivityWindow(hours) => Some(hours),
+        }
+    }
+
+    pub(crate) fn implicit_filter(
+        self,
+        filtered_count: i64,
+    ) -> PromptCacheConversationImplicitFilter {
+        let kind = if filtered_count > 0 {
+            Some(match self {
+                Self::Count(_) => PromptCacheConversationImplicitFilterKind::InactiveOutside24h,
+                Self::ActivityWindow(_) => PromptCacheConversationImplicitFilterKind::CappedTo50,
+            })
+        } else {
+            None
+        };
+
+        PromptCacheConversationImplicitFilter {
+            kind,
+            filtered_count: filtered_count.max(0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationImplicitFilter {
+    pub(crate) kind: Option<PromptCacheConversationImplicitFilterKind>,
+    pub(crate) filtered_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PromptCacheConversationImplicitFilterKind {
+    InactiveOutside24h,
+    CappedTo50,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3439,22 +3689,27 @@ pub(crate) struct PromptCacheConversationInFlight {
 
 #[derive(Debug, Default)]
 pub(crate) struct PromptCacheConversationsCacheState {
-    pub(crate) entries: HashMap<i64, PromptCacheConversationsCacheEntry>,
-    pub(crate) in_flight: HashMap<i64, PromptCacheConversationInFlight>,
+    pub(crate) entries:
+        HashMap<PromptCacheConversationSelection, PromptCacheConversationsCacheEntry>,
+    pub(crate) in_flight:
+        HashMap<PromptCacheConversationSelection, PromptCacheConversationInFlight>,
 }
 
 #[derive(Debug)]
 pub(crate) struct PromptCacheConversationFlightGuard {
     pub(crate) cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
-    pub(crate) limit: i64,
+    pub(crate) selection: PromptCacheConversationSelection,
     pub(crate) active: bool,
 }
 
 impl PromptCacheConversationFlightGuard {
-    pub(crate) fn new(cache: Arc<Mutex<PromptCacheConversationsCacheState>>, limit: i64) -> Self {
+    pub(crate) fn new(
+        cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
+        selection: PromptCacheConversationSelection,
+    ) -> Self {
         Self {
             cache,
-            limit,
+            selection,
             active: true,
         }
     }
@@ -3471,11 +3726,11 @@ impl Drop for PromptCacheConversationFlightGuard {
         }
 
         let cache = self.cache.clone();
-        let limit = self.limit;
+        let selection = self.selection;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut state = cache.lock().await;
-                if let Some(in_flight) = state.in_flight.remove(&limit) {
+                if let Some(in_flight) = state.in_flight.remove(&selection) {
                     let _ = in_flight.signal.send(true);
                 }
             });
@@ -3483,7 +3738,7 @@ impl Drop for PromptCacheConversationFlightGuard {
         }
 
         if let Ok(mut state) = cache.try_lock()
-            && let Some(in_flight) = state.in_flight.remove(&limit)
+            && let Some(in_flight) = state.in_flight.remove(&selection)
         {
             let _ = in_flight.signal.send(true);
         }
@@ -3774,6 +4029,11 @@ pub(crate) struct PromptCacheConversationEventRow {
     pub(crate) prompt_cache_key: String,
 }
 
+#[derive(Debug, FromRow)]
+pub(crate) struct PromptCacheConversationKeyRow {
+    pub(crate) prompt_cache_key: String,
+}
+
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListQuery {
@@ -3809,6 +4069,7 @@ pub(crate) struct ListQuery {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationsQuery {
     pub(crate) limit: Option<i64>,
+    pub(crate) activity_hours: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
