@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中（3/4）
+- Status: 已完成（4/4）
 - Created: 2026-03-11
 - Last: 2026-03-19
 
@@ -97,7 +97,7 @@
 - [x] M1: `invocation_rollup_daily` range helper落地，并接入 daily timeseries 聚合。
 - [x] M2: 子日级请求跨过 archive 边界时自动提升到 `1d`，并暴露实际生效 bucket 元信息。
 - [x] M3: Rust + 前端回归测试覆盖 archive-aware bucket 行为与 stale bucket 回退。
-- [ ] M4: 验证、spec-sync、PR 与 review-loop 收敛。
+- [x] M4: 验证、spec-sync、PR 与 review-loop 收敛。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -114,3 +114,4 @@
 - 2026-03-11: review-loop 发现 rollup 为 Asia/Shanghai 日粒度后，补充“仅在请求时区日边界匹配时合并 rollup”的保护逻辑与对应 UTC / Asia-Singapore 回归测试。
 - 2026-03-11: 完成 shared testbox 生产快照验证，确认 Asia/Shanghai 日图恢复 archived rollup，UTC 等不匹配时区不会误并入 rollup。
 - 2026-03-19: 扩展热修范围到归档窗口下的 subday bucket guard；`/api/stats/timeseries` 新增 `effectiveBucket` / `availableBuckets` / `bucketLimitedToDaily`，统计页据此自动限制 bucket 并回退 stale 选择。
+- 2026-03-19: 本地验证通过，PR #184 已创建，当前收口到 `PR ready`。
