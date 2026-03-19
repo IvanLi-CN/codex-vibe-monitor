@@ -1,0 +1,58 @@
+---
+title: Storybook
+description: 跳转到 Codex Vibe Monitor Storybook。
+---
+
+import { useEffect, useMemo } from 'react'
+
+export const DEFAULT_LOCAL_STORYBOOK_DEV_ORIGIN = 'http://127.0.0.1:60082'
+export const DEFAULT_DOCS_PORT = '60081'
+
+export function isStandaloneDocsServer(currentUrl) {
+  const docsPort = process.env.RSPRESS_DOCS_PORT || DEFAULT_DOCS_PORT
+  return (
+    ['127.0.0.1', 'localhost'].includes(currentUrl.hostname) &&
+    currentUrl.port === docsPort &&
+    currentUrl.pathname.endsWith('/storybook.html')
+  )
+}
+
+export function getLocalStorybookDevOrigin() {
+  return process.env.RSPRESS_STORYBOOK_DEV_ORIGIN || DEFAULT_LOCAL_STORYBOOK_DEV_ORIGIN
+}
+
+export function buildStorybookTarget(currentHref) {
+  const currentUrl = new URL(currentHref)
+  if (isStandaloneDocsServer(currentUrl)) {
+    const target = new URL('/', getLocalStorybookDevOrigin())
+    const requestedPath = currentUrl.searchParams.get('path')
+    if (requestedPath) {
+      target.searchParams.set('path', requestedPath)
+    }
+    return target
+  }
+  return new URL('./storybook/index.html' + currentUrl.search, currentUrl)
+}
+
+export const StorybookRedirect = () => {
+  const fallbackHref = useMemo(() => {
+    if (typeof window === 'undefined') return './storybook/index.html'
+    return buildStorybookTarget(window.location.href).toString()
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.location.replace(buildStorybookTarget(window.location.href).toString())
+  }, [])
+
+  return (
+    <>
+      <h1>正在跳转到 Storybook…</h1>
+      <p>
+        如果没有自动跳转，请直接打开 <a href={fallbackHref}>Codex Vibe Monitor Storybook</a>。
+      </p>
+    </>
+  )
+}
+
+<StorybookRedirect />

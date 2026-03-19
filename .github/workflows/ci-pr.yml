@@ -77,6 +77,9 @@ jobs:
         working-directory: web
         run: bun install --frozen-lockfile
 
+      - name: Install docs-site dependencies
+        run: bun install --cwd docs-site --frozen-lockfile
+
       - name: Bun-first guard
         run: bun run check:bun-first
 
@@ -202,6 +205,39 @@ jobs:
       - name: Front-end lint
         working-directory: web
         run: bun run lint
+
+      - name: Build Storybook static site
+        working-directory: web
+        run: bun run storybook:build -- --quiet
+
+      - name: Compute DOCS_BASE
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY##*/}"
+          if [[ "${repo}" == "${owner}.github.io" ]]; then
+            echo "DOCS_BASE=/" >> "$GITHUB_ENV"
+          else
+            echo "DOCS_BASE=/${repo}/" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build docs site
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd docs-site
+          DOCS_BASE="${DOCS_BASE}" bun run build
+
+      - name: Assemble public docs site smoke check
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./.github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static .tmp/pages-site
+          test -f .tmp/pages-site/index.html
+          test -f .tmp/pages-site/storybook/index.html
+          test -f .tmp/pages-site/storybook.html
+          grep -q "${DOCS_BASE}storybook.html" .tmp/pages-site/index.html
 
   frontend-tests:
     name: Front-end Tests
