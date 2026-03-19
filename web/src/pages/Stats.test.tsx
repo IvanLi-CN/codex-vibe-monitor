@@ -2,7 +2,8 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import StatsPage, { BUCKET_OPTION_KEYS } from './Stats'
+import StatsPage from './Stats'
+import { BUCKET_OPTION_KEYS } from './stats-options'
 
 const hookMocks = vi.hoisted(() => ({
   useSummary: vi.fn(),

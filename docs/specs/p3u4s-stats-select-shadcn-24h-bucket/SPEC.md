@@ -33,6 +33,7 @@
 - `web/package.json` 与 `web/bun.lock`：补充 `@radix-ui/react-select` 依赖。
 - `web/src/components/ui/select.tsx`：新增项目内 shadcn 风格 `Select` 封装。
 - `web/src/pages/Stats.tsx`：替换 3 处原生选择器，并为 `7d` 增加 `1d` bucket 选项。
+- `web/src/pages/stats-options.ts`：承载 Stats 页范围与桶位配置，避免页面文件导出非组件触发 lint 失败。
 - `web/src/i18n/translations.ts`：新增“每 24 小时 / Every 24 hours”文案。
 - `web/src/pages/Stats.test.tsx`：新增页面级回归测试。
 - `docs/specs/README.md` 与当前 spec：记录本次 fast-flow 交付状态。
@@ -90,6 +91,7 @@
 
 - 2026-03-19: 创建 spec，冻结“Stats 选择器 shadcn 化 + 最近 7 天补 24 小时粒度”范围。
 - 2026-03-19: 已完成 `Select` 组件接入、Stats 页替换、文案补充，以及 `Stats.test.tsx` + `bunx tsc -b` 验证。
+- 2026-03-19: 为满足 `react-refresh/only-export-components`，将 Stats 页桶位配置抽到 `web/src/pages/stats-options.ts`，行为与验收口径保持不变。
 
 ## 参考（References）
 
