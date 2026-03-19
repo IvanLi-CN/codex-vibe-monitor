@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.15.7",
+  "base_stable_version": "1.15.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-19T09:01:59Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.15.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f6b45f5125c20e92277f18bb5a7d1eadf2c51917",
+  "pr_number": 187,
+  "pr_title": "fix(account-pool): harden OAuth import validation flow",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.15.7",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.15.7,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "7427f8325f82203092d1a335a94da1f884d6199e",
+  "type_label": "type:patch"
+}
