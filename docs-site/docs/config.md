@@ -1,22 +1,33 @@
 ---
 title: 配置参考
-description: Codex Vibe Monitor 本地开发、文档站与部署相关的常用配置项。
+description: 先覆盖自部署常用运行参数，再补充开发和文档站配置合同。
 ---
 
 # 配置参考
 
-## 环境变量加载顺序
+## 如果你是第一次部署，先决定这几件事
 
-本地运行时建议把个人配置写入 `.env.local`。服务启动会以仓库根目录下的当前环境变量与 `.env.local` 为准。
+| 关注点 | 关键变量 | 默认值 | 什么时候该改 |
+| --- | --- | --- | --- |
+| 应用监听地址 | `HTTP_BIND` | 本地默认 `127.0.0.1:8080`；运行镜像默认 `0.0.0.0:8080` | 本地开发、容器部署或反向代理拓扑不同时 |
+| 数据库存放位置 | `DATABASE_PATH` | `codex_vibe_monitor.db` | 想把 SQLite 和归档放到持久化卷时 |
+| 上游代理目标 | `OPENAI_UPSTREAM_BASE_URL` | OpenAI 官方默认地址 | 你接的是自建兼容上游或其他转发层时 |
+| 账号池写能力 | `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET` | 无 | 只要你要新增账号、改账号或用 OAuth 登录，就必须配置 |
+| 数据保留与归档 | `RETENTION_ENABLED`、`ARCHIVE_DIR`、各类 retention 天数 | 默认偏保守、默认不开启后台维护 | 想长期运行并控制主库体积时 |
 
-## 核心运行时
+如果你只是先把服务跑起来，通常先确认上表这 4 到 5 项就够了。
 
-- `HTTP_BIND`：后端监听地址，默认 `127.0.0.1:8080`
-- `DATABASE_PATH`：SQLite 主库路径，默认 `codex_vibe_monitor.db`
+## 自部署最常见的运行时变量
+
+### 基础运行
+
+- `HTTP_BIND`：后端监听地址
+- `DATABASE_PATH`：SQLite 主库路径
 - `STATIC_DIR`：若存在则用于托管前端静态产物，默认 `web/dist`
-- `VITE_BACKEND_PROXY`：前端开发服务器代理目标，默认 `http://localhost:8080`
+- `USER_AGENT`：出站请求的默认 UA
+- `CORS_ALLOWED_ORIGINS`：只有需要显式跨域时才配置
 
-## 代理捕获与上游请求
+### 代理捕获与上游请求
 
 - `OPENAI_UPSTREAM_BASE_URL`：OpenAI 兼容上游基址
 - `REQUEST_TIMEOUT_SECS`：通用请求超时
@@ -29,7 +40,7 @@ description: Codex Vibe Monitor 本地开发、文档站与部署相关的常用
 - `PROXY_USAGE_BACKFILL_ON_STARTUP`：历史补数兼容开关
 - `FORWARD_PROXY_ALGO`：forward proxy 权重算法版本
 
-## 上游账号与号池
+### 上游账号与号池
 
 - `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`：启用号池写入与加密落库的必填密钥
 - `UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID`
@@ -40,7 +51,9 @@ description: Codex Vibe Monitor 本地开发、文档站与部署相关的常用
 - `UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS`
 - `UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS`
 
-## 归档与保留
+如果你不打算启用 Account Pool 的写入能力，这一组变量可以后置；如果要走 OAuth 登录或账号写入，这一组不要拖到最后才补。
+
+### 归档与保留
 
 - `RETENTION_ENABLED`
 - `RETENTION_DRY_RUN`
@@ -53,10 +66,11 @@ description: Codex Vibe Monitor 本地开发、文档站与部署相关的常用
 - `STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS`
 - `QUOTA_SNAPSHOT_FULL_DAYS`
 
-这些参数控制在线明细、离线 archive 与定时 maintenance 行为。更深的部署与安全边界说明请回到仓库中的 `docs/deployment.md`。
+这些参数控制在线明细、离线 archive 与后台 maintenance 行为。更细的部署与安全边界请回到仓库里的 [Deployment Guide](https://github.com/IvanLi-CN/codex-vibe-monitor/blob/main/docs/deployment.md)。
 
-## 文档站与 Storybook
+## 开发与文档站相关变量
 
+- `VITE_BACKEND_PROXY`：前端开发服务器代理目标，默认 `http://localhost:8080`
 - `DOCS_PORT`：docs-site 本地 dev/preview 端口，默认 `60081`
 - `DOCS_BASE`：静态站部署基路径；GitHub Pages 项目页通常使用 `/<repo>/`
 - `VITE_STORYBOOK_DEV_ORIGIN`：docs-site 本地 `storybook.html` 跳转到 Storybook dev server 时使用的完整 origin；默认 `http://127.0.0.1:60082`
@@ -70,3 +84,7 @@ description: Codex Vibe Monitor 本地开发、文档站与部署相关的常用
 - Backend：`8080`
 
 这些端口都允许通过 env 或命令行覆盖，但文档、脚本与 CI 默认按以上合同组织。
+
+## 本地环境加载
+
+本地运行时建议把个人配置写入 `.env.local`。服务启动会以仓库根目录下的当前环境变量与 `.env.local` 为准。

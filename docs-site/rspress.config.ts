@@ -23,32 +23,33 @@ export default defineConfig({
     },
   },
   title: 'Codex Vibe Monitor 文档',
-  description: 'Codex Vibe Monitor 的快速开始、配置参考、产品说明与 Storybook 入口。',
+  description: '面向自部署与项目开发的 Codex Vibe Monitor 文档站。',
   lang: 'zh',
   themeConfig: {
     search: true,
     nav: [
       { text: '首页', link: '/' },
-      { text: '快速开始', link: '/quick-start' },
+      { text: '部署与开发', link: '/quick-start' },
       { text: '配置参考', link: '/config' },
-      { text: '产品说明', link: '/product' },
+      { text: '项目介绍', link: '/product' },
       { text: 'Storybook', link: '/storybook.html' },
       { text: 'GitHub', link: 'https://github.com/IvanLi-CN/codex-vibe-monitor' },
     ],
     sidebar: {
       '/': [
         {
-          text: '入门',
+          text: '自部署与上手',
           items: [
-            { text: '文档首页', link: '/' },
-            { text: '快速开始', link: '/quick-start' },
+            { text: '项目首页', link: '/' },
+            { text: '部署与开发', link: '/quick-start' },
             { text: '配置参考', link: '/config' },
-            { text: '产品说明', link: '/product' },
+            { text: '项目介绍', link: '/product' },
           ],
         },
         {
           text: '预览与源码',
           items: [
+            { text: 'Storybook 入口', link: '/storybook.html' },
             { text: 'Storybook 导览', link: '/storybook-guide.html' },
             { text: 'GitHub 仓库', link: 'https://github.com/IvanLi-CN/codex-vibe-monitor' },
           ],
