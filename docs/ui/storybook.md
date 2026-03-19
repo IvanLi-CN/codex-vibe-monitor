@@ -8,6 +8,7 @@
 
 - 全局引入 `web/src/index.css`，所以 Storybook 画布与应用主题保持同一套样式源。
 - 使用 `ThemeProvider` 与 `StorybookThemeBridge` 驱动 light/dark 预览。
+- 本地开发默认端口由 `web/scripts/run-storybook.mjs` 固定为 `60082`，并支持 `STORYBOOK_PORT` 覆盖。
 - 默认布局是 `fullscreen`。
 - 默认 viewport 是 `desktop1280`，可切换到 `mobile390`、`mobile430`、`tablet768`、`laptop1024`、`desktop1440`。
 - docs 画布表面已被改造成跟应用同一套 surface 语言，而不是 Storybook 默认白底文档皮肤。
@@ -27,6 +28,7 @@
 ### 证据采集口径
 
 - 页面级视觉确认优先从 Storybook 或浏览器 smoke 里拿证据，而不是从实现截图中二次猜测布局。
+- public docs 层通过 `docs-site/docs/storybook.mdx` 提供 Storybook 入口；当入口口径变化时要同步回写这个页面。
 - 采集证据时至少覆盖一个桌面 viewport；涉及移动端差异时，再补 `mobile390` 或 `mobile430`。
 - 有主题差异的组件，默认要在 light/dark 两种主题下都能复核。
 

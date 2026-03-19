@@ -8,7 +8,12 @@
 /node_modules
 /web/node_modules
 /web/dist
+/web/storybook-static
 /web/.vite
+/docs-site/node_modules
+/docs-site/doc_build
+/docs-site/.rspress
+/.tmp
 design-system/
 .codex/*
 !.codex/skills/

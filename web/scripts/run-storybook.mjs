@@ -1,4 +1,4 @@
-const defaultPort = '30000'
+const defaultPort = '60082'
 const host = process.env.STORYBOOK_HOST || '127.0.0.1'
 const port = process.env.STORYBOOK_PORT || defaultPort
 
@@ -7,7 +7,7 @@ if (port === '6006') {
   process.exit(1)
 }
 
-const child = Bun.spawn(['bunx', '--bun', 'storybook', 'dev', '--host', host, '--port', port], {
+const child = Bun.spawn(['storybook', 'dev', '--host', host, '--port', port, '--no-open'], {
   stdin: 'inherit',
   stdout: 'inherit',
   stderr: 'inherit',

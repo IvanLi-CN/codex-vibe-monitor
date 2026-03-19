@@ -1,0 +1,12 @@
+{
+  "name": "codex-vibe-monitor-docs-site",
+  "private": true,
+  "scripts": {
+    "dev": "rspress dev --host 127.0.0.1 --port ${DOCS_PORT:-60081}",
+    "build": "rspress build",
+    "preview": "rspress preview --host 127.0.0.1 --port ${DOCS_PORT:-60081}"
+  },
+  "devDependencies": {
+    "rspress": "^1.47.1"
+  }
+}
