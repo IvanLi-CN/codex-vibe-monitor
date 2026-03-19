@@ -13,6 +13,10 @@ import {
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
+import type {
+  ImportedOauthValidationResponse,
+  ImportedOauthValidationRow,
+} from "../../lib/api";
 import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
 
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -106,16 +110,8 @@ class MockValidationEventSource implements EventTarget {
   }
 }
 
-type ImportedOauthValidationStatus =
-  | "pending"
-  | "duplicate_in_input"
-  | "ok"
-  | "ok_exhausted"
-  | "invalid"
-  | "error";
-
 function buildImportedOauthValidationCounts(
-  rows: Array<{ status: ImportedOauthValidationStatus }>,
+  rows: Array<{ status: string }>,
 ) {
   const counts = {
     pending: 0,
@@ -2411,7 +2407,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
   function buildPendingImportedOauthSnapshot(
     items: Array<{ sourceId: string; fileName: string }>,
-  ) {
+  ): ImportedOauthValidationResponse {
     return {
       inputFiles: items.length,
       uniqueInInput: items.length,
@@ -2433,14 +2429,14 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
   function installImportedOauthValidationJobFlow(options: {
     jobId?: string;
-    rowsBySourceId: Record<string, ReturnType<typeof buildImportedOauthRow>>;
+    rowsBySourceId?: Record<string, ReturnType<typeof buildImportedOauthRow>>;
     finalEvent?: "completed" | "failed" | "cancelled";
     finalError?: string;
     stepwise?: boolean;
   } = {}) {
     const {
       jobId = "job-1",
-      rowsBySourceId,
+      rowsBySourceId = {},
       finalEvent = "completed",
       finalError = "Validation job failed",
       stepwise = false,
@@ -2464,7 +2460,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       }) => {
         const pendingSnapshot = buildPendingImportedOauthSnapshot(items);
         const source = new MockValidationEventSource();
-        const currentRows = [...pendingSnapshot.rows];
+        const currentRows: ImportedOauthValidationRow[] = [...pendingSnapshot.rows];
         controller = {
           source,
           pendingSnapshot,
@@ -2948,10 +2944,12 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     expect(
       importOauthAccounts.mock.calls[0]?.[0]?.selectedSourceIds,
     ).toHaveLength(100);
+    expect(importOauthAccounts.mock.calls[0]?.[0]?.validationJobId).toBe("job-1");
     expect(importOauthAccounts.mock.calls[1]?.[0]?.items).toHaveLength(30);
     expect(
       importOauthAccounts.mock.calls[1]?.[0]?.selectedSourceIds,
     ).toHaveLength(30);
+    expect(importOauthAccounts.mock.calls[1]?.[0]?.validationJobId).toBe("job-1");
     expect(document.body.textContent).not.toContain("Import validation");
     expect(navigateMock).not.toHaveBeenCalled();
   });

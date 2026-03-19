@@ -19,7 +19,7 @@
 - 在上游账号新增页增加 `导入` 模式，支持浏览器一次选择多个 OAuth 凭据 `.json` 文件。
 - 新增后端实时校验任务接口与批量 `import` 接口，先逐条校验文件结构与凭据可用性，再导入通过项。
 - 验证阶段要区分 `ok`、`ok_exhausted`、`invalid`、`error`、`duplicate_in_input`，并回传现有账号匹配信息。
-- 导入阶段命中现有账号时更新凭据并重新同步；未命中时创建新的 OAuth 账号。
+- 导入阶段命中现有账号时更新凭据；未命中时创建新的 OAuth 账号。导入主路径复用刚完成的校验产物，不再为每个已通过行重复做整套 probe / sync。
 - 导入结果弹窗对齐 `mixed-results` 交互：顶部统计、结果筛选、逐行状态、重试失败项，以及大结果集分页。
 
 ### Non-goals
@@ -40,7 +40,7 @@
 
 - `validation-jobs` 先创建一次校验任务并返回全量 `pending` 快照；SSE 事件流随后按单条文件推送 `row` 增量，并在结束时推送 `completed / failed / cancelled` 终态。
 - 兼容 `validate` 路由继续保留，用于回归与兼容调用；新前端默认走任务式实时校验。
-- `import` 只接受已验证通过的行键，逐行执行“更新现有账号凭据”或“创建新 OAuth 账号”，然后触发一次同步收口。
+- `import` 只接受已验证通过的行键，逐行执行“更新现有账号凭据”或“创建新 OAuth 账号”，优先复用 `validation-jobs` 缓存的凭据 probe 结果与 usage snapshot，避免导入阶段重复刷新 token、重复拉 usage snapshot。
 - 导入相关路由 `POST /api/pool/upstream-accounts/oauth/imports/validate`、`POST /api/pool/upstream-accounts/oauth/imports/validation-jobs` 与 `POST /api/pool/upstream-accounts/oauth/imports` 使用独立 `32 MiB` body limit，不放大全局 API 限额。
 - 前端验证阶段不再按 `100` 条批次等待整批响应，而是通过任务专属 SSE 逐条刷新；导入阶段继续按固定 `100` 条/批顺序分发，避免单次导入请求体过大。
 - 新建账号默认 `displayName=email`、`isMother=false`，并应用导入页默认 `groupName/groupNote/tagIds`。
@@ -63,7 +63,7 @@
 - Given 用户一次选择上百个文件，When 导入触发多批次请求，Then 结果仍聚合为单一列表视图，分页保持每页 100 条，且不会因为单次请求体过大而返回 `413`。
 - Given 某些文件已失效或结构错误，When 验证结束，Then 这些行显示 `invalid` 或 `error`，且不会阻塞其它可用行导入。
 - Given 两个输入文件指向同一账号，When 验证结束，Then 其中重复行标记为 `duplicate_in_input`，不进入导入通过集合。
-- Given 某输入命中现有账号，When 执行导入，Then 原账号凭据被更新并重新同步，既有分组 / tag / note / 母号不变。
+- Given 某输入命中现有账号，When 执行导入，Then 原账号凭据被更新并沿用校验阶段已拿到的凭据 / usage 结果完成轻量状态落库，既有分组 / tag / note / 母号不变。
 - Given 某输入未命中现有账号，When 执行导入，Then 系统创建新的 OAuth 账号，默认名称为导入邮箱，并继承导入页默认分组与 tags。
 - Given 某一批验证或导入请求失败，When 其它批次已成功完成，Then 已完成批次结果保留，失败批次仅把对应行标记为 `error`，不会回滚其它批次。
 - Given 用户在校验过程中关闭弹窗，When 前端发出取消请求，Then 服务端校验任务停止并释放会话级任务状态。
@@ -93,6 +93,7 @@
 
 - 2026-03-19：补充导入路由专用 `32 MiB` body limit、前端 `100` 条分批验证/导入、共享测试机 413 复现结论与大请求 HTTP 回归要求。
 - 2026-03-19：将验证阶段改为 `validation-jobs + SSE` 逐条实时返回，补充任务取消与“仅表体滚动”的对话框布局约束，并新增相关前后端回归测试。
+- 2026-03-19：补充“导入阶段复用 validation job 缓存结果”的约束，避免 101 线上在 600+ 可导入账号场景下因重复 probe + 立即 sync 导致单次导入持续 30 分钟以上。
 
 ## 实现备注
 

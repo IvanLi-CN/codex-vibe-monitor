@@ -1341,6 +1341,7 @@ export interface ImportedOauthValidationFailedEventPayload {
 export interface ImportValidatedOauthAccountsPayload {
   items: ImportOauthCredentialFilePayload[];
   selectedSourceIds: string[];
+  validationJobId?: string;
   groupName?: string;
   groupNote?: string;
   tagIds?: number[];

@@ -2133,9 +2133,6 @@ export default function UpstreamAccountCreatePage() {
           | ImportedOauthValidationFailedEventPayload,
         importError: string | null,
       ) => {
-        if (importValidationJobIdRef.current === jobId) {
-          importValidationJobIdRef.current = null;
-        }
         closeImportValidationEventSource();
         if (merge) {
           updateRows(payload.snapshot.rows, {
@@ -2161,9 +2158,6 @@ export default function UpstreamAccountCreatePage() {
           );
           finalizeValidation(payload, null);
         } catch (err) {
-          if (importValidationJobIdRef.current === jobId) {
-            importValidationJobIdRef.current = null;
-          }
           closeImportValidationEventSource();
           setImportValidationState((current) =>
             current
@@ -2207,6 +2201,7 @@ export default function UpstreamAccountCreatePage() {
           const payload = normalizeImportedOauthValidationSnapshotEventPayload(
             JSON.parse(message.data),
           );
+          importValidationJobIdRef.current = null;
           finalizeValidation(payload, null);
         } catch {
           closeImportValidationEventSource();
@@ -2460,6 +2455,7 @@ export default function UpstreamAccountCreatePage() {
       !isExistingGroup(groups, normalizedImportGroupName)
         ? groupDraftNotes[normalizedImportGroupName]?.trim() || undefined
         : undefined;
+    const validationJobId = importValidationJobIdRef.current ?? undefined;
     let workingItems = [...importFiles];
     let workingRows = [...currentRows];
     let importedAny = false;
@@ -2480,6 +2476,7 @@ export default function UpstreamAccountCreatePage() {
         const response = await importOauthAccounts({
           items: batch,
           selectedSourceIds: batch.map((item) => item.sourceId),
+          validationJobId,
           groupName: normalizedImportGroupName || undefined,
           groupNote: importGroupNote,
           tagIds: importTagIds,

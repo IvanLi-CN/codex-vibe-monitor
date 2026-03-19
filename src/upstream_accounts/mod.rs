@@ -515,6 +515,8 @@ pub(crate) struct ImportValidatedOauthAccountsRequest {
     items: Vec<ImportOauthCredentialFileRequest>,
     #[serde(default)]
     selected_source_ids: Vec<String>,
+    #[serde(default)]
+    validation_job_id: Option<String>,
     group_name: Option<String>,
     group_note: Option<String>,
     #[serde(default)]
@@ -613,6 +615,7 @@ enum ImportedOauthValidationJobEvent {
 #[derive(Debug)]
 struct ImportedOauthValidationJob {
     snapshot: Mutex<ImportedOauthValidationResponse>,
+    validated_imports: Mutex<HashMap<String, ImportedOauthValidatedImportData>>,
     broadcaster: broadcast::Sender<ImportedOauthValidationJobEvent>,
     cancel: CancellationToken,
     terminal_event: Mutex<Option<ImportedOauthValidationTerminalEvent>>,
@@ -623,6 +626,7 @@ impl ImportedOauthValidationJob {
         let (broadcaster, _rx) = broadcast::channel(256);
         Self {
             snapshot: Mutex::new(snapshot),
+            validated_imports: Mutex::new(HashMap::new()),
             broadcaster,
             cancel: CancellationToken::new(),
             terminal_event: Mutex::new(None),
@@ -830,8 +834,15 @@ struct ImportedOauthProbeOutcome {
     token_expires_at: String,
     credentials: StoredOauthCredentials,
     claims: ChatgptJwtClaims,
+    usage_snapshot: Option<NormalizedUsageSnapshot>,
     exhausted: bool,
     usage_snapshot_warning: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ImportedOauthValidatedImportData {
+    normalized: NormalizedImportedOauthCredentials,
+    probe: ImportedOauthProbeOutcome,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1726,7 +1737,11 @@ async fn build_imported_oauth_validation_response(
             });
             continue;
         }
-        rows.push(build_imported_oauth_validation_row(state, normalized).await);
+        rows.push(
+            build_imported_oauth_validation_result(state, normalized)
+                .await
+                .0,
+        );
     }
 
     build_imported_oauth_validation_response_from_rows(items.len(), rows)
@@ -1829,10 +1844,13 @@ fn imported_oauth_terminal_event_to_sse(
     }
 }
 
-async fn build_imported_oauth_validation_row(
+async fn build_imported_oauth_validation_result(
     state: &AppState,
     normalized: NormalizedImportedOauthCredentials,
-) -> ImportedOauthValidationRow {
+) -> (
+    ImportedOauthValidationRow,
+    Option<ImportedOauthValidatedImportData>,
+) {
     let matched_account = match find_existing_import_match(
         &state.pool,
         &normalized.chatgpt_account_id,
@@ -1842,58 +1860,70 @@ async fn build_imported_oauth_validation_row(
     {
         Ok(value) => value.map(|row| import_match_summary_from_row(&row)),
         Err(err) => {
-            return ImportedOauthValidationRow {
+            return (
+                ImportedOauthValidationRow {
+                    source_id: normalized.source_id,
+                    file_name: normalized.file_name,
+                    email: Some(normalized.email),
+                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                    display_name: Some(normalized.display_name),
+                    token_expires_at: Some(normalized.token_expires_at),
+                    matched_account: None,
+                    status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
+                    detail: Some(err.to_string()),
+                    attempts: 0,
+                },
+                None,
+            );
+        }
+    };
+
+    match probe_imported_oauth_credentials(state, &normalized).await {
+        Ok(outcome) => (
+            ImportedOauthValidationRow {
+                source_id: normalized.source_id.clone(),
+                file_name: normalized.file_name.clone(),
+                email: Some(normalized.email.clone()),
+                chatgpt_account_id: Some(normalized.chatgpt_account_id.clone()),
+                display_name: Some(normalized.display_name.clone()),
+                token_expires_at: Some(outcome.token_expires_at.clone()),
+                matched_account,
+                status: if outcome.exhausted {
+                    IMPORT_VALIDATION_STATUS_OK_EXHAUSTED.to_string()
+                } else {
+                    IMPORT_VALIDATION_STATUS_OK.to_string()
+                },
+                detail: if outcome.exhausted {
+                    Some("usage snapshot indicates the account is currently exhausted".to_string())
+                } else {
+                    outcome.usage_snapshot_warning.clone()
+                },
+                attempts: 1,
+            },
+            Some(ImportedOauthValidatedImportData {
+                normalized,
+                probe: outcome,
+            }),
+        ),
+        Err(err) => (
+            ImportedOauthValidationRow {
                 source_id: normalized.source_id,
                 file_name: normalized.file_name,
                 email: Some(normalized.email),
                 chatgpt_account_id: Some(normalized.chatgpt_account_id),
                 display_name: Some(normalized.display_name),
                 token_expires_at: Some(normalized.token_expires_at),
-                matched_account: None,
-                status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
+                matched_account,
+                status: if is_import_invalid_error_message(&err.to_string()) {
+                    IMPORT_VALIDATION_STATUS_INVALID.to_string()
+                } else {
+                    IMPORT_VALIDATION_STATUS_ERROR.to_string()
+                },
                 detail: Some(err.to_string()),
-                attempts: 0,
-            };
-        }
-    };
-
-    match probe_imported_oauth_credentials(state, &normalized).await {
-        Ok(outcome) => ImportedOauthValidationRow {
-            source_id: normalized.source_id,
-            file_name: normalized.file_name,
-            email: Some(normalized.email),
-            chatgpt_account_id: Some(normalized.chatgpt_account_id),
-            display_name: Some(normalized.display_name),
-            token_expires_at: Some(outcome.token_expires_at),
-            matched_account,
-            status: if outcome.exhausted {
-                IMPORT_VALIDATION_STATUS_OK_EXHAUSTED.to_string()
-            } else {
-                IMPORT_VALIDATION_STATUS_OK.to_string()
+                attempts: 1,
             },
-            detail: if outcome.exhausted {
-                Some("usage snapshot indicates the account is currently exhausted".to_string())
-            } else {
-                outcome.usage_snapshot_warning
-            },
-            attempts: 1,
-        },
-        Err(err) => ImportedOauthValidationRow {
-            source_id: normalized.source_id,
-            file_name: normalized.file_name,
-            email: Some(normalized.email),
-            chatgpt_account_id: Some(normalized.chatgpt_account_id),
-            display_name: Some(normalized.display_name),
-            token_expires_at: Some(normalized.token_expires_at),
-            matched_account,
-            status: if is_import_invalid_error_message(&err.to_string()) {
-                IMPORT_VALIDATION_STATUS_INVALID.to_string()
-            } else {
-                IMPORT_VALIDATION_STATUS_ERROR.to_string()
-            },
-            detail: Some(err.to_string()),
-            attempts: 1,
-        },
+            None,
+        ),
     }
 }
 
@@ -1901,6 +1931,7 @@ async fn update_imported_oauth_validation_job_row(
     job: &Arc<ImportedOauthValidationJob>,
     row_index: usize,
     row: ImportedOauthValidationRow,
+    validated_import: Option<ImportedOauthValidatedImportData>,
 ) {
     let counts = {
         let mut snapshot = job.snapshot.lock().await;
@@ -1920,6 +1951,13 @@ async fn update_imported_oauth_validation_job_row(
             .saturating_sub(snapshot.duplicate_in_input);
         compute_imported_oauth_validation_counts(&snapshot.rows)
     };
+    let source_id = row.source_id.clone();
+    let mut validated_imports = job.validated_imports.lock().await;
+    if let Some(validated_import) = validated_import {
+        validated_imports.insert(source_id, validated_import);
+    } else {
+        validated_imports.remove(&source_id);
+    }
     let _ = job.broadcaster.send(ImportedOauthValidationJobEvent::Row(
         ImportedOauthValidationRowEvent { row, counts },
     ));
@@ -1992,7 +2030,7 @@ fn schedule_imported_oauth_validation_job_cleanup(
     job_id: String,
 ) {
     tokio::spawn(async move {
-        sleep(Duration::from_secs(60)).await;
+        sleep(Duration::from_secs(15 * 60)).await;
         let should_remove = match runtime.get_validation_job(&job_id).await {
             Some(job) => job.terminal_event.lock().await.is_some(),
             None => false,
@@ -2039,13 +2077,15 @@ fn spawn_imported_oauth_validation_job(
                                 detail: Some(message),
                                 attempts: 0,
                             },
+                            None,
                         )
                         .await;
                         continue;
                     }
                 };
 
-                let match_key = imported_match_key(&normalized.email, &normalized.chatgpt_account_id);
+                let match_key =
+                    imported_match_key(&normalized.email, &normalized.chatgpt_account_id);
                 if !seen_keys.insert(match_key) {
                     update_imported_oauth_validation_job_row(
                         &job,
@@ -2064,6 +2104,7 @@ fn spawn_imported_oauth_validation_job(
                             ),
                             attempts: 0,
                         },
+                        None,
                     )
                     .await;
                     continue;
@@ -2077,7 +2118,7 @@ fn spawn_imported_oauth_validation_job(
                 async move {
                     (
                         row_index,
-                        build_imported_oauth_validation_row(state.as_ref(), normalized).await,
+                        build_imported_oauth_validation_result(state.as_ref(), normalized).await,
                     )
                 }
             }))
@@ -2092,8 +2133,14 @@ fn spawn_imported_oauth_validation_job(
                     }
                     next = validations.next() => {
                         match next {
-                            Some((row_index, row)) => {
-                                update_imported_oauth_validation_job_row(&job, row_index, row).await;
+                            Some((row_index, (row, validated_import))) => {
+                                update_imported_oauth_validation_job_row(
+                                    &job,
+                                    row_index,
+                                    row,
+                                    validated_import,
+                                )
+                                .await;
                             }
                             None => break,
                         }
@@ -2271,9 +2318,16 @@ pub(crate) async fn import_validated_oauth_accounts(
             "cross-origin account writes are forbidden".to_string(),
         ));
     }
+    let ImportValidatedOauthAccountsRequest {
+        items,
+        selected_source_ids,
+        validation_job_id,
+        group_name,
+        group_note,
+        tag_ids,
+    } = payload;
     let crypto_key = state.upstream_accounts.require_crypto_key()?;
-    let selected_source_ids = payload
-        .selected_source_ids
+    let selected_source_ids = selected_source_ids
         .into_iter()
         .filter_map(|value| normalize_optional_text(Some(value)))
         .collect::<HashSet<_>>();
@@ -2283,11 +2337,21 @@ pub(crate) async fn import_validated_oauth_accounts(
             "selectedSourceIds must not be empty".to_string(),
         ));
     }
-    let group_name = normalize_optional_text(payload.group_name);
-    let group_note = normalize_optional_text(payload.group_note);
+    let group_name = normalize_optional_text(group_name);
+    let group_note = normalize_optional_text(group_note);
     validate_group_note_target(group_name.as_deref(), group_note.is_some())?;
-    let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
-    let input_files = payload.items.len();
+    let tag_ids = validate_tag_ids(&state.pool, &tag_ids).await?;
+    let cached_validation_results = if let Some(job_id) = normalize_optional_text(validation_job_id)
+    {
+        if let Some(job) = state.upstream_accounts.get_validation_job(&job_id).await {
+            job.validated_imports.lock().await.clone()
+        } else {
+            HashMap::new()
+        }
+    } else {
+        HashMap::new()
+    };
+    let input_files = items.len();
     let selected_files = selected_source_ids.len();
 
     let mut created = 0usize;
@@ -2296,27 +2360,31 @@ pub(crate) async fn import_validated_oauth_accounts(
     let mut seen_keys = HashSet::new();
     let mut results = Vec::new();
 
-    for item in payload.items {
+    for item in items {
         if !selected_source_ids.contains(&item.source_id) {
             continue;
         }
 
-        let normalized = match normalize_imported_oauth_credentials(&item) {
-            Ok(value) => value,
-            Err(message) => {
-                failed += 1;
-                results.push(ImportedOauthImportResult {
-                    source_id: item.source_id,
-                    file_name: item.file_name,
-                    email: None,
-                    chatgpt_account_id: None,
-                    account_id: None,
-                    status: IMPORT_RESULT_STATUS_FAILED.to_string(),
-                    detail: Some(message),
-                    matched_account: None,
-                });
-                continue;
-            }
+        let cached_validation = cached_validation_results.get(&item.source_id).cloned();
+        let normalized = match cached_validation.as_ref() {
+            Some(cached) => cached.normalized.clone(),
+            None => match normalize_imported_oauth_credentials(&item) {
+                Ok(value) => value,
+                Err(message) => {
+                    failed += 1;
+                    results.push(ImportedOauthImportResult {
+                        source_id: item.source_id,
+                        file_name: item.file_name,
+                        email: None,
+                        chatgpt_account_id: None,
+                        account_id: None,
+                        status: IMPORT_RESULT_STATUS_FAILED.to_string(),
+                        detail: Some(message),
+                        matched_account: None,
+                    });
+                    continue;
+                }
+            },
         };
 
         let match_key = imported_match_key(&normalized.email, &normalized.chatgpt_account_id);
@@ -2359,23 +2427,25 @@ pub(crate) async fn import_validated_oauth_accounts(
             }
         };
         let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
-
-        let probe = match probe_imported_oauth_credentials(state.as_ref(), &normalized).await {
-            Ok(value) => value,
-            Err(err) => {
-                failed += 1;
-                results.push(ImportedOauthImportResult {
-                    source_id: normalized.source_id,
-                    file_name: normalized.file_name,
-                    email: Some(normalized.email),
-                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                    account_id: existing_match.as_ref().map(|row| row.id),
-                    status: IMPORT_RESULT_STATUS_FAILED.to_string(),
-                    detail: Some(err.to_string()),
-                    matched_account,
-                });
-                continue;
-            }
+        let probe = match cached_validation {
+            Some(cached) => cached.probe,
+            None => match probe_imported_oauth_credentials(state.as_ref(), &normalized).await {
+                Ok(value) => value,
+                Err(err) => {
+                    failed += 1;
+                    results.push(ImportedOauthImportResult {
+                        source_id: normalized.source_id,
+                        file_name: normalized.file_name,
+                        email: Some(normalized.email),
+                        chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                        account_id: existing_match.as_ref().map(|row| row.id),
+                        status: IMPORT_RESULT_STATUS_FAILED.to_string(),
+                        detail: Some(err.to_string()),
+                        matched_account,
+                    });
+                    continue;
+                }
+            },
         };
 
         let encrypted_credentials = encrypt_credentials(
@@ -2446,17 +2516,21 @@ pub(crate) async fn import_validated_oauth_accounts(
             account_id
         };
 
-        let sync_warning =
-            match sync_upstream_account_by_id(state.as_ref(), persisted_account_id, false).await {
-                Ok(_) => None,
+        let import_warning =
+            match apply_imported_oauth_probe_result(state.as_ref(), persisted_account_id, &probe)
+                .await
+            {
+                Ok(warning) => warning,
                 Err(err) => {
                     warn!(
                         account_id = persisted_account_id,
                         source_id = %normalized.source_id,
                         error = %err,
-                        "imported OAuth credential persisted but initial sync failed"
+                        "imported OAuth credential persisted but post-import state update failed"
                     );
-                    Some(format!("Imported, but initial sync failed: {err}"))
+                    Some(format!(
+                        "Imported, but post-import state update failed: {err}"
+                    ))
                 }
             };
 
@@ -2476,7 +2550,7 @@ pub(crate) async fn import_validated_oauth_accounts(
             } else {
                 IMPORT_RESULT_STATUS_CREATED.to_string()
             },
-            detail: sync_warning,
+            detail: import_warning,
             matched_account,
         });
     }
@@ -3982,6 +4056,7 @@ async fn probe_imported_oauth_credentials(
         token_expires_at,
         credentials,
         claims,
+        usage_snapshot: snapshot.clone(),
         exhausted: snapshot
             .as_ref()
             .is_some_and(imported_snapshot_is_exhausted),
@@ -4363,6 +4438,25 @@ async fn persist_usage_snapshot(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+async fn apply_imported_oauth_probe_result(
+    state: &AppState,
+    account_id: i64,
+    probe: &ImportedOauthProbeOutcome,
+) -> Result<Option<String>> {
+    if let Some(snapshot) = probe.usage_snapshot.as_ref() {
+        persist_usage_snapshot(
+            &state.pool,
+            account_id,
+            probe.claims.chatgpt_plan_type.as_deref(),
+            snapshot,
+            state.config.upstream_accounts_history_retention_days,
+        )
+        .await?;
+        mark_account_sync_success(&state.pool, account_id).await?;
+    }
+    Ok(probe.usage_snapshot_warning.clone())
 }
 
 struct OauthAccountUpsert<'a> {
@@ -8851,6 +8945,89 @@ mod tests {
         let error = normalize_imported_oauth_credentials(&item)
             .expect_err("expected imported oauth mismatch");
         assert_eq!(error, "email does not match id_token");
+    }
+
+    #[tokio::test]
+    async fn imported_oauth_validation_job_caches_successful_probe_for_import_reuse() {
+        let job = Arc::new(ImportedOauthValidationJob::new(
+            ImportedOauthValidationResponse {
+                input_files: 1,
+                unique_in_input: 1,
+                duplicate_in_input: 0,
+                rows: vec![ImportedOauthValidationRow {
+                    source_id: "source-1".to_string(),
+                    file_name: "alpha.json".to_string(),
+                    email: None,
+                    chatgpt_account_id: None,
+                    display_name: None,
+                    token_expires_at: None,
+                    matched_account: None,
+                    status: "pending".to_string(),
+                    detail: None,
+                    attempts: 0,
+                }],
+            },
+        ));
+        let normalized = NormalizedImportedOauthCredentials {
+            source_id: "source-1".to_string(),
+            file_name: "alpha.json".to_string(),
+            email: "alpha@duckmail.sbs".to_string(),
+            display_name: "alpha@duckmail.sbs".to_string(),
+            chatgpt_account_id: "acct_alpha".to_string(),
+            token_expires_at: "2026-03-20T00:00:00Z".to_string(),
+            credentials: StoredOauthCredentials {
+                access_token: "access-token".to_string(),
+                refresh_token: "refresh-token".to_string(),
+                id_token: test_id_token(
+                    "alpha@duckmail.sbs",
+                    Some("acct_alpha"),
+                    Some("user_alpha"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            },
+            claims: test_claims("alpha@duckmail.sbs", Some("acct_alpha"), Some("user_alpha")),
+        };
+        let probe = ImportedOauthProbeOutcome {
+            token_expires_at: "2026-03-20T00:00:00Z".to_string(),
+            credentials: normalized.credentials.clone(),
+            claims: normalized.claims.clone(),
+            usage_snapshot: None,
+            exhausted: false,
+            usage_snapshot_warning: Some(
+                "usage snapshot unavailable during validation".to_string(),
+            ),
+        };
+
+        update_imported_oauth_validation_job_row(
+            &job,
+            0,
+            ImportedOauthValidationRow {
+                source_id: "source-1".to_string(),
+                file_name: "alpha.json".to_string(),
+                email: Some("alpha@duckmail.sbs".to_string()),
+                chatgpt_account_id: Some("acct_alpha".to_string()),
+                display_name: Some("alpha@duckmail.sbs".to_string()),
+                token_expires_at: Some("2026-03-20T00:00:00Z".to_string()),
+                matched_account: None,
+                status: IMPORT_VALIDATION_STATUS_OK.to_string(),
+                detail: probe.usage_snapshot_warning.clone(),
+                attempts: 1,
+            },
+            Some(ImportedOauthValidatedImportData { normalized, probe }),
+        )
+        .await;
+
+        let cached = job
+            .validated_imports
+            .lock()
+            .await
+            .get("source-1")
+            .cloned()
+            .expect("cached validated import");
+        assert_eq!(cached.normalized.email, "alpha@duckmail.sbs");
+        assert_eq!(cached.normalized.chatgpt_account_id, "acct_alpha");
+        assert_eq!(cached.probe.credentials.refresh_token, "refresh-token");
     }
 
     #[test]
