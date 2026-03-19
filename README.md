@@ -40,6 +40,8 @@
 - docs-site 默认本地地址：`http://127.0.0.1:60081`
 - Storybook 默认本地地址：`http://127.0.0.1:60082`
 - GitHub Pages 会把 docs-site 发布到站点根目录，并把 Storybook 装配到 `/storybook/`
+- public docs 面向三类读者：想自部署的人、想继续开发的人、先想快速了解项目的人
+- 当前 public docs 入口按“项目介绍 / 快速开始 / 配置与运行 / 自部署 / 排障 / 开发 / Storybook”组织
 
 ## 目录结构
 
