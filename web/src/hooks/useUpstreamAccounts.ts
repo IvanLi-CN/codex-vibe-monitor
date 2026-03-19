@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  cancelImportedOauthValidationJob,
   createApiKeyUpstreamAccount,
+  createImportedOauthValidationJob,
   createOauthMailboxSession,
   completeOauthLoginSession,
   createOauthLoginSession,
@@ -23,6 +25,7 @@ import {
   type FetchUpstreamAccountsQuery,
   type ImportValidatedOauthAccountsPayload,
   type ImportedOauthImportResponse,
+  type ImportedOauthValidationJobResponse,
   type ImportedOauthValidationResponse,
   type LoginSessionStatusResponse,
   type OauthMailboxSession,
@@ -314,6 +317,17 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     [],
   )
 
+  const startImportedOauthValidationJob = useCallback(
+    async (payload: ValidateImportedOauthAccountsPayload): Promise<ImportedOauthValidationJobResponse> => {
+      return createImportedOauthValidationJob(payload)
+    },
+    [],
+  )
+
+  const stopImportedOauthValidationJob = useCallback(async (jobId: string) => {
+    await cancelImportedOauthValidationJob(jobId)
+  }, [])
+
   const importOauthAccounts = useCallback(
     async (payload: ImportValidatedOauthAccountsPayload): Promise<ImportedOauthImportResponse> => {
       const response = await importValidatedOauthAccounts(payload)
@@ -450,6 +464,8 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     completeOauthLogin,
     createApiKeyAccount,
     runImportedOauthValidation,
+    startImportedOauthValidationJob,
+    stopImportedOauthValidationJob,
     importOauthAccounts,
     saveAccount,
     saveRouting,

@@ -20544,6 +20544,87 @@ async fn post_same_origin_json(
         .expect("request should succeed")
 }
 
+async fn delete_same_origin(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    path: &str,
+) -> reqwest::Response {
+    let origin = format!("http://{addr}");
+    client
+        .delete(format!("{origin}{path}"))
+        .header(reqwest::header::ORIGIN, &origin)
+        .header(reqwest::header::REFERER, format!("{origin}/"))
+        .send()
+        .await
+        .expect("request should succeed")
+}
+
+fn parse_sse_frame(frame: &str) -> Option<(String, String)> {
+    let mut event_name = None::<String>;
+    let mut data_lines = Vec::new();
+    for line in frame.lines() {
+        if let Some(value) = line.strip_prefix("event:") {
+            event_name = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data_lines.push(value.trim().to_string());
+        }
+    }
+    match (event_name, data_lines.is_empty()) {
+        (Some(event_name), false) => Some((event_name, data_lines.join("\n"))),
+        _ => None,
+    }
+}
+
+async fn collect_sse_events(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    path: &str,
+    expected_count: usize,
+) -> Vec<(String, String)> {
+    let response = client
+        .get(format!("http://{addr}{path}"))
+        .send()
+        .await
+        .expect("sse request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.starts_with("text/event-stream")),
+        Some(true)
+    );
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut events = Vec::new();
+    while events.len() < expected_count {
+        let next_chunk = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("sse stream should produce data before timeout");
+        let chunk = next_chunk
+            .expect("sse stream should stay open")
+            .expect("sse chunk should decode");
+        buffer.push_str(
+            &std::str::from_utf8(&chunk)
+                .expect("sse chunk should be utf-8")
+                .replace("\r\n", "\n"),
+        );
+        while let Some(split_index) = buffer.find("\n\n") {
+            let frame = buffer[..split_index].to_string();
+            buffer = buffer[(split_index + 2)..].to_string();
+            if let Some(event) = parse_sse_frame(&frame) {
+                events.push(event);
+                if events.len() >= expected_count {
+                    break;
+                }
+            }
+        }
+    }
+    events
+}
+
 #[tokio::test]
 async fn imported_oauth_validate_route_accepts_large_request_body() {
     let state = test_state_from_config(test_config(), false).await;
@@ -20617,6 +20698,127 @@ async fn imported_oauth_import_route_accepts_large_request_body() {
         "import route should no longer reject large import payloads before business handling"
     );
     assert!(text.contains("\"summary\""));
+
+    state.shutdown.cancel();
+    server_handle.await.expect("http server task should join");
+}
+
+#[tokio::test]
+async fn imported_oauth_validation_job_stream_replays_snapshot_and_completed_terminal_event() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (addr, server_handle) = spawn_http_server(state.clone())
+        .await
+        .expect("spawn http server");
+    state.startup_ready.store(true, Ordering::Release);
+
+    let client = reqwest::Client::new();
+    let create_response = post_same_origin_json(
+        &client,
+        addr,
+        "/api/pool/upstream-accounts/oauth/imports/validation-jobs",
+        json!({
+            "items": [
+                {
+                    "sourceId": "invalid-source",
+                    "fileName": "broken@duckmail.sbs.json",
+                    "content": "{not-json",
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let created: Value = create_response
+        .json()
+        .await
+        .expect("read create job payload");
+    let job_id = created.get("jobId").and_then(Value::as_str).expect("jobId");
+    assert_eq!(
+        created
+            .get("snapshot")
+            .and_then(|snapshot| snapshot.get("rows"))
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("pending")
+    );
+
+    let events = collect_sse_events(
+        &client,
+        addr,
+        &format!("/api/pool/upstream-accounts/oauth/imports/validation-jobs/{job_id}/events"),
+        2,
+    )
+    .await;
+    assert_eq!(events[0].0, "snapshot");
+    assert_eq!(events[1].0, "completed");
+    let completed_payload: Value =
+        serde_json::from_str(&events[1].1).expect("completed event should be valid json");
+    assert_eq!(
+        completed_payload
+            .get("snapshot")
+            .and_then(|snapshot| snapshot.get("rows"))
+            .and_then(Value::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.get("status"))
+            .and_then(Value::as_str),
+        Some("invalid")
+    );
+
+    state.shutdown.cancel();
+    server_handle.await.expect("http server task should join");
+}
+
+#[tokio::test]
+async fn imported_oauth_validation_job_delete_removes_completed_job() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (addr, server_handle) = spawn_http_server(state.clone())
+        .await
+        .expect("spawn http server");
+    state.startup_ready.store(true, Ordering::Release);
+
+    let client = reqwest::Client::new();
+    let create_response = post_same_origin_json(
+        &client,
+        addr,
+        "/api/pool/upstream-accounts/oauth/imports/validation-jobs",
+        json!({
+            "items": [
+                {
+                    "sourceId": "invalid-source",
+                    "fileName": "broken@duckmail.sbs.json",
+                    "content": "{not-json",
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let created: Value = create_response
+        .json()
+        .await
+        .expect("read create job payload");
+    let job_id = created.get("jobId").and_then(Value::as_str).expect("jobId");
+
+    let delete_response = delete_same_origin(
+        &client,
+        addr,
+        &format!("/api/pool/upstream-accounts/oauth/imports/validation-jobs/{job_id}"),
+    )
+    .await;
+    assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+    let response = client
+        .get(format!(
+            "http://{addr}/api/pool/upstream-accounts/oauth/imports/validation-jobs/{job_id}/events"
+        ))
+        .send()
+        .await
+        .expect("lookup request should succeed");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     state.shutdown.cancel();
     server_handle.await.expect("http server task should join");
