@@ -1,5 +1,6 @@
 import { AppIcon } from '../AppIcon'
 import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { resolveTextInputAutocompleteProps, type TextInputAutocompleteOffProps } from '../../lib/form-autocomplete'
 import { cn } from '../../lib/utils'
 
 interface FilterableComboboxProps {
@@ -18,6 +19,7 @@ interface FilterableComboboxProps {
   name?: string
   id?: string
   onOpenChange?: (open: boolean) => void
+  inputAutocompleteProps?: Partial<TextInputAutocompleteOffProps>
 }
 
 export function FilterableCombobox({
@@ -36,6 +38,7 @@ export function FilterableCombobox({
   name,
   id,
   onOpenChange,
+  inputAutocompleteProps,
 }: FilterableComboboxProps) {
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(-1)
@@ -43,6 +46,7 @@ export function FilterableCombobox({
   const fallbackInputId = useId()
   const listId = useId()
   const inputId = id ?? fallbackInputId
+  const resolvedInputAutocompleteProps = resolveTextInputAutocompleteProps(inputAutocompleteProps)
 
   useEffect(() => {
     onOpenChange?.(open)
@@ -105,6 +109,7 @@ export function FilterableCombobox({
   return (
     <div ref={rootRef} className={cn('relative', className)}>
       <input
+        {...resolvedInputAutocompleteProps}
         role="combobox"
         id={inputId}
         name={name}
