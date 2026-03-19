@@ -53,7 +53,9 @@ import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import type {
   ImportOauthCredentialFilePayload,
+  ImportedOauthValidationFailedEventPayload,
   ImportedOauthValidationRow,
+  ImportedOauthValidationSnapshotEventPayload,
   LoginSessionStatusResponse,
   OauthMailboxSession,
   OauthMailboxSessionSupported,
@@ -62,7 +64,13 @@ import type {
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import { fetchUpstreamAccountDetail } from "../../lib/api";
+import {
+  createImportedOauthValidationJobEventSource,
+  fetchUpstreamAccountDetail,
+  normalizeImportedOauthValidationFailedEventPayload,
+  normalizeImportedOauthValidationRowEventPayload,
+  normalizeImportedOauthValidationSnapshotEventPayload,
+} from "../../lib/api";
 import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import {
@@ -367,6 +375,20 @@ function buildImportedOauthStateFromRows(
   };
 }
 
+function buildImportedOauthStateFromSnapshot(
+  snapshot: ImportedOauthValidationSnapshotEventPayload["snapshot"],
+): ImportedOauthValidationDialogState {
+  return {
+    inputFiles: snapshot.inputFiles,
+    uniqueInInput: snapshot.uniqueInInput,
+    duplicateInInput: snapshot.duplicateInInput,
+    checking: true,
+    importing: false,
+    rows: snapshot.rows,
+    importError: null,
+  };
+}
+
 function chunkImportedOauthItems(
   items: ImportOauthCredentialFilePayload[],
   size: number = IMPORT_VALIDATION_PAGE_SIZE,
@@ -431,6 +453,37 @@ function mergeImportedOauthValidationRows(
         attempts: retriedSourceIds.has(row.sourceId)
           ? Math.max(nextRow.attempts, row.attempts + 1)
           : nextRow.attempts,
+      };
+    }),
+  );
+}
+
+function mergeImportedOauthValidationRow(
+  currentRows: ImportedOauthValidationRow[],
+  nextRow: ImportedOauthValidationRow,
+  retriedSourceIds: Set<string>,
+) {
+  return mergeImportedOauthValidationRows(
+    currentRows,
+    [nextRow],
+    retriedSourceIds,
+  );
+}
+
+function replaceImportedOauthValidationRows(
+  currentRows: ImportedOauthValidationRow[],
+  nextRows: ImportedOauthValidationRow[],
+) {
+  const nextBySourceId = new Map(
+    nextRows.map((row) => [row.sourceId, row] as const),
+  );
+  return applyImportedOauthDuplicateStatuses(
+    currentRows.map((row) => {
+      const nextRow = nextBySourceId.get(row.sourceId);
+      if (!nextRow) return row;
+      return {
+        ...row,
+        ...nextRow,
       };
     }),
   );
@@ -942,7 +995,8 @@ export default function UpstreamAccountCreatePage() {
     removeOauthMailboxSession,
     completeOauthLogin,
     createApiKeyAccount,
-    runImportedOauthValidation,
+    startImportedOauthValidationJob,
+    stopImportedOauthValidationJob,
     importOauthAccounts,
     saveGroupNote,
   } = useUpstreamAccounts();
@@ -1100,6 +1154,9 @@ export default function UpstreamAccountCreatePage() {
   const [importValidationState, setImportValidationState] =
     useState<ImportedOauthValidationDialogState | null>(null);
   const [importInputKey, setImportInputKey] = useState(0);
+  const importValidationEventSourceRef = useRef<EventSource | null>(null);
+  const importValidationEventCleanupRef = useRef<(() => void) | null>(null);
+  const importValidationJobIdRef = useRef<string | null>(null);
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([]);
   const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(
     () => initialBatchRows,
@@ -1899,11 +1956,295 @@ export default function UpstreamAccountCreatePage() {
   };
 
   const handleTabChange = (tab: CreateTab) => {
+    if (tab !== "import" && importValidationState?.checking) {
+      void (async () => {
+        const jobId = importValidationJobIdRef.current;
+        importValidationJobIdRef.current = null;
+        importValidationEventCleanupRef.current?.();
+        importValidationEventCleanupRef.current = null;
+        importValidationEventSourceRef.current?.close();
+        importValidationEventSourceRef.current = null;
+        if (jobId) {
+          try {
+            await stopImportedOauthValidationJob(jobId);
+          } catch {
+            // ignore best-effort cancellation while leaving the page
+          }
+        }
+      })();
+      setImportValidationDialogOpen(false);
+      setImportValidationState(null);
+    }
     setActiveTab(tab);
     if (isRelinking) return;
     const search = tab === "oauth" ? "?mode=oauth" : `?mode=${tab}`;
     navigate(`${location.pathname}${search}`, { replace: true });
   };
+
+  const closeImportValidationEventSource = useCallback(() => {
+    importValidationEventCleanupRef.current?.();
+    importValidationEventCleanupRef.current = null;
+    importValidationEventSourceRef.current?.close();
+    importValidationEventSourceRef.current = null;
+  }, []);
+
+  const cancelActiveImportedOauthValidation = useCallback(
+    async ({ closeDialog }: { closeDialog: boolean }) => {
+      const jobId = importValidationJobIdRef.current;
+      importValidationJobIdRef.current = null;
+      closeImportValidationEventSource();
+      if (closeDialog) {
+        setImportValidationDialogOpen(false);
+        setImportValidationState(null);
+      }
+      if (!jobId) return;
+      try {
+        await stopImportedOauthValidationJob(jobId);
+      } catch {
+        // Ignore cancellation failures; the local UI state is already closed.
+      }
+    },
+    [closeImportValidationEventSource, stopImportedOauthValidationJob],
+  );
+
+  const attachImportedOauthValidationJob = useCallback(
+    ({
+      jobId,
+      allItems,
+      merge,
+      retriedSourceIds,
+    }: {
+      jobId: string;
+      allItems: ImportOauthCredentialFilePayload[];
+      merge: boolean;
+      retriedSourceIds: Set<string>;
+    }) => {
+      closeImportValidationEventSource();
+      importValidationJobIdRef.current = jobId;
+      const eventSource = createImportedOauthValidationJobEventSource(jobId);
+      importValidationEventSourceRef.current = eventSource;
+
+      const updateRows = (
+        nextRows: ImportedOauthValidationRow[],
+        options?: {
+          checking?: boolean;
+          importError?: string | null;
+        },
+      ) => {
+        setImportValidationState((current) => {
+          const baselineRows = current?.rows ?? buildImportedOauthPendingState(allItems).rows;
+          const mergedRows = merge
+            ? nextRows.length === 1
+              ? mergeImportedOauthValidationRow(
+                  baselineRows,
+                  nextRows[0]!,
+                  retriedSourceIds,
+                )
+              : mergeImportedOauthValidationRows(
+                  baselineRows,
+                  nextRows,
+                  retriedSourceIds,
+                )
+            : mergeImportedOauthValidationRows(
+                baselineRows,
+                nextRows,
+                new Set(nextRows.map((row) => row.sourceId)),
+              );
+          return {
+            ...buildImportedOauthStateFromRows(mergedRows, allItems),
+            checking: options?.checking ?? true,
+            importing: false,
+            importError: options?.importError ?? null,
+          };
+        });
+      };
+
+      const handleSnapshot = (event: Event) => {
+        if (importValidationJobIdRef.current !== jobId) return;
+        const message = event as MessageEvent<string>;
+        try {
+          const payload = normalizeImportedOauthValidationSnapshotEventPayload(
+            JSON.parse(message.data),
+          );
+          if (merge) {
+            setImportValidationState((current) => {
+              const baselineRows =
+                current?.rows ?? buildImportedOauthPendingState(allItems).rows;
+              return {
+                ...buildImportedOauthStateFromRows(
+                  replaceImportedOauthValidationRows(
+                    baselineRows,
+                    payload.snapshot.rows,
+                  ),
+                  allItems,
+                ),
+                checking: true,
+                importing: false,
+                importError: null,
+              };
+            });
+            return;
+          }
+          setImportValidationState({
+            ...buildImportedOauthStateFromSnapshot(payload.snapshot),
+            checking: true,
+            importing: false,
+            importError: null,
+          });
+        } catch (err) {
+          setImportValidationState((current) =>
+            current
+              ? {
+                  ...current,
+                  checking: false,
+                  importing: false,
+                  importError: err instanceof Error ? err.message : String(err),
+                }
+              : current,
+          );
+        }
+      };
+
+      const handleRow = (event: Event) => {
+        if (importValidationJobIdRef.current !== jobId) return;
+        const message = event as MessageEvent<string>;
+        try {
+          const payload = normalizeImportedOauthValidationRowEventPayload(
+            JSON.parse(message.data),
+          );
+          updateRows([payload.row], { checking: true, importError: null });
+        } catch (err) {
+          setImportValidationState((current) =>
+            current
+              ? {
+                  ...current,
+                  checking: false,
+                  importing: false,
+                  importError: err instanceof Error ? err.message : String(err),
+                }
+              : current,
+          );
+        }
+      };
+
+      const finalizeValidation = (
+        payload:
+          | ImportedOauthValidationSnapshotEventPayload
+          | ImportedOauthValidationFailedEventPayload,
+        importError: string | null,
+      ) => {
+        closeImportValidationEventSource();
+        if (merge) {
+          updateRows(payload.snapshot.rows, {
+            checking: false,
+            importError,
+          });
+          return;
+        }
+        setImportValidationState({
+          ...buildImportedOauthStateFromRows(payload.snapshot.rows, allItems),
+          checking: false,
+          importing: false,
+          importError,
+        });
+      };
+
+      const handleCompleted = (event: Event) => {
+        if (importValidationJobIdRef.current !== jobId) return;
+        const message = event as MessageEvent<string>;
+        try {
+          const payload = normalizeImportedOauthValidationSnapshotEventPayload(
+            JSON.parse(message.data),
+          );
+          finalizeValidation(payload, null);
+        } catch (err) {
+          closeImportValidationEventSource();
+          setImportValidationState((current) =>
+            current
+              ? {
+                  ...current,
+                  checking: false,
+                  importing: false,
+                  importError: err instanceof Error ? err.message : String(err),
+                }
+              : current,
+          );
+        }
+      };
+
+      const handleFailed = (event: Event) => {
+        if (importValidationJobIdRef.current !== jobId) return;
+        const message = event as MessageEvent<string>;
+        try {
+          const payload = normalizeImportedOauthValidationFailedEventPayload(
+            JSON.parse(message.data),
+          );
+          finalizeValidation(payload, payload.error);
+        } catch (err) {
+          setImportValidationState((current) =>
+            current
+              ? {
+                  ...current,
+                  checking: false,
+                  importing: false,
+                  importError: err instanceof Error ? err.message : String(err),
+                }
+              : current,
+          );
+        }
+      };
+
+      const handleCancelled = (event: Event) => {
+        if (importValidationJobIdRef.current !== jobId) return;
+        const message = event as MessageEvent<string>;
+        try {
+          const payload = normalizeImportedOauthValidationSnapshotEventPayload(
+            JSON.parse(message.data),
+          );
+          importValidationJobIdRef.current = null;
+          finalizeValidation(payload, null);
+        } catch {
+          closeImportValidationEventSource();
+          importValidationJobIdRef.current = null;
+        }
+      };
+
+      eventSource.addEventListener("snapshot", handleSnapshot as EventListener);
+      eventSource.addEventListener("row", handleRow as EventListener);
+      eventSource.addEventListener(
+        "completed",
+        handleCompleted as EventListener,
+      );
+      eventSource.addEventListener("failed", handleFailed as EventListener);
+      eventSource.addEventListener(
+        "cancelled",
+        handleCancelled as EventListener,
+      );
+
+      importValidationEventCleanupRef.current = () => {
+        eventSource.removeEventListener(
+          "snapshot",
+          handleSnapshot as EventListener,
+        );
+        eventSource.removeEventListener("row", handleRow as EventListener);
+        eventSource.removeEventListener(
+          "completed",
+          handleCompleted as EventListener,
+        );
+        eventSource.removeEventListener(
+          "failed",
+          handleFailed as EventListener,
+        );
+        eventSource.removeEventListener(
+          "cancelled",
+          handleCancelled as EventListener,
+        );
+      };
+    },
+    [
+      closeImportValidationEventSource,
+    ],
+  );
 
   const runImportValidation = useCallback(
     async (
@@ -1914,91 +2255,91 @@ export default function UpstreamAccountCreatePage() {
       const merge = options?.merge === true;
       const retriedSourceIds = new Set(items.map((item) => item.sourceId));
       const allItems = merge ? importFiles : items;
-      const batches = chunkImportedOauthItems(items);
-      const batchErrors: string[] = [];
       setImportValidationDialogOpen(true);
-      setImportValidationState((current) =>
-        merge && current
-          ? {
-              ...current,
-              checking: true,
-              importing: false,
-              importError: null,
-              rows: current.rows.map((row) =>
-                retriedSourceIds.has(row.sourceId)
-                  ? {
-                      ...row,
-                      status: "pending",
-                      detail: null,
-                    }
-                  : row,
-              ),
-            }
-          : buildImportedOauthPendingState(allItems),
-      );
-      for (const batch of batches) {
-        const batchSourceIds = new Set(batch.map((item) => item.sourceId));
-        try {
-          const response = await runImportedOauthValidation({ items: batch });
-          setImportValidationState((current) => {
-            const baseline =
-              current ?? buildImportedOauthPendingState(allItems);
+      try {
+        if (importValidationJobIdRef.current) {
+          await cancelActiveImportedOauthValidation({ closeDialog: false });
+        } else {
+          closeImportValidationEventSource();
+        }
+        const response = await startImportedOauthValidationJob({ items });
+        setImportValidationState((current) => {
+          if (merge && current) {
             return {
               ...buildImportedOauthStateFromRows(
                 mergeImportedOauthValidationRows(
-                  baseline.rows,
-                  response.rows,
-                  batchSourceIds,
+                  current.rows.map((row) =>
+                    retriedSourceIds.has(row.sourceId)
+                      ? {
+                          ...row,
+                          status: "pending",
+                          detail: null,
+                        }
+                      : row,
+                  ),
+                  response.snapshot.rows,
+                  retriedSourceIds,
                 ),
                 allItems,
               ),
               checking: true,
               importing: false,
-              importError: summarizeImportedOauthBatchErrors(batchErrors),
+              importError: null,
             };
-          });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          batchErrors.push(message);
-          setImportValidationState((current) => {
-            const baseline =
-              current ?? buildImportedOauthPendingState(allItems);
-            return {
-              ...buildImportedOauthStateFromRows(
-                markImportedOauthRowsAsError(
-                  baseline.rows,
-                  batchSourceIds,
-                  message,
-                ),
-                allItems,
-              ),
-              checking: true,
-              importing: false,
-              importError: summarizeImportedOauthBatchErrors(batchErrors),
-            };
-          });
-        }
+          }
+          return {
+            ...buildImportedOauthStateFromSnapshot(response.snapshot),
+            checking: true,
+            importing: false,
+            importError: null,
+          };
+        });
+        attachImportedOauthValidationJob({
+          jobId: response.jobId,
+          allItems,
+          merge,
+          retriedSourceIds,
+        });
+      } catch (err) {
+        setImportValidationState((current) => {
+          const baseline =
+            current ?? buildImportedOauthPendingState(allItems);
+          const nextRows = merge
+            ? markImportedOauthRowsAsError(
+                baseline.rows,
+                retriedSourceIds,
+                err instanceof Error ? err.message : String(err),
+              )
+            : baseline.rows;
+          return {
+            ...buildImportedOauthStateFromRows(nextRows, allItems),
+            checking: false,
+            importing: false,
+            importError: err instanceof Error ? err.message : String(err),
+          };
+        });
       }
-      setImportValidationState((current) =>
-        current
-          ? {
-              ...current,
-              checking: false,
-              importing: false,
-              importError: summarizeImportedOauthBatchErrors(batchErrors),
-            }
-          : current,
-      );
     },
-    [importFiles, runImportedOauthValidation],
+    [
+      attachImportedOauthValidationJob,
+      cancelActiveImportedOauthValidation,
+      closeImportValidationEventSource,
+      importFiles,
+      startImportedOauthValidationJob,
+    ],
   );
 
   const handleImportFilesChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       const selectedFiles = Array.from(event.target.files ?? []);
       setActionError(null);
-      setImportValidationDialogOpen(false);
-      setImportValidationState(null);
+      if (importValidationJobIdRef.current) {
+        await cancelActiveImportedOauthValidation({ closeDialog: true });
+      } else {
+        setImportValidationDialogOpen(false);
+        setImportValidationState(null);
+        closeImportValidationEventSource();
+      }
       if (selectedFiles.length === 0) {
         setImportFiles([]);
         setImportSelectionLabel(null);
@@ -2020,16 +2361,23 @@ export default function UpstreamAccountCreatePage() {
         setActionError(err instanceof Error ? err.message : String(err));
       }
     },
-    [t],
+    [cancelActiveImportedOauthValidation, closeImportValidationEventSource, t],
   );
 
   const handleClearImportSelection = useCallback(() => {
-    setImportFiles([]);
-    setImportSelectionLabel(null);
-    setImportValidationDialogOpen(false);
-    setImportValidationState(null);
-    setImportInputKey((current) => current + 1);
-  }, []);
+    void (async () => {
+      if (importValidationJobIdRef.current) {
+        await cancelActiveImportedOauthValidation({ closeDialog: true });
+      } else {
+        closeImportValidationEventSource();
+        setImportValidationDialogOpen(false);
+        setImportValidationState(null);
+      }
+      setImportFiles([]);
+      setImportSelectionLabel(null);
+      setImportInputKey((current) => current + 1);
+    })();
+  }, [cancelActiveImportedOauthValidation, closeImportValidationEventSource]);
 
   const handleValidateImportedOauth = useCallback(async () => {
     if (!writesEnabled || importFiles.length === 0) return;
@@ -2061,6 +2409,35 @@ export default function UpstreamAccountCreatePage() {
     );
   }, [importFiles, importValidationState?.rows, runImportValidation]);
 
+  const handleCloseImportedOauthValidationDialog = useCallback(() => {
+    if (importValidationState?.importing) return;
+    if (importValidationState?.checking) {
+      void cancelActiveImportedOauthValidation({ closeDialog: true });
+      return;
+    }
+    closeImportValidationEventSource();
+    setImportValidationDialogOpen(false);
+    setImportValidationState(null);
+  }, [
+    cancelActiveImportedOauthValidation,
+    closeImportValidationEventSource,
+    importValidationState?.checking,
+    importValidationState?.importing,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      const jobId = importValidationJobIdRef.current;
+      importValidationJobIdRef.current = null;
+      closeImportValidationEventSource();
+      if (jobId) {
+        void stopImportedOauthValidationJob(jobId).catch(() => {
+          // Best-effort cleanup during unmount.
+        });
+      }
+    };
+  }, [closeImportValidationEventSource, stopImportedOauthValidationJob]);
+
   const handleImportValidatedOauth = useCallback(async () => {
     const currentRows = importValidationState?.rows ?? [];
     const validSourceIds = currentRows
@@ -2078,6 +2455,7 @@ export default function UpstreamAccountCreatePage() {
       !isExistingGroup(groups, normalizedImportGroupName)
         ? groupDraftNotes[normalizedImportGroupName]?.trim() || undefined
         : undefined;
+    const validationJobId = importValidationJobIdRef.current ?? undefined;
     let workingItems = [...importFiles];
     let workingRows = [...currentRows];
     let importedAny = false;
@@ -2098,6 +2476,7 @@ export default function UpstreamAccountCreatePage() {
         const response = await importOauthAccounts({
           items: batch,
           selectedSourceIds: batch.map((item) => item.sourceId),
+          validationJobId,
           groupName: normalizedImportGroupName || undefined,
           groupNote: importGroupNote,
           tagIds: importTagIds,
@@ -5286,14 +5665,7 @@ export default function UpstreamAccountCreatePage() {
       <ImportedOauthValidationDialog
         open={importValidationDialogOpen}
         state={importValidationState}
-        onClose={() => {
-          if (
-            importValidationState?.checking ||
-            importValidationState?.importing
-          )
-            return;
-          setImportValidationDialogOpen(false);
-        }}
+        onClose={handleCloseImportedOauthValidationDialog}
         onRetryFailed={() => void handleRetryImportedOauthFailed()}
         onRetryOne={(sourceId) => void handleRetryImportedOauthOne(sourceId)}
         onImportValid={() => void handleImportValidatedOauth()}

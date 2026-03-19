@@ -1356,9 +1356,41 @@ export interface ImportedOauthValidationResponse {
   rows: ImportedOauthValidationRow[];
 }
 
+export interface ImportedOauthValidationCounts {
+  pending: number;
+  duplicateInInput: number;
+  ok: number;
+  okExhausted: number;
+  invalid: number;
+  error: number;
+  checked: number;
+}
+
+export interface ImportedOauthValidationJobResponse {
+  jobId: string;
+  snapshot: ImportedOauthValidationResponse;
+}
+
+export interface ImportedOauthValidationSnapshotEventPayload {
+  snapshot: ImportedOauthValidationResponse;
+  counts: ImportedOauthValidationCounts;
+}
+
+export interface ImportedOauthValidationRowEventPayload {
+  row: ImportedOauthValidationRow;
+  counts: ImportedOauthValidationCounts;
+}
+
+export interface ImportedOauthValidationFailedEventPayload {
+  snapshot: ImportedOauthValidationResponse;
+  counts: ImportedOauthValidationCounts;
+  error: string;
+}
+
 export interface ImportValidatedOauthAccountsPayload {
   items: ImportOauthCredentialFilePayload[];
   selectedSourceIds: string[];
+  validationJobId?: string;
   groupName?: string;
   groupNote?: string;
   tagIds?: number[];
@@ -1821,6 +1853,100 @@ function normalizeImportedOauthImportResult(
   const fileName = typeof payload.fileName === "string" ? payload.fileName : "";
   const status = typeof payload.status === "string" ? payload.status : "";
   if (!sourceId || !fileName || !status) return null;
+
+function normalizeImportedOauthValidationCounts(
+  raw: unknown,
+): ImportedOauthValidationCounts {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const pending = normalizeFiniteNumber(payload.pending);
+  const duplicateInInput = normalizeFiniteNumber(payload.duplicateInInput);
+  const ok = normalizeFiniteNumber(payload.ok);
+  const okExhausted = normalizeFiniteNumber(payload.okExhausted);
+  const invalid = normalizeFiniteNumber(payload.invalid);
+  const error = normalizeFiniteNumber(payload.error);
+  const checked = normalizeFiniteNumber(payload.checked);
+  if (
+    pending == null ||
+    duplicateInInput == null ||
+    ok == null ||
+    okExhausted == null ||
+    invalid == null ||
+    error == null ||
+    checked == null
+  ) {
+    throw new Error(
+      "Request failed: invalid imported OAuth validation counts payload",
+    );
+  }
+  return {
+    pending,
+    duplicateInInput,
+    ok,
+    okExhausted,
+    invalid,
+    error,
+    checked,
+  };
+}
+
+function normalizeImportedOauthValidationJobResponse(
+  raw: unknown,
+): ImportedOauthValidationJobResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
+  if (!jobId) {
+    throw new Error(
+      "Request failed: invalid imported OAuth validation job payload",
+    );
+  }
+  return {
+    jobId,
+    snapshot: normalizeImportedOauthValidationResponse(payload.snapshot),
+  };
+}
+
+export function normalizeImportedOauthValidationSnapshotEventPayload(
+  raw: unknown,
+): ImportedOauthValidationSnapshotEventPayload {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    snapshot: normalizeImportedOauthValidationResponse(payload.snapshot),
+    counts: normalizeImportedOauthValidationCounts(payload.counts),
+  };
+}
+
+export function normalizeImportedOauthValidationRowEventPayload(
+  raw: unknown,
+): ImportedOauthValidationRowEventPayload {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const row = normalizeImportedOauthValidationRow(payload.row);
+  if (!row) {
+    throw new Error(
+      "Request failed: invalid imported OAuth validation row event payload",
+    );
+  }
+  return {
+    row,
+    counts: normalizeImportedOauthValidationCounts(payload.counts),
+  };
+}
+
+export function normalizeImportedOauthValidationFailedEventPayload(
+  raw: unknown,
+): ImportedOauthValidationFailedEventPayload {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const error = typeof payload.error === "string" ? payload.error : "";
+  if (!error) {
+    throw new Error(
+      "Request failed: invalid imported OAuth validation failed event payload",
+    );
+  }
+  return {
+    snapshot: normalizeImportedOauthValidationResponse(payload.snapshot),
+    counts: normalizeImportedOauthValidationCounts(payload.counts),
+    error,
+  };
+}
   return {
     sourceId,
     fileName,
@@ -2356,6 +2482,30 @@ export async function validateImportedOauthAccounts(
   return normalizeImportedOauthValidationResponse(response);
 }
 
+export async function createImportedOauthValidationJob(
+  payload: ValidateImportedOauthAccountsPayload,
+): Promise<ImportedOauthValidationJobResponse> {
+  const response = await fetchJson<unknown>(
+    "/api/pool/upstream-accounts/oauth/imports/validation-jobs",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  )
+  return normalizeImportedOauthValidationJobResponse(response)
+}
+
+export async function cancelImportedOauthValidationJob(
+  jobId: string,
+): Promise<void> {
+  await fetchJson(
+    `/api/pool/upstream-accounts/oauth/imports/validation-jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: "DELETE",
+    },
+  )
+}
+
 export async function importValidatedOauthAccounts(
   payload: ImportValidatedOauthAccountsPayload,
 ): Promise<ImportedOauthImportResponse> {
@@ -2434,4 +2584,10 @@ export async function syncUpstreamAccount(
 
 export function createEventSource(path: string) {
   return new EventSource(withBase(path));
+}
+
+export function createImportedOauthValidationJobEventSource(jobId: string) {
+  return createEventSource(
+    `/api/pool/upstream-accounts/oauth/imports/validation-jobs/${encodeURIComponent(jobId)}/events`,
+  )
 }

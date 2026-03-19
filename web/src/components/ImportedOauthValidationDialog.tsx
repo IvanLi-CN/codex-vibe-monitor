@@ -385,8 +385,8 @@ export function ImportedOauthValidationDialog({
       open={open}
       onOpenChange={(nextOpen: boolean) => (!nextOpen ? onClose() : undefined)}
     >
-      <DialogContent className="w-[min(96vw,92rem)] max-w-none max-h-[90vh] overflow-hidden p-0">
-        <div className="flex max-h-[90vh] flex-col">
+      <DialogContent className="h-[min(92vh,56rem)] w-[min(96vw,92rem)] max-w-none overflow-hidden p-0">
+        <div className="grid h-full min-h-0 grid-rows-[auto,minmax(0,1fr),auto]">
           <DialogHeader className="border-b border-base-300 bg-[linear-gradient(180deg,rgba(15,23,42,0.04),transparent)] px-6 pb-5 pt-5">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
@@ -443,7 +443,7 @@ export function ImportedOauthValidationDialog({
             </div>
           </DialogHeader>
 
-          <div className="flex min-h-0 flex-1 flex-col px-6 py-5">
+          <div className="grid h-full min-h-0 grid-rows-[auto,minmax(0,1fr)] overflow-hidden px-6 py-5">
             {state?.importError ? (
               <Alert variant="error" className="mb-4">
                 <AppIcon
@@ -455,7 +455,7 @@ export function ImportedOauthValidationDialog({
               </Alert>
             ) : null}
 
-            <section className="flex min-h-0 flex-1 flex-col border-t border-base-300/65 pt-5">
+            <section className="grid h-full min-h-0 grid-rows-[auto,minmax(0,1fr),auto] border-t border-base-300/65 pt-5">
               <div className="flex flex-wrap items-center justify-between gap-3 px-1 pb-3">
                 <div>
                   <h3 className="text-sm font-semibold text-base-content">
@@ -503,7 +503,7 @@ export function ImportedOauthValidationDialog({
               </div>
 
               {filteredRows.length === 0 ? (
-                <div className="px-4 py-10 text-center text-sm text-base-content/65">
+                <div className="flex min-h-0 items-center justify-center px-4 py-10 text-center text-sm text-base-content/65">
                   {state?.checking
                     ? t(
                         "accountPool.upstreamAccounts.import.validation.checking",
@@ -512,7 +512,7 @@ export function ImportedOauthValidationDialog({
                 </div>
               ) : (
                 <>
-                  <div className="hidden min-h-0 flex-1 md:block">
+                  <div className="hidden min-h-0 overflow-hidden md:block">
                     <div className="h-full overflow-y-auto rounded-[1rem] border border-base-300/65">
                       <table className="min-w-full table-fixed text-sm">
                         <thead className="sticky top-0 z-10 bg-base-200/95 text-[11px] uppercase tracking-[0.08em] text-base-content/60 backdrop-blur">
@@ -651,7 +651,7 @@ export function ImportedOauthValidationDialog({
                     </div>
                   </div>
 
-                  <div className="min-h-0 flex-1 overflow-y-auto md:hidden">
+                  <div className="min-h-0 overflow-y-auto md:hidden">
                     <div className="divide-y divide-base-300/65 overflow-hidden rounded-[1rem] border border-base-300/65">
                       {pagedRows.map((row) => {
                         const canRetryOne =
