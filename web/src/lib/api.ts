@@ -251,6 +251,9 @@ export interface TimeseriesResponse {
   rangeStart: string;
   rangeEnd: string;
   bucketSeconds: number;
+  effectiveBucket?: string;
+  availableBuckets?: string[];
+  bucketLimitedToDaily?: boolean;
   points: TimeseriesPoint[];
 }
 
