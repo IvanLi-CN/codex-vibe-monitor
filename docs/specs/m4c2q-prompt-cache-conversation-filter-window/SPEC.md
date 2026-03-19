@@ -85,6 +85,31 @@
 - [x] M3: 前端完成联合筛选状态、动态图表时间轴、小字提示与页面测试。
 - [ ] M4: fast-flow 提交、PR、checks、review-loop 收敛到 merge-ready。
 
+## Visual Evidence (PR)
+
+- source_type: `storybook_canvas`
+  story_id_or_title: `Monitoring/Live Prompt Cache Section / Interactive Filters`
+  state: `activityWindow=3h`
+  target_program: `mock-only`
+  capture_scope: `element`
+  sensitive_exclusion: `N/A`
+  submission_gate: `pending-owner-approval`
+  evidence_note: 验证时间模式下的互斥筛选、按 `createdAt DESC` 排序、共享动态小时列名，以及命中 50 条上限时的页脚提示。
+  image:
+  ![Prompt Cache activity window 3h](./assets/prompt-cache-activity-window-3h.png)
+
+- source_type: `storybook_canvas`
+  story_id_or_title: `Monitoring/Live Prompt Cache Section / Interactive Filters`
+  state: `count=20`
+  target_program: `mock-only`
+  capture_scope: `element`
+  sensitive_exclusion: `N/A`
+  submission_gate: `pending-owner-approval`
+  evidence_note: 验证数量模式下“近 24 小时活跃 + 最多 20 个”的互斥筛选、共享时间轴，以及隐含过滤提示文案。
+  image:
+  ![Prompt Cache count 20](./assets/prompt-cache-count-20.png)
+
 ## 变更记录（Change log）
 
 - 2026-03-19: 新建 spec，冻结 Prompt Cache Key 对话筛选增强、隐含过滤提示与动态共享时间轴方案。
+- 2026-03-19: 补充 Storybook canvas 截图作为 PR 视觉凭据，覆盖 `近 3 小时活动` 与 `20 个对话` 两个关键状态。
