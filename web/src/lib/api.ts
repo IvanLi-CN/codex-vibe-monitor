@@ -1853,6 +1853,20 @@ function normalizeImportedOauthImportResult(
   const fileName = typeof payload.fileName === "string" ? payload.fileName : "";
   const status = typeof payload.status === "string" ? payload.status : "";
   if (!sourceId || !fileName || !status) return null;
+  return {
+    sourceId,
+    fileName,
+    email: typeof payload.email === "string" ? payload.email : null,
+    chatgptAccountId:
+      typeof payload.chatgptAccountId === "string"
+        ? payload.chatgptAccountId
+        : null,
+    accountId: normalizeFiniteNumber(payload.accountId) ?? null,
+    status,
+    detail: typeof payload.detail === "string" ? payload.detail : null,
+    matchedAccount: normalizeImportedOauthMatchSummary(payload.matchedAccount),
+  };
+}
 
 function normalizeImportedOauthValidationCounts(
   raw: unknown,
@@ -1945,20 +1959,6 @@ export function normalizeImportedOauthValidationFailedEventPayload(
     snapshot: normalizeImportedOauthValidationResponse(payload.snapshot),
     counts: normalizeImportedOauthValidationCounts(payload.counts),
     error,
-  };
-}
-  return {
-    sourceId,
-    fileName,
-    email: typeof payload.email === "string" ? payload.email : null,
-    chatgptAccountId:
-      typeof payload.chatgptAccountId === "string"
-        ? payload.chatgptAccountId
-        : null,
-    accountId: normalizeFiniteNumber(payload.accountId) ?? null,
-    status,
-    detail: typeof payload.detail === "string" ? payload.detail : null,
-    matchedAccount: normalizeImportedOauthMatchSummary(payload.matchedAccount),
   };
 }
 
