@@ -15880,16 +15880,13 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
     assert_eq!(key_a.request_count, 3);
     assert_eq!(key_a.total_tokens, 150);
     assert!((key_a.total_cost - 1.5).abs() < 1e-9);
-    assert_eq!(key_a.last24h_requests.len(), 3);
-    assert_eq!(key_a.last24h_requests[0].request_tokens, 100);
-    assert_eq!(key_a.last24h_requests[0].cumulative_tokens, 100);
+    assert_eq!(key_a.last24h_requests.len(), 2);
+    assert_eq!(key_a.last24h_requests[0].request_tokens, 20);
+    assert_eq!(key_a.last24h_requests[0].cumulative_tokens, 20);
     assert!(key_a.last24h_requests[0].is_success);
-    assert_eq!(key_a.last24h_requests[1].request_tokens, 20);
-    assert_eq!(key_a.last24h_requests[1].cumulative_tokens, 120);
-    assert!(key_a.last24h_requests[1].is_success);
-    assert_eq!(key_a.last24h_requests[2].request_tokens, 30);
-    assert_eq!(key_a.last24h_requests[2].cumulative_tokens, 150);
-    assert!(!key_a.last24h_requests[2].is_success);
+    assert_eq!(key_a.last24h_requests[1].request_tokens, 30);
+    assert_eq!(key_a.last24h_requests[1].cumulative_tokens, 50);
+    assert!(!key_a.last24h_requests[1].is_success);
 }
 
 #[tokio::test]
@@ -16183,6 +16180,88 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
         Some(PromptCacheConversationImplicitFilterKind::CappedTo50)
     );
     assert_eq!(response.implicit_filter.filtered_count, 5);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_chart_window_caps_history_to_recent_24_hours() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        total_tokens: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(0.01)
+        .bind(json!({ "promptCacheKey": key }).to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    insert_row(
+        &state.pool,
+        "chart-cap-history",
+        now - ChronoDuration::hours(50),
+        "chart-cap",
+        90,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "chart-cap-recent-a",
+        now - ChronoDuration::hours(2),
+        "chart-cap",
+        30,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "chart-cap-recent-b",
+        now - ChronoDuration::minutes(20),
+        "chart-cap",
+        45,
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: Some(1),
+        }),
+    )
+    .await
+    .expect("activity-window prompt cache conversations should succeed");
+
+    assert_eq!(response.conversations.len(), 1);
+    let conversation = &response.conversations[0];
+    assert_eq!(conversation.last24h_requests.len(), 2);
+    assert_eq!(conversation.last24h_requests[0].request_tokens, 30);
+    assert_eq!(conversation.last24h_requests[0].cumulative_tokens, 30);
+    assert_eq!(conversation.last24h_requests[1].request_tokens, 45);
+    assert_eq!(conversation.last24h_requests[1].cumulative_tokens, 75);
 }
 
 #[tokio::test]
