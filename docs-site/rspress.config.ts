@@ -54,7 +54,6 @@ export default defineConfig({
           text: '预览与源码',
           items: [
             { text: 'Storybook 入口', link: '/storybook.html' },
-            { text: 'Storybook 导览', link: '/storybook-guide.html' },
             { text: 'GitHub 仓库', link: 'https://github.com/IvanLi-CN/codex-vibe-monitor' },
           ],
         },
