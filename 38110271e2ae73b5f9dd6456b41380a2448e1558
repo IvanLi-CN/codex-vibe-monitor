@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.15.8",
+  "base_stable_version": "1.15.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-19T10:57:14Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.15.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "9b16a15f2e7b7e683e07ecff3b47b4c9423fa6a4",
+  "pr_number": 188,
+  "pr_title": "fix(web): disable native autocomplete in records filters",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.15.8",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.15.8,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "38110271e2ae73b5f9dd6456b41380a2448e1558",
+  "type_label": "type:patch"
+}
