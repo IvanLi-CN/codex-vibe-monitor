@@ -1698,28 +1698,15 @@ pub(crate) async fn fetch_timeseries(
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
-    let mut bucket_seconds = if let Some(spec) = params.bucket.as_deref() {
-        bucket_seconds_from_spec(spec)
-            .ok_or_else(|| anyhow!("unsupported bucket specification: {spec}"))?
-    } else {
-        default_bucket_seconds(range_window.duration)
-    };
-
-    if bucket_seconds <= 0 {
-        return Err(ApiError::bad_request(anyhow!(
-            "bucket seconds must be positive"
-        )));
-    }
-
-    let range_seconds = range_window.duration.num_seconds();
-
-    if range_seconds / bucket_seconds > 10_000 {
-        // avoid accidentally returning extremely large payloads
-        bucket_seconds = range_seconds / 10_000;
-    }
+    let bucket_selection = resolve_timeseries_bucket_selection(
+        &params,
+        &range_window,
+        state.config.invocation_max_days,
+    )?;
+    let bucket_seconds = bucket_selection.bucket_seconds;
 
     if bucket_seconds == 86_400 {
-        return fetch_timeseries_daily(state, params, reporting_tz).await;
+        return fetch_timeseries_daily(state, params, reporting_tz, bucket_selection).await;
     }
 
     let offset_seconds = 0;
@@ -1852,6 +1839,9 @@ pub(crate) async fn fetch_timeseries(
             format_utc_iso(end)
         },
         bucket_seconds,
+        effective_bucket: bucket_selection.effective_bucket,
+        available_buckets: bucket_selection.available_buckets,
+        bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
         points,
     };
 
@@ -1905,10 +1895,11 @@ fn rollup_day_boundaries_match_reporting_tz(
     true
 }
 
-pub(crate) async fn fetch_timeseries_daily(
+async fn fetch_timeseries_daily(
     state: Arc<AppState>,
     params: TimeseriesQuery,
     reporting_tz: Tz,
+    bucket_selection: TimeseriesBucketSelection,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
     let now = Utc::now();
     let source_scope = resolve_default_source_scope(&state.pool).await?;
@@ -2051,6 +2042,9 @@ pub(crate) async fn fetch_timeseries_daily(
         range_start,
         range_end,
         bucket_seconds: 86_400,
+        effective_bucket: bucket_selection.effective_bucket,
+        available_buckets: bucket_selection.available_buckets,
+        bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
         points,
     }))
 }
@@ -3205,7 +3199,61 @@ pub(crate) struct TimeseriesResponse {
     pub(crate) range_start: String,
     pub(crate) range_end: String,
     pub(crate) bucket_seconds: i64,
+    pub(crate) effective_bucket: String,
+    pub(crate) available_buckets: Vec<String>,
+    pub(crate) bucket_limited_to_daily: bool,
     pub(crate) points: Vec<TimeseriesPoint>,
+}
+
+#[derive(Debug, Clone)]
+struct TimeseriesBucketSelection {
+    bucket_seconds: i64,
+    effective_bucket: String,
+    available_buckets: Vec<String>,
+    bucket_limited_to_daily: bool,
+}
+
+fn resolve_timeseries_bucket_selection(
+    params: &TimeseriesQuery,
+    range_window: &RangeWindow,
+    invocation_max_days: u64,
+) -> Result<TimeseriesBucketSelection, ApiError> {
+    let mut bucket_seconds = if let Some(spec) = params.bucket.as_deref() {
+        bucket_seconds_from_spec(spec)
+            .ok_or_else(|| anyhow!("unsupported bucket specification: {spec}"))?
+    } else {
+        default_bucket_seconds(range_window.duration)
+    };
+
+    if bucket_seconds <= 0 {
+        return Err(ApiError::bad_request(anyhow!(
+            "bucket seconds must be positive"
+        )));
+    }
+
+    let range_seconds = range_window.duration.num_seconds();
+    if range_seconds / bucket_seconds > 10_000 {
+        // avoid accidentally returning extremely large payloads
+        bucket_seconds = range_seconds / 10_000;
+    }
+
+    let subday_supported = range_window.start >= shanghai_retention_cutoff(invocation_max_days);
+    let bucket_limited_to_daily = bucket_seconds < 86_400 && !subday_supported;
+    let effective_bucket_seconds = if bucket_limited_to_daily {
+        86_400
+    } else {
+        bucket_seconds
+    };
+    let effective_bucket = bucket_spec_from_seconds(effective_bucket_seconds)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{effective_bucket_seconds}s"));
+
+    Ok(TimeseriesBucketSelection {
+        bucket_seconds: effective_bucket_seconds,
+        effective_bucket,
+        available_buckets: available_timeseries_bucket_specs(subday_supported),
+        bucket_limited_to_daily,
+    })
 }
 
 #[derive(Debug, Serialize)]
