@@ -181,6 +181,41 @@ function getNewDataLabel(testId: 'records-new-data-label-idle' | 'records-new-da
 }
 
 describe('RecordsPage suggestions', () => {
+  it('disables browser native autocomplete for filter controls', () => {
+    mockInvocationRecords()
+
+    render(<RecordsPage />)
+
+    const modelInput = host?.querySelector('#records-filter-model')
+    const rangePresetSelect = host?.querySelector('select[name="rangePreset"]')
+    const keywordInput = host?.querySelector('input[name="keyword"]')
+    const minTotalTokensInput = host?.querySelector('input[name="minTotalTokens"]')
+
+    if (!(modelInput instanceof HTMLInputElement)) {
+      throw new Error('missing model input')
+    }
+    if (!(rangePresetSelect instanceof HTMLSelectElement)) {
+      throw new Error('missing range preset select')
+    }
+    if (!(keywordInput instanceof HTMLInputElement)) {
+      throw new Error('missing keyword input')
+    }
+    if (!(minTotalTokensInput instanceof HTMLInputElement)) {
+      throw new Error('missing min total tokens input')
+    }
+
+    expect(modelInput.autocomplete).toBe('off')
+    expect(modelInput.getAttribute('autocorrect')).toBe('off')
+    expect(modelInput.getAttribute('autocapitalize')).toBe('none')
+    expect(modelInput.getAttribute('spellcheck')).toBe('false')
+    expect(rangePresetSelect.getAttribute('autocomplete')).toBe('off')
+    expect(keywordInput.autocomplete).toBe('off')
+    expect(keywordInput.getAttribute('autocorrect')).toBe('off')
+    expect(keywordInput.getAttribute('autocapitalize')).toBe('none')
+    expect(keywordInput.getAttribute('spellcheck')).toBe('false')
+    expect(minTotalTokensInput.autocomplete).toBe('off')
+  })
+
   it('loads suggestions lazily after a combobox opens', async () => {
     vi.useFakeTimers()
     apiMocks.fetchInvocationSuggestions.mockResolvedValue(createSuggestions())

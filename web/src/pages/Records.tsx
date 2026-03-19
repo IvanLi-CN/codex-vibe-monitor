@@ -16,6 +16,7 @@ import {
   type InvocationSuggestionsResponse,
   type InvocationUpstreamScope,
 } from '../lib/api'
+import { nativeFormAutocompleteOffProps, textInputAutocompleteOffProps } from '../lib/form-autocomplete'
 import { buildInvocationSuggestionsQuery, createDefaultCustomRange, RECORDS_PAGE_SIZE_OPTIONS } from '../lib/invocationRecords'
 import { cn } from '../lib/utils'
 
@@ -269,7 +270,13 @@ export default function RecordsPage() {
             <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <label className="field">
                 <span className="field-label">{t('records.filters.rangePreset')}</span>
-                <select name="rangePreset" className="field-select" value={draft.rangePreset} onChange={(event) => handleRangePresetChange(event.target.value as InvocationRangePreset)}>
+                <select
+                  {...nativeFormAutocompleteOffProps}
+                  name="rangePreset"
+                  className="field-select"
+                  value={draft.rangePreset}
+                  onChange={(event) => handleRangePresetChange(event.target.value as InvocationRangePreset)}
+                >
                   {rangeOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -280,6 +287,7 @@ export default function RecordsPage() {
               <label className="field">
                 <span className="field-label">{t('records.filters.from')}</span>
                 <input
+                  {...nativeFormAutocompleteOffProps}
                   className={inputClassName}
                   type="datetime-local"
                   name="customFrom"
@@ -294,6 +302,7 @@ export default function RecordsPage() {
               <label className="field">
                 <span className="field-label">{t('records.filters.to')}</span>
                 <input
+                  {...nativeFormAutocompleteOffProps}
                   className={inputClassName}
                   type="datetime-local"
                   name="customTo"
@@ -307,7 +316,13 @@ export default function RecordsPage() {
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.status')}</span>
-                <select name="status" className="field-select" value={draft.status} onChange={(event) => updateDraft('status', event.target.value)}>
+                <select
+                  {...nativeFormAutocompleteOffProps}
+                  name="status"
+                  className="field-select"
+                  value={draft.status}
+                  onChange={(event) => updateDraft('status', event.target.value)}
+                >
                   <option value="">{t('records.filters.status.all')}</option>
                   <option value="success">{t('records.filters.status.success')}</option>
                   <option value="failed">{t('records.filters.status.failed')}</option>
@@ -369,7 +384,13 @@ export default function RecordsPage() {
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.failureClass')}</span>
-                <select name="failureClass" className="field-select" value={draft.failureClass} onChange={(event) => updateDraft('failureClass', event.target.value)}>
+                <select
+                  {...nativeFormAutocompleteOffProps}
+                  name="failureClass"
+                  className="field-select"
+                  value={draft.failureClass}
+                  onChange={(event) => updateDraft('failureClass', event.target.value)}
+                >
                   <option value="">{t('records.filters.failureClass.all')}</option>
                   <option value="service_failure">{t('records.filters.failureClass.service')}</option>
                   <option value="client_failure">{t('records.filters.failureClass.client')}</option>
@@ -380,6 +401,7 @@ export default function RecordsPage() {
               <label className="field">
                 <span className="field-label">{t('records.filters.upstreamScope')}</span>
                 <select
+                  {...nativeFormAutocompleteOffProps}
                   name="upstreamScope"
                   className="field-select"
                   value={draft.upstreamScope}
@@ -446,24 +468,64 @@ export default function RecordsPage() {
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.keyword')}</span>
-                <input name="keyword" className={inputClassName} value={draft.keyword} onChange={(event) => updateDraft('keyword', event.target.value)} />
+                <input
+                  {...textInputAutocompleteOffProps}
+                  name="keyword"
+                  className={inputClassName}
+                  value={draft.keyword}
+                  onChange={(event) => updateDraft('keyword', event.target.value)}
+                />
               </label>
 
               <label className="field">
                 <span className="field-label">{t('records.filters.minTotalTokens')}</span>
-                <input name="minTotalTokens" className={inputClassName} type="number" inputMode="numeric" step={1} value={draft.minTotalTokens} onChange={(event) => updateDraft('minTotalTokens', event.target.value)} />
+                <input
+                  {...nativeFormAutocompleteOffProps}
+                  name="minTotalTokens"
+                  className={inputClassName}
+                  type="number"
+                  inputMode="numeric"
+                  step={1}
+                  value={draft.minTotalTokens}
+                  onChange={(event) => updateDraft('minTotalTokens', event.target.value)}
+                />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.maxTotalTokens')}</span>
-                <input name="maxTotalTokens" className={inputClassName} type="number" inputMode="numeric" step={1} value={draft.maxTotalTokens} onChange={(event) => updateDraft('maxTotalTokens', event.target.value)} />
+                <input
+                  {...nativeFormAutocompleteOffProps}
+                  name="maxTotalTokens"
+                  className={inputClassName}
+                  type="number"
+                  inputMode="numeric"
+                  step={1}
+                  value={draft.maxTotalTokens}
+                  onChange={(event) => updateDraft('maxTotalTokens', event.target.value)}
+                />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.minTotalMs')}</span>
-                <input name="minTotalMs" className={inputClassName} type="number" inputMode="decimal" value={draft.minTotalMs} onChange={(event) => updateDraft('minTotalMs', event.target.value)} />
+                <input
+                  {...nativeFormAutocompleteOffProps}
+                  name="minTotalMs"
+                  className={inputClassName}
+                  type="number"
+                  inputMode="decimal"
+                  value={draft.minTotalMs}
+                  onChange={(event) => updateDraft('minTotalMs', event.target.value)}
+                />
               </label>
               <label className="field">
                 <span className="field-label">{t('records.filters.maxTotalMs')}</span>
-                <input name="maxTotalMs" className={inputClassName} type="number" inputMode="decimal" value={draft.maxTotalMs} onChange={(event) => updateDraft('maxTotalMs', event.target.value)} />
+                <input
+                  {...nativeFormAutocompleteOffProps}
+                  name="maxTotalMs"
+                  className={inputClassName}
+                  type="number"
+                  inputMode="decimal"
+                  value={draft.maxTotalMs}
+                  onChange={(event) => updateDraft('maxTotalMs', event.target.value)}
+                />
               </label>
             </div>
           </div>
