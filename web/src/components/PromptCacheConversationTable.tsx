@@ -13,6 +13,7 @@ interface PromptCacheConversationTableProps {
 }
 
 const PROMPT_CACHE_NOW_TICK_MS = 30_000;
+const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
 
 function parseEpoch(raw?: string | null) {
   if (!raw) return null;
@@ -51,8 +52,12 @@ export function PromptCacheConversationTable({
       null,
     );
     if (earliestCreatedAt == null) return null;
+    const chartRangeStart = Math.max(
+      earliestCreatedAt,
+      now - PROMPT_CACHE_CHART_MAX_WINDOW_MS,
+    );
     return {
-      rangeStart: new Date(earliestCreatedAt).toISOString(),
+      rangeStart: new Date(chartRangeStart).toISOString(),
       rangeEnd: new Date(now).toISOString(),
     };
   }, [now, stats]);

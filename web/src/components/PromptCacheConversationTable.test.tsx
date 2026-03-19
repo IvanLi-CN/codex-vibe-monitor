@@ -321,4 +321,47 @@ describe("PromptCacheConversationTable", () => {
 
     expect(host?.textContent).toContain("1 小时 Token 累计");
   });
+
+  it("caps the shared chart window to 24 hours for older active conversations", () => {
+    const stats: PromptCacheConversationsResponse = {
+      rangeStart: "2026-03-02T23:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "activityWindow",
+      selectedLimit: null,
+      selectedActivityHours: 1,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        {
+          promptCacheKey: "pck-active-old",
+          requestCount: 4,
+          totalTokens: 240,
+          totalCost: 0.02,
+          createdAt: "2026-03-01T00:00:00Z",
+          lastActivityAt: "2026-03-02T23:50:00Z",
+          last24hRequests: [
+            {
+              occurredAt: "2026-03-02T01:00:00Z",
+              status: "success",
+              isSuccess: true,
+              requestTokens: 120,
+              cumulativeTokens: 120,
+            },
+            {
+              occurredAt: "2026-03-02T23:50:00Z",
+              status: "success",
+              isSuccess: true,
+              requestTokens: 120,
+              cumulativeTokens: 240,
+            },
+          ],
+        },
+      ],
+    };
+
+    const html = renderTable(stats);
+
+    expect(html).toContain("24 小时 Token 累计");
+    expect(html).toContain('aria-label="pck-active-old 24 小时 Token 累计图"');
+    expect(html).not.toContain("48 小时 Token 累计");
+  });
 });
