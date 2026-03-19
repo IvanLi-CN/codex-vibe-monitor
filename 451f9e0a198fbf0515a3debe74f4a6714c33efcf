@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.15.6",
+  "base_stable_version": "1.15.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-19T06:05:03Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.15.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "15bca274cad531fd6ad932f35374598e7d7cff72",
+  "pr_number": 184,
+  "pr_title": "fix: guard archived subday stats buckets",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.15.6",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.15.6,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "451f9e0a198fbf0515a3debe74f4a6714c33efcf",
+  "type_label": "type:patch"
+}
