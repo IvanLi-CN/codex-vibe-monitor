@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, userEvent, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import type { ApiInvocation, InvocationRecordsQuery, InvocationSortBy, InvocationSortOrder } from '../lib/api'
 import RecordsPage from '../pages/Records'
@@ -368,5 +369,53 @@ export const RefreshingNewData: Story = {
         button.click()
       }
     }, 300)
+  },
+}
+
+export const AutocompleteSuppressedFilters: Story = {
+  parameters: {
+    newRecordsCount: 0,
+  },
+  render: () => <RecordsPage />,
+  play: async ({ canvasElement }) => {
+    const doc = canvasElement.ownerDocument
+    const heading = within(canvasElement).getByRole('heading', { name: /筛选|filters/i })
+    await expect(heading).toBeInTheDocument()
+
+    const modelInput = doc.querySelector('#records-filter-model')
+    const keywordInput = doc.querySelector('input[name="keyword"]')
+    const statusSelect = doc.querySelector('select[name="status"]')
+
+    if (!(modelInput instanceof HTMLInputElement)) {
+      throw new Error('missing records model combobox input')
+    }
+    if (!(keywordInput instanceof HTMLInputElement)) {
+      throw new Error('missing records keyword input')
+    }
+    if (!(statusSelect instanceof HTMLSelectElement)) {
+      throw new Error('missing records status select')
+    }
+
+    await expect(modelInput.getAttribute('autocomplete')).toBe('off')
+    await expect(modelInput.getAttribute('autocorrect')).toBe('off')
+    await expect(modelInput.getAttribute('autocapitalize')).toBe('none')
+    await expect(modelInput.getAttribute('spellcheck')).toBe('false')
+
+    await expect(keywordInput.getAttribute('autocomplete')).toBe('off')
+    await expect(keywordInput.getAttribute('autocorrect')).toBe('off')
+    await expect(keywordInput.getAttribute('autocapitalize')).toBe('none')
+    await expect(keywordInput.getAttribute('spellcheck')).toBe('false')
+
+    await expect(statusSelect.getAttribute('autocomplete')).toBe('off')
+
+    await userEvent.click(modelInput)
+
+    const listbox = doc.body.querySelector('[role="listbox"]')
+    if (!(listbox instanceof HTMLElement)) {
+      throw new Error('missing records combobox listbox')
+    }
+
+    await expect(listbox).toBeVisible()
+    await expect(listbox.textContent ?? '').toContain('gpt-5.3-codex')
   },
 }
