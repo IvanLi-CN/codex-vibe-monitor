@@ -1530,22 +1530,14 @@ pub(crate) async fn build_prompt_cache_conversations_response(
     .await?;
     let active_filtered_count = match selection {
         PromptCacheConversationSelection::Count(limit) => {
-            let active_keys = query_active_prompt_cache_conversation_keys(
+            query_prompt_cache_conversation_hidden_count(
                 &state.pool,
                 &range_start_bound,
                 source_scope,
-            )
-            .await?;
-            let history_keys = query_prompt_cache_conversation_recent_history_keys(
-                &state.pool,
-                source_scope,
                 limit,
+                aggregates.len() as i64,
             )
-            .await?;
-            history_keys
-                .into_iter()
-                .filter(|key| !active_keys.contains(key))
-                .count() as i64
+            .await?
         }
         PromptCacheConversationSelection::ActivityWindow(_) => {
             let matched_count = query_active_prompt_cache_conversation_count(
@@ -1701,7 +1693,7 @@ pub(crate) async fn query_prompt_cache_conversation_aggregates(
          ) \
          SELECT prompt_cache_key, request_count, total_tokens, total_cost, created_at, last_activity_at \
          FROM aggregates \
-         ORDER BY created_at DESC \
+         ORDER BY created_at DESC, prompt_cache_key DESC \
          LIMIT ",
         )
         .push_bind(limit);
@@ -1713,16 +1705,16 @@ pub(crate) async fn query_prompt_cache_conversation_aggregates(
         .map_err(Into::into)
 }
 
-pub(crate) async fn query_active_prompt_cache_conversation_keys(
+pub(crate) async fn query_active_prompt_cache_conversation_count(
     pool: &Pool<Sqlite>,
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
-) -> Result<HashSet<String>> {
+) -> Result<i64> {
     const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
 
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT DISTINCT ");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT COUNT(DISTINCT ");
     query.push(KEY_EXPR).push(
-        " AS prompt_cache_key \
+        ") AS count \
          FROM codex_invocations \
          WHERE occurred_at >= ",
     );
@@ -1739,40 +1731,48 @@ pub(crate) async fn query_active_prompt_cache_conversation_keys(
         .push(KEY_EXPR)
         .push(" <> ''");
 
-    let rows = query
-        .build_query_as::<PromptCacheConversationKeyRow>()
-        .fetch_all(pool)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| row.prompt_cache_key)
-        .collect::<HashSet<_>>())
+    let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
+    Ok(count)
 }
 
-pub(crate) async fn query_active_prompt_cache_conversation_count(
+pub(crate) async fn query_prompt_cache_conversation_hidden_count(
     pool: &Pool<Sqlite>,
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
+    requested_limit: i64,
+    selected_active_count: i64,
 ) -> Result<i64> {
-    Ok(
-        query_active_prompt_cache_conversation_keys(pool, range_start_bound, source_scope)
-            .await?
-            .len() as i64,
-    )
-}
+    if requested_limit <= 0 {
+        return Ok(0);
+    }
 
-pub(crate) async fn query_prompt_cache_conversation_recent_history_keys(
-    pool: &Pool<Sqlite>,
-    source_scope: InvocationSourceScope,
-    limit: i64,
-) -> Result<Vec<String>> {
     const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
 
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT prompt_cache_key \
-         FROM (\
-            SELECT ",
+        "WITH active AS (\
+            SELECT DISTINCT ",
     );
+    query.push(KEY_EXPR).push(
+        " AS prompt_cache_key \
+         FROM codex_invocations \
+         WHERE occurred_at >= ",
+    );
+    query.push_bind(range_start_bound);
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(KEY_EXPR)
+        .push(
+            " <> ''\
+         ), history AS (\
+            SELECT ",
+        );
     query
         .push(KEY_EXPR)
         .push(
@@ -1789,20 +1789,32 @@ pub(crate) async fn query_prompt_cache_conversation_recent_history_keys(
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    query
-        .push(
-            " GROUP BY prompt_cache_key\
+    query.push(
+        " GROUP BY prompt_cache_key\
+         ), ranked AS (\
+            SELECT history.prompt_cache_key, \
+                   CASE WHEN active.prompt_cache_key IS NULL THEN 0 ELSE 1 END AS is_active, \
+                   SUM(CASE WHEN active.prompt_cache_key IS NULL THEN 0 ELSE 1 END) OVER (\
+                       ORDER BY history.created_at DESC, history.prompt_cache_key DESC \
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\
+                   ) AS active_rank \
+            FROM history \
+            LEFT JOIN active ON active.prompt_cache_key = history.prompt_cache_key\
          ) \
-         ORDER BY created_at DESC \
-         LIMIT ",
-        )
-        .push_bind(limit);
+         SELECT COUNT(*) AS count \
+         FROM ranked \
+         WHERE is_active = 0 AND (",
+    );
+    query
+        .push_bind(selected_active_count)
+        .push(" < ")
+        .push_bind(requested_limit)
+        .push(" OR active_rank < ")
+        .push_bind(requested_limit)
+        .push(")");
 
-    let rows = query
-        .build_query_as::<PromptCacheConversationKeyRow>()
-        .fetch_all(pool)
-        .await?;
-    Ok(rows.into_iter().map(|row| row.prompt_cache_key).collect())
+    let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
+    Ok(count)
 }
 
 pub(crate) async fn query_prompt_cache_conversation_events(
@@ -4026,11 +4038,6 @@ pub(crate) struct PromptCacheConversationEventRow {
     pub(crate) occurred_at: String,
     pub(crate) status: String,
     pub(crate) request_tokens: i64,
-    pub(crate) prompt_cache_key: String,
-}
-
-#[derive(Debug, FromRow)]
-pub(crate) struct PromptCacheConversationKeyRow {
     pub(crate) prompt_cache_key: String,
 }
 

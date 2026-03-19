@@ -15965,6 +15965,88 @@ async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_f
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_count_mode_reports_all_skipped_newer_inactive_rows() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10)
+        .bind(0.01)
+        .bind(json!({ "promptCacheKey": key }).to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    for index in 0..25 {
+        insert_row(
+            &state.pool,
+            &format!("count-inactive-{index}"),
+            now - ChronoDuration::hours(25) + ChronoDuration::minutes(index as i64),
+            &format!("count-inactive-{index}"),
+        )
+        .await;
+    }
+
+    for index in 0..20 {
+        insert_row(
+            &state.pool,
+            &format!("count-active-{index}-history"),
+            now - ChronoDuration::days(4) + ChronoDuration::minutes(index as i64),
+            &format!("count-active-{index}"),
+        )
+        .await;
+        insert_row(
+            &state.pool,
+            &format!("count-active-{index}-recent"),
+            now - ChronoDuration::hours(12) + ChronoDuration::minutes(index as i64),
+            &format!("count-active-{index}"),
+        )
+        .await;
+    }
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversations should succeed");
+
+    assert_eq!(response.conversations.len(), 20);
+    assert_eq!(
+        response.implicit_filter.kind,
+        Some(PromptCacheConversationImplicitFilterKind::InactiveOutside24h)
+    );
+    assert_eq!(response.implicit_filter.filtered_count, 25);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -16073,7 +16155,13 @@ async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
         .as_str()
         .expect("lastActivityAt should serialize as string");
 
-    assert_eq!(DateTime::parse_from_rfc3339(created_at).unwrap().offset().utc_minus_local(), 0);
+    assert_eq!(
+        DateTime::parse_from_rfc3339(created_at)
+            .unwrap()
+            .offset()
+            .utc_minus_local(),
+        0
+    );
     assert_eq!(
         DateTime::parse_from_rfc3339(last_activity_at)
             .unwrap()
