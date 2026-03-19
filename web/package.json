@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "test:e2e": "playwright test",
     "storybook": "bun run scripts/run-storybook.mjs",
-    "build-storybook": "bunx --bun storybook build"
+    "storybook:build": "storybook build",
+    "build-storybook": "bun run storybook:build"
   },
   "dependencies": {
     "@iconify-icons/mdi": "^1.2.48",
