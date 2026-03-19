@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { resolveStatsBucketOptions, resolveStatsBucketValue } from './statsBuckets'
+import {
+  BUCKET_OPTION_KEYS,
+  resolveStatsBucketOptions,
+  resolveStatsBucketValue,
+} from './stats-options'
 
 describe('resolveStatsBucketOptions', () => {
   it('returns the default range buckets when the backend has no extra limits', () => {
@@ -36,5 +40,18 @@ describe('resolveStatsBucketValue', () => {
 
   it('falls back to the first supported bucket when the previous bucket became invalid', () => {
     expect(resolveStatsBucketValue('12h', [{ value: '1d' }])).toBe('1d')
+  })
+})
+
+describe('BUCKET_OPTION_KEYS', () => {
+  it('keeps the 24-hour bucket option for the 7d range', () => {
+    expect(BUCKET_OPTION_KEYS['7d']).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          value: '1d',
+          labelKey: 'stats.bucket.each24Hours',
+        }),
+      ]),
+    )
   })
 })

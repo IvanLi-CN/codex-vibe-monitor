@@ -5,7 +5,7 @@ export interface StatsOption {
   labelKey: TranslationKey
 }
 
-export const STATS_RANGE_OPTIONS = [
+export const RANGE_OPTIONS = [
   { value: '1h', labelKey: 'stats.range.lastHour' },
   { value: 'today', labelKey: 'stats.range.today' },
   { value: '1d', labelKey: 'stats.range.lastDay' },
@@ -13,9 +13,9 @@ export const STATS_RANGE_OPTIONS = [
   { value: '7d', labelKey: 'stats.range.lastWeek' },
   { value: 'thisMonth', labelKey: 'stats.range.thisMonth' },
   { value: '1mo', labelKey: 'stats.range.lastMonth' },
-] as const satisfies readonly StatsOption[]
+ ] as const satisfies readonly StatsOption[]
 
-export const STATS_BUCKET_OPTION_KEYS: Record<string, readonly StatsOption[]> = {
+export const BUCKET_OPTION_KEYS: Record<string, readonly StatsOption[]> = {
   '1h': [
     { value: '1m', labelKey: 'stats.bucket.eachMinute' },
     { value: '5m', labelKey: 'stats.bucket.each5Minutes' },
@@ -37,6 +37,7 @@ export const STATS_BUCKET_OPTION_KEYS: Record<string, readonly StatsOption[]> = 
     { value: '1h', labelKey: 'stats.bucket.eachHour' },
     { value: '6h', labelKey: 'stats.bucket.each6Hours' },
     { value: '12h', labelKey: 'stats.bucket.each12Hours' },
+    { value: '1d', labelKey: 'stats.bucket.each24Hours' },
   ],
   thisWeek: [
     { value: '1h', labelKey: 'stats.bucket.eachHour' },
@@ -60,7 +61,7 @@ export function resolveStatsBucketOptions(
   range: string,
   availableBuckets?: readonly string[] | null,
 ): StatsOption[] {
-  const raw = STATS_BUCKET_OPTION_KEYS[range] ?? STATS_BUCKET_OPTION_KEYS['1d']
+  const raw = BUCKET_OPTION_KEYS[range] ?? BUCKET_OPTION_KEYS['1d']
   if (!availableBuckets || availableBuckets.length === 0) {
     return [...raw]
   }
