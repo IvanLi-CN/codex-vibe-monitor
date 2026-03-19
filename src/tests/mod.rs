@@ -16023,6 +16023,69 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
 }
 
 #[tokio::test]
+async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = Utc::now() - ChronoDuration::minutes(15);
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("prompt-cache-utc-iso")
+    .bind(format_naive(
+        occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(42)
+    .bind(0.42)
+    .bind(json!({ "promptCacheKey": "prompt-cache-utc-iso" }).to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache invocation row");
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversations should succeed");
+
+    let payload = serde_json::to_value(&response).expect("serialize prompt cache response");
+    let conversation = payload["conversations"][0]
+        .as_object()
+        .expect("conversation should be serialized as object");
+    let created_at = conversation["createdAt"]
+        .as_str()
+        .expect("createdAt should serialize as string");
+    let last_activity_at = conversation["lastActivityAt"]
+        .as_str()
+        .expect("lastActivityAt should serialize as string");
+
+    assert_eq!(DateTime::parse_from_rfc3339(created_at).unwrap().offset().utc_minus_local(), 0);
+    assert_eq!(
+        DateTime::parse_from_rfc3339(last_activity_at)
+            .unwrap()
+            .offset()
+            .utc_minus_local(),
+        0
+    );
+    assert!(created_at.ends_with('Z'));
+    assert!(last_activity_at.ends_with('Z'));
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
