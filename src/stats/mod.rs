@@ -291,6 +291,31 @@ pub(crate) fn bucket_seconds_from_spec(spec: &str) -> Option<i64> {
     }
 }
 
+pub(crate) fn bucket_spec_from_seconds(bucket_seconds: i64) -> Option<&'static str> {
+    match bucket_seconds {
+        60 => Some("1m"),
+        300 => Some("5m"),
+        900 => Some("15m"),
+        1800 => Some("30m"),
+        3600 => Some("1h"),
+        21_600 => Some("6h"),
+        43_200 => Some("12h"),
+        86_400 => Some("1d"),
+        _ => None,
+    }
+}
+
+pub(crate) fn available_timeseries_bucket_specs(subday_supported: bool) -> Vec<String> {
+    if subday_supported {
+        vec!["1m", "5m", "15m", "30m", "1h", "6h", "12h", "1d"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        vec!["1d".to_string()]
+    }
+}
+
 pub(crate) fn default_bucket_seconds(range: ChronoDuration) -> i64 {
     let seconds = range.num_seconds();
     if seconds <= 3_600 {

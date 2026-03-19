@@ -17,36 +17,32 @@ import {
   SelectValue,
 } from '../components/ui/select'
 import type { FailureScope } from '../lib/api'
-import { BUCKET_OPTION_KEYS, RANGE_OPTIONS } from './stats-options'
+import {
+  resolveStatsBucketOptions,
+  resolveStatsBucketValue,
+  RANGE_OPTIONS,
+} from './stats-options'
 
 export default function StatsPage() {
   const { t } = useTranslation()
   const [range, setRange] = useState<typeof RANGE_OPTIONS[number]['value']>('today')
   const [errorScope, setErrorScope] = useState<FailureScope>('service')
-  const rawBucketOptions = useMemo(() => BUCKET_OPTION_KEYS[range] ?? BUCKET_OPTION_KEYS['1d'], [range])
-  const [bucket, setBucket] = useState<string>(rawBucketOptions[0]?.value ?? '1h')
+  const [bucket, setBucket] = useState<string>(() =>
+    resolveStatsBucketValue('', resolveStatsBucketOptions('today')),
+  )
 
-  // Guarantee we never request an incompatible bucket for the selected range.
-  // When range changes, the previous bucket (e.g., 15m) may be invalid for 1mo.
-  // Compute an effective bucket that always belongs to the current range options.
-  const effectiveBucket = useMemo(() => {
-    if (rawBucketOptions.some((option) => option.value === bucket)) return bucket
-    return rawBucketOptions[0]?.value ?? '1h'
-  }, [bucket, rawBucketOptions])
-
-  // Keep internal bucket state in sync after range changes so the select displays correctly
-  useEffect(() => {
-    if (bucket !== effectiveBucket) setBucket(effectiveBucket)
-  }, [bucket, effectiveBucket])
+  const requestedBucketOptions = useMemo(
+    () => resolveStatsBucketOptions(range),
+    [range],
+  )
+  const requestedBucket = useMemo(
+    () => resolveStatsBucketValue(bucket, requestedBucketOptions),
+    [bucket, requestedBucketOptions],
+  )
 
   const rangeOptions = useMemo(
     () => RANGE_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
     [t],
-  )
-
-  const bucketOptions = useMemo(
-    () => rawBucketOptions.map((option) => ({ ...option, label: t(option.labelKey) })),
-    [rawBucketOptions, t],
   )
 
   const {
@@ -60,9 +56,27 @@ export default function StatsPage() {
     isLoading: timeseriesLoading,
     error: timeseriesError,
   } = useTimeseries(range, {
-    bucket: effectiveBucket,
+    bucket: requestedBucket,
     preferServerAggregation: true,
   })
+
+  const rawBucketOptions = useMemo(
+    () => resolveStatsBucketOptions(range, timeseries?.availableBuckets),
+    [range, timeseries?.availableBuckets],
+  )
+  const effectiveBucket = useMemo(
+    () => resolveStatsBucketValue(timeseries?.effectiveBucket ?? requestedBucket, rawBucketOptions),
+    [rawBucketOptions, requestedBucket, timeseries?.effectiveBucket],
+  )
+  const bucketOptions = useMemo(
+    () => rawBucketOptions.map((option) => ({ ...option, label: t(option.labelKey) })),
+    [rawBucketOptions, t],
+  )
+
+  // Keep internal bucket state in sync after the backend narrows unsupported options.
+  useEffect(() => {
+    if (bucket !== effectiveBucket) setBucket(effectiveBucket)
+  }, [bucket, effectiveBucket])
 
   const { data: errors, isLoading: errorsLoading, error: errorsError } = useErrorDistribution(range, 8, errorScope)
   const {

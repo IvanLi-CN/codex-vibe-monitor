@@ -1,5 +1,10 @@
 import type { TranslationKey } from '../i18n'
 
+export interface StatsOption {
+  value: string
+  labelKey: TranslationKey
+}
+
 export const RANGE_OPTIONS = [
   { value: '1h', labelKey: 'stats.range.lastHour' },
   { value: 'today', labelKey: 'stats.range.today' },
@@ -8,9 +13,9 @@ export const RANGE_OPTIONS = [
   { value: '7d', labelKey: 'stats.range.lastWeek' },
   { value: 'thisMonth', labelKey: 'stats.range.thisMonth' },
   { value: '1mo', labelKey: 'stats.range.lastMonth' },
-] as const satisfies readonly { value: string; labelKey: TranslationKey }[]
+ ] as const satisfies readonly StatsOption[]
 
-export const BUCKET_OPTION_KEYS: Record<string, { value: string; labelKey: TranslationKey }[]> = {
+export const BUCKET_OPTION_KEYS: Record<string, readonly StatsOption[]> = {
   '1h': [
     { value: '1m', labelKey: 'stats.bucket.eachMinute' },
     { value: '5m', labelKey: 'stats.bucket.each5Minutes' },
@@ -50,4 +55,33 @@ export const BUCKET_OPTION_KEYS: Record<string, { value: string; labelKey: Trans
     { value: '12h', labelKey: 'stats.bucket.each12Hours' },
     { value: '1d', labelKey: 'stats.bucket.eachDay' },
   ],
+}
+
+export function resolveStatsBucketOptions(
+  range: string,
+  availableBuckets?: readonly string[] | null,
+): StatsOption[] {
+  const raw = BUCKET_OPTION_KEYS[range] ?? BUCKET_OPTION_KEYS['1d']
+  if (!availableBuckets || availableBuckets.length === 0) {
+    return [...raw]
+  }
+
+  const allowed = new Set(availableBuckets)
+  const filtered = raw.filter((option) => allowed.has(option.value))
+  if (filtered.length > 0) {
+    return filtered
+  }
+
+  const fallbackDaily = raw.filter((option) => option.value === '1d')
+  return fallbackDaily.length > 0 ? fallbackDaily : [...raw]
+}
+
+export function resolveStatsBucketValue(
+  currentBucket: string,
+  options: readonly Pick<StatsOption, 'value'>[],
+): string {
+  if (options.some((option) => option.value === currentBucket)) {
+    return currentBucket
+  }
+  return options[0]?.value ?? '1d'
 }

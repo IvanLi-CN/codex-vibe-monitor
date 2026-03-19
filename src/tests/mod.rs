@@ -18066,6 +18066,88 @@ async fn timeseries_daily_includes_rollups_for_equivalent_day_boundaries() {
 }
 
 #[tokio::test]
+async fn timeseries_subday_bucket_is_limited_to_daily_when_range_crosses_archive_boundary() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(12);
+    let live_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(2);
+    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 6, 5, 1, 600, 1.2).await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-subday-live-after-archive",
+        &format_naive(live_date.and_hms_opt(12, 30, 0).expect("valid live time")),
+        "success",
+        Some(120.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "30d".to_string(),
+            bucket: Some("12h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries with archive-aware bucket fallback");
+
+    assert_eq!(response.bucket_seconds, 86_400);
+    assert_eq!(response.effective_bucket, "1d");
+    assert_eq!(response.available_buckets, vec!["1d".to_string()]);
+    assert!(response.bucket_limited_to_daily);
+
+    let archived_bucket = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == archived_date)
+        .expect("should include archived rollup day");
+    assert_eq!(archived_bucket.total_count, 6);
+}
+
+#[tokio::test]
+async fn timeseries_subday_bucket_stays_available_inside_live_window() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let live_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(2);
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-subday-stays-12h",
+        &format_naive(live_date.and_hms_opt(3, 0, 0).expect("valid live time")),
+        "success",
+        Some(90.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "7d".to_string(),
+            bucket: Some("12h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch live-window subday timeseries");
+
+    assert_eq!(response.bucket_seconds, 43_200);
+    assert_eq!(response.effective_bucket, "12h");
+    assert!(!response.bucket_limited_to_daily);
+    assert!(response.available_buckets.contains(&"12h".to_string()));
+    assert!(response.available_buckets.contains(&"1d".to_string()));
+}
+
+#[tokio::test]
 async fn invocation_rollup_daily_range_respects_proxy_only_scope() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
