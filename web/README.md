@@ -34,7 +34,7 @@ bun run storybook
 bun run storybook:build
 ```
 
-静态产物会写入 `web/storybook-static/`。GitHub Pages 发布时，该目录会被装配到 public docs 站点的 `/storybook/` 子路径下；主入口通过 `/storybook.html` 跳转，导览页固定在 `/storybook-guide.html`。
+静态产物会写入 `web/storybook-static/`。GitHub Pages 发布时，该目录会被装配到 public docs 站点的 `/storybook/` 子路径下；公共入口统一通过 `/storybook.html` 跳转。
 
 ## Storybook 范围
 
