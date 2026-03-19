@@ -82,13 +82,3 @@ if ! grep -q '正在跳转到 Storybook' "$output_dir/storybook.html"; then
   echo "storybook.html is missing the Storybook redirect copy" >&2
   exit 1
 fi
-
-if [[ ! -f "$output_dir/storybook-guide.html" ]]; then
-  echo "assembled site is missing storybook-guide.html" >&2
-  exit 1
-fi
-
-if ! grep -q 'Storybook 导览' "$output_dir/storybook-guide.html"; then
-  echo "storybook-guide.html is missing the Storybook guide copy" >&2
-  exit 1
-fi

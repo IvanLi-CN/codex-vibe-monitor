@@ -28,7 +28,7 @@
 ### 证据采集口径
 
 - 页面级视觉确认优先从 Storybook 或浏览器 smoke 里拿证据，而不是从实现截图中二次猜测布局。
-- public docs 层通过 `docs-site/docs/storybook.mdx` 与 `docs-site/docs/storybook-guide.mdx` 提供 Storybook 入口与核心深链；当入口 story 变化时要同步回写这两个页面。
+- public docs 层通过 `docs-site/docs/storybook.mdx` 提供 Storybook 入口；当入口口径变化时要同步回写这个页面。
 - 采集证据时至少覆盖一个桌面 viewport；涉及移动端差异时，再补 `mobile390` 或 `mobile430`。
 - 有主题差异的组件，默认要在 light/dark 两种主题下都能复核。
 

@@ -171,9 +171,7 @@ jobs:
           test -f .tmp/pages-site/index.html
           test -f .tmp/pages-site/storybook/index.html
           test -f .tmp/pages-site/storybook.html
-          test -f .tmp/pages-site/storybook-guide.html
           grep -q "${DOCS_BASE}storybook.html" .tmp/pages-site/index.html
-          grep -q '/storybook.html?path=/docs/monitoring-invocationtable--docs' .tmp/pages-site/storybook-guide.html
 
   frontend-tests:
     name: Front-end Tests

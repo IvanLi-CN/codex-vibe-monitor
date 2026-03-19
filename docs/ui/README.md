@@ -27,7 +27,7 @@
 
 - 新增基础样式 token、组件状态或通用布局模式时，必须先判断应该补到哪一份文档，而不是只写在单个 feature spec 里。
 - 新增可复用组件时，优先补充对应 Storybook story，再在 `components.md` 或 `patterns.md` 里补使用约束。
-- 若 public docs 中的 Storybook 导览或入口口径发生变化，需同步更新 `docs-site/docs/storybook.mdx` 与 `docs-site/docs/storybook-guide.mdx`。
+- 若 public docs 中的 Storybook 入口口径发生变化，需同步更新 `docs-site/docs/storybook.mdx`。
 - 新增图表或新指标颜色时，先复用 `data-viz.md` 既有语义；只有现有语义不足以表达时，才扩展 token 与规范。
 - 新增页面若形成新的通用交互模式，必须把通用规则抽到 `patterns.md`，避免规范继续散落在页面实现里。
 

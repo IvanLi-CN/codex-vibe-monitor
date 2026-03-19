@@ -140,5 +140,5 @@ bash .github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-st
 - 想按长期运行口径部署，而不是只本地跑通：看 [自部署](/deployment)
 - 想知道第一次部署应该真正决定哪些参数：看 [配置与运行](/config)
 - 想开始改代码：看 [开发](/development)
-- 想先核对页面和组件状态：看 [Storybook 导览](/storybook-guide.html)
+- 想先核对页面和组件状态：看 [Storybook](/storybook.html)
 - 卡在“服务能开但不好用”：看 [排障](/troubleshooting)

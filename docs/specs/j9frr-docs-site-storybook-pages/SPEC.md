@@ -31,7 +31,7 @@
 
 ### In scope
 
-- 新建 `docs-site/`，包含 `package.json`、`rspress.config.ts`、`bun.lock` 与 `docs/index.md`、`quick-start.md`、`config.md`、`deployment.md`、`troubleshooting.md`、`development.md`、`product.md`、`storybook.mdx`、`storybook-guide.mdx`、`404.md`
+- 新建 `docs-site/`，包含 `package.json`、`rspress.config.ts`、`bun.lock` 与 `docs/index.md`、`quick-start.md`、`config.md`、`deployment.md`、`troubleshooting.md`、`development.md`、`product.md`、`storybook.mdx`、`404.md`
 - 更新 `web/package.json` 与 `web/scripts/run-storybook.mjs`，固定 Storybook 默认开发端口并引入 `storybook:build`
 - 新建 `.github/scripts/assemble-pages-site.sh`
 - 新建 `.github/workflows/docs-pages.yml`
@@ -58,7 +58,7 @@
 
 ### SHOULD
 
-- `storybook-guide.mdx` 应固定给出 Dashboard、Live、Records、Settings、Invocation、Account Pool 等核心 stories 深链
+- public docs 应保留单一 Storybook 入口，而不是额外维护独立导览页，避免 docs 与 stories 深链重复维护
 - `web/README.md` 与根 README 应给出稳定的本地 URL 合同与 Pages 说明
 - `docs/ui/**` 应明确“public docs 在 `docs-site/`，内部 UI 规范继续在 `docs/ui/`”
 
@@ -77,7 +77,7 @@
 ### Edge cases / errors
 
 - 若 docs-site 或 Storybook 产物目录不存在，装配脚本必须报错退出，而不是生成不完整站点。
-- 若 `storybook.html` 或 `storybook-guide.html` 缺失关键跳转文案/深链，CI smoke 必须失败。
+- 若 `storybook.html` 缺失关键跳转文案，CI smoke 必须失败。
 - 若 Storybook 端口被显式设置为 `6006`，本地脚本必须拒绝启动。
 
 ## 接口契约（Interfaces & Contracts）
@@ -106,7 +106,7 @@
   Then Storybook 在 `http://127.0.0.1:60082` 启动，并拒绝使用 `6006`。
 - Given docs-site build 与 Storybook static build 都成功
   When 执行 `.github/scripts/assemble-pages-site.sh`
-  Then 输出站点同时包含根 docs、`storybook.html`、`storybook-guide.html` 与 `/storybook/index.html`。
+  Then 输出站点同时包含根 docs、`storybook.html` 与 `/storybook/index.html`。
 - Given PR 修改了 docs-site / Storybook / 装配脚本
   When `CI PR` 运行
   Then `Lint & Format Check` 内的 docs build / storybook build / assembled-site smoke 全部通过。
@@ -128,11 +128,11 @@
 - `cd docs-site && bun run build`
 - `cd web && bun run storybook:build`
 - `bash .github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static .tmp/pages-site`
-- 浏览器验收：`docs-site` 首页、`storybook.html` 重定向、`storybook-guide.html`、一个 Storybook docs 深链，以及按 `DOCS_BASE` 子路径提供的 assembled `/storybook/` 访问
+- 浏览器验收：`docs-site` 首页、`storybook.html` 重定向、一个 Storybook docs 深链，以及按 `DOCS_BASE` 子路径提供的 assembled `/storybook/` 访问
 
 ### UI / Storybook (if applicable)
 
-- Docs pages / state galleries to add/update: `docs-site/docs/storybook.mdx`, `docs-site/docs/storybook-guide.mdx`
+- Docs pages / state galleries to add/update: `docs-site/docs/storybook.mdx`
 - Stories to reference: `TodayStatsOverview`, `ForwardProxyLiveTable`, `InvocationTable`, `RecordsPage`, `SettingsPage`, `UpstreamAccountsPage`, `TagsPage`
 
 ### Quality checks
@@ -147,7 +147,7 @@
 - `README.md`: 增加 public docs / docs-site / Storybook / Pages 入口与本地 URL 合同
 - `web/README.md`: 替换模板内容，明确 app / Storybook / docs-site 协作方式
 - `docs/ui/README.md`: 明确 public docs 与内部 UI 规范的边界
-- `docs/ui/storybook.md`: 增加 public docs/storybook-guide 回链说明
+- `docs/ui/storybook.md`: 增加 public docs/storybook 回链说明
 
 ## 计划资产（Plan assets）
 
@@ -178,7 +178,7 @@ None
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
-- 风险：Storybook docs 深链如果跟当前 story id 不一致，会导致 `storybook-guide` 出现死链，需要在本地 build 后校正。
+- 风险：Storybook 入口若携带固定 docs path 参数，会在 story id 变化时形成死链；当前方案避免单独维护导览页来降低这类漂移。
 - 风险：Rspress / Storybook 的子路径资源引用若处理不当，最容易在 Pages 部署后暴露。
 - 开放问题：无。
 - 假设：仓库设置允许 GitHub Actions 部署 Pages。
@@ -188,6 +188,7 @@ None
 - 2026-03-19: 创建 spec，冻结 docs-site、Storybook、Pages 与 CI smoke 的首版交付范围。
 - 2026-03-19: 完成 docs-site / Storybook / Pages 装配实现、targeted validation 与浏览器验收，进入 fast-track PR 收敛阶段。
 - 2026-03-19: 参考 `tavily-hikari` 的 task-based IA，把 public docs 重构为“项目介绍 + 快速开始 + 配置与运行 + 自部署 + 排障 + 开发 + Storybook”分工，并强化自部署读者的最短路径。
+- 2026-03-19: 删除独立 `storybook-guide` 页面，改为只保留 `storybook.html` 作为 public docs 的 Storybook 入口。
 
 ## 参考（References）
 
