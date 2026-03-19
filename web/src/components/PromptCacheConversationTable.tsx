@@ -35,6 +35,11 @@ export function PromptCacheConversationTable({
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (!stats) return;
+    setNow(Date.now());
+  }, [stats]);
+
   const chartRangeOverride = useMemo(() => {
     if (!stats || stats.conversations.length === 0) return null;
     const earliestCreatedAt = stats.conversations.reduce<number | null>(

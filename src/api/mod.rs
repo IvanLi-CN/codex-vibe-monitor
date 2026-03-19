@@ -1794,6 +1794,9 @@ pub(crate) async fn query_prompt_cache_conversation_hidden_count(
          ), ranked AS (\
             SELECT history.prompt_cache_key, \
                    CASE WHEN active.prompt_cache_key IS NULL THEN 0 ELSE 1 END AS is_active, \
+                   ROW_NUMBER() OVER (\
+                       ORDER BY history.created_at DESC, history.prompt_cache_key DESC\
+                   ) AS history_rank, \
                    SUM(CASE WHEN active.prompt_cache_key IS NULL THEN 0 ELSE 1 END) OVER (\
                        ORDER BY history.created_at DESC, history.prompt_cache_key DESC \
                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\
@@ -1803,15 +1806,21 @@ pub(crate) async fn query_prompt_cache_conversation_hidden_count(
          ) \
          SELECT COUNT(*) AS count \
          FROM ranked \
-         WHERE is_active = 0 AND (",
+         WHERE is_active = 0 AND ((",
     );
     query
         .push_bind(selected_active_count)
         .push(" < ")
         .push_bind(requested_limit)
-        .push(" OR active_rank < ")
+        .push(" AND history_rank <= ")
         .push_bind(requested_limit)
-        .push(")");
+        .push(") OR (")
+        .push_bind(selected_active_count)
+        .push(" >= ")
+        .push_bind(requested_limit)
+        .push(" AND active_rank < ")
+        .push_bind(requested_limit)
+        .push("))");
 
     let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
     Ok(count)

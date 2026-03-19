@@ -1,5 +1,8 @@
+/** @vitest-environment jsdom */
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import type { PromptCacheConversationsResponse } from "../lib/api";
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
@@ -16,6 +19,17 @@ function renderTable(stats: PromptCacheConversationsResponse) {
   );
 }
 
+let host: HTMLDivElement | null = null;
+let root: Root | null = null;
+
+beforeAll(() => {
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
+    configurable: true,
+    writable: true,
+    value: true,
+  });
+});
+
 describe("PromptCacheConversationTable", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -23,8 +37,33 @@ describe("PromptCacheConversationTable", () => {
   });
 
   afterEach(() => {
+    act(() => {
+      root?.unmount();
+    });
+    host?.remove();
+    host = null;
+    root = null;
     vi.useRealTimers();
   });
+
+  function renderInteractive(stats: PromptCacheConversationsResponse | null) {
+    if (!host) {
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      root = createRoot(host);
+    }
+    act(() => {
+      root?.render(
+        <I18nProvider>
+          <PromptCacheConversationTable
+            stats={stats}
+            isLoading={false}
+            error={null}
+          />
+        </I18nProvider>,
+      );
+    });
+  }
 
   it("renders conversation metrics and unified 24h sparkline surfaces", () => {
     const stats: PromptCacheConversationsResponse = {
@@ -239,5 +278,47 @@ describe("PromptCacheConversationTable", () => {
     expect(html).toContain(
       "有 7 个对话命中了活动时间筛选，但因时间模式最多只展示 50 个对话而未显示。",
     );
+  });
+
+  it("refreshes the chart range end when stats arrive after mount", async () => {
+    const nextStats: PromptCacheConversationsResponse = {
+      rangeStart: "2026-03-03T00:00:05Z",
+      rangeEnd: "2026-03-03T00:00:05Z",
+      selectionMode: "activityWindow",
+      selectedLimit: null,
+      selectedActivityHours: 1,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        {
+          promptCacheKey: "pck-live-arrival",
+          requestCount: 1,
+          totalTokens: 120,
+          totalCost: 0.01,
+          createdAt: "2026-03-03T00:00:05Z",
+          lastActivityAt: "2026-03-03T00:00:05Z",
+          last24hRequests: [
+            {
+              occurredAt: "2026-03-03T00:00:05Z",
+              status: "success",
+              isSuccess: true,
+              requestTokens: 120,
+              cumulativeTokens: 120,
+            },
+          ],
+        },
+      ],
+    };
+
+    renderInteractive(null);
+
+    vi.setSystemTime(new Date("2026-03-03T00:00:10Z"));
+
+    renderInteractive(nextStats);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.textContent).toContain("1 小时 Token 累计");
   });
 });
