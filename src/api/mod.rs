@@ -1567,12 +1567,10 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         .iter()
         .map(|row| row.prompt_cache_key.clone())
         .collect::<Vec<_>>();
-    let chart_range_start_bound = aggregates
-        .iter()
-        .map(|row| row.created_at.as_str())
-        .min()
-        .unwrap_or(range_start_bound.as_str())
-        .to_string();
+    let chart_range_start_bound = resolve_prompt_cache_conversation_chart_range_start(
+        range_end,
+        aggregates.iter().map(|row| row.created_at.as_str()).min(),
+    );
     let events = query_prompt_cache_conversation_events(
         &state.pool,
         &chart_range_start_bound,
@@ -1631,6 +1629,21 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         implicit_filter,
         conversations,
     })
+}
+
+fn resolve_prompt_cache_conversation_chart_range_start(
+    range_end: DateTime<Utc>,
+    earliest_created_at: Option<&str>,
+) -> String {
+    let floor = range_end - ChronoDuration::hours(PROMPT_CACHE_CONVERSATION_CHART_MAX_HOURS);
+    let created_at = earliest_created_at
+        .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+        .map(|value| value.with_timezone(&Utc));
+    let chart_start = match created_at {
+        Some(created_at) if created_at > floor => created_at,
+        _ => floor,
+    };
+    format_utc_iso(chart_start)
 }
 
 pub(crate) async fn query_prompt_cache_conversation_aggregates(
