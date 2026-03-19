@@ -13,6 +13,10 @@ import {
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
+import type {
+  ImportedOauthValidationResponse,
+  ImportedOauthValidationRow,
+} from "../../lib/api";
 import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
 
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -21,6 +25,7 @@ const hookMocks = vi.hoisted(() => ({
 }));
 const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail: vi.fn(),
+  createImportedOauthValidationJobEventSource: vi.fn(),
 }));
 
 vi.mock("react-router-dom", async () => {
@@ -44,8 +49,110 @@ vi.mock("../../lib/api", async () => {
   return {
     ...actual,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
+    createImportedOauthValidationJobEventSource:
+      apiMocks.createImportedOauthValidationJobEventSource,
   };
 });
+
+class MockValidationEventSource implements EventTarget {
+  private listeners = new Map<string, Set<EventListener>>();
+  readyState = 1;
+
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ) {
+    if (!listener) return;
+    const handler =
+      typeof listener === "function"
+        ? listener
+        : ((event: Event) => listener.handleEvent(event)) as EventListener;
+    const current = this.listeners.get(type) ?? new Set<EventListener>();
+    current.add(handler);
+    this.listeners.set(type, current);
+  }
+
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ) {
+    if (!listener) return;
+    const current = this.listeners.get(type);
+    if (!current) return;
+    const handler =
+      typeof listener === "function"
+        ? listener
+        : ((event: Event) => listener.handleEvent(event)) as EventListener;
+    current.delete(handler);
+    if (current.size === 0) {
+      this.listeners.delete(type);
+    }
+  }
+
+  dispatchEvent(event: Event): boolean {
+    const current = Array.from(this.listeners.get(event.type) ?? []);
+    current.forEach((listener) => listener(event));
+    return true;
+  }
+
+  close() {
+    this.readyState = 2;
+    this.listeners.clear();
+  }
+
+  emit(type: string, payload: unknown) {
+    if (this.readyState === 2) return;
+    this.dispatchEvent(
+      new MessageEvent(type, {
+        data: JSON.stringify(payload),
+      }),
+    );
+  }
+}
+
+function buildImportedOauthValidationCounts(
+  rows: Array<{ status: string }>,
+) {
+  const counts = {
+    pending: 0,
+    duplicateInInput: 0,
+    ok: 0,
+    okExhausted: 0,
+    invalid: 0,
+    error: 0,
+    checked: 0,
+  };
+  rows.forEach((row) => {
+    switch (row.status) {
+      case "pending":
+        counts.pending += 1;
+        break;
+      case "duplicate_in_input":
+        counts.duplicateInInput += 1;
+        break;
+      case "ok":
+        counts.ok += 1;
+        break;
+      case "ok_exhausted":
+        counts.okExhausted += 1;
+        break;
+      case "invalid":
+        counts.invalid += 1;
+        break;
+      case "error":
+      default:
+        counts.error += 1;
+        break;
+    }
+  });
+  counts.checked =
+    counts.duplicateInInput +
+    counts.ok +
+    counts.okExhausted +
+    counts.invalid +
+    counts.error;
+  return counts;
+}
 
 type RenderEntry =
   | string
@@ -100,6 +207,7 @@ beforeEach(() => {
   vi.mocked(window.localStorage.getItem).mockImplementation((key: string) =>
     key === "codex-vibe-monitor.locale" ? "en" : null,
   );
+  apiMocks.createImportedOauthValidationJobEventSource.mockReset();
 });
 
 afterEach(() => {
@@ -111,6 +219,7 @@ afterEach(() => {
   root = null;
   navigateMock.mockReset();
   apiMocks.fetchUpstreamAccountDetail.mockReset();
+  apiMocks.createImportedOauthValidationJobEventSource.mockReset();
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -421,6 +530,16 @@ function mockUpstreamAccounts(
       duplicateInInput: 0,
       rows: [],
     }),
+    startImportedOauthValidationJob: vi.fn().mockResolvedValue({
+      jobId: "job-1",
+      snapshot: {
+        inputFiles: 0,
+        uniqueInInput: 0,
+        duplicateInInput: 0,
+        rows: [],
+      },
+    }),
+    stopImportedOauthValidationJob: vi.fn().mockResolvedValue(undefined),
     importOauthAccounts: vi.fn().mockResolvedValue({
       summary: {
         inputFiles: 0,
@@ -2280,54 +2399,196 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     };
   }
 
-  function buildImportedOauthRowFromItem(
-    item: { sourceId: string; fileName: string },
-    status:
-      | "ok"
-      | "ok_exhausted"
-      | "invalid"
-      | "error"
-      | "duplicate_in_input" = "ok",
-    detail: string | null = null,
-  ) {
-    const email = item.fileName.replace(/\.json$/i, "");
-    const indexMatch = /mailbox-(\d+)@/i.exec(email);
-    const accountId = indexMatch
-      ? `acct_${indexMatch[1]}`
-      : `acct_${item.sourceId}`;
-    return buildImportedOauthRow(
-      item.sourceId,
-      item.fileName,
-      email,
-      accountId,
-      status,
-      detail,
-    );
-  }
-
   function getImportedOauthResultRowsText() {
     return Array.from(document.querySelectorAll("tbody tr")).map(
       (row) => row.textContent ?? "",
     );
   }
 
+  function buildPendingImportedOauthSnapshot(
+    items: Array<{ sourceId: string; fileName: string }>,
+  ): ImportedOauthValidationResponse {
+    return {
+      inputFiles: items.length,
+      uniqueInInput: items.length,
+      duplicateInInput: 0,
+      rows: items.map((item) => ({
+        sourceId: item.sourceId,
+        fileName: item.fileName,
+        email: null,
+        chatgptAccountId: null,
+        displayName: null,
+        tokenExpiresAt: null,
+        matchedAccount: null,
+        status: "pending" as const,
+        detail: null,
+        attempts: 0,
+      })),
+    };
+  }
+
+  function installImportedOauthValidationJobFlow(options: {
+    jobId?: string;
+    rowsBySourceId?: Record<string, ReturnType<typeof buildImportedOauthRow>>;
+    finalEvent?: "completed" | "failed" | "cancelled";
+    finalError?: string;
+    stepwise?: boolean;
+  } = {}) {
+    const {
+      jobId = "job-1",
+      rowsBySourceId = {},
+      finalEvent = "completed",
+      finalError = "Validation job failed",
+      stepwise = false,
+    } = options;
+    let controller: {
+      source: MockValidationEventSource;
+      pendingSnapshot: ReturnType<typeof buildPendingImportedOauthSnapshot>;
+      currentRows: ReturnType<typeof buildPendingImportedOauthSnapshot>["rows"];
+      emitSnapshot: () => void;
+      emitRow: (sourceId: string) => void;
+      complete: () => void;
+      fail: (error?: string) => void;
+      cancel: () => void;
+    } | null = null;
+
+    const startImportedOauthValidationJob = vi.fn().mockImplementation(
+      async ({
+        items,
+      }: {
+        items: Array<{ sourceId: string; fileName: string }>;
+      }) => {
+        const pendingSnapshot = buildPendingImportedOauthSnapshot(items);
+        const source = new MockValidationEventSource();
+        const currentRows: ImportedOauthValidationRow[] = [...pendingSnapshot.rows];
+        controller = {
+          source,
+          pendingSnapshot,
+          currentRows,
+          emitSnapshot() {
+            source.emit("snapshot", {
+              snapshot: pendingSnapshot,
+              counts: buildImportedOauthValidationCounts(currentRows),
+            });
+          },
+          emitRow(sourceId: string) {
+            const nextRow = rowsBySourceId[sourceId];
+            if (!nextRow) {
+              throw new Error(`missing validation row for ${sourceId}`);
+            }
+            const index = currentRows.findIndex((row) => row.sourceId === sourceId);
+            if (index >= 0) {
+              currentRows[index] = {
+                ...nextRow,
+              };
+            }
+            source.emit("row", {
+              row: nextRow,
+              counts: buildImportedOauthValidationCounts(currentRows),
+            });
+          },
+          complete() {
+            source.emit("completed", {
+              snapshot: {
+                inputFiles: pendingSnapshot.inputFiles,
+                uniqueInInput: currentRows.length,
+                duplicateInInput: currentRows.filter(
+                  (row) => row.status === "duplicate_in_input",
+                ).length,
+                rows: currentRows,
+              },
+              counts: buildImportedOauthValidationCounts(currentRows),
+            });
+          },
+          fail(error = finalError) {
+            source.emit("failed", {
+              snapshot: {
+                inputFiles: pendingSnapshot.inputFiles,
+                uniqueInInput: currentRows.length,
+                duplicateInInput: currentRows.filter(
+                  (row) => row.status === "duplicate_in_input",
+                ).length,
+                rows: currentRows,
+              },
+              counts: buildImportedOauthValidationCounts(currentRows),
+              error,
+            });
+          },
+          cancel() {
+            source.emit("cancelled", {
+              snapshot: {
+                inputFiles: pendingSnapshot.inputFiles,
+                uniqueInInput: currentRows.length,
+                duplicateInInput: currentRows.filter(
+                  (row) => row.status === "duplicate_in_input",
+                ).length,
+                rows: currentRows,
+              },
+              counts: buildImportedOauthValidationCounts(currentRows),
+            });
+          },
+        };
+
+        apiMocks.createImportedOauthValidationJobEventSource.mockReturnValue(
+          source as unknown as EventSource,
+        );
+
+        if (!stepwise) {
+          window.setTimeout(() => {
+            controller?.emitSnapshot();
+            items.forEach((item) => controller?.emitRow(item.sourceId));
+            if (finalEvent === "failed") {
+              controller?.fail();
+            } else if (finalEvent === "cancelled") {
+              controller?.cancel();
+            } else {
+              controller?.complete();
+            }
+          }, 0);
+        }
+
+        return {
+          jobId,
+          snapshot: pendingSnapshot,
+        };
+      },
+    );
+    const stopImportedOauthValidationJob = vi.fn().mockResolvedValue(undefined);
+
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      stopImportedOauthValidationJob,
+    });
+
+    return {
+      startImportedOauthValidationJob,
+      stopImportedOauthValidationJob,
+      getController: () => {
+        if (!controller) {
+          throw new Error("validation controller not initialized");
+        }
+        return controller;
+      },
+    };
+  }
+
   it("opens import mode from the query string and validates selected files", async () => {
     const fixture = createImportedOauthFixture(1);
     const sourceId = getImportedOauthSourceId(fixture);
-    const runImportedOauthValidation = vi.fn().mockResolvedValue({
-      inputFiles: 1,
-      uniqueInInput: 1,
-      duplicateInInput: 0,
-      rows: [
-        buildImportedOauthRow(
-          sourceId,
-          fixture.fileName,
-          fixture.email,
-          fixture.chatgptAccountId,
-        ),
-      ],
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [sourceId]: buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
     });
-    mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
     expect(host?.textContent).toContain("Import Codex OAuth JSON");
@@ -2342,8 +2603,10 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     clickButton(/validate and review/i);
     await flushAsync();
+    await flushTimers();
+    await flushAsync();
 
-    expect(runImportedOauthValidation).toHaveBeenCalledWith({
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
       items: [
         expect.objectContaining({
           fileName: fixture.fileName,
@@ -2361,27 +2624,25 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     const pendingFixture = createImportedOauthFixture(2);
     const importedSourceId = getImportedOauthSourceId(importedFixture, 0);
     const pendingSourceId = getImportedOauthSourceId(pendingFixture, 1);
-    const runImportedOauthValidation = vi.fn().mockResolvedValue({
-      inputFiles: 2,
-      uniqueInInput: 2,
-      duplicateInInput: 0,
-      rows: [
-        buildImportedOauthRow(
-          importedSourceId,
-          importedFixture.fileName,
-          importedFixture.email,
-          importedFixture.chatgptAccountId,
-        ),
-        buildImportedOauthRow(
-          pendingSourceId,
-          pendingFixture.fileName,
-          pendingFixture.email,
-          pendingFixture.chatgptAccountId,
-          "invalid",
-          "Broken credential",
-        ),
-      ],
-    });
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [importedSourceId]: buildImportedOauthRow(
+            importedSourceId,
+            importedFixture.fileName,
+            importedFixture.email,
+            importedFixture.chatgptAccountId,
+          ),
+          [pendingSourceId]: buildImportedOauthRow(
+            pendingSourceId,
+            pendingFixture.fileName,
+            pendingFixture.email,
+            pendingFixture.chatgptAccountId,
+            "invalid",
+            "Broken credential",
+          ),
+        },
+      });
     const importOauthAccounts = vi.fn().mockResolvedValue({
       summary: {
         inputFiles: 2,
@@ -2403,7 +2664,10 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
         },
       ],
     });
-    mockUpstreamAccounts({ runImportedOauthValidation, importOauthAccounts });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      importOauthAccounts,
+    });
     render("/account-pool/upstream-accounts/new?mode=import");
 
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
@@ -2418,6 +2682,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     await flushAsync();
 
     clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
     await flushAsync();
 
     clickBodyButton(/import usable files/i);
@@ -2441,21 +2708,24 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     const fixtures = Array.from({ length: 130 }, (_, index) =>
       createImportedOauthFixture(index + 1),
     );
-    const runImportedOauthValidation = vi
-      .fn()
-      .mockImplementation(
-        async ({
-          items,
-        }: {
-          items: Array<{ sourceId: string; fileName: string }>;
-        }) => ({
-          inputFiles: items.length,
-          uniqueInInput: items.length,
-          duplicateInInput: 0,
-          rows: items.map((item) => buildImportedOauthRowFromItem(item)),
-        }),
-      );
-    mockUpstreamAccounts({ runImportedOauthValidation });
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: Object.fromEntries(
+          fixtures.map((fixture, index) => {
+            const sourceId = getImportedOauthSourceId(fixture, index);
+            return [
+              sourceId,
+              buildImportedOauthRow(
+                sourceId,
+                fixture.fileName,
+                fixture.email,
+                fixture.chatgptAccountId,
+              ),
+            ];
+          }),
+        ),
+      });
+    mockUpstreamAccounts({ startImportedOauthValidationJob });
     render("/account-pool/upstream-accounts/new?mode=import");
 
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
@@ -2471,14 +2741,13 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     clickButton(/validate and review/i);
     await flushAsync();
+    await flushTimers();
+    await flushAsync();
 
     const pageOneRows = getImportedOauthResultRowsText().join("\n");
-    expect(runImportedOauthValidation).toHaveBeenCalledTimes(2);
-    expect(runImportedOauthValidation.mock.calls[0]?.[0]?.items).toHaveLength(
-      100,
-    );
-    expect(runImportedOauthValidation.mock.calls[1]?.[0]?.items).toHaveLength(
-      30,
+    expect(startImportedOauthValidationJob).toHaveBeenCalledTimes(1);
+    expect(startImportedOauthValidationJob.mock.calls[0]?.[0]?.items).toHaveLength(
+      130,
     );
     expect(pageOneRows).toContain("mailbox-1@duckmail.sbs.json");
     expect(pageOneRows).toContain("mailbox-100@duckmail.sbs.json");
@@ -2495,26 +2764,30 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     expect(document.body.textContent).toContain("Page 2 / 2");
   });
 
-  it("keeps successful validation batches and marks only the failed batch as error", async () => {
-    const fixtures = Array.from({ length: 130 }, (_, index) =>
+  it("updates validation progress one row at a time through SSE events", async () => {
+    const fixtures = Array.from({ length: 3 }, (_, index) =>
       createImportedOauthFixture(index + 1),
     );
-    const runImportedOauthValidation = vi
-      .fn()
-      .mockImplementationOnce(
-        async ({
-          items,
-        }: {
-          items: Array<{ sourceId: string; fileName: string }>;
-        }) => ({
-          inputFiles: items.length,
-          uniqueInInput: items.length,
-          duplicateInInput: 0,
-          rows: items.map((item) => buildImportedOauthRowFromItem(item)),
-        }),
-      )
-      .mockRejectedValueOnce(new Error("Batch exploded"));
-    mockUpstreamAccounts({ runImportedOauthValidation });
+    const rowsBySourceId = Object.fromEntries(
+      fixtures.map((fixture, index) => {
+        const sourceId = getImportedOauthSourceId(fixture, index);
+        return [
+          sourceId,
+          buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        ];
+      }),
+    );
+    const { startImportedOauthValidationJob, getController } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId,
+        stepwise: true,
+      });
+    mockUpstreamAccounts({ startImportedOauthValidationJob });
     render("/account-pool/upstream-accounts/new?mode=import");
 
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
@@ -2530,38 +2803,92 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     clickButton(/validate and review/i);
     await flushAsync();
-
-    expect(runImportedOauthValidation).toHaveBeenCalledTimes(2);
-    expect(document.body.textContent).toContain("Batch exploded");
-    expect(document.body.textContent).toContain("mailbox-1@duckmail.sbs.json");
-
-    clickBodyButton(/^next$/i);
+    await flushTimers();
     await flushAsync();
 
-    expect(document.body.textContent).toContain(
-      "mailbox-101@duckmail.sbs.json",
-    );
-    expect(document.body.textContent).toContain("Batch exploded");
+    const controller = getController();
+    controller.emitSnapshot();
+    await flushAsync();
+    expect(document.body.textContent).toContain("Checked 0 of 3");
+
+    controller.emitRow(getImportedOauthSourceId(fixtures[0]!, 0));
+    await flushAsync();
+    expect(document.body.textContent).toContain("Checked 1 of 3");
+
+    controller.emitRow(getImportedOauthSourceId(fixtures[1]!, 1));
+    await flushAsync();
+    expect(document.body.textContent).toContain("Checked 2 of 3");
+
+    controller.emitRow(getImportedOauthSourceId(fixtures[2]!, 2));
+    controller.complete();
+    await flushAsync();
+    expect(document.body.textContent).toContain("Checked 3 of 3");
+  });
+
+  it("closes the dialog and cancels the active validation job while checking", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = getImportedOauthSourceId(fixture);
+    const { startImportedOauthValidationJob, stopImportedOauthValidationJob, getController } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [sourceId]: buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        },
+        stepwise: true,
+      });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      stopImportedOauthValidationJob,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [fixture.file]);
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+
+    getController().emitSnapshot();
+    await flushAsync();
+    expect(document.body.textContent).toContain("Import validation");
+
+    clickBodyButton(/^close$/i);
+    await flushAsync();
+
+    expect(stopImportedOauthValidationJob).toHaveBeenCalledWith("job-1");
+    expect(document.body.textContent).not.toContain("Import validation");
   });
 
   it("imports validated oauth rows in batches of 100 and clears the dialog when all batches succeed", async () => {
     const fixtures = Array.from({ length: 130 }, (_, index) =>
       createImportedOauthFixture(index + 1),
     );
-    const runImportedOauthValidation = vi
-      .fn()
-      .mockImplementation(
-        async ({
-          items,
-        }: {
-          items: Array<{ sourceId: string; fileName: string }>;
-        }) => ({
-          inputFiles: items.length,
-          uniqueInInput: items.length,
-          duplicateInInput: 0,
-          rows: items.map((item) => buildImportedOauthRowFromItem(item)),
-        }),
-      );
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: Object.fromEntries(
+          fixtures.map((fixture, index) => {
+            const sourceId = getImportedOauthSourceId(fixture, index);
+            return [
+              sourceId,
+              buildImportedOauthRow(
+                sourceId,
+                fixture.fileName,
+                fixture.email,
+                fixture.chatgptAccountId,
+              ),
+            ];
+          }),
+        ),
+      });
     const importOauthAccounts = vi
       .fn()
       .mockImplementation(async ({ items, selectedSourceIds }) => ({
@@ -2589,7 +2916,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
           };
         }),
       }));
-    mockUpstreamAccounts({ runImportedOauthValidation, importOauthAccounts });
+    mockUpstreamAccounts({ startImportedOauthValidationJob, importOauthAccounts });
     render("/account-pool/upstream-accounts/new?mode=import");
 
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
@@ -2605,6 +2932,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     clickButton(/validate and review/i);
     await flushAsync();
+    await flushTimers();
+    await flushAsync();
+    await flushAsync();
 
     clickBodyButton(/import usable files/i);
     await flushAsync();
@@ -2614,10 +2944,12 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     expect(
       importOauthAccounts.mock.calls[0]?.[0]?.selectedSourceIds,
     ).toHaveLength(100);
+    expect(importOauthAccounts.mock.calls[0]?.[0]?.validationJobId).toBe("job-1");
     expect(importOauthAccounts.mock.calls[1]?.[0]?.items).toHaveLength(30);
     expect(
       importOauthAccounts.mock.calls[1]?.[0]?.selectedSourceIds,
     ).toHaveLength(30);
+    expect(importOauthAccounts.mock.calls[1]?.[0]?.validationJobId).toBe("job-1");
     expect(document.body.textContent).not.toContain("Import validation");
     expect(navigateMock).not.toHaveBeenCalled();
   });
@@ -2626,20 +2958,23 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     const fixtures = Array.from({ length: 130 }, (_, index) =>
       createImportedOauthFixture(index + 1),
     );
-    const runImportedOauthValidation = vi
-      .fn()
-      .mockImplementation(
-        async ({
-          items,
-        }: {
-          items: Array<{ sourceId: string; fileName: string }>;
-        }) => ({
-          inputFiles: items.length,
-          uniqueInInput: items.length,
-          duplicateInInput: 0,
-          rows: items.map((item) => buildImportedOauthRowFromItem(item)),
-        }),
-      );
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: Object.fromEntries(
+          fixtures.map((fixture, index) => {
+            const sourceId = getImportedOauthSourceId(fixture, index);
+            return [
+              sourceId,
+              buildImportedOauthRow(
+                sourceId,
+                fixture.fileName,
+                fixture.email,
+                fixture.chatgptAccountId,
+              ),
+            ];
+          }),
+        ),
+      });
     const importOauthAccounts = vi
       .fn()
       .mockImplementationOnce(async ({ items, selectedSourceIds }) => ({
@@ -2662,7 +2997,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
         })),
       }))
       .mockRejectedValueOnce(new Error("Import batch exploded"));
-    mockUpstreamAccounts({ runImportedOauthValidation, importOauthAccounts });
+    mockUpstreamAccounts({ startImportedOauthValidationJob, importOauthAccounts });
     render("/account-pool/upstream-accounts/new?mode=import");
 
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
@@ -2677,6 +3012,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     await flushAsync();
 
     clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
     await flushAsync();
 
     clickBodyButton(/import usable files/i);
