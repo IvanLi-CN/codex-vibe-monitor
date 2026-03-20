@@ -40,6 +40,7 @@ pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS: u64 = 10 * 60
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS: u64 = 5 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS: u64 = 15 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: u64 = 30;
+const DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM: usize = 4;
 const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS: u64 = 60 * 60;
 const DEFAULT_MANUAL_OAUTH_CALLBACK_PORT: u16 = 1455;
 const OAUTH_MAILBOX_SOURCE_GENERATED: &str = "generated";
@@ -150,9 +151,16 @@ impl fmt::Debug for AccountActorHandle {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct AccountOpCoordinator {
     actors: Arc<std::sync::Mutex<HashMap<i64, AccountActorHandle>>>,
+    maintenance_slots: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for AccountOpCoordinator {
+    fn default() -> Self {
+        Self::new(DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM)
+    }
 }
 
 impl fmt::Debug for AccountOpCoordinator {
@@ -164,6 +172,10 @@ impl fmt::Debug for AccountOpCoordinator {
             .len();
         f.debug_struct("AccountOpCoordinator")
             .field("actor_count", &actor_count)
+            .field(
+                "maintenance_slots_available",
+                &self.maintenance_slots.available_permits(),
+            )
             .finish()
     }
 }
@@ -224,9 +236,18 @@ impl UpstreamAccountsRuntime {
 
     #[cfg(test)]
     pub(crate) fn test_instance() -> Self {
+        Self::test_instance_with_maintenance_parallelism(
+            DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_instance_with_maintenance_parallelism(
+        maintenance_parallelism: usize,
+    ) -> Self {
         Self {
             crypto_key: Some(derive_secret_key("test-upstream-account-secret")),
-            account_ops: AccountOpCoordinator::default(),
+            account_ops: AccountOpCoordinator::new(maintenance_parallelism),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -245,6 +266,15 @@ impl UpstreamAccountsRuntime {
 }
 
 impl AccountOpCoordinator {
+    fn new(maintenance_parallelism: usize) -> Self {
+        Self {
+            actors: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            maintenance_slots: Arc::new(tokio::sync::Semaphore::new(
+                maintenance_parallelism.max(1),
+            )),
+        }
+    }
+
     fn actor_handle(&self, account_id: i64) -> AccountActorHandle {
         let mut actors = self
             .actors
@@ -523,6 +553,19 @@ impl AccountOpCoordinator {
 
         let coordinator = self.clone();
         tokio::spawn(async move {
+            let _permit = match coordinator.maintenance_slots.clone().acquire_owned().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    warn!(
+                        account_id = id,
+                        error = %err,
+                        "maintenance slots closed before sync started"
+                    );
+                    handle.maintenance_pending.store(false, Ordering::Release);
+                    coordinator.remove_actor_if_idle(id, &handle);
+                    return;
+                }
+            };
             match coordinator
                 .run_command_with_handle(
                     state,
@@ -10042,6 +10085,17 @@ mod tests {
     }
 
     async fn test_app_state_with_usage_base(base_url: &str) -> Arc<AppState> {
+        test_app_state_with_usage_base_and_parallelism(
+            base_url,
+            DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
+        )
+        .await
+    }
+
+    async fn test_app_state_with_usage_base_and_parallelism(
+        base_url: &str,
+        maintenance_parallelism: usize,
+    ) -> Arc<AppState> {
         let config = usage_snapshot_test_config(base_url, "codex-vibe-monitor/test");
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
@@ -10080,7 +10134,11 @@ mod tests {
                     in_flight: HashMap::new(),
                 },
             )),
-            upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
+            upstream_accounts: Arc::new(
+                UpstreamAccountsRuntime::test_instance_with_maintenance_parallelism(
+                    maintenance_parallelism,
+                ),
+            ),
         })
     }
 
@@ -10312,6 +10370,16 @@ mod tests {
         .expect("flag should become true");
     }
 
+    async fn wait_for_atomic_usize(flag: &AtomicUsize, expected: usize) {
+        timeout(Duration::from_secs(1), async {
+            while flag.load(Ordering::SeqCst) < expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("counter should reach expected value");
+    }
+
     #[tokio::test]
     async fn maintenance_pass_dispatches_without_waiting_for_sync_completion() {
         let (base_url, started, release, requests, server) = spawn_blocking_usage_server().await;
@@ -10349,6 +10417,93 @@ mod tests {
         })
         .await
         .expect("queued maintenance request should complete");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn maintenance_dispatch_respects_parallelism_limit() {
+        async fn handler(
+            State((requests, release)): State<(Arc<AtomicUsize>, Arc<Semaphore>)>,
+        ) -> (StatusCode, String) {
+            requests.fetch_add(1, Ordering::SeqCst);
+            let _permit = release
+                .acquire()
+                .await
+                .expect("test release semaphore should stay open");
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state((requests.clone(), release.clone()));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind bounded usage server");
+        let addr = listener.local_addr().expect("bounded usage server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve bounded usage server");
+        });
+
+        let state = test_app_state_with_usage_base_and_parallelism(
+            &format!("http://{addr}/backend-api"),
+            1,
+        )
+        .await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Bounded Maintenance A",
+            "bounded-a@example.com",
+            "org_bounded_a",
+            "user_bounded_a",
+        )
+        .await;
+        insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Bounded Maintenance B",
+            "bounded-b@example.com",
+            "org_bounded_b",
+            "user_bounded_b",
+        )
+        .await;
+
+        run_upstream_account_maintenance_once(state.clone())
+            .await
+            .expect("dispatch maintenance pass");
+        wait_for_atomic_usize(requests.as_ref(), 1).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "only one maintenance sync should reach the upstream at a time"
+        );
+
+        release.add_permits(1);
+        wait_for_atomic_usize(requests.as_ref(), 2).await;
+        release.add_permits(1);
         server.abort();
     }
 
