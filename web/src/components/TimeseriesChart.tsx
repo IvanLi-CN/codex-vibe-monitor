@@ -15,23 +15,18 @@ import type { TimeseriesPoint } from '../lib/api'
 import { useTranslation } from '../i18n'
 import { chartBaseTokens, metricAccent, withOpacity } from '../lib/chartTheme'
 import { useTheme } from '../theme'
+import {
+  buildTimeseriesChartData,
+  resolveTimeseriesChartMode,
+} from './timeseriesChartModel'
 import { Alert } from './ui/alert'
 import { Spinner } from './ui/spinner'
-
-const LINE_CHART_POINT_THRESHOLD = 48
 
 interface TimeseriesChartProps {
   points: TimeseriesPoint[]
   isLoading: boolean
   bucketSeconds?: number
   showDate?: boolean
-}
-
-interface ChartDatum {
-  label: string
-  totalTokens: number
-  totalCost: number
-  totalCount: number
 }
 
 export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = true }: TimeseriesChartProps) {
@@ -72,16 +67,8 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
     return <Alert>{t('chart.noDataRange')}</Alert>
   }
 
-  const chartData: ChartDatum[] = points.map((point) => {
-    const start = new Date(point.bucketStart)
-    const label = formatLocalLabel(start, bucketSeconds, showDate)
-    return {
-      label,
-      totalTokens: point.totalTokens,
-      totalCost: point.totalCost,
-      totalCount: point.totalCount,
-    }
-  })
+  const chartMode = resolveTimeseriesChartMode(points.length)
+  const chartData = buildTimeseriesChartData(points, bucketSeconds, showDate)
 
   // Keep animations for normal point counts; auto-disable only for extreme cases to avoid UI lockups
   const animate = chartData.length <= 800
@@ -92,9 +79,6 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
     totalCount: t('chart.totalCount'),
   }
 
-  // Use a line/area visualization once the buckets get dense to avoid cramped bars
-  const useLine = chartData.length >= LINE_CHART_POINT_THRESHOLD
-
   const formatValue = (value: number, key: keyof typeof seriesNames) => {
     if (key === 'totalCost') {
       return currencyFormatter.format(value)
@@ -103,9 +87,13 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
   }
 
   return (
-    <div className="h-96 w-full">
+    <div
+      className="h-96 w-full"
+      data-chart-kind="stats-timeseries-trend"
+      data-chart-mode={chartMode}
+    >
       <ResponsiveContainer>
-        {useLine ? (
+        {chartMode === 'cumulative-area' ? (
           <AreaChart data={chartData} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
             <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
             <XAxis
@@ -233,20 +221,4 @@ export function TimeseriesChart({ points, isLoading, bucketSeconds, showDate = t
       </ResponsiveContainer>
     </div>
   )
-}
-
-function pad2(n: number) {
-  return n.toString().padStart(2, '0')
-}
-
-function formatLocalLabel(date: Date, bucketSeconds: number | undefined, showDate: boolean) {
-  const y = date.getFullYear()
-  const m = pad2(date.getMonth() + 1)
-  const d = pad2(date.getDate())
-  const hh = pad2(date.getHours())
-  const mm = pad2(date.getMinutes())
-  if (!bucketSeconds || bucketSeconds >= 3600) {
-    return showDate ? `${y}-${m}-${d} ${hh}:00` : `${hh}:00`
-  }
-  return showDate ? `${y}-${m}-${d} ${hh}:${mm}` : `${hh}:${mm}`
 }
