@@ -114,31 +114,39 @@ export function DashboardActivityOverview() {
 
         <StatsCards stats={activeSummary} loading={activeSummaryLoading} error={activeSummaryError} />
 
-        <div
-          data-testid="dashboard-activity-range-1d"
-          hidden={activeRange !== '1d'}
-          aria-hidden={activeRange !== '1d'}
-          className={cn(activeRange !== '1d' && 'hidden')}
-        >
-          <Last24hTenMinuteHeatmap
-            metric={metric24h}
-            onChangeMetric={setMetric24h}
-            showHeader={false}
-          />
-        </div>
+        <div className="grid">
+          <div
+            data-testid="dashboard-activity-range-1d"
+            aria-hidden={activeRange !== '1d'}
+            data-active={activeRange === '1d'}
+            className={cn(
+              'col-start-1 row-start-1',
+              activeRange !== '1d' && 'invisible pointer-events-none',
+            )}
+          >
+            <Last24hTenMinuteHeatmap
+              metric={metric24h}
+              onChangeMetric={setMetric24h}
+              showHeader={false}
+            />
+          </div>
 
-        <div
-          data-testid="dashboard-activity-range-7d"
-          hidden={activeRange !== '7d'}
-          aria-hidden={activeRange !== '7d'}
-          className={cn(activeRange !== '7d' && 'hidden')}
-        >
-          <WeeklyHourlyHeatmap
-            metric={metric7d}
-            onChangeMetric={setMetric7d}
-            showHeader={false}
-            showSurface={false}
-          />
+          <div
+            data-testid="dashboard-activity-range-7d"
+            aria-hidden={activeRange !== '7d'}
+            data-active={activeRange === '7d'}
+            className={cn(
+              'col-start-1 row-start-1',
+              activeRange !== '7d' && 'invisible pointer-events-none',
+            )}
+          >
+            <WeeklyHourlyHeatmap
+              metric={metric7d}
+              onChangeMetric={setMetric7d}
+              showHeader={false}
+              showSurface={false}
+            />
+          </div>
         </div>
       </div>
     </section>

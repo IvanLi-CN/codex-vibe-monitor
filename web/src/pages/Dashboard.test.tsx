@@ -155,8 +155,10 @@ describe('DashboardPage', () => {
     expect(host?.textContent).toContain('活动总览')
     expect(host?.querySelectorAll('[data-testid="dashboard-activity-overview"]')).toHaveLength(1)
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.hasAttribute('hidden')).toBe(false)
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.hasAttribute('hidden')).toBe(true)
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.getAttribute('aria-hidden')).toBe('false')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.getAttribute('data-active')).toBe('true')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('aria-hidden')).toBe('true')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.className).toContain('invisible')
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain('metric:totalCount')
 
     const rangeButtons = host?.querySelectorAll('button[role="tab"]')
@@ -172,8 +174,10 @@ describe('DashboardPage', () => {
     })
 
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:700')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.hasAttribute('hidden')).toBe(true)
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.hasAttribute('hidden')).toBe(false)
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.getAttribute('aria-hidden')).toBe('true')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.className).toContain('invisible')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('aria-hidden')).toBe('false')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('data-active')).toBe('true')
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
       'metric:totalCount;header:false;surface:false',
     )
