@@ -1111,6 +1111,7 @@ async fn drain_runtime_after_shutdown(
             "upstream account maintenance task terminated unexpectedly"
         );
     }
+    state.upstream_accounts.drain_background_tasks().await;
     if let Some(forward_proxy_handle) = forward_proxy_handle
         && let Err(err) = forward_proxy_handle.await
     {

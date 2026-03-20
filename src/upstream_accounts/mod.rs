@@ -155,6 +155,7 @@ impl fmt::Debug for AccountActorHandle {
 struct AccountOpCoordinator {
     actors: Arc<std::sync::Mutex<HashMap<i64, AccountActorHandle>>>,
     maintenance_slots: Arc<tokio::sync::Semaphore>,
+    maintenance_handles: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Default for AccountOpCoordinator {
@@ -175,6 +176,14 @@ impl fmt::Debug for AccountOpCoordinator {
             .field(
                 "maintenance_slots_available",
                 &self.maintenance_slots.available_permits(),
+            )
+            .field(
+                "maintenance_handle_count",
+                &self
+                    .maintenance_handles
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .len(),
             )
             .finish()
     }
@@ -263,6 +272,10 @@ impl UpstreamAccountsRuntime {
     async fn remove_validation_job(&self, job_id: &str) -> Option<Arc<ImportedOauthValidationJob>> {
         self.validation_jobs.lock().await.remove(job_id)
     }
+
+    pub(crate) async fn drain_background_tasks(&self) {
+        self.account_ops.drain_maintenance_tasks().await;
+    }
 }
 
 impl AccountOpCoordinator {
@@ -272,6 +285,7 @@ impl AccountOpCoordinator {
             maintenance_slots: Arc::new(tokio::sync::Semaphore::new(
                 maintenance_parallelism.max(1),
             )),
+            maintenance_handles: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -359,6 +373,22 @@ impl AccountOpCoordinator {
                     "account actor job panicked"
                 );
                 Err(AccountCommandDispatchError::ActorUnavailable(command))
+            }
+        }
+    }
+
+    async fn drain_maintenance_tasks(&self) {
+        let mut handles = {
+            let mut guard = self
+                .maintenance_handles
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *guard)
+        };
+        handles.retain(|handle| !handle.is_finished());
+        for handle in handles {
+            if let Err(err) = handle.await {
+                error!(?err, "queued maintenance task terminated unexpectedly");
             }
         }
     }
@@ -552,7 +582,7 @@ impl AccountOpCoordinator {
         }
 
         let coordinator = self.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let _permit = match coordinator.maintenance_slots.clone().acquire_owned().await {
                 Ok(permit) => permit,
                 Err(err) => {
@@ -592,6 +622,12 @@ impl AccountOpCoordinator {
                 }
             }
         });
+        let mut maintenance_handles = self
+            .maintenance_handles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        maintenance_handles.retain(|handle| !handle.is_finished());
+        maintenance_handles.push(handle);
 
         Ok(MaintenanceQueueOutcome::Queued)
     }
@@ -2955,66 +2991,50 @@ pub(crate) async fn import_validated_oauth_accounts(
             &StoredCredentials::Oauth(probe.credentials.clone()),
         )
         .map_err(internal_error_tuple)?;
-        let (persisted_account_id, import_warning) = if let Some(existing_row) =
-            existing_match.as_ref()
-        {
-            let warning = state
-                .upstream_accounts
-                .account_ops
-                .run_persist_imported_oauth(state.clone(), existing_row.id, probe.clone())
-                .await?;
-            (existing_row.id, warning)
-        } else {
-            let persisted_account_id = {
-                let mut tx = state
-                    .pool
-                    .begin_with("BEGIN IMMEDIATE")
+        let (persisted_account_id, import_warning) =
+            if let Some(existing_row) = existing_match.as_ref() {
+                let warning = state
+                    .upstream_accounts
+                    .account_ops
+                    .run_persist_imported_oauth(state.clone(), existing_row.id, probe.clone())
+                    .await?;
+                (existing_row.id, warning)
+            } else {
+                let persisted_account_id = {
+                    let mut tx = state
+                        .pool
+                        .begin_with("BEGIN IMMEDIATE")
+                        .await
+                        .map_err(internal_error_tuple)?;
+                    ensure_display_name_available(&mut *tx, &normalized.display_name, None).await?;
+                    let account_id = upsert_oauth_account(
+                        &mut tx,
+                        OauthAccountUpsert {
+                            account_id: None,
+                            display_name: &normalized.display_name,
+                            group_name: group_name.clone(),
+                            is_mother: false,
+                            note: None,
+                            tag_ids: tag_ids.clone(),
+                            group_note: group_note.clone(),
+                            claims: &probe.claims,
+                            encrypted_credentials,
+                            token_expires_at: &probe.token_expires_at,
+                        },
+                    )
                     .await
                     .map_err(internal_error_tuple)?;
-                ensure_display_name_available(&mut *tx, &normalized.display_name, None).await?;
-                let account_id = upsert_oauth_account(
-                    &mut tx,
-                    OauthAccountUpsert {
-                        account_id: None,
-                        display_name: &normalized.display_name,
-                        group_name: group_name.clone(),
-                        is_mother: false,
-                        note: None,
-                        tag_ids: tag_ids.clone(),
-                        group_note: group_note.clone(),
-                        claims: &probe.claims,
-                        encrypted_credentials,
-                        token_expires_at: &probe.token_expires_at,
-                    },
-                )
-                .await
-                .map_err(internal_error_tuple)?;
-                tx.commit().await.map_err(internal_error_tuple)?;
-                account_id
-            };
+                    tx.commit().await.map_err(internal_error_tuple)?;
+                    account_id
+                };
 
-            let warning = match apply_imported_oauth_probe_result(
-                state.as_ref(),
-                persisted_account_id,
-                &probe,
-            )
-            .await
-            {
-                Ok(warning) => warning,
-                Err(err) => {
-                    warn!(
-                        account_id = persisted_account_id,
-                        source_id = %normalized.source_id,
-                        error = %err,
-                        "imported OAuth credential persisted but post-import state update failed"
-                    );
-                    Some(format!(
-                        "Imported, but post-import state update failed: {err}"
-                    ))
-                }
+                let warning = state
+                    .upstream_accounts
+                    .account_ops
+                    .run_persist_imported_oauth(state.clone(), persisted_account_id, probe.clone())
+                    .await?;
+                (persisted_account_id, warning)
             };
-            (persisted_account_id, warning)
-        };
 
         if existing_match.is_some() {
             updated_existing += 1;
@@ -10421,6 +10441,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn drain_background_tasks_waits_for_queued_maintenance_syncs() {
+        let (base_url, started, release, _requests, server) = spawn_blocking_usage_server().await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Drain Maintenance OAuth",
+            "drain-maintenance@example.com",
+            "org_drain_maintenance",
+            "user_drain_maintenance",
+        )
+        .await;
+
+        run_upstream_account_maintenance_once(state.clone())
+            .await
+            .expect("maintenance pass should dispatch");
+        wait_for_atomic_true(started.as_ref()).await;
+
+        let mut drain_task = tokio::spawn({
+            let runtime = state.upstream_accounts.clone();
+            async move {
+                runtime.drain_background_tasks().await;
+            }
+        });
+        assert!(
+            timeout(Duration::from_millis(150), &mut drain_task)
+                .await
+                .is_err(),
+            "drain should wait for queued maintenance tasks"
+        );
+
+        release.notify_waiters();
+        drain_task.await.expect("drain join should succeed");
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn maintenance_dispatch_respects_parallelism_limit() {
         async fn handler(
             State((requests, release)): State<(Arc<AtomicUsize>, Arc<Semaphore>)>,
@@ -10587,6 +10649,95 @@ mod tests {
             MaintenanceDispatchOutcome::Executed
         );
         assert_eq!(requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn persist_imported_oauth_waits_for_inflight_maintenance() {
+        let (base_url, started, release, _requests, server) = spawn_blocking_usage_server().await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Imported OAuth",
+            "imported@example.com",
+            "org_imported",
+            "user_imported",
+        )
+        .await;
+
+        let maintenance_task = tokio::spawn({
+            let state = state.clone();
+            async move {
+                state
+                    .upstream_accounts
+                    .account_ops
+                    .run_maintenance_sync(state.clone(), account_id)
+                    .await
+            }
+        });
+        wait_for_atomic_true(started.as_ref()).await;
+
+        let probe = ImportedOauthProbeOutcome {
+            token_expires_at: format_utc_iso(Utc::now() + ChronoDuration::days(30)),
+            credentials: StoredOauthCredentials {
+                access_token: "imported-access-token".to_string(),
+                refresh_token: "imported-refresh-token".to_string(),
+                id_token: test_id_token(
+                    "imported@example.com",
+                    Some("org_imported"),
+                    Some("user_imported"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            },
+            claims: test_claims(
+                "imported@example.com",
+                Some("org_imported"),
+                Some("user_imported"),
+            ),
+            usage_snapshot: None,
+            exhausted: false,
+            usage_snapshot_warning: Some("usage snapshot unavailable".to_string()),
+        };
+
+        let mut import_task = tokio::spawn({
+            let state = state.clone();
+            async move {
+                state
+                    .upstream_accounts
+                    .account_ops
+                    .run_persist_imported_oauth(state.clone(), account_id, probe)
+                    .await
+            }
+        });
+        assert!(
+            timeout(Duration::from_millis(150), &mut import_task)
+                .await
+                .is_err(),
+            "post-import updates should queue behind same-account maintenance"
+        );
+
+        release.notify_waiters();
+        assert_eq!(
+            maintenance_task
+                .await
+                .expect("maintenance join")
+                .expect("maintenance result"),
+            MaintenanceDispatchOutcome::Executed
+        );
+        assert_eq!(
+            import_task
+                .await
+                .expect("import join")
+                .expect("persist imported oauth"),
+            Some("usage snapshot unavailable".to_string())
+        );
         server.abort();
     }
 
