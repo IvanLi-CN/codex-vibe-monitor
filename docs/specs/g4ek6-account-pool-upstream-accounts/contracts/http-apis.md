@@ -153,6 +153,7 @@ Query:
 - `localLimitUnit`
 
 - 若更新后的 `displayName` 与其他账号重复（忽略大小写 + 去首尾空格），返回 `409 Conflict`，消息为 `displayName must be unique`。
+- 服务端必须与同账号的后台维护、手动同步、删除、re-login callback 落库和导入覆盖串行执行；无关账号之间不得互相阻塞。
 
 ## OAuth 完成的重复 warning
 
@@ -168,9 +169,16 @@ Query:
 
 - 成功返回 `204 No Content`。
 - 同时删除关联的登录会话与历史样本。
+- 服务端必须与同账号的后台维护、启停、保存、手动同步和导入覆盖串行执行。
 
 ## `POST /api/pool/upstream-accounts/:id/sync`
 
 - OAuth：触发 refresh + usage sync。
 - API Key：刷新本地状态时间戳。
 - 成功返回同步后的 `UpstreamAccountDetail`。
+- 同账号存在运行中或排队中的后台维护时，该同步请求必须排队执行；后台维护不得阻塞无关账号的 `PATCH enabled` / `PATCH disabled`。
+
+## 后台维护并发保证
+
+- 后台维护只允许按账号去重；同一账号存在运行中或排队中的维护任务时，新的维护请求必须被合并。
+- 在后台维护竞争下，无关账号的人工启用/禁用请求必须以 `1 秒内完成服务端提交` 为目标，不允许因为整池维护扫描而长时间 pending。

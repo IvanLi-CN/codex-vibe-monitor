@@ -10,9 +10,10 @@ use axum::{
     response::Html,
 };
 use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
+use futures_util::FutureExt;
 use rand::{Rng, RngCore, rngs::OsRng};
 use sqlx::Transaction;
-
+use std::{any::Any, panic::AssertUnwindSafe};
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
     "UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET";
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID: &str = "UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID";
@@ -39,6 +40,7 @@ pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS: u64 = 10 * 60
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS: u64 = 5 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS: u64 = 15 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: u64 = 30;
+const DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM: usize = 4;
 const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS: u64 = 60 * 60;
 const DEFAULT_MANUAL_OAUTH_CALLBACK_PORT: u16 = 1455;
 const OAUTH_MAILBOX_SOURCE_GENERATED: &str = "generated";
@@ -79,8 +81,124 @@ const UPSTREAM_USAGE_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel M
 #[derive(Debug)]
 pub(crate) struct UpstreamAccountsRuntime {
     pub(crate) crypto_key: Option<[u8; 32]>,
-    sync_lock: Arc<Mutex<()>>,
+    account_ops: AccountOpCoordinator,
     validation_jobs: Arc<Mutex<HashMap<String, Arc<ImportedOauthValidationJob>>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccountCommand {
+    UpdateAccount,
+    DeleteAccount,
+    ManualSync,
+    MaintenanceSync,
+    PersistOauthCallback,
+    PersistImportedOauth,
+    PostCreateSync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncCause {
+    Manual,
+    Maintenance,
+    PostCreate,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaintenanceDispatchOutcome {
+    Executed,
+    Skipped,
+    Deduped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaintenanceQueueOutcome {
+    Queued,
+    Deduped,
+}
+
+struct MaintenancePendingGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl MaintenancePendingGuard {
+    fn new(flag: Arc<AtomicBool>) -> Self {
+        Self { flag }
+    }
+}
+
+impl Drop for MaintenancePendingGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Clone)]
+struct AccountActorHandle {
+    serial: Arc<tokio::sync::Mutex<()>>,
+    maintenance_pending: Arc<AtomicBool>,
+}
+
+impl fmt::Debug for AccountActorHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccountActorHandle")
+            .field("serial_refs", &Arc::strong_count(&self.serial))
+            .field(
+                "maintenance_pending",
+                &self.maintenance_pending.load(Ordering::Acquire),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+struct AccountOpCoordinator {
+    actors: Arc<std::sync::Mutex<HashMap<i64, AccountActorHandle>>>,
+    maintenance_slots: Arc<tokio::sync::Semaphore>,
+    maintenance_handles: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
+}
+
+impl Default for AccountOpCoordinator {
+    fn default() -> Self {
+        Self::new(DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM)
+    }
+}
+
+impl fmt::Debug for AccountOpCoordinator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let actor_count = self
+            .actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len();
+        f.debug_struct("AccountOpCoordinator")
+            .field("actor_count", &actor_count)
+            .field(
+                "maintenance_slots_available",
+                &self.maintenance_slots.available_permits(),
+            )
+            .field(
+                "maintenance_handle_count",
+                &self
+                    .maintenance_handles
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .len(),
+            )
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+enum AccountCommandDispatchError<E> {
+    Command(E),
+    ActorUnavailable(AccountCommand),
+}
+
+#[derive(Debug)]
+enum AccountSubmitOutcome<T> {
+    Completed(T),
+    Deduped,
 }
 
 impl UpstreamAccountsRuntime {
@@ -104,7 +222,7 @@ impl UpstreamAccountsRuntime {
 
         Ok(Self {
             crypto_key,
-            sync_lock: Arc::new(Mutex::new(())),
+            account_ops: AccountOpCoordinator::default(),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -127,9 +245,18 @@ impl UpstreamAccountsRuntime {
 
     #[cfg(test)]
     pub(crate) fn test_instance() -> Self {
+        Self::test_instance_with_maintenance_parallelism(
+            DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_instance_with_maintenance_parallelism(
+        maintenance_parallelism: usize,
+    ) -> Self {
         Self {
             crypto_key: Some(derive_secret_key("test-upstream-account-secret")),
-            sync_lock: Arc::new(Mutex::new(())),
+            account_ops: AccountOpCoordinator::new(maintenance_parallelism),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -144,6 +271,409 @@ impl UpstreamAccountsRuntime {
 
     async fn remove_validation_job(&self, job_id: &str) -> Option<Arc<ImportedOauthValidationJob>> {
         self.validation_jobs.lock().await.remove(job_id)
+    }
+
+    pub(crate) async fn drain_background_tasks(&self) {
+        self.account_ops.drain_maintenance_tasks().await;
+    }
+}
+
+impl AccountOpCoordinator {
+    fn new(maintenance_parallelism: usize) -> Self {
+        Self {
+            actors: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            maintenance_slots: Arc::new(tokio::sync::Semaphore::new(
+                maintenance_parallelism.max(1),
+            )),
+            maintenance_handles: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    fn actor_handle(&self, account_id: i64) -> AccountActorHandle {
+        let mut actors = self
+            .actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(handle) = actors.get(&account_id) {
+            return handle.clone();
+        }
+
+        let maintenance_pending = Arc::new(AtomicBool::new(false));
+        let handle = AccountActorHandle {
+            serial: Arc::new(tokio::sync::Mutex::new(())),
+            maintenance_pending,
+        };
+        let actor_handle = handle.clone();
+        actors.insert(account_id, actor_handle.clone());
+        actor_handle
+    }
+
+    fn remove_actor_if_idle(&self, account_id: i64, handle: &AccountActorHandle) {
+        let mut actors = self
+            .actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(current) = actors.get(&account_id) else {
+            return;
+        };
+        if !Arc::ptr_eq(&current.serial, &handle.serial)
+            || !Arc::ptr_eq(&current.maintenance_pending, &handle.maintenance_pending)
+        {
+            return;
+        }
+
+        // `2` means the only remaining owners are the map entry and this call frame.
+        if Arc::strong_count(&handle.serial) == 2
+            && Arc::strong_count(&handle.maintenance_pending) == 2
+            && !handle.maintenance_pending.load(Ordering::Acquire)
+        {
+            actors.remove(&account_id);
+        }
+    }
+
+    #[cfg(test)]
+    fn actor_count(&self) -> usize {
+        self.actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    async fn run_command_with_handle<R, E, F, Fut>(
+        &self,
+        state: Arc<AppState>,
+        account_id: i64,
+        command: AccountCommand,
+        handle: AccountActorHandle,
+        job_factory: F,
+    ) -> Result<R, AccountCommandDispatchError<E>>
+    where
+        R: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce(Arc<AppState>, i64) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<R, E>> + Send + 'static,
+    {
+        let result = {
+            let _serial_guard = handle.serial.lock().await;
+            let maintenance_pending = handle.maintenance_pending.clone();
+            let _reset_guard = (command == AccountCommand::MaintenanceSync)
+                .then(|| MaintenancePendingGuard::new(maintenance_pending));
+            AssertUnwindSafe(job_factory(state, account_id))
+                .catch_unwind()
+                .await
+        };
+        self.remove_actor_if_idle(account_id, &handle);
+
+        match result {
+            Ok(result) => result.map_err(AccountCommandDispatchError::Command),
+            Err(panic) => {
+                error!(
+                    account_id,
+                    panic = %describe_panic_payload(&panic),
+                    "account actor job panicked"
+                );
+                Err(AccountCommandDispatchError::ActorUnavailable(command))
+            }
+        }
+    }
+
+    async fn drain_maintenance_tasks(&self) {
+        let mut handles = {
+            let mut guard = self
+                .maintenance_handles
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *guard)
+        };
+        handles.retain(|handle| !handle.is_finished());
+        for handle in handles {
+            if let Err(err) = handle.await {
+                error!(?err, "queued maintenance task terminated unexpectedly");
+            }
+        }
+    }
+
+    async fn submit_command<R, E, F, Fut>(
+        &self,
+        state: Arc<AppState>,
+        account_id: i64,
+        command: AccountCommand,
+        dedupe: bool,
+        job_factory: F,
+    ) -> Result<AccountSubmitOutcome<R>, AccountCommandDispatchError<E>>
+    where
+        R: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce(Arc<AppState>, i64) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<R, E>> + Send + 'static,
+    {
+        let handle = self.actor_handle(account_id);
+        if dedupe && handle.maintenance_pending.swap(true, Ordering::AcqRel) {
+            return Ok(AccountSubmitOutcome::Deduped);
+        }
+
+        self.run_command_with_handle(state, account_id, command, handle, job_factory)
+            .await
+            .map(AccountSubmitOutcome::Completed)
+    }
+
+    async fn run_update_account(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+        payload: UpdateUpstreamAccountRequest,
+    ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
+        self.submit_command(
+            state,
+            id,
+            AccountCommand::UpdateAccount,
+            false,
+            move |state, id| async move {
+                update_upstream_account_inner(state.as_ref(), id, payload).await
+            },
+        )
+        .await
+        .map_err(map_account_dispatch_http)?
+        .expect_completed(AccountCommand::UpdateAccount)
+    }
+
+    async fn run_delete_account(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+    ) -> Result<StatusCode, (StatusCode, String)> {
+        self.submit_command(
+            state,
+            id,
+            AccountCommand::DeleteAccount,
+            false,
+            move |state, id| async move { delete_upstream_account_inner(state.as_ref(), id).await },
+        )
+        .await
+        .map_err(map_account_dispatch_http)?
+        .expect_completed(AccountCommand::DeleteAccount)
+    }
+
+    async fn run_manual_sync(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+    ) -> Result<UpstreamAccountDetail, anyhow::Error> {
+        self.submit_command(
+            state,
+            id,
+            AccountCommand::ManualSync,
+            false,
+            move |state, id| async move {
+                sync_upstream_account_by_id(state.as_ref(), id, SyncCause::Manual).await
+            },
+        )
+        .await
+        .map_err(map_account_dispatch_anyhow)
+        .and_then(|outcome| match outcome {
+            AccountSubmitOutcome::Completed(Some(detail)) => Ok(detail),
+            AccountSubmitOutcome::Completed(None) => Err(anyhow!("manual sync returned no detail")),
+            AccountSubmitOutcome::Deduped => {
+                Err(anyhow!("manual sync was unexpectedly deduplicated"))
+            }
+        })
+    }
+
+    async fn run_post_create_sync(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+    ) -> Result<UpstreamAccountDetail, anyhow::Error> {
+        self.submit_command(
+            state,
+            id,
+            AccountCommand::PostCreateSync,
+            false,
+            move |state, id| async move {
+                sync_upstream_account_by_id(state.as_ref(), id, SyncCause::PostCreate).await
+            },
+        )
+        .await
+        .map_err(map_account_dispatch_anyhow)
+        .and_then(|outcome| match outcome {
+            AccountSubmitOutcome::Completed(Some(detail)) => Ok(detail),
+            AccountSubmitOutcome::Completed(None) => {
+                Err(anyhow!("post-create sync returned no detail"))
+            }
+            AccountSubmitOutcome::Deduped => {
+                Err(anyhow!("post-create sync was unexpectedly deduplicated"))
+            }
+        })
+    }
+
+    #[cfg(test)]
+    async fn run_maintenance_sync(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+    ) -> Result<MaintenanceDispatchOutcome, anyhow::Error> {
+        match self
+            .submit_command(
+                state,
+                id,
+                AccountCommand::MaintenanceSync,
+                true,
+                move |state, id| async move {
+                    sync_upstream_account_by_id(state.as_ref(), id, SyncCause::Maintenance).await
+                },
+            )
+            .await
+            .map_err(map_account_dispatch_anyhow)?
+        {
+            AccountSubmitOutcome::Completed(Some(_)) => Ok(MaintenanceDispatchOutcome::Executed),
+            AccountSubmitOutcome::Completed(None) => Ok(MaintenanceDispatchOutcome::Skipped),
+            AccountSubmitOutcome::Deduped => Ok(MaintenanceDispatchOutcome::Deduped),
+        }
+    }
+
+    async fn run_persist_oauth_callback(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+        input: PersistOauthCallbackInput,
+    ) -> Result<i64, (StatusCode, String)> {
+        self.submit_command(
+            state,
+            id,
+            AccountCommand::PersistOauthCallback,
+            false,
+            move |state, _| async move {
+                persist_existing_oauth_callback_inner(state.as_ref(), input).await
+            },
+        )
+        .await
+        .map_err(map_account_dispatch_http)?
+        .expect_completed(AccountCommand::PersistOauthCallback)
+    }
+
+    async fn run_persist_imported_oauth(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+        probe: ImportedOauthProbeOutcome,
+    ) -> Result<Option<String>, (StatusCode, String)> {
+        self.submit_command(
+            state,
+            id,
+            AccountCommand::PersistImportedOauth,
+            false,
+            move |state, id| async move {
+                persist_imported_oauth_existing_inner(state.as_ref(), id, probe).await
+            },
+        )
+        .await
+        .map_err(map_account_dispatch_http)?
+        .expect_completed(AccountCommand::PersistImportedOauth)
+    }
+
+    fn dispatch_maintenance_sync(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+    ) -> Result<MaintenanceQueueOutcome, anyhow::Error> {
+        let handle = self.actor_handle(id);
+        if handle.maintenance_pending.swap(true, Ordering::AcqRel) {
+            return Ok(MaintenanceQueueOutcome::Deduped);
+        }
+
+        let coordinator = self.clone();
+        let handle = tokio::spawn(async move {
+            let _permit = match coordinator.maintenance_slots.clone().acquire_owned().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    warn!(
+                        account_id = id,
+                        error = %err,
+                        "maintenance slots closed before sync started"
+                    );
+                    handle.maintenance_pending.store(false, Ordering::Release);
+                    coordinator.remove_actor_if_idle(id, &handle);
+                    return;
+                }
+            };
+            match coordinator
+                .run_command_with_handle(
+                    state,
+                    id,
+                    AccountCommand::MaintenanceSync,
+                    handle,
+                    move |state, id| async move {
+                        sync_upstream_account_by_id(state.as_ref(), id, SyncCause::Maintenance)
+                            .await
+                    },
+                )
+                .await
+            {
+                Ok(Some(_)) | Ok(None) => {}
+                Err(AccountCommandDispatchError::Command(err)) => {
+                    warn!(account_id = id, error = %err, "failed to maintain upstream OAuth account");
+                }
+                Err(AccountCommandDispatchError::ActorUnavailable(command)) => {
+                    warn!(
+                        account_id = id,
+                        ?command,
+                        "account actor became unavailable while executing maintenance"
+                    );
+                }
+            }
+        });
+        let mut maintenance_handles = self
+            .maintenance_handles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        maintenance_handles.retain(|handle| !handle.is_finished());
+        maintenance_handles.push(handle);
+
+        Ok(MaintenanceQueueOutcome::Queued)
+    }
+}
+
+impl<T> AccountSubmitOutcome<T> {
+    fn expect_completed(self, command: AccountCommand) -> Result<T, (StatusCode, String)> {
+        match self {
+            Self::Completed(value) => Ok(value),
+            Self::Deduped => Err(internal_error_tuple(anyhow!(
+                "account command {:?} unexpectedly deduped",
+                command
+            ))),
+        }
+    }
+}
+
+fn describe_panic_payload(payload: &Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
+fn map_account_dispatch_http(
+    err: AccountCommandDispatchError<(StatusCode, String)>,
+) -> (StatusCode, String) {
+    match err {
+        AccountCommandDispatchError::Command(err) => err,
+        AccountCommandDispatchError::ActorUnavailable(command) => internal_error_tuple(anyhow!(
+            "account actor became unavailable while executing {:?}",
+            command
+        )),
+    }
+}
+
+fn map_account_dispatch_anyhow(err: AccountCommandDispatchError<anyhow::Error>) -> anyhow::Error {
+    match err {
+        AccountCommandDispatchError::Command(err) => err,
+        AccountCommandDispatchError::ActorUnavailable(command) => anyhow!(
+            "account actor became unavailable while executing {:?}",
+            command
+        ),
     }
 }
 
@@ -845,6 +1375,14 @@ struct ImportedOauthValidatedImportData {
     probe: ImportedOauthProbeOutcome,
 }
 
+struct PersistOauthCallbackInput {
+    session: OauthLoginSessionRow,
+    display_name: String,
+    claims: ChatgptJwtClaims,
+    encrypted_credentials: String,
+    token_expires_at: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct ChatgptJwtOuterClaims {
     #[serde(default)]
@@ -1470,7 +2008,7 @@ pub(crate) fn spawn_upstream_account_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    if let Err(err) = run_upstream_account_maintenance_once(state.as_ref()).await {
+                    if let Err(err) = run_upstream_account_maintenance_once(state.clone()).await {
                         warn!(error = %err, "failed to run upstream account maintenance");
                     }
                 }
@@ -2453,85 +2991,49 @@ pub(crate) async fn import_validated_oauth_accounts(
             &StoredCredentials::Oauth(probe.credentials.clone()),
         )
         .map_err(internal_error_tuple)?;
-        let persisted_account_id = {
-            let _guard = state.upstream_accounts.sync_lock.lock().await;
-            let mut tx = state
-                .pool
-                .begin_with("BEGIN IMMEDIATE")
-                .await
-                .map_err(internal_error_tuple)?;
-            let account_id = if let Some(existing_row) = existing_match.as_ref() {
-                let existing_tag_ids = load_account_tag_map(&state.pool, &[existing_row.id])
-                    .await
-                    .map_err(internal_error_tuple)?
-                    .remove(&existing_row.id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|tag| tag.id)
-                    .collect::<Vec<_>>();
-                ensure_display_name_available(
-                    &mut *tx,
-                    &existing_row.display_name,
-                    Some(existing_row.id),
-                )
-                .await?;
-                upsert_oauth_account(
-                    &mut tx,
-                    OauthAccountUpsert {
-                        account_id: Some(existing_row.id),
-                        display_name: &existing_row.display_name,
-                        group_name: existing_row.group_name.clone(),
-                        is_mother: existing_row.is_mother != 0,
-                        note: existing_row.note.clone(),
-                        tag_ids: existing_tag_ids,
-                        group_note: None,
-                        claims: &probe.claims,
-                        encrypted_credentials,
-                        token_expires_at: &probe.token_expires_at,
-                    },
-                )
-                .await
-                .map_err(internal_error_tuple)?
+        let (persisted_account_id, import_warning) =
+            if let Some(existing_row) = existing_match.as_ref() {
+                let warning = state
+                    .upstream_accounts
+                    .account_ops
+                    .run_persist_imported_oauth(state.clone(), existing_row.id, probe.clone())
+                    .await?;
+                (existing_row.id, warning)
             } else {
-                ensure_display_name_available(&mut *tx, &normalized.display_name, None).await?;
-                upsert_oauth_account(
-                    &mut tx,
-                    OauthAccountUpsert {
-                        account_id: None,
-                        display_name: &normalized.display_name,
-                        group_name: group_name.clone(),
-                        is_mother: false,
-                        note: None,
-                        tag_ids: tag_ids.clone(),
-                        group_note: group_note.clone(),
-                        claims: &probe.claims,
-                        encrypted_credentials,
-                        token_expires_at: &probe.token_expires_at,
-                    },
-                )
-                .await
-                .map_err(internal_error_tuple)?
-            };
-            tx.commit().await.map_err(internal_error_tuple)?;
-            account_id
-        };
+                let persisted_account_id = {
+                    let mut tx = state
+                        .pool
+                        .begin_with("BEGIN IMMEDIATE")
+                        .await
+                        .map_err(internal_error_tuple)?;
+                    ensure_display_name_available(&mut *tx, &normalized.display_name, None).await?;
+                    let account_id = upsert_oauth_account(
+                        &mut tx,
+                        OauthAccountUpsert {
+                            account_id: None,
+                            display_name: &normalized.display_name,
+                            group_name: group_name.clone(),
+                            is_mother: false,
+                            note: None,
+                            tag_ids: tag_ids.clone(),
+                            group_note: group_note.clone(),
+                            claims: &probe.claims,
+                            encrypted_credentials,
+                            token_expires_at: &probe.token_expires_at,
+                        },
+                    )
+                    .await
+                    .map_err(internal_error_tuple)?;
+                    tx.commit().await.map_err(internal_error_tuple)?;
+                    account_id
+                };
 
-        let import_warning =
-            match apply_imported_oauth_probe_result(state.as_ref(), persisted_account_id, &probe)
-                .await
-            {
-                Ok(warning) => warning,
-                Err(err) => {
-                    warn!(
-                        account_id = persisted_account_id,
-                        source_id = %normalized.source_id,
-                        error = %err,
-                        "imported OAuth credential persisted but post-import state update failed"
-                    );
-                    Some(format!(
-                        "Imported, but post-import state update failed: {err}"
-                    ))
-                }
+                let warning = state
+                    .upstream_accounts
+                    .account_ops
+                    .run_persist_imported_oauth(state.clone(), persisted_account_id, probe.clone())
+                    .await?;
+                (persisted_account_id, warning)
             };
 
         if existing_match.is_some() {
@@ -2975,7 +3477,6 @@ pub(crate) async fn create_oauth_login_session(
     };
     let stored_group_note = if store_group_note { group_note } else { None };
 
-    let _guard = state.upstream_accounts.sync_lock.lock().await;
     let mut tx = state
         .pool
         .begin_with("BEGIN IMMEDIATE")
@@ -3045,7 +3546,7 @@ pub(crate) async fn oauth_callback(
     State(state): State<Arc<AppState>>,
     Query(query): Query<OauthCallbackQuery>,
 ) -> Response {
-    match handle_oauth_callback(state.as_ref(), query).await {
+    match handle_oauth_callback(state, query).await {
         Ok(html) => (StatusCode::OK, Html(html)).into_response(),
         Err((status, html)) => (status, Html(html)).into_response(),
     }
@@ -3095,8 +3596,7 @@ pub(crate) async fn complete_oauth_login_session(
     .await?;
     let query = parse_manual_oauth_callback(&payload.callback_url, &session.redirect_uri)
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
-    let account_id =
-        complete_oauth_login_session_with_query(state.as_ref(), session, query).await?;
+    let account_id = complete_oauth_login_session_with_query(state.clone(), session, query).await?;
     let detail = load_upstream_account_detail(&state.pool, account_id)
         .await
         .map_err(internal_error_tuple)?
@@ -3184,6 +3684,14 @@ pub(crate) async fn create_api_key_account(
             "cross-origin account writes are forbidden".to_string(),
         ));
     }
+    let detail = create_api_key_account_inner(state, payload).await?;
+    Ok(Json(detail))
+}
+
+async fn create_api_key_account_inner(
+    state: Arc<AppState>,
+    payload: CreateApiKeyAccountRequest,
+) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
     let crypto_key = state.upstream_accounts.require_crypto_key()?;
     let display_name = normalize_required_display_name(&payload.display_name)?;
     validate_local_limits(payload.local_primary_limit, payload.local_secondary_limit)?;
@@ -3206,7 +3714,6 @@ pub(crate) async fn create_api_key_account(
     )
     .map_err(internal_error_tuple)?;
     let inserted_id = {
-        let _guard = state.upstream_accounts.sync_lock.lock().await;
         let mut tx = state
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -3265,10 +3772,13 @@ pub(crate) async fn create_api_key_account(
     sync_account_tag_links(&state.pool, inserted_id, &tag_ids)
         .await
         .map_err(internal_error_tuple)?;
-    let detail = sync_upstream_account_by_id(state.as_ref(), inserted_id, false)
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_post_create_sync(state.clone(), inserted_id)
         .await
         .map_err(internal_error_tuple)?;
-    Ok(Json(detail))
+    Ok(detail)
 }
 
 pub(crate) async fn update_upstream_account(
@@ -3283,8 +3793,21 @@ pub(crate) async fn update_upstream_account(
             "cross-origin account writes are forbidden".to_string(),
         ));
     }
+    state.upstream_accounts.require_crypto_key()?;
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_update_account(state.clone(), id, payload)
+        .await?;
+    Ok(Json(detail))
+}
+
+async fn update_upstream_account_inner(
+    state: &AppState,
+    id: i64,
+    payload: UpdateUpstreamAccountRequest,
+) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
     let crypto_key = state.upstream_accounts.require_crypto_key()?;
-    let _guard = state.upstream_accounts.sync_lock.lock().await;
     let mut row = load_upstream_account_row(&state.pool, id)
         .await
         .map_err(internal_error_tuple)?
@@ -3422,7 +3945,7 @@ pub(crate) async fn update_upstream_account(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
-    Ok(Json(detail))
+    Ok(detail)
 }
 
 pub(crate) async fn delete_upstream_account(
@@ -3437,7 +3960,18 @@ pub(crate) async fn delete_upstream_account(
         ));
     }
     state.upstream_accounts.require_crypto_key()?;
-    let _guard = state.upstream_accounts.sync_lock.lock().await;
+    let status = state
+        .upstream_accounts
+        .account_ops
+        .run_delete_account(state.clone(), id)
+        .await?;
+    Ok(status)
+}
+
+async fn delete_upstream_account_inner(
+    state: &AppState,
+    id: i64,
+) -> Result<StatusCode, (StatusCode, String)> {
     let mut tx = state
         .pool
         .begin_with("BEGIN IMMEDIATE")
@@ -3492,14 +4026,17 @@ pub(crate) async fn sync_upstream_account(
             "cross-origin account writes are forbidden".to_string(),
         ));
     }
-    let detail = sync_upstream_account_by_id(state.as_ref(), id, true)
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_manual_sync(state.clone(), id)
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(detail))
 }
 
 async fn handle_oauth_callback(
-    state: &AppState,
+    state: Arc<AppState>,
     query: OauthCallbackQuery,
 ) -> Result<String, (StatusCode, String)> {
     let Some(state_value) = normalize_optional_text(query.state.clone()) else {
@@ -3544,7 +4081,7 @@ async fn handle_oauth_callback(
 }
 
 async fn complete_oauth_login_session_with_query(
-    state: &AppState,
+    state: Arc<AppState>,
     session: OauthLoginSessionRow,
     query: OauthCallbackQuery,
 ) -> Result<i64, (StatusCode, String)> {
@@ -3679,62 +4216,104 @@ async fn complete_oauth_login_session_with_query(
         .clone()
         .and_then(|value| normalize_optional_text(Some(value)))
         .unwrap_or(default_display_name);
-    let account_id = {
-        let _guard = state.upstream_accounts.sync_lock.lock().await;
-        let mut tx = state
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
+    let input = PersistOauthCallbackInput {
+        session,
+        display_name,
+        claims,
+        encrypted_credentials: credentials,
+        token_expires_at,
+    };
+    let account_id = if let Some(existing_account_id) = input.session.account_id {
+        state
+            .upstream_accounts
+            .account_ops
+            .run_persist_oauth_callback(state.clone(), existing_account_id, input)
+            .await?
+    } else {
+        let account_id = persist_new_oauth_callback_inner(state.as_ref(), input).await?;
+        if let Err(err) = state
+            .upstream_accounts
+            .account_ops
+            .run_post_create_sync(state.clone(), account_id)
             .await
-            .map_err(internal_error_tuple)?;
-        let session = load_login_session_by_login_id_with_executor(&mut *tx, &session.login_id)
-            .await
-            .map_err(internal_error_tuple)?
-            .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
-        if session.status != LOGIN_SESSION_STATUS_PENDING {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "This login session has already been consumed.".to_string(),
-            ));
-        }
-        if let Err((status, message)) =
-            ensure_display_name_available(&mut *tx, &display_name, session.account_id).await
         {
-            if status == StatusCode::CONFLICT {
-                fail_login_session_with_executor(&mut *tx, &session.login_id, &message)
-                    .await
-                    .map_err(internal_error_tuple)?;
-                tx.commit().await.map_err(internal_error_tuple)?;
-            }
-            return Err((status, message));
+            warn!(account_id, error = %err, "OAuth callback created account but initial sync failed");
         }
-        let account_id = upsert_oauth_account(
-            &mut tx,
-            OauthAccountUpsert {
-                account_id: session.account_id,
-                display_name: &display_name,
-                group_name: session.group_name.clone(),
-                is_mother: session.is_mother != 0,
-                note: session.note.clone(),
-                tag_ids: parse_tag_ids_json(session.tag_ids_json.as_deref()),
-                group_note: session.group_note.clone(),
-                claims: &claims,
-                encrypted_credentials: credentials,
-                token_expires_at: &token_expires_at,
-            },
-        )
-        .await
-        .map_err(internal_error_tuple)?;
-        complete_login_session_with_executor(&mut *tx, &session.login_id, account_id)
-            .await
-            .map_err(internal_error_tuple)?;
-        tx.commit().await.map_err(internal_error_tuple)?;
         account_id
     };
 
-    if let Err(err) = sync_upstream_account_by_id(state, account_id, false).await {
-        warn!(account_id, error = %err, "OAuth callback created account but initial sync failed");
-    }
+    Ok(account_id)
+}
 
+async fn persist_existing_oauth_callback_inner(
+    state: &AppState,
+    input: PersistOauthCallbackInput,
+) -> Result<i64, (StatusCode, String)> {
+    let account_id = persist_oauth_callback_inner(state, input).await?;
+    if let Err(err) = sync_upstream_account_by_id(state, account_id, SyncCause::PostCreate).await {
+        warn!(account_id, error = %err, "OAuth callback updated account but initial sync failed");
+    }
+    Ok(account_id)
+}
+
+async fn persist_new_oauth_callback_inner(
+    state: &AppState,
+    input: PersistOauthCallbackInput,
+) -> Result<i64, (StatusCode, String)> {
+    persist_oauth_callback_inner(state, input).await
+}
+
+async fn persist_oauth_callback_inner(
+    state: &AppState,
+    input: PersistOauthCallbackInput,
+) -> Result<i64, (StatusCode, String)> {
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    let session = load_login_session_by_login_id_with_executor(&mut *tx, &input.session.login_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    if session.status != LOGIN_SESSION_STATUS_PENDING {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "This login session has already been consumed.".to_string(),
+        ));
+    }
+    if let Err((status, message)) =
+        ensure_display_name_available(&mut *tx, &input.display_name, session.account_id).await
+    {
+        if status == StatusCode::CONFLICT {
+            fail_login_session_with_executor(&mut *tx, &session.login_id, &message)
+                .await
+                .map_err(internal_error_tuple)?;
+            tx.commit().await.map_err(internal_error_tuple)?;
+        }
+        return Err((status, message));
+    }
+    let account_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: session.account_id,
+            display_name: &input.display_name,
+            group_name: session.group_name.clone(),
+            is_mother: session.is_mother != 0,
+            note: session.note.clone(),
+            tag_ids: parse_tag_ids_json(session.tag_ids_json.as_deref()),
+            group_note: session.group_note.clone(),
+            claims: &input.claims,
+            encrypted_credentials: input.encrypted_credentials,
+            token_expires_at: &input.token_expires_at,
+        },
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    complete_login_session_with_executor(&mut *tx, &session.login_id, account_id)
+        .await
+        .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
     Ok(account_id)
 }
 
@@ -3788,14 +4367,13 @@ fn parse_manual_oauth_callback(
     Ok(query)
 }
 
-async fn run_upstream_account_maintenance_once(state: &AppState) -> Result<()> {
+async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<()> {
     expire_pending_login_sessions(&state.pool).await?;
-    cleanup_expired_oauth_mailbox_sessions(state).await?;
+    cleanup_expired_oauth_mailbox_sessions(state.as_ref()).await?;
     let Some(_) = state.upstream_accounts.crypto_key else {
         return Ok(());
     };
 
-    let _guard = state.upstream_accounts.sync_lock.lock().await;
     let account_ids = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT id
@@ -3808,17 +4386,28 @@ async fn run_upstream_account_maintenance_once(state: &AppState) -> Result<()> {
     .fetch_all(&state.pool)
     .await?;
 
+    let mut queued = 0usize;
+    let mut deduped = 0usize;
+    let mut failed = 0usize;
     for account_id in account_ids {
-        let Some(row) = load_upstream_account_row(&state.pool, account_id).await? else {
-            continue;
-        };
-        if !should_maintain_account(&row, state) {
-            continue;
-        }
-        if let Err(err) = sync_oauth_account(state, &row).await {
-            warn!(account_id, error = %err, "failed to maintain upstream OAuth account");
+        match state
+            .upstream_accounts
+            .account_ops
+            .dispatch_maintenance_sync(state.clone(), account_id)
+        {
+            Ok(MaintenanceQueueOutcome::Queued) => queued += 1,
+            Ok(MaintenanceQueueOutcome::Deduped) => deduped += 1,
+            Err(err) => {
+                failed += 1;
+                warn!(account_id, error = %err, "failed to dispatch upstream OAuth maintenance");
+            }
         }
     }
+
+    info!(
+        candidates = queued + deduped + failed,
+        queued, deduped, failed, "upstream account maintenance pass finished"
+    );
 
     Ok(())
 }
@@ -4067,20 +4656,24 @@ async fn probe_imported_oauth_credentials(
 async fn sync_upstream_account_by_id(
     state: &AppState,
     id: i64,
-    reject_disabled: bool,
-) -> Result<UpstreamAccountDetail> {
+    cause: SyncCause,
+) -> Result<Option<UpstreamAccountDetail>> {
     let row = load_upstream_account_row(&state.pool, id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
 
     if row.enabled == 0 {
-        if reject_disabled {
+        if cause == SyncCause::Manual {
             bail!("disabled accounts cannot be synced");
         }
         let detail = load_upstream_account_detail(&state.pool, id)
             .await?
             .ok_or_else(|| anyhow!("account not found"))?;
-        return Ok(detail);
+        return Ok(Some(detail));
+    }
+
+    if cause == SyncCause::Maintenance && !should_maintain_account(&row, state) {
+        return Ok(None);
     }
 
     match row.kind.as_str() {
@@ -4089,9 +4682,10 @@ async fn sync_upstream_account_by_id(
         _ => bail!("unsupported account kind: {}", row.kind),
     }
 
-    load_upstream_account_detail(&state.pool, id)
+    let detail = load_upstream_account_detail(&state.pool, id)
         .await?
-        .ok_or_else(|| anyhow!("account not found after sync"))
+        .ok_or_else(|| anyhow!("account not found after sync"))?;
+    Ok(Some(detail))
 }
 
 async fn sync_api_key_account(pool: &Pool<Sqlite>, row: &UpstreamAccountRow) -> Result<()> {
@@ -4457,6 +5051,71 @@ async fn apply_imported_oauth_probe_result(
         mark_account_sync_success(&state.pool, account_id).await?;
     }
     Ok(probe.usage_snapshot_warning.clone())
+}
+
+async fn persist_imported_oauth_existing_inner(
+    state: &AppState,
+    account_id: i64,
+    probe: ImportedOauthProbeOutcome,
+) -> Result<Option<String>, (StatusCode, String)> {
+    let existing_row = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let existing_tag_ids = load_account_tag_map(&state.pool, &[account_id])
+        .await
+        .map_err(internal_error_tuple)?
+        .remove(&account_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|tag| tag.id)
+        .collect::<Vec<_>>();
+    let crypto_key = state.upstream_accounts.require_crypto_key()?;
+    let encrypted_credentials = encrypt_credentials(
+        crypto_key,
+        &StoredCredentials::Oauth(probe.credentials.clone()),
+    )
+    .map_err(internal_error_tuple)?;
+
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    ensure_display_name_available(&mut *tx, &existing_row.display_name, Some(existing_row.id))
+        .await?;
+    upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: Some(existing_row.id),
+            display_name: &existing_row.display_name,
+            group_name: existing_row.group_name.clone(),
+            is_mother: existing_row.is_mother != 0,
+            note: existing_row.note.clone(),
+            tag_ids: existing_tag_ids,
+            group_note: None,
+            claims: &probe.claims,
+            encrypted_credentials,
+            token_expires_at: &probe.token_expires_at,
+        },
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
+
+    match apply_imported_oauth_probe_result(state, account_id, &probe).await {
+        Ok(warning) => Ok(warning),
+        Err(err) => {
+            warn!(
+                account_id,
+                error = %err,
+                "imported OAuth credential persisted but post-import state update failed"
+            );
+            Ok(Some(format!(
+                "Imported, but post-import state update failed: {err}"
+            )))
+        }
+    }
 }
 
 struct OauthAccountUpsert<'a> {
@@ -8831,8 +9490,17 @@ mod tests {
         routing::get,
     };
     use sqlx::SqlitePool;
-    use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
-    use tokio::{net::TcpListener, sync::Mutex};
+    use std::{
+        collections::HashMap,
+        path::PathBuf,
+        sync::{Arc, atomic::AtomicUsize},
+        time::Duration,
+    };
+    use tokio::{
+        net::TcpListener,
+        sync::{Mutex, Notify},
+        time::timeout,
+    };
 
     #[test]
     fn derive_secret_key_is_stable() {
@@ -9436,6 +10104,64 @@ mod tests {
         pool
     }
 
+    async fn test_app_state_with_usage_base(base_url: &str) -> Arc<AppState> {
+        test_app_state_with_usage_base_and_parallelism(
+            base_url,
+            DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
+        )
+        .await
+    }
+
+    async fn test_app_state_with_usage_base_and_parallelism(
+        base_url: &str,
+        maintenance_parallelism: usize,
+    ) -> Arc<AppState> {
+        let config = usage_snapshot_test_config(base_url, "codex-vibe-monitor/test");
+        let http_clients = HttpClients::build(&config).expect("build http clients");
+        let (broadcaster, _) = broadcast::channel(8);
+        Arc::new(AppState {
+            config,
+            pool: test_pool().await,
+            http_clients,
+            broadcaster,
+            broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache {
+                summaries: HashMap::new(),
+                quota: None,
+            })),
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+            proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
+            startup_ready: Arc::new(AtomicBool::new(true)),
+            shutdown: CancellationToken::new(),
+            semaphore: Arc::new(Semaphore::new(4)),
+            proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
+            proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+                ForwardProxySettings::default(),
+                Vec::new(),
+            ))),
+            xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+                "xray".to_string(),
+                PathBuf::from("target/xray-supervisor-tests"),
+            ))),
+            forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
+            pricing_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
+            prompt_cache_conversation_cache: Arc::new(Mutex::new(
+                PromptCacheConversationsCacheState {
+                    entries: HashMap::new(),
+                    in_flight: HashMap::new(),
+                },
+            )),
+            upstream_accounts: Arc::new(
+                UpstreamAccountsRuntime::test_instance_with_maintenance_parallelism(
+                    maintenance_parallelism,
+                ),
+            ),
+        })
+    }
+
     fn test_claims_with_plan_type(
         email: &str,
         chatgpt_account_id: Option<&str>,
@@ -9538,6 +10264,708 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("insert oauth account")
+    }
+
+    async fn insert_syncable_oauth_account(
+        pool: &SqlitePool,
+        crypto_key: &[u8; 32],
+        display_name: &str,
+        email: &str,
+        account_id: &str,
+        user_id: &str,
+    ) -> i64 {
+        let now_iso = format_utc_iso(Utc::now());
+        let token_expires_at = format_utc_iso(Utc::now() + ChronoDuration::days(30));
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "access-token".to_string(),
+                refresh_token: "refresh-token".to_string(),
+                id_token: test_id_token(email, Some(account_id), Some(user_id), Some("team")),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                kind, provider, display_name, group_name, note, status, enabled, email, chatgpt_account_id,
+                chatgpt_user_id, plan_type, masked_api_key, encrypted_credentials, token_expires_at,
+                last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
+                local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
+            ) VALUES (
+                ?1, ?2, ?3, NULL, NULL, ?4, 1, ?5, ?6,
+                ?7, ?8, NULL, ?9, ?10,
+                NULL, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, ?11, ?11
+            ) RETURNING id
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
+        .bind(display_name)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind(email)
+        .bind(account_id)
+        .bind(user_id)
+        .bind("team")
+        .bind(encrypted_credentials)
+        .bind(&token_expires_at)
+        .bind(&now_iso)
+        .fetch_one(pool)
+        .await
+        .expect("insert syncable oauth account")
+    }
+
+    #[derive(Clone)]
+    struct BlockingUsageServerState {
+        started: Arc<AtomicBool>,
+        release: Arc<Notify>,
+        requests: Arc<AtomicUsize>,
+    }
+
+    async fn spawn_blocking_usage_server() -> (
+        String,
+        Arc<AtomicBool>,
+        Arc<Notify>,
+        Arc<AtomicUsize>,
+        JoinHandle<()>,
+    ) {
+        async fn handler(State(state): State<BlockingUsageServerState>) -> (StatusCode, String) {
+            state.requests.fetch_add(1, Ordering::SeqCst);
+            state.started.store(true, Ordering::SeqCst);
+            state.release.notified().await;
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        let started = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(Notify::new());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state(BlockingUsageServerState {
+                started: started.clone(),
+                release: release.clone(),
+                requests: requests.clone(),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind blocking usage server");
+        let addr = listener.local_addr().expect("blocking usage server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve blocking usage server");
+        });
+
+        (
+            format!("http://{addr}/backend-api"),
+            started,
+            release,
+            requests,
+            server,
+        )
+    }
+
+    async fn wait_for_atomic_true(flag: &AtomicBool) {
+        timeout(Duration::from_secs(1), async {
+            while !flag.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("flag should become true");
+    }
+
+    async fn wait_for_atomic_usize(flag: &AtomicUsize, expected: usize) {
+        timeout(Duration::from_secs(1), async {
+            while flag.load(Ordering::SeqCst) < expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("counter should reach expected value");
+    }
+
+    #[tokio::test]
+    async fn maintenance_pass_dispatches_without_waiting_for_sync_completion() {
+        let (base_url, started, release, requests, server) = spawn_blocking_usage_server().await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Queued Maintenance OAuth",
+            "queued-maintenance@example.com",
+            "org_queued_maintenance",
+            "user_queued_maintenance",
+        )
+        .await;
+
+        let started_at = std::time::Instant::now();
+        run_upstream_account_maintenance_once(state.clone())
+            .await
+            .expect("maintenance pass should dispatch");
+        assert!(
+            started_at.elapsed() < Duration::from_secs(1),
+            "maintenance pass should return after dispatching work"
+        );
+
+        wait_for_atomic_true(started.as_ref()).await;
+        release.notify_waiters();
+        timeout(Duration::from_secs(1), async {
+            while requests.load(Ordering::SeqCst) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("queued maintenance request should complete");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn drain_background_tasks_waits_for_queued_maintenance_syncs() {
+        let (base_url, started, release, _requests, server) = spawn_blocking_usage_server().await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Drain Maintenance OAuth",
+            "drain-maintenance@example.com",
+            "org_drain_maintenance",
+            "user_drain_maintenance",
+        )
+        .await;
+
+        run_upstream_account_maintenance_once(state.clone())
+            .await
+            .expect("maintenance pass should dispatch");
+        wait_for_atomic_true(started.as_ref()).await;
+
+        let mut drain_task = tokio::spawn({
+            let runtime = state.upstream_accounts.clone();
+            async move {
+                runtime.drain_background_tasks().await;
+            }
+        });
+        assert!(
+            timeout(Duration::from_millis(150), &mut drain_task)
+                .await
+                .is_err(),
+            "drain should wait for queued maintenance tasks"
+        );
+
+        release.notify_waiters();
+        drain_task.await.expect("drain join should succeed");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn maintenance_dispatch_respects_parallelism_limit() {
+        async fn handler(
+            State((requests, release)): State<(Arc<AtomicUsize>, Arc<Semaphore>)>,
+        ) -> (StatusCode, String) {
+            requests.fetch_add(1, Ordering::SeqCst);
+            let _permit = release
+                .acquire()
+                .await
+                .expect("test release semaphore should stay open");
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state((requests.clone(), release.clone()));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind bounded usage server");
+        let addr = listener.local_addr().expect("bounded usage server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve bounded usage server");
+        });
+
+        let state = test_app_state_with_usage_base_and_parallelism(
+            &format!("http://{addr}/backend-api"),
+            1,
+        )
+        .await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Bounded Maintenance A",
+            "bounded-a@example.com",
+            "org_bounded_a",
+            "user_bounded_a",
+        )
+        .await;
+        insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Bounded Maintenance B",
+            "bounded-b@example.com",
+            "org_bounded_b",
+            "user_bounded_b",
+        )
+        .await;
+
+        run_upstream_account_maintenance_once(state.clone())
+            .await
+            .expect("dispatch maintenance pass");
+        wait_for_atomic_usize(requests.as_ref(), 1).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "only one maintenance sync should reach the upstream at a time"
+        );
+
+        release.add_permits(1);
+        wait_for_atomic_usize(requests.as_ref(), 2).await;
+        release.add_permits(1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn maintenance_sync_does_not_block_unrelated_account_updates() {
+        let (base_url, started, release, requests, server) = spawn_blocking_usage_server().await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let maintenance_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Maintenance OAuth",
+            "maintenance@example.com",
+            "org_maintenance",
+            "user_maintenance",
+        )
+        .await;
+        let updated_account_id = insert_api_key_account(&state.pool, "Unrelated API Key").await;
+
+        let maintenance_task = tokio::spawn({
+            let state = state.clone();
+            async move {
+                state
+                    .upstream_accounts
+                    .account_ops
+                    .run_maintenance_sync(state.clone(), maintenance_account_id)
+                    .await
+            }
+        });
+        wait_for_atomic_true(started.as_ref()).await;
+
+        let started_at = std::time::Instant::now();
+        state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                updated_account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    group_name: None,
+                    note: Some("updated while maintenance runs".to_string()),
+                    group_note: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: Some(false),
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                },
+            )
+            .await
+            .expect("update unrelated account");
+        assert!(
+            started_at.elapsed() < Duration::from_secs(1),
+            "unrelated account update should not wait for maintenance"
+        );
+
+        let updated_row = load_upstream_account_row(&state.pool, updated_account_id)
+            .await
+            .expect("load updated account")
+            .expect("updated account exists");
+        assert_eq!(updated_row.enabled, 0);
+        assert_eq!(
+            updated_row.note.as_deref(),
+            Some("updated while maintenance runs")
+        );
+
+        release.notify_waiters();
+        assert_eq!(
+            maintenance_task
+                .await
+                .expect("maintenance join")
+                .expect("maintenance result"),
+            MaintenanceDispatchOutcome::Executed
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn persist_imported_oauth_waits_for_inflight_maintenance() {
+        let (base_url, started, release, _requests, server) = spawn_blocking_usage_server().await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Imported OAuth",
+            "imported@example.com",
+            "org_imported",
+            "user_imported",
+        )
+        .await;
+
+        let maintenance_task = tokio::spawn({
+            let state = state.clone();
+            async move {
+                state
+                    .upstream_accounts
+                    .account_ops
+                    .run_maintenance_sync(state.clone(), account_id)
+                    .await
+            }
+        });
+        wait_for_atomic_true(started.as_ref()).await;
+
+        let probe = ImportedOauthProbeOutcome {
+            token_expires_at: format_utc_iso(Utc::now() + ChronoDuration::days(30)),
+            credentials: StoredOauthCredentials {
+                access_token: "imported-access-token".to_string(),
+                refresh_token: "imported-refresh-token".to_string(),
+                id_token: test_id_token(
+                    "imported@example.com",
+                    Some("org_imported"),
+                    Some("user_imported"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            },
+            claims: test_claims(
+                "imported@example.com",
+                Some("org_imported"),
+                Some("user_imported"),
+            ),
+            usage_snapshot: None,
+            exhausted: false,
+            usage_snapshot_warning: Some("usage snapshot unavailable".to_string()),
+        };
+
+        let mut import_task = tokio::spawn({
+            let state = state.clone();
+            async move {
+                state
+                    .upstream_accounts
+                    .account_ops
+                    .run_persist_imported_oauth(state.clone(), account_id, probe)
+                    .await
+            }
+        });
+        assert!(
+            timeout(Duration::from_millis(150), &mut import_task)
+                .await
+                .is_err(),
+            "post-import updates should queue behind same-account maintenance"
+        );
+
+        release.notify_waiters();
+        assert_eq!(
+            maintenance_task
+                .await
+                .expect("maintenance join")
+                .expect("maintenance result"),
+            MaintenanceDispatchOutcome::Executed
+        );
+        assert_eq!(
+            import_task
+                .await
+                .expect("import join")
+                .expect("persist imported oauth"),
+            Some("usage snapshot unavailable".to_string())
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn same_account_updates_wait_for_inflight_maintenance() {
+        let (base_url, started, release, _requests, server) = spawn_blocking_usage_server().await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Serialized OAuth",
+            "serialized@example.com",
+            "org_serialized",
+            "user_serialized",
+        )
+        .await;
+
+        let maintenance_task = tokio::spawn({
+            let state = state.clone();
+            async move {
+                state
+                    .upstream_accounts
+                    .account_ops
+                    .run_maintenance_sync(state.clone(), account_id)
+                    .await
+            }
+        });
+        wait_for_atomic_true(started.as_ref()).await;
+
+        let mut update_task = tokio::spawn({
+            let state = state.clone();
+            async move {
+                state
+                    .upstream_accounts
+                    .account_ops
+                    .run_update_account(
+                        state.clone(),
+                        account_id,
+                        UpdateUpstreamAccountRequest {
+                            display_name: None,
+                            group_name: None,
+                            note: Some("queued note".to_string()),
+                            group_note: None,
+                            upstream_base_url: OptionalField::Missing,
+                            enabled: None,
+                            is_mother: None,
+                            api_key: None,
+                            local_primary_limit: None,
+                            local_secondary_limit: None,
+                            local_limit_unit: None,
+                            tag_ids: None,
+                        },
+                    )
+                    .await
+            }
+        });
+        assert!(
+            timeout(Duration::from_millis(150), &mut update_task)
+                .await
+                .is_err(),
+            "same-account update should queue behind maintenance"
+        );
+
+        let row_during_maintenance = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load row during maintenance")
+            .expect("row exists");
+        assert_eq!(row_during_maintenance.note, None);
+
+        release.notify_waiters();
+        assert_eq!(
+            maintenance_task
+                .await
+                .expect("maintenance join")
+                .expect("maintenance result"),
+            MaintenanceDispatchOutcome::Executed
+        );
+        update_task
+            .await
+            .expect("update join")
+            .expect("update result");
+
+        let updated_row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load updated row")
+            .expect("updated row exists");
+        assert_eq!(updated_row.note.as_deref(), Some("queued note"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn maintenance_sync_deduplicates_same_account_work() {
+        let (base_url, started, release, requests, server) = spawn_blocking_usage_server().await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Deduped OAuth",
+            "deduped@example.com",
+            "org_deduped",
+            "user_deduped",
+        )
+        .await;
+
+        let maintenance_task = tokio::spawn({
+            let state = state.clone();
+            async move {
+                state
+                    .upstream_accounts
+                    .account_ops
+                    .run_maintenance_sync(state.clone(), account_id)
+                    .await
+            }
+        });
+        wait_for_atomic_true(started.as_ref()).await;
+
+        let second = state
+            .upstream_accounts
+            .account_ops
+            .run_maintenance_sync(state.clone(), account_id)
+            .await
+            .expect("second maintenance result");
+        assert_eq!(second, MaintenanceDispatchOutcome::Deduped);
+
+        release.notify_waiters();
+        assert_eq!(
+            maintenance_task
+                .await
+                .expect("maintenance join")
+                .expect("maintenance result"),
+            MaintenanceDispatchOutcome::Executed
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn maintenance_dedupe_flag_resets_after_panicking_job() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = 777_i64;
+
+        let first: Result<AccountSubmitOutcome<()>, AccountCommandDispatchError<anyhow::Error>> =
+            state
+                .upstream_accounts
+                .account_ops
+                .submit_command(
+                    state.clone(),
+                    account_id,
+                    AccountCommand::MaintenanceSync,
+                    true,
+                    |_state, _id| async move {
+                        let _: Result<(), anyhow::Error> = Ok(());
+                        panic!("simulated maintenance panic");
+                    },
+                )
+                .await;
+        assert!(matches!(
+            first,
+            Err(AccountCommandDispatchError::ActorUnavailable(
+                AccountCommand::MaintenanceSync
+            ))
+        ));
+
+        let second = state
+            .upstream_accounts
+            .account_ops
+            .submit_command(
+                state.clone(),
+                account_id,
+                AccountCommand::MaintenanceSync,
+                true,
+                |_state, _id| async move { Result::<(), anyhow::Error>::Ok(()) },
+            )
+            .await
+            .expect("second maintenance command should be accepted");
+        assert!(matches!(second, AccountSubmitOutcome::Completed(())));
+        assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn account_actors_are_released_after_idle_commands_finish() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Actor cleanup").await;
+
+        assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
+
+        state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    group_name: None,
+                    note: Some("released".to_string()),
+                    group_note: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                },
+            )
+            .await
+            .expect("update account");
+        assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
+
+        state
+            .upstream_accounts
+            .account_ops
+            .run_delete_account(state.clone(), account_id)
+            .await
+            .expect("delete account");
+        assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
     }
 
     #[tokio::test]

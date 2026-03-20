@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-11
-- Last: 2026-03-18
+- Last: 2026-03-20
 
 ## 背景 / 问题陈述
 
@@ -65,6 +65,7 @@
 - 账号状态至少支持 `active`、`syncing`、`needs_reauth`、`error` 与 `disabled`；授权失效只能转 `needs_reauth`，不得静默删除账号或清空最后一次成功快照。
 - 任何导致组内母号归属变化的写操作，都必须触发系统级通知，并提供 10 秒可撤销窗口；同组后续切换应覆盖旧撤销上下文。
 - 账号详情页的操作忙碌态必须按账号隔离：当账号 A 正在同步/保存/删除/启停时，切到账号 B 的详情不得继承 A 的 loading/spinning 状态；若随后对账号 B 发起同类操作，账号 A 原有的按钮 busy 态也不得被覆盖或提前清除；同一账号存在任一进行中的写操作时，该账号的其它写操作入口必须一并禁用，直到该账号自己的请求结束。
+- 后端账号维护与人工写操作必须按账号粒度串行：同一账号上的维护、启停、保存、删除、立即同步、re-login callback 落库与导入覆盖不得并发执行，但无关账号之间不得被整池维护阻塞；在维护竞争下，对无关账号的人工启用/禁用写入必须以 `1 秒内完成服务端提交` 为目标。
 - 账号切换必须在同一交互拍内使旧 detail 请求失效：用户点击从账号 A 切到账号 B 后，即使 React 尚未提交下一次 effect，A 的晚到 detail 成功/失败响应也不得再写入 detail 或全局错误提示。
 - 保存/同步这类直接写入详情的成功响应，必须先使当前 in-flight detail 请求失效；更早发出的 detail reload 成功返回后，不得再把刚保存/同步后的新详情回写成旧快照。
 
@@ -139,6 +140,7 @@
 - Given OAuth 登录会话过期、state 错误或重复消费，When callback 被访问，Then 会话标记为 `failed/expired` 且不会创建或覆盖账号。
 - Given 已持久化 OAuth 账号且 access token 到期，When 后台维护任务或手动同步运行，Then 系统会自动 refresh 并继续同步 usage，无需用户重新登录。
 - Given refresh token 已失效，When 后台维护任务运行，Then 账号进入 `needs_reauth`，但账号记录、历史样本和最后成功同步时间仍然保留。
+- Given 后台维护正在同步账号 A，When 用户对无关账号 B 发起启用或禁用，Then B 的写请求必须在 `1 秒` 内完成服务端提交，且不会因为 A 的维护而长时间 pending。
 - Given API Key 账号录入了本地 `5 小时 / 7 天` 限额，When 打开列表或详情，Then 两个窗口都能显示本地限额与 `0` 使用量，并明确标记为占位统计。
 - Given OAuth 账号已有 usage 样本，When 打开详情页，Then `5 小时` 与 `7 天` 卡片都能展示最新百分比、重置时间和最近 7 天趋势线。
 - Given 用户打开号池路由密钥弹窗，When 点击“生成密钥”后关闭且未保存，Then 新生成的 key 只停留在当前草稿中，再次打开弹窗时输入框恢复为已保存状态。
@@ -171,7 +173,7 @@
 
 ### Testing
 
-- Rust tests：schema 创建 / 迁移、加密 round-trip、OAuth 登录会话生命周期、callback state/TTL/single-use 校验、refresh 分类、usage payload 归一化、母号唯一性与 session 落库。
+- Rust tests：schema 创建 / 迁移、加密 round-trip、OAuth 登录会话生命周期、callback state/TTL/single-use 校验、refresh 分类、usage payload 归一化、母号唯一性与 session 落库，以及“维护不阻塞无关账号启停 / 同账号写操作与维护严格串行 / 重复维护请求去重”并发回归。
 - Web tests：账号列表与详情渲染、OAuth 轮询流程、API Key 表单、母号皇冠互斥、系统通知撤销、空态/错误态、导航路由。
 - Browser smoke：本地打开 `号池 -> 上游账号`，验证新增 OAuth/API Key、同步与详情图表渲染。
 
@@ -200,6 +202,7 @@
 ## Change log
 
 - 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 与 action error 都要按账号隔离、同一账号任一写操作进行中时其它写入口必须锁住、账号切换要在同一交互拍内使旧 detail 请求失效、保存/同步成功要先失效旧 detail reload、refresh 必须用列表数据纯计算最终选中账号后再刷新 detail 且列表失败时不得清空当前 detail、hook 级 list/detail 错误必须按来源隔离、同类动作跨账号并发时不得互相覆盖 busy/error 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
+- 2026-03-20：补充账号级 actor 串行与后台维护去重约束，明确维护只允许阻塞同一账号、无关账号启停在维护竞争下需以 `1 秒内完成服务端提交` 为目标，并新增对应的 Rust 并发回归测试要求。
 
 ## Visual Evidence (PR)
 
