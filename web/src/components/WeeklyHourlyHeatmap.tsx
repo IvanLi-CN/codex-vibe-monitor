@@ -8,10 +8,9 @@ import { heatmapLevels, metricAccent } from '../lib/chartTheme'
 import { cn } from '../lib/utils'
 import { useTheme } from '../theme'
 import { Alert } from './ui/alert'
+import type { MetricKey } from './Last24hTenMinuteHeatmap'
 
 type Cell = { date: string; hour: number; value: number }
-
-type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
 interface MetricOption {
   key: MetricKey
@@ -23,6 +22,13 @@ const METRIC_OPTIONS: MetricOption[] = [
   { key: 'totalCost', labelKey: 'metric.totalCost' },
   { key: 'totalTokens', labelKey: 'metric.totalTokens' },
 ]
+
+export interface WeeklyHourlyHeatmapProps {
+  metric?: MetricKey
+  onChangeMetric?: (metric: MetricKey) => void
+  showHeader?: boolean
+  showSurface?: boolean
+}
 
 function parseDateTimeParts(value: string) {
   if (value.includes('T')) {
@@ -87,14 +93,23 @@ function levelFor(value: number, max: number) {
   return 1
 }
 
-export function WeeklyHourlyHeatmap() {
+export function WeeklyHourlyHeatmap({
+  metric: controlledMetric,
+  onChangeMetric,
+  showHeader = true,
+  showSurface = true,
+}: WeeklyHourlyHeatmapProps) {
   const { t, locale } = useTranslation()
   const { themeMode } = useTheme()
-  const [metric, setMetric] = useState<MetricKey>('totalCount')
+  const [uncontrolledMetric, setUncontrolledMetric] = useState<MetricKey>('totalCount')
+  const metric = controlledMetric ?? uncontrolledMetric
   const { data, isLoading, error } = useTimeseries('7d', { bucket: '1h' })
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
-  const currencyFormatter = useMemo(() => new Intl.NumberFormat(localeTag, { style: 'currency', currency: 'USD' }), [localeTag])
+  const currencyFormatter = useMemo(
+    () => new Intl.NumberFormat(localeTag, { style: 'currency', currency: 'USD' }),
+    [localeTag],
+  )
   const countUnit = t('unit.calls')
 
   const metricOptions = useMemo(
@@ -116,10 +131,14 @@ export function WeeklyHourlyHeatmap() {
   }
 
   const noDataText = t('heatmap.noData')
+  const setMetric = (nextMetric: MetricKey) => {
+    if (onChangeMetric) onChangeMetric(nextMetric)
+    else setUncontrolledMetric(nextMetric)
+  }
 
-  return (
-    <section className="surface-panel overflow-visible" data-testid="weekly-hourly-heatmap">
-      <div className="surface-panel-body gap-4">
+  const content = (
+    <>
+      {showHeader && (
         <div className="flex items-center justify-between gap-3">
           <div className="section-heading">
             <h2 className="section-title">{t('heatmap.title')}</h2>
@@ -144,71 +163,85 @@ export function WeeklyHourlyHeatmap() {
             })}
           </div>
         </div>
+      )}
 
-        {error ? (
-          <Alert variant="error">{error}</Alert>
-        ) : grid.days.length > 0 ? (
-          <div className="w-full overflow-x-auto no-scrollbar">
-            <div className="flex justify-center">
-              <div className="inline-block">
-                <div className="ml-14 grid gap-[3px] pl-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
-                  {Array.from({ length: 24 }, (_, h) => (
-                    <div key={`h-${h}`} className="text-center text-[10px] leading-3 text-base-content/60">
-                      {h}
-                    </div>
-                  ))}
-                </div>
+      {error ? (
+        <Alert variant="error">{error}</Alert>
+      ) : grid.days.length > 0 ? (
+        <div className="w-full overflow-x-auto no-scrollbar">
+          <div className="flex justify-center">
+            <div className="inline-block">
+              <div className="ml-14 grid gap-[3px] pl-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
+                {Array.from({ length: 24 }, (_, h) => (
+                  <div key={`h-${h}`} className="text-center text-[10px] leading-3 text-base-content/60">
+                    {h}
+                  </div>
+                ))}
+              </div>
 
-                <div className="mt-2 flex flex-col gap-[3px]">
-                  {grid.rows.map((row, idx) => {
-                    const dateLabel = grid.days[idx]?.slice(5) ?? ''
-                    // Treat the last two rows as bottom edge to avoid clipping by card border
-                    const isBottomBand = idx >= grid.rows.length - 2
-                    return (
-                      <div key={`r-${idx}`} className="flex items-center gap-3">
-                        <div className="w-14 shrink-0 text-right text-xs text-base-content/70">{dateLabel}</div>
-                        <div className="grid gap-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
-                          {row.map((cell, ci) => {
-                            const lvl = levelFor(cell.value, grid.max)
-                            const color = levelPalette[lvl] ?? levelPalette[0]
-                            const formatted = formatValue(cell.value)
-                            const hourLabel = String(ci).padStart(2, '0')
-                            const dateTimeLabel = `${cell.date || grid.days[idx]} ${hourLabel}:00`
-                            const title = `${dateTimeLabel} ${formatted}`
-                            const verticalClass = isBottomBand ? 'bottom-full mb-1' : 'top-full mt-1'
-                            return (
+              <div className="mt-2 flex flex-col gap-[3px]">
+                {grid.rows.map((row, idx) => {
+                  const dateLabel = grid.days[idx]?.slice(5) ?? ''
+                  // Treat the last two rows as bottom edge to avoid clipping by card border
+                  const isBottomBand = idx >= grid.rows.length - 2
+                  return (
+                    <div key={`r-${idx}`} className="flex items-center gap-3">
+                      <div className="w-14 shrink-0 text-right text-xs text-base-content/70">{dateLabel}</div>
+                      <div className="grid gap-[3px]" style={{ gridTemplateColumns: 'repeat(24, minmax(0, 1fr))' }}>
+                        {row.map((cell, ci) => {
+                          const lvl = levelFor(cell.value, grid.max)
+                          const color = levelPalette[lvl] ?? levelPalette[0]
+                          const formatted = formatValue(cell.value)
+                          const hourLabel = String(ci).padStart(2, '0')
+                          const dateTimeLabel = `${cell.date || grid.days[idx]} ${hourLabel}:00`
+                          const title = `${dateTimeLabel} ${formatted}`
+                          const verticalClass = isBottomBand ? 'bottom-full mb-1' : 'top-full mt-1'
+                          return (
+                            <div
+                              key={`c-${idx}-${ci}`}
+                              className="group relative"
+                              aria-label={title}
+                              title={title}
+                            >
+                              <div className="h-5 w-5 rounded-sm sm:h-6 sm:w-6" style={{ backgroundColor: color }} />
                               <div
-                                key={`c-${idx}-${ci}`}
-                                className="group relative"
-                                aria-label={title}
-                                title={title}
+                                className={`pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] sm:text-xs leading-tight text-base-content shadow-md opacity-0 group-hover:opacity-100 ${verticalClass}`}
                               >
-                                <div className="h-5 w-5 rounded-sm sm:h-6 sm:w-6" style={{ backgroundColor: color }} />
-                                <div
-                                  className={`pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] sm:text-xs leading-tight text-base-content shadow-md opacity-0 group-hover:opacity-100 ${verticalClass}`}
-                                >
-                                  <div className="text-[10px] sm:text-xs text-base-content/80">{dateTimeLabel}</div>
-                                  <div className="mt-0.5 font-mono font-semibold text-sm sm:text-base tracking-tight text-center">
-                                    {formatted}
-                                  </div>
+                                <div className="text-[10px] sm:text-xs text-base-content/80">{dateTimeLabel}</div>
+                                <div className="mt-0.5 font-mono font-semibold text-sm sm:text-base tracking-tight text-center">
+                                  {formatted}
                                 </div>
                               </div>
-                            )
-                          })}
-                        </div>
+                            </div>
+                          )
+                        })}
                       </div>
-                    )
-                  })}
-                </div>
+                    </div>
+                  )
+                })}
               </div>
             </div>
           </div>
-        ) : isLoading ? (
-          <div className="h-40 w-full animate-pulse rounded-xl border border-base-300/70 bg-base-200/55" />
-        ) : (
-          <div className="text-base-content/70">{noDataText}</div>
-        )}
+        </div>
+      ) : isLoading ? (
+        <div className="h-40 w-full animate-pulse rounded-xl border border-base-300/70 bg-base-200/55" />
+      ) : (
+        <div className="text-base-content/70">{noDataText}</div>
+      )}
+    </>
+  )
+
+  if (!showSurface) {
+    return (
+      <div data-testid="weekly-hourly-heatmap" className="flex flex-col gap-4">
+        {content}
       </div>
+    )
+  }
+
+  return (
+    <section className="surface-panel overflow-visible" data-testid="weekly-hourly-heatmap">
+      <div className="surface-panel-body gap-4">{content}</div>
     </section>
   )
 }
