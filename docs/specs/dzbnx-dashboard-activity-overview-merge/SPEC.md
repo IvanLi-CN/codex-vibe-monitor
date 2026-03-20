@@ -43,7 +43,6 @@
 
 - `src/` 下任意后端实现与接口定义。
 - `web/src/components/Last24hTenMinuteHeatmap.tsx` 的数据契约调整。
-- 新增截图资产；若后续需要把截图纳入 PR，需单独获得主人明确同意。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -82,7 +81,7 @@
 ## 方案概述（Approach, high-level）
 
 - 新建一个页面级组合组件，把“时间范围切换”和“指标切换”从原本两个独立卡片中提到统一头部。
-- 两个 summary hook 与两张 heatmap 都在组件挂载时预热，其中 24h/7d 热力图保持 mounted，仅通过 `hidden` 切换显示，避免首次切换冷启动或丢失各自的指标状态。
+- 两个 summary hook 与两张 heatmap 都在组件挂载时预热，其中 24h/7d 热力图保持 mounted，并通过同一 `grid` 叠层渲染加 `invisible` / `pointer-events-none` 切换可见性，避免首次切换冷启动、丢失各自的指标状态，且保证卡片高度不随时间范围切换跳变。
 - 7 日 KPI 直接复用现有 `/api/stats/summary?window=7d`，不引入新的接口或衍生 summary 聚合层。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
@@ -91,6 +90,12 @@
 - 风险：合并头部后在窄屏下可能产生换行或拥挤，需要通过真实页面验证无横向溢出。
 - 假设：共享总览标题使用中性文案“活动总览 / Activity Overview”，不再沿用单范围标题。
 - 假设：本轮快车道终点是 merge-ready，不自动 merge。
+
+## 视觉参考（UI Snapshot）
+
+- 下图为共享测试机预览环境中的“活动总览”卡片元素级截图，用于记录合并后的卡片布局与切换器位置。
+
+![活动总览卡片](./activity-overview-card.png)
 
 ## 变更记录（Change log）
 
