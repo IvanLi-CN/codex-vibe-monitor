@@ -14,8 +14,6 @@ use futures_util::FutureExt;
 use rand::{Rng, RngCore, rngs::OsRng};
 use sqlx::Transaction;
 use std::{any::Any, panic::AssertUnwindSafe};
-use tokio::sync::oneshot;
-
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
     "UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET";
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID: &str = "UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID";
@@ -118,10 +116,6 @@ enum MaintenanceQueueOutcome {
     Deduped,
 }
 
-struct AccountActorEnvelope {
-    job: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
-}
-
 struct MaintenancePendingGuard {
     flag: Arc<AtomicBool>,
 }
@@ -140,13 +134,14 @@ impl Drop for MaintenancePendingGuard {
 
 #[derive(Clone)]
 struct AccountActorHandle {
-    sender: mpsc::UnboundedSender<AccountActorEnvelope>,
+    serial: Arc<tokio::sync::Mutex<()>>,
     maintenance_pending: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for AccountActorHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AccountActorHandle")
+            .field("serial_refs", &Arc::strong_count(&self.serial))
             .field(
                 "maintenance_pending",
                 &self.maintenance_pending.load(Ordering::Acquire),
@@ -155,9 +150,9 @@ impl fmt::Debug for AccountActorHandle {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct AccountOpCoordinator {
-    actors: std::sync::Mutex<HashMap<i64, AccountActorHandle>>,
+    actors: Arc<std::sync::Mutex<HashMap<i64, AccountActorHandle>>>,
 }
 
 impl fmt::Debug for AccountOpCoordinator {
@@ -259,26 +254,83 @@ impl AccountOpCoordinator {
             return handle.clone();
         }
 
-        let (sender, mut receiver) = mpsc::unbounded_channel::<AccountActorEnvelope>();
         let maintenance_pending = Arc::new(AtomicBool::new(false));
         let handle = AccountActorHandle {
-            sender,
+            serial: Arc::new(tokio::sync::Mutex::new(())),
             maintenance_pending,
         };
         let actor_handle = handle.clone();
-        tokio::spawn(async move {
-            while let Some(envelope) = receiver.recv().await {
-                if let Err(panic) = AssertUnwindSafe(envelope.job).catch_unwind().await {
-                    error!(
-                        account_id,
-                        panic = %describe_panic_payload(&panic),
-                        "account actor job panicked"
-                    );
-                }
-            }
-        });
         actors.insert(account_id, actor_handle.clone());
         actor_handle
+    }
+
+    fn remove_actor_if_idle(&self, account_id: i64, handle: &AccountActorHandle) {
+        let mut actors = self
+            .actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(current) = actors.get(&account_id) else {
+            return;
+        };
+        if !Arc::ptr_eq(&current.serial, &handle.serial)
+            || !Arc::ptr_eq(&current.maintenance_pending, &handle.maintenance_pending)
+        {
+            return;
+        }
+
+        // `2` means the only remaining owners are the map entry and this call frame.
+        if Arc::strong_count(&handle.serial) == 2
+            && Arc::strong_count(&handle.maintenance_pending) == 2
+            && !handle.maintenance_pending.load(Ordering::Acquire)
+        {
+            actors.remove(&account_id);
+        }
+    }
+
+    #[cfg(test)]
+    fn actor_count(&self) -> usize {
+        self.actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    async fn run_command_with_handle<R, E, F, Fut>(
+        &self,
+        state: Arc<AppState>,
+        account_id: i64,
+        command: AccountCommand,
+        handle: AccountActorHandle,
+        job_factory: F,
+    ) -> Result<R, AccountCommandDispatchError<E>>
+    where
+        R: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce(Arc<AppState>, i64) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<R, E>> + Send + 'static,
+    {
+        let result = {
+            let _serial_guard = handle.serial.lock().await;
+            let maintenance_pending = handle.maintenance_pending.clone();
+            let _reset_guard = (command == AccountCommand::MaintenanceSync)
+                .then(|| MaintenancePendingGuard::new(maintenance_pending));
+            AssertUnwindSafe(job_factory(state, account_id))
+                .catch_unwind()
+                .await
+        };
+        self.remove_actor_if_idle(account_id, &handle);
+
+        match result {
+            Ok(result) => result.map_err(AccountCommandDispatchError::Command),
+            Err(panic) => {
+                error!(
+                    account_id,
+                    panic = %describe_panic_payload(&panic),
+                    "account actor job panicked"
+                );
+                Err(AccountCommandDispatchError::ActorUnavailable(command))
+            }
+        }
     }
 
     async fn submit_command<R, E, F, Fut>(
@@ -300,29 +352,9 @@ impl AccountOpCoordinator {
             return Ok(AccountSubmitOutcome::Deduped);
         }
 
-        let (sender, receiver) = oneshot::channel::<Result<R, E>>();
-        let maintenance_pending = handle.maintenance_pending.clone();
-        let reset_guard = (command == AccountCommand::MaintenanceSync)
-            .then(|| MaintenancePendingGuard::new(maintenance_pending));
-        let job = Box::pin(async move {
-            let _reset_guard = reset_guard;
-            let result = job_factory(state, account_id).await;
-            let _ = sender.send(result);
-        });
-
-        if handle.sender.send(AccountActorEnvelope { job }).is_err() {
-            if command == AccountCommand::MaintenanceSync {
-                handle.maintenance_pending.store(false, Ordering::Release);
-            }
-            return Err(AccountCommandDispatchError::ActorUnavailable(command));
-        }
-
-        match receiver.await {
-            Ok(result) => result
-                .map(AccountSubmitOutcome::Completed)
-                .map_err(AccountCommandDispatchError::Command),
-            Err(_) => Err(AccountCommandDispatchError::ActorUnavailable(command)),
-        }
+        self.run_command_with_handle(state, account_id, command, handle, job_factory)
+            .await
+            .map(AccountSubmitOutcome::Completed)
     }
 
     async fn run_update_account(
@@ -489,25 +521,34 @@ impl AccountOpCoordinator {
             return Ok(MaintenanceQueueOutcome::Deduped);
         }
 
-        let maintenance_pending = handle.maintenance_pending.clone();
-        let job = Box::pin(async move {
-            let _reset_guard = MaintenancePendingGuard::new(maintenance_pending);
-            match sync_upstream_account_by_id(state.as_ref(), id, SyncCause::Maintenance).await {
-                Ok(Some(_)) => {}
-                Ok(None) => {}
-                Err(err) => {
+        let coordinator = self.clone();
+        tokio::spawn(async move {
+            match coordinator
+                .run_command_with_handle(
+                    state,
+                    id,
+                    AccountCommand::MaintenanceSync,
+                    handle,
+                    move |state, id| async move {
+                        sync_upstream_account_by_id(state.as_ref(), id, SyncCause::Maintenance)
+                            .await
+                    },
+                )
+                .await
+            {
+                Ok(Some(_)) | Ok(None) => {}
+                Err(AccountCommandDispatchError::Command(err)) => {
                     warn!(account_id = id, error = %err, "failed to maintain upstream OAuth account");
+                }
+                Err(AccountCommandDispatchError::ActorUnavailable(command)) => {
+                    warn!(
+                        account_id = id,
+                        ?command,
+                        "account actor became unavailable while executing maintenance"
+                    );
                 }
             }
         });
-
-        if handle.sender.send(AccountActorEnvelope { job }).is_err() {
-            handle.maintenance_pending.store(false, Ordering::Release);
-            return Err(anyhow!(
-                "account actor became unavailable while executing {:?}",
-                AccountCommand::MaintenanceSync
-            ));
-        }
 
         Ok(MaintenanceQueueOutcome::Queued)
     }
@@ -10577,6 +10618,48 @@ mod tests {
             .await
             .expect("second maintenance command should be accepted");
         assert!(matches!(second, AccountSubmitOutcome::Completed(())));
+        assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn account_actors_are_released_after_idle_commands_finish() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Actor cleanup").await;
+
+        assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
+
+        state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    group_name: None,
+                    note: Some("released".to_string()),
+                    group_note: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                },
+            )
+            .await
+            .expect("update account");
+        assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
+
+        state
+            .upstream_accounts
+            .account_ops
+            .run_delete_account(state.clone(), account_id)
+            .await
+            .expect("delete account");
+        assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
     }
 
     #[tokio::test]
