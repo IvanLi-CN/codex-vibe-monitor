@@ -160,13 +160,17 @@ export function InvocationAccountDetailDrawer({
   return createPortal(
     <div className="fixed inset-0 z-[70]">
       <div aria-hidden="true" className="absolute inset-0 bg-neutral/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="absolute inset-y-0 right-0 flex w-full justify-end pl-4 sm:pl-8">
+      <div
+        className="absolute inset-y-0 right-0 flex w-full justify-end pl-4 sm:pl-8"
+        onClick={onClose}
+      >
         <section
           ref={handleSectionRef}
           role="dialog"
           aria-modal="true"
           aria-labelledby="invocation-account-detail-title"
           className="drawer-shell flex h-full w-full max-w-[56rem] flex-col"
+          onClick={(event) => event.stopPropagation()}
         >
           <OverlayHostProvider value={sectionElement ?? undefined}>
             <div className="drawer-header px-5 py-4 sm:px-6">

@@ -14,7 +14,9 @@ const INVOCATION_ROUTE_MODE_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.routeMode') AS TEXT) END";
 const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
+const INVOCATION_UPSTREAM_ACCOUNT_NAME_TRIMMED_SQL: &str = "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END), '')";
 const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
+const PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT: usize = 3;
 const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
 
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
@@ -1578,6 +1580,12 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         &selected_keys,
     )
     .await?;
+    let upstream_account_rows = query_prompt_cache_conversation_upstream_account_summaries(
+        &state.pool,
+        source_scope,
+        &selected_keys,
+    )
+    .await?;
 
     let mut grouped_events: HashMap<String, Vec<PromptCacheConversationRequestPointResponse>> =
         HashMap::new();
@@ -1605,6 +1613,118 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         });
     }
 
+    let mut upstream_account_rows_by_key: HashMap<
+        String,
+        Vec<PromptCacheConversationUpstreamAccountSummaryRow>,
+    > = HashMap::new();
+    for row in upstream_account_rows {
+        upstream_account_rows_by_key
+            .entry(row.prompt_cache_key.clone())
+            .or_default()
+            .push(row);
+    }
+
+    let mut grouped_upstream_accounts: HashMap<
+        String,
+        Vec<PromptCacheConversationUpstreamAccountResponse>,
+    > = HashMap::new();
+    for (prompt_cache_key, rows) in upstream_account_rows_by_key {
+        let mut unique_ids_by_name: HashMap<String, Option<i64>> = HashMap::new();
+        for row in &rows {
+            let Some(normalized_name) =
+                normalize_trimmed_optional_string(row.upstream_account_name.clone())
+            else {
+                continue;
+            };
+            let Some(upstream_account_id) = row.upstream_account_id else {
+                continue;
+            };
+            match unique_ids_by_name.entry(normalized_name) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(Some(upstream_account_id));
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    if entry
+                        .get()
+                        .is_some_and(|existing_id| existing_id != upstream_account_id)
+                    {
+                        entry.insert(None);
+                    }
+                }
+            }
+        }
+
+        let mut account_entries: HashMap<String, PromptCacheConversationUpstreamAccountResponse> =
+            HashMap::new();
+        for row in rows {
+            let normalized_name =
+                normalize_trimmed_optional_string(row.upstream_account_name.clone());
+            let resolved_upstream_account_id = row.upstream_account_id.or_else(|| {
+                normalized_name
+                    .as_ref()
+                    .and_then(|name| unique_ids_by_name.get(name).copied().flatten())
+            });
+            let account_group_key = resolve_prompt_cache_upstream_account_group_key(
+                resolved_upstream_account_id,
+                normalized_name.as_deref(),
+            );
+            let entry = account_entries.entry(account_group_key).or_insert_with(|| {
+                PromptCacheConversationUpstreamAccountResponse {
+                    upstream_account_id: resolved_upstream_account_id,
+                    upstream_account_name: normalized_name.clone(),
+                    request_count: 0,
+                    total_tokens: 0,
+                    total_cost: 0.0,
+                    last_activity_at: row.last_activity_at.clone(),
+                }
+            });
+
+            if entry.upstream_account_id.is_none() && resolved_upstream_account_id.is_some() {
+                entry.upstream_account_id = resolved_upstream_account_id;
+            }
+            if entry.upstream_account_name.is_none() && normalized_name.is_some() {
+                entry.upstream_account_name = normalized_name;
+            }
+            entry.request_count += row.request_count;
+            entry.total_tokens += row.total_tokens.max(0);
+            entry.total_cost += row.total_cost;
+            if row.last_activity_at > entry.last_activity_at {
+                entry.last_activity_at = row.last_activity_at;
+            }
+        }
+        grouped_upstream_accounts.insert(
+            prompt_cache_key,
+            account_entries.into_values().collect::<Vec<_>>(),
+        );
+    }
+
+    for accounts in grouped_upstream_accounts.values_mut() {
+        accounts.sort_by(|left, right| {
+            right
+                .last_activity_at
+                .cmp(&left.last_activity_at)
+                .then_with(|| {
+                    resolve_prompt_cache_upstream_account_label(
+                        right.upstream_account_name.as_deref(),
+                        right.upstream_account_id,
+                    )
+                    .cmp(&resolve_prompt_cache_upstream_account_label(
+                        left.upstream_account_name.as_deref(),
+                        left.upstream_account_id,
+                    ))
+                })
+                .then_with(|| {
+                    right
+                        .upstream_account_id
+                        .unwrap_or(i64::MIN)
+                        .cmp(&left.upstream_account_id.unwrap_or(i64::MIN))
+                })
+                .then_with(|| right.total_tokens.cmp(&left.total_tokens))
+                .then_with(|| right.request_count.cmp(&left.request_count))
+        });
+        accounts.truncate(PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT);
+    }
+
     let conversations = aggregates
         .into_iter()
         .map(|row| PromptCacheConversationResponse {
@@ -1614,6 +1734,9 @@ pub(crate) async fn build_prompt_cache_conversations_response(
             total_cost: row.total_cost,
             created_at: row.created_at,
             last_activity_at: row.last_activity_at,
+            upstream_accounts: grouped_upstream_accounts
+                .remove(&row.prompt_cache_key)
+                .unwrap_or_default(),
             last24h_requests: grouped_events
                 .remove(&row.prompt_cache_key)
                 .unwrap_or_default(),
@@ -1644,6 +1767,49 @@ fn resolve_prompt_cache_conversation_chart_range_start(
         _ => floor,
     };
     format_utc_iso(chart_start)
+}
+
+fn normalize_trimmed_optional_string(raw: Option<String>) -> Option<String> {
+    raw.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn resolve_prompt_cache_upstream_account_label(
+    upstream_account_name: Option<&str>,
+    upstream_account_id: Option<i64>,
+) -> String {
+    if let Some(name) = upstream_account_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return name.to_string();
+    }
+    if let Some(account_id) = upstream_account_id {
+        return format!("账号 #{account_id}");
+    }
+    "—".to_string()
+}
+
+fn resolve_prompt_cache_upstream_account_group_key(
+    upstream_account_id: Option<i64>,
+    upstream_account_name: Option<&str>,
+) -> String {
+    if let Some(account_id) = upstream_account_id {
+        return format!("id:{account_id}");
+    }
+    if let Some(name) = upstream_account_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("name:{name}");
+    }
+    "unknown".to_string()
 }
 
 pub(crate) async fn query_prompt_cache_conversation_aggregates(
@@ -1883,6 +2049,56 @@ pub(crate) async fn query_prompt_cache_conversation_events(
 
     query
         .build_query_as::<PromptCacheConversationEventRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    selected_keys: &[String],
+) -> Result<Vec<PromptCacheConversationUpstreamAccountSummaryRow>> {
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" AS prompt_cache_key, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" AS upstream_account_id, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_TRIMMED_SQL)
+        .push(
+            " AS upstream_account_name, \
+             COUNT(*) AS request_count, \
+             COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens, \
+             COALESCE(SUM(COALESCE(cost, 0.0)), 0.0) AS total_cost, \
+             MAX(occurred_at) AS last_activity_at \
+             FROM codex_invocations \
+             WHERE ",
+        )
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" IN (");
+
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(")");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query
+        .push(
+            " GROUP BY prompt_cache_key, upstream_account_id, upstream_account_name \
+              ORDER BY prompt_cache_key ASC, last_activity_at DESC, upstream_account_name DESC, upstream_account_id DESC",
+        )
+        .build_query_as::<PromptCacheConversationUpstreamAccountSummaryRow>()
         .fetch_all(pool)
         .await
         .map_err(Into::into)
@@ -3696,7 +3912,20 @@ pub(crate) struct PromptCacheConversationResponse {
     pub(crate) created_at: String,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) last_activity_at: String,
+    pub(crate) upstream_accounts: Vec<PromptCacheConversationUpstreamAccountResponse>,
     pub(crate) last24h_requests: Vec<PromptCacheConversationRequestPointResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationUpstreamAccountResponse {
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) request_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    pub(crate) last_activity_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4061,6 +4290,17 @@ pub(crate) struct PromptCacheConversationEventRow {
     pub(crate) status: String,
     pub(crate) request_tokens: i64,
     pub(crate) prompt_cache_key: String,
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct PromptCacheConversationUpstreamAccountSummaryRow {
+    pub(crate) prompt_cache_key: String,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) request_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) last_activity_at: String,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
