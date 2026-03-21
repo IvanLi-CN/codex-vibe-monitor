@@ -937,7 +937,10 @@ const baseTranslations = {
       "{{count}} newer conversation(s) were hidden because count mode only includes conversations active in the last 24 hours.",
     "live.conversations.implicitFilter.cappedTo50":
       "{{count}} conversation(s) matched the activity window but were hidden because activity-window mode shows at most 50 conversations.",
+    "live.conversations.accountLabel.idFallback": "Account #{{id}}",
     "live.conversations.table.promptCacheKey": "Prompt Cache Key",
+    "live.conversations.table.upstreamAccounts": "Upstream accounts",
+    "live.conversations.table.summary": "Total",
     "live.conversations.table.requestCount": "Requests",
     "live.conversations.table.totalTokens": "Total tokens",
     "live.conversations.table.totalCost": "Total cost",
@@ -2079,7 +2082,10 @@ const baseTranslations = {
       "有 {{count}} 个更新创建的对话因未在近 24 小时活动而未显示；数量模式只统计近 24 小时活跃对话。",
     "live.conversations.implicitFilter.cappedTo50":
       "有 {{count}} 个对话命中了活动时间筛选，但因时间模式最多只展示 50 个对话而未显示。",
+    "live.conversations.accountLabel.idFallback": "账号 #{{id}}",
     "live.conversations.table.promptCacheKey": "Prompt Cache Key",
+    "live.conversations.table.upstreamAccounts": "上游账号",
+    "live.conversations.table.summary": "总计",
     "live.conversations.table.requestCount": "请求数",
     "live.conversations.table.totalTokens": "总 Tokens",
     "live.conversations.table.totalCost": "总成本",

@@ -62,7 +62,7 @@ interface ConversationChartGeometry {
 
 const CHART_WIDTH = 232;
 const CHART_HEIGHT = 48;
-const FALLBACK_CELL = "—";
+export const FALLBACK_CELL = "—";
 
 function parseEpoch(raw?: string | null) {
   if (!raw) return null;
@@ -134,7 +134,7 @@ function resolveRangeEpochs(rangeStart: string, rangeEnd: string) {
   return { rangeStartEpoch, rangeEndEpoch };
 }
 
-function findVisibleConversationChartMax<
+export function findVisibleConversationChartMax<
   TConversation extends KeyedConversationRecord,
 >(conversations: TConversation[], rangeStart: string, rangeEnd: string) {
   const range = resolveRangeEpochs(rangeStart, rangeEnd);
@@ -242,7 +242,7 @@ function buildConversationTooltipData(
   };
 }
 
-function ConversationSparkline<TConversation extends KeyedConversationRecord>({
+export function ConversationSparkline<TConversation extends KeyedConversationRecord>({
   conversation,
   rangeStart,
   rangeEnd,

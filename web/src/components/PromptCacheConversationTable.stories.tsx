@@ -18,6 +18,40 @@ const stats: PromptCacheConversationsResponse = {
       totalCost: 1.2842,
       createdAt: "2026-02-24T03:26:11.000Z",
       lastActivityAt: "2026-03-03T12:44:10.000Z",
+      upstreamAccounts: [
+        {
+          upstreamAccountId: 11,
+          upstreamAccountName: "Pool Alpha",
+          requestCount: 19,
+          totalTokens: 26480,
+          totalCost: 0.6124,
+          lastActivityAt: "2026-03-03T12:44:10.000Z",
+        },
+        {
+          upstreamAccountId: 12,
+          upstreamAccountName: "Pool Beta",
+          requestCount: 12,
+          totalTokens: 17820,
+          totalCost: 0.4018,
+          lastActivityAt: "2026-03-03T11:21:00.000Z",
+        },
+        {
+          upstreamAccountId: null,
+          upstreamAccountName: null,
+          requestCount: 10,
+          totalTokens: 11824,
+          totalCost: 0.27,
+          lastActivityAt: "2026-03-03T10:00:00.000Z",
+        },
+        {
+          upstreamAccountId: 13,
+          upstreamAccountName: "Pool Hidden",
+          requestCount: 3,
+          totalTokens: 500,
+          totalCost: 0.01,
+          lastActivityAt: "2026-03-02T08:00:00.000Z",
+        },
+      ],
       last24hRequests: [
         {
           occurredAt: "2026-03-02T13:00:00.000Z",
@@ -63,6 +97,24 @@ const stats: PromptCacheConversationsResponse = {
       totalCost: 0.4628,
       createdAt: "2026-02-20T08:09:33.000Z",
       lastActivityAt: "2026-03-03T11:40:28.000Z",
+      upstreamAccounts: [
+        {
+          upstreamAccountId: 21,
+          upstreamAccountName: "Pool Delta",
+          requestCount: 9,
+          totalTokens: 10120,
+          totalCost: 0.2588,
+          lastActivityAt: "2026-03-03T11:40:28.000Z",
+        },
+        {
+          upstreamAccountId: 22,
+          upstreamAccountName: "Pool Epsilon",
+          requestCount: 7,
+          totalTokens: 8089,
+          totalCost: 0.204,
+          lastActivityAt: "2026-03-03T09:30:00.000Z",
+        },
+      ],
       last24hRequests: [
         {
           occurredAt: "2026-03-02T14:16:00.000Z",
@@ -112,6 +164,16 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
       totalCost: 0.01,
       createdAt: "2026-03-02T03:00:00.000Z",
       lastActivityAt: "2026-03-02T05:00:00.000Z",
+      upstreamAccounts: [
+        {
+          upstreamAccountId: 31,
+          upstreamAccountName: "Pool Low",
+          requestCount: 3,
+          totalTokens: 420,
+          totalCost: 0.01,
+          lastActivityAt: "2026-03-02T05:00:00.000Z",
+        },
+      ],
       last24hRequests: [
         {
           occurredAt: "2026-03-02T03:00:00.000Z",
@@ -136,6 +198,16 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
       totalCost: 0.21,
       createdAt: "2026-03-02T02:30:00.000Z",
       lastActivityAt: "2026-03-02T23:40:00.000Z",
+      upstreamAccounts: [
+        {
+          upstreamAccountId: 41,
+          upstreamAccountName: "Pool High",
+          requestCount: 8,
+          totalTokens: 8600,
+          totalCost: 0.21,
+          lastActivityAt: "2026-03-02T23:40:00.000Z",
+        },
+      ],
       last24hRequests: [
         {
           occurredAt: "2026-03-02T02:30:00.000Z",

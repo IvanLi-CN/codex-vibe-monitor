@@ -4,7 +4,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
-import type { PromptCacheConversationsResponse } from "../lib/api";
+import type {
+  PromptCacheConversation,
+  PromptCacheConversationsResponse,
+} from "../lib/api";
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
 
 function renderTable(stats: PromptCacheConversationsResponse) {
@@ -17,6 +20,25 @@ function renderTable(stats: PromptCacheConversationsResponse) {
       />
     </I18nProvider>,
   );
+}
+
+function createConversation(
+  overrides: Partial<PromptCacheConversation> & {
+    promptCacheKey: string;
+    createdAt: string;
+    lastActivityAt: string;
+  },
+): PromptCacheConversation {
+  return {
+    promptCacheKey: overrides.promptCacheKey,
+    requestCount: overrides.requestCount ?? 1,
+    totalTokens: overrides.totalTokens ?? 0,
+    totalCost: overrides.totalCost ?? 0,
+    createdAt: overrides.createdAt,
+    lastActivityAt: overrides.lastActivityAt,
+    upstreamAccounts: overrides.upstreamAccounts ?? [],
+    last24hRequests: overrides.last24hRequests ?? [],
+  };
 }
 
 let host: HTMLDivElement | null = null;
@@ -74,13 +96,31 @@ describe("PromptCacheConversationTable", () => {
       selectedActivityHours: null,
       implicitFilter: { kind: null, filteredCount: 0 },
       conversations: [
-        {
+        createConversation({
           promptCacheKey: "pck-chat-001",
           requestCount: 12,
           totalTokens: 3456,
           totalCost: 1.2345,
           createdAt: "2026-03-02T00:00:00Z",
           lastActivityAt: "2026-03-02T16:00:00Z",
+          upstreamAccounts: [
+            {
+              upstreamAccountId: 101,
+              upstreamAccountName: "Pool Alpha",
+              requestCount: 7,
+              totalTokens: 2000,
+              totalCost: 0.7,
+              lastActivityAt: "2026-03-02T16:00:00Z",
+            },
+            {
+              upstreamAccountId: 102,
+              upstreamAccountName: "Pool Beta",
+              requestCount: 5,
+              totalTokens: 1456,
+              totalCost: 0.5345,
+              lastActivityAt: "2026-03-02T14:00:00Z",
+            },
+          ],
           last24hRequests: [
             {
               occurredAt: "2026-03-02T10:00:00Z",
@@ -97,7 +137,7 @@ describe("PromptCacheConversationTable", () => {
               cumulativeTokens: 200,
             },
           ],
-        },
+        }),
       ],
     };
 
@@ -124,7 +164,7 @@ describe("PromptCacheConversationTable", () => {
       selectedActivityHours: null,
       implicitFilter: { kind: null, filteredCount: 0 },
       conversations: [
-        {
+        createConversation({
           promptCacheKey: "pck-low",
           requestCount: 1,
           totalTokens: 50,
@@ -140,8 +180,8 @@ describe("PromptCacheConversationTable", () => {
               cumulativeTokens: 50,
             },
           ],
-        },
-        {
+        }),
+        createConversation({
           promptCacheKey: "pck-high",
           requestCount: 1,
           totalTokens: 100,
@@ -157,7 +197,7 @@ describe("PromptCacheConversationTable", () => {
               cumulativeTokens: 100,
             },
           ],
-        },
+        }),
       ],
     };
 
@@ -176,7 +216,7 @@ describe("PromptCacheConversationTable", () => {
       selectedActivityHours: null,
       implicitFilter: { kind: null, filteredCount: 0 },
       conversations: [
-        {
+        createConversation({
           promptCacheKey: "pck-low-valid",
           requestCount: 1,
           totalTokens: 50,
@@ -192,8 +232,8 @@ describe("PromptCacheConversationTable", () => {
               cumulativeTokens: 50,
             },
           ],
-        },
-        {
+        }),
+        createConversation({
           promptCacheKey: "pck-bad-point",
           requestCount: 2,
           totalTokens: 100,
@@ -216,7 +256,7 @@ describe("PromptCacheConversationTable", () => {
               cumulativeTokens: 100,
             },
           ],
-        },
+        }),
       ],
     };
 
@@ -252,7 +292,7 @@ describe("PromptCacheConversationTable", () => {
       selectedActivityHours: 3,
       implicitFilter: { kind: "cappedTo50", filteredCount: 7 },
       conversations: [
-        {
+        createConversation({
           promptCacheKey: "pck-window-cap",
           requestCount: 2,
           totalTokens: 120,
@@ -268,7 +308,7 @@ describe("PromptCacheConversationTable", () => {
               cumulativeTokens: 120,
             },
           ],
-        },
+        }),
       ],
     };
 
@@ -289,7 +329,7 @@ describe("PromptCacheConversationTable", () => {
       selectedActivityHours: 1,
       implicitFilter: { kind: null, filteredCount: 0 },
       conversations: [
-        {
+        createConversation({
           promptCacheKey: "pck-live-arrival",
           requestCount: 1,
           totalTokens: 120,
@@ -305,7 +345,7 @@ describe("PromptCacheConversationTable", () => {
               cumulativeTokens: 120,
             },
           ],
-        },
+        }),
       ],
     };
 
@@ -331,7 +371,7 @@ describe("PromptCacheConversationTable", () => {
       selectedActivityHours: 1,
       implicitFilter: { kind: null, filteredCount: 0 },
       conversations: [
-        {
+        createConversation({
           promptCacheKey: "pck-active-old",
           requestCount: 4,
           totalTokens: 240,
@@ -354,7 +394,7 @@ describe("PromptCacheConversationTable", () => {
               cumulativeTokens: 240,
             },
           ],
-        },
+        }),
       ],
     };
 
@@ -363,5 +403,73 @@ describe("PromptCacheConversationTable", () => {
     expect(html).toContain("24 小时 Token 累计");
     expect(html).toContain('aria-label="pck-active-old 24 小时 Token 累计图"');
     expect(html).not.toContain("48 小时 Token 累计");
+  });
+
+  it("renders upstream account rows and three-line totals with fallbacks", () => {
+    const stats: PromptCacheConversationsResponse = {
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-account-lines",
+          requestCount: 12,
+          totalTokens: 3456,
+          totalCost: 1.2345,
+          createdAt: "2026-03-02T00:00:00Z",
+          lastActivityAt: "2026-03-02T16:00:00Z",
+          upstreamAccounts: [
+            {
+              upstreamAccountId: 101,
+              upstreamAccountName: "Pool Alpha",
+              requestCount: 5,
+              totalTokens: 1600,
+              totalCost: 0.56,
+              lastActivityAt: "2026-03-02T16:00:00Z",
+            },
+            {
+              upstreamAccountId: 202,
+              upstreamAccountName: null,
+              requestCount: 4,
+              totalTokens: 1200,
+              totalCost: 0.44,
+              lastActivityAt: "2026-03-02T15:00:00Z",
+            },
+            {
+              upstreamAccountId: null,
+              upstreamAccountName: null,
+              requestCount: 3,
+              totalTokens: 656,
+              totalCost: 0.2345,
+              lastActivityAt: "2026-03-02T14:00:00Z",
+            },
+            {
+              upstreamAccountId: 303,
+              upstreamAccountName: "Pool Hidden",
+              requestCount: 1,
+              totalTokens: 1,
+              totalCost: 0.0001,
+              lastActivityAt: "2026-03-02T13:00:00Z",
+            },
+          ],
+          last24hRequests: [],
+        }),
+      ],
+    };
+
+    const html = renderTable(stats);
+
+    expect(html).toContain("上游账号");
+    expect(html).toContain("总计");
+    expect(html).toContain("Pool Alpha");
+    expect(html).toContain("账号 #202");
+    expect(html).toContain("—");
+    expect(html).not.toContain("Pool Hidden");
+    expect(html).toContain("请求数");
+    expect(html).toContain("3,456");
+    expect(html).toContain("US$1.2345");
   });
 });

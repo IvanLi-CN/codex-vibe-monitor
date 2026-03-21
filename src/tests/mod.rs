@@ -15890,6 +15890,181 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_include_recent_upstream_account_summaries() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        account_id: Option<i64>,
+        account_name: Option<&str>,
+        total_tokens: i64,
+        cost: f64,
+    ) {
+        let mut payload = json!({ "promptCacheKey": key });
+        if let Some(account_id) = account_id {
+            payload["upstreamAccountId"] = json!(account_id);
+        }
+        if let Some(account_name) = account_name {
+            payload["upstreamAccountName"] = json!(account_name);
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    insert_row(
+        &state.pool,
+        "pck-upstream-beta-history",
+        now - ChronoDuration::hours(48),
+        "pck-upstream",
+        None,
+        Some("Beta"),
+        40,
+        0.4,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-upstream-alpha",
+        now - ChronoDuration::hours(6),
+        "pck-upstream",
+        Some(1),
+        Some("Alpha"),
+        10,
+        0.1,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-upstream-id-only",
+        now - ChronoDuration::hours(3),
+        "pck-upstream",
+        Some(7),
+        None,
+        20,
+        0.2,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-upstream-beta-recent",
+        now - ChronoDuration::hours(2),
+        "pck-upstream",
+        Some(2),
+        Some("Beta"),
+        15,
+        0.15,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-upstream-gamma",
+        now - ChronoDuration::hours(1),
+        "pck-upstream",
+        Some(9),
+        Some("Gamma"),
+        30,
+        0.3,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-upstream-unknown",
+        now - ChronoDuration::minutes(90),
+        "pck-upstream",
+        None,
+        None,
+        25,
+        0.25,
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversation stats should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-upstream")
+        .expect("pck-upstream should be included");
+
+    assert_eq!(conversation.upstream_accounts.len(), 3);
+
+    let first = &conversation.upstream_accounts[0];
+    assert_eq!(first.upstream_account_id, Some(9));
+    assert_eq!(first.upstream_account_name.as_deref(), Some("Gamma"));
+    assert_eq!(first.request_count, 1);
+    assert_eq!(first.total_tokens, 30);
+
+    let second = &conversation.upstream_accounts[1];
+    assert_eq!(second.upstream_account_id, None);
+    assert_eq!(second.upstream_account_name, None);
+    assert_eq!(second.request_count, 1);
+    assert_eq!(second.total_tokens, 25);
+    assert!((second.total_cost - 0.25).abs() < 1e-9);
+
+    let third = &conversation.upstream_accounts[2];
+    assert_eq!(third.upstream_account_id, Some(2));
+    assert_eq!(third.upstream_account_name.as_deref(), Some("Beta"));
+    assert_eq!(third.request_count, 2);
+    assert_eq!(third.total_tokens, 55);
+    assert!((third.total_cost - 0.55).abs() < 1e-9);
+
+    assert!(
+        conversation
+            .upstream_accounts
+            .iter()
+            .all(|account| account.upstream_account_id != Some(7))
+    );
+
+    assert!(
+        conversation
+            .upstream_accounts
+            .iter()
+            .any(|account| account.upstream_account_id.is_none()
+                && account.upstream_account_name.is_none())
+    );
+    assert!(
+        conversation
+            .upstream_accounts
+            .iter()
+            .all(|account| account.upstream_account_id != Some(1))
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_filter() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

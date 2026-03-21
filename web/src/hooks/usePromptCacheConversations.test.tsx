@@ -111,6 +111,7 @@ function createResponse(
         totalCost: 0.12,
         createdAt: "2026-03-10T01:00:00Z",
         lastActivityAt: "2026-03-10T02:00:00Z",
+        upstreamAccounts: [],
         last24hRequests: [],
       },
     ],
