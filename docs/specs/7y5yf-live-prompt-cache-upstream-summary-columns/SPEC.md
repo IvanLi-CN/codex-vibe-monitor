@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中
+- Status: 已完成（4/4）
 - Created: 2026-03-21
 - Last: 2026-03-21
 
@@ -86,9 +86,10 @@
 - [x] M1: 新建 spec，冻结 Prompt Cache 对话表双列复合展示的接口与布局口径。
 - [x] M2: 后端返回每个对话最近 3 个上游账号摘要，并补排序/截断/回退测试。
 - [x] M3: 前端改为 Prompt Cache 专用双列布局，并补 i18n、Vitest 与 Storybook 示例。
-- [ ] M4: 快车道完成提交、PR、checks 与 review-loop 收敛到 merge-ready。
+- [x] M4: 快车道完成提交、PR、checks 与 review-loop 收敛到 merge-ready。
 
 ## 变更记录（Change log）
 
 - 2026-03-21: 新建 spec，冻结 Prompt Cache Key 对话表“上游账号 / 总计”双列复合展示方案。
 - 2026-03-21: 完成后端 `upstreamAccounts[]` 聚合、前端双列布局、i18n、测试与 Storybook 示例同步，等待快车道 PR 收口。
+- 2026-03-21: PR #196 已创建并收敛到 merge-ready，所需 checks 全部通过。
