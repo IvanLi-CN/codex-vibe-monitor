@@ -4,7 +4,6 @@ const rawBase = import.meta.env.VITE_API_BASE_URL ?? "";
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
-const FORWARD_PROXY_HISTORY_HOUR_MS = 3_600_000;
 const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
 
 type ZonedDateParts = {
