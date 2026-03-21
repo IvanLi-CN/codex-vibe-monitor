@@ -1593,7 +1593,11 @@ async fn query_invocation_aggregate_records_from_archive_range(
     for archive_file in archive_files {
         let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
-            continue;
+            return Err(anyhow!(
+                "required codex_invocations archive batch is missing for historical exact reads: {}",
+                archive_path.display()
+            )
+            .into());
         }
         let temp_path = PathBuf::from(format!(
             "{}.{}.sqlite",

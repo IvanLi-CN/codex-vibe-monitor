@@ -7061,7 +7061,7 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
 }
 
 #[tokio::test]
-async fn forward_proxy_timeseries_trims_partial_edge_hours() {
+async fn forward_proxy_timeseries_includes_edge_hours_for_partial_ranges() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -7179,24 +7179,64 @@ async fn forward_proxy_timeseries_trims_partial_edge_hours() {
         .iter()
         .find(|node| node.key == manual_key)
         .expect("manual node should remain queryable");
-    assert_eq!(manual.buckets.len(), 1);
-    assert_eq!(manual.weight_buckets.len(), 1);
+    assert_eq!(
+        response.range_start,
+        format_utc_iso(Utc.timestamp_opt(bucket0, 0).single().unwrap())
+    );
+    assert_eq!(
+        response.range_end,
+        format_utc_iso(Utc.timestamp_opt(bucket2 + 3_600, 0).single().unwrap())
+    );
+    assert_eq!(manual.buckets.len(), 3);
+    assert_eq!(manual.weight_buckets.len(), 3);
     assert_eq!(
         manual.buckets[0].bucket_start,
+        format_utc_iso(
+            Utc.timestamp_opt(bucket0, 0)
+                .single()
+                .expect("first bucket start should be valid")
+        )
+    );
+    assert_eq!(manual.buckets[0].success_count, 1);
+    assert_eq!(manual.buckets[0].failure_count, 0);
+    assert_eq!(
+        manual.buckets[1].bucket_start,
         format_utc_iso(
             Utc.timestamp_opt(bucket1, 0)
                 .single()
                 .expect("middle bucket start should be valid")
         )
     );
-    assert_eq!(manual.buckets[0].success_count, 1);
-    assert_eq!(manual.buckets[0].failure_count, 0);
+    assert_eq!(manual.buckets[1].success_count, 1);
+    assert_eq!(manual.buckets[1].failure_count, 0);
+    assert_eq!(
+        manual.buckets[2].bucket_start,
+        format_utc_iso(
+            Utc.timestamp_opt(bucket2, 0)
+                .single()
+                .expect("last bucket start should be valid")
+        )
+    );
+    assert_eq!(manual.buckets[2].success_count, 0);
+    assert_eq!(manual.buckets[2].failure_count, 1);
     assert_eq!(
         manual.weight_buckets[0].bucket_start,
         manual.buckets[0].bucket_start
     );
     assert_eq!(manual.weight_buckets[0].sample_count, 1);
-    assert_f64_close(manual.weight_buckets[0].last_weight, 0.70);
+    assert_f64_close(manual.weight_buckets[0].last_weight, 0.80);
+    assert_eq!(
+        manual.weight_buckets[1].bucket_start,
+        manual.buckets[1].bucket_start
+    );
+    assert_eq!(manual.weight_buckets[1].sample_count, 1);
+    assert_f64_close(manual.weight_buckets[1].last_weight, 0.70);
+    assert_eq!(
+        manual.weight_buckets[2].bucket_start,
+        manual.buckets[2].bucket_start
+    );
+    assert_eq!(manual.weight_buckets[2].sample_count, 1);
+    assert_f64_close(manual.weight_buckets[2].last_weight, 0.60);
 }
 
 #[tokio::test]
@@ -19185,6 +19225,63 @@ async fn timeseries_hourly_backed_includes_crs_deltas() {
             .sum::<f64>(),
         0.9,
     );
+}
+
+#[tokio::test]
+async fn timeseries_hourly_backed_fails_when_exact_archive_batch_is_missing() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+    let temp_dir = make_temp_test_dir("timeseries-missing-exact-archive");
+    let missing_archive = temp_dir.join("missing-codex-invocations.sqlite.gz");
+    let month_key = Utc::now()
+        .with_timezone(&Shanghai)
+        .format("%Y-%m")
+        .to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(missing_archive.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&state.pool)
+    .await
+    .expect("insert missing exact-range archive manifest");
+
+    let err = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "48h".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("UTC".to_string()),
+        }),
+    )
+    .await
+    .expect_err("missing exact-range archive batch should fail timeseries");
+
+    match err {
+        ApiError::Internal(inner) => {
+            assert!(
+                inner
+                    .to_string()
+                    .contains("required codex_invocations archive batch is missing"),
+                "unexpected error message: {inner}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
