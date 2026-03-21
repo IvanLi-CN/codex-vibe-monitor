@@ -8463,7 +8463,7 @@ fn generate_mailbox_local_name() -> Result<String, (StatusCode, String)> {
         1 => format!("{left}.{right}"),
         _ => format!("{left}-{right}"),
     };
-    let local = match rng.gen_range(0..3) {
+    let mut local = match rng.gen_range(0..3) {
         0 => {
             let base = maybe_join(
                 GIVEN_NAMES[rng.gen_range(0..GIVEN_NAMES.len())],
@@ -8489,6 +8489,9 @@ fn generate_mailbox_local_name() -> Result<String, (StatusCode, String)> {
             maybe_join(&base, &suffix, &mut rng)
         }
     };
+    if local.len() < 10 {
+        local.push_str(&random_base36(10 - local.len())?);
+    }
     Ok(local)
 }
 
