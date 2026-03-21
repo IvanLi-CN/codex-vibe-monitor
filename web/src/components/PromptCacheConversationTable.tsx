@@ -129,12 +129,12 @@ function UpstreamAccountsBlock({
       {upstreamAccounts.slice(0, 3).map((account, index) => (
         <div
           key={`${account.upstreamAccountId ?? "unknown"}-${account.upstreamAccountName ?? "none"}-${index}`}
-          className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-0.5 text-[11px]"
+          className="flex items-center gap-2 text-[11px]"
         >
-          <span className="truncate font-medium">
+          <span className="max-w-[9rem] shrink-0 truncate font-medium">
             {resolveUpstreamAccountLabel(account, fallbackAccountLabel)}
           </span>
-          <span className="truncate text-right text-base-content/62">
+          <span className="min-w-0 truncate text-base-content/62">
             {formatNumber(account.requestCount, numberFormatter)}
             {" "}
             {labels.requestCountCompact}
@@ -434,13 +434,13 @@ export function PromptCacheConversationTable({
               <th className="w-[19%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {t("live.conversations.table.promptCacheKey")}
               </th>
-              <th className="w-[31%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
+              <th className="w-[36%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {t("live.conversations.table.upstreamAccounts")}
               </th>
-              <th className="w-[14%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
+              <th className="w-[16%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {t("live.conversations.table.summary")}
               </th>
-              <th className="w-[18%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
+              <th className="w-[11%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {totalLabels.time}
               </th>
               <th className="w-[18%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
@@ -481,19 +481,19 @@ export function PromptCacheConversationTable({
                 </td>
                 <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
                   <div className="space-y-1.5 text-[11px]">
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="grid grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-x-2">
                       <span className="text-base-content/60">
                         {totalLabels.createdAtShort}
                       </span>
-                      <span className="text-right">
+                      <span className="min-w-0 truncate">
                         {formatDateLabel(conversation.createdAt, dateFormatter)}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="grid grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-x-2">
                       <span className="text-base-content/60">
                         {totalLabels.lastActivityAtShort}
                       </span>
-                      <span className="text-right">
+                      <span className="min-w-0 truncate">
                         {formatDateLabel(conversation.lastActivityAt, dateFormatter)}
                       </span>
                     </div>
