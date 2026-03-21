@@ -217,17 +217,6 @@ impl BucketAggregate {
         add_approx_histogram_sample(&mut self.first_byte_histogram, value);
     }
 
-    pub(crate) fn record_precise_ttfb_sample(
-        &mut self,
-        status: Option<&str>,
-        ttfb_ms: Option<f64>,
-    ) {
-        let Some(value) = Self::validated_success_ttfb_value(status, ttfb_ms) else {
-            return;
-        };
-        self.first_byte_ttfb_values.push(value);
-    }
-
     pub(crate) fn record_exact_ttfb_sample(&mut self, status: Option<&str>, ttfb_ms: Option<f64>) {
         let Some(value) = Self::validated_success_ttfb_value(status, ttfb_ms) else {
             return;
@@ -235,6 +224,10 @@ impl BucketAggregate {
         self.first_byte_sample_count += 1;
         self.first_byte_ttfb_sum_ms += value;
         self.first_byte_ttfb_values.push(value);
+        if self.first_byte_histogram.is_empty() {
+            self.first_byte_histogram = empty_approx_histogram();
+        }
+        add_approx_histogram_sample(&mut self.first_byte_histogram, value);
     }
 
     pub(crate) fn first_byte_avg_ms(&self) -> Option<f64> {
@@ -246,6 +239,10 @@ impl BucketAggregate {
 
     pub(crate) fn first_byte_p95_ms(&self) -> Option<f64> {
         if self.first_byte_ttfb_values.is_empty() {
+            return approx_histogram_percentile_ms(&self.first_byte_histogram, 0.95);
+        }
+        let histogram_total: i64 = self.first_byte_histogram.iter().copied().sum();
+        if histogram_total > self.first_byte_ttfb_values.len() as i64 {
             return approx_histogram_percentile_ms(&self.first_byte_histogram, 0.95);
         }
         let mut sorted = self.first_byte_ttfb_values.clone();
@@ -311,7 +308,10 @@ pub(crate) fn resolve_range_window(spec: &str, tz: Tz) -> Result<RangeWindow> {
     let now = Utc::now();
     if let Some((start, raw_end)) = named_range_bounds(spec, now, tz) {
         // Clamp to "now" so charts do not render future empty buckets.
-        let end = now.min(raw_end);
+        let mut end = now.min(raw_end);
+        if end == now && end.timestamp_subsec_nanos() == 0 {
+            end += ChronoDuration::nanoseconds(1);
+        }
         let duration = end.signed_duration_since(start).max(ChronoDuration::zero());
         return Ok(RangeWindow {
             start,
@@ -322,7 +322,10 @@ pub(crate) fn resolve_range_window(spec: &str, tz: Tz) -> Result<RangeWindow> {
     }
 
     let duration = parse_duration_spec(spec)?;
-    let end = now;
+    let mut end = now;
+    if end.timestamp_subsec_nanos() == 0 {
+        end += ChronoDuration::nanoseconds(1);
+    }
     let start = end - duration;
     Ok(RangeWindow {
         start,

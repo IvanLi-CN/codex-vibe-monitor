@@ -1404,11 +1404,11 @@ struct HourlyRollupExactRangePlan {
     full_hour_range: Option<(i64, i64)>,
     archive_exact_ranges: Vec<ExactUtcRange>,
     live_exact_ranges: Vec<ExactUtcRange>,
-    live_ttfb_overlay_range: Option<ExactUtcRange>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct InvocationAggregateRecord {
+    id: i64,
     occurred_at: String,
     status: Option<String>,
     total_tokens: Option<i64>,
@@ -1437,27 +1437,22 @@ fn ceil_hour_epoch(epoch: i64) -> i64 {
     if floor < epoch { floor + 3_600 } else { floor }
 }
 
-fn exact_utc_range(start_epoch: i64, end_epoch: i64) -> Result<Option<ExactUtcRange>, ApiError> {
-    if start_epoch >= end_epoch {
+fn exact_utc_range(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<Option<ExactUtcRange>, ApiError> {
+    if start >= end {
         return Ok(None);
     }
-    let start = Utc
-        .timestamp_opt(start_epoch, 0)
-        .single()
-        .ok_or_else(|| ApiError::from(anyhow!("invalid exact range start epoch")))?;
-    let end = Utc
-        .timestamp_opt(end_epoch, 0)
-        .single()
-        .ok_or_else(|| ApiError::from(anyhow!("invalid exact range end epoch")))?;
     Ok(Some(ExactUtcRange { start, end }))
 }
 
 fn push_exact_range(
     ranges: &mut Vec<ExactUtcRange>,
-    start_epoch: i64,
-    end_epoch: i64,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
 ) -> Result<(), ApiError> {
-    let Some(range) = exact_utc_range(start_epoch, end_epoch)? else {
+    let Some(range) = exact_utc_range(start, end)? else {
         return Ok(());
     };
     if ranges
@@ -1476,20 +1471,13 @@ fn split_exact_range_by_retention(
     range: ExactUtcRange,
     raw_cutoff: DateTime<Utc>,
 ) -> Result<(), ApiError> {
-    let cutoff_epoch = raw_cutoff.timestamp();
     if range.start < raw_cutoff {
-        push_exact_range(
-            archive_ranges,
-            range.start.timestamp(),
-            range.end.timestamp().min(cutoff_epoch),
-        )?;
+        let pre_cutoff_end = range.end.min(raw_cutoff);
+        push_exact_range(archive_ranges, range.start, pre_cutoff_end)?;
+        push_exact_range(live_ranges, range.start, pre_cutoff_end)?;
     }
     if range.end > raw_cutoff {
-        push_exact_range(
-            live_ranges,
-            range.start.timestamp().max(cutoff_epoch),
-            range.end.timestamp(),
-        )?;
+        push_exact_range(live_ranges, range.start.max(raw_cutoff), range.end)?;
     }
     Ok(())
 }
@@ -1504,10 +1492,18 @@ fn build_hourly_rollup_exact_range_plan(
     let end_epoch = end.timestamp();
     let full_hour_start_epoch = ceil_hour_epoch(start_epoch);
     let full_hour_end_epoch = align_bucket_epoch(end_epoch, 3_600, 0);
+    let full_hour_start = Utc
+        .timestamp_opt(full_hour_start_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour start epoch")))?;
+    let full_hour_end = Utc
+        .timestamp_opt(full_hour_end_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour end epoch")))?;
     if full_hour_start_epoch < full_hour_end_epoch {
         plan.full_hour_range = Some((full_hour_start_epoch, full_hour_end_epoch));
     }
-    if let Some(range) = exact_utc_range(start_epoch, full_hour_start_epoch.min(end_epoch))? {
+    if let Some(range) = exact_utc_range(start, end.min(full_hour_start))? {
         split_exact_range_by_retention(
             &mut plan.archive_exact_ranges,
             &mut plan.live_exact_ranges,
@@ -1515,7 +1511,7 @@ fn build_hourly_rollup_exact_range_plan(
             raw_cutoff,
         )?;
     }
-    if let Some(range) = exact_utc_range(full_hour_end_epoch.max(start_epoch), end_epoch)? {
+    if let Some(range) = exact_utc_range(start.max(full_hour_end), end)? {
         split_exact_range_by_retention(
             &mut plan.archive_exact_ranges,
             &mut plan.live_exact_ranges,
@@ -1523,12 +1519,6 @@ fn build_hourly_rollup_exact_range_plan(
             raw_cutoff,
         )?;
     }
-    plan.live_ttfb_overlay_range = exact_utc_range(
-        full_hour_start_epoch
-            .max(raw_cutoff.timestamp())
-            .max(start_epoch),
-        full_hour_end_epoch.min(end_epoch),
-    )?;
     Ok(plan)
 }
 
@@ -1625,7 +1615,7 @@ async fn query_invocation_aggregate_records_from_archive_range(
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
         let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT \
-                occurred_at, status, total_tokens, cost, error_message, failure_kind, \
+                id, occurred_at, status, total_tokens, cost, error_message, failure_kind, \
                 failure_class, is_actionable, t_total_ms, t_req_read_ms, t_req_parse_ms, \
                 t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
                 t_resp_parse_ms, t_persist_ms \
@@ -1639,7 +1629,7 @@ async fn query_invocation_aggregate_records_from_archive_range(
         if source_scope == InvocationSourceScope::ProxyOnly {
             query.push(" AND source = ").push_bind(SOURCE_PROXY);
         }
-        query.push(" ORDER BY occurred_at ASC");
+        query.push(" ORDER BY occurred_at ASC, id ASC");
         records.extend(
             query
                 .build_query_as::<InvocationAggregateRecord>()
@@ -1649,7 +1639,11 @@ async fn query_invocation_aggregate_records_from_archive_range(
         archive_pool.close().await;
         drop(temp_cleanup);
     }
-    records.sort_by(|left, right| left.occurred_at.cmp(&right.occurred_at));
+    records.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     Ok(records)
 }
 
@@ -1660,7 +1654,7 @@ async fn query_invocation_aggregate_records_from_live_range(
 ) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
-            occurred_at, status, total_tokens, cost, error_message, failure_kind, \
+            id, occurred_at, status, total_tokens, cost, error_message, failure_kind, \
             failure_class, is_actionable, t_total_ms, t_req_read_ms, t_req_parse_ms, \
             t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
             t_resp_parse_ms, t_persist_ms \
@@ -1674,12 +1668,56 @@ async fn query_invocation_aggregate_records_from_live_range(
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-    query.push(" ORDER BY occurred_at ASC");
+    query.push(" ORDER BY occurred_at ASC, id ASC");
     query
         .build_query_as::<InvocationAggregateRecord>()
         .fetch_all(pool)
         .await
         .map_err(Into::into)
+}
+
+fn extend_unique_invocation_records(
+    records: &mut Vec<InvocationAggregateRecord>,
+    seen_ids: &mut HashSet<i64>,
+    candidates: Vec<InvocationAggregateRecord>,
+) {
+    for record in candidates {
+        if seen_ids.insert(record.id) {
+            records.push(record);
+        }
+    }
+}
+
+async fn query_invocation_exact_records(
+    pool: &Pool<Sqlite>,
+    range_plan: &HourlyRollupExactRangePlan,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    let mut records = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    for range in &range_plan.archive_exact_ranges {
+        extend_unique_invocation_records(
+            &mut records,
+            &mut seen_ids,
+            query_invocation_aggregate_records_from_archive_range(pool, *range, source_scope)
+                .await?,
+        );
+    }
+    for range in &range_plan.live_exact_ranges {
+        extend_unique_invocation_records(
+            &mut records,
+            &mut seen_ids,
+            query_invocation_aggregate_records_from_live_range(pool, *range, source_scope).await?,
+        );
+    }
+
+    records.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(records)
 }
 
 fn add_invocation_record_to_summary_totals(
@@ -1697,7 +1735,10 @@ fn add_invocation_record_to_summary_totals(
 }
 
 fn db_occurred_at_upper_bound(end_utc: DateTime<Utc>) -> String {
-    db_occurred_at_lower_bound(end_utc + ChronoDuration::seconds(1))
+    if end_utc.timestamp_subsec_nanos() > 0 {
+        return db_occurred_at_lower_bound(end_utc + ChronoDuration::seconds(1));
+    }
+    db_occurred_at_lower_bound(end_utc)
 }
 
 fn record_perf_stage_sample(
@@ -1756,21 +1797,10 @@ pub(crate) async fn query_hourly_backed_summary_since(
             totals.total_cost += row.total_cost;
         }
     }
-    for range in range_plan.archive_exact_ranges {
-        let records =
-            query_invocation_aggregate_records_from_archive_range(&state.pool, range, source_scope)
-                .await?;
-        for record in &records {
-            add_invocation_record_to_summary_totals(&mut totals, record);
-        }
-    }
-    for range in range_plan.live_exact_ranges {
-        let records =
-            query_invocation_aggregate_records_from_live_range(&state.pool, range, source_scope)
-                .await?;
-        for record in &records {
-            add_invocation_record_to_summary_totals(&mut totals, record);
-        }
+    let exact_records =
+        query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
+    for record in &exact_records {
+        add_invocation_record_to_summary_totals(&mut totals, record);
     }
     let relay = query_crs_totals(
         &state.pool,
@@ -2487,83 +2517,23 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         }
     }
 
-    for range in &range_plan.archive_exact_ranges {
-        let records = query_invocation_aggregate_records_from_archive_range(
-            &state.pool,
-            *range,
-            source_scope,
-        )
-        .await?;
-        for record in records {
-            let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
-                continue;
-            };
-            let bucket_epoch = align_reporting_bucket_epoch(
-                occurred_utc.timestamp(),
-                bucket_seconds,
-                reporting_tz,
-            )?;
-            if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-                entry.total_count += 1;
-                match record.status.as_deref() {
-                    Some("success") => entry.success_count += 1,
-                    _ => entry.failure_count += 1,
-                }
-                entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
-                entry.total_tokens += record.total_tokens.unwrap_or_default();
-                entry.total_cost += record.cost.unwrap_or_default();
+    let exact_records =
+        query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
+    for record in exact_records {
+        let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
+            continue;
+        };
+        let bucket_epoch =
+            align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
+        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+            entry.total_count += 1;
+            match record.status.as_deref() {
+                Some("success") => entry.success_count += 1,
+                _ => entry.failure_count += 1,
             }
-        }
-    }
-
-    for range in &range_plan.live_exact_ranges {
-        let records =
-            query_invocation_aggregate_records_from_live_range(&state.pool, *range, source_scope)
-                .await?;
-        for record in records {
-            let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
-                continue;
-            };
-            let bucket_epoch = align_reporting_bucket_epoch(
-                occurred_utc.timestamp(),
-                bucket_seconds,
-                reporting_tz,
-            )?;
-            if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-                entry.total_count += 1;
-                match record.status.as_deref() {
-                    Some("success") => entry.success_count += 1,
-                    _ => entry.failure_count += 1,
-                }
-                entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
-                entry.total_tokens += record.total_tokens.unwrap_or_default();
-                entry.total_cost += record.cost.unwrap_or_default();
-            }
-        }
-    }
-
-    if let Some(live_raw_range) = range_plan.live_ttfb_overlay_range {
-        let records = query_invocation_aggregate_records_from_live_range(
-            &state.pool,
-            live_raw_range,
-            source_scope,
-        )
-        .await?;
-        for record in records {
-            let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
-                continue;
-            };
-            let bucket_epoch = align_reporting_bucket_epoch(
-                occurred_utc.timestamp(),
-                bucket_seconds,
-                reporting_tz,
-            )?;
-            if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-                entry.record_precise_ttfb_sample(
-                    record.status.as_deref(),
-                    record.t_upstream_ttfb_ms,
-                );
-            }
+            entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+            entry.total_tokens += record.total_tokens.unwrap_or_default();
+            entry.total_cost += record.cost.unwrap_or_default();
         }
     }
 
@@ -3144,51 +3114,22 @@ pub(crate) async fn fetch_error_distribution(
                 *counts.entry(row.error_category).or_default() += row.failure_count;
             }
         }
-        for range in &range_plan.archive_exact_ranges {
-            let records = query_invocation_aggregate_records_from_archive_range(
-                &state.pool,
-                *range,
-                source_scope,
-            )
-            .await?;
-            for record in records {
-                let classification = resolve_failure_classification(
-                    record.status.as_deref(),
-                    record.error_message.as_deref(),
-                    record.failure_kind.as_deref(),
-                    record.failure_class.as_deref(),
-                    record.is_actionable,
-                );
-                if !failure_scope_matches(scope, classification.failure_class) {
-                    continue;
-                }
-                let raw = record.error_message.unwrap_or_default();
-                let key = categorize_error(&raw);
-                *counts.entry(key).or_default() += 1;
+        let exact_records =
+            query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
+        for record in exact_records {
+            let classification = resolve_failure_classification(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+                record.failure_kind.as_deref(),
+                record.failure_class.as_deref(),
+                record.is_actionable,
+            );
+            if !failure_scope_matches(scope, classification.failure_class) {
+                continue;
             }
-        }
-        for range in &range_plan.live_exact_ranges {
-            let records = query_invocation_aggregate_records_from_live_range(
-                &state.pool,
-                *range,
-                source_scope,
-            )
-            .await?;
-            for record in records {
-                let classification = resolve_failure_classification(
-                    record.status.as_deref(),
-                    record.error_message.as_deref(),
-                    record.failure_kind.as_deref(),
-                    record.failure_class.as_deref(),
-                    record.is_actionable,
-                );
-                if !failure_scope_matches(scope, classification.failure_class) {
-                    continue;
-                }
-                let raw = record.error_message.unwrap_or_default();
-                let key = categorize_error(&raw);
-                *counts.entry(key).or_default() += 1;
-            }
+            let raw = record.error_message.unwrap_or_default();
+            let key = categorize_error(&raw);
+            *counts.entry(key).or_default() += 1;
         }
         let mut items: Vec<ErrorDistributionItem> = counts
             .into_iter()
@@ -3540,64 +3481,28 @@ pub(crate) async fn fetch_failure_summary(
                 }
             }
         }
-        for range in &range_plan.archive_exact_ranges {
-            let records = query_invocation_aggregate_records_from_archive_range(
-                &state.pool,
-                *range,
-                source_scope,
-            )
-            .await?;
-            for record in records {
-                let classification = resolve_failure_classification(
-                    record.status.as_deref(),
-                    record.error_message.as_deref(),
-                    record.failure_kind.as_deref(),
-                    record.failure_class.as_deref(),
-                    record.is_actionable,
-                );
-                if classification.failure_class == FailureClass::None {
-                    continue;
-                }
-                total_failures += 1;
-                match classification.failure_class {
-                    FailureClass::ServiceFailure => service_failure_count += 1,
-                    FailureClass::ClientFailure => client_failure_count += 1,
-                    FailureClass::ClientAbort => client_abort_count += 1,
-                    FailureClass::None => {}
-                }
-                if classification.is_actionable {
-                    actionable_failure_count += 1;
-                }
+        let exact_records =
+            query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
+        for record in exact_records {
+            let classification = resolve_failure_classification(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+                record.failure_kind.as_deref(),
+                record.failure_class.as_deref(),
+                record.is_actionable,
+            );
+            if classification.failure_class == FailureClass::None {
+                continue;
             }
-        }
-        for range in &range_plan.live_exact_ranges {
-            let records = query_invocation_aggregate_records_from_live_range(
-                &state.pool,
-                *range,
-                source_scope,
-            )
-            .await?;
-            for record in records {
-                let classification = resolve_failure_classification(
-                    record.status.as_deref(),
-                    record.error_message.as_deref(),
-                    record.failure_kind.as_deref(),
-                    record.failure_class.as_deref(),
-                    record.is_actionable,
-                );
-                if classification.failure_class == FailureClass::None {
-                    continue;
-                }
-                total_failures += 1;
-                match classification.failure_class {
-                    FailureClass::ServiceFailure => service_failure_count += 1,
-                    FailureClass::ClientFailure => client_failure_count += 1,
-                    FailureClass::ClientAbort => client_abort_count += 1,
-                    FailureClass::None => {}
-                }
-                if classification.is_actionable {
-                    actionable_failure_count += 1;
-                }
+            total_failures += 1;
+            match classification.failure_class {
+                FailureClass::ServiceFailure => service_failure_count += 1,
+                FailureClass::ClientFailure => client_failure_count += 1,
+                FailureClass::ClientAbort => client_abort_count += 1,
+                FailureClass::None => {}
+            }
+            if classification.is_actionable {
+                actionable_failure_count += 1;
             }
         }
         let actionable_failure_rate = if total_failures > 0 {
@@ -3727,65 +3632,29 @@ pub(crate) async fn fetch_perf_stats(
                 )?;
             }
         }
-        for range in &range_plan.archive_exact_ranges {
-            let records = query_invocation_aggregate_records_from_archive_range(
-                &state.pool,
-                *range,
-                InvocationSourceScope::ProxyOnly,
-            )
-            .await?;
-            for record in records {
-                record_perf_stage_sample(&mut by_stage, "total", record.t_total_ms);
-                record_perf_stage_sample(&mut by_stage, "requestRead", record.t_req_read_ms);
-                record_perf_stage_sample(&mut by_stage, "requestParse", record.t_req_parse_ms);
-                record_perf_stage_sample(
-                    &mut by_stage,
-                    "upstreamConnect",
-                    record.t_upstream_connect_ms,
-                );
-                record_perf_stage_sample(
-                    &mut by_stage,
-                    "upstreamFirstByte",
-                    record.t_upstream_ttfb_ms,
-                );
-                record_perf_stage_sample(
-                    &mut by_stage,
-                    "upstreamStream",
-                    record.t_upstream_stream_ms,
-                );
-                record_perf_stage_sample(&mut by_stage, "responseParse", record.t_resp_parse_ms);
-                record_perf_stage_sample(&mut by_stage, "persistence", record.t_persist_ms);
-            }
-        }
-        for range in &range_plan.live_exact_ranges {
-            let records = query_invocation_aggregate_records_from_live_range(
-                &state.pool,
-                *range,
-                InvocationSourceScope::ProxyOnly,
-            )
-            .await?;
-            for record in records {
-                record_perf_stage_sample(&mut by_stage, "total", record.t_total_ms);
-                record_perf_stage_sample(&mut by_stage, "requestRead", record.t_req_read_ms);
-                record_perf_stage_sample(&mut by_stage, "requestParse", record.t_req_parse_ms);
-                record_perf_stage_sample(
-                    &mut by_stage,
-                    "upstreamConnect",
-                    record.t_upstream_connect_ms,
-                );
-                record_perf_stage_sample(
-                    &mut by_stage,
-                    "upstreamFirstByte",
-                    record.t_upstream_ttfb_ms,
-                );
-                record_perf_stage_sample(
-                    &mut by_stage,
-                    "upstreamStream",
-                    record.t_upstream_stream_ms,
-                );
-                record_perf_stage_sample(&mut by_stage, "responseParse", record.t_resp_parse_ms);
-                record_perf_stage_sample(&mut by_stage, "persistence", record.t_persist_ms);
-            }
+        let exact_records = query_invocation_exact_records(
+            &state.pool,
+            &range_plan,
+            InvocationSourceScope::ProxyOnly,
+        )
+        .await?;
+        for record in exact_records {
+            record_perf_stage_sample(&mut by_stage, "total", record.t_total_ms);
+            record_perf_stage_sample(&mut by_stage, "requestRead", record.t_req_read_ms);
+            record_perf_stage_sample(&mut by_stage, "requestParse", record.t_req_parse_ms);
+            record_perf_stage_sample(
+                &mut by_stage,
+                "upstreamConnect",
+                record.t_upstream_connect_ms,
+            );
+            record_perf_stage_sample(
+                &mut by_stage,
+                "upstreamFirstByte",
+                record.t_upstream_ttfb_ms,
+            );
+            record_perf_stage_sample(&mut by_stage, "upstreamStream", record.t_upstream_stream_ms);
+            record_perf_stage_sample(&mut by_stage, "responseParse", record.t_resp_parse_ms);
+            record_perf_stage_sample(&mut by_stage, "persistence", record.t_persist_ms);
         }
         let mut stages = Vec::new();
         for (stage, (count, sum_ms, max_ms, histogram)) in by_stage {

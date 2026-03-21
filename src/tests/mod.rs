@@ -18647,6 +18647,29 @@ async fn timeseries_daily_bucket_includes_first_byte_stats() {
     );
 }
 
+#[test]
+fn bucket_aggregate_uses_histogram_for_mixed_rollup_and_exact_p95() {
+    let mut bucket = BucketAggregate {
+        first_byte_sample_count: 1,
+        first_byte_ttfb_sum_ms: 1_000.0,
+        first_byte_histogram: empty_approx_histogram(),
+        ..Default::default()
+    };
+    add_approx_histogram_sample(&mut bucket.first_byte_histogram, 1_000.0);
+
+    bucket.record_exact_ttfb_sample(Some("success"), Some(100.0));
+
+    assert_eq!(bucket.first_byte_sample_count, 2);
+    assert_f64_close(
+        bucket.first_byte_avg_ms().expect("avg should be present"),
+        550.0,
+    );
+    assert_f64_close(
+        bucket.first_byte_p95_ms().expect("p95 should be present"),
+        1_000.0,
+    );
+}
+
 #[tokio::test]
 async fn timeseries_daily_includes_archived_rollup_days_without_ttfb() {
     let state = test_state_with_openai_base(
@@ -19142,6 +19165,59 @@ async fn timeseries_hourly_backed_uses_exact_archived_partial_hour_records() {
         bucket.first_byte_p95_ms.expect("p95 should be present"),
         200.0,
     );
+}
+
+#[tokio::test]
+async fn hourly_backed_summary_reads_pre_cutoff_exact_rows_from_live_table() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+
+    let pre_cutoff_local = start_of_local_day(Utc::now(), Shanghai)
+        .with_timezone(&Shanghai)
+        .naive_local()
+        - ChronoDuration::minutes(15);
+    let occurred_at = format_naive(pre_cutoff_local);
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            cost,
+            status,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("pre-cutoff-live-exact")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(12_i64)
+    .bind(0.12_f64)
+    .bind("success")
+    .bind("{}")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert pre-cutoff live exact row");
+
+    let start = local_naive_to_utc(pre_cutoff_local - ChronoDuration::minutes(15), Shanghai);
+    let totals =
+        query_hourly_backed_summary_since(state.as_ref(), start, InvocationSourceScope::ProxyOnly)
+            .await
+            .expect("load summary totals across retention cutoff");
+
+    assert_eq!(totals.total_count, 1);
+    assert_eq!(totals.success_count, 1);
+    assert_eq!(totals.failure_count, 0);
+    assert_eq!(totals.total_tokens, 12);
+    assert_f64_close(totals.total_cost, 0.12);
 }
 
 #[tokio::test]
