@@ -1392,7 +1392,295 @@ pub(crate) async fn fetch_summary(
     Ok(Json(totals.into_response()))
 }
 
-async fn query_hourly_backed_summary_since(
+#[derive(Debug, Clone, Copy)]
+struct ExactUtcRange {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+}
+
+#[derive(Debug, Default)]
+struct HourlyBackedExactRangePlan {
+    archived_full_hour_range: Option<(i64, i64)>,
+    archived_partial_ranges: Vec<ExactUtcRange>,
+    live_raw_range: Option<ExactUtcRange>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct InvocationAggregateRecord {
+    occurred_at: String,
+    status: Option<String>,
+    total_tokens: Option<i64>,
+    cost: Option<f64>,
+    error_message: Option<String>,
+    failure_kind: Option<String>,
+    failure_class: Option<String>,
+    is_actionable: Option<i64>,
+    t_total_ms: Option<f64>,
+    t_req_read_ms: Option<f64>,
+    t_req_parse_ms: Option<f64>,
+    t_upstream_connect_ms: Option<f64>,
+    t_upstream_ttfb_ms: Option<f64>,
+    t_upstream_stream_ms: Option<f64>,
+    t_resp_parse_ms: Option<f64>,
+    t_persist_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ArchiveBatchPathRow {
+    file_path: String,
+}
+
+fn ceil_hour_epoch(epoch: i64) -> i64 {
+    let floor = align_bucket_epoch(epoch, 3_600, 0);
+    if floor < epoch { floor + 3_600 } else { floor }
+}
+
+fn exact_utc_range(start_epoch: i64, end_epoch: i64) -> Result<Option<ExactUtcRange>, ApiError> {
+    if start_epoch >= end_epoch {
+        return Ok(None);
+    }
+    let start = Utc
+        .timestamp_opt(start_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid exact range start epoch")))?;
+    let end = Utc
+        .timestamp_opt(end_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid exact range end epoch")))?;
+    Ok(Some(ExactUtcRange { start, end }))
+}
+
+fn push_exact_range(
+    ranges: &mut Vec<ExactUtcRange>,
+    start_epoch: i64,
+    end_epoch: i64,
+) -> Result<(), ApiError> {
+    let Some(range) = exact_utc_range(start_epoch, end_epoch)? else {
+        return Ok(());
+    };
+    if ranges
+        .iter()
+        .any(|existing| existing.start == range.start && existing.end == range.end)
+    {
+        return Ok(());
+    }
+    ranges.push(range);
+    Ok(())
+}
+
+fn build_hourly_backed_exact_range_plan(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    raw_cutoff: DateTime<Utc>,
+) -> Result<HourlyBackedExactRangePlan, ApiError> {
+    let mut plan = HourlyBackedExactRangePlan::default();
+    let archived_end = end.min(raw_cutoff);
+    if start < archived_end {
+        let start_epoch = start.timestamp();
+        let archived_end_epoch = archived_end.timestamp();
+        let archived_full_start_epoch = ceil_hour_epoch(start_epoch);
+        let archived_full_end_epoch = align_bucket_epoch(archived_end_epoch, 3_600, 0);
+        push_exact_range(
+            &mut plan.archived_partial_ranges,
+            start_epoch,
+            archived_full_start_epoch.min(archived_end_epoch),
+        )?;
+        push_exact_range(
+            &mut plan.archived_partial_ranges,
+            archived_full_end_epoch.max(start_epoch),
+            archived_end_epoch,
+        )?;
+        if archived_full_start_epoch < archived_full_end_epoch {
+            plan.archived_full_hour_range =
+                Some((archived_full_start_epoch, archived_full_end_epoch));
+        }
+    }
+    plan.live_raw_range = exact_utc_range(start.max(raw_cutoff).timestamp(), end.timestamp())?;
+    Ok(plan)
+}
+
+fn shanghai_month_keys_for_range(range: ExactUtcRange) -> Vec<String> {
+    if range.start >= range.end {
+        return Vec::new();
+    }
+    let start_local = range.start.with_timezone(&Shanghai);
+    let end_local = (range.end - ChronoDuration::seconds(1)).with_timezone(&Shanghai);
+    let mut year = start_local.year();
+    let mut month = start_local.month();
+    let end_key = (end_local.year(), end_local.month());
+    let mut keys = Vec::new();
+    loop {
+        keys.push(format!("{year:04}-{month:02}"));
+        if (year, month) == end_key {
+            break;
+        }
+        month += 1;
+        if month > 12 {
+            month = 1;
+            year += 1;
+        }
+    }
+    keys
+}
+
+async fn query_archive_batch_paths_for_range(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    range: ExactUtcRange,
+) -> Result<Vec<ArchiveBatchPathRow>, ApiError> {
+    let month_keys = shanghai_month_keys_for_range(range);
+    if month_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT file_path FROM archive_batches WHERE dataset = ");
+    query
+        .push_bind(dataset)
+        .push(" AND status = ")
+        .push_bind(ARCHIVE_STATUS_COMPLETED)
+        .push(" AND month_key IN (");
+    {
+        let mut separated = query.separated(", ");
+        for month_key in month_keys {
+            separated.push_bind(month_key);
+        }
+    }
+    query.push(") ORDER BY month_key ASC, created_at ASC, id ASC");
+    query
+        .build_query_as::<ArchiveBatchPathRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn query_invocation_aggregate_records_from_archive_range(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    let archive_files =
+        query_archive_batch_paths_for_range(pool, "codex_invocations", range).await?;
+    if archive_files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let lower_bound = db_occurred_at_lower_bound(range.start);
+    let upper_bound = db_occurred_at_lower_bound(range.end);
+    let mut records = Vec::new();
+    for archive_file in archive_files {
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if !archive_path.exists() {
+            continue;
+        }
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        let connect_opts = build_sqlite_connect_options(
+            &sqlite_url_for_path(&temp_path),
+            Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+        )?;
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect_opts)
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT \
+                occurred_at, status, total_tokens, cost, error_message, failure_kind, \
+                failure_class, is_actionable, t_total_ms, t_req_read_ms, t_req_parse_ms, \
+                t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
+                t_resp_parse_ms, t_persist_ms \
+             FROM codex_invocations \
+             WHERE occurred_at >= ",
+        );
+        query
+            .push_bind(&lower_bound)
+            .push(" AND occurred_at < ")
+            .push_bind(&upper_bound);
+        if source_scope == InvocationSourceScope::ProxyOnly {
+            query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        }
+        query.push(" ORDER BY occurred_at ASC");
+        records.extend(
+            query
+                .build_query_as::<InvocationAggregateRecord>()
+                .fetch_all(&archive_pool)
+                .await?,
+        );
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+    records.sort_by(|left, right| left.occurred_at.cmp(&right.occurred_at));
+    Ok(records)
+}
+
+async fn query_invocation_aggregate_records_from_live_range(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT \
+            occurred_at, status, total_tokens, cost, error_message, failure_kind, \
+            failure_class, is_actionable, t_total_ms, t_req_read_ms, t_req_parse_ms, \
+            t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
+            t_resp_parse_ms, t_persist_ms \
+         FROM codex_invocations \
+         WHERE occurred_at >= ",
+    );
+    query
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_lower_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY occurred_at ASC");
+    query
+        .build_query_as::<InvocationAggregateRecord>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+fn add_invocation_record_to_summary_totals(
+    totals: &mut StatsTotals,
+    record: &InvocationAggregateRecord,
+) {
+    totals.total_count += 1;
+    match record.status.as_deref() {
+        Some("success") => totals.success_count += 1,
+        Some(_) => totals.failure_count += 1,
+        None => {}
+    }
+    totals.total_tokens += record.total_tokens.unwrap_or_default();
+    totals.total_cost += record.cost.unwrap_or_default();
+}
+
+fn record_perf_stage_sample(
+    by_stage: &mut BTreeMap<String, (i64, f64, f64, ApproxHistogramCounts)>,
+    stage: &str,
+    value: Option<f64>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    let entry = by_stage
+        .entry(stage.to_string())
+        .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
+    entry.0 += 1;
+    entry.1 += value;
+    entry.2 = entry.2.max(value);
+    add_approx_histogram_sample(&mut entry.3, value);
+}
+
+pub(crate) async fn query_hourly_backed_summary_since(
     state: &AppState,
     start: DateTime<Utc>,
     source_scope: InvocationSourceScope,
@@ -1408,22 +1696,46 @@ async fn query_hourly_backed_summary_since(
         .map_err(Into::into);
     }
 
-    let range_start_epoch = align_bucket_epoch(start.timestamp(), 3600, 0);
-    let range_end_epoch = align_bucket_epoch(Utc::now().timestamp(), 3600, 0) + 3600;
-    let rows = query_invocation_hourly_rollup_range(
-        &state.pool,
-        range_start_epoch,
-        range_end_epoch,
-        source_scope,
-    )
-    .await?;
     let mut totals = StatsTotals::default();
-    for row in rows {
-        totals.total_count += row.total_count;
-        totals.success_count += row.success_count;
-        totals.failure_count += row.failure_count;
-        totals.total_tokens += row.total_tokens;
-        totals.total_cost += row.total_cost;
+    let now = Utc::now();
+    let range_plan = build_hourly_backed_exact_range_plan(
+        start,
+        now,
+        shanghai_retention_cutoff(state.config.invocation_max_days),
+    )?;
+    if let Some((range_start_epoch, range_end_epoch)) = range_plan.archived_full_hour_range {
+        let rows = query_invocation_hourly_rollup_range(
+            &state.pool,
+            range_start_epoch,
+            range_end_epoch,
+            source_scope,
+        )
+        .await?;
+        for row in rows {
+            totals.total_count += row.total_count;
+            totals.success_count += row.success_count;
+            totals.failure_count += row.failure_count;
+            totals.total_tokens += row.total_tokens;
+            totals.total_cost += row.total_cost;
+        }
+    }
+    for range in range_plan.archived_partial_ranges {
+        let records =
+            query_invocation_aggregate_records_from_archive_range(&state.pool, range, source_scope)
+                .await?;
+        for record in &records {
+            add_invocation_record_to_summary_totals(&mut totals, record);
+        }
+    }
+    if let Some(live_raw_range) = range_plan.live_raw_range {
+        totals = totals.add(
+            query_invocation_totals(
+                &state.pool,
+                StatsFilter::Since(live_raw_range.start),
+                source_scope,
+            )
+            .await?,
+        );
     }
     let relay = query_crs_totals(
         &state.pool,
@@ -2055,7 +2367,7 @@ pub(crate) async fn fetch_timeseries(
     Ok(Json(response))
 }
 
-async fn fetch_timeseries_from_hourly_rollups(
+pub(crate) async fn fetch_timeseries_from_hourly_rollups(
     state: Arc<AppState>,
     _params: TimeseriesQuery,
     reporting_tz: Tz,
@@ -2066,18 +2378,11 @@ async fn fetch_timeseries_from_hourly_rollups(
     let bucket_seconds = bucket_selection.bucket_seconds;
     let start_epoch = range_window.start.timestamp();
     let end_epoch = range_window.end.timestamp();
-    let mut hourly_cursor = align_bucket_epoch(start_epoch, 3_600, 0);
-    if hourly_cursor > start_epoch {
-        hourly_cursor -= 3_600;
-    }
-    let hourly_end_epoch = align_bucket_epoch(end_epoch, 3_600, 0) + 3_600;
-    let rows = query_invocation_hourly_rollup_range(
-        &state.pool,
-        hourly_cursor,
-        hourly_end_epoch,
-        source_scope,
-    )
-    .await?;
+    let range_plan = build_hourly_backed_exact_range_plan(
+        range_window.start,
+        range_window.end,
+        shanghai_retention_cutoff(state.config.invocation_max_days),
+    )?;
 
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
     let mut bucket_cursor =
@@ -2093,63 +2398,98 @@ async fn fetch_timeseries_from_hourly_rollups(
         bucket_cursor += bucket_seconds;
     }
 
-    for row in rows {
-        let bucket_epoch =
-            align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-        let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += row.total_count;
-        entry.success_count += row.success_count;
-        entry.failure_count += row.failure_count;
-        entry.total_tokens += row.total_tokens;
-        entry.total_cost += row.total_cost;
-        entry.first_byte_sample_count += row.first_byte_sample_count;
-        entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
-        entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
-            decode_approx_histogram(&row.first_byte_histogram)
-        } else {
-            let mut merged = entry.first_byte_histogram.clone();
-            merge_approx_histogram_into(
-                &mut merged,
-                &decode_approx_histogram(&row.first_byte_histogram),
-            )?;
-            merged
-        };
+    if let Some((hourly_cursor, hourly_end_epoch)) = range_plan.archived_full_hour_range {
+        let rows = query_invocation_hourly_rollup_range(
+            &state.pool,
+            hourly_cursor,
+            hourly_end_epoch,
+            source_scope,
+        )
+        .await?;
+        for row in rows {
+            let bucket_epoch =
+                align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
+            let entry = aggregates.entry(bucket_epoch).or_default();
+            entry.total_count += row.total_count;
+            entry.success_count += row.success_count;
+            entry.failure_count += row.failure_count;
+            entry.total_tokens += row.total_tokens;
+            entry.total_cost += row.total_cost;
+            entry.first_byte_sample_count += row.first_byte_sample_count;
+            entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
+            entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
+                decode_approx_histogram(&row.first_byte_histogram)
+            } else {
+                let mut merged = entry.first_byte_histogram.clone();
+                merge_approx_histogram_into(
+                    &mut merged,
+                    &decode_approx_histogram(&row.first_byte_histogram),
+                )?;
+                merged
+            };
+        }
     }
 
-    let raw_overlay_start = std::cmp::max(
-        range_window.start,
-        shanghai_retention_cutoff(state.config.invocation_max_days),
-    );
-    if raw_overlay_start < range_window.end {
-        let mut records_query = QueryBuilder::new(
-            "SELECT occurred_at, status, NULL AS total_tokens, NULL AS cost, t_upstream_ttfb_ms FROM codex_invocations WHERE occurred_at >= ",
-        );
-        records_query.push_bind(db_occurred_at_lower_bound(raw_overlay_start));
-        if source_scope == InvocationSourceScope::ProxyOnly {
-            records_query.push(" AND source = ").push_bind(SOURCE_PROXY);
-        }
-        records_query.push(" ORDER BY occurred_at ASC");
-        let records = records_query
-            .build_query_as::<TimeseriesRecord>()
-            .fetch_all(&state.pool)
-            .await?;
+    for range in &range_plan.archived_partial_ranges {
+        let records = query_invocation_aggregate_records_from_archive_range(
+            &state.pool,
+            *range,
+            source_scope,
+        )
+        .await?;
         for record in records {
             let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
                 continue;
             };
-            if occurred_utc < raw_overlay_start || occurred_utc >= range_window.end {
-                continue;
-            }
             let bucket_epoch = align_reporting_bucket_epoch(
                 occurred_utc.timestamp(),
                 bucket_seconds,
                 reporting_tz,
             )?;
             if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+                entry.total_count += 1;
+                match record.status.as_deref() {
+                    Some("success") => entry.success_count += 1,
+                    _ => entry.failure_count += 1,
+                }
                 entry.record_precise_ttfb_sample(
                     record.status.as_deref(),
                     record.t_upstream_ttfb_ms,
                 );
+                entry.total_tokens += record.total_tokens.unwrap_or_default();
+                entry.total_cost += record.cost.unwrap_or_default();
+            }
+        }
+    }
+
+    if let Some(live_raw_range) = range_plan.live_raw_range {
+        let records = query_invocation_aggregate_records_from_live_range(
+            &state.pool,
+            live_raw_range,
+            source_scope,
+        )
+        .await?;
+        for record in records {
+            let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
+                continue;
+            };
+            let bucket_epoch = align_reporting_bucket_epoch(
+                occurred_utc.timestamp(),
+                bucket_seconds,
+                reporting_tz,
+            )?;
+            if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+                entry.total_count += 1;
+                match record.status.as_deref() {
+                    Some("success") => entry.success_count += 1,
+                    _ => entry.failure_count += 1,
+                }
+                entry.record_precise_ttfb_sample(
+                    record.status.as_deref(),
+                    record.t_upstream_ttfb_ms,
+                );
+                entry.total_tokens += record.total_tokens.unwrap_or_default();
+                entry.total_cost += record.cost.unwrap_or_default();
             }
         }
     }
@@ -2707,24 +3047,75 @@ pub(crate) async fn fetch_error_distribution(
     let scope = FailureScope::parse(params.scope.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     if start_dt < shanghai_retention_cutoff(state.config.invocation_max_days) {
-        let range_start_epoch = align_bucket_epoch(start_dt.timestamp(), 3_600, 0);
-        let range_end_epoch = align_bucket_epoch(display_end.timestamp(), 3_600, 0) + 3_600;
-        let rows = query_invocation_failure_hourly_rollup_range(
-            &state.pool,
-            range_start_epoch,
-            range_end_epoch,
-            source_scope,
-        )
-        .await?;
         let mut counts: HashMap<String, i64> = HashMap::new();
-        for row in rows {
-            let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
-                continue;
-            };
-            if !failure_scope_matches(scope, class) {
-                continue;
+        let range_plan = build_hourly_backed_exact_range_plan(
+            start_dt,
+            display_end,
+            shanghai_retention_cutoff(state.config.invocation_max_days),
+        )?;
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.archived_full_hour_range {
+            let rows = query_invocation_failure_hourly_rollup_range(
+                &state.pool,
+                range_start_epoch,
+                range_end_epoch,
+                source_scope,
+            )
+            .await?;
+            for row in rows {
+                let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
+                    continue;
+                };
+                if !failure_scope_matches(scope, class) {
+                    continue;
+                }
+                *counts.entry(row.error_category).or_default() += row.failure_count;
             }
-            *counts.entry(row.error_category).or_default() += row.failure_count;
+        }
+        for range in &range_plan.archived_partial_ranges {
+            let records = query_invocation_aggregate_records_from_archive_range(
+                &state.pool,
+                *range,
+                source_scope,
+            )
+            .await?;
+            for record in records {
+                let classification = resolve_failure_classification(
+                    record.status.as_deref(),
+                    record.error_message.as_deref(),
+                    record.failure_kind.as_deref(),
+                    record.failure_class.as_deref(),
+                    record.is_actionable,
+                );
+                if !failure_scope_matches(scope, classification.failure_class) {
+                    continue;
+                }
+                let raw = record.error_message.unwrap_or_default();
+                let key = categorize_error(&raw);
+                *counts.entry(key).or_default() += 1;
+            }
+        }
+        if let Some(live_raw_range) = range_plan.live_raw_range {
+            let records = query_invocation_aggregate_records_from_live_range(
+                &state.pool,
+                live_raw_range,
+                source_scope,
+            )
+            .await?;
+            for record in records {
+                let classification = resolve_failure_classification(
+                    record.status.as_deref(),
+                    record.error_message.as_deref(),
+                    record.failure_kind.as_deref(),
+                    record.failure_class.as_deref(),
+                    record.is_actionable,
+                );
+                if !failure_scope_matches(scope, classification.failure_class) {
+                    continue;
+                }
+                let raw = record.error_message.unwrap_or_default();
+                let key = categorize_error(&raw);
+                *counts.entry(key).or_default() += 1;
+            }
         }
         let mut items: Vec<ErrorDistributionItem> = counts
             .into_iter()
@@ -3042,33 +3433,98 @@ pub(crate) async fn fetch_failure_summary(
     let display_end = range_window.display_end;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     if start_dt < shanghai_retention_cutoff(state.config.invocation_max_days) {
-        let range_start_epoch = align_bucket_epoch(start_dt.timestamp(), 3_600, 0);
-        let range_end_epoch = align_bucket_epoch(display_end.timestamp(), 3_600, 0) + 3_600;
-        let rows = query_invocation_failure_hourly_rollup_range(
-            &state.pool,
-            range_start_epoch,
-            range_end_epoch,
-            source_scope,
-        )
-        .await?;
         let mut total_failures = 0_i64;
         let mut service_failure_count = 0_i64;
         let mut client_failure_count = 0_i64;
         let mut client_abort_count = 0_i64;
         let mut actionable_failure_count = 0_i64;
-        for row in rows {
-            let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
-                continue;
-            };
-            total_failures += row.failure_count;
-            match class {
-                FailureClass::ServiceFailure => service_failure_count += row.failure_count,
-                FailureClass::ClientFailure => client_failure_count += row.failure_count,
-                FailureClass::ClientAbort => client_abort_count += row.failure_count,
-                FailureClass::None => {}
+        let range_plan = build_hourly_backed_exact_range_plan(
+            start_dt,
+            display_end,
+            shanghai_retention_cutoff(state.config.invocation_max_days),
+        )?;
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.archived_full_hour_range {
+            let rows = query_invocation_failure_hourly_rollup_range(
+                &state.pool,
+                range_start_epoch,
+                range_end_epoch,
+                source_scope,
+            )
+            .await?;
+            for row in rows {
+                let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
+                    continue;
+                };
+                total_failures += row.failure_count;
+                match class {
+                    FailureClass::ServiceFailure => service_failure_count += row.failure_count,
+                    FailureClass::ClientFailure => client_failure_count += row.failure_count,
+                    FailureClass::ClientAbort => client_abort_count += row.failure_count,
+                    FailureClass::None => {}
+                }
+                if row.is_actionable != 0 {
+                    actionable_failure_count += row.failure_count;
+                }
             }
-            if row.is_actionable != 0 {
-                actionable_failure_count += row.failure_count;
+        }
+        for range in &range_plan.archived_partial_ranges {
+            let records = query_invocation_aggregate_records_from_archive_range(
+                &state.pool,
+                *range,
+                source_scope,
+            )
+            .await?;
+            for record in records {
+                let classification = resolve_failure_classification(
+                    record.status.as_deref(),
+                    record.error_message.as_deref(),
+                    record.failure_kind.as_deref(),
+                    record.failure_class.as_deref(),
+                    record.is_actionable,
+                );
+                if classification.failure_class == FailureClass::None {
+                    continue;
+                }
+                total_failures += 1;
+                match classification.failure_class {
+                    FailureClass::ServiceFailure => service_failure_count += 1,
+                    FailureClass::ClientFailure => client_failure_count += 1,
+                    FailureClass::ClientAbort => client_abort_count += 1,
+                    FailureClass::None => {}
+                }
+                if classification.is_actionable {
+                    actionable_failure_count += 1;
+                }
+            }
+        }
+        if let Some(live_raw_range) = range_plan.live_raw_range {
+            let records = query_invocation_aggregate_records_from_live_range(
+                &state.pool,
+                live_raw_range,
+                source_scope,
+            )
+            .await?;
+            for record in records {
+                let classification = resolve_failure_classification(
+                    record.status.as_deref(),
+                    record.error_message.as_deref(),
+                    record.failure_kind.as_deref(),
+                    record.failure_class.as_deref(),
+                    record.is_actionable,
+                );
+                if classification.failure_class == FailureClass::None {
+                    continue;
+                }
+                total_failures += 1;
+                match classification.failure_class {
+                    FailureClass::ServiceFailure => service_failure_count += 1,
+                    FailureClass::ClientFailure => client_failure_count += 1,
+                    FailureClass::ClientAbort => client_abort_count += 1,
+                    FailureClass::None => {}
+                }
+                if classification.is_actionable {
+                    actionable_failure_count += 1;
+                }
             }
         }
         let actionable_failure_rate = if total_failures > 0 {
@@ -3171,22 +3627,92 @@ pub(crate) async fn fetch_perf_stats(
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     if range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
-        let rows = query_proxy_perf_stage_hourly_rollup_range(
-            &state.pool,
-            align_bucket_epoch(range_window.start.timestamp(), 3_600, 0),
-            align_bucket_epoch(range_window.display_end.timestamp(), 3_600, 0) + 3_600,
-        )
-        .await?;
+        let range_plan = build_hourly_backed_exact_range_plan(
+            range_window.start,
+            range_window.display_end,
+            shanghai_retention_cutoff(state.config.invocation_max_days),
+        )?;
         let mut by_stage: BTreeMap<String, (i64, f64, f64, ApproxHistogramCounts)> =
             BTreeMap::new();
-        for row in rows {
-            let entry = by_stage
-                .entry(row.stage)
-                .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
-            entry.0 += row.sample_count;
-            entry.1 += row.sum_ms;
-            entry.2 = entry.2.max(row.max_ms);
-            merge_approx_histogram_into(&mut entry.3, &decode_approx_histogram(&row.histogram))?;
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.archived_full_hour_range {
+            let rows = query_proxy_perf_stage_hourly_rollup_range(
+                &state.pool,
+                range_start_epoch,
+                range_end_epoch,
+            )
+            .await?;
+            for row in rows {
+                let entry = by_stage
+                    .entry(row.stage)
+                    .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
+                entry.0 += row.sample_count;
+                entry.1 += row.sum_ms;
+                entry.2 = entry.2.max(row.max_ms);
+                merge_approx_histogram_into(
+                    &mut entry.3,
+                    &decode_approx_histogram(&row.histogram),
+                )?;
+            }
+        }
+        for range in &range_plan.archived_partial_ranges {
+            let records = query_invocation_aggregate_records_from_archive_range(
+                &state.pool,
+                *range,
+                InvocationSourceScope::ProxyOnly,
+            )
+            .await?;
+            for record in records {
+                record_perf_stage_sample(&mut by_stage, "total", record.t_total_ms);
+                record_perf_stage_sample(&mut by_stage, "requestRead", record.t_req_read_ms);
+                record_perf_stage_sample(&mut by_stage, "requestParse", record.t_req_parse_ms);
+                record_perf_stage_sample(
+                    &mut by_stage,
+                    "upstreamConnect",
+                    record.t_upstream_connect_ms,
+                );
+                record_perf_stage_sample(
+                    &mut by_stage,
+                    "upstreamFirstByte",
+                    record.t_upstream_ttfb_ms,
+                );
+                record_perf_stage_sample(
+                    &mut by_stage,
+                    "upstreamStream",
+                    record.t_upstream_stream_ms,
+                );
+                record_perf_stage_sample(&mut by_stage, "responseParse", record.t_resp_parse_ms);
+                record_perf_stage_sample(&mut by_stage, "persistence", record.t_persist_ms);
+            }
+        }
+        if let Some(live_raw_range) = range_plan.live_raw_range {
+            let records = query_invocation_aggregate_records_from_live_range(
+                &state.pool,
+                live_raw_range,
+                InvocationSourceScope::ProxyOnly,
+            )
+            .await?;
+            for record in records {
+                record_perf_stage_sample(&mut by_stage, "total", record.t_total_ms);
+                record_perf_stage_sample(&mut by_stage, "requestRead", record.t_req_read_ms);
+                record_perf_stage_sample(&mut by_stage, "requestParse", record.t_req_parse_ms);
+                record_perf_stage_sample(
+                    &mut by_stage,
+                    "upstreamConnect",
+                    record.t_upstream_connect_ms,
+                );
+                record_perf_stage_sample(
+                    &mut by_stage,
+                    "upstreamFirstByte",
+                    record.t_upstream_ttfb_ms,
+                );
+                record_perf_stage_sample(
+                    &mut by_stage,
+                    "upstreamStream",
+                    record.t_upstream_stream_ms,
+                );
+                record_perf_stage_sample(&mut by_stage, "responseParse", record.t_resp_parse_ms);
+                record_perf_stage_sample(&mut by_stage, "persistence", record.t_persist_ms);
+            }
         }
         let mut stages = Vec::new();
         for (stage, (count, sum_ms, max_ms, histogram)) in by_stage {
@@ -3697,11 +4223,11 @@ pub(crate) struct TimeseriesResponse {
 }
 
 #[derive(Debug, Clone)]
-struct TimeseriesBucketSelection {
-    bucket_seconds: i64,
-    effective_bucket: String,
-    available_buckets: Vec<String>,
-    bucket_limited_to_daily: bool,
+pub(crate) struct TimeseriesBucketSelection {
+    pub(crate) bucket_seconds: i64,
+    pub(crate) effective_bucket: String,
+    pub(crate) available_buckets: Vec<String>,
+    pub(crate) bucket_limited_to_daily: bool,
 }
 
 fn resolve_timeseries_bucket_selection(

@@ -3162,6 +3162,12 @@ async fn archive_old_invocations(
             let mut tx = pool.begin().await?;
             upsert_invocation_rollups(tx.as_mut(), &group).await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+            mark_retention_archived_hourly_rollup_targets_tx(
+                tx.as_mut(),
+                spec.dataset,
+                &archive_outcome.file_path,
+            )
+            .await?;
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             tx.commit().await?;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
@@ -3255,6 +3261,12 @@ async fn archive_timestamped_dataset(
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+            mark_retention_archived_hourly_rollup_targets_tx(
+                tx.as_mut(),
+                spec.dataset,
+                &archive_outcome.file_path,
+            )
+            .await?;
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             tx.commit().await?;
         }
@@ -3829,6 +3841,28 @@ async fn upsert_archive_batch_manifest(
     .await?;
     if batch.dataset == "codex_invocations" && !batch.upstream_last_activity.is_empty() {
         upsert_archived_upstream_last_activity(tx, &batch.upstream_last_activity).await?;
+    }
+    Ok(())
+}
+
+async fn mark_retention_archived_hourly_rollup_targets_tx(
+    tx: &mut SqliteConnection,
+    dataset: &str,
+    file_path: &str,
+) -> Result<()> {
+    let targets: &[&str] = match dataset {
+        "codex_invocations" => &[
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+            HOURLY_ROLLUP_TARGET_PROXY_PERF,
+            HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+            HOURLY_ROLLUP_TARGET_STICKY_KEYS,
+        ],
+        "forward_proxy_attempts" => &[HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS],
+        _ => &[],
+    };
+    for target in targets {
+        mark_hourly_rollup_archive_replayed_tx(tx, target, dataset, file_path).await?;
     }
     Ok(())
 }

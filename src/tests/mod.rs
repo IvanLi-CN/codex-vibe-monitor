@@ -18296,6 +18296,125 @@ async fn insert_invocation_rollup(
     .expect("insert invocation hourly rollup");
 }
 
+async fn insert_invocation_hourly_rollup_bucket(
+    pool: &SqlitePool,
+    bucket_start: DateTime<Utc>,
+    source: &str,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0.0, 0.0, ?8, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start.timestamp())
+    .bind(source)
+    .bind(total_count)
+    .bind(success_count)
+    .bind(failure_count)
+    .bind(total_tokens)
+    .bind(total_cost)
+    .bind(
+        encode_approx_histogram(&empty_approx_histogram())
+            .expect("encode empty approximate histogram"),
+    )
+    .execute(pool)
+    .await
+    .expect("insert invocation hourly rollup bucket");
+}
+
+async fn seed_invocation_archive_batch(
+    pool: &SqlitePool,
+    config: &AppConfig,
+    batch_name: &str,
+    rows: &[(i64, &str, &str, &str, &str, i64, f64, Option<f64>)],
+) -> PathBuf {
+    let month_key = rows
+        .first()
+        .map(|row| row.2[..7].to_string())
+        .expect("archive batch rows should not be empty");
+    let archive_path = archive_batch_file_path(config, "codex_invocations", &month_key)
+        .expect("resolve invocation archive batch path");
+    fs::create_dir_all(
+        archive_path
+            .parent()
+            .expect("invocation archive batch should have parent"),
+    )
+    .expect("create invocation archive dir");
+
+    let archive_db_path = config.archive_dir.join(format!("{batch_name}.sqlite"));
+    let _ = fs::remove_file(&archive_db_path);
+    fs::File::create(&archive_db_path).expect("create invocation archive sqlite file");
+    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open invocation archive sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create invocation archive schema");
+    for (id, invoke_id, occurred_at, source, status, total_tokens, cost, ttfb_ms) in rows {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, t_upstream_ttfb_ms, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(*id)
+        .bind(*invoke_id)
+        .bind(*occurred_at)
+        .bind(*source)
+        .bind(*status)
+        .bind(*total_tokens)
+        .bind(*cost)
+        .bind(*ttfb_ms)
+        .bind("{}")
+        .bind(*occurred_at)
+        .execute(&archive_pool)
+        .await
+        .expect("insert invocation archive row");
+    }
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress invocation archive batch");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(sha256_hex_file(&archive_path).expect("archive sha256"))
+    .bind(rows.len() as i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(pool)
+    .await
+    .expect("insert invocation archive batch manifest");
+    archive_path
+}
+
 fn bucket_date_in_tz(bucket_start: &str, tz: Tz) -> NaiveDate {
     DateTime::parse_from_rfc3339(bucket_start)
         .expect("valid bucket start")
@@ -18820,6 +18939,200 @@ async fn timeseries_hourly_backed_bucket_stays_available_across_archive_boundary
         })
         .expect("should include archived rollup-backed bucket");
     assert_eq!(archived_bucket.total_count, 6);
+}
+
+#[tokio::test]
+async fn summary_hourly_backed_since_preserves_exact_archived_start_hour() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let bucket_start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let before_start = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("before-start local time"),
+    );
+    let after_start = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(50))
+            .expect("after-start local time"),
+    );
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-exact-archived-start",
+        &[
+            (
+                1_i64,
+                "summary-before-start",
+                before_start.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.1_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "summary-after-start",
+                after_start.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.1_f64,
+                Some(200.0),
+            ),
+        ],
+    )
+    .await;
+    insert_invocation_hourly_rollup_bucket(
+        &state.pool,
+        bucket_start,
+        SOURCE_PROXY,
+        2,
+        2,
+        0,
+        20,
+        0.2,
+    )
+    .await;
+
+    let start = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(30))
+            .expect("range start local time"),
+        Shanghai,
+    );
+    let totals =
+        query_hourly_backed_summary_since(state.as_ref(), start, InvocationSourceScope::ProxyOnly)
+            .await
+            .expect("load exact archived summary totals");
+
+    assert_eq!(totals.total_count, 1);
+    assert_eq!(totals.success_count, 1);
+    assert_eq!(totals.failure_count, 0);
+    assert_eq!(totals.total_tokens, 10);
+    assert_f64_close(totals.total_cost, 0.1);
+}
+
+#[tokio::test]
+async fn timeseries_hourly_backed_uses_exact_archived_partial_hour_records() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let bucket_start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let before_start = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("before-start local time"),
+    );
+    let after_start = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(50))
+            .expect("after-start local time"),
+    );
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "timeseries-exact-archived-start",
+        &[
+            (
+                1_i64,
+                "timeseries-before-start",
+                before_start.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.1_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "timeseries-after-start",
+                after_start.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.1_f64,
+                Some(200.0),
+            ),
+        ],
+    )
+    .await;
+    insert_invocation_hourly_rollup_bucket(
+        &state.pool,
+        bucket_start,
+        SOURCE_PROXY,
+        2,
+        2,
+        0,
+        20,
+        0.2,
+    )
+    .await;
+
+    let start = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(30))
+            .expect("range start local time"),
+        Shanghai,
+    );
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(55))
+            .expect("range end local time"),
+        Shanghai,
+    );
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state.clone(),
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch exact archived timeseries");
+
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count > 0)
+        .expect("should include exact archived bucket");
+    assert_eq!(bucket.total_count, 1);
+    assert_eq!(bucket.success_count, 1);
+    assert_eq!(bucket.failure_count, 0);
+    assert_eq!(bucket.total_tokens, 10);
+    assert_f64_close(bucket.total_cost, 0.1);
 }
 
 #[tokio::test]
@@ -20402,6 +20715,102 @@ async fn retention_archives_forward_proxy_attempts_and_stats_snapshots() {
     .collect();
     assert!(datasets.contains("forward_proxy_attempts"));
     assert!(datasets.contains("stats_source_snapshots"));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn bootstrap_hourly_rollups_skips_batches_already_accounted_during_retention() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("hourly-rollup-retention-accounted").await;
+    let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "hourly-rollup-retention-accounted",
+        &old_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    let old_attempt = Utc::now()
+        - ChronoDuration::days((config.forward_proxy_attempts_retention_days + 2) as i64);
+    seed_forward_proxy_attempt_at(&pool, "proxy-retention-accounted", old_attempt, true).await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let invocation_total_before: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation hourly totals before retention");
+    let forward_proxy_total_before: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(attempts), 0) FROM forward_proxy_attempt_hourly WHERE proxy_key = ?1",
+    )
+    .bind("proxy-retention-accounted")
+    .fetch_one(&pool)
+    .await
+    .expect("load forward proxy hourly totals before retention");
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention before bootstrap replay");
+    assert_eq!(summary.invocation_rows_archived, 1);
+    assert_eq!(summary.forward_proxy_attempt_rows_archived, 1);
+
+    bootstrap_hourly_rollups(&pool)
+        .await
+        .expect("replay hourly rollups after retention");
+    let invocation_total_after: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation hourly totals after bootstrap");
+    let forward_proxy_total_after: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(attempts), 0) FROM forward_proxy_attempt_hourly WHERE proxy_key = ?1",
+    )
+    .bind("proxy-retention-accounted")
+    .fetch_one(&pool)
+    .await
+    .expect("load forward proxy hourly totals after bootstrap");
+
+    assert_eq!(invocation_total_before, 1);
+    assert_eq!(invocation_total_after, invocation_total_before);
+    assert_eq!(forward_proxy_total_before, 1);
+    assert_eq!(forward_proxy_total_after, forward_proxy_total_before);
+
+    let invocation_marked_targets: HashSet<String> = sqlx::query_scalar(
+        "SELECT target FROM hourly_rollup_archive_replay WHERE dataset = 'codex_invocations'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load invocation replay markers")
+    .into_iter()
+    .collect();
+    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_INVOCATIONS));
+    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES));
+    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_PROXY_PERF));
+    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_PROMPT_CACHE));
+    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_STICKY_KEYS));
+
+    let forward_proxy_marked: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = 'forward_proxy_attempts' AND target = ?1",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
+    .fetch_one(&pool)
+    .await
+    .expect("load forward proxy replay marker count");
+    assert_eq!(forward_proxy_marked, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }
