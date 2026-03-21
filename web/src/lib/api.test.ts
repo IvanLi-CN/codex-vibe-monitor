@@ -305,30 +305,17 @@ describe("fetchForwardProxyTimeseries", () => {
     expect(response.nodes[0].weightBuckets[0].lastWeight).toBe(0.8);
   });
 
-  it("falls back to UTC for non-whole-hour proxy history time zones", async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(
-          JSON.stringify({
-            rangeStart: "2026-01-01T00:00:00Z",
-            rangeEnd: "2026-01-01T01:00:00Z",
-            bucketSeconds: 3600,
-            effectiveBucket: "1h",
-            availableBuckets: ["1h"],
-            nodes: [],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-    );
+  it("rejects non-whole-hour proxy history time zones instead of rewriting them", async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
-    await fetchForwardProxyTimeseries("7d", {
-      bucket: "1h",
-      timeZone: "Asia/Kolkata",
-    });
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("timeZone=UTC");
+    await expect(
+      fetchForwardProxyTimeseries("today", {
+        bucket: "1h",
+        timeZone: "Asia/Kolkata",
+      }),
+    ).rejects.toThrow("whole-hour UTC offsets");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

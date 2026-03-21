@@ -38,7 +38,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return JSON.parse(rawText) as T;
 }
 
-function normalizeForwardProxyHistoryTimeZone(timeZone?: string): string {
+function resolveForwardProxyHistoryTimeZone(timeZone?: string): string {
   const candidate = timeZone ?? getBrowserTimeZone();
   try {
     const timeZoneName = new Intl.DateTimeFormat("en-US", {
@@ -56,8 +56,21 @@ function normalizeForwardProxyHistoryTimeZone(timeZone?: string): string {
     if (!match) {
       return candidate;
     }
-    return (match[1] ?? "00") === "00" ? candidate : "UTC";
-  } catch {
+    if ((match[1] ?? "00") !== "00") {
+      throw new Error(
+        `unsupported timeZone for forward proxy hourly timeseries: ${candidate}; hourly buckets require whole-hour UTC offsets`,
+      );
+    }
+    return candidate;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith(
+        "unsupported timeZone for forward proxy hourly timeseries:",
+      )
+    ) {
+      throw error;
+    }
     return candidate;
   }
 }
@@ -2285,7 +2298,7 @@ export async function fetchForwardProxyTimeseries(
 ) {
   const search = new URLSearchParams();
   search.set("range", range);
-  search.set("timeZone", normalizeForwardProxyHistoryTimeZone(params?.timeZone));
+  search.set("timeZone", resolveForwardProxyHistoryTimeZone(params?.timeZone));
   if (params?.bucket) {
     search.set("bucket", params.bucket);
   }

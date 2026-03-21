@@ -21274,6 +21274,84 @@ async fn bootstrap_hourly_rollups_skips_batches_already_accounted_during_retenti
 }
 
 #[tokio::test]
+async fn bootstrap_hourly_rollups_fails_when_invocation_archive_batch_is_missing() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("hourly-rollup-missing-invocation-archive").await;
+    let missing_archive = temp_dir.join("missing-codex-invocations.sqlite.gz");
+    let missing_archive_path = missing_archive.to_string_lossy().to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind("2025-01")
+    .bind(&missing_archive_path)
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("insert missing codex_invocations archive manifest");
+
+    let err = bootstrap_hourly_rollups(&pool)
+        .await
+        .expect_err("missing codex_invocations archive batch should fail bootstrap");
+    assert!(
+        err.to_string()
+            .contains("required codex_invocations archive batch is missing"),
+        "unexpected error: {err:#}"
+    );
+    assert!(
+        err.to_string().contains(&missing_archive_path),
+        "unexpected error: {err:#}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn bootstrap_hourly_rollups_fails_when_forward_proxy_archive_batch_is_missing() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("hourly-rollup-missing-forward-proxy-archive").await;
+    let missing_archive = temp_dir.join("missing-forward-proxy-attempts.sqlite.gz");
+    let missing_archive_path = missing_archive.to_string_lossy().to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind("forward_proxy_attempts")
+    .bind("2025-01")
+    .bind(&missing_archive_path)
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("insert missing forward_proxy_attempts archive manifest");
+
+    let err = bootstrap_hourly_rollups(&pool)
+        .await
+        .expect_err("missing forward_proxy_attempts archive batch should fail bootstrap");
+    assert!(
+        err.to_string()
+            .contains("required forward_proxy_attempts archive batch is missing"),
+        "unexpected error: {err:#}"
+    );
+    assert!(
+        err.to_string().contains(&missing_archive_path),
+        "unexpected error: {err:#}"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_compacts_old_quota_snapshots_by_shanghai_day() {
     let (pool, config, temp_dir) = retention_test_pool_and_config("retention-quota").await;
     let same_day_early = utc_naive_from_shanghai_local_days_ago(40, 8, 0, 0);

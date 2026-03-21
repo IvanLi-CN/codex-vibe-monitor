@@ -4630,7 +4630,10 @@ async fn replay_invocation_archives_into_hourly_rollups(pool: &Pool<Sqlite>) -> 
 
         let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
-            continue;
+            return Err(anyhow!(
+                "required codex_invocations archive batch is missing for hourly rollup replay: {}",
+                archive_path.display()
+            ));
         }
         let temp_path = PathBuf::from(format!(
             "{}.{}.sqlite",
@@ -4724,7 +4727,10 @@ async fn replay_forward_proxy_archives_into_hourly_rollups(pool: &Pool<Sqlite>) 
 
         let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
-            continue;
+            return Err(anyhow!(
+                "required forward_proxy_attempts archive batch is missing for hourly rollup replay: {}",
+                archive_path.display()
+            ));
         }
         let temp_path = PathBuf::from(format!(
             "{}.{}.sqlite",
