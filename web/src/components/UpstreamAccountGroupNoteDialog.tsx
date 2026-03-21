@@ -12,6 +12,7 @@ import {
 
 interface UpstreamAccountGroupNoteDialogProps {
   open: boolean
+  container?: HTMLElement | null
   groupName: string
   note: string
   busy?: boolean
@@ -34,6 +35,7 @@ interface UpstreamAccountGroupNoteDialogProps {
 
 export function UpstreamAccountGroupNoteDialog({
   open,
+  container,
   groupName,
   note,
   busy = false,
@@ -55,7 +57,7 @@ export function UpstreamAccountGroupNoteDialog({
 }: UpstreamAccountGroupNoteDialogProps) {
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
-      <DialogContent className="overflow-hidden border-base-300 bg-base-100 p-0">
+      <DialogContent container={container} className="overflow-hidden border-base-300 bg-base-100 p-0">
         <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
           <DialogHeader className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">

@@ -2773,6 +2773,29 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     expect(confirmDialog?.closest('.drawer-body')).toBeNull();
   });
 
+  it("keeps the tag picker popover inside the detail drawer dialog subtree", async () => {
+    mockAccountsPage();
+    render({
+      pathname: "/account-pool/upstream-accounts",
+      state: {
+        selectedAccountId: 5,
+        openDetail: true,
+      },
+    });
+    await flushAsync();
+    await flushTimers();
+
+    clickButton(/^add tag$/i);
+    await flushAsync();
+    await flushTimers();
+
+    const searchInput = document.body.querySelector(
+      'input[placeholder="Search existing tags..."]',
+    );
+    expect(searchInput).not.toBeNull();
+    expect(searchInput?.closest('[role="dialog"]')).not.toBeNull();
+  });
+
   it("keeps the drawer open until a failing delete request settles", async () => {
     let rejectRemove: ((reason?: unknown) => void) | null = null;
     const removeAccount = vi.fn(
