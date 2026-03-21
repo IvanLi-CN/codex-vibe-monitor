@@ -2,6 +2,7 @@ use super::*;
 use crate::forward_proxy::*;
 use crate::stats::*;
 use chrono::Offset;
+use chrono::Timelike;
 
 const INVOCATION_PROXY_DISPLAY_SQL: &str = "COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), ''), CASE WHEN TRIM(source) != 'proxy' THEN TRIM(source) END)";
 const INVOCATION_ENDPOINT_SQL: &str =
@@ -2353,11 +2354,6 @@ pub(crate) async fn fetch_timeseries(
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
 
     let start_epoch = start_dt.timestamp();
-    // Track the latest record timestamp only for internal stats, but do not
-    // let it extend the visible range beyond "now". Some providers or clock
-    // skews can produce future-dated records which previously caused the
-    // time-series to expand past the requested window.
-    let mut latest_record_epoch = end_dt.timestamp();
 
     for record in records {
         let naive = NaiveDateTime::parse_from_str(&record.occurred_at, "%Y-%m-%d %H:%M:%S")
@@ -2368,9 +2364,6 @@ pub(crate) async fn fetch_timeseries(
             .single()
             .map(|dt| dt.with_timezone(&Utc).timestamp())
             .unwrap_or_else(|| naive.and_utc().timestamp());
-        if epoch > latest_record_epoch {
-            latest_record_epoch = epoch;
-        }
         let bucket_epoch = align_reporting_bucket_epoch(epoch, bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
         entry.total_count += 1;
@@ -2403,31 +2396,28 @@ pub(crate) async fn fetch_timeseries(
         entry.total_cost += delta.total_cost;
     }
 
-    // Compute the inclusive fill range [fill_start_epoch, fill_end_epoch].
-    // Start from the aligned bucket that intersects the requested start time.
-    let mut bucket_cursor =
-        align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
-    if bucket_cursor > start_epoch {
-        bucket_cursor -= bucket_seconds;
-    }
-    let fill_start_epoch = bucket_cursor;
-
-    // Clamp the filled range end to the current time (aligned to the next bucket).
-    // This prevents future-dated records from pushing the chart beyond the
-    // intended window (e.g., "last 24 hours").
-    let fill_end_epoch =
-        align_reporting_bucket_epoch(end_dt.timestamp(), bucket_seconds, reporting_tz)?
-            + bucket_seconds;
-    while bucket_cursor <= fill_end_epoch {
+    // Fill every bucket that intersects the requested range using reporting-timezone
+    // boundaries rather than fixed UTC-duration strides. This keeps DST transition
+    // days aligned to local clock buckets.
+    let fill_start_epoch = align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
+    let fill_end_epoch = next_reporting_bucket_epoch(
+        align_reporting_bucket_epoch(end_dt.timestamp(), bucket_seconds, reporting_tz)?,
+        bucket_seconds,
+        reporting_tz,
+    )?;
+    let mut bucket_cursor = fill_start_epoch;
+    while bucket_cursor < fill_end_epoch {
         aggregates.entry(bucket_cursor).or_default();
-        bucket_cursor += bucket_seconds;
+        bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
     }
 
     let mut points = Vec::with_capacity(aggregates.len());
     for (bucket_epoch, agg) in aggregates {
+        let bucket_end_epoch =
+            next_reporting_bucket_epoch(bucket_epoch, bucket_seconds, reporting_tz)?;
         // Skip any buckets outside the desired window. This guards against
         // future-dated records leaking past the clamped end.
-        if bucket_epoch < fill_start_epoch || bucket_epoch + bucket_seconds > fill_end_epoch {
+        if bucket_epoch < fill_start_epoch || bucket_end_epoch > fill_end_epoch {
             continue;
         }
         let start = Utc
@@ -2435,7 +2425,7 @@ pub(crate) async fn fetch_timeseries(
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
         let end = Utc
-            .timestamp_opt(bucket_epoch + bucket_seconds, 0)
+            .timestamp_opt(bucket_end_epoch, 0)
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
         let first_byte_avg_ms = agg.first_byte_avg_ms();
@@ -2491,17 +2481,16 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
     )?;
 
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
-    let mut bucket_cursor =
-        align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
-    if bucket_cursor > start_epoch {
-        bucket_cursor -= bucket_seconds;
-    }
-    let fill_start_epoch = bucket_cursor;
-    let fill_end_epoch =
-        align_reporting_bucket_epoch(end_epoch, bucket_seconds, reporting_tz)? + bucket_seconds;
-    while bucket_cursor <= fill_end_epoch {
+    let fill_start_epoch = align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
+    let fill_end_epoch = next_reporting_bucket_epoch(
+        align_reporting_bucket_epoch(end_epoch, bucket_seconds, reporting_tz)?,
+        bucket_seconds,
+        reporting_tz,
+    )?;
+    let mut bucket_cursor = fill_start_epoch;
+    while bucket_cursor < fill_end_epoch {
         aggregates.entry(bucket_cursor).or_default();
-        bucket_cursor += bucket_seconds;
+        bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
     }
 
     if let Some((hourly_cursor, hourly_end_epoch)) = range_plan.full_hour_range {
@@ -2557,9 +2546,30 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         }
     }
 
+    let relay_deltas = if source_scope == InvocationSourceScope::All
+        && let Some(relay) = state.config.crs_stats.as_ref()
+    {
+        query_crs_deltas(&state.pool, relay, start_epoch, end_epoch).await?
+    } else {
+        Vec::new()
+    };
+    for delta in relay_deltas {
+        let bucket_epoch =
+            align_reporting_bucket_epoch(delta.captured_at_epoch, bucket_seconds, reporting_tz)?;
+        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+            entry.total_count += delta.total_count;
+            entry.success_count += delta.success_count;
+            entry.failure_count += delta.failure_count;
+            entry.total_tokens += delta.total_tokens;
+            entry.total_cost += delta.total_cost;
+        }
+    }
+
     let mut points = Vec::with_capacity(aggregates.len());
     for (bucket_epoch, agg) in aggregates {
-        if bucket_epoch < fill_start_epoch || bucket_epoch + bucket_seconds > fill_end_epoch {
+        let bucket_end_epoch =
+            next_reporting_bucket_epoch(bucket_epoch, bucket_seconds, reporting_tz)?;
+        if bucket_epoch < fill_start_epoch || bucket_end_epoch > fill_end_epoch {
             continue;
         }
         let start = Utc
@@ -2567,7 +2577,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
         let end = Utc
-            .timestamp_opt(bucket_epoch + bucket_seconds, 0)
+            .timestamp_opt(bucket_end_epoch, 0)
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
         points.push(TimeseriesPoint {
@@ -2601,19 +2611,69 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
     }))
 }
 
-fn align_reporting_bucket_epoch(epoch: i64, bucket_seconds: i64, reporting_tz: Tz) -> Result<i64> {
+pub(crate) fn align_reporting_bucket_epoch(
+    epoch: i64,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<i64> {
     let timestamp = Utc
         .timestamp_opt(epoch, 0)
         .single()
         .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
     let local = timestamp.with_timezone(&reporting_tz);
-    let local_midnight = local
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .expect("midnight should be representable");
-    let local_midnight_utc = local_naive_to_utc(local_midnight, reporting_tz).timestamp();
-    let elapsed = epoch - local_midnight_utc;
-    Ok(local_midnight_utc + elapsed.div_euclid(bucket_seconds) * bucket_seconds)
+    let elapsed_seconds = i64::from(local.time().num_seconds_from_midnight());
+    let remainder = elapsed_seconds.rem_euclid(bucket_seconds);
+    let bucket_start_local = local.naive_local() - ChronoDuration::seconds(remainder);
+    Ok(
+        local_naive_to_utc_not_after_reference(bucket_start_local, reporting_tz, timestamp)
+            .timestamp(),
+    )
+}
+
+pub(crate) fn next_reporting_bucket_epoch(
+    bucket_start_epoch: i64,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<i64> {
+    let bucket_start = Utc
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+    let next_start = if bucket_seconds == 3_600 {
+        bucket_start + ChronoDuration::seconds(bucket_seconds)
+    } else {
+        let local_start = bucket_start.with_timezone(&reporting_tz).naive_local();
+        local_naive_to_utc(
+            local_start + ChronoDuration::seconds(bucket_seconds),
+            reporting_tz,
+        )
+    };
+    if next_start.timestamp() <= bucket_start_epoch {
+        return Err(anyhow!(
+            "non-increasing reporting bucket progression for {reporting_tz} at {bucket_start_epoch}"
+        ));
+    }
+    Ok(next_start.timestamp())
+}
+
+fn local_naive_to_utc_not_after_reference(
+    naive: NaiveDateTime,
+    tz: Tz,
+    reference_utc: DateTime<Utc>,
+) -> DateTime<Utc> {
+    match tz.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => dt.with_timezone(&Utc),
+        LocalResult::Ambiguous(first, second) => {
+            let first_utc = first.with_timezone(&Utc);
+            let second_utc = second.with_timezone(&Utc);
+            [first_utc, second_utc]
+                .into_iter()
+                .filter(|candidate| *candidate <= reference_utc)
+                .max()
+                .unwrap_or(first_utc.min(second_utc))
+        }
+        LocalResult::None => local_naive_to_utc(naive, tz),
+    }
 }
 
 pub(crate) fn resolve_daily_date_range(

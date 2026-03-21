@@ -138,6 +138,36 @@ fn named_range_this_week_end_respects_dst() {
 }
 
 #[test]
+fn next_reporting_bucket_epoch_respects_dst_for_multi_hour_buckets() {
+    let tz = chrono_tz::America::New_York;
+    let timestamp = Utc
+        .with_ymd_and_hms(2024, 3, 10, 9, 30, 0)
+        .single()
+        .expect("valid dt");
+
+    let bucket_start_epoch =
+        align_reporting_bucket_epoch(timestamp.timestamp(), 6 * 3_600, tz).expect("align bucket");
+    let bucket_end_epoch =
+        next_reporting_bucket_epoch(bucket_start_epoch, 6 * 3_600, tz).expect("next bucket");
+
+    let bucket_start_local = Utc
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .expect("valid bucket start")
+        .with_timezone(&tz);
+    let bucket_end_local = Utc
+        .timestamp_opt(bucket_end_epoch, 0)
+        .single()
+        .expect("valid bucket end")
+        .with_timezone(&tz);
+
+    assert_eq!(bucket_start_local.hour(), 0);
+    assert_eq!(bucket_start_local.minute(), 0);
+    assert_eq!(bucket_end_local.hour(), 6);
+    assert_eq!(bucket_end_local.minute(), 0);
+}
+
+#[test]
 fn local_naive_to_utc_does_not_fall_back_to_and_utc_on_dst_gap() {
     let tz = chrono_tz::America::Los_Angeles;
     let naive = NaiveDate::from_ymd_opt(2024, 3, 10)
@@ -19051,6 +19081,109 @@ async fn timeseries_hourly_recent_non_hour_aligned_timezones_fall_back_to_raw_ro
             .map(|point| point.total_count)
             .sum::<i64>(),
         1
+    );
+}
+
+#[tokio::test]
+async fn timeseries_hourly_backed_includes_crs_deltas() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse("https://crs.example.com/").expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    let state = test_state_from_config(config, true).await;
+    let captured_at = Utc::now() - ChronoDuration::minutes(30);
+    let stats_date = captured_at
+        .with_timezone(&Shanghai)
+        .date_naive()
+        .to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO stats_source_deltas (
+            source,
+            period,
+            stats_date,
+            captured_at,
+            captured_at_epoch,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(SOURCE_CRS)
+    .bind("daily")
+    .bind(&stats_date)
+    .bind(format_utc_iso(captured_at))
+    .bind(captured_at.timestamp())
+    .bind(3_i64)
+    .bind(2_i64)
+    .bind(1_i64)
+    .bind(300_i64)
+    .bind(0.9_f64)
+    .execute(&state.pool)
+    .await
+    .expect("insert crs delta");
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1d".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("UTC".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch hourly-backed timeseries with crs deltas");
+
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        3
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.success_count)
+            .sum::<i64>(),
+        2
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.failure_count)
+            .sum::<i64>(),
+        1
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_tokens)
+            .sum::<i64>(),
+        300
+    );
+    assert_f64_close(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_cost)
+            .sum::<f64>(),
+        0.9,
     );
 }
 
