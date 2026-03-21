@@ -794,8 +794,8 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
     let end_epoch = range_window.end.timestamp();
     let query_start_epoch = align_bucket_epoch(start_epoch, BUCKET_SECONDS, 0);
     let query_end_epoch = ceil_hour_epoch(end_epoch);
-    let fill_start_epoch = ceil_hour_epoch(start_epoch);
-    let fill_end_epoch = align_bucket_epoch(end_epoch, BUCKET_SECONDS, 0);
+    let fill_start_epoch = query_start_epoch;
+    let fill_end_epoch = query_end_epoch;
 
     let hourly_map =
         query_forward_proxy_hourly_stats(&state.pool, query_start_epoch, query_end_epoch).await?;

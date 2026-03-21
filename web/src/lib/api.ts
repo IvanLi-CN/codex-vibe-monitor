@@ -5,6 +5,7 @@ const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
 const FORWARD_PROXY_HISTORY_HOUR_MS = 3_600_000;
+const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
 
 type ZonedDateParts = {
   year: number;
@@ -224,16 +225,10 @@ function resolveForwardProxyHistoryTimeZone(
     if (!rangeWindow) {
       return candidate;
     }
-    const startMs =
-      Math.floor(rangeWindow.startMs / FORWARD_PROXY_HISTORY_HOUR_MS) *
-      FORWARD_PROXY_HISTORY_HOUR_MS;
-    const endMs =
-      Math.ceil(rangeWindow.endMs / FORWARD_PROXY_HISTORY_HOUR_MS) *
-      FORWARD_PROXY_HISTORY_HOUR_MS;
     for (
-      let currentMs = startMs;
-      currentMs < endMs;
-      currentMs += FORWARD_PROXY_HISTORY_HOUR_MS
+      let currentMs = rangeWindow.startMs;
+      currentMs < rangeWindow.endMs;
+      currentMs += FORWARD_PROXY_HISTORY_DAY_MS
     ) {
       const offsetMinutes = getForwardProxyHistoryOffsetMinutes(
         new Date(currentMs),
@@ -244,6 +239,16 @@ function resolveForwardProxyHistoryTimeZone(
           `unsupported timeZone for forward proxy hourly timeseries: ${candidate}; hourly buckets require whole-hour UTC offsets`,
         );
       }
+    }
+    const lastSampleMs = Math.max(rangeWindow.startMs, rangeWindow.endMs - 1);
+    const lastOffsetMinutes = getForwardProxyHistoryOffsetMinutes(
+      new Date(lastSampleMs),
+      candidate,
+    );
+    if (lastOffsetMinutes !== null && lastOffsetMinutes % 60 !== 0) {
+      throw new Error(
+        `unsupported timeZone for forward proxy hourly timeseries: ${candidate}; hourly buckets require whole-hour UTC offsets`,
+      );
     }
     return candidate;
   } catch (error) {

@@ -1864,6 +1864,8 @@ pub(crate) fn reporting_tz_has_whole_hour_offsets(
     reporting_tz: Tz,
     range_window: &RangeWindow,
 ) -> bool {
+    const SAMPLE_STEP_DAYS: i64 = 1;
+
     fn offset_is_hour_aligned(reporting_tz: Tz, instant: DateTime<Utc>) -> bool {
         instant
             .with_timezone(&reporting_tz)
@@ -1875,12 +1877,13 @@ pub(crate) fn reporting_tz_has_whole_hour_offsets(
     }
 
     let mut cursor = range_window.start;
-    let sample_step = ChronoDuration::minutes(1);
     while cursor < range_window.end {
         if !offset_is_hour_aligned(reporting_tz, cursor) {
             return false;
         }
-        let next = cursor + sample_step;
+        let Some(next) = cursor.checked_add_signed(ChronoDuration::days(SAMPLE_STEP_DAYS)) else {
+            break;
+        };
         if next >= range_window.end {
             break;
         }

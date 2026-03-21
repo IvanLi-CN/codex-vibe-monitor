@@ -7061,7 +7061,7 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
 }
 
 #[tokio::test]
-async fn forward_proxy_timeseries_excludes_partial_edge_hours_outside_requested_range() {
+async fn forward_proxy_timeseries_includes_intersecting_edge_hours() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -7181,24 +7181,130 @@ async fn forward_proxy_timeseries_excludes_partial_edge_hours_outside_requested_
         .expect("manual node should remain queryable");
     assert_eq!(response.range_start, format_utc_iso(range_start));
     assert_eq!(response.range_end, format_utc_iso(range_end));
-    assert_eq!(manual.buckets.len(), 1);
-    assert_eq!(manual.weight_buckets.len(), 1);
+    assert_eq!(manual.buckets.len(), 3);
+    assert_eq!(manual.weight_buckets.len(), 3);
     assert_eq!(
-        manual.buckets[0].bucket_start,
-        format_utc_iso(
-            Utc.timestamp_opt(bucket1, 0)
-                .single()
-                .expect("middle bucket start should be valid")
-        )
+        manual
+            .buckets
+            .iter()
+            .map(|bucket| bucket.bucket_start.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            format_utc_iso(
+                Utc.timestamp_opt(bucket0, 0)
+                    .single()
+                    .expect("leading bucket start should be valid")
+            ),
+            format_utc_iso(
+                Utc.timestamp_opt(bucket1, 0)
+                    .single()
+                    .expect("middle bucket start should be valid")
+            ),
+            format_utc_iso(
+                Utc.timestamp_opt(bucket2, 0)
+                    .single()
+                    .expect("trailing bucket start should be valid")
+            ),
+        ]
     );
     assert_eq!(manual.buckets[0].success_count, 1);
     assert_eq!(manual.buckets[0].failure_count, 0);
-    assert_eq!(
-        manual.weight_buckets[0].bucket_start,
-        manual.buckets[0].bucket_start
-    );
+    assert_eq!(manual.buckets[1].success_count, 1);
+    assert_eq!(manual.buckets[1].failure_count, 0);
+    assert_eq!(manual.buckets[2].success_count, 0);
+    assert_eq!(manual.buckets[2].failure_count, 1);
     assert_eq!(manual.weight_buckets[0].sample_count, 1);
-    assert_f64_close(manual.weight_buckets[0].last_weight, 0.70);
+    assert_f64_close(manual.weight_buckets[0].last_weight, 0.80);
+    assert_eq!(manual.weight_buckets[1].sample_count, 1);
+    assert_f64_close(manual.weight_buckets[1].last_weight, 0.70);
+    assert_eq!(manual.weight_buckets[2].sample_count, 1);
+    assert_f64_close(manual.weight_buckets[2].last_weight, 0.60);
+}
+
+#[tokio::test]
+async fn forward_proxy_timeseries_keeps_single_partial_hour_ranges_non_empty() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(settings_response) = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec!["socks5://127.0.0.1:1083".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect("put forward proxy settings should succeed");
+    let manual_key = settings_response
+        .nodes
+        .iter()
+        .find(|node| node.source == FORWARD_PROXY_SOURCE_MANUAL)
+        .map(|node| node.key.clone())
+        .expect("manual node should exist");
+
+    let bucket_start_epoch =
+        align_bucket_epoch((Utc::now() - ChronoDuration::hours(4)).timestamp(), 3600, 0);
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        &manual_key,
+        Utc.timestamp_opt(bucket_start_epoch + 10 * 60, 0)
+            .single()
+            .expect("partial bucket attempt timestamp should be valid"),
+        true,
+    )
+    .await;
+    seed_forward_proxy_weight_bucket_at(
+        &state.pool,
+        &manual_key,
+        bucket_start_epoch,
+        1,
+        0.58,
+        0.58,
+        0.58,
+        0.58,
+    )
+    .await;
+
+    ensure_hourly_rollups_caught_up(state.as_ref())
+        .await
+        .expect("hourly rollups should sync");
+
+    let range_start = Utc
+        .timestamp_opt(bucket_start_epoch + 5 * 60, 0)
+        .single()
+        .expect("range start should be valid");
+    let range_end = Utc
+        .timestamp_opt(bucket_start_epoch + 20 * 60, 0)
+        .single()
+        .expect("range end should be valid");
+    let response = build_forward_proxy_timeseries_response(
+        state.as_ref(),
+        RangeWindow {
+            start: range_start,
+            end: range_end,
+            display_end: range_end,
+            duration: range_end - range_start,
+        },
+    )
+    .await
+    .expect("forward proxy timeseries should succeed");
+
+    let manual = response
+        .nodes
+        .iter()
+        .find(|node| node.key == manual_key)
+        .expect("manual node should remain queryable");
+    assert_eq!(manual.buckets.len(), 1);
+    assert_eq!(manual.weight_buckets.len(), 1);
+    assert_eq!(manual.buckets[0].success_count, 1);
+    assert_eq!(manual.buckets[0].failure_count, 0);
+    assert_eq!(manual.weight_buckets[0].sample_count, 1);
+    assert_f64_close(manual.weight_buckets[0].last_weight, 0.58);
 }
 
 #[tokio::test]
@@ -7275,9 +7381,11 @@ async fn forward_proxy_timeseries_seeds_leading_weight_buckets_from_first_histor
         .iter()
         .find(|node| node.key == manual_key)
         .expect("manual node should remain queryable");
-    assert_eq!(manual.weight_buckets.len(), 1);
+    assert_eq!(manual.weight_buckets.len(), 2);
     assert_eq!(manual.weight_buckets[0].sample_count, 0);
     assert_f64_close(manual.weight_buckets[0].last_weight, 0.35);
+    assert_eq!(manual.weight_buckets[1].sample_count, 1);
+    assert_f64_close(manual.weight_buckets[1].last_weight, 0.35);
 }
 
 #[tokio::test]

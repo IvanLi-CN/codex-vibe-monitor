@@ -333,6 +333,21 @@ describe("fetchForwardProxyTimeseries", () => {
     ).rejects.toThrow("whole-hour UTC offsets");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("rejects short proxy history ranges that cross a sub-hour DST transition", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-03T15:40:00Z"));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await expect(
+      fetchForwardProxyTimeseries("30m", {
+        bucket: "1h",
+        timeZone: "Australia/Lord_Howe",
+      }),
+    ).rejects.toThrow("whole-hour UTC offsets");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("fetchSummary", () => {
