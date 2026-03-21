@@ -1,6 +1,8 @@
 use super::*;
 use crate::forward_proxy::*;
 use crate::stats::*;
+use chrono::Offset;
+use chrono::Timelike;
 
 const INVOCATION_PROXY_DISPLAY_SQL: &str = "COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), ''), CASE WHEN TRIM(source) != 'proxy' THEN TRIM(source) END)";
 const INVOCATION_ENDPOINT_SQL: &str =
@@ -14,7 +16,6 @@ const INVOCATION_ROUTE_MODE_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.routeMode') AS TEXT) END";
 const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
-const INVOCATION_UPSTREAM_ACCOUNT_NAME_TRIMMED_SQL: &str = "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END), '')";
 const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
 const PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT: usize = 3;
 const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
@@ -1337,6 +1338,7 @@ pub(crate) async fn fetch_invocation_suggestions(
 pub(crate) async fn fetch_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StatsResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let totals = query_combined_totals(
         &state.pool,
@@ -1355,6 +1357,7 @@ pub(crate) async fn fetch_summary(
     let default_limit = state.config.list_limit_max as i64;
     let window = parse_summary_window(&params, default_limit)?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
 
     let totals = match window {
@@ -1378,43 +1381,529 @@ pub(crate) async fn fetch_summary(
         }
         SummaryWindow::Duration(duration) => {
             let start = Utc::now() - duration;
-            query_combined_totals(
-                &state.pool,
-                state.config.crs_stats.as_ref(),
-                StatsFilter::Since(start),
-                source_scope,
-            )
-            .await?
+            query_hourly_backed_summary_since(state.as_ref(), start, source_scope).await?
         }
         SummaryWindow::Calendar(spec) => {
             let now = Utc::now();
             let start = named_range_start(spec.as_str(), now, reporting_tz).ok_or_else(|| {
                 ApiError::bad_request(anyhow!("unsupported calendar window: {spec}"))
             })?;
-            query_combined_totals(
-                &state.pool,
-                state.config.crs_stats.as_ref(),
-                StatsFilter::Since(start),
-                source_scope,
-            )
-            .await?
+            query_hourly_backed_summary_since(state.as_ref(), start, source_scope).await?
         }
     };
 
     Ok(Json(totals.into_response()))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ExactUtcRange {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+}
+
+#[derive(Debug, Default)]
+struct HourlyRollupExactRangePlan {
+    full_hour_range: Option<(i64, i64)>,
+    archive_exact_ranges: Vec<ExactUtcRange>,
+    live_exact_ranges: Vec<ExactUtcRange>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct InvocationAggregateRecord {
+    id: i64,
+    occurred_at: String,
+    status: Option<String>,
+    total_tokens: Option<i64>,
+    cost: Option<f64>,
+    error_message: Option<String>,
+    failure_kind: Option<String>,
+    failure_class: Option<String>,
+    is_actionable: Option<i64>,
+    t_total_ms: Option<f64>,
+    t_req_read_ms: Option<f64>,
+    t_req_parse_ms: Option<f64>,
+    t_upstream_connect_ms: Option<f64>,
+    t_upstream_ttfb_ms: Option<f64>,
+    t_upstream_stream_ms: Option<f64>,
+    t_resp_parse_ms: Option<f64>,
+    t_persist_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ArchiveBatchPathRow {
+    file_path: String,
+}
+
+fn ceil_hour_epoch(epoch: i64) -> i64 {
+    let floor = align_bucket_epoch(epoch, 3_600, 0);
+    if floor < epoch { floor + 3_600 } else { floor }
+}
+
+fn exact_utc_range(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<Option<ExactUtcRange>, ApiError> {
+    if start >= end {
+        return Ok(None);
+    }
+    Ok(Some(ExactUtcRange { start, end }))
+}
+
+fn push_exact_range(
+    ranges: &mut Vec<ExactUtcRange>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<(), ApiError> {
+    let Some(range) = exact_utc_range(start, end)? else {
+        return Ok(());
+    };
+    if ranges
+        .iter()
+        .any(|existing| existing.start == range.start && existing.end == range.end)
+    {
+        return Ok(());
+    }
+    ranges.push(range);
+    Ok(())
+}
+
+fn split_exact_range_by_retention(
+    archive_ranges: &mut Vec<ExactUtcRange>,
+    live_ranges: &mut Vec<ExactUtcRange>,
+    range: ExactUtcRange,
+    raw_cutoff: DateTime<Utc>,
+) -> Result<(), ApiError> {
+    if range.start < raw_cutoff {
+        let pre_cutoff_end = range.end.min(raw_cutoff);
+        push_exact_range(archive_ranges, range.start, pre_cutoff_end)?;
+        push_exact_range(live_ranges, range.start, pre_cutoff_end)?;
+    }
+    if range.end > raw_cutoff {
+        push_exact_range(live_ranges, range.start.max(raw_cutoff), range.end)?;
+    }
+    Ok(())
+}
+
+fn build_hourly_rollup_exact_range_plan(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    raw_cutoff: DateTime<Utc>,
+) -> Result<HourlyRollupExactRangePlan, ApiError> {
+    let mut plan = HourlyRollupExactRangePlan::default();
+    let start_epoch = start.timestamp();
+    let end_epoch = end.timestamp();
+    let full_hour_start_epoch = ceil_hour_epoch(start_epoch);
+    let full_hour_end_epoch = align_bucket_epoch(end_epoch, 3_600, 0);
+    let full_hour_start = Utc
+        .timestamp_opt(full_hour_start_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour start epoch")))?;
+    let full_hour_end = Utc
+        .timestamp_opt(full_hour_end_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour end epoch")))?;
+    if full_hour_start_epoch < full_hour_end_epoch {
+        plan.full_hour_range = Some((full_hour_start_epoch, full_hour_end_epoch));
+    }
+    if let Some(range) = exact_utc_range(start, end.min(full_hour_start))? {
+        split_exact_range_by_retention(
+            &mut plan.archive_exact_ranges,
+            &mut plan.live_exact_ranges,
+            range,
+            raw_cutoff,
+        )?;
+    }
+    if let Some(range) = exact_utc_range(start.max(full_hour_end), end)? {
+        split_exact_range_by_retention(
+            &mut plan.archive_exact_ranges,
+            &mut plan.live_exact_ranges,
+            range,
+            raw_cutoff,
+        )?;
+    }
+    Ok(plan)
+}
+
+fn shanghai_month_keys_for_range(range: ExactUtcRange) -> Vec<String> {
+    if range.start >= range.end {
+        return Vec::new();
+    }
+    let start_local = range.start.with_timezone(&Shanghai);
+    let end_local = (range.end - ChronoDuration::seconds(1)).with_timezone(&Shanghai);
+    let mut year = start_local.year();
+    let mut month = start_local.month();
+    let end_key = (end_local.year(), end_local.month());
+    let mut keys = Vec::new();
+    loop {
+        keys.push(format!("{year:04}-{month:02}"));
+        if (year, month) == end_key {
+            break;
+        }
+        month += 1;
+        if month > 12 {
+            month = 1;
+            year += 1;
+        }
+    }
+    keys
+}
+
+async fn query_archive_batch_paths_for_range(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    range: ExactUtcRange,
+) -> Result<Vec<ArchiveBatchPathRow>, ApiError> {
+    let month_keys = shanghai_month_keys_for_range(range);
+    if month_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT file_path FROM archive_batches WHERE dataset = ");
+    query
+        .push_bind(dataset)
+        .push(" AND status = ")
+        .push_bind(ARCHIVE_STATUS_COMPLETED)
+        .push(" AND month_key IN (");
+    {
+        let mut separated = query.separated(", ");
+        for month_key in month_keys {
+            separated.push_bind(month_key);
+        }
+    }
+    query.push(") ORDER BY month_key ASC, created_at ASC, id ASC");
+    query
+        .build_query_as::<ArchiveBatchPathRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn query_invocation_aggregate_records_from_archive_range(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    let archive_files =
+        query_archive_batch_paths_for_range(pool, "codex_invocations", range).await?;
+    if archive_files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let lower_bound = db_occurred_at_lower_bound(range.start);
+    let upper_bound = db_occurred_at_upper_bound(range.end);
+    let mut records = Vec::new();
+    for archive_file in archive_files {
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if !archive_path.exists() {
+            return Err(anyhow!(
+                "required codex_invocations archive batch is missing for historical exact reads: {}",
+                archive_path.display()
+            )
+            .into());
+        }
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        let connect_opts = build_sqlite_connect_options(
+            &sqlite_url_for_path(&temp_path),
+            Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+        )?;
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect_opts)
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT \
+                id, occurred_at, status, total_tokens, cost, error_message, failure_kind, \
+                failure_class, is_actionable, t_total_ms, t_req_read_ms, t_req_parse_ms, \
+                t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
+                t_resp_parse_ms, t_persist_ms \
+             FROM codex_invocations \
+             WHERE occurred_at >= ",
+        );
+        query
+            .push_bind(&lower_bound)
+            .push(" AND occurred_at < ")
+            .push_bind(&upper_bound);
+        if source_scope == InvocationSourceScope::ProxyOnly {
+            query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        }
+        query.push(" ORDER BY occurred_at ASC, id ASC");
+        records.extend(
+            query
+                .build_query_as::<InvocationAggregateRecord>()
+                .fetch_all(&archive_pool)
+                .await?,
+        );
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+    records.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(records)
+}
+
+async fn query_invocation_aggregate_records_from_live_range(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT \
+            id, occurred_at, status, total_tokens, cost, error_message, failure_kind, \
+            failure_class, is_actionable, t_total_ms, t_req_read_ms, t_req_parse_ms, \
+            t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
+            t_resp_parse_ms, t_persist_ms \
+         FROM codex_invocations \
+         WHERE occurred_at >= ",
+    );
+    query
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY occurred_at ASC, id ASC");
+    query
+        .build_query_as::<InvocationAggregateRecord>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+fn extend_unique_invocation_records(
+    records: &mut Vec<InvocationAggregateRecord>,
+    seen_ids: &mut HashSet<i64>,
+    candidates: Vec<InvocationAggregateRecord>,
+) {
+    for record in candidates {
+        if seen_ids.insert(record.id) {
+            records.push(record);
+        }
+    }
+}
+
+async fn query_invocation_exact_records(
+    pool: &Pool<Sqlite>,
+    range_plan: &HourlyRollupExactRangePlan,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    let mut records = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    for range in &range_plan.archive_exact_ranges {
+        extend_unique_invocation_records(
+            &mut records,
+            &mut seen_ids,
+            query_invocation_aggregate_records_from_archive_range(pool, *range, source_scope)
+                .await?,
+        );
+    }
+    for range in &range_plan.live_exact_ranges {
+        extend_unique_invocation_records(
+            &mut records,
+            &mut seen_ids,
+            query_invocation_aggregate_records_from_live_range(pool, *range, source_scope).await?,
+        );
+    }
+
+    records.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(records)
+}
+
+fn add_invocation_record_to_summary_totals(
+    totals: &mut StatsTotals,
+    record: &InvocationAggregateRecord,
+) {
+    totals.total_count += 1;
+    match record.status.as_deref() {
+        Some("success") => totals.success_count += 1,
+        Some(_) => totals.failure_count += 1,
+        None => {}
+    }
+    totals.total_tokens += record.total_tokens.unwrap_or_default();
+    totals.total_cost += record.cost.unwrap_or_default();
+}
+
+fn db_occurred_at_upper_bound(end_utc: DateTime<Utc>) -> String {
+    if end_utc.timestamp_subsec_nanos() > 0 {
+        return db_occurred_at_lower_bound(end_utc + ChronoDuration::seconds(1));
+    }
+    db_occurred_at_lower_bound(end_utc)
+}
+
+fn record_perf_stage_sample(
+    by_stage: &mut BTreeMap<String, (i64, f64, f64, ApproxHistogramCounts)>,
+    stage: &str,
+    value: Option<f64>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    let entry = by_stage
+        .entry(stage.to_string())
+        .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
+    entry.0 += 1;
+    entry.1 += value;
+    entry.2 = entry.2.max(value);
+    add_approx_histogram_sample(&mut entry.3, value);
+}
+
+pub(crate) async fn query_hourly_backed_summary_since_with_config(
+    pool: &Pool<Sqlite>,
+    relay: Option<&CrsStatsConfig>,
+    invocation_max_days: u64,
+    start: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+) -> Result<StatsTotals, ApiError> {
+    let retention_cutoff = shanghai_retention_cutoff(invocation_max_days);
+    if start >= retention_cutoff {
+        return query_combined_totals(pool, relay, StatsFilter::Since(start), source_scope)
+            .await
+            .map_err(Into::into);
+    }
+
+    let mut totals = StatsTotals::default();
+    let now = Utc::now();
+    let range_plan = build_hourly_rollup_exact_range_plan(start, now, retention_cutoff)?;
+    if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+        let rows = query_invocation_hourly_rollup_range(
+            pool,
+            range_start_epoch,
+            range_end_epoch,
+            source_scope,
+        )
+        .await?;
+        for row in rows {
+            totals.total_count += row.total_count;
+            totals.success_count += row.success_count;
+            totals.failure_count += row.failure_count;
+            totals.total_tokens += row.total_tokens;
+            totals.total_cost += row.total_cost;
+        }
+    }
+    let exact_records = query_invocation_exact_records(pool, &range_plan, source_scope).await?;
+    for record in &exact_records {
+        add_invocation_record_to_summary_totals(&mut totals, record);
+    }
+    let relay_totals =
+        query_crs_totals(pool, relay, &StatsFilter::Since(start), source_scope).await?;
+    Ok(totals.add(relay_totals))
+}
+
+pub(crate) async fn query_hourly_backed_summary_since(
+    state: &AppState,
+    start: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+) -> Result<StatsTotals, ApiError> {
+    query_hourly_backed_summary_since_with_config(
+        &state.pool,
+        state.config.crs_stats.as_ref(),
+        state.config.invocation_max_days,
+        start,
+        source_scope,
+    )
+    .await
+    .map_err(Into::into)
+}
+
 pub(crate) async fn fetch_forward_proxy_live_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ForwardProxyLiveStatsResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let response = build_forward_proxy_live_stats_response(state.as_ref()).await?;
     Ok(Json(response))
+}
+
+pub(crate) async fn fetch_forward_proxy_timeseries(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TimeseriesQuery>,
+) -> Result<Json<ForwardProxyTimeseriesResponse>, ApiError> {
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let range_window = resolve_range_window(&params.range, reporting_tz)?;
+    ensure_forward_proxy_hourly_tz_supported(reporting_tz, &range_window)?;
+    let bucket_spec = params.bucket.as_deref().unwrap_or("1h");
+    if bucket_seconds_from_spec(bucket_spec) != Some(3_600) {
+        return Err(ApiError::bad_request(anyhow!(
+            "unsupported forward proxy bucket specification: {bucket_spec}; only 1h is supported"
+        )));
+    }
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
+    let response = build_forward_proxy_timeseries_response(state.as_ref(), range_window).await?;
+    Ok(Json(response))
+}
+
+fn ensure_forward_proxy_hourly_tz_supported(
+    reporting_tz: Tz,
+    range_window: &RangeWindow,
+) -> Result<(), ApiError> {
+    if reporting_tz_has_whole_hour_offsets(reporting_tz, range_window) {
+        return Ok(());
+    }
+    Err(ApiError::bad_request(anyhow!(
+        "unsupported timeZone for forward proxy hourly timeseries: {reporting_tz}; hourly buckets require whole-hour UTC offsets"
+    )))
+}
+
+pub(crate) fn reporting_tz_has_whole_hour_offsets(
+    reporting_tz: Tz,
+    range_window: &RangeWindow,
+) -> bool {
+    const SAMPLE_STEP_DAYS: i64 = 1;
+
+    fn offset_is_hour_aligned(reporting_tz: Tz, instant: DateTime<Utc>) -> bool {
+        instant
+            .with_timezone(&reporting_tz)
+            .offset()
+            .fix()
+            .local_minus_utc()
+            .rem_euclid(3_600)
+            == 0
+    }
+
+    let mut cursor = range_window.start;
+    while cursor < range_window.end {
+        if !offset_is_hour_aligned(reporting_tz, cursor) {
+            return false;
+        }
+        let Some(next) = cursor.checked_add_signed(ChronoDuration::days(SAMPLE_STEP_DAYS)) else {
+            break;
+        };
+        if next >= range_window.end {
+            break;
+        }
+        cursor = next;
+    }
+    if let Some(last_instant) = range_window
+        .end
+        .checked_sub_signed(ChronoDuration::nanoseconds(1))
+        .filter(|instant| *instant >= range_window.start)
+    {
+        return offset_is_hour_aligned(reporting_tz, last_instant);
+    }
+    true
 }
 
 pub(crate) async fn fetch_prompt_cache_conversations(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PromptCacheConversationsQuery>,
 ) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let selection = resolve_prompt_cache_conversation_selection(params)?;
     let response = fetch_prompt_cache_conversations_cached(state.as_ref(), selection).await?;
     Ok(Json(response))
@@ -1818,49 +2307,29 @@ pub(crate) async fn query_prompt_cache_conversation_aggregates(
     source_scope: InvocationSourceScope,
     limit: i64,
 ) -> Result<Vec<PromptCacheConversationAggregateRow>> {
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH active AS (\
-            SELECT ",
+            SELECT prompt_cache_key, MIN(first_seen_at) AS first_seen_24h \
+             FROM prompt_cache_rollup_hourly \
+             WHERE last_seen_at >= ",
     );
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key, MIN(occurred_at) AS first_seen_24h \
-             FROM codex_invocations \
-             WHERE occurred_at >= ",
-        )
-        .push_bind(range_start_bound);
-
+    query.push_bind(range_start_bound);
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    query
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(
-            " <> '' \
-             GROUP BY prompt_cache_key\
+    query.push(
+        " GROUP BY prompt_cache_key\
          ), aggregates AS (\
-            SELECT ",
-        )
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key, \
-                 COUNT(*) AS request_count, \
-                 COALESCE(SUM(total_tokens), 0) AS total_tokens, \
-                 COALESCE(SUM(cost), 0.0) AS total_cost, \
-                 MIN(occurred_at) AS created_at, \
-                 MAX(occurred_at) AS last_activity_at \
-             FROM codex_invocations \
-             WHERE ",
-        )
-        .push(KEY_EXPR)
-        .push(" IN (SELECT prompt_cache_key FROM active)");
+            SELECT prompt_cache_key, \
+                 SUM(request_count) AS request_count, \
+                 SUM(total_tokens) AS total_tokens, \
+                 SUM(total_cost) AS total_cost, \
+                 MIN(first_seen_at) AS created_at, \
+                 MAX(last_seen_at) AS last_activity_at \
+             FROM prompt_cache_rollup_hourly \
+             WHERE prompt_cache_key IN (SELECT prompt_cache_key FROM active)",
+    );
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
@@ -1889,26 +2358,16 @@ pub(crate) async fn query_active_prompt_cache_conversation_count(
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
 ) -> Result<i64> {
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT COUNT(DISTINCT ");
-    query.push(KEY_EXPR).push(
-        ") AS count \
-         FROM codex_invocations \
-         WHERE occurred_at >= ",
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT COUNT(DISTINCT prompt_cache_key) AS count \
+         FROM prompt_cache_rollup_hourly \
+         WHERE last_seen_at >= ",
     );
     query.push_bind(range_start_bound);
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-
-    query
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(" <> ''");
 
     let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
     Ok(count)
@@ -1925,16 +2384,11 @@ pub(crate) async fn query_prompt_cache_conversation_hidden_count(
         return Ok(0);
     }
 
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH active AS (\
-            SELECT DISTINCT ",
-    );
-    query.push(KEY_EXPR).push(
-        " AS prompt_cache_key \
-         FROM codex_invocations \
-         WHERE occurred_at >= ",
+            SELECT DISTINCT prompt_cache_key \
+         FROM prompt_cache_rollup_hourly \
+         WHERE last_seen_at >= ",
     );
     query.push_bind(range_start_bound);
 
@@ -1942,30 +2396,14 @@ pub(crate) async fn query_prompt_cache_conversation_hidden_count(
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    query
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(
-            " <> ''\
-         ), history AS (\
-            SELECT ",
-        );
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key, MIN(occurred_at) AS created_at \
-             FROM codex_invocations \
-             WHERE ",
-        )
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(" <> ''");
+    query.push(
+        " ), history AS (\
+            SELECT prompt_cache_key, MIN(first_seen_at) AS created_at \
+             FROM prompt_cache_rollup_hourly",
+    );
 
     if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        query.push(" WHERE source = ").push_bind(SOURCE_PROXY);
     }
 
     query.push(
@@ -2063,24 +2501,17 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
         return Ok(Vec::new());
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
-    query
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(" AS prompt_cache_key, ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-        .push(" AS upstream_account_id, ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_TRIMMED_SQL)
-        .push(
-            " AS upstream_account_name, \
-             COUNT(*) AS request_count, \
-             COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens, \
-             COALESCE(SUM(COALESCE(cost, 0.0)), 0.0) AS total_cost, \
-             MAX(occurred_at) AS last_activity_at \
-             FROM codex_invocations \
-             WHERE ",
-        )
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(" IN (");
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT prompt_cache_key, \
+             upstream_account_id, \
+             upstream_account_name, \
+             SUM(request_count) AS request_count, \
+             SUM(total_tokens) AS total_tokens, \
+             SUM(total_cost) AS total_cost, \
+             MAX(last_seen_at) AS last_activity_at \
+         FROM prompt_cache_upstream_account_hourly \
+         WHERE prompt_cache_key IN (",
+    );
 
     {
         let mut separated = query.separated(", ");
@@ -2095,7 +2526,7 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
 
     query
         .push(
-            " GROUP BY prompt_cache_key, upstream_account_id, upstream_account_name \
+            " GROUP BY prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name \
               ORDER BY prompt_cache_key ASC, last_activity_at DESC, upstream_account_name DESC, upstream_account_id DESC",
         )
         .build_query_as::<PromptCacheConversationUpstreamAccountSummaryRow>()
@@ -2108,6 +2539,7 @@ pub(crate) async fn fetch_timeseries(
     State(state): State<Arc<AppState>>,
     Query(params): Query<TimeseriesQuery>,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
@@ -2118,11 +2550,28 @@ pub(crate) async fn fetch_timeseries(
     )?;
     let bucket_seconds = bucket_selection.bucket_seconds;
 
-    if bucket_seconds == 86_400 {
-        return fetch_timeseries_daily(state, params, reporting_tz, bucket_selection).await;
+    if bucket_seconds >= 3_600 {
+        let tz_is_hour_aligned = reporting_tz_has_whole_hour_offsets(reporting_tz, &range_window);
+        let needs_historical_rollups =
+            range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days);
+        if !tz_is_hour_aligned {
+            if needs_historical_rollups {
+                return Err(ApiError::bad_request(anyhow!(
+                    "unsupported timeZone for historical hourly timeseries: {reporting_tz}; archived hourly buckets require whole-hour UTC offsets"
+                )));
+            }
+        } else {
+            return fetch_timeseries_from_hourly_rollups(
+                state,
+                params,
+                reporting_tz,
+                source_scope,
+                range_window,
+                bucket_selection,
+            )
+            .await;
+        }
     }
-
-    let offset_seconds = 0;
 
     let end_dt = range_window.end;
     let start_dt = range_window.start;
@@ -2144,11 +2593,6 @@ pub(crate) async fn fetch_timeseries(
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
 
     let start_epoch = start_dt.timestamp();
-    // Track the latest record timestamp only for internal stats, but do not
-    // let it extend the visible range beyond "now". Some providers or clock
-    // skews can produce future-dated records which previously caused the
-    // time-series to expand past the requested window.
-    let mut latest_record_epoch = end_dt.timestamp();
 
     for record in records {
         let naive = NaiveDateTime::parse_from_str(&record.occurred_at, "%Y-%m-%d %H:%M:%S")
@@ -2159,15 +2603,13 @@ pub(crate) async fn fetch_timeseries(
             .single()
             .map(|dt| dt.with_timezone(&Utc).timestamp())
             .unwrap_or_else(|| naive.and_utc().timestamp());
-        if epoch > latest_record_epoch {
-            latest_record_epoch = epoch;
-        }
-        let bucket_epoch = align_bucket_epoch(epoch, bucket_seconds, offset_seconds);
+        let bucket_epoch = align_reporting_bucket_epoch(epoch, bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
         entry.total_count += 1;
         match record.status.as_deref() {
             Some("success") => entry.success_count += 1,
-            _ => entry.failure_count += 1,
+            Some(_) => entry.failure_count += 1,
+            None => {}
         }
         entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
         entry.total_tokens += record.total_tokens.unwrap_or(0);
@@ -2184,7 +2626,7 @@ pub(crate) async fn fetch_timeseries(
 
     for delta in relay_deltas {
         let bucket_epoch =
-            align_bucket_epoch(delta.captured_at_epoch, bucket_seconds, offset_seconds);
+            align_reporting_bucket_epoch(delta.captured_at_epoch, bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
         entry.total_count += delta.total_count;
         entry.success_count += delta.success_count;
@@ -2193,29 +2635,28 @@ pub(crate) async fn fetch_timeseries(
         entry.total_cost += delta.total_cost;
     }
 
-    // Compute the inclusive fill range [fill_start_epoch, fill_end_epoch].
-    // Start from the aligned bucket that intersects the requested start time.
-    let mut bucket_cursor = align_bucket_epoch(start_epoch, bucket_seconds, offset_seconds);
-    if bucket_cursor > start_epoch {
-        bucket_cursor -= bucket_seconds;
-    }
-    let fill_start_epoch = bucket_cursor;
-
-    // Clamp the filled range end to the current time (aligned to the next bucket).
-    // This prevents future-dated records from pushing the chart beyond the
-    // intended window (e.g., "last 24 hours").
-    let fill_end_epoch =
-        align_bucket_epoch(end_dt.timestamp(), bucket_seconds, offset_seconds) + bucket_seconds;
-    while bucket_cursor <= fill_end_epoch {
+    // Fill every bucket that intersects the requested range using reporting-timezone
+    // boundaries rather than fixed UTC-duration strides. This keeps DST transition
+    // days aligned to local clock buckets.
+    let fill_start_epoch = align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
+    let fill_end_epoch = next_reporting_bucket_epoch(
+        align_reporting_bucket_epoch(end_dt.timestamp(), bucket_seconds, reporting_tz)?,
+        bucket_seconds,
+        reporting_tz,
+    )?;
+    let mut bucket_cursor = fill_start_epoch;
+    while bucket_cursor < fill_end_epoch {
         aggregates.entry(bucket_cursor).or_default();
-        bucket_cursor += bucket_seconds;
+        bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
     }
 
     let mut points = Vec::with_capacity(aggregates.len());
     for (bucket_epoch, agg) in aggregates {
+        let bucket_end_epoch =
+            next_reporting_bucket_epoch(bucket_epoch, bucket_seconds, reporting_tz)?;
         // Skip any buckets outside the desired window. This guards against
         // future-dated records leaking past the clamped end.
-        if bucket_epoch < fill_start_epoch || bucket_epoch + bucket_seconds > fill_end_epoch {
+        if bucket_epoch < fill_start_epoch || bucket_end_epoch > fill_end_epoch {
             continue;
         }
         let start = Utc
@@ -2223,7 +2664,7 @@ pub(crate) async fn fetch_timeseries(
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
         let end = Utc
-            .timestamp_opt(bucket_epoch + bucket_seconds, 0)
+            .timestamp_opt(bucket_end_epoch, 0)
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
         let first_byte_avg_ms = agg.first_byte_avg_ms();
@@ -2259,6 +2700,219 @@ pub(crate) async fn fetch_timeseries(
     };
 
     Ok(Json(response))
+}
+
+pub(crate) async fn fetch_timeseries_from_hourly_rollups(
+    state: Arc<AppState>,
+    _params: TimeseriesQuery,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    range_window: RangeWindow,
+    bucket_selection: TimeseriesBucketSelection,
+) -> Result<Json<TimeseriesResponse>, ApiError> {
+    let bucket_seconds = bucket_selection.bucket_seconds;
+    let start_epoch = range_window.start.timestamp();
+    let end_epoch = range_window.end.timestamp();
+    let range_plan = build_hourly_rollup_exact_range_plan(
+        range_window.start,
+        range_window.end,
+        shanghai_retention_cutoff(state.config.invocation_max_days),
+    )?;
+
+    let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
+    let fill_start_epoch = align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
+    let fill_end_epoch = next_reporting_bucket_epoch(
+        align_reporting_bucket_epoch(end_epoch, bucket_seconds, reporting_tz)?,
+        bucket_seconds,
+        reporting_tz,
+    )?;
+    let mut bucket_cursor = fill_start_epoch;
+    while bucket_cursor < fill_end_epoch {
+        aggregates.entry(bucket_cursor).or_default();
+        bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
+    }
+
+    if let Some((hourly_cursor, hourly_end_epoch)) = range_plan.full_hour_range {
+        let rows = query_invocation_hourly_rollup_range(
+            &state.pool,
+            hourly_cursor,
+            hourly_end_epoch,
+            source_scope,
+        )
+        .await?;
+        for row in rows {
+            let bucket_epoch =
+                align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
+            let entry = aggregates.entry(bucket_epoch).or_default();
+            entry.total_count += row.total_count;
+            entry.success_count += row.success_count;
+            entry.failure_count += row.failure_count;
+            entry.total_tokens += row.total_tokens;
+            entry.total_cost += row.total_cost;
+            entry.first_byte_sample_count += row.first_byte_sample_count;
+            entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
+            entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
+                decode_approx_histogram(&row.first_byte_histogram)
+            } else {
+                let mut merged = entry.first_byte_histogram.clone();
+                merge_approx_histogram_into(
+                    &mut merged,
+                    &decode_approx_histogram(&row.first_byte_histogram),
+                )?;
+                merged
+            };
+        }
+    }
+
+    let exact_records =
+        query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
+    for record in exact_records {
+        let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
+            continue;
+        };
+        let bucket_epoch =
+            align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
+        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+            entry.total_count += 1;
+            match record.status.as_deref() {
+                Some("success") => entry.success_count += 1,
+                Some(_) => entry.failure_count += 1,
+                None => {}
+            }
+            entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+            entry.total_tokens += record.total_tokens.unwrap_or_default();
+            entry.total_cost += record.cost.unwrap_or_default();
+        }
+    }
+
+    let relay_deltas = if source_scope == InvocationSourceScope::All
+        && let Some(relay) = state.config.crs_stats.as_ref()
+    {
+        query_crs_deltas(&state.pool, relay, start_epoch, end_epoch).await?
+    } else {
+        Vec::new()
+    };
+    for delta in relay_deltas {
+        let bucket_epoch =
+            align_reporting_bucket_epoch(delta.captured_at_epoch, bucket_seconds, reporting_tz)?;
+        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+            entry.total_count += delta.total_count;
+            entry.success_count += delta.success_count;
+            entry.failure_count += delta.failure_count;
+            entry.total_tokens += delta.total_tokens;
+            entry.total_cost += delta.total_cost;
+        }
+    }
+
+    let mut points = Vec::with_capacity(aggregates.len());
+    for (bucket_epoch, agg) in aggregates {
+        let bucket_end_epoch =
+            next_reporting_bucket_epoch(bucket_epoch, bucket_seconds, reporting_tz)?;
+        if bucket_epoch < fill_start_epoch || bucket_end_epoch > fill_end_epoch {
+            continue;
+        }
+        let start = Utc
+            .timestamp_opt(bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+        let end = Utc
+            .timestamp_opt(bucket_end_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+        points.push(TimeseriesPoint {
+            bucket_start: format_utc_iso(start),
+            bucket_end: format_utc_iso(end),
+            total_count: agg.total_count,
+            success_count: agg.success_count,
+            failure_count: agg.failure_count,
+            total_tokens: agg.total_tokens,
+            total_cost: agg.total_cost,
+            first_byte_sample_count: agg.first_byte_sample_count,
+            first_byte_avg_ms: agg.first_byte_avg_ms(),
+            first_byte_p95_ms: agg.first_byte_p95_ms(),
+        });
+    }
+
+    Ok(Json(TimeseriesResponse {
+        range_start: format_utc_iso(range_window.start),
+        range_end: {
+            let end = Utc
+                .timestamp_opt(fill_end_epoch, 0)
+                .single()
+                .unwrap_or_else(Utc::now);
+            format_utc_iso(end)
+        },
+        bucket_seconds,
+        effective_bucket: bucket_selection.effective_bucket,
+        available_buckets: bucket_selection.available_buckets,
+        bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
+        points,
+    }))
+}
+
+pub(crate) fn align_reporting_bucket_epoch(
+    epoch: i64,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<i64> {
+    let timestamp = Utc
+        .timestamp_opt(epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+    let local = timestamp.with_timezone(&reporting_tz);
+    let elapsed_seconds = i64::from(local.time().num_seconds_from_midnight());
+    let remainder = elapsed_seconds.rem_euclid(bucket_seconds);
+    let bucket_start_local = local.naive_local() - ChronoDuration::seconds(remainder);
+    Ok(
+        local_naive_to_utc_not_after_reference(bucket_start_local, reporting_tz, timestamp)
+            .timestamp(),
+    )
+}
+
+pub(crate) fn next_reporting_bucket_epoch(
+    bucket_start_epoch: i64,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<i64> {
+    let bucket_start = Utc
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+    let next_start = if bucket_seconds == 3_600 {
+        bucket_start + ChronoDuration::seconds(bucket_seconds)
+    } else {
+        let local_start = bucket_start.with_timezone(&reporting_tz).naive_local();
+        local_naive_to_utc(
+            local_start + ChronoDuration::seconds(bucket_seconds),
+            reporting_tz,
+        )
+    };
+    if next_start.timestamp() <= bucket_start_epoch {
+        return Err(anyhow!(
+            "non-increasing reporting bucket progression for {reporting_tz} at {bucket_start_epoch}"
+        ));
+    }
+    Ok(next_start.timestamp())
+}
+
+fn local_naive_to_utc_not_after_reference(
+    naive: NaiveDateTime,
+    tz: Tz,
+    reference_utc: DateTime<Utc>,
+) -> DateTime<Utc> {
+    match tz.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => dt.with_timezone(&Utc),
+        LocalResult::Ambiguous(first, second) => {
+            let first_utc = first.with_timezone(&Utc);
+            let second_utc = second.with_timezone(&Utc);
+            [first_utc, second_utc]
+                .into_iter()
+                .filter(|candidate| *candidate <= reference_utc)
+                .max()
+                .unwrap_or(first_utc.min(second_utc))
+        }
+        LocalResult::None => local_naive_to_utc(naive, tz),
+    }
 }
 
 pub(crate) fn resolve_daily_date_range(
@@ -2380,7 +3034,8 @@ async fn fetch_timeseries_daily(
         entry.total_count += 1;
         match record.status.as_deref() {
             Some("success") => entry.success_count += 1,
-            _ => entry.failure_count += 1,
+            Some(_) => entry.failure_count += 1,
+            None => {}
         }
         entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
         entry.total_tokens += record.total_tokens.unwrap_or(0);
@@ -2747,12 +3402,72 @@ pub(crate) async fn fetch_error_distribution(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ErrorQuery>,
 ) -> Result<Json<ErrorDistributionResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
     let display_end = range_window.display_end;
     let scope = FailureScope::parse(params.scope.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    if start_dt < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        let mut counts: HashMap<String, i64> = HashMap::new();
+        let range_plan = build_hourly_rollup_exact_range_plan(
+            start_dt,
+            display_end,
+            shanghai_retention_cutoff(state.config.invocation_max_days),
+        )?;
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+            let rows = query_invocation_failure_hourly_rollup_range(
+                &state.pool,
+                range_start_epoch,
+                range_end_epoch,
+                source_scope,
+            )
+            .await?;
+            for row in rows {
+                let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
+                    continue;
+                };
+                if !failure_scope_matches(scope, class) {
+                    continue;
+                }
+                *counts.entry(row.error_category).or_default() += row.failure_count;
+            }
+        }
+        let exact_records =
+            query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
+        for record in exact_records {
+            let classification = resolve_failure_classification(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+                record.failure_kind.as_deref(),
+                record.failure_class.as_deref(),
+                record.is_actionable,
+            );
+            if !failure_scope_matches(scope, classification.failure_class) {
+                continue;
+            }
+            let raw = record.error_message.unwrap_or_default();
+            let key = categorize_error(&raw);
+            *counts.entry(key).or_default() += 1;
+        }
+        let mut items: Vec<ErrorDistributionItem> = counts
+            .into_iter()
+            .map(|(reason, count)| ErrorDistributionItem { reason, count })
+            .collect();
+        items.sort_by(|a, b| b.count.cmp(&a.count));
+        if let Some(top) = params.top {
+            let limited = top.clamp(1, 50) as usize;
+            if items.len() > limited {
+                items.truncate(limited);
+            }
+        }
+        return Ok(Json(ErrorDistributionResponse {
+            range_start: format_utc_iso(start_dt),
+            range_end: format_utc_iso(display_end),
+            items,
+        }));
+    }
 
     #[derive(sqlx::FromRow)]
     struct RawErr {
@@ -3045,11 +3760,87 @@ pub(crate) async fn fetch_failure_summary(
     State(state): State<Arc<AppState>>,
     Query(params): Query<FailureSummaryQuery>,
 ) -> Result<Json<FailureSummaryResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
     let display_end = range_window.display_end;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    if start_dt < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        let mut total_failures = 0_i64;
+        let mut service_failure_count = 0_i64;
+        let mut client_failure_count = 0_i64;
+        let mut client_abort_count = 0_i64;
+        let mut actionable_failure_count = 0_i64;
+        let range_plan = build_hourly_rollup_exact_range_plan(
+            start_dt,
+            display_end,
+            shanghai_retention_cutoff(state.config.invocation_max_days),
+        )?;
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+            let rows = query_invocation_failure_hourly_rollup_range(
+                &state.pool,
+                range_start_epoch,
+                range_end_epoch,
+                source_scope,
+            )
+            .await?;
+            for row in rows {
+                let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
+                    continue;
+                };
+                total_failures += row.failure_count;
+                match class {
+                    FailureClass::ServiceFailure => service_failure_count += row.failure_count,
+                    FailureClass::ClientFailure => client_failure_count += row.failure_count,
+                    FailureClass::ClientAbort => client_abort_count += row.failure_count,
+                    FailureClass::None => {}
+                }
+                if row.is_actionable != 0 {
+                    actionable_failure_count += row.failure_count;
+                }
+            }
+        }
+        let exact_records =
+            query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
+        for record in exact_records {
+            let classification = resolve_failure_classification(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+                record.failure_kind.as_deref(),
+                record.failure_class.as_deref(),
+                record.is_actionable,
+            );
+            if classification.failure_class == FailureClass::None {
+                continue;
+            }
+            total_failures += 1;
+            match classification.failure_class {
+                FailureClass::ServiceFailure => service_failure_count += 1,
+                FailureClass::ClientFailure => client_failure_count += 1,
+                FailureClass::ClientAbort => client_abort_count += 1,
+                FailureClass::None => {}
+            }
+            if classification.is_actionable {
+                actionable_failure_count += 1;
+            }
+        }
+        let actionable_failure_rate = if total_failures > 0 {
+            actionable_failure_count as f64 / total_failures as f64
+        } else {
+            0.0
+        };
+        return Ok(Json(FailureSummaryResponse {
+            range_start: format_utc_iso(start_dt),
+            range_end: format_utc_iso(display_end),
+            total_failures,
+            service_failure_count,
+            client_failure_count,
+            client_abort_count,
+            actionable_failure_count,
+            actionable_failure_rate,
+        }));
+    }
 
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -3118,6 +3909,7 @@ pub(crate) async fn fetch_perf_stats(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PerfQuery>,
 ) -> Result<Json<PerfStatsResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     #[derive(sqlx::FromRow)]
     struct PerfTimingRow {
         t_total_ms: Option<f64>,
@@ -3132,6 +3924,80 @@ pub(crate) async fn fetch_perf_stats(
 
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
+    if range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        let range_plan = build_hourly_rollup_exact_range_plan(
+            range_window.start,
+            range_window.display_end,
+            shanghai_retention_cutoff(state.config.invocation_max_days),
+        )?;
+        let mut by_stage: BTreeMap<String, (i64, f64, f64, ApproxHistogramCounts)> =
+            BTreeMap::new();
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+            let rows = query_proxy_perf_stage_hourly_rollup_range(
+                &state.pool,
+                range_start_epoch,
+                range_end_epoch,
+            )
+            .await?;
+            for row in rows {
+                let entry = by_stage
+                    .entry(row.stage)
+                    .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
+                entry.0 += row.sample_count;
+                entry.1 += row.sum_ms;
+                entry.2 = entry.2.max(row.max_ms);
+                merge_approx_histogram_into(
+                    &mut entry.3,
+                    &decode_approx_histogram(&row.histogram),
+                )?;
+            }
+        }
+        let exact_records = query_invocation_exact_records(
+            &state.pool,
+            &range_plan,
+            InvocationSourceScope::ProxyOnly,
+        )
+        .await?;
+        for record in exact_records {
+            record_perf_stage_sample(&mut by_stage, "total", record.t_total_ms);
+            record_perf_stage_sample(&mut by_stage, "requestRead", record.t_req_read_ms);
+            record_perf_stage_sample(&mut by_stage, "requestParse", record.t_req_parse_ms);
+            record_perf_stage_sample(
+                &mut by_stage,
+                "upstreamConnect",
+                record.t_upstream_connect_ms,
+            );
+            record_perf_stage_sample(
+                &mut by_stage,
+                "upstreamFirstByte",
+                record.t_upstream_ttfb_ms,
+            );
+            record_perf_stage_sample(&mut by_stage, "upstreamStream", record.t_upstream_stream_ms);
+            record_perf_stage_sample(&mut by_stage, "responseParse", record.t_resp_parse_ms);
+            record_perf_stage_sample(&mut by_stage, "persistence", record.t_persist_ms);
+        }
+        let mut stages = Vec::new();
+        for (stage, (count, sum_ms, max_ms, histogram)) in by_stage {
+            if count <= 0 {
+                continue;
+            }
+            stages.push(PerfStageStats {
+                stage,
+                count,
+                avg_ms: sum_ms / count as f64,
+                p50_ms: approx_histogram_percentile_ms(&histogram, 0.50).unwrap_or(max_ms),
+                p90_ms: approx_histogram_percentile_ms(&histogram, 0.90).unwrap_or(max_ms),
+                p99_ms: approx_histogram_percentile_ms(&histogram, 0.99).unwrap_or(max_ms),
+                max_ms,
+            });
+        }
+        return Ok(Json(PerfStatsResponse {
+            range_start: format_utc_iso(range_window.start),
+            range_end: format_utc_iso(range_window.display_end),
+            source: SOURCE_PROXY.to_string(),
+            stages,
+        }));
+    }
     let mut query = QueryBuilder::new(
         "SELECT \
             t_total_ms, t_req_read_ms, t_req_parse_ms, \
@@ -3619,11 +4485,11 @@ pub(crate) struct TimeseriesResponse {
 }
 
 #[derive(Debug, Clone)]
-struct TimeseriesBucketSelection {
-    bucket_seconds: i64,
-    effective_bucket: String,
-    available_buckets: Vec<String>,
-    bucket_limited_to_daily: bool,
+pub(crate) struct TimeseriesBucketSelection {
+    pub(crate) bucket_seconds: i64,
+    pub(crate) effective_bucket: String,
+    pub(crate) available_buckets: Vec<String>,
+    pub(crate) bucket_limited_to_daily: bool,
 }
 
 fn resolve_timeseries_bucket_selection(
@@ -3650,10 +4516,10 @@ fn resolve_timeseries_bucket_selection(
         bucket_seconds = range_seconds / 10_000;
     }
 
-    let subday_supported = range_window.start >= shanghai_retention_cutoff(invocation_max_days);
-    let bucket_limited_to_daily = bucket_seconds < 86_400 && !subday_supported;
-    let effective_bucket_seconds = if bucket_limited_to_daily {
-        86_400
+    let subhour_supported = range_window.start >= shanghai_retention_cutoff(invocation_max_days);
+    let bucket_limited_to_daily = false;
+    let effective_bucket_seconds = if bucket_seconds < 3_600 && !subhour_supported {
+        3_600
     } else {
         bucket_seconds
     };
@@ -3664,7 +4530,7 @@ fn resolve_timeseries_bucket_selection(
     Ok(TimeseriesBucketSelection {
         bucket_seconds: effective_bucket_seconds,
         effective_bucket,
-        available_buckets: available_timeseries_bucket_specs(subday_supported),
+        available_buckets: available_timeseries_bucket_specs(subhour_supported),
         bucket_limited_to_daily,
     })
 }
