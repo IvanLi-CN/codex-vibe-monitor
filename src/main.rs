@@ -5152,6 +5152,7 @@ async fn schedule_poll(
                     match collect_broadcast_state_snapshots(
                         &state_clone.pool,
                         state_clone.config.crs_stats.as_ref(),
+                        state_clone.config.invocation_max_days,
                     )
                     .await
                     {
@@ -5429,9 +5430,10 @@ fn should_collect_late_broadcast_state(
 async fn collect_broadcast_state_snapshots(
     pool: &Pool<Sqlite>,
     relay: Option<&CrsStatsConfig>,
+    invocation_max_days: u64,
 ) -> Result<(Vec<SummaryPublish>, Option<QuotaSnapshotResponse>)> {
     Ok((
-        collect_summary_snapshots(pool, relay).await?,
+        collect_summary_snapshots(pool, relay, invocation_max_days).await?,
         QuotaSnapshotResponse::fetch_latest(pool).await?,
     ))
 }
@@ -5462,7 +5464,12 @@ async fn fetch_and_store(
     }
 
     let (summaries, quota_payload) = if collect_broadcast_state {
-        collect_broadcast_state_snapshots(&state.pool, relay_config.as_ref()).await?
+        collect_broadcast_state_snapshots(
+            &state.pool,
+            relay_config.as_ref(),
+            state.config.invocation_max_days,
+        )
+        .await?
     } else {
         (Vec::new(), None)
     };
@@ -5507,6 +5514,7 @@ fn summary_broadcast_specs() -> Vec<SummaryBroadcastSpec> {
 async fn collect_summary_snapshots(
     pool: &Pool<Sqlite>,
     relay: Option<&CrsStatsConfig>,
+    invocation_max_days: u64,
 ) -> Result<Vec<SummaryPublish>> {
     let mut summaries = Vec::new();
     let mut cached_all: Option<StatsResponse> = None;
@@ -5528,9 +5536,16 @@ async fn collect_summary_snapshots(
             }
             Some(duration) => {
                 let start = now - duration;
-                query_combined_totals(pool, relay, StatsFilter::Since(start), source_scope)
-                    .await?
-                    .into_response()
+                query_hourly_backed_summary_since_with_config(
+                    pool,
+                    relay,
+                    invocation_max_days,
+                    start,
+                    source_scope,
+                )
+                .await
+                .map_err(|err| anyhow!("{err:?}"))?
+                .into_response()
             }
         };
 
@@ -12998,13 +13013,14 @@ async fn broadcast_proxy_capture_follow_up(
     broadcaster: &broadcast::Sender<BroadcastPayload>,
     broadcast_state_cache: &Mutex<BroadcastStateCache>,
     relay_config: Option<&CrsStatsConfig>,
+    invocation_max_days: u64,
     invoke_id: &str,
 ) {
     if broadcaster.receiver_count() == 0 {
         return;
     }
 
-    match collect_summary_snapshots(pool, relay_config).await {
+    match collect_summary_snapshots(pool, relay_config, invocation_max_days).await {
         Ok(summaries) => {
             for summary in summaries {
                 if let Err(err) = broadcast_summary_if_changed(
@@ -13068,6 +13084,7 @@ struct SummaryQuotaBroadcastIdleContext<'a> {
     broadcaster: &'a broadcast::Sender<BroadcastPayload>,
     broadcast_state_cache: &'a Mutex<BroadcastStateCache>,
     relay_config: Option<&'a CrsStatsConfig>,
+    invocation_max_days: u64,
     invoke_id: &'a str,
 }
 
@@ -13094,6 +13111,7 @@ async fn finish_summary_quota_broadcast_idle(
             ctx.broadcaster,
             ctx.broadcast_state_cache,
             ctx.relay_config,
+            ctx.invocation_max_days,
             ctx.invoke_id,
         )
         .await;
@@ -13139,6 +13157,7 @@ async fn persist_and_broadcast_proxy_capture(
             &state.broadcaster,
             state.broadcast_state_cache.as_ref(),
             state.config.crs_stats.as_ref(),
+            state.config.invocation_max_days,
             &invoke_id,
         )
         .await;
@@ -13158,6 +13177,7 @@ async fn persist_and_broadcast_proxy_capture(
             &state.broadcaster,
             state.broadcast_state_cache.as_ref(),
             state.config.crs_stats.as_ref(),
+            state.config.invocation_max_days,
             &invoke_id,
         )
         .await;
@@ -13177,6 +13197,7 @@ async fn persist_and_broadcast_proxy_capture(
     let broadcaster = state.broadcaster.clone();
     let broadcast_state_cache = state.broadcast_state_cache.clone();
     let relay_config = state.config.crs_stats.clone();
+    let invocation_max_days = state.config.invocation_max_days;
     let shutdown = state.shutdown.clone();
     let broadcast_handle_slot = state.proxy_summary_quota_broadcast_handle.clone();
     let handle = tokio::spawn(async move {
@@ -13194,6 +13215,7 @@ async fn persist_and_broadcast_proxy_capture(
                         &broadcaster,
                         broadcast_state_cache.as_ref(),
                         relay_config.as_ref(),
+                        invocation_max_days,
                         &invoke_id,
                     )
                     .await;
@@ -13216,6 +13238,7 @@ async fn persist_and_broadcast_proxy_capture(
                         broadcaster: &broadcaster,
                         broadcast_state_cache: broadcast_state_cache.as_ref(),
                         relay_config: relay_config.as_ref(),
+                        invocation_max_days,
                         invoke_id: &invoke_id,
                     },
                     synced_seq,
@@ -13239,6 +13262,7 @@ async fn persist_and_broadcast_proxy_capture(
                         &broadcaster,
                         broadcast_state_cache.as_ref(),
                         relay_config.as_ref(),
+                        invocation_max_days,
                         &invoke_id,
                     )
                     .await;
@@ -13249,7 +13273,7 @@ async fn persist_and_broadcast_proxy_capture(
                     );
                     break;
                 }
-                result = collect_summary_snapshots(&pool, relay_config.as_ref()) => result,
+                result = collect_summary_snapshots(&pool, relay_config.as_ref(), invocation_max_days) => result,
             };
             match summaries {
                 Ok(summaries) => {
@@ -13291,6 +13315,7 @@ async fn persist_and_broadcast_proxy_capture(
                         &broadcaster,
                         broadcast_state_cache.as_ref(),
                         relay_config.as_ref(),
+                        invocation_max_days,
                         &invoke_id,
                     )
                     .await;

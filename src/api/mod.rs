@@ -1763,32 +1763,26 @@ fn record_perf_stage_sample(
     add_approx_histogram_sample(&mut entry.3, value);
 }
 
-pub(crate) async fn query_hourly_backed_summary_since(
-    state: &AppState,
+pub(crate) async fn query_hourly_backed_summary_since_with_config(
+    pool: &Pool<Sqlite>,
+    relay: Option<&CrsStatsConfig>,
+    invocation_max_days: u64,
     start: DateTime<Utc>,
     source_scope: InvocationSourceScope,
 ) -> Result<StatsTotals, ApiError> {
-    if start >= shanghai_retention_cutoff(state.config.invocation_max_days) {
-        return query_combined_totals(
-            &state.pool,
-            state.config.crs_stats.as_ref(),
-            StatsFilter::Since(start),
-            source_scope,
-        )
-        .await
-        .map_err(Into::into);
+    let retention_cutoff = shanghai_retention_cutoff(invocation_max_days);
+    if start >= retention_cutoff {
+        return query_combined_totals(pool, relay, StatsFilter::Since(start), source_scope)
+            .await
+            .map_err(Into::into);
     }
 
     let mut totals = StatsTotals::default();
     let now = Utc::now();
-    let range_plan = build_hourly_rollup_exact_range_plan(
-        start,
-        now,
-        shanghai_retention_cutoff(state.config.invocation_max_days),
-    )?;
+    let range_plan = build_hourly_rollup_exact_range_plan(start, now, retention_cutoff)?;
     if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
         let rows = query_invocation_hourly_rollup_range(
-            &state.pool,
+            pool,
             range_start_epoch,
             range_end_epoch,
             source_scope,
@@ -1802,19 +1796,29 @@ pub(crate) async fn query_hourly_backed_summary_since(
             totals.total_cost += row.total_cost;
         }
     }
-    let exact_records =
-        query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
+    let exact_records = query_invocation_exact_records(pool, &range_plan, source_scope).await?;
     for record in &exact_records {
         add_invocation_record_to_summary_totals(&mut totals, record);
     }
-    let relay = query_crs_totals(
+    let relay_totals =
+        query_crs_totals(pool, relay, &StatsFilter::Since(start), source_scope).await?;
+    Ok(totals.add(relay_totals))
+}
+
+pub(crate) async fn query_hourly_backed_summary_since(
+    state: &AppState,
+    start: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+) -> Result<StatsTotals, ApiError> {
+    query_hourly_backed_summary_since_with_config(
         &state.pool,
         state.config.crs_stats.as_ref(),
-        &StatsFilter::Since(start),
+        state.config.invocation_max_days,
+        start,
         source_scope,
     )
-    .await?;
-    Ok(totals.add(relay))
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn fetch_forward_proxy_live_stats(

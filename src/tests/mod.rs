@@ -19484,6 +19484,77 @@ async fn summary_hourly_backed_since_preserves_exact_archived_start_hour() {
 }
 
 #[tokio::test]
+async fn collect_summary_snapshots_uses_hourly_backed_duration_windows() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let bucket_start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(45))
+            .expect("archived local time"),
+    );
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-broadcast-hourly-window",
+        &[(
+            1_i64,
+            "summary-broadcast-archived-row",
+            archived_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            25_i64,
+            0.25_f64,
+            Some(250.0),
+        )],
+    )
+    .await;
+    insert_invocation_hourly_rollup_bucket(
+        &state.pool,
+        bucket_start,
+        SOURCE_PROXY,
+        1,
+        1,
+        0,
+        25,
+        0.25,
+    )
+    .await;
+
+    let summaries = collect_summary_snapshots(
+        &state.pool,
+        state.config.crs_stats.as_ref(),
+        state.config.invocation_max_days,
+    )
+    .await
+    .expect("collect summary snapshots");
+
+    let month = summaries
+        .iter()
+        .find(|summary| summary.window == "1mo")
+        .expect("1mo summary should be present");
+    assert_eq!(month.summary.total_count, 1);
+    assert_eq!(month.summary.success_count, 1);
+    assert_eq!(month.summary.failure_count, 0);
+    assert_eq!(month.summary.total_tokens, 25);
+    assert_f64_close(month.summary.total_cost, 0.25);
+
+    let day = summaries
+        .iter()
+        .find(|summary| summary.window == "1d")
+        .expect("1d summary should be present");
+    assert_eq!(day.summary.total_count, 0);
+}
+
+#[tokio::test]
 async fn timeseries_hourly_backed_uses_exact_archived_partial_hour_records() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -23241,6 +23312,7 @@ async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_
             broadcaster: &state.broadcaster,
             broadcast_state_cache: state.broadcast_state_cache.as_ref(),
             relay_config: state.config.crs_stats.as_ref(),
+            invocation_max_days: state.config.invocation_max_days,
             invoke_id: "idle-shutdown-tail",
         },
         1,
