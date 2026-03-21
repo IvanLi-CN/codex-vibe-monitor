@@ -226,6 +226,7 @@ describe("fetchForwardProxyLiveStats", () => {
 
 describe("fetchForwardProxyTimeseries", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -313,6 +314,21 @@ describe("fetchForwardProxyTimeseries", () => {
       fetchForwardProxyTimeseries("today", {
         bucket: "1h",
         timeZone: "Asia/Kolkata",
+      }),
+    ).rejects.toThrow("whole-hour UTC offsets");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects seasonal half-hour proxy history time zones when the queried range crosses them", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-10T00:00:00Z"));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await expect(
+      fetchForwardProxyTimeseries("1mo", {
+        bucket: "1h",
+        timeZone: "Australia/Lord_Howe",
       }),
     ).rejects.toThrow("whole-hour UTC offsets");
     expect(fetchMock).not.toHaveBeenCalled();

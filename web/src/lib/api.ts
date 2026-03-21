@@ -4,6 +4,14 @@ const rawBase = import.meta.env.VITE_API_BASE_URL ?? "";
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
+const FORWARD_PROXY_HISTORY_HOUR_MS = 3_600_000;
+
+type ZonedDateParts = {
+  year: number;
+  month: number;
+  day: number;
+  weekday: number;
+};
 
 const withBase = (path: string) => `${API_BASE}${path}`;
 
@@ -38,28 +46,204 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return JSON.parse(rawText) as T;
 }
 
-function resolveForwardProxyHistoryTimeZone(timeZone?: string): string {
+function parseForwardProxyHistoryRangeSeconds(range: string): number | null {
+  if (range.endsWith("mo")) {
+    const value = Number(range.slice(0, -2));
+    return Number.isFinite(value) ? value * 30 * 86_400 : null;
+  }
+  const unit = range.slice(-1);
+  const value = Number(range.slice(0, -1));
+  if (!Number.isFinite(value)) return null;
+  switch (unit) {
+    case "d":
+      return value * 86_400;
+    case "h":
+      return value * 3_600;
+    case "m":
+      return value * 60;
+    default:
+      return null;
+  }
+}
+
+function getForwardProxyHistoryOffsetMinutes(
+  date: Date,
+  timeZone: string,
+): number | null {
+  const timeZoneName = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "shortOffset",
+    hour: "2-digit",
+  })
+    .formatToParts(date)
+    .find((part) => part.type === "timeZoneName")?.value;
+  const normalized = (timeZoneName ?? "").replace(/^UTC/, "GMT");
+  if (!normalized || normalized === "GMT") {
+    return 0;
+  }
+  const match = normalized.match(/^GMT([+-])(\d{1,2})(?::(\d{2}))?$/i);
+  if (!match) {
+    return null;
+  }
+  const sign = match[1] === "-" ? -1 : 1;
+  const hours = Number(match[2] ?? "0");
+  const minutes = Number(match[3] ?? "0");
+  return sign * (hours * 60 + minutes);
+}
+
+function getForwardProxyHistoryDateParts(
+  date: Date,
+  timeZone: string,
+): ZonedDateParts | null {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const partMap = Object.fromEntries(
+    parts
+      .filter((part) =>
+        ["weekday", "year", "month", "day"].includes(part.type),
+      )
+      .map((part) => [part.type, part.value]),
+  );
+  const weekdayMap: Record<string, number> = {
+    Mon: 0,
+    Tue: 1,
+    Wed: 2,
+    Thu: 3,
+    Fri: 4,
+    Sat: 5,
+    Sun: 6,
+  };
+  const year = Number(partMap.year);
+  const month = Number(partMap.month);
+  const day = Number(partMap.day);
+  const weekday = weekdayMap[partMap.weekday ?? ""];
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    weekday === undefined
+  ) {
+    return null;
+  }
+  return { year, month, day, weekday };
+}
+
+function addUtcDays(parts: ZonedDateParts, days: number): ZonedDateParts {
+  const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    weekday: shifted.getUTCDay(),
+  };
+}
+
+function forwardProxyHistoryLocalMidnightUtcMillis(
+  timeZone: string,
+  parts: Pick<ZonedDateParts, "year" | "month" | "day">,
+): number {
+  const localMidnightUtc = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0);
+  let candidate = localMidnightUtc;
+  for (let index = 0; index < 4; index += 1) {
+    const offsetMinutes = getForwardProxyHistoryOffsetMinutes(
+      new Date(candidate),
+      timeZone,
+    );
+    if (offsetMinutes === null) {
+      break;
+    }
+    const adjusted = localMidnightUtc - offsetMinutes * 60_000;
+    if (adjusted === candidate) {
+      return candidate;
+    }
+    candidate = adjusted;
+  }
+  return candidate;
+}
+
+function resolveForwardProxyHistoryRangeMillis(
+  range: string,
+  timeZone: string,
+  now: Date,
+): { startMs: number; endMs: number } | null {
+  const localNow = getForwardProxyHistoryDateParts(now, timeZone);
+  if (!localNow) {
+    return null;
+  }
+
+  if (range === "today") {
+    return {
+      startMs: forwardProxyHistoryLocalMidnightUtcMillis(timeZone, localNow),
+      endMs: now.getTime(),
+    };
+  }
+  if (range === "thisWeek") {
+    const weekStart = addUtcDays(localNow, -localNow.weekday);
+    return {
+      startMs: forwardProxyHistoryLocalMidnightUtcMillis(timeZone, weekStart),
+      endMs: now.getTime(),
+    };
+  }
+  if (range === "thisMonth") {
+    return {
+      startMs: forwardProxyHistoryLocalMidnightUtcMillis(timeZone, {
+        year: localNow.year,
+        month: localNow.month,
+        day: 1,
+      }),
+      endMs: now.getTime(),
+    };
+  }
+
+  const durationSeconds = parseForwardProxyHistoryRangeSeconds(range);
+  if (durationSeconds === null) {
+    return null;
+  }
+  return {
+    startMs: now.getTime() - durationSeconds * 1_000,
+    endMs: now.getTime(),
+  };
+}
+
+function resolveForwardProxyHistoryTimeZone(
+  range: string,
+  timeZone?: string,
+): string {
   const candidate = timeZone ?? getBrowserTimeZone();
   try {
-    const timeZoneName = new Intl.DateTimeFormat("en-US", {
-      timeZone: candidate,
-      timeZoneName: "shortOffset",
-      hour: "2-digit",
-    })
-      .formatToParts(new Date())
-      .find((part) => part.type === "timeZoneName")?.value;
-    const normalized = (timeZoneName ?? "").replace(/^UTC/, "GMT");
-    if (!normalized || normalized === "GMT") {
+    const rangeWindow = resolveForwardProxyHistoryRangeMillis(
+      range,
+      candidate,
+      new Date(),
+    );
+    if (!rangeWindow) {
       return candidate;
     }
-    const match = normalized.match(/^GMT[+-]\d{1,2}(?::(\d{2}))?$/i);
-    if (!match) {
-      return candidate;
-    }
-    if ((match[1] ?? "00") !== "00") {
-      throw new Error(
-        `unsupported timeZone for forward proxy hourly timeseries: ${candidate}; hourly buckets require whole-hour UTC offsets`,
+    const startMs =
+      Math.floor(rangeWindow.startMs / FORWARD_PROXY_HISTORY_HOUR_MS) *
+      FORWARD_PROXY_HISTORY_HOUR_MS;
+    const endMs =
+      Math.ceil(rangeWindow.endMs / FORWARD_PROXY_HISTORY_HOUR_MS) *
+      FORWARD_PROXY_HISTORY_HOUR_MS;
+    for (
+      let currentMs = startMs;
+      currentMs < endMs;
+      currentMs += FORWARD_PROXY_HISTORY_HOUR_MS
+    ) {
+      const offsetMinutes = getForwardProxyHistoryOffsetMinutes(
+        new Date(currentMs),
+        candidate,
       );
+      if (offsetMinutes !== null && offsetMinutes % 60 !== 0) {
+        throw new Error(
+          `unsupported timeZone for forward proxy hourly timeseries: ${candidate}; hourly buckets require whole-hour UTC offsets`,
+        );
+      }
     }
     return candidate;
   } catch (error) {
@@ -2298,7 +2482,7 @@ export async function fetchForwardProxyTimeseries(
 ) {
   const search = new URLSearchParams();
   search.set("range", range);
-  search.set("timeZone", resolveForwardProxyHistoryTimeZone(params?.timeZone));
+  search.set("timeZone", resolveForwardProxyHistoryTimeZone(range, params?.timeZone));
   if (params?.bucket) {
     search.set("bucket", params.bucket);
   }
