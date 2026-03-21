@@ -168,7 +168,7 @@ export function InvocationAccountDetailDrawer({
           aria-labelledby="invocation-account-detail-title"
           className="drawer-shell flex h-full w-full max-w-[56rem] flex-col"
         >
-          <OverlayHostProvider value={sectionElement}>
+          <OverlayHostProvider value={sectionElement ?? undefined}>
             <div className="drawer-header px-5 py-4 sm:px-6">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0 space-y-1">

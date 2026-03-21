@@ -5,9 +5,9 @@ export function OverlayHostProvider({
   value,
   children,
 }: {
-  value: HTMLElement | null
+  value?: HTMLElement | null
   children: React.ReactNode
 }) {
   const parentHost = React.useContext(OverlayHostContext)
-  return <OverlayHostContext.Provider value={value ?? parentHost}>{children}</OverlayHostContext.Provider>
+  return <OverlayHostContext.Provider value={value === undefined ? parentHost : value}>{children}</OverlayHostContext.Provider>
 }

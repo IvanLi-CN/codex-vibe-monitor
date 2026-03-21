@@ -48,7 +48,8 @@ const DialogContent = React.forwardRef<
   }
 >(({ className, children, container, ...props }, ref) => {
   const resolvedContainer = useResolvedOverlayContainer(container)
-  const { hostElement, ref: hostRef } = useOverlayHostElement<HTMLDivElement>(undefined, resolvedContainer)
+  const { hostElement, ref: hostRef } = useOverlayHostElement<HTMLDivElement>(undefined)
+  const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container)
   const contentRef = React.useCallback(
     (node: React.ElementRef<typeof DialogPrimitive.Content> | null) => {
       if (typeof ref === 'function') {
@@ -64,7 +65,7 @@ const DialogContent = React.forwardRef<
     <DialogPortal container={resolvedContainer}>
       <DialogOverlay />
       <div ref={hostRef} className="fixed inset-0 z-[81] pointer-events-none">
-        <OverlayHostProvider value={hostElement}>
+        <OverlayHostProvider value={hostValue}>
           <DialogPrimitive.Content
             ref={contentRef}
             className={cn(

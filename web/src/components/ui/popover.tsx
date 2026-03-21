@@ -21,11 +21,12 @@ const PopoverContent = React.forwardRef<
   }
 >(({ className, align = 'center', sideOffset = 4, container, ...props }, ref) => {
   const resolvedContainer = useResolvedOverlayContainer(container)
-  const { hostElement, ref: contentRef } = useOverlayHostElement(ref, resolvedContainer)
+  const { hostElement, ref: contentRef } = useOverlayHostElement(ref)
+  const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container)
 
   return (
     <PopoverPrimitive.Portal container={resolvedContainer ?? undefined}>
-      <OverlayHostProvider value={hostElement}>
+      <OverlayHostProvider value={hostValue}>
         <PopoverPrimitive.Content
           ref={contentRef}
           align={align}

@@ -93,11 +93,12 @@ const SelectContent = React.forwardRef<
   }
 >(({ className, children, position = 'popper', container, ...props }, ref) => {
   const resolvedContainer = useResolvedOverlayContainer(container)
-  const { hostElement, ref: contentRef } = useOverlayHostElement(ref, resolvedContainer)
+  const { hostElement, ref: contentRef } = useOverlayHostElement(ref)
+  const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container)
 
   return (
     <SelectPrimitive.Portal container={resolvedContainer ?? undefined}>
-      <OverlayHostProvider value={hostElement}>
+      <OverlayHostProvider value={hostValue}>
         <SelectPrimitive.Content
           ref={contentRef}
           className={cn(

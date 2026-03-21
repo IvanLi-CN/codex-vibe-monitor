@@ -38,10 +38,8 @@ export function Tooltip({
   const [hoverOpen, setHoverOpen] = React.useState(false)
   const [longPressOpen, setLongPressOpen] = React.useState(false)
   const resolvedContainer = useResolvedOverlayContainer(container)
-  const { hostElement, ref: contentRef } = useOverlayHostElement<HTMLDivElement>(
-    undefined,
-    resolvedContainer,
-  )
+  const { hostElement, ref: contentRef } = useOverlayHostElement<HTMLDivElement>(undefined)
+  const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container)
 
   const clearLongPressTimer = React.useCallback(() => {
     if (longPressTimerRef.current != null) {
@@ -92,7 +90,7 @@ export function Tooltip({
           </span>
         </TooltipPrimitive.Trigger>
         <TooltipPrimitive.Portal container={resolvedContainer ?? undefined}>
-          <OverlayHostProvider value={hostElement}>
+          <OverlayHostProvider value={hostValue}>
             <TooltipPrimitive.Content
               ref={contentRef}
               side={side}

@@ -9,7 +9,6 @@ export function useResolvedOverlayContainer(container?: HTMLElement | null) {
 
 export function useOverlayHostElement<T extends HTMLElement>(
   ref: React.Ref<T> | undefined,
-  fallbackHost: HTMLElement | null,
 ) {
   const [hostElement, setHostElement] = React.useState<T | null>(null)
 
@@ -26,7 +25,7 @@ export function useOverlayHostElement<T extends HTMLElement>(
   )
 
   return {
-    hostElement: hostElement ?? fallbackHost,
+    hostElement,
     ref: handleRef,
   }
 }

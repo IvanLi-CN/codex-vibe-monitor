@@ -175,6 +175,39 @@ describe('overlay host inheritance', () => {
     expect(overlayHost.contains(content)).toBe(false)
   })
 
+  it('preserves container={null} as an escape hatch from the inherited overlay host', () => {
+    setupOverlayRoots()
+    if (!overlayHost) throw new Error('missing overlay host')
+
+    render(
+      <OverlayHostProvider value={overlayHost}>
+        <Popover open>
+          <PopoverTrigger asChild>
+            <button type="button">Open escaped popover</button>
+          </PopoverTrigger>
+          <PopoverContent container={null} className="escaped-popover-root">
+            <span>Escaped popover root</span>
+            <Popover open>
+              <PopoverTrigger asChild>
+                <button type="button">Open escaped child</button>
+              </PopoverTrigger>
+              <PopoverContent className="escaped-popover-child">Escaped nested popover</PopoverContent>
+            </Popover>
+          </PopoverContent>
+        </Popover>
+      </OverlayHostProvider>,
+    )
+
+    const escapedRoot = document.body.querySelector('.escaped-popover-root') as HTMLElement | null
+    const escapedChild = document.body.querySelector('.escaped-popover-child') as HTMLElement | null
+
+    expect(escapedRoot).not.toBeNull()
+    expect(escapedChild).not.toBeNull()
+    expect(overlayHost.contains(escapedRoot)).toBe(false)
+    expect(overlayHost.contains(escapedChild)).toBe(false)
+    expect(escapedRoot?.contains(escapedChild)).toBe(true)
+  })
+
   it('keeps nested popovers out of overflow-hidden dialog content while staying inside the dialog host', () => {
     setupOverlayRoots()
     if (!overlayHost) throw new Error('missing overlay host')
