@@ -215,11 +215,12 @@ cargo run -- \
 
 ## 数据分层保留与离线归档
 
+- `invocation_rollup_hourly`、`invocation_failure_rollup_hourly`、`proxy_perf_stage_hourly`、`prompt_cache_rollup_hourly`、`upstream_sticky_key_hourly`、`forward_proxy_attempt_hourly` 是**长期在线保留**的统计层；历史查询默认优先读取这些小时桶，而不是依赖旧 raw 明细。
 - `codex_invocations` 的成功记录超过 30 个上海自然日后，会先把完整行写入对应月份的离线 archive，再把主库内的原始 payload / raw response / raw file 引用精简为 `structured_only`，但保留结构化统计字段用于在线排障。
 - 任意调用记录超过 90 个上海自然日后，会先归档到 `ARCHIVE_DIR/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`；若 `ARCHIVE_DIR` 使用相对路径，则实际位置位于 `<DATABASE_PATH 同级目录>/<ARCHIVE_DIR 的值>/...`，写入 `archive_batches` 清单后，再从主库删除。
 - `forward_proxy_attempts` 与 `stats_source_snapshots` 只保留最近 30 个上海自然日在线明细；更老数据同样执行“先归档、再清理”。
 - `codex_quota_snapshots` 保留最近 30 天全量，更老日期在主库内压缩为“每个上海自然日最后一条”，被折叠掉的行进入离线归档。
-- `stats_source_deltas` 长期在线保留；`/api/stats` 与 `GET /api/stats/summary?window=all` 通过“在线明细 + invocation_rollup_daily”保证长期 totals 不缩水。
+- `stats_source_deltas` 长期在线保留；`/api/stats`、`GET /api/stats/summary?window=all`、`GET /api/stats/timeseries` 等长期统计路径通过 hourly rollups 保证 totals 与小时趋势在 raw retention 之后仍连续在线可查。
 - 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，现有 Web UI 不提供 archived 明细在线浏览；orphan sweep 只清理超过宽限期的未引用文件。
 - 运维直接扫磁盘 raw 时，统一使用镜像内置命令：`docker exec ai-codex-vibe-monitor search-raw '<needle>'`。脚本默认按容器内的 `DATABASE_PATH + PROXY_RAW_DIR` 解析搜索根目录，同时搜索 `*.bin` 与 `*.bin.gz`；加 `--regex` 可切换为正则模式，`--root` 可显式覆写路径。
 
@@ -244,9 +245,10 @@ cargo run -- --retention-run-once
 - `PUT /api/settings/proxy`：更新 `/v1/models` 劫持与上游合并开关状态（全局持久化）。
 - `PUT /api/settings/pricing`：更新价格目录（全量覆盖、全局持久化、实时生效于新请求成本估算）。
 - `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `LIST_LIMIT_MAX` 控制）；每条记录额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记在线明细是否仍完整。
-- `GET /api/stats`：全量聚合统计；长期 totals 会合并在线明细与 `invocation_rollup_daily`。
-- `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计；`window=all` 会承接归档前回填的日汇总。
-- `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）。
+- `GET /api/stats`：全量聚合统计；长期 totals 读取永久在线 hourly rollups，并补上尚未 sync 的 live tail。
+- `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计；`window=all` 与历史长窗口都通过 hourly rollups 保持在线连续。
+- `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）；跨过 raw retention 后仍支持小时级历史查询。
+- `GET /api/stats/forward-proxy/timeseries?range=30d&bucket=1h`：forward proxy 历史小时时序，返回每个 proxy 的 request buckets 与 weight buckets。
 - `GET /api/stats/perf`：代理链路阶段耗时统计（count/avg/P50/P90/P99/max）。
 - `GET /api/quota/latest`：数据库中最近一次历史配额快照（服务不会再主动抓取新的 XYAI quota）。
 - `ANY /v1/*`：OpenAI 兼容反向代理（请求头/请求体/状态码/响应头/响应体透明透传，包含流式响应）；`GET /v1/models` 可按设置切换为预置列表或预置+上游实时合并。

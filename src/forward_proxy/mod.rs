@@ -203,26 +203,49 @@ pub(crate) async fn insert_forward_proxy_attempt(
     failure_kind: Option<&str>,
     is_probe: bool,
 ) -> Result<()> {
-    sqlx::query(
+    let occurred_at = format_naive(Utc::now().naive_utc());
+    let mut tx = pool.begin().await?;
+    let insert = sqlx::query(
         r#"
         INSERT INTO forward_proxy_attempts (
             proxy_key,
+            occurred_at,
             is_success,
             latency_ms,
             failure_kind,
             is_probe
         )
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         "#,
     )
     .bind(proxy_key)
+    .bind(&occurred_at)
     .bind(success as i64)
     .bind(latency_ms)
     .bind(failure_kind)
     .bind(is_probe as i64)
-    .execute(pool)
+    .execute(tx.as_mut())
     .await
     .with_context(|| format!("failed to insert forward proxy attempt for {proxy_key}"))?;
+    let inserted_id = insert.last_insert_rowid();
+    upsert_forward_proxy_attempt_hourly_rollups_tx(
+        tx.as_mut(),
+        &[ForwardProxyAttemptHourlySourceRecord {
+            id: inserted_id,
+            proxy_key: proxy_key.to_string(),
+            occurred_at,
+            is_success: success as i64,
+            latency_ms,
+        }],
+    )
+    .await?;
+    save_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+        inserted_id,
+    )
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -326,13 +349,12 @@ pub(crate) async fn query_forward_proxy_hourly_stats(
         r#"
         SELECT
             proxy_key,
-            (CAST(strftime('%s', occurred_at) AS INTEGER) / 3600) * 3600 AS bucket_start_epoch,
-            SUM(CASE WHEN is_success != 0 THEN 1 ELSE 0 END) AS success_count,
-            SUM(CASE WHEN is_success = 0 THEN 1 ELSE 0 END) AS failure_count
-        FROM forward_proxy_attempts
-        WHERE occurred_at >= datetime(?1, 'unixepoch')
-          AND occurred_at < datetime(?2, 'unixepoch')
-        GROUP BY proxy_key, bucket_start_epoch
+            bucket_start_epoch,
+            success_count,
+            failure_count
+        FROM forward_proxy_attempt_hourly
+        WHERE bucket_start_epoch >= ?1
+          AND bucket_start_epoch < ?2
         "#,
     )
     .bind(range_start_epoch)
@@ -674,6 +696,166 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
         range_start: format_utc_iso(range_start),
         range_end: format_utc_iso(range_end),
         bucket_seconds: BUCKET_SECONDS,
+        nodes,
+    })
+}
+
+pub(crate) async fn build_forward_proxy_timeseries_response(
+    state: &AppState,
+    range_window: RangeWindow,
+) -> Result<ForwardProxyTimeseriesResponse> {
+    const BUCKET_SECONDS: i64 = 3600;
+
+    let runtime_rows = {
+        let manager = state.forward_proxy.lock().await;
+        manager.snapshot_runtime()
+    };
+    let runtime_map = runtime_rows
+        .into_iter()
+        .map(|runtime| (runtime.proxy_key.clone(), runtime))
+        .collect::<HashMap<_, _>>();
+
+    let start_epoch = range_window.start.timestamp();
+    let end_epoch = range_window.end.timestamp();
+    let mut bucket_cursor = align_bucket_epoch(start_epoch, BUCKET_SECONDS, 0);
+    if bucket_cursor > start_epoch {
+        bucket_cursor -= BUCKET_SECONDS;
+    }
+    let fill_start_epoch = bucket_cursor;
+    let fill_end_epoch = align_bucket_epoch(end_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
+
+    let hourly_map =
+        query_forward_proxy_hourly_stats(&state.pool, fill_start_epoch, fill_end_epoch).await?;
+    let weight_hourly_map =
+        query_forward_proxy_weight_hourly_stats(&state.pool, fill_start_epoch, fill_end_epoch)
+            .await?;
+
+    let mut seen = HashSet::new();
+    let mut proxy_keys = Vec::new();
+    for key in runtime_map.keys() {
+        if seen.insert(key.clone()) {
+            proxy_keys.push(key.clone());
+        }
+    }
+    for key in hourly_map.keys() {
+        if seen.insert(key.clone()) {
+            proxy_keys.push(key.clone());
+        }
+    }
+    for key in weight_hourly_map.keys() {
+        if seen.insert(key.clone()) {
+            proxy_keys.push(key.clone());
+        }
+    }
+    proxy_keys.sort();
+
+    let weight_carry_map =
+        query_forward_proxy_weight_last_before(&state.pool, fill_start_epoch, &proxy_keys).await?;
+
+    let mut nodes = proxy_keys
+        .into_iter()
+        .map(|proxy_key| {
+            let runtime = runtime_map.get(&proxy_key);
+            let request_points = hourly_map.get(&proxy_key);
+            let weight_points = weight_hourly_map.get(&proxy_key);
+            let fallback_weight = weight_carry_map.get(&proxy_key).copied().unwrap_or(1.0);
+            let mut carry_weight = runtime.map(|item| item.weight).unwrap_or(fallback_weight);
+            if let Some(prior_weight) = weight_carry_map.get(&proxy_key).copied() {
+                carry_weight = prior_weight;
+            }
+
+            let buckets = (0..((fill_end_epoch - fill_start_epoch) / BUCKET_SECONDS))
+                .map(|index| {
+                    let bucket_start_epoch = fill_start_epoch + index * BUCKET_SECONDS;
+                    let bucket_end_epoch = bucket_start_epoch + BUCKET_SECONDS;
+                    let point = request_points
+                        .and_then(|items| items.get(&bucket_start_epoch))
+                        .cloned()
+                        .unwrap_or_default();
+                    let bucket_start = Utc
+                        .timestamp_opt(bucket_start_epoch, 0)
+                        .single()
+                        .ok_or_else(|| anyhow!("invalid forward proxy bucket start epoch"))?;
+                    let bucket_end = Utc
+                        .timestamp_opt(bucket_end_epoch, 0)
+                        .single()
+                        .ok_or_else(|| anyhow!("invalid forward proxy bucket end epoch"))?;
+                    Ok(ForwardProxyHourlyBucketResponse {
+                        bucket_start: format_utc_iso(bucket_start),
+                        bucket_end: format_utc_iso(bucket_end),
+                        success_count: point.success_count,
+                        failure_count: point.failure_count,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let weight_buckets = (0..((fill_end_epoch - fill_start_epoch) / BUCKET_SECONDS))
+                .map(|index| {
+                    let bucket_start_epoch = fill_start_epoch + index * BUCKET_SECONDS;
+                    let bucket_end_epoch = bucket_start_epoch + BUCKET_SECONDS;
+                    let point = weight_points.and_then(|items| items.get(&bucket_start_epoch));
+                    let (sample_count, min_weight, max_weight, avg_weight, last_weight) =
+                        if let Some(point) = point {
+                            carry_weight = point.last_weight;
+                            (
+                                point.sample_count,
+                                point.min_weight,
+                                point.max_weight,
+                                point.avg_weight,
+                                point.last_weight,
+                            )
+                        } else {
+                            (0, carry_weight, carry_weight, carry_weight, carry_weight)
+                        };
+                    let bucket_start = Utc
+                        .timestamp_opt(bucket_start_epoch, 0)
+                        .single()
+                        .ok_or_else(|| {
+                            anyhow!("invalid forward proxy weight bucket start epoch")
+                        })?;
+                    let bucket_end = Utc
+                        .timestamp_opt(bucket_end_epoch, 0)
+                        .single()
+                        .ok_or_else(|| anyhow!("invalid forward proxy weight bucket end epoch"))?;
+                    Ok(ForwardProxyWeightHourlyBucketResponse {
+                        bucket_start: format_utc_iso(bucket_start),
+                        bucket_end: format_utc_iso(bucket_end),
+                        sample_count,
+                        min_weight,
+                        max_weight,
+                        avg_weight,
+                        last_weight,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            Ok(ForwardProxyTimeseriesNodeResponse {
+                key: proxy_key.clone(),
+                source: runtime
+                    .map(|item| item.source.clone())
+                    .unwrap_or_else(|| "archived".to_string()),
+                display_name: runtime
+                    .map(|item| item.display_name.clone())
+                    .unwrap_or_else(|| proxy_key.clone()),
+                endpoint_url: runtime.and_then(|item| item.endpoint_url.clone()),
+                weight: runtime.map(|item| item.weight).unwrap_or(fallback_weight),
+                penalized: runtime.map(|item| item.is_penalized()).unwrap_or(false),
+                buckets,
+                weight_buckets,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
+
+    Ok(ForwardProxyTimeseriesResponse {
+        range_start: format_utc_iso(range_window.start),
+        range_end: format_utc_iso(
+            Utc.timestamp_opt(fill_end_epoch, 0)
+                .single()
+                .unwrap_or(range_window.display_end),
+        ),
+        bucket_seconds: BUCKET_SECONDS,
+        effective_bucket: "1h".to_string(),
+        available_buckets: vec!["1h".to_string()],
         nodes,
     })
 }
@@ -3541,4 +3723,28 @@ pub(crate) struct ForwardProxyLiveStatsResponse {
     pub(crate) range_end: String,
     pub(crate) bucket_seconds: i64,
     pub(crate) nodes: Vec<ForwardProxyLiveNodeResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ForwardProxyTimeseriesNodeResponse {
+    pub(crate) key: String,
+    pub(crate) source: String,
+    pub(crate) display_name: String,
+    pub(crate) endpoint_url: Option<String>,
+    pub(crate) weight: f64,
+    pub(crate) penalized: bool,
+    pub(crate) buckets: Vec<ForwardProxyHourlyBucketResponse>,
+    pub(crate) weight_buckets: Vec<ForwardProxyWeightHourlyBucketResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ForwardProxyTimeseriesResponse {
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) bucket_seconds: i64,
+    pub(crate) effective_bucket: String,
+    pub(crate) available_buckets: Vec<String>,
+    pub(crate) nodes: Vec<ForwardProxyTimeseriesNodeResponse>,
 }

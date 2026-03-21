@@ -2717,6 +2717,7 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
 }
@@ -6912,6 +6913,124 @@ async fn forward_proxy_live_stats_keeps_direct_node_and_zero_metrics_when_no_att
 }
 
 #[tokio::test]
+async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(settings_response) = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec!["socks5://127.0.0.1:1081".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect("put forward proxy settings should succeed");
+    let manual_key = settings_response
+        .nodes
+        .iter()
+        .find(|node| node.source == FORWARD_PROXY_SOURCE_MANUAL)
+        .map(|node| node.key.clone())
+        .expect("manual node should exist");
+
+    let historical_bucket_start =
+        align_bucket_epoch((Utc::now() - ChronoDuration::days(45)).timestamp(), 3600, 0);
+    let historical_attempt_at = Utc
+        .timestamp_opt(historical_bucket_start + 5 * 60, 0)
+        .single()
+        .expect("historical attempt timestamp should be valid");
+    seed_forward_proxy_weight_bucket_at(
+        &state.pool,
+        &manual_key,
+        historical_bucket_start,
+        2,
+        0.55,
+        0.75,
+        0.65,
+        0.70,
+    )
+    .await;
+    seed_forward_proxy_attempt_at(&state.pool, &manual_key, historical_attempt_at, true).await;
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        &manual_key,
+        historical_attempt_at + ChronoDuration::minutes(10),
+        false,
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&state.pool, &state.config, Some(false), None)
+        .await
+        .expect("run retention maintenance");
+    assert_eq!(summary.forward_proxy_attempt_rows_archived, 2);
+
+    let live_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM forward_proxy_attempts WHERE proxy_key = ?1 AND occurred_at < ?2",
+    )
+    .bind(&manual_key)
+    .bind(
+        Utc.timestamp_opt(historical_bucket_start + 3_600, 0)
+            .single()
+            .expect("historical bucket end should be valid")
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count live forward proxy attempts");
+    assert_eq!(live_count, 0);
+
+    let Json(response) = fetch_forward_proxy_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("UTC".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch forward proxy timeseries should succeed");
+
+    assert_eq!(response.bucket_seconds, 3600);
+    assert_eq!(response.effective_bucket, "1h");
+    assert_eq!(response.available_buckets, vec!["1h".to_string()]);
+
+    let manual = response
+        .nodes
+        .iter()
+        .find(|node| node.key == manual_key)
+        .expect("manual node should remain queryable");
+    let bucket_start = format_utc_iso(
+        Utc.timestamp_opt(historical_bucket_start, 0)
+            .single()
+            .expect("historical bucket start should be valid"),
+    );
+    let request_bucket = manual
+        .buckets
+        .iter()
+        .find(|bucket| bucket.bucket_start == bucket_start)
+        .expect("historical request bucket should be present");
+    assert_eq!(request_bucket.success_count, 1);
+    assert_eq!(request_bucket.failure_count, 1);
+    let weight_bucket = manual
+        .weight_buckets
+        .iter()
+        .find(|bucket| bucket.bucket_start == bucket_start)
+        .expect("historical weight bucket should be present");
+    assert_eq!(weight_bucket.sample_count, 2);
+    assert_f64_close(weight_bucket.min_weight, 0.55);
+    assert_f64_close(weight_bucket.max_weight, 0.75);
+    assert_f64_close(weight_bucket.avg_weight, 0.65);
+    assert_f64_close(weight_bucket.last_weight, 0.70);
+}
+
+#[tokio::test]
 async fn upsert_forward_proxy_weight_hourly_bucket_keeps_latest_sample_weight() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
@@ -7803,6 +7922,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -9279,6 +9399,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -11930,6 +12051,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -12302,6 +12424,9 @@ async fn build_account_sticky_keys_response_keeps_attached_keys_without_recent_a
     .execute(&state.pool)
     .await
     .expect("insert stale sticky invocation");
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("sync hourly rollups before sticky aggregate response");
 
     let response = build_account_sticky_keys_response(&state.pool, account_id, 20)
         .await
@@ -12543,6 +12668,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -12615,6 +12741,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -18017,6 +18144,7 @@ async fn quota_latest_returns_degraded_when_empty() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -18125,6 +18253,47 @@ async fn insert_invocation_rollup(
     .execute(pool)
     .await
     .expect("insert invocation rollup");
+
+    let bucket_start_epoch = local_naive_to_utc(
+        stats_date
+            .and_hms_opt(0, 0, 0)
+            .expect("stats_date midnight should be valid"),
+        Shanghai,
+    )
+    .timestamp();
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0.0, 0.0, ?8, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(source)
+    .bind(total_count)
+    .bind(success_count)
+    .bind(failure_count)
+    .bind(total_tokens)
+    .bind(total_cost)
+    .bind(
+        encode_approx_histogram(&empty_approx_histogram())
+            .expect("encode empty approximate histogram"),
+    )
+    .execute(pool)
+    .await
+    .expect("insert invocation hourly rollup");
 }
 
 fn bucket_date_in_tz(bucket_start: &str, tz: Tz) -> NaiveDate {
@@ -18521,7 +18690,7 @@ async fn timeseries_daily_combines_rollup_and_live_within_same_day() {
 }
 
 #[tokio::test]
-async fn timeseries_daily_skips_rollups_when_timezone_boundaries_differ() {
+async fn timeseries_hourly_rollups_rebucket_for_different_timezones() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -18541,22 +18710,29 @@ async fn timeseries_daily_skips_rollups_when_timezone_boundaries_differ() {
     .await
     .expect("fetch utc daily timeseries");
 
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.total_count)
-            .sum::<i64>(),
-        0
-    );
-    assert_eq!(
-        response
-            .points
-            .iter()
-            .map(|point| point.first_byte_sample_count)
-            .sum::<i64>(),
-        0
-    );
+    let expected_utc_date = local_naive_to_utc(
+        archived_date
+            .and_hms_opt(0, 0, 0)
+            .expect("archived_date midnight should be valid"),
+        Shanghai,
+    )
+    .date_naive();
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| {
+            DateTime::parse_from_rfc3339(&point.bucket_start)
+                .expect("valid utc bucket start")
+                .with_timezone(&Utc)
+                .date_naive()
+                == expected_utc_date
+        })
+        .expect("should rebucket archived hourly rollup into utc day");
+    assert_eq!(bucket.total_count, 9);
+    assert_eq!(bucket.success_count, 7);
+    assert_eq!(bucket.failure_count, 2);
+    assert_eq!(bucket.total_tokens, 900);
+    assert_f64_close(bucket.total_cost, 2.25);
 }
 
 #[tokio::test]
@@ -18595,7 +18771,7 @@ async fn timeseries_daily_includes_rollups_for_equivalent_day_boundaries() {
 }
 
 #[tokio::test]
-async fn timeseries_subday_bucket_is_limited_to_daily_when_range_crosses_archive_boundary() {
+async fn timeseries_hourly_backed_bucket_stays_available_across_archive_boundary() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -18624,18 +18800,25 @@ async fn timeseries_subday_bucket_is_limited_to_daily_when_range_crosses_archive
         }),
     )
     .await
-    .expect("fetch timeseries with archive-aware bucket fallback");
+    .expect("fetch timeseries with hourly rollup continuity");
 
-    assert_eq!(response.bucket_seconds, 86_400);
-    assert_eq!(response.effective_bucket, "1d");
-    assert_eq!(response.available_buckets, vec!["1d".to_string()]);
-    assert!(response.bucket_limited_to_daily);
+    assert_eq!(response.bucket_seconds, 43_200);
+    assert_eq!(response.effective_bucket, "12h");
+    assert!(!response.bucket_limited_to_daily);
+    assert!(response.available_buckets.contains(&"1h".to_string()));
+    assert!(response.available_buckets.contains(&"12h".to_string()));
+    assert!(response.available_buckets.contains(&"1d".to_string()));
 
     let archived_bucket = response
         .points
         .iter()
-        .find(|point| shanghai_bucket_date(&point.bucket_start) == archived_date)
-        .expect("should include archived rollup day");
+        .find(|point| {
+            point.total_count == 6
+                && point.success_count == 5
+                && point.failure_count == 1
+                && point.total_tokens == 600
+        })
+        .expect("should include archived rollup-backed bucket");
     assert_eq!(archived_bucket.total_count, 6);
 }
 
@@ -18677,7 +18860,7 @@ async fn timeseries_subday_bucket_stays_available_inside_live_window() {
 }
 
 #[tokio::test]
-async fn invocation_rollup_daily_range_respects_proxy_only_scope() {
+async fn invocation_hourly_rollup_range_respects_proxy_only_scope() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -18686,22 +18869,31 @@ async fn invocation_rollup_daily_range_respects_proxy_only_scope() {
     insert_invocation_rollup(&state.pool, stats_date, SOURCE_PROXY, 2, 1, 1, 20, 0.2).await;
     insert_invocation_rollup(&state.pool, stats_date, SOURCE_XY, 5, 5, 0, 50, 0.5).await;
 
-    let proxy_rows = query_invocation_rollup_daily_range(
+    let range_start_epoch = local_naive_to_utc(
+        stats_date
+            .and_hms_opt(0, 0, 0)
+            .expect("stats_date midnight should be valid"),
+        Shanghai,
+    )
+    .timestamp();
+    let range_end_epoch = range_start_epoch + 3_600;
+
+    let proxy_rows = query_invocation_hourly_rollup_range(
         &state.pool,
-        stats_date,
-        stats_date,
+        range_start_epoch,
+        range_end_epoch,
         InvocationSourceScope::ProxyOnly,
     )
     .await
-    .expect("query proxy rollup range");
-    let all_rows = query_invocation_rollup_daily_range(
+    .expect("query proxy hourly rollup range");
+    let all_rows = query_invocation_hourly_rollup_range(
         &state.pool,
-        stats_date,
-        stats_date,
+        range_start_epoch,
+        range_end_epoch,
         InvocationSourceScope::All,
     )
     .await
-    .expect("query all rollup range");
+    .expect("query all hourly rollup range");
 
     assert_eq!(proxy_rows.len(), 1);
     assert_eq!(proxy_rows[0].total_count, 2);

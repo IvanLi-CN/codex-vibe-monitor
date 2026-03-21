@@ -3113,6 +3113,9 @@ pub(crate) async fn get_upstream_account_sticky_keys(
     AxumPath(id): AxumPath<i64>,
     Query(params): Query<AccountStickyKeysQuery>,
 ) -> Result<Json<AccountStickyKeysResponse>, (StatusCode, String)> {
+    ensure_hourly_rollups_caught_up(state.as_ref())
+        .await
+        .map_err(internal_error_tuple)?;
     let exists = load_upstream_account_row(&state.pool, id)
         .await
         .map_err(internal_error_tuple)?
@@ -9065,28 +9068,17 @@ async fn query_account_sticky_key_aggregates(
     if selected_keys.is_empty() {
         return Ok(Vec::new());
     }
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
-    const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
-
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS sticky_key, \
-                 COUNT(*) AS request_count, \
-                 COALESCE(SUM(total_tokens), 0) AS total_tokens, \
-                 COALESCE(SUM(cost), 0.0) AS total_cost, \
-                 MIN(occurred_at) AS created_at, \
-                 MAX(occurred_at) AS last_activity_at \
-             FROM codex_invocations \
-             WHERE ",
-        )
-        .push(ACCOUNT_EXPR)
-        .push(" = ")
-        .push_bind(account_id)
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IN (");
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT sticky_key, \
+             SUM(request_count) AS request_count, \
+             SUM(total_tokens) AS total_tokens, \
+             SUM(total_cost) AS total_cost, \
+             MIN(first_seen_at) AS created_at, \
+             MAX(last_seen_at) AS last_activity_at \
+         FROM upstream_sticky_key_hourly \
+         WHERE upstream_account_id = ",
+    );
+    query.push_bind(account_id).push(" AND sticky_key IN (");
     {
         let mut separated = query.separated(", ");
         for key in selected_keys {
@@ -10154,6 +10146,7 @@ mod tests {
                     in_flight: HashMap::new(),
                 },
             )),
+            hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
             upstream_accounts: Arc::new(
                 UpstreamAccountsRuntime::test_instance_with_maintenance_parallelism(
                     maintenance_parallelism,

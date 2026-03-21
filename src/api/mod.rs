@@ -1335,6 +1335,7 @@ pub(crate) async fn fetch_invocation_suggestions(
 pub(crate) async fn fetch_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StatsResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let totals = query_combined_totals(
         &state.pool,
@@ -1353,6 +1354,7 @@ pub(crate) async fn fetch_summary(
     let default_limit = state.config.list_limit_max as i64;
     let window = parse_summary_window(&params, default_limit)?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
 
     let totals = match window {
@@ -1376,36 +1378,85 @@ pub(crate) async fn fetch_summary(
         }
         SummaryWindow::Duration(duration) => {
             let start = Utc::now() - duration;
-            query_combined_totals(
-                &state.pool,
-                state.config.crs_stats.as_ref(),
-                StatsFilter::Since(start),
-                source_scope,
-            )
-            .await?
+            query_hourly_backed_summary_since(state.as_ref(), start, source_scope).await?
         }
         SummaryWindow::Calendar(spec) => {
             let now = Utc::now();
             let start = named_range_start(spec.as_str(), now, reporting_tz).ok_or_else(|| {
                 ApiError::bad_request(anyhow!("unsupported calendar window: {spec}"))
             })?;
-            query_combined_totals(
-                &state.pool,
-                state.config.crs_stats.as_ref(),
-                StatsFilter::Since(start),
-                source_scope,
-            )
-            .await?
+            query_hourly_backed_summary_since(state.as_ref(), start, source_scope).await?
         }
     };
 
     Ok(Json(totals.into_response()))
 }
 
+async fn query_hourly_backed_summary_since(
+    state: &AppState,
+    start: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+) -> Result<StatsTotals, ApiError> {
+    if start >= shanghai_retention_cutoff(state.config.invocation_max_days) {
+        return query_combined_totals(
+            &state.pool,
+            state.config.crs_stats.as_ref(),
+            StatsFilter::Since(start),
+            source_scope,
+        )
+        .await
+        .map_err(Into::into);
+    }
+
+    let range_start_epoch = align_bucket_epoch(start.timestamp(), 3600, 0);
+    let range_end_epoch = align_bucket_epoch(Utc::now().timestamp(), 3600, 0) + 3600;
+    let rows = query_invocation_hourly_rollup_range(
+        &state.pool,
+        range_start_epoch,
+        range_end_epoch,
+        source_scope,
+    )
+    .await?;
+    let mut totals = StatsTotals::default();
+    for row in rows {
+        totals.total_count += row.total_count;
+        totals.success_count += row.success_count;
+        totals.failure_count += row.failure_count;
+        totals.total_tokens += row.total_tokens;
+        totals.total_cost += row.total_cost;
+    }
+    let relay = query_crs_totals(
+        &state.pool,
+        state.config.crs_stats.as_ref(),
+        &StatsFilter::Since(start),
+        source_scope,
+    )
+    .await?;
+    Ok(totals.add(relay))
+}
+
 pub(crate) async fn fetch_forward_proxy_live_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ForwardProxyLiveStatsResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let response = build_forward_proxy_live_stats_response(state.as_ref()).await?;
+    Ok(Json(response))
+}
+
+pub(crate) async fn fetch_forward_proxy_timeseries(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TimeseriesQuery>,
+) -> Result<Json<ForwardProxyTimeseriesResponse>, ApiError> {
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let range_window = resolve_range_window(&params.range, reporting_tz)?;
+    let bucket_spec = params.bucket.as_deref().unwrap_or("1h");
+    if bucket_seconds_from_spec(bucket_spec) != Some(3_600) {
+        return Err(ApiError::bad_request(anyhow!(
+            "unsupported forward proxy bucket specification: {bucket_spec}; only 1h is supported"
+        )));
+    }
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
+    let response = build_forward_proxy_timeseries_response(state.as_ref(), range_window).await?;
     Ok(Json(response))
 }
 
@@ -1413,6 +1464,7 @@ pub(crate) async fn fetch_prompt_cache_conversations(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PromptCacheConversationsQuery>,
 ) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let selection = resolve_prompt_cache_conversation_selection(params)?;
     let response = fetch_prompt_cache_conversations_cached(state.as_ref(), selection).await?;
     Ok(Json(response))
@@ -1652,49 +1704,33 @@ pub(crate) async fn query_prompt_cache_conversation_aggregates(
     source_scope: InvocationSourceScope,
     limit: i64,
 ) -> Result<Vec<PromptCacheConversationAggregateRow>> {
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    let range_start_epoch = parse_to_utc_datetime(range_start_bound)
+        .map(|value| align_bucket_epoch(value.timestamp(), 3_600, 0))
+        .unwrap_or_default();
 
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH active AS (\
-            SELECT ",
+            SELECT prompt_cache_key, MIN(first_seen_at) AS first_seen_24h \
+             FROM prompt_cache_rollup_hourly \
+             WHERE bucket_start_epoch >= ",
     );
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key, MIN(occurred_at) AS first_seen_24h \
-             FROM codex_invocations \
-             WHERE occurred_at >= ",
-        )
-        .push_bind(range_start_bound);
-
+    query.push_bind(range_start_epoch);
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    query
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(
-            " <> '' \
-             GROUP BY prompt_cache_key\
+    query.push(
+        " GROUP BY prompt_cache_key\
          ), aggregates AS (\
-            SELECT ",
-        )
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key, \
-                 COUNT(*) AS request_count, \
-                 COALESCE(SUM(total_tokens), 0) AS total_tokens, \
-                 COALESCE(SUM(cost), 0.0) AS total_cost, \
-                 MIN(occurred_at) AS created_at, \
-                 MAX(occurred_at) AS last_activity_at \
-             FROM codex_invocations \
-             WHERE ",
-        )
-        .push(KEY_EXPR)
-        .push(" IN (SELECT prompt_cache_key FROM active)");
+            SELECT prompt_cache_key, \
+                 SUM(request_count) AS request_count, \
+                 SUM(total_tokens) AS total_tokens, \
+                 SUM(total_cost) AS total_cost, \
+                 MIN(first_seen_at) AS created_at, \
+                 MAX(last_seen_at) AS last_activity_at \
+             FROM prompt_cache_rollup_hourly \
+             WHERE prompt_cache_key IN (SELECT prompt_cache_key FROM active)",
+    );
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
@@ -1723,26 +1759,20 @@ pub(crate) async fn query_active_prompt_cache_conversation_count(
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
 ) -> Result<i64> {
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    let range_start_epoch = parse_to_utc_datetime(range_start_bound)
+        .map(|value| align_bucket_epoch(value.timestamp(), 3_600, 0))
+        .unwrap_or_default();
 
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT COUNT(DISTINCT ");
-    query.push(KEY_EXPR).push(
-        ") AS count \
-         FROM codex_invocations \
-         WHERE occurred_at >= ",
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT COUNT(DISTINCT prompt_cache_key) AS count \
+         FROM prompt_cache_rollup_hourly \
+         WHERE bucket_start_epoch >= ",
     );
-    query.push_bind(range_start_bound);
+    query.push_bind(range_start_epoch);
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-
-    query
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(" <> ''");
 
     let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
     Ok(count)
@@ -1759,47 +1789,30 @@ pub(crate) async fn query_prompt_cache_conversation_hidden_count(
         return Ok(0);
     }
 
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    let range_start_epoch = parse_to_utc_datetime(range_start_bound)
+        .map(|value| align_bucket_epoch(value.timestamp(), 3_600, 0))
+        .unwrap_or_default();
 
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH active AS (\
-            SELECT DISTINCT ",
+            SELECT DISTINCT prompt_cache_key \
+         FROM prompt_cache_rollup_hourly \
+         WHERE bucket_start_epoch >= ",
     );
-    query.push(KEY_EXPR).push(
-        " AS prompt_cache_key \
-         FROM codex_invocations \
-         WHERE occurred_at >= ",
-    );
-    query.push_bind(range_start_bound);
+    query.push_bind(range_start_epoch);
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    query
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(
-            " <> ''\
-         ), history AS (\
-            SELECT ",
-        );
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key, MIN(occurred_at) AS created_at \
-             FROM codex_invocations \
-             WHERE ",
-        )
-        .push(KEY_EXPR)
-        .push(" IS NOT NULL AND ")
-        .push(KEY_EXPR)
-        .push(" <> ''");
+    query.push(
+        " ), history AS (\
+            SELECT prompt_cache_key, MIN(first_seen_at) AS created_at \
+             FROM prompt_cache_rollup_hourly",
+    );
 
     if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        query.push(" WHERE source = ").push_bind(SOURCE_PROXY);
     }
 
     query.push(
@@ -1892,6 +1905,7 @@ pub(crate) async fn fetch_timeseries(
     State(state): State<Arc<AppState>>,
     Query(params): Query<TimeseriesQuery>,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
@@ -1902,8 +1916,16 @@ pub(crate) async fn fetch_timeseries(
     )?;
     let bucket_seconds = bucket_selection.bucket_seconds;
 
-    if bucket_seconds == 86_400 {
-        return fetch_timeseries_daily(state, params, reporting_tz, bucket_selection).await;
+    if bucket_seconds >= 3_600 {
+        return fetch_timeseries_from_hourly_rollups(
+            state,
+            params,
+            reporting_tz,
+            source_scope,
+            range_window,
+            bucket_selection,
+        )
+        .await;
     }
 
     let offset_seconds = 0;
@@ -2043,6 +2065,108 @@ pub(crate) async fn fetch_timeseries(
     };
 
     Ok(Json(response))
+}
+
+async fn fetch_timeseries_from_hourly_rollups(
+    state: Arc<AppState>,
+    _params: TimeseriesQuery,
+    _reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    range_window: RangeWindow,
+    bucket_selection: TimeseriesBucketSelection,
+) -> Result<Json<TimeseriesResponse>, ApiError> {
+    let bucket_seconds = bucket_selection.bucket_seconds;
+    let start_epoch = range_window.start.timestamp();
+    let end_epoch = range_window.end.timestamp();
+    let mut hourly_cursor = align_bucket_epoch(start_epoch, 3_600, 0);
+    if hourly_cursor > start_epoch {
+        hourly_cursor -= 3_600;
+    }
+    let hourly_end_epoch = align_bucket_epoch(end_epoch, 3_600, 0) + 3_600;
+    let rows = query_invocation_hourly_rollup_range(
+        &state.pool,
+        hourly_cursor,
+        hourly_end_epoch,
+        source_scope,
+    )
+    .await?;
+
+    let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
+    let mut bucket_cursor = align_bucket_epoch(start_epoch, bucket_seconds, 0);
+    if bucket_cursor > start_epoch {
+        bucket_cursor -= bucket_seconds;
+    }
+    let fill_start_epoch = bucket_cursor;
+    let fill_end_epoch = align_bucket_epoch(end_epoch, bucket_seconds, 0) + bucket_seconds;
+    while bucket_cursor <= fill_end_epoch {
+        aggregates.entry(bucket_cursor).or_default();
+        bucket_cursor += bucket_seconds;
+    }
+
+    for row in rows {
+        let bucket_epoch = align_bucket_epoch(row.bucket_start_epoch, bucket_seconds, 0);
+        let entry = aggregates.entry(bucket_epoch).or_default();
+        entry.total_count += row.total_count;
+        entry.success_count += row.success_count;
+        entry.failure_count += row.failure_count;
+        entry.total_tokens += row.total_tokens;
+        entry.total_cost += row.total_cost;
+        entry.first_byte_sample_count += row.first_byte_sample_count;
+        entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
+        entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
+            decode_approx_histogram(&row.first_byte_histogram)
+        } else {
+            let mut merged = entry.first_byte_histogram.clone();
+            merge_approx_histogram_into(
+                &mut merged,
+                &decode_approx_histogram(&row.first_byte_histogram),
+            )?;
+            merged
+        };
+    }
+
+    let mut points = Vec::with_capacity(aggregates.len());
+    for (bucket_epoch, agg) in aggregates {
+        if bucket_epoch < fill_start_epoch || bucket_epoch + bucket_seconds > fill_end_epoch {
+            continue;
+        }
+        let start = Utc
+            .timestamp_opt(bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+        let end = Utc
+            .timestamp_opt(bucket_epoch + bucket_seconds, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+        points.push(TimeseriesPoint {
+            bucket_start: format_utc_iso(start),
+            bucket_end: format_utc_iso(end),
+            total_count: agg.total_count,
+            success_count: agg.success_count,
+            failure_count: agg.failure_count,
+            total_tokens: agg.total_tokens,
+            total_cost: agg.total_cost,
+            first_byte_sample_count: agg.first_byte_sample_count,
+            first_byte_avg_ms: agg.first_byte_avg_ms(),
+            first_byte_p95_ms: agg.first_byte_p95_ms(),
+        });
+    }
+
+    Ok(Json(TimeseriesResponse {
+        range_start: format_utc_iso(range_window.start),
+        range_end: {
+            let end = Utc
+                .timestamp_opt(fill_end_epoch, 0)
+                .single()
+                .unwrap_or_else(Utc::now);
+            format_utc_iso(end)
+        },
+        bucket_seconds,
+        effective_bucket: bucket_selection.effective_bucket,
+        available_buckets: bucket_selection.available_buckets,
+        bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
+        points,
+    }))
 }
 
 pub(crate) fn resolve_daily_date_range(
@@ -2531,12 +2655,50 @@ pub(crate) async fn fetch_error_distribution(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ErrorQuery>,
 ) -> Result<Json<ErrorDistributionResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
     let display_end = range_window.display_end;
     let scope = FailureScope::parse(params.scope.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    if start_dt < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        let range_start_epoch = align_bucket_epoch(start_dt.timestamp(), 3_600, 0);
+        let range_end_epoch = align_bucket_epoch(display_end.timestamp(), 3_600, 0) + 3_600;
+        let rows = query_invocation_failure_hourly_rollup_range(
+            &state.pool,
+            range_start_epoch,
+            range_end_epoch,
+            source_scope,
+        )
+        .await?;
+        let mut counts: HashMap<String, i64> = HashMap::new();
+        for row in rows {
+            let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
+                continue;
+            };
+            if !failure_scope_matches(scope, class) {
+                continue;
+            }
+            *counts.entry(row.error_category).or_default() += row.failure_count;
+        }
+        let mut items: Vec<ErrorDistributionItem> = counts
+            .into_iter()
+            .map(|(reason, count)| ErrorDistributionItem { reason, count })
+            .collect();
+        items.sort_by(|a, b| b.count.cmp(&a.count));
+        if let Some(top) = params.top {
+            let limited = top.clamp(1, 50) as usize;
+            if items.len() > limited {
+                items.truncate(limited);
+            }
+        }
+        return Ok(Json(ErrorDistributionResponse {
+            range_start: format_utc_iso(start_dt),
+            range_end: format_utc_iso(display_end),
+            items,
+        }));
+    }
 
     #[derive(sqlx::FromRow)]
     struct RawErr {
@@ -2829,11 +2991,58 @@ pub(crate) async fn fetch_failure_summary(
     State(state): State<Arc<AppState>>,
     Query(params): Query<FailureSummaryQuery>,
 ) -> Result<Json<FailureSummaryResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
     let display_end = range_window.display_end;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    if start_dt < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        let range_start_epoch = align_bucket_epoch(start_dt.timestamp(), 3_600, 0);
+        let range_end_epoch = align_bucket_epoch(display_end.timestamp(), 3_600, 0) + 3_600;
+        let rows = query_invocation_failure_hourly_rollup_range(
+            &state.pool,
+            range_start_epoch,
+            range_end_epoch,
+            source_scope,
+        )
+        .await?;
+        let mut total_failures = 0_i64;
+        let mut service_failure_count = 0_i64;
+        let mut client_failure_count = 0_i64;
+        let mut client_abort_count = 0_i64;
+        let mut actionable_failure_count = 0_i64;
+        for row in rows {
+            let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
+                continue;
+            };
+            total_failures += row.failure_count;
+            match class {
+                FailureClass::ServiceFailure => service_failure_count += row.failure_count,
+                FailureClass::ClientFailure => client_failure_count += row.failure_count,
+                FailureClass::ClientAbort => client_abort_count += row.failure_count,
+                FailureClass::None => {}
+            }
+            if row.is_actionable != 0 {
+                actionable_failure_count += row.failure_count;
+            }
+        }
+        let actionable_failure_rate = if total_failures > 0 {
+            actionable_failure_count as f64 / total_failures as f64
+        } else {
+            0.0
+        };
+        return Ok(Json(FailureSummaryResponse {
+            range_start: format_utc_iso(start_dt),
+            range_end: format_utc_iso(display_end),
+            total_failures,
+            service_failure_count,
+            client_failure_count,
+            client_abort_count,
+            actionable_failure_count,
+            actionable_failure_rate,
+        }));
+    }
 
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -2902,6 +3111,7 @@ pub(crate) async fn fetch_perf_stats(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PerfQuery>,
 ) -> Result<Json<PerfStatsResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     #[derive(sqlx::FromRow)]
     struct PerfTimingRow {
         t_total_ms: Option<f64>,
@@ -2916,6 +3126,46 @@ pub(crate) async fn fetch_perf_stats(
 
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
+    if range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        let rows = query_proxy_perf_stage_hourly_rollup_range(
+            &state.pool,
+            align_bucket_epoch(range_window.start.timestamp(), 3_600, 0),
+            align_bucket_epoch(range_window.display_end.timestamp(), 3_600, 0) + 3_600,
+        )
+        .await?;
+        let mut by_stage: BTreeMap<String, (i64, f64, f64, ApproxHistogramCounts)> =
+            BTreeMap::new();
+        for row in rows {
+            let entry = by_stage
+                .entry(row.stage)
+                .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
+            entry.0 += row.sample_count;
+            entry.1 += row.sum_ms;
+            entry.2 = entry.2.max(row.max_ms);
+            merge_approx_histogram_into(&mut entry.3, &decode_approx_histogram(&row.histogram))?;
+        }
+        let mut stages = Vec::new();
+        for (stage, (count, sum_ms, max_ms, histogram)) in by_stage {
+            if count <= 0 {
+                continue;
+            }
+            stages.push(PerfStageStats {
+                stage,
+                count,
+                avg_ms: sum_ms / count as f64,
+                p50_ms: approx_histogram_percentile_ms(&histogram, 0.50).unwrap_or(max_ms),
+                p90_ms: approx_histogram_percentile_ms(&histogram, 0.90).unwrap_or(max_ms),
+                p99_ms: approx_histogram_percentile_ms(&histogram, 0.99).unwrap_or(max_ms),
+                max_ms,
+            });
+        }
+        return Ok(Json(PerfStatsResponse {
+            range_start: format_utc_iso(range_window.start),
+            range_end: format_utc_iso(range_window.display_end),
+            source: SOURCE_PROXY.to_string(),
+            stages,
+        }));
+    }
     let mut query = QueryBuilder::new(
         "SELECT \
             t_total_ms, t_req_read_ms, t_req_parse_ms, \
@@ -3434,10 +3684,10 @@ fn resolve_timeseries_bucket_selection(
         bucket_seconds = range_seconds / 10_000;
     }
 
-    let subday_supported = range_window.start >= shanghai_retention_cutoff(invocation_max_days);
-    let bucket_limited_to_daily = bucket_seconds < 86_400 && !subday_supported;
-    let effective_bucket_seconds = if bucket_limited_to_daily {
-        86_400
+    let subhour_supported = range_window.start >= shanghai_retention_cutoff(invocation_max_days);
+    let bucket_limited_to_daily = false;
+    let effective_bucket_seconds = if bucket_seconds < 3_600 && !subhour_supported {
+        3_600
     } else {
         bucket_seconds
     };
@@ -3448,7 +3698,7 @@ fn resolve_timeseries_bucket_selection(
     Ok(TimeseriesBucketSelection {
         bucket_seconds: effective_bucket_seconds,
         effective_bucket,
-        available_buckets: available_timeseries_bucket_specs(subday_supported),
+        available_buckets: available_timeseries_bucket_specs(subhour_supported),
         bucket_limited_to_daily,
     })
 }

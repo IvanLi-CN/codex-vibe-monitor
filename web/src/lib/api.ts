@@ -541,6 +541,26 @@ export interface ForwardProxyLiveStatsResponse {
   nodes: ForwardProxyLiveNode[];
 }
 
+export interface ForwardProxyTimeseriesNode {
+  key: string;
+  source: string;
+  displayName: string;
+  endpointUrl?: string;
+  weight: number;
+  penalized: boolean;
+  buckets: ForwardProxyHourlyBucket[];
+  weightBuckets: ForwardProxyWeightBucket[];
+}
+
+export interface ForwardProxyTimeseriesResponse {
+  rangeStart: string;
+  rangeEnd: string;
+  bucketSeconds: number;
+  effectiveBucket: string;
+  availableBuckets: string[];
+  nodes: ForwardProxyTimeseriesNode[];
+}
+
 export interface ConversationRequestPoint {
   occurredAt: string;
   status: string;
@@ -883,6 +903,60 @@ function normalizeForwardProxyLiveStatsResponse(
       typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 3600,
+    nodes,
+  };
+}
+
+function normalizeForwardProxyTimeseriesNode(
+  raw: unknown,
+): ForwardProxyTimeseriesNode | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const base = normalizeForwardProxyNode(raw);
+  if (!base) return null;
+  const bucketsRaw = Array.isArray(payload.buckets) ? payload.buckets : [];
+  const weightBucketsRaw = Array.isArray(payload.weightBuckets)
+    ? payload.weightBuckets
+    : [];
+  return {
+    key: base.key,
+    source: base.source,
+    displayName: base.displayName,
+    endpointUrl: base.endpointUrl,
+    weight: base.weight,
+    penalized: base.penalized,
+    buckets: bucketsRaw
+      .map(normalizeForwardProxyHourlyBucket)
+      .filter((item): item is ForwardProxyHourlyBucket => item != null),
+    weightBuckets: weightBucketsRaw
+      .map(normalizeForwardProxyWeightBucket)
+      .filter((item): item is ForwardProxyWeightBucket => item != null),
+  };
+}
+
+function normalizeForwardProxyTimeseriesResponse(
+  raw: unknown,
+): ForwardProxyTimeseriesResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const nodesRaw = Array.isArray(payload.nodes) ? payload.nodes : [];
+  const nodes = nodesRaw
+    .map(normalizeForwardProxyTimeseriesNode)
+    .filter((node): node is ForwardProxyTimeseriesNode => node != null)
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  const availableBucketsRaw = Array.isArray(payload.availableBuckets)
+    ? payload.availableBuckets
+    : [];
+  return {
+    rangeStart:
+      typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 3600,
+    effectiveBucket:
+      typeof payload.effectiveBucket === "string"
+        ? payload.effectiveBucket
+        : "1h",
+    availableBuckets: availableBucketsRaw.filter(
+      (item): item is string => typeof item === "string" && item.length > 0,
+    ),
     nodes,
   };
 }
@@ -2179,6 +2253,23 @@ export async function fetchSummary(
 export async function fetchForwardProxyLiveStats() {
   const response = await fetchJson<unknown>("/api/stats/forward-proxy");
   return normalizeForwardProxyLiveStatsResponse(response);
+}
+
+export async function fetchForwardProxyTimeseries(
+  range: string,
+  params?: { bucket?: string; timeZone?: string; signal?: AbortSignal },
+) {
+  const search = new URLSearchParams();
+  search.set("range", range);
+  search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
+  if (params?.bucket) {
+    search.set("bucket", params.bucket);
+  }
+  const response = await fetchJson<unknown>(
+    `/api/stats/forward-proxy/timeseries?${search.toString()}`,
+    { signal: params?.signal },
+  );
+  return normalizeForwardProxyTimeseriesResponse(response);
 }
 
 const DEFAULT_PROMPT_CACHE_CONVERSATION_LIMIT = 50;
