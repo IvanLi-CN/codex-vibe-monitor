@@ -48,27 +48,39 @@ const DialogContent = React.forwardRef<
   }
 >(({ className, children, container, ...props }, ref) => {
   const resolvedContainer = useResolvedOverlayContainer(container)
-  const { hostElement, ref: contentRef } = useOverlayHostElement(ref, resolvedContainer)
+  const { hostElement, ref: hostRef } = useOverlayHostElement<HTMLDivElement>(undefined, resolvedContainer)
+  const contentRef = React.useCallback(
+    (node: React.ElementRef<typeof DialogPrimitive.Content> | null) => {
+      if (typeof ref === 'function') {
+        ref(node)
+      } else if (ref) {
+        ref.current = node
+      }
+    },
+    [ref],
+  )
 
   return (
     <DialogPortal container={resolvedContainer}>
       <DialogOverlay />
-      <OverlayHostProvider value={hostElement}>
-        <DialogPrimitive.Content
-          ref={contentRef}
-          className={cn(
-            'dialog-surface fixed left-1/2 top-1/2 z-[81] w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2',
-            'rounded-[1.75rem] border outline-none',
-            'data-[state=open]:animate-in data-[state=closed]:animate-out',
-            'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
-            'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
-            className,
-          )}
-          {...props}
-        >
-          {children}
-        </DialogPrimitive.Content>
-      </OverlayHostProvider>
+      <div ref={hostRef} className="fixed inset-0 z-[81] pointer-events-none">
+        <OverlayHostProvider value={hostElement}>
+          <DialogPrimitive.Content
+            ref={contentRef}
+            className={cn(
+              'dialog-surface pointer-events-auto fixed left-1/2 top-1/2 w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2',
+              'rounded-[1.75rem] border outline-none',
+              'data-[state=open]:animate-in data-[state=closed]:animate-out',
+              'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+              'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
+              className,
+            )}
+            {...props}
+          >
+            {children}
+          </DialogPrimitive.Content>
+        </OverlayHostProvider>
+      </div>
     </DialogPortal>
   )
 })

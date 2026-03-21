@@ -174,4 +174,33 @@ describe('overlay host inheritance', () => {
     expect(explicitRoot.contains(content)).toBe(true)
     expect(overlayHost.contains(content)).toBe(false)
   })
+
+  it('keeps nested popovers out of overflow-hidden dialog content while staying inside the dialog host', () => {
+    setupOverlayRoots()
+    if (!overlayHost) throw new Error('missing overlay host')
+
+    render(
+      <OverlayHostProvider value={overlayHost}>
+        <Dialog open>
+          <DialogContent className="overflow-hidden">
+            <DialogTitle>Dialog with nested popover</DialogTitle>
+            <Popover open>
+              <PopoverTrigger asChild>
+                <button type="button">Open nested popover</button>
+              </PopoverTrigger>
+              <PopoverContent>Nested popover inside dialog</PopoverContent>
+            </Popover>
+          </DialogContent>
+        </Dialog>
+      </OverlayHostProvider>,
+    )
+
+    const dialog = document.body.querySelector('[role="dialog"]') as HTMLElement | null
+    const popover = findElementByText('Nested popover inside dialog')
+
+    expect(dialog).not.toBeNull()
+    expect(popover).not.toBeNull()
+    expect(overlayHost.contains(popover)).toBe(true)
+    expect(dialog?.contains(popover)).toBe(false)
+  })
 })
