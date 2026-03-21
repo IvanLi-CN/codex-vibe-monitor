@@ -794,6 +794,15 @@ export type PromptCacheConversationRequestPoint = ConversationRequestPoint;
 
 export type StickyKeyConversationRequestPoint = ConversationRequestPoint;
 
+export interface PromptCacheConversationUpstreamAccount {
+  upstreamAccountId: number | null;
+  upstreamAccountName: string | null;
+  requestCount: number;
+  totalTokens: number;
+  totalCost: number;
+  lastActivityAt: string;
+}
+
 export interface PromptCacheConversation {
   promptCacheKey: string;
   requestCount: number;
@@ -801,6 +810,7 @@ export interface PromptCacheConversation {
   totalCost: number;
   createdAt: string;
   lastActivityAt: string;
+  upstreamAccounts: PromptCacheConversationUpstreamAccount[];
   last24hRequests: PromptCacheConversationRequestPoint[];
 }
 
@@ -1188,6 +1198,24 @@ function normalizePromptCacheConversationRequestPoint(
   return normalizeConversationRequestPoint(raw);
 }
 
+function normalizePromptCacheConversationUpstreamAccount(
+  raw: unknown,
+): PromptCacheConversationUpstreamAccount | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    upstreamAccountId: normalizeFiniteNumber(payload.upstreamAccountId) ?? null,
+    upstreamAccountName:
+      typeof payload.upstreamAccountName === "string"
+        ? payload.upstreamAccountName.trim() || null
+        : null,
+    requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
+    totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
+    totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
+    lastActivityAt:
+      typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
+  };
+}
+
 function normalizePromptCacheConversation(
   raw: unknown,
 ): PromptCacheConversation | null {
@@ -1200,6 +1228,9 @@ function normalizePromptCacheConversation(
   const requestsRaw = Array.isArray(payload.last24hRequests)
     ? payload.last24hRequests
     : [];
+  const upstreamAccountsRaw = Array.isArray(payload.upstreamAccounts)
+    ? payload.upstreamAccounts
+    : [];
   return {
     promptCacheKey,
     requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
@@ -1208,6 +1239,11 @@ function normalizePromptCacheConversation(
     createdAt: typeof payload.createdAt === "string" ? payload.createdAt : "",
     lastActivityAt:
       typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
+    upstreamAccounts: upstreamAccountsRaw
+      .map(normalizePromptCacheConversationUpstreamAccount)
+      .filter(
+        (item): item is PromptCacheConversationUpstreamAccount => item != null,
+      ),
     last24hRequests: requestsRaw
       .map(normalizePromptCacheConversationRequestPoint)
       .filter(

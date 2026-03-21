@@ -1,7 +1,140 @@
+import { useEffect, useRef, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
-import type { PromptCacheConversationsResponse } from "../lib/api";
+import type {
+  PromptCacheConversationsResponse,
+  UpstreamAccountDetail,
+} from "../lib/api";
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
+
+function jsonResponse(payload: unknown, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+function buildAccountDetail(
+  id: number,
+  displayName: string,
+  overrides?: Partial<UpstreamAccountDetail>,
+): UpstreamAccountDetail {
+  return {
+    id,
+    kind: "oauth_codex",
+    provider: "openai",
+    displayName,
+    groupName: "storybook-group",
+    isMother: false,
+    status: "active",
+    enabled: true,
+    email: `${displayName.toLowerCase().replace(/\s+/g, "-")}@example.com`,
+    chatgptAccountId: `org_${id}`,
+    chatgptUserId: `user_${id}`,
+    planType: "team",
+    maskedApiKey: null,
+    lastSyncedAt: "2026-03-03T12:40:00.000Z",
+    lastSuccessfulSyncAt: "2026-03-03T12:38:00.000Z",
+    lastActivityAt: "2026-03-03T12:44:10.000Z",
+    lastError: null,
+    lastErrorAt: null,
+    tokenExpiresAt: "2026-03-03T18:00:00.000Z",
+    lastRefreshedAt: "2026-03-03T12:39:00.000Z",
+    primaryWindow: {
+      usedPercent: 22,
+      usedText: "22 / 100",
+      limitText: "100 requests",
+      resetsAt: "2026-03-03T18:00:00.000Z",
+      windowDurationMins: 300,
+    },
+    secondaryWindow: {
+      usedPercent: 38,
+      usedText: "38 / 100",
+      limitText: "100 requests",
+      resetsAt: "2026-03-10T00:00:00.000Z",
+      windowDurationMins: 10080,
+    },
+    credits: null,
+    localLimits: null,
+    duplicateInfo: null,
+    tags: [],
+    effectiveRoutingRule: {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: true,
+      allowCutIn: true,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    },
+    note: null,
+    upstreamBaseUrl: null,
+    history: [],
+    ...overrides,
+  };
+}
+
+const accountDetails = new Map<number, UpstreamAccountDetail>([
+  [11, buildAccountDetail(11, "Pool Alpha", { isMother: true })],
+  [12, buildAccountDetail(12, "Pool Beta")],
+  [21, buildAccountDetail(21, "Pool Delta")],
+  [22, buildAccountDetail(22, "Pool Epsilon")],
+  [31, buildAccountDetail(31, "Pool Low")],
+  [41, buildAccountDetail(41, "Pool High")],
+]);
+
+function StorybookPromptCacheAccountMock({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const installedRef = useRef(false);
+
+  if (typeof window !== "undefined" && !installedRef.current) {
+    installedRef.current = true;
+    originalFetchRef.current = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const method = (
+        init?.method ||
+        (input instanceof Request ? input.method : "GET")
+      ).toUpperCase();
+      const inputUrl =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      const parsedUrl = new URL(inputUrl, window.location.origin);
+      const match = parsedUrl.pathname.match(/^\/api\/pool\/upstream-accounts\/(\d+)$/);
+
+      if (match && method === "GET") {
+        const accountId = Number(match[1]);
+        const detail = accountDetails.get(accountId);
+        if (!detail) {
+          return jsonResponse({ message: "Not found" }, 404);
+        }
+        return jsonResponse(detail);
+      }
+
+      return (originalFetchRef.current as typeof window.fetch)(input, init);
+    };
+  }
+
+  useEffect(() => {
+    return () => {
+      if (originalFetchRef.current) {
+        window.fetch = originalFetchRef.current;
+      }
+    };
+  }, []);
+
+  return <>{children}</>;
+}
 
 const stats: PromptCacheConversationsResponse = {
   rangeStart: "2026-03-02T00:00:00.000Z",
@@ -18,6 +151,40 @@ const stats: PromptCacheConversationsResponse = {
       totalCost: 1.2842,
       createdAt: "2026-02-24T03:26:11.000Z",
       lastActivityAt: "2026-03-03T12:44:10.000Z",
+      upstreamAccounts: [
+        {
+          upstreamAccountId: 11,
+          upstreamAccountName: "Pool Alpha",
+          requestCount: 19,
+          totalTokens: 26480,
+          totalCost: 0.6124,
+          lastActivityAt: "2026-03-03T12:44:10.000Z",
+        },
+        {
+          upstreamAccountId: 12,
+          upstreamAccountName: "Pool Beta",
+          requestCount: 12,
+          totalTokens: 17820,
+          totalCost: 0.4018,
+          lastActivityAt: "2026-03-03T11:21:00.000Z",
+        },
+        {
+          upstreamAccountId: null,
+          upstreamAccountName: null,
+          requestCount: 10,
+          totalTokens: 11824,
+          totalCost: 0.27,
+          lastActivityAt: "2026-03-03T10:00:00.000Z",
+        },
+        {
+          upstreamAccountId: 13,
+          upstreamAccountName: "Pool Hidden",
+          requestCount: 3,
+          totalTokens: 500,
+          totalCost: 0.01,
+          lastActivityAt: "2026-03-02T08:00:00.000Z",
+        },
+      ],
       last24hRequests: [
         {
           occurredAt: "2026-03-02T13:00:00.000Z",
@@ -63,6 +230,24 @@ const stats: PromptCacheConversationsResponse = {
       totalCost: 0.4628,
       createdAt: "2026-02-20T08:09:33.000Z",
       lastActivityAt: "2026-03-03T11:40:28.000Z",
+      upstreamAccounts: [
+        {
+          upstreamAccountId: 21,
+          upstreamAccountName: "Pool Delta",
+          requestCount: 9,
+          totalTokens: 10120,
+          totalCost: 0.2588,
+          lastActivityAt: "2026-03-03T11:40:28.000Z",
+        },
+        {
+          upstreamAccountId: 22,
+          upstreamAccountName: "Pool Epsilon",
+          requestCount: 7,
+          totalTokens: 8089,
+          totalCost: 0.204,
+          lastActivityAt: "2026-03-03T09:30:00.000Z",
+        },
+      ],
       last24hRequests: [
         {
           occurredAt: "2026-03-02T14:16:00.000Z",
@@ -112,6 +297,16 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
       totalCost: 0.01,
       createdAt: "2026-03-02T03:00:00.000Z",
       lastActivityAt: "2026-03-02T05:00:00.000Z",
+      upstreamAccounts: [
+        {
+          upstreamAccountId: 31,
+          upstreamAccountName: "Pool Low",
+          requestCount: 3,
+          totalTokens: 420,
+          totalCost: 0.01,
+          lastActivityAt: "2026-03-02T05:00:00.000Z",
+        },
+      ],
       last24hRequests: [
         {
           occurredAt: "2026-03-02T03:00:00.000Z",
@@ -136,6 +331,16 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
       totalCost: 0.21,
       createdAt: "2026-03-02T02:30:00.000Z",
       lastActivityAt: "2026-03-02T23:40:00.000Z",
+      upstreamAccounts: [
+        {
+          upstreamAccountId: 41,
+          upstreamAccountName: "Pool High",
+          requestCount: 8,
+          totalTokens: 8600,
+          totalCost: 0.21,
+          lastActivityAt: "2026-03-02T23:40:00.000Z",
+        },
+      ],
       last24hRequests: [
         {
           occurredAt: "2026-03-02T02:30:00.000Z",
@@ -178,16 +383,20 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <I18nProvider>
-        <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
-          <main className="mx-auto w-full max-w-[1200px] space-y-4">
-            <h2 className="text-xl font-semibold">
-              Prompt Cache 对话统计（Storybook Mock）
-            </h2>
-            <Story />
-          </main>
-        </div>
-      </I18nProvider>
+      <MemoryRouter>
+        <I18nProvider>
+          <StorybookPromptCacheAccountMock>
+            <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
+              <main className="mx-auto w-full max-w-[1200px] space-y-4">
+                <h2 className="text-xl font-semibold">
+                  Prompt Cache 对话统计（Storybook Mock）
+                </h2>
+                <Story />
+              </main>
+            </div>
+          </StorybookPromptCacheAccountMock>
+        </I18nProvider>
+      </MemoryRouter>
     ),
   ],
 } satisfies Meta<typeof PromptCacheConversationTable>;

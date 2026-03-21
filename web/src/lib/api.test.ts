@@ -733,6 +733,16 @@ describe("account pool frontend API helpers", () => {
               totalCost: 0.12,
               createdAt: "2026-03-10T22:00:00Z",
               lastActivityAt: "2026-03-10T23:00:00Z",
+              upstreamAccounts: [
+                {
+                  upstreamAccountId: 42,
+                  upstreamAccountName: "Pool Alpha",
+                  requestCount: 2,
+                  totalTokens: 30,
+                  totalCost: 0.12,
+                  lastActivityAt: "2026-03-10T23:00:00Z",
+                },
+              ],
               last24hRequests: [],
             },
           ],
@@ -752,5 +762,8 @@ describe("account pool frontend API helpers", () => {
     expect(response.implicitFilter.kind).toBe("cappedTo50");
     expect(response.implicitFilter.filteredCount).toBe(7);
     expect(response.conversations[0]?.promptCacheKey).toBe("pck-001");
+    expect(response.conversations[0]?.upstreamAccounts[0]?.upstreamAccountName).toBe(
+      "Pool Alpha",
+    );
   });
 });

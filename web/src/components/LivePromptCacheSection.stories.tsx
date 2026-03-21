@@ -128,6 +128,48 @@ function buildTimelinePoints({
   );
 }
 
+function buildUpstreamAccounts(seed: number, totalTokens: number, lastActivityAt: string) {
+  const primaryTokens = Math.max(200, Math.round(totalTokens * 0.46));
+  const secondaryTokens = Math.max(120, Math.round(totalTokens * 0.31));
+  const tertiaryTokens = Math.max(80, Math.round(totalTokens * 0.17));
+  const hiddenTokens = Math.max(40, totalTokens - primaryTokens - secondaryTokens - tertiaryTokens);
+
+  return [
+    {
+      upstreamAccountId: 100 + seed,
+      upstreamAccountName: `Pool ${(seed % 4) + 1} Alpha`,
+      requestCount: 8 + (seed % 5),
+      totalTokens: primaryTokens,
+      totalCost: Number((primaryTokens / 42000).toFixed(4)),
+      lastActivityAt,
+    },
+    {
+      upstreamAccountId: 200 + seed,
+      upstreamAccountName: `Pool ${(seed % 3) + 1} Beta`,
+      requestCount: 6 + (seed % 4),
+      totalTokens: secondaryTokens,
+      totalCost: Number((secondaryTokens / 42000).toFixed(4)),
+      lastActivityAt: isoAt(0.8 + (seed % 3) * 0.2, 0),
+    },
+    {
+      upstreamAccountId: seed % 2 === 0 ? 300 + seed : null,
+      upstreamAccountName: seed % 2 === 0 ? null : null,
+      requestCount: 4 + (seed % 3),
+      totalTokens: tertiaryTokens,
+      totalCost: Number((tertiaryTokens / 42000).toFixed(4)),
+      lastActivityAt: isoAt(1.3 + (seed % 4) * 0.2, 0),
+    },
+    {
+      upstreamAccountId: 400 + seed,
+      upstreamAccountName: `Pool Hidden ${seed + 1}`,
+      requestCount: 1,
+      totalTokens: hiddenTokens,
+      totalCost: Number((hiddenTokens / 42000).toFixed(4)),
+      lastActivityAt: isoAt(3.8 + (seed % 4) * 0.3, 0),
+    },
+  ];
+}
+
 function buildDenseConversation(seed: number, variant: "count" | "window") {
   const createdHoursAgo =
     variant === "count" ? 18 + seed * 1.35 : 5.2 - seed * 0.32;
@@ -157,6 +199,11 @@ function buildDenseConversation(seed: number, variant: "count" | "window") {
     totalCost: Number((totalTokens / 42000).toFixed(4)),
     createdAt: isoAt(createdHoursAgo, 0),
     lastActivityAt: lastPoint?.occurredAt ?? isoAt(lastActivityHoursAgo, 0),
+    upstreamAccounts: buildUpstreamAccounts(
+      seed,
+      totalTokens,
+      lastPoint?.occurredAt ?? isoAt(lastActivityHoursAgo, 0),
+    ),
     last24hRequests: points,
   } satisfies PromptCacheConversation;
 }
@@ -234,6 +281,11 @@ function buildActivityWindowStats(hours: number): PromptCacheConversationsRespon
         totalCost: Number((totalTokens / 42000).toFixed(4)),
         createdAt: isoAt(createdAtHours, 0),
         lastActivityAt: withinWindowPoints.at(-1)?.occurredAt ?? isoAt(0.2, 0),
+        upstreamAccounts: buildUpstreamAccounts(
+          index + 7,
+          totalTokens,
+          withinWindowPoints.at(-1)?.occurredAt ?? isoAt(0.2, 0),
+        ),
         last24hRequests: withinWindowPoints,
       };
     },
