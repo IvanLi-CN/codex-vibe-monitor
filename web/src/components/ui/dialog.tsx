@@ -2,12 +2,25 @@ import * as React from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { AppIcon } from '../AppIcon'
 import { cn } from '../../lib/utils'
+import {
+  useOverlayHostElement,
+  useResolvedOverlayContainer,
+} from './use-overlay-host'
+import { OverlayHostProvider } from './overlay-host'
 
 const Dialog = DialogPrimitive.Root
 
 const DialogTrigger = DialogPrimitive.Trigger
 
-const DialogPortal = DialogPrimitive.Portal
+function DialogPortal({
+  container,
+  ...props
+}: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Portal> & {
+  container?: HTMLElement | null
+}) {
+  const resolvedContainer = useResolvedOverlayContainer(container)
+  return <DialogPrimitive.Portal container={resolvedContainer ?? undefined} {...props} />
+}
 
 const DialogClose = DialogPrimitive.Close
 
@@ -30,26 +43,48 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
-  <DialogPortal>
-    <DialogOverlay />
-    <DialogPrimitive.Content
-      ref={ref}
-      className={cn(
-        'dialog-surface fixed left-1/2 top-1/2 z-[81] w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2',
-        'rounded-[1.75rem] border outline-none',
-        'data-[state=open]:animate-in data-[state=closed]:animate-out',
-        'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
-        'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
-        className,
-      )}
-      {...props}
-    >
-      {children}
-    </DialogPrimitive.Content>
-  </DialogPortal>
-))
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
+    container?: HTMLElement | null
+  }
+>(({ className, children, container, ...props }, ref) => {
+  const resolvedContainer = useResolvedOverlayContainer(container)
+  const { hostElement, ref: hostRef } = useOverlayHostElement<HTMLDivElement>(undefined)
+  const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container)
+  const contentRef = React.useCallback(
+    (node: React.ElementRef<typeof DialogPrimitive.Content> | null) => {
+      if (typeof ref === 'function') {
+        ref(node)
+      } else if (ref) {
+        ref.current = node
+      }
+    },
+    [ref],
+  )
+
+  return (
+    <DialogPortal container={resolvedContainer}>
+      <DialogOverlay />
+      <div ref={hostRef} className="fixed inset-0 z-[81] pointer-events-none">
+        <OverlayHostProvider value={hostValue}>
+          <DialogPrimitive.Content
+            ref={contentRef}
+            className={cn(
+              'dialog-surface pointer-events-auto fixed left-1/2 top-1/2 w-[min(34rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2',
+              'rounded-[1.75rem] border outline-none',
+              'data-[state=open]:animate-in data-[state=closed]:animate-out',
+              'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+              'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
+              className,
+            )}
+            {...props}
+          >
+            {children}
+          </DialogPrimitive.Content>
+        </OverlayHostProvider>
+      </div>
+    </DialogPortal>
+  )
+})
 DialogContent.displayName = DialogPrimitive.Content.displayName
 
 function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {

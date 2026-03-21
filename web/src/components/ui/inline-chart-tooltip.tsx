@@ -198,7 +198,13 @@ export function InlineChartTooltipSurface({
         </span>
       ) : null}
       <div className={cn('relative', chartClassName)}>{children({ activeIndex: state.activeIndex, highlightedIndex, getItemProps })}</div>
-      {tooltipNode && ownerDocument ? createPortal(tooltipNode, ownerDocument.body) : tooltipNode}
+      {tooltipNode && ownerDocument
+        ? createPortal(
+            // Intentional body-root overlay: chart hover tooltips should not inherit local hosts.
+            tooltipNode,
+            ownerDocument.body,
+          )
+        : tooltipNode}
     </div>
   )
 }
