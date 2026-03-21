@@ -129,9 +129,9 @@ function UpstreamAccountsBlock({
       {upstreamAccounts.slice(0, 3).map((account, index) => (
         <div
           key={`${account.upstreamAccountId ?? "unknown"}-${account.upstreamAccountName ?? "none"}-${index}`}
-          className="flex items-center gap-2 text-[11px]"
+          className="grid grid-cols-[7.5rem_minmax(0,1fr)] items-center gap-x-2 text-[11px]"
         >
-          <span className="max-w-[9rem] shrink-0 truncate font-medium">
+          <span className="truncate font-medium">
             {resolveUpstreamAccountLabel(account, fallbackAccountLabel)}
           </span>
           <span className="min-w-0 truncate text-base-content/62">
