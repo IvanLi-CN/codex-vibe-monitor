@@ -464,12 +464,17 @@ describe("PromptCacheConversationTable", () => {
 
     expect(html).toContain("上游账号");
     expect(html).toContain("总计");
+    expect(html).toContain("时间");
     expect(html).toContain("Pool Alpha");
     expect(html).toContain("账号 #202");
     expect(html).toContain("—");
     expect(html).not.toContain("Pool Hidden");
+    expect(html).toContain("5 请求 · Token 1,600 · US$0.56");
+    expect(html).toContain("4 请求 · Token 1,200 · US$0.44");
     expect(html).toContain("请求数");
     expect(html).toContain("3,456");
     expect(html).toContain("US$1.2345");
+    expect(html).toContain("创建");
+    expect(html).toContain("活动");
   });
 });

@@ -113,9 +113,8 @@ function UpstreamAccountsBlock({
 }: {
   upstreamAccounts: PromptCacheConversationUpstreamAccount[];
   labels: {
-    requestCount: string;
-    totalTokens: string;
-    totalCost: string;
+    requestCountCompact: string;
+    totalTokensCompact: string;
   };
   numberFormatter: Intl.NumberFormat;
   currencyFormatter: Intl.NumberFormat;
@@ -136,9 +135,13 @@ function UpstreamAccountsBlock({
             {resolveUpstreamAccountLabel(account, fallbackAccountLabel)}
           </span>
           <span className="truncate text-right text-base-content/62">
-            {labels.requestCount} {formatNumber(account.requestCount, numberFormatter)}
+            {formatNumber(account.requestCount, numberFormatter)}
+            {" "}
+            {labels.requestCountCompact}
             {" · "}
-            {labels.totalTokens} {formatNumber(account.totalTokens, numberFormatter)}
+            {labels.totalTokensCompact}
+            {" "}
+            {formatNumber(account.totalTokens, numberFormatter)}
             {" · "}
             {formatCurrency(account.totalCost, currencyFormatter)}
           </span>
@@ -288,6 +291,11 @@ export function PromptCacheConversationTable({
       requestCount: t("live.conversations.table.requestCount"),
       totalTokens: t("live.conversations.table.totalTokens"),
       totalCost: t("live.conversations.table.totalCost"),
+      requestCountCompact: t("live.conversations.table.requestCountCompact"),
+      totalTokensCompact: t("live.conversations.table.totalTokensCompact"),
+      time: t("live.conversations.table.time"),
+      createdAtShort: t("live.conversations.table.createdAtShort"),
+      lastActivityAtShort: t("live.conversations.table.lastActivityAtShort"),
     }),
     [t],
   );
@@ -379,20 +387,25 @@ export function PromptCacheConversationTable({
                   />
                 </div>
 
-                <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-                  <div>
-                    <dt className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
-                      {t("live.conversations.table.createdAt")}
-                    </dt>
-                    <dd>{createdAtLabel}</dd>
+                <div className="space-y-1">
+                  <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                    {totalLabels.time}
                   </div>
-                  <div>
-                    <dt className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
-                      {t("live.conversations.table.lastActivityAt")}
-                    </dt>
-                    <dd>{lastActivityLabel}</dd>
-                  </div>
-                </dl>
+                  <dl className="space-y-1 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className="text-base-content/60">
+                        {totalLabels.createdAtShort}
+                      </dt>
+                      <dd className="text-right">{createdAtLabel}</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className="text-base-content/60">
+                        {totalLabels.lastActivityAtShort}
+                      </dt>
+                      <dd className="text-right">{lastActivityLabel}</dd>
+                    </div>
+                  </dl>
+                </div>
 
                 <div className="space-y-1">
                   <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
@@ -421,17 +434,14 @@ export function PromptCacheConversationTable({
               <th className="w-[19%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {t("live.conversations.table.promptCacheKey")}
               </th>
-              <th className="w-[25%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
+              <th className="w-[31%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {t("live.conversations.table.upstreamAccounts")}
               </th>
               <th className="w-[14%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {t("live.conversations.table.summary")}
               </th>
-              <th className="w-[12%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
-                {t("live.conversations.table.createdAt")}
-              </th>
-              <th className="w-[12%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
-                {t("live.conversations.table.lastActivityAt")}
+              <th className="w-[18%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
+                {totalLabels.time}
               </th>
               <th className="w-[18%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {chartColumnLabel}
@@ -470,10 +480,24 @@ export function PromptCacheConversationTable({
                   />
                 </td>
                 <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
-                  {formatDateLabel(conversation.createdAt, dateFormatter)}
-                </td>
-                <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
-                  {formatDateLabel(conversation.lastActivityAt, dateFormatter)}
+                  <div className="space-y-1.5 text-[11px]">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-base-content/60">
+                        {totalLabels.createdAtShort}
+                      </span>
+                      <span className="text-right">
+                        {formatDateLabel(conversation.createdAt, dateFormatter)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-base-content/60">
+                        {totalLabels.lastActivityAtShort}
+                      </span>
+                      <span className="text-right">
+                        {formatDateLabel(conversation.lastActivityAt, dateFormatter)}
+                      </span>
+                    </div>
+                  </div>
                 </td>
                 <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
                   <ConversationSparkline
