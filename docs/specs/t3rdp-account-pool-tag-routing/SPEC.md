@@ -153,3 +153,14 @@
   evidence_note: 验证账号详情页能够直接展示多 tag 合并后的最终生效规则，并标出来源 tag 与逐条守卫约束。
   image:
   ![Effective routing rule card strict merged rule](./assets/effective-routing-rule-card-strict.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/DetailDrawer
+  state: detail-drawer-tag-picker-open
+  evidence_note: 验证账号详情抽屉中的 tag 添加面板展开后仍保持可见并停留在抽屉语义层内，证明嵌套 overlay 已继承最近宿主而不再被抽屉层级压住。
+  image:
+  ![Account detail drawer tag picker open](./assets/account-detail-drawer-tag-picker-open.png)

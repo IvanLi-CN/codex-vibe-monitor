@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { AppIcon, type AppIconName } from '../../components/AppIcon'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
@@ -19,6 +19,7 @@ import { FloatingFieldError } from '../../components/ui/floating-field-error'
 import { FormFieldFeedback } from '../../components/ui/form-field-feedback'
 import { Input } from '../../components/ui/input'
 import { Popover, PopoverArrow, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
+import { OverlayHostProvider } from '../../components/ui/overlay-host'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
@@ -328,6 +329,15 @@ function AccountDetailDrawer({
   children: ReactNode
 }) {
   const closeButtonRef = useRef<HTMLButtonElement | null>(null)
+  const [sectionElement, setSectionElement] = useState<HTMLElement | null>(null)
+
+  const handleSectionRef = useCallback(
+    (node: HTMLElement | null) => {
+      setSectionElement(node)
+      onPortalContainerChange?.(node)
+    },
+    [onPortalContainerChange],
+  )
 
   useEffect(() => {
     if (!open || typeof document === 'undefined') return undefined
@@ -366,36 +376,38 @@ function AccountDetailDrawer({
       />
       <div className="absolute inset-y-0 right-0 flex w-full justify-end pl-4 sm:pl-8">
         <section
-          ref={onPortalContainerChange}
+          ref={handleSectionRef}
           role="dialog"
           aria-modal="true"
           aria-labelledby="upstream-account-detail-title"
           className="drawer-shell flex h-full w-full max-w-[60rem] flex-col"
         >
-          <div className="drawer-header px-5 py-4 sm:px-6">
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0 space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
-                  {subtitle}
-                </p>
-                <h2 id="upstream-account-detail-title" className="truncate text-xl font-semibold text-base-content">
-                  {title}
-                </h2>
+          <OverlayHostProvider value={sectionElement ?? undefined}>
+            <div className="drawer-header px-5 py-4 sm:px-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 space-y-1">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
+                    {subtitle}
+                  </p>
+                  <h2 id="upstream-account-detail-title" className="truncate text-xl font-semibold text-base-content">
+                    {title}
+                  </h2>
+                </div>
+                <Button
+                  ref={closeButtonRef}
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={onClose}
+                  disabled={closeDisabled}
+                >
+                  <AppIcon name="close" className="h-5 w-5" aria-hidden />
+                  <span className="sr-only">{closeLabel}</span>
+                </Button>
               </div>
-              <Button
-                ref={closeButtonRef}
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={onClose}
-                disabled={closeDisabled}
-              >
-                <AppIcon name="close" className="h-5 w-5" aria-hidden />
-                <span className="sr-only">{closeLabel}</span>
-              </Button>
             </div>
-          </div>
-          <div className="drawer-body min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6">{children}</div>
+            <div className="drawer-body min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6">{children}</div>
+          </OverlayHostProvider>
         </section>
       </div>
     </div>,
@@ -1739,6 +1751,7 @@ export default function UpstreamAccountsPage() {
 
       <UpstreamAccountGroupNoteDialog
         open={groupNoteEditor.open}
+        container={detailDrawerPortalContainer}
         groupName={groupNoteEditor.groupName}
         note={groupNoteEditor.note}
         busy={groupNoteBusy}

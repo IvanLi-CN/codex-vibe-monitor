@@ -230,6 +230,7 @@ export function SystemNotificationProvider({ children }: { children: ReactNode }
       {typeof document === 'undefined'
         ? null
         : createPortal(
+            // Intentional body-root overlay: global notifications must stay above every local host.
             <div className="pointer-events-none fixed inset-x-0 top-4 z-[120] mx-auto flex w-full max-w-5xl flex-col gap-3 px-4">
               {notifications.map((notification) => (
                 <MotherSwitchUndoToast
