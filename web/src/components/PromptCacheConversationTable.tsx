@@ -5,6 +5,7 @@ import type {
   PromptCacheConversationUpstreamAccount,
   PromptCacheConversationsResponse,
 } from "../lib/api";
+import { InvocationAccountDetailDrawer } from "./InvocationAccountDetailDrawer";
 import { ConversationSparkline } from "./KeyedConversationTable";
 import {
   FALLBACK_CELL,
@@ -59,6 +60,15 @@ function resolveUpstreamAccountLabel(
   return FALLBACK_CELL;
 }
 
+function canOpenPromptCacheUpstreamAccount(
+  account: PromptCacheConversationUpstreamAccount,
+) {
+  return (
+    typeof account.upstreamAccountId === "number" &&
+    Number.isFinite(account.upstreamAccountId)
+  );
+}
+
 function SummaryBlock({
   conversation,
   labels,
@@ -110,6 +120,7 @@ function UpstreamAccountsBlock({
   numberFormatter,
   currencyFormatter,
   fallbackAccountLabel,
+  onOpenAccountDetail,
 }: {
   upstreamAccounts: PromptCacheConversationUpstreamAccount[];
   labels: {
@@ -119,6 +130,7 @@ function UpstreamAccountsBlock({
   numberFormatter: Intl.NumberFormat;
   currencyFormatter: Intl.NumberFormat;
   fallbackAccountLabel: (id: number) => string;
+  onOpenAccountDetail?: (account: PromptCacheConversationUpstreamAccount) => void;
 }) {
   if (upstreamAccounts.length === 0) {
     return <div className="text-[11px] text-base-content/55">{FALLBACK_CELL}</div>;
@@ -126,27 +138,44 @@ function UpstreamAccountsBlock({
 
   return (
     <div className="space-y-1.5">
-      {upstreamAccounts.slice(0, 3).map((account, index) => (
-        <div
-          key={`${account.upstreamAccountId ?? "unknown"}-${account.upstreamAccountName ?? "none"}-${index}`}
-          className="grid grid-cols-[7.5rem_minmax(0,1fr)] items-center gap-x-2 text-[11px]"
-        >
-          <span className="truncate font-medium">
-            {resolveUpstreamAccountLabel(account, fallbackAccountLabel)}
-          </span>
-          <span className="min-w-0 truncate text-base-content/62">
-            {formatNumber(account.requestCount, numberFormatter)}
-            {" "}
-            {labels.requestCountCompact}
-            {" · "}
-            {labels.totalTokensCompact}
-            {" "}
-            {formatNumber(account.totalTokens, numberFormatter)}
-            {" · "}
-            {formatCurrency(account.totalCost, currencyFormatter)}
-          </span>
-        </div>
-      ))}
+      {upstreamAccounts.slice(0, 3).map((account, index) => {
+        const accountLabel = resolveUpstreamAccountLabel(
+          account,
+          fallbackAccountLabel,
+        );
+        const clickable = canOpenPromptCacheUpstreamAccount(account);
+
+        return (
+          <div
+            key={`${account.upstreamAccountId ?? "unknown"}-${account.upstreamAccountName ?? "none"}-${index}`}
+            className="grid grid-cols-[7.5rem_minmax(0,1fr)] items-center gap-x-2 text-[11px]"
+          >
+            {clickable ? (
+              <button
+                type="button"
+                className="truncate text-left font-medium transition hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                onClick={() => onOpenAccountDetail?.(account)}
+                title={accountLabel}
+              >
+                {accountLabel}
+              </button>
+            ) : (
+              <span className="truncate font-medium">{accountLabel}</span>
+            )}
+            <span className="min-w-0 truncate text-base-content/62">
+              {formatNumber(account.requestCount, numberFormatter)}
+              {" "}
+              {labels.requestCountCompact}
+              {" · "}
+              {labels.totalTokensCompact}
+              {" "}
+              {formatNumber(account.totalTokens, numberFormatter)}
+              {" · "}
+              {formatCurrency(account.totalCost, currencyFormatter)}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -158,6 +187,8 @@ export function PromptCacheConversationTable({
 }: PromptCacheConversationTableProps) {
   const { t, locale } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
+  const [drawerAccountId, setDrawerAccountId] = useState<number | null>(null);
+  const [drawerAccountLabel, setDrawerAccountLabel] = useState<string | null>(null);
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
 
   useEffect(() => {
@@ -306,6 +337,15 @@ export function PromptCacheConversationTable({
       }),
     [t],
   );
+  const openAccountDrawer = (account: PromptCacheConversationUpstreamAccount) => {
+    if (!canOpenPromptCacheUpstreamAccount(account)) return;
+    setDrawerAccountId(Math.trunc(Number(account.upstreamAccountId)));
+    setDrawerAccountLabel(resolveUpstreamAccountLabel(account, fallbackAccountLabel));
+  };
+  const closeAccountDrawer = () => {
+    setDrawerAccountId(null);
+    setDrawerAccountLabel(null);
+  };
 
   if (error) {
     return (
@@ -372,6 +412,7 @@ export function PromptCacheConversationTable({
                     numberFormatter={numberFormatter}
                     currencyFormatter={currencyFormatter}
                     fallbackAccountLabel={fallbackAccountLabel}
+                    onOpenAccountDetail={openAccountDrawer}
                   />
                 </div>
 
@@ -469,6 +510,7 @@ export function PromptCacheConversationTable({
                     numberFormatter={numberFormatter}
                     currencyFormatter={currencyFormatter}
                     fallbackAccountLabel={fallbackAccountLabel}
+                    onOpenAccountDetail={openAccountDrawer}
                   />
                 </td>
                 <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
@@ -520,6 +562,12 @@ export function PromptCacheConversationTable({
       {footerNote ? (
         <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p>
       ) : null}
+      <InvocationAccountDetailDrawer
+        open={drawerAccountId != null}
+        accountId={drawerAccountId}
+        accountLabel={drawerAccountLabel}
+        onClose={closeAccountDrawer}
+      />
     </div>
   );
 }

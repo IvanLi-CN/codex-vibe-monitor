@@ -2,13 +2,29 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import type {
   PromptCacheConversation,
   PromptCacheConversationsResponse,
+  UpstreamAccountDetail,
 } from "../lib/api";
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
+
+const apiMocks = vi.hoisted(() => ({
+  fetchUpstreamAccountDetail: vi.fn<
+    (accountId: number) => Promise<UpstreamAccountDetail>
+  >(),
+}));
+
+vi.mock("../lib/api", async () => {
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  return {
+    ...actual,
+    fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
+  };
+});
 
 function renderTable(stats: PromptCacheConversationsResponse) {
   return renderToStaticMarkup(
@@ -56,6 +72,7 @@ describe("PromptCacheConversationTable", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-03T00:00:00Z"));
+    apiMocks.fetchUpstreamAccountDetail.mockReset();
   });
 
   afterEach(() => {
@@ -76,13 +93,15 @@ describe("PromptCacheConversationTable", () => {
     }
     act(() => {
       root?.render(
-        <I18nProvider>
-          <PromptCacheConversationTable
-            stats={stats}
-            isLoading={false}
-            error={null}
-          />
-        </I18nProvider>,
+        <MemoryRouter>
+          <I18nProvider>
+            <PromptCacheConversationTable
+              stats={stats}
+              isLoading={false}
+              error={null}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
       );
     });
   }
@@ -476,5 +495,126 @@ describe("PromptCacheConversationTable", () => {
     expect(html).toContain("US$1.2345");
     expect(html).toContain("创建");
     expect(html).toContain("活动");
+  });
+
+  it("opens and closes the upstream account drawer from prompt cache rows", async () => {
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
+      id: 101,
+      kind: "oauth_codex",
+      provider: "openai",
+      displayName: "Pool Alpha",
+      groupName: "group-a",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      email: "pool-alpha@example.com",
+      chatgptAccountId: "org_pool_alpha",
+      chatgptUserId: "user_pool_alpha",
+      planType: "team",
+      maskedApiKey: null,
+      lastSyncedAt: "2026-03-02T16:20:00Z",
+      lastSuccessfulSyncAt: "2026-03-02T16:18:00Z",
+      lastActivityAt: "2026-03-02T16:00:00Z",
+      lastError: null,
+      lastErrorAt: null,
+      tokenExpiresAt: "2026-03-02T22:00:00Z",
+      lastRefreshedAt: "2026-03-02T16:19:00Z",
+      primaryWindow: {
+        usedPercent: 22,
+        usedText: "22 / 100",
+        limitText: "100 requests",
+        resetsAt: "2026-03-02T18:00:00Z",
+        windowDurationMins: 300,
+      },
+      secondaryWindow: {
+        usedPercent: 38,
+        usedText: "38 / 100",
+        limitText: "100 requests",
+        resetsAt: "2026-03-09T00:00:00Z",
+        windowDurationMins: 10080,
+      },
+      credits: null,
+      localLimits: null,
+      duplicateInfo: null,
+      tags: [],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+      note: null,
+      upstreamBaseUrl: null,
+      history: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-clickable-account",
+          requestCount: 12,
+          totalTokens: 3456,
+          totalCost: 1.2345,
+          createdAt: "2026-03-02T00:00:00Z",
+          lastActivityAt: "2026-03-02T16:00:00Z",
+          upstreamAccounts: [
+            {
+              upstreamAccountId: 101,
+              upstreamAccountName: "Pool Alpha",
+              requestCount: 5,
+              totalTokens: 1600,
+              totalCost: 0.56,
+              lastActivityAt: "2026-03-02T16:00:00Z",
+            },
+            {
+              upstreamAccountId: null,
+              upstreamAccountName: "匿名账号",
+              requestCount: 4,
+              totalTokens: 1200,
+              totalCost: 0.44,
+              lastActivityAt: "2026-03-02T15:00:00Z",
+            },
+          ],
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const trigger = Array.from(document.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Pool Alpha"),
+    );
+    expect(trigger).toBeTruthy();
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledWith(101);
+    expect(document.body.textContent).toContain("上游账号");
+    expect(document.body.textContent).toContain("Pool Alpha");
+    expect(document.body.textContent).toContain("去号池查看完整详情");
+
+    const drawerWrapper = document
+      .querySelector('section[role="dialog"]')
+      ?.parentElement;
+    expect(drawerWrapper).toBeTruthy();
+
+    await act(async () => {
+      drawerWrapper?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).not.toContain("去号池查看完整详情");
   });
 });
