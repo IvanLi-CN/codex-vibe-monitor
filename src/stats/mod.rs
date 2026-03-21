@@ -228,6 +228,15 @@ impl BucketAggregate {
         self.first_byte_ttfb_values.push(value);
     }
 
+    pub(crate) fn record_exact_ttfb_sample(&mut self, status: Option<&str>, ttfb_ms: Option<f64>) {
+        let Some(value) = Self::validated_success_ttfb_value(status, ttfb_ms) else {
+            return;
+        };
+        self.first_byte_sample_count += 1;
+        self.first_byte_ttfb_sum_ms += value;
+        self.first_byte_ttfb_values.push(value);
+    }
+
     pub(crate) fn first_byte_avg_ms(&self) -> Option<f64> {
         if self.first_byte_sample_count <= 0 {
             return None;

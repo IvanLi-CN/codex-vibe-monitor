@@ -19133,6 +19133,45 @@ async fn timeseries_hourly_backed_uses_exact_archived_partial_hour_records() {
     assert_eq!(bucket.failure_count, 0);
     assert_eq!(bucket.total_tokens, 10);
     assert_f64_close(bucket.total_cost, 0.1);
+    assert_eq!(bucket.first_byte_sample_count, 1);
+    assert_f64_close(
+        bucket.first_byte_avg_ms.expect("avg should be present"),
+        200.0,
+    );
+    assert_f64_close(
+        bucket.first_byte_p95_ms.expect("p95 should be present"),
+        200.0,
+    );
+}
+
+#[tokio::test]
+async fn forward_proxy_timeseries_rejects_non_hour_aligned_timezones() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let err = fetch_forward_proxy_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "24h".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Kolkata".to_string()),
+        }),
+    )
+    .await
+    .expect_err("non-hour-aligned timezones should be rejected");
+
+    match err {
+        ApiError::BadRequest(err) => {
+            assert!(
+                err.to_string().contains("whole-hour UTC offsets"),
+                "unexpected error message: {err}"
+            );
+        }
+        other => panic!("expected bad request, got {other:?}"),
+    }
 }
 
 #[tokio::test]

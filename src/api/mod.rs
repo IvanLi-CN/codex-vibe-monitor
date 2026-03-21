@@ -1,6 +1,7 @@
 use super::*;
 use crate::forward_proxy::*;
 use crate::stats::*;
+use chrono::Offset;
 
 const INVOCATION_PROXY_DISPLAY_SQL: &str = "COALESCE(NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), ''), CASE WHEN TRIM(source) != 'proxy' THEN TRIM(source) END)";
 const INVOCATION_ENDPOINT_SQL: &str =
@@ -1399,10 +1400,11 @@ struct ExactUtcRange {
 }
 
 #[derive(Debug, Default)]
-struct HourlyBackedExactRangePlan {
-    archived_full_hour_range: Option<(i64, i64)>,
-    archived_partial_ranges: Vec<ExactUtcRange>,
-    live_raw_range: Option<ExactUtcRange>,
+struct HourlyRollupExactRangePlan {
+    full_hour_range: Option<(i64, i64)>,
+    archive_exact_ranges: Vec<ExactUtcRange>,
+    live_exact_ranges: Vec<ExactUtcRange>,
+    live_ttfb_overlay_range: Option<ExactUtcRange>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1468,34 +1470,65 @@ fn push_exact_range(
     Ok(())
 }
 
-fn build_hourly_backed_exact_range_plan(
+fn split_exact_range_by_retention(
+    archive_ranges: &mut Vec<ExactUtcRange>,
+    live_ranges: &mut Vec<ExactUtcRange>,
+    range: ExactUtcRange,
+    raw_cutoff: DateTime<Utc>,
+) -> Result<(), ApiError> {
+    let cutoff_epoch = raw_cutoff.timestamp();
+    if range.start < raw_cutoff {
+        push_exact_range(
+            archive_ranges,
+            range.start.timestamp(),
+            range.end.timestamp().min(cutoff_epoch),
+        )?;
+    }
+    if range.end > raw_cutoff {
+        push_exact_range(
+            live_ranges,
+            range.start.timestamp().max(cutoff_epoch),
+            range.end.timestamp(),
+        )?;
+    }
+    Ok(())
+}
+
+fn build_hourly_rollup_exact_range_plan(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     raw_cutoff: DateTime<Utc>,
-) -> Result<HourlyBackedExactRangePlan, ApiError> {
-    let mut plan = HourlyBackedExactRangePlan::default();
-    let archived_end = end.min(raw_cutoff);
-    if start < archived_end {
-        let start_epoch = start.timestamp();
-        let archived_end_epoch = archived_end.timestamp();
-        let archived_full_start_epoch = ceil_hour_epoch(start_epoch);
-        let archived_full_end_epoch = align_bucket_epoch(archived_end_epoch, 3_600, 0);
-        push_exact_range(
-            &mut plan.archived_partial_ranges,
-            start_epoch,
-            archived_full_start_epoch.min(archived_end_epoch),
-        )?;
-        push_exact_range(
-            &mut plan.archived_partial_ranges,
-            archived_full_end_epoch.max(start_epoch),
-            archived_end_epoch,
-        )?;
-        if archived_full_start_epoch < archived_full_end_epoch {
-            plan.archived_full_hour_range =
-                Some((archived_full_start_epoch, archived_full_end_epoch));
-        }
+) -> Result<HourlyRollupExactRangePlan, ApiError> {
+    let mut plan = HourlyRollupExactRangePlan::default();
+    let start_epoch = start.timestamp();
+    let end_epoch = end.timestamp();
+    let full_hour_start_epoch = ceil_hour_epoch(start_epoch);
+    let full_hour_end_epoch = align_bucket_epoch(end_epoch, 3_600, 0);
+    if full_hour_start_epoch < full_hour_end_epoch {
+        plan.full_hour_range = Some((full_hour_start_epoch, full_hour_end_epoch));
     }
-    plan.live_raw_range = exact_utc_range(start.max(raw_cutoff).timestamp(), end.timestamp())?;
+    if let Some(range) = exact_utc_range(start_epoch, full_hour_start_epoch.min(end_epoch))? {
+        split_exact_range_by_retention(
+            &mut plan.archive_exact_ranges,
+            &mut plan.live_exact_ranges,
+            range,
+            raw_cutoff,
+        )?;
+    }
+    if let Some(range) = exact_utc_range(full_hour_end_epoch.max(start_epoch), end_epoch)? {
+        split_exact_range_by_retention(
+            &mut plan.archive_exact_ranges,
+            &mut plan.live_exact_ranges,
+            range,
+            raw_cutoff,
+        )?;
+    }
+    plan.live_ttfb_overlay_range = exact_utc_range(
+        full_hour_start_epoch
+            .max(raw_cutoff.timestamp())
+            .max(start_epoch),
+        full_hour_end_epoch.min(end_epoch),
+    )?;
     Ok(plan)
 }
 
@@ -1564,7 +1597,7 @@ async fn query_invocation_aggregate_records_from_archive_range(
         return Ok(Vec::new());
     }
     let lower_bound = db_occurred_at_lower_bound(range.start);
-    let upper_bound = db_occurred_at_lower_bound(range.end);
+    let upper_bound = db_occurred_at_upper_bound(range.end);
     let mut records = Vec::new();
     for archive_file in archive_files {
         let archive_path = PathBuf::from(&archive_file.file_path);
@@ -1637,7 +1670,7 @@ async fn query_invocation_aggregate_records_from_live_range(
     query
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
-        .push_bind(db_occurred_at_lower_bound(range.end));
+        .push_bind(db_occurred_at_upper_bound(range.end));
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
@@ -1661,6 +1694,10 @@ fn add_invocation_record_to_summary_totals(
     }
     totals.total_tokens += record.total_tokens.unwrap_or_default();
     totals.total_cost += record.cost.unwrap_or_default();
+}
+
+fn db_occurred_at_upper_bound(end_utc: DateTime<Utc>) -> String {
+    db_occurred_at_lower_bound(end_utc + ChronoDuration::seconds(1))
 }
 
 fn record_perf_stage_sample(
@@ -1698,12 +1735,12 @@ pub(crate) async fn query_hourly_backed_summary_since(
 
     let mut totals = StatsTotals::default();
     let now = Utc::now();
-    let range_plan = build_hourly_backed_exact_range_plan(
+    let range_plan = build_hourly_rollup_exact_range_plan(
         start,
         now,
         shanghai_retention_cutoff(state.config.invocation_max_days),
     )?;
-    if let Some((range_start_epoch, range_end_epoch)) = range_plan.archived_full_hour_range {
+    if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
         let rows = query_invocation_hourly_rollup_range(
             &state.pool,
             range_start_epoch,
@@ -1719,7 +1756,7 @@ pub(crate) async fn query_hourly_backed_summary_since(
             totals.total_cost += row.total_cost;
         }
     }
-    for range in range_plan.archived_partial_ranges {
+    for range in range_plan.archive_exact_ranges {
         let records =
             query_invocation_aggregate_records_from_archive_range(&state.pool, range, source_scope)
                 .await?;
@@ -1727,15 +1764,13 @@ pub(crate) async fn query_hourly_backed_summary_since(
             add_invocation_record_to_summary_totals(&mut totals, record);
         }
     }
-    if let Some(live_raw_range) = range_plan.live_raw_range {
-        totals = totals.add(
-            query_invocation_totals(
-                &state.pool,
-                StatsFilter::Since(live_raw_range.start),
-                source_scope,
-            )
-            .await?,
-        );
+    for range in range_plan.live_exact_ranges {
+        let records =
+            query_invocation_aggregate_records_from_live_range(&state.pool, range, source_scope)
+                .await?;
+        for record in &records {
+            add_invocation_record_to_summary_totals(&mut totals, record);
+        }
     }
     let relay = query_crs_totals(
         &state.pool,
@@ -1761,6 +1796,7 @@ pub(crate) async fn fetch_forward_proxy_timeseries(
 ) -> Result<Json<ForwardProxyTimeseriesResponse>, ApiError> {
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
+    ensure_forward_proxy_hourly_tz_supported(reporting_tz, &range_window)?;
     let bucket_spec = params.bucket.as_deref().unwrap_or("1h");
     if bucket_seconds_from_spec(bucket_spec) != Some(3_600) {
         return Err(ApiError::bad_request(anyhow!(
@@ -1770,6 +1806,27 @@ pub(crate) async fn fetch_forward_proxy_timeseries(
     ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let response = build_forward_proxy_timeseries_response(state.as_ref(), range_window).await?;
     Ok(Json(response))
+}
+
+fn ensure_forward_proxy_hourly_tz_supported(
+    reporting_tz: Tz,
+    range_window: &RangeWindow,
+) -> Result<(), ApiError> {
+    let mut cursor = range_window.start;
+    while cursor < range_window.end {
+        let offset_seconds = cursor
+            .with_timezone(&reporting_tz)
+            .offset()
+            .fix()
+            .local_minus_utc();
+        if offset_seconds.rem_euclid(3_600) != 0 {
+            return Err(ApiError::bad_request(anyhow!(
+                "unsupported timeZone for forward proxy hourly timeseries: {reporting_tz}; hourly buckets require whole-hour UTC offsets"
+            )));
+        }
+        cursor += ChronoDuration::hours(1);
+    }
+    Ok(())
 }
 
 pub(crate) async fn fetch_prompt_cache_conversations(
@@ -2378,7 +2435,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
     let bucket_seconds = bucket_selection.bucket_seconds;
     let start_epoch = range_window.start.timestamp();
     let end_epoch = range_window.end.timestamp();
-    let range_plan = build_hourly_backed_exact_range_plan(
+    let range_plan = build_hourly_rollup_exact_range_plan(
         range_window.start,
         range_window.end,
         shanghai_retention_cutoff(state.config.invocation_max_days),
@@ -2398,7 +2455,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         bucket_cursor += bucket_seconds;
     }
 
-    if let Some((hourly_cursor, hourly_end_epoch)) = range_plan.archived_full_hour_range {
+    if let Some((hourly_cursor, hourly_end_epoch)) = range_plan.full_hour_range {
         let rows = query_invocation_hourly_rollup_range(
             &state.pool,
             hourly_cursor,
@@ -2430,7 +2487,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         }
     }
 
-    for range in &range_plan.archived_partial_ranges {
+    for range in &range_plan.archive_exact_ranges {
         let records = query_invocation_aggregate_records_from_archive_range(
             &state.pool,
             *range,
@@ -2452,17 +2509,40 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                     Some("success") => entry.success_count += 1,
                     _ => entry.failure_count += 1,
                 }
-                entry.record_precise_ttfb_sample(
-                    record.status.as_deref(),
-                    record.t_upstream_ttfb_ms,
-                );
+                entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
                 entry.total_tokens += record.total_tokens.unwrap_or_default();
                 entry.total_cost += record.cost.unwrap_or_default();
             }
         }
     }
 
-    if let Some(live_raw_range) = range_plan.live_raw_range {
+    for range in &range_plan.live_exact_ranges {
+        let records =
+            query_invocation_aggregate_records_from_live_range(&state.pool, *range, source_scope)
+                .await?;
+        for record in records {
+            let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
+                continue;
+            };
+            let bucket_epoch = align_reporting_bucket_epoch(
+                occurred_utc.timestamp(),
+                bucket_seconds,
+                reporting_tz,
+            )?;
+            if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+                entry.total_count += 1;
+                match record.status.as_deref() {
+                    Some("success") => entry.success_count += 1,
+                    _ => entry.failure_count += 1,
+                }
+                entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+                entry.total_tokens += record.total_tokens.unwrap_or_default();
+                entry.total_cost += record.cost.unwrap_or_default();
+            }
+        }
+    }
+
+    if let Some(live_raw_range) = range_plan.live_ttfb_overlay_range {
         let records = query_invocation_aggregate_records_from_live_range(
             &state.pool,
             live_raw_range,
@@ -2479,17 +2559,10 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 reporting_tz,
             )?;
             if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-                entry.total_count += 1;
-                match record.status.as_deref() {
-                    Some("success") => entry.success_count += 1,
-                    _ => entry.failure_count += 1,
-                }
                 entry.record_precise_ttfb_sample(
                     record.status.as_deref(),
                     record.t_upstream_ttfb_ms,
                 );
-                entry.total_tokens += record.total_tokens.unwrap_or_default();
-                entry.total_cost += record.cost.unwrap_or_default();
             }
         }
     }
@@ -3048,12 +3121,12 @@ pub(crate) async fn fetch_error_distribution(
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     if start_dt < shanghai_retention_cutoff(state.config.invocation_max_days) {
         let mut counts: HashMap<String, i64> = HashMap::new();
-        let range_plan = build_hourly_backed_exact_range_plan(
+        let range_plan = build_hourly_rollup_exact_range_plan(
             start_dt,
             display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
-        if let Some((range_start_epoch, range_end_epoch)) = range_plan.archived_full_hour_range {
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
             let rows = query_invocation_failure_hourly_rollup_range(
                 &state.pool,
                 range_start_epoch,
@@ -3071,7 +3144,7 @@ pub(crate) async fn fetch_error_distribution(
                 *counts.entry(row.error_category).or_default() += row.failure_count;
             }
         }
-        for range in &range_plan.archived_partial_ranges {
+        for range in &range_plan.archive_exact_ranges {
             let records = query_invocation_aggregate_records_from_archive_range(
                 &state.pool,
                 *range,
@@ -3094,10 +3167,10 @@ pub(crate) async fn fetch_error_distribution(
                 *counts.entry(key).or_default() += 1;
             }
         }
-        if let Some(live_raw_range) = range_plan.live_raw_range {
+        for range in &range_plan.live_exact_ranges {
             let records = query_invocation_aggregate_records_from_live_range(
                 &state.pool,
-                live_raw_range,
+                *range,
                 source_scope,
             )
             .await?;
@@ -3438,12 +3511,12 @@ pub(crate) async fn fetch_failure_summary(
         let mut client_failure_count = 0_i64;
         let mut client_abort_count = 0_i64;
         let mut actionable_failure_count = 0_i64;
-        let range_plan = build_hourly_backed_exact_range_plan(
+        let range_plan = build_hourly_rollup_exact_range_plan(
             start_dt,
             display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
-        if let Some((range_start_epoch, range_end_epoch)) = range_plan.archived_full_hour_range {
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
             let rows = query_invocation_failure_hourly_rollup_range(
                 &state.pool,
                 range_start_epoch,
@@ -3467,7 +3540,7 @@ pub(crate) async fn fetch_failure_summary(
                 }
             }
         }
-        for range in &range_plan.archived_partial_ranges {
+        for range in &range_plan.archive_exact_ranges {
             let records = query_invocation_aggregate_records_from_archive_range(
                 &state.pool,
                 *range,
@@ -3497,10 +3570,10 @@ pub(crate) async fn fetch_failure_summary(
                 }
             }
         }
-        if let Some(live_raw_range) = range_plan.live_raw_range {
+        for range in &range_plan.live_exact_ranges {
             let records = query_invocation_aggregate_records_from_live_range(
                 &state.pool,
-                live_raw_range,
+                *range,
                 source_scope,
             )
             .await?;
@@ -3627,14 +3700,14 @@ pub(crate) async fn fetch_perf_stats(
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     if range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
-        let range_plan = build_hourly_backed_exact_range_plan(
+        let range_plan = build_hourly_rollup_exact_range_plan(
             range_window.start,
             range_window.display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
         let mut by_stage: BTreeMap<String, (i64, f64, f64, ApproxHistogramCounts)> =
             BTreeMap::new();
-        if let Some((range_start_epoch, range_end_epoch)) = range_plan.archived_full_hour_range {
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
             let rows = query_proxy_perf_stage_hourly_rollup_range(
                 &state.pool,
                 range_start_epoch,
@@ -3654,7 +3727,7 @@ pub(crate) async fn fetch_perf_stats(
                 )?;
             }
         }
-        for range in &range_plan.archived_partial_ranges {
+        for range in &range_plan.archive_exact_ranges {
             let records = query_invocation_aggregate_records_from_archive_range(
                 &state.pool,
                 *range,
@@ -3684,10 +3757,10 @@ pub(crate) async fn fetch_perf_stats(
                 record_perf_stage_sample(&mut by_stage, "persistence", record.t_persist_ms);
             }
         }
-        if let Some(live_raw_range) = range_plan.live_raw_range {
+        for range in &range_plan.live_exact_ranges {
             let records = query_invocation_aggregate_records_from_live_range(
                 &state.pool,
-                live_raw_range,
+                *range,
                 InvocationSourceScope::ProxyOnly,
             )
             .await?;
