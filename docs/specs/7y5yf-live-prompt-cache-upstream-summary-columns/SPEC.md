@@ -88,6 +88,19 @@
 - [x] M3: 前端改为 Prompt Cache 专用双列布局，并补 i18n、Vitest 与 Storybook 示例。
 - [x] M4: 快车道完成提交、PR、checks 与 review-loop 收敛到 merge-ready。
 
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: Monitoring/PromptCacheConversationTable / Populated
+- state: populated desktop table
+- evidence_note: 验证 Prompt Cache 对话表在桌面端的上游账号紧凑统计、总计三行展示、时间合并列和调整后的列宽对齐效果。
+- image:
+  ![Prompt Cache 对话表 Populated Story](./assets/prompt-cache-conversation-table-populated.png)
+
 ## 变更记录（Change log）
 
 - 2026-03-21: 新建 spec，冻结 Prompt Cache Key 对话表“上游账号 / 总计”双列复合展示方案。
