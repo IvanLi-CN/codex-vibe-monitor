@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.18.0",
+  "base_stable_version": "1.17.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-21T19:08:52Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.18.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "81c4c6a9a5653aee72268e610fb56c0aa8b30ae0",
+  "pr_number": 196,
+  "pr_title": "feat: add upstream summaries to prompt cache conversations",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.18.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.18.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "260b62782ff24ba5946493c88bc833d20729e350",
+  "type_label": "type:minor"
+}
