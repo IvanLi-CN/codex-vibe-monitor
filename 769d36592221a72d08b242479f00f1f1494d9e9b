@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.18.1",
+  "base_stable_version": "1.18.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-21T20:59:44Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.18.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e7a61dd977634b1ad5dddc4d72f98913ca02c0bc",
+  "pr_number": 197,
+  "pr_title": "feat(stats): retain hourly rollups online",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.18.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.18.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "769d36592221a72d08b242479f00f1f1494d9e9b",
+  "type_label": "type:patch"
+}
