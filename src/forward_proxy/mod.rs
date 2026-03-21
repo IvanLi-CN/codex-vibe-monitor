@@ -34,6 +34,11 @@ pub(crate) struct ForwardProxyWeightLastBeforeRangeRow {
     pub(crate) last_weight: f64,
 }
 
+fn ceil_hour_epoch(epoch: i64) -> i64 {
+    let floor = align_bucket_epoch(epoch, 3_600, 0);
+    if floor < epoch { floor + 3_600 } else { floor }
+}
+
 pub(crate) async fn load_forward_proxy_settings(
     pool: &Pool<Sqlite>,
 ) -> Result<ForwardProxySettings> {
@@ -717,12 +722,8 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
 
     let start_epoch = range_window.start.timestamp();
     let end_epoch = range_window.end.timestamp();
-    let mut bucket_cursor = align_bucket_epoch(start_epoch, BUCKET_SECONDS, 0);
-    if bucket_cursor > start_epoch {
-        bucket_cursor -= BUCKET_SECONDS;
-    }
-    let fill_start_epoch = bucket_cursor;
-    let fill_end_epoch = align_bucket_epoch(end_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
+    let fill_start_epoch = ceil_hour_epoch(start_epoch);
+    let fill_end_epoch = align_bucket_epoch(end_epoch, BUCKET_SECONDS, 0);
 
     let hourly_map =
         query_forward_proxy_hourly_stats(&state.pool, fill_start_epoch, fill_end_epoch).await?;
@@ -764,7 +765,8 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
                 carry_weight = prior_weight;
             }
 
-            let buckets = (0..((fill_end_epoch - fill_start_epoch) / BUCKET_SECONDS))
+            let bucket_count = (fill_end_epoch - fill_start_epoch).max(0) / BUCKET_SECONDS;
+            let buckets = (0..bucket_count)
                 .map(|index| {
                     let bucket_start_epoch = fill_start_epoch + index * BUCKET_SECONDS;
                     let bucket_end_epoch = bucket_start_epoch + BUCKET_SECONDS;
@@ -788,7 +790,7 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let weight_buckets = (0..((fill_end_epoch - fill_start_epoch) / BUCKET_SECONDS))
+            let weight_buckets = (0..bucket_count)
                 .map(|index| {
                     let bucket_start_epoch = fill_start_epoch + index * BUCKET_SECONDS;
                     let bucket_end_epoch = bucket_start_epoch + BUCKET_SECONDS;
@@ -848,11 +850,7 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
 
     Ok(ForwardProxyTimeseriesResponse {
         range_start: format_utc_iso(range_window.start),
-        range_end: format_utc_iso(
-            Utc.timestamp_opt(fill_end_epoch, 0)
-                .single()
-                .unwrap_or(range_window.display_end),
-        ),
+        range_end: format_utc_iso(range_window.display_end),
         bucket_seconds: BUCKET_SECONDS,
         effective_bucket: "1h".to_string(),
         available_buckets: vec!["1h".to_string()],

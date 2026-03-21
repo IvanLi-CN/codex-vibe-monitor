@@ -1842,6 +1842,15 @@ fn ensure_forward_proxy_hourly_tz_supported(
     reporting_tz: Tz,
     range_window: &RangeWindow,
 ) -> Result<(), ApiError> {
+    if reporting_tz_has_whole_hour_offsets(reporting_tz, range_window) {
+        return Ok(());
+    }
+    Err(ApiError::bad_request(anyhow!(
+        "unsupported timeZone for forward proxy hourly timeseries: {reporting_tz}; hourly buckets require whole-hour UTC offsets"
+    )))
+}
+
+fn reporting_tz_has_whole_hour_offsets(reporting_tz: Tz, range_window: &RangeWindow) -> bool {
     let mut cursor = range_window.start;
     while cursor < range_window.end {
         let offset_seconds = cursor
@@ -1850,13 +1859,11 @@ fn ensure_forward_proxy_hourly_tz_supported(
             .fix()
             .local_minus_utc();
         if offset_seconds.rem_euclid(3_600) != 0 {
-            return Err(ApiError::bad_request(anyhow!(
-                "unsupported timeZone for forward proxy hourly timeseries: {reporting_tz}; hourly buckets require whole-hour UTC offsets"
-            )));
+            return false;
         }
         cursor += ChronoDuration::hours(1);
     }
-    Ok(())
+    true
 }
 
 pub(crate) async fn fetch_prompt_cache_conversations(
@@ -2304,15 +2311,26 @@ pub(crate) async fn fetch_timeseries(
     let bucket_seconds = bucket_selection.bucket_seconds;
 
     if bucket_seconds >= 3_600 {
-        return fetch_timeseries_from_hourly_rollups(
-            state,
-            params,
-            reporting_tz,
-            source_scope,
-            range_window,
-            bucket_selection,
-        )
-        .await;
+        let tz_is_hour_aligned = reporting_tz_has_whole_hour_offsets(reporting_tz, &range_window);
+        let needs_historical_rollups =
+            range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days);
+        if !tz_is_hour_aligned {
+            if needs_historical_rollups {
+                return Err(ApiError::bad_request(anyhow!(
+                    "unsupported timeZone for historical hourly timeseries: {reporting_tz}; archived hourly buckets require whole-hour UTC offsets"
+                )));
+            }
+        } else {
+            return fetch_timeseries_from_hourly_rollups(
+                state,
+                params,
+                reporting_tz,
+                source_scope,
+                range_window,
+                bucket_selection,
+            )
+            .await;
+        }
     }
 
     let end_dt = range_window.end;

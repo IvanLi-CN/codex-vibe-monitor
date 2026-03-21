@@ -7031,6 +7031,145 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
 }
 
 #[tokio::test]
+async fn forward_proxy_timeseries_trims_partial_edge_hours() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(settings_response) = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec!["socks5://127.0.0.1:1082".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect("put forward proxy settings should succeed");
+    let manual_key = settings_response
+        .nodes
+        .iter()
+        .find(|node| node.source == FORWARD_PROXY_SOURCE_MANUAL)
+        .map(|node| node.key.clone())
+        .expect("manual node should exist");
+
+    let bucket0 = align_bucket_epoch((Utc::now() - ChronoDuration::hours(6)).timestamp(), 3600, 0);
+    let bucket1 = bucket0 + 3_600;
+    let bucket2 = bucket1 + 3_600;
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        &manual_key,
+        Utc.timestamp_opt(bucket0 + 30 * 60, 0)
+            .single()
+            .expect("bucket0 partial attempt timestamp should be valid"),
+        true,
+    )
+    .await;
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        &manual_key,
+        Utc.timestamp_opt(bucket1 + 30 * 60, 0)
+            .single()
+            .expect("bucket1 full attempt timestamp should be valid"),
+        true,
+    )
+    .await;
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        &manual_key,
+        Utc.timestamp_opt(bucket2 + 30 * 60, 0)
+            .single()
+            .expect("bucket2 partial attempt timestamp should be valid"),
+        false,
+    )
+    .await;
+    seed_forward_proxy_weight_bucket_at(
+        &state.pool,
+        &manual_key,
+        bucket0,
+        1,
+        0.80,
+        0.80,
+        0.80,
+        0.80,
+    )
+    .await;
+    seed_forward_proxy_weight_bucket_at(
+        &state.pool,
+        &manual_key,
+        bucket1,
+        1,
+        0.70,
+        0.70,
+        0.70,
+        0.70,
+    )
+    .await;
+    seed_forward_proxy_weight_bucket_at(
+        &state.pool,
+        &manual_key,
+        bucket2,
+        1,
+        0.60,
+        0.60,
+        0.60,
+        0.60,
+    )
+    .await;
+
+    ensure_hourly_rollups_caught_up(state.as_ref())
+        .await
+        .expect("hourly rollups should sync");
+
+    let range_start = Utc
+        .timestamp_opt(bucket0 + 15 * 60, 0)
+        .single()
+        .expect("range start should be valid");
+    let range_end = Utc
+        .timestamp_opt(bucket2 + 45 * 60, 0)
+        .single()
+        .expect("range end should be valid");
+    let response = build_forward_proxy_timeseries_response(
+        state.as_ref(),
+        RangeWindow {
+            start: range_start,
+            end: range_end,
+            display_end: range_end,
+            duration: range_end - range_start,
+        },
+    )
+    .await
+    .expect("forward proxy timeseries should succeed");
+
+    let manual = response
+        .nodes
+        .iter()
+        .find(|node| node.key == manual_key)
+        .expect("manual node should remain queryable");
+    assert_eq!(manual.buckets.len(), 1);
+    assert_eq!(manual.weight_buckets.len(), 1);
+    assert_eq!(
+        manual.buckets[0].bucket_start,
+        format_utc_iso(
+            Utc.timestamp_opt(bucket1, 0)
+                .single()
+                .expect("middle bucket start should be valid")
+        )
+    );
+    assert_eq!(manual.buckets[0].success_count, 1);
+    assert_eq!(manual.buckets[0].failure_count, 0);
+    assert_eq!(
+        manual.weight_buckets[0].bucket_start,
+        manual.buckets[0].bucket_start
+    );
+    assert_eq!(manual.weight_buckets[0].sample_count, 1);
+    assert_f64_close(manual.weight_buckets[0].last_weight, 0.70);
+}
+
+#[tokio::test]
 async fn upsert_forward_proxy_weight_hourly_bucket_keeps_latest_sample_weight() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
@@ -18878,6 +19017,75 @@ async fn timeseries_hourly_rollups_rebucket_for_different_timezones() {
 }
 
 #[tokio::test]
+async fn timeseries_hourly_recent_non_hour_aligned_timezones_fall_back_to_raw_rows() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-kathmandu-recent",
+        &occurred_at,
+        "success",
+        Some(180.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1d".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Kathmandu".to_string()),
+        }),
+    )
+    .await
+    .expect("recent non-hour-aligned timezone should use raw rows");
+
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn timeseries_hourly_historical_non_hour_aligned_timezones_are_rejected() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+
+    let err = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "48h".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Kathmandu".to_string()),
+        }),
+    )
+    .await
+    .expect_err("historical non-hour-aligned timezone should be rejected");
+
+    match err {
+        ApiError::BadRequest(err) => {
+            assert!(
+                err.to_string().contains("whole-hour UTC offsets"),
+                "unexpected error message: {err}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn timeseries_daily_includes_rollups_for_equivalent_day_boundaries() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -19218,6 +19426,61 @@ async fn hourly_backed_summary_reads_pre_cutoff_exact_rows_from_live_table() {
     assert_eq!(totals.failure_count, 0);
     assert_eq!(totals.total_tokens, 12);
     assert_f64_close(totals.total_cost, 0.12);
+}
+
+#[tokio::test]
+async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let bucket_start_epoch = invocation_bucket_start_epoch(&occurred_at)
+        .expect("bucket start epoch should be derivable");
+    let mut tx = state.pool.begin().await.expect("begin transaction");
+    upsert_invocation_hourly_rollups_tx(
+        tx.as_mut(),
+        &[InvocationHourlySourceRecord {
+            id: 1,
+            occurred_at,
+            source: SOURCE_PROXY.to_string(),
+            status: None,
+            total_tokens: Some(7),
+            cost: Some(0.07),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: None,
+            payload: None,
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+        }],
+    )
+    .await
+    .expect("upsert hourly rollup source row");
+    tx.commit().await.expect("commit transaction");
+
+    let rows = query_invocation_hourly_rollup_range(
+        &state.pool,
+        bucket_start_epoch,
+        bucket_start_epoch + 3_600,
+        InvocationSourceScope::ProxyOnly,
+    )
+    .await
+    .expect("query hourly rollup range");
+    let row = rows.first().expect("rollup row should exist");
+    assert_eq!(row.total_count, 1);
+    assert_eq!(row.success_count, 0);
+    assert_eq!(row.failure_count, 0);
+    assert_eq!(row.total_tokens, 7);
+    assert_f64_close(row.total_cost, 0.07);
 }
 
 #[tokio::test]

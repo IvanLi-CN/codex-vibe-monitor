@@ -4054,10 +4054,10 @@ async fn upsert_invocation_hourly_rollups_tx(
                 ..InvocationHourlyRollupDelta::default()
             });
         overall_entry.total_count += 1;
-        if row.status.as_deref() == Some("success") {
-            overall_entry.success_count += 1;
-        } else {
-            overall_entry.failure_count += 1;
+        match row.status.as_deref() {
+            Some("success") => overall_entry.success_count += 1,
+            Some(_) => overall_entry.failure_count += 1,
+            None => {}
         }
         overall_entry.total_tokens += row.total_tokens.unwrap_or_default();
         overall_entry.total_cost += row.cost.unwrap_or_default();
