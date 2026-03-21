@@ -1704,17 +1704,13 @@ pub(crate) async fn query_prompt_cache_conversation_aggregates(
     source_scope: InvocationSourceScope,
     limit: i64,
 ) -> Result<Vec<PromptCacheConversationAggregateRow>> {
-    let range_start_epoch = parse_to_utc_datetime(range_start_bound)
-        .map(|value| align_bucket_epoch(value.timestamp(), 3_600, 0))
-        .unwrap_or_default();
-
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH active AS (\
             SELECT prompt_cache_key, MIN(first_seen_at) AS first_seen_24h \
              FROM prompt_cache_rollup_hourly \
-             WHERE bucket_start_epoch >= ",
+             WHERE last_seen_at >= ",
     );
-    query.push_bind(range_start_epoch);
+    query.push_bind(range_start_bound);
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
@@ -1759,16 +1755,12 @@ pub(crate) async fn query_active_prompt_cache_conversation_count(
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
 ) -> Result<i64> {
-    let range_start_epoch = parse_to_utc_datetime(range_start_bound)
-        .map(|value| align_bucket_epoch(value.timestamp(), 3_600, 0))
-        .unwrap_or_default();
-
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT COUNT(DISTINCT prompt_cache_key) AS count \
          FROM prompt_cache_rollup_hourly \
-         WHERE bucket_start_epoch >= ",
+         WHERE last_seen_at >= ",
     );
-    query.push_bind(range_start_epoch);
+    query.push_bind(range_start_bound);
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
@@ -1789,17 +1781,13 @@ pub(crate) async fn query_prompt_cache_conversation_hidden_count(
         return Ok(0);
     }
 
-    let range_start_epoch = parse_to_utc_datetime(range_start_bound)
-        .map(|value| align_bucket_epoch(value.timestamp(), 3_600, 0))
-        .unwrap_or_default();
-
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH active AS (\
             SELECT DISTINCT prompt_cache_key \
          FROM prompt_cache_rollup_hourly \
-         WHERE bucket_start_epoch >= ",
+         WHERE last_seen_at >= ",
     );
-    query.push_bind(range_start_epoch);
+    query.push_bind(range_start_bound);
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
@@ -1928,8 +1916,6 @@ pub(crate) async fn fetch_timeseries(
         .await;
     }
 
-    let offset_seconds = 0;
-
     let end_dt = range_window.end;
     let start_dt = range_window.start;
     let start_str_iso = format_utc_iso(start_dt);
@@ -1968,7 +1954,7 @@ pub(crate) async fn fetch_timeseries(
         if epoch > latest_record_epoch {
             latest_record_epoch = epoch;
         }
-        let bucket_epoch = align_bucket_epoch(epoch, bucket_seconds, offset_seconds);
+        let bucket_epoch = align_reporting_bucket_epoch(epoch, bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
         entry.total_count += 1;
         match record.status.as_deref() {
@@ -1990,7 +1976,7 @@ pub(crate) async fn fetch_timeseries(
 
     for delta in relay_deltas {
         let bucket_epoch =
-            align_bucket_epoch(delta.captured_at_epoch, bucket_seconds, offset_seconds);
+            align_reporting_bucket_epoch(delta.captured_at_epoch, bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
         entry.total_count += delta.total_count;
         entry.success_count += delta.success_count;
@@ -2001,7 +1987,8 @@ pub(crate) async fn fetch_timeseries(
 
     // Compute the inclusive fill range [fill_start_epoch, fill_end_epoch].
     // Start from the aligned bucket that intersects the requested start time.
-    let mut bucket_cursor = align_bucket_epoch(start_epoch, bucket_seconds, offset_seconds);
+    let mut bucket_cursor =
+        align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
     if bucket_cursor > start_epoch {
         bucket_cursor -= bucket_seconds;
     }
@@ -2011,7 +1998,8 @@ pub(crate) async fn fetch_timeseries(
     // This prevents future-dated records from pushing the chart beyond the
     // intended window (e.g., "last 24 hours").
     let fill_end_epoch =
-        align_bucket_epoch(end_dt.timestamp(), bucket_seconds, offset_seconds) + bucket_seconds;
+        align_reporting_bucket_epoch(end_dt.timestamp(), bucket_seconds, reporting_tz)?
+            + bucket_seconds;
     while bucket_cursor <= fill_end_epoch {
         aggregates.entry(bucket_cursor).or_default();
         bucket_cursor += bucket_seconds;
@@ -2070,7 +2058,7 @@ pub(crate) async fn fetch_timeseries(
 async fn fetch_timeseries_from_hourly_rollups(
     state: Arc<AppState>,
     _params: TimeseriesQuery,
-    _reporting_tz: Tz,
+    reporting_tz: Tz,
     source_scope: InvocationSourceScope,
     range_window: RangeWindow,
     bucket_selection: TimeseriesBucketSelection,
@@ -2092,19 +2080,22 @@ async fn fetch_timeseries_from_hourly_rollups(
     .await?;
 
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
-    let mut bucket_cursor = align_bucket_epoch(start_epoch, bucket_seconds, 0);
+    let mut bucket_cursor =
+        align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
     if bucket_cursor > start_epoch {
         bucket_cursor -= bucket_seconds;
     }
     let fill_start_epoch = bucket_cursor;
-    let fill_end_epoch = align_bucket_epoch(end_epoch, bucket_seconds, 0) + bucket_seconds;
+    let fill_end_epoch =
+        align_reporting_bucket_epoch(end_epoch, bucket_seconds, reporting_tz)? + bucket_seconds;
     while bucket_cursor <= fill_end_epoch {
         aggregates.entry(bucket_cursor).or_default();
         bucket_cursor += bucket_seconds;
     }
 
     for row in rows {
-        let bucket_epoch = align_bucket_epoch(row.bucket_start_epoch, bucket_seconds, 0);
+        let bucket_epoch =
+            align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
         entry.total_count += row.total_count;
         entry.success_count += row.success_count;
@@ -2123,6 +2114,44 @@ async fn fetch_timeseries_from_hourly_rollups(
             )?;
             merged
         };
+    }
+
+    let raw_overlay_start = std::cmp::max(
+        range_window.start,
+        shanghai_retention_cutoff(state.config.invocation_max_days),
+    );
+    if raw_overlay_start < range_window.end {
+        let mut records_query = QueryBuilder::new(
+            "SELECT occurred_at, status, NULL AS total_tokens, NULL AS cost, t_upstream_ttfb_ms FROM codex_invocations WHERE occurred_at >= ",
+        );
+        records_query.push_bind(db_occurred_at_lower_bound(raw_overlay_start));
+        if source_scope == InvocationSourceScope::ProxyOnly {
+            records_query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        }
+        records_query.push(" ORDER BY occurred_at ASC");
+        let records = records_query
+            .build_query_as::<TimeseriesRecord>()
+            .fetch_all(&state.pool)
+            .await?;
+        for record in records {
+            let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
+                continue;
+            };
+            if occurred_utc < raw_overlay_start || occurred_utc >= range_window.end {
+                continue;
+            }
+            let bucket_epoch = align_reporting_bucket_epoch(
+                occurred_utc.timestamp(),
+                bucket_seconds,
+                reporting_tz,
+            )?;
+            if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+                entry.record_precise_ttfb_sample(
+                    record.status.as_deref(),
+                    record.t_upstream_ttfb_ms,
+                );
+            }
+        }
     }
 
     let mut points = Vec::with_capacity(aggregates.len());
@@ -2167,6 +2196,21 @@ async fn fetch_timeseries_from_hourly_rollups(
         bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
         points,
     }))
+}
+
+fn align_reporting_bucket_epoch(epoch: i64, bucket_seconds: i64, reporting_tz: Tz) -> Result<i64> {
+    let timestamp = Utc
+        .timestamp_opt(epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
+    let local = timestamp.with_timezone(&reporting_tz);
+    let local_midnight = local
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight should be representable");
+    let local_midnight_utc = local_naive_to_utc(local_midnight, reporting_tz).timestamp();
+    let elapsed = epoch - local_midnight_utc;
+    Ok(local_midnight_utc + elapsed.div_euclid(bucket_seconds) * bucket_seconds)
 }
 
 pub(crate) fn resolve_daily_date_range(

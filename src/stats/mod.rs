@@ -193,16 +193,21 @@ pub(crate) struct BucketAggregate {
 }
 
 impl BucketAggregate {
-    pub(crate) fn record_ttfb_sample(&mut self, status: Option<&str>, ttfb_ms: Option<f64>) {
+    fn validated_success_ttfb_value(status: Option<&str>, ttfb_ms: Option<f64>) -> Option<f64> {
         if status != Some("success") {
-            return;
+            return None;
         }
-        let Some(value) = ttfb_ms else {
+        let value = ttfb_ms?;
+        if !value.is_finite() || value <= 0.0 {
+            return None;
+        }
+        Some(value)
+    }
+
+    pub(crate) fn record_ttfb_sample(&mut self, status: Option<&str>, ttfb_ms: Option<f64>) {
+        let Some(value) = Self::validated_success_ttfb_value(status, ttfb_ms) else {
             return;
         };
-        if !value.is_finite() || value <= 0.0 {
-            return;
-        }
         self.first_byte_sample_count += 1;
         self.first_byte_ttfb_sum_ms += value;
         self.first_byte_ttfb_values.push(value);
@@ -210,6 +215,17 @@ impl BucketAggregate {
             self.first_byte_histogram = empty_approx_histogram();
         }
         add_approx_histogram_sample(&mut self.first_byte_histogram, value);
+    }
+
+    pub(crate) fn record_precise_ttfb_sample(
+        &mut self,
+        status: Option<&str>,
+        ttfb_ms: Option<f64>,
+    ) {
+        let Some(value) = Self::validated_success_ttfb_value(status, ttfb_ms) else {
+            return;
+        };
+        self.first_byte_ttfb_values.push(value);
     }
 
     pub(crate) fn first_byte_avg_ms(&self) -> Option<f64> {
@@ -220,11 +236,8 @@ impl BucketAggregate {
     }
 
     pub(crate) fn first_byte_p95_ms(&self) -> Option<f64> {
-        if let Some(value) = approx_histogram_percentile_ms(&self.first_byte_histogram, 0.95) {
-            return Some(value);
-        }
         if self.first_byte_ttfb_values.is_empty() {
-            return None;
+            return approx_histogram_percentile_ms(&self.first_byte_histogram, 0.95);
         }
         let mut sorted = self.first_byte_ttfb_values.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -628,7 +641,7 @@ pub(crate) async fn query_invocation_totals(
         let mut totals = query_invocation_hourly_rollup_totals(pool, source_scope).await?;
         let last_row_id = sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT last_row_id
+            SELECT cursor_id
             FROM hourly_rollup_live_progress
             WHERE dataset = 'codex_invocations'
             LIMIT 1
