@@ -7061,7 +7061,7 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
 }
 
 #[tokio::test]
-async fn forward_proxy_timeseries_includes_edge_hours_for_partial_ranges() {
+async fn forward_proxy_timeseries_excludes_partial_edge_hours_outside_requested_range() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -7179,64 +7179,26 @@ async fn forward_proxy_timeseries_includes_edge_hours_for_partial_ranges() {
         .iter()
         .find(|node| node.key == manual_key)
         .expect("manual node should remain queryable");
-    assert_eq!(
-        response.range_start,
-        format_utc_iso(Utc.timestamp_opt(bucket0, 0).single().unwrap())
-    );
-    assert_eq!(
-        response.range_end,
-        format_utc_iso(Utc.timestamp_opt(bucket2 + 3_600, 0).single().unwrap())
-    );
-    assert_eq!(manual.buckets.len(), 3);
-    assert_eq!(manual.weight_buckets.len(), 3);
+    assert_eq!(response.range_start, format_utc_iso(range_start));
+    assert_eq!(response.range_end, format_utc_iso(range_end));
+    assert_eq!(manual.buckets.len(), 1);
+    assert_eq!(manual.weight_buckets.len(), 1);
     assert_eq!(
         manual.buckets[0].bucket_start,
-        format_utc_iso(
-            Utc.timestamp_opt(bucket0, 0)
-                .single()
-                .expect("first bucket start should be valid")
-        )
-    );
-    assert_eq!(manual.buckets[0].success_count, 1);
-    assert_eq!(manual.buckets[0].failure_count, 0);
-    assert_eq!(
-        manual.buckets[1].bucket_start,
         format_utc_iso(
             Utc.timestamp_opt(bucket1, 0)
                 .single()
                 .expect("middle bucket start should be valid")
         )
     );
-    assert_eq!(manual.buckets[1].success_count, 1);
-    assert_eq!(manual.buckets[1].failure_count, 0);
-    assert_eq!(
-        manual.buckets[2].bucket_start,
-        format_utc_iso(
-            Utc.timestamp_opt(bucket2, 0)
-                .single()
-                .expect("last bucket start should be valid")
-        )
-    );
-    assert_eq!(manual.buckets[2].success_count, 0);
-    assert_eq!(manual.buckets[2].failure_count, 1);
+    assert_eq!(manual.buckets[0].success_count, 1);
+    assert_eq!(manual.buckets[0].failure_count, 0);
     assert_eq!(
         manual.weight_buckets[0].bucket_start,
         manual.buckets[0].bucket_start
     );
     assert_eq!(manual.weight_buckets[0].sample_count, 1);
-    assert_f64_close(manual.weight_buckets[0].last_weight, 0.80);
-    assert_eq!(
-        manual.weight_buckets[1].bucket_start,
-        manual.buckets[1].bucket_start
-    );
-    assert_eq!(manual.weight_buckets[1].sample_count, 1);
-    assert_f64_close(manual.weight_buckets[1].last_weight, 0.70);
-    assert_eq!(
-        manual.weight_buckets[2].bucket_start,
-        manual.buckets[2].bucket_start
-    );
-    assert_eq!(manual.weight_buckets[2].sample_count, 1);
-    assert_f64_close(manual.weight_buckets[2].last_weight, 0.60);
+    assert_f64_close(manual.weight_buckets[0].last_weight, 0.70);
 }
 
 #[tokio::test]
@@ -7313,11 +7275,9 @@ async fn forward_proxy_timeseries_seeds_leading_weight_buckets_from_first_histor
         .iter()
         .find(|node| node.key == manual_key)
         .expect("manual node should remain queryable");
-    assert_eq!(manual.weight_buckets.len(), 2);
+    assert_eq!(manual.weight_buckets.len(), 1);
     assert_eq!(manual.weight_buckets[0].sample_count, 0);
     assert_f64_close(manual.weight_buckets[0].last_weight, 0.35);
-    assert_eq!(manual.weight_buckets[1].sample_count, 1);
-    assert_f64_close(manual.weight_buckets[1].last_weight, 0.35);
 }
 
 #[tokio::test]
@@ -7410,6 +7370,28 @@ async fn forward_proxy_timeseries_preserves_retired_proxy_metadata() {
     assert_eq!(archived.display_name, manual.display_name);
     assert_eq!(archived.source, manual.source);
     assert_eq!(archived.endpoint_url, manual.endpoint_url);
+}
+
+#[tokio::test]
+async fn reporting_tz_hour_alignment_rejects_sub_hour_dst_transition_windows() {
+    let start = Utc
+        .with_ymd_and_hms(2026, 10, 3, 15, 20, 0)
+        .single()
+        .expect("transition test start should be valid");
+    let end = Utc
+        .with_ymd_and_hms(2026, 10, 3, 15, 40, 0)
+        .single()
+        .expect("transition test end should be valid");
+
+    assert!(!reporting_tz_has_whole_hour_offsets(
+        chrono_tz::Australia::Lord_Howe,
+        &RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        }
+    ));
 }
 
 #[tokio::test]
@@ -20274,6 +20256,7 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
             t_resp_parse_ms: None,
             t_persist_ms: None,
         }],
+        &INVOCATION_HOURLY_ROLLUP_TARGETS,
     )
     .await
     .expect("upsert hourly rollup source row");
@@ -22081,6 +22064,89 @@ async fn bootstrap_hourly_rollups_skips_batches_already_accounted_during_retenti
     .await
     .expect("load forward proxy replay marker count");
     assert_eq!(forward_proxy_marked, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn bootstrap_hourly_rollups_replays_only_missing_invocation_targets() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("hourly-rollup-missing-invocation-target").await;
+    let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
+    let payload = r#"{"endpoint":"/v1/responses","promptCacheKey":"cache-replay","upstreamAccountId":17,"upstreamAccountName":"Replay Account","stickyKey":"sticky-replay"}"#;
+    insert_retention_invocation(
+        &pool,
+        "hourly-rollup-missing-invocation-target",
+        &old_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some(payload),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention before bootstrap replay");
+    assert_eq!(summary.invocation_rows_archived, 1);
+
+    bootstrap_hourly_rollups(&pool)
+        .await
+        .expect("bootstrap hourly rollups after retention");
+
+    let archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load archived codex_invocations batch path");
+    let invocation_total_before: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation totals before marker repair");
+
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_replay WHERE dataset = 'codex_invocations' AND target = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS)
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("delete one invocation replay marker");
+
+    bootstrap_hourly_rollups(&pool)
+        .await
+        .expect("bootstrap should replay only the missing target");
+
+    let invocation_total_after: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation totals after marker repair");
+    let repaired_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = 'codex_invocations' AND target = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS)
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired replay marker count");
+
+    assert_eq!(invocation_total_before, 1);
+    assert_eq!(invocation_total_after, invocation_total_before);
+    assert_eq!(repaired_marker_count, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }

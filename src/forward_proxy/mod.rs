@@ -792,13 +792,15 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
 
     let start_epoch = range_window.start.timestamp();
     let end_epoch = range_window.end.timestamp();
-    let fill_start_epoch = align_bucket_epoch(start_epoch, BUCKET_SECONDS, 0);
-    let fill_end_epoch = ceil_hour_epoch(end_epoch);
+    let query_start_epoch = align_bucket_epoch(start_epoch, BUCKET_SECONDS, 0);
+    let query_end_epoch = ceil_hour_epoch(end_epoch);
+    let fill_start_epoch = ceil_hour_epoch(start_epoch);
+    let fill_end_epoch = align_bucket_epoch(end_epoch, BUCKET_SECONDS, 0);
 
     let hourly_map =
-        query_forward_proxy_hourly_stats(&state.pool, fill_start_epoch, fill_end_epoch).await?;
+        query_forward_proxy_hourly_stats(&state.pool, query_start_epoch, query_end_epoch).await?;
     let weight_hourly_map =
-        query_forward_proxy_weight_hourly_stats(&state.pool, fill_start_epoch, fill_end_epoch)
+        query_forward_proxy_weight_hourly_stats(&state.pool, query_start_epoch, query_end_epoch)
             .await?;
 
     let mut seen = HashSet::new();
@@ -929,18 +931,9 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
         .collect::<Result<Vec<_>>>()?;
     nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
 
-    let range_start = Utc
-        .timestamp_opt(fill_start_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid forward proxy range start epoch"))?;
-    let range_end = Utc
-        .timestamp_opt(fill_end_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid forward proxy range end epoch"))?;
-
     Ok(ForwardProxyTimeseriesResponse {
-        range_start: format_utc_iso(range_start),
-        range_end: format_utc_iso(range_end),
+        range_start: format_utc_iso(range_window.start),
+        range_end: format_utc_iso(range_window.display_end),
         bucket_seconds: BUCKET_SECONDS,
         effective_bucket: "1h".to_string(),
         available_buckets: vec!["1h".to_string()],

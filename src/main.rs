@@ -4060,10 +4060,18 @@ fn record_proxy_perf_stage_sample(
 async fn upsert_invocation_hourly_rollups_tx(
     tx: &mut SqliteConnection,
     rows: &[InvocationHourlySourceRecord],
+    targets: &[&str],
 ) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
+    let upsert_overall = targets.contains(&HOURLY_ROLLUP_TARGET_INVOCATIONS);
+    let upsert_failures = targets.contains(&HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES);
+    let upsert_perf = targets.contains(&HOURLY_ROLLUP_TARGET_PROXY_PERF);
+    let upsert_prompt_cache = targets.contains(&HOURLY_ROLLUP_TARGET_PROMPT_CACHE);
+    let upsert_prompt_cache_upstream_accounts =
+        targets.contains(&HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS);
+    let upsert_sticky_keys = targets.contains(&HOURLY_ROLLUP_TARGET_STICKY_KEYS);
 
     let mut overall: BTreeMap<(i64, String), InvocationHourlyRollupDelta> = BTreeMap::new();
     let mut failures: BTreeMap<(i64, String, String, i64, String), i64> = BTreeMap::new();
@@ -4079,52 +4087,57 @@ async fn upsert_invocation_hourly_rollups_tx(
 
     for row in rows {
         let bucket_start_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
-        let overall_entry = overall
-            .entry((bucket_start_epoch, row.source.clone()))
-            .or_insert_with(|| InvocationHourlyRollupDelta {
-                first_byte_histogram: empty_approx_histogram(),
-                ..InvocationHourlyRollupDelta::default()
-            });
-        overall_entry.total_count += 1;
-        match row.status.as_deref() {
-            Some("success") => overall_entry.success_count += 1,
-            Some(_) => overall_entry.failure_count += 1,
-            None => {}
-        }
-        overall_entry.total_tokens += row.total_tokens.unwrap_or_default();
-        overall_entry.total_cost += row.cost.unwrap_or_default();
-        if row.status.as_deref() == Some("success")
-            && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
-            && ttfb_ms.is_finite()
-            && ttfb_ms > 0.0
-        {
-            overall_entry.first_byte_sample_count += 1;
-            overall_entry.first_byte_sum_ms += ttfb_ms;
-            overall_entry.first_byte_max_ms = overall_entry.first_byte_max_ms.max(ttfb_ms);
-            add_approx_histogram_sample(&mut overall_entry.first_byte_histogram, ttfb_ms);
-        }
-
-        let classification = resolve_failure_classification(
-            row.status.as_deref(),
-            row.error_message.as_deref(),
-            row.failure_kind.as_deref(),
-            row.failure_class.as_deref(),
-            row.is_actionable,
-        );
-        if classification.failure_class != FailureClass::None {
-            let error_category = categorize_error(row.error_message.as_deref().unwrap_or_default());
-            *failures
-                .entry((
-                    bucket_start_epoch,
-                    row.source.clone(),
-                    classification.failure_class.as_str().to_string(),
-                    classification.is_actionable as i64,
-                    error_category,
-                ))
-                .or_default() += 1;
+        if upsert_overall {
+            let overall_entry = overall
+                .entry((bucket_start_epoch, row.source.clone()))
+                .or_insert_with(|| InvocationHourlyRollupDelta {
+                    first_byte_histogram: empty_approx_histogram(),
+                    ..InvocationHourlyRollupDelta::default()
+                });
+            overall_entry.total_count += 1;
+            match row.status.as_deref() {
+                Some("success") => overall_entry.success_count += 1,
+                Some(_) => overall_entry.failure_count += 1,
+                None => {}
+            }
+            overall_entry.total_tokens += row.total_tokens.unwrap_or_default();
+            overall_entry.total_cost += row.cost.unwrap_or_default();
+            if row.status.as_deref() == Some("success")
+                && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
+                && ttfb_ms.is_finite()
+                && ttfb_ms > 0.0
+            {
+                overall_entry.first_byte_sample_count += 1;
+                overall_entry.first_byte_sum_ms += ttfb_ms;
+                overall_entry.first_byte_max_ms = overall_entry.first_byte_max_ms.max(ttfb_ms);
+                add_approx_histogram_sample(&mut overall_entry.first_byte_histogram, ttfb_ms);
+            }
         }
 
-        if row.source == SOURCE_PROXY {
+        if upsert_failures {
+            let classification = resolve_failure_classification(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+                row.failure_kind.as_deref(),
+                row.failure_class.as_deref(),
+                row.is_actionable,
+            );
+            if classification.failure_class != FailureClass::None {
+                let error_category =
+                    categorize_error(row.error_message.as_deref().unwrap_or_default());
+                *failures
+                    .entry((
+                        bucket_start_epoch,
+                        row.source.clone(),
+                        classification.failure_class.as_str().to_string(),
+                        classification.is_actionable as i64,
+                        error_category,
+                    ))
+                    .or_default() += 1;
+            }
+        }
+
+        if upsert_perf && row.source == SOURCE_PROXY {
             record_proxy_perf_stage_sample(
                 &mut perf,
                 bucket_start_epoch,
@@ -4175,63 +4188,72 @@ async fn upsert_invocation_hourly_rollups_tx(
             );
         }
 
-        if let Some(prompt_cache_key) = prompt_cache_key_from_payload(row.payload.as_deref()) {
-            let entry = keyed_conversation_delta(
-                &mut prompt_cache,
-                bucket_start_epoch,
-                &row.source,
-                &prompt_cache_key,
-                &row.occurred_at,
-            );
-            entry.request_count += 1;
-            if row.status.as_deref() == Some("success") {
-                entry.success_count += 1;
-            } else {
-                entry.failure_count += 1;
-            }
-            entry.total_tokens += row.total_tokens.unwrap_or_default();
-            entry.total_cost += row.cost.unwrap_or_default();
-
-            let upstream_account_id = upstream_account_id_from_payload(row.payload.as_deref());
-            let upstream_account_name = upstream_account_name_from_payload(row.payload.as_deref());
-            let rollup_key = prompt_cache_upstream_account_rollup_key(
-                upstream_account_id,
-                upstream_account_name.as_deref(),
-            );
-            let entry = prompt_cache_upstream_accounts
-                .entry((
+        if (upsert_prompt_cache || upsert_prompt_cache_upstream_accounts)
+            && let Some(prompt_cache_key) = prompt_cache_key_from_payload(row.payload.as_deref())
+        {
+            if upsert_prompt_cache {
+                let entry = keyed_conversation_delta(
+                    &mut prompt_cache,
                     bucket_start_epoch,
-                    row.source.clone(),
-                    prompt_cache_key,
-                    rollup_key,
+                    &row.source,
+                    &prompt_cache_key,
+                    &row.occurred_at,
+                );
+                entry.request_count += 1;
+                if row.status.as_deref() == Some("success") {
+                    entry.success_count += 1;
+                } else {
+                    entry.failure_count += 1;
+                }
+                entry.total_tokens += row.total_tokens.unwrap_or_default();
+                entry.total_cost += row.cost.unwrap_or_default();
+            }
+
+            if upsert_prompt_cache_upstream_accounts {
+                let upstream_account_id = upstream_account_id_from_payload(row.payload.as_deref());
+                let upstream_account_name =
+                    upstream_account_name_from_payload(row.payload.as_deref());
+                let rollup_key = prompt_cache_upstream_account_rollup_key(
                     upstream_account_id,
-                    upstream_account_name.clone(),
-                ))
-                .or_insert_with(|| KeyedConversationHourlyDelta {
-                    first_seen_at: row.occurred_at.clone(),
-                    last_seen_at: row.occurred_at.clone(),
-                    ..KeyedConversationHourlyDelta::default()
-                });
-            if row.occurred_at < entry.first_seen_at {
-                entry.first_seen_at = row.occurred_at.clone();
+                    upstream_account_name.as_deref(),
+                );
+                let entry = prompt_cache_upstream_accounts
+                    .entry((
+                        bucket_start_epoch,
+                        row.source.clone(),
+                        prompt_cache_key,
+                        rollup_key,
+                        upstream_account_id,
+                        upstream_account_name.clone(),
+                    ))
+                    .or_insert_with(|| KeyedConversationHourlyDelta {
+                        first_seen_at: row.occurred_at.clone(),
+                        last_seen_at: row.occurred_at.clone(),
+                        ..KeyedConversationHourlyDelta::default()
+                    });
+                if row.occurred_at < entry.first_seen_at {
+                    entry.first_seen_at = row.occurred_at.clone();
+                }
+                if row.occurred_at > entry.last_seen_at {
+                    entry.last_seen_at = row.occurred_at.clone();
+                }
+                entry.request_count += 1;
+                if row.status.as_deref() == Some("success") {
+                    entry.success_count += 1;
+                } else {
+                    entry.failure_count += 1;
+                }
+                entry.total_tokens += row.total_tokens.unwrap_or_default();
+                entry.total_cost += row.cost.unwrap_or_default();
             }
-            if row.occurred_at > entry.last_seen_at {
-                entry.last_seen_at = row.occurred_at.clone();
-            }
-            entry.request_count += 1;
-            if row.status.as_deref() == Some("success") {
-                entry.success_count += 1;
-            } else {
-                entry.failure_count += 1;
-            }
-            entry.total_tokens += row.total_tokens.unwrap_or_default();
-            entry.total_cost += row.cost.unwrap_or_default();
         }
 
-        if let (Some(upstream_account_id), Some(sticky_key)) = (
-            upstream_account_id_from_payload(row.payload.as_deref()),
-            sticky_key_from_payload(row.payload.as_deref()),
-        ) {
+        if upsert_sticky_keys
+            && let (Some(upstream_account_id), Some(sticky_key)) = (
+                upstream_account_id_from_payload(row.payload.as_deref()),
+                sticky_key_from_payload(row.payload.as_deref()),
+            )
+        {
             let entry = sticky_keys
                 .entry((bucket_start_epoch, upstream_account_id, sticky_key))
                 .or_insert_with(|| KeyedConversationHourlyDelta {
@@ -4256,288 +4278,300 @@ async fn upsert_invocation_hourly_rollups_tx(
         }
     }
 
-    for ((bucket_start_epoch, source), delta) in overall {
-        let current_histogram = sqlx::query_scalar::<_, String>(
-            r#"
-            SELECT first_byte_histogram
-            FROM invocation_rollup_hourly
-            WHERE bucket_start_epoch = ?1 AND source = ?2
-            "#,
-        )
-        .bind(bucket_start_epoch)
-        .bind(&source)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let mut merged_histogram = current_histogram
-            .as_deref()
-            .map(decode_approx_histogram)
-            .unwrap_or_else(empty_approx_histogram);
-        merge_approx_histogram_into(&mut merged_histogram, &delta.first_byte_histogram)?;
-        sqlx::query(
-            r#"
-            INSERT INTO invocation_rollup_hourly (
-                bucket_start_epoch,
-                source,
-                total_count,
-                success_count,
-                failure_count,
-                total_tokens,
-                total_cost,
-                first_byte_sample_count,
-                first_byte_sum_ms,
-                first_byte_max_ms,
-                first_byte_histogram,
-                updated_at
+    if upsert_overall {
+        for ((bucket_start_epoch, source), delta) in overall {
+            let current_histogram = sqlx::query_scalar::<_, String>(
+                r#"
+                SELECT first_byte_histogram
+                FROM invocation_rollup_hourly
+                WHERE bucket_start_epoch = ?1 AND source = ?2
+                "#,
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))
-            ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
-                total_count = invocation_rollup_hourly.total_count + excluded.total_count,
-                success_count = invocation_rollup_hourly.success_count + excluded.success_count,
-                failure_count = invocation_rollup_hourly.failure_count + excluded.failure_count,
-                total_tokens = invocation_rollup_hourly.total_tokens + excluded.total_tokens,
-                total_cost = invocation_rollup_hourly.total_cost + excluded.total_cost,
-                first_byte_sample_count = invocation_rollup_hourly.first_byte_sample_count + excluded.first_byte_sample_count,
-                first_byte_sum_ms = invocation_rollup_hourly.first_byte_sum_ms + excluded.first_byte_sum_ms,
-                first_byte_max_ms = MAX(invocation_rollup_hourly.first_byte_max_ms, excluded.first_byte_max_ms),
-                first_byte_histogram = excluded.first_byte_histogram,
-                updated_at = datetime('now')
-            "#,
-        )
-        .bind(bucket_start_epoch)
-        .bind(&source)
-        .bind(delta.total_count)
-        .bind(delta.success_count)
-        .bind(delta.failure_count)
-        .bind(delta.total_tokens)
-        .bind(delta.total_cost)
-        .bind(delta.first_byte_sample_count)
-        .bind(delta.first_byte_sum_ms)
-        .bind(delta.first_byte_max_ms)
-        .bind(encode_approx_histogram(&merged_histogram)?)
-        .execute(&mut *tx)
-        .await?;
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let mut merged_histogram = current_histogram
+                .as_deref()
+                .map(decode_approx_histogram)
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(&mut merged_histogram, &delta.first_byte_histogram)?;
+            sqlx::query(
+                r#"
+                INSERT INTO invocation_rollup_hourly (
+                    bucket_start_epoch,
+                    source,
+                    total_count,
+                    success_count,
+                    failure_count,
+                    total_tokens,
+                    total_cost,
+                    first_byte_sample_count,
+                    first_byte_sum_ms,
+                    first_byte_max_ms,
+                    first_byte_histogram,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))
+                ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
+                    total_count = invocation_rollup_hourly.total_count + excluded.total_count,
+                    success_count = invocation_rollup_hourly.success_count + excluded.success_count,
+                    failure_count = invocation_rollup_hourly.failure_count + excluded.failure_count,
+                    total_tokens = invocation_rollup_hourly.total_tokens + excluded.total_tokens,
+                    total_cost = invocation_rollup_hourly.total_cost + excluded.total_cost,
+                    first_byte_sample_count = invocation_rollup_hourly.first_byte_sample_count + excluded.first_byte_sample_count,
+                    first_byte_sum_ms = invocation_rollup_hourly.first_byte_sum_ms + excluded.first_byte_sum_ms,
+                    first_byte_max_ms = MAX(invocation_rollup_hourly.first_byte_max_ms, excluded.first_byte_max_ms),
+                    first_byte_histogram = excluded.first_byte_histogram,
+                    updated_at = datetime('now')
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .bind(delta.total_count)
+            .bind(delta.success_count)
+            .bind(delta.failure_count)
+            .bind(delta.total_tokens)
+            .bind(delta.total_cost)
+            .bind(delta.first_byte_sample_count)
+            .bind(delta.first_byte_sum_ms)
+            .bind(delta.first_byte_max_ms)
+            .bind(encode_approx_histogram(&merged_histogram)?)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
-    for (
-        (bucket_start_epoch, source, failure_class, is_actionable, error_category),
-        failure_count,
-    ) in failures
-    {
-        sqlx::query(
-            r#"
-            INSERT INTO invocation_failure_rollup_hourly (
-                bucket_start_epoch,
-                source,
-                failure_class,
-                is_actionable,
-                error_category,
-                failure_count,
-                updated_at
+    if upsert_failures {
+        for (
+            (bucket_start_epoch, source, failure_class, is_actionable, error_category),
+            failure_count,
+        ) in failures
+        {
+            sqlx::query(
+                r#"
+                INSERT INTO invocation_failure_rollup_hourly (
+                    bucket_start_epoch,
+                    source,
+                    failure_class,
+                    is_actionable,
+                    error_category,
+                    failure_count,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+                ON CONFLICT(bucket_start_epoch, source, failure_class, is_actionable, error_category) DO UPDATE SET
+                    failure_count = invocation_failure_rollup_hourly.failure_count + excluded.failure_count,
+                    updated_at = datetime('now')
+                "#,
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
-            ON CONFLICT(bucket_start_epoch, source, failure_class, is_actionable, error_category) DO UPDATE SET
-                failure_count = invocation_failure_rollup_hourly.failure_count + excluded.failure_count,
-                updated_at = datetime('now')
-            "#,
-        )
-        .bind(bucket_start_epoch)
-        .bind(&source)
-        .bind(&failure_class)
-        .bind(is_actionable)
-        .bind(&error_category)
-        .bind(failure_count)
-        .execute(&mut *tx)
-        .await?;
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .bind(&failure_class)
+            .bind(is_actionable)
+            .bind(&error_category)
+            .bind(failure_count)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
-    for ((bucket_start_epoch, stage), delta) in perf {
-        let current_histogram = sqlx::query_scalar::<_, String>(
-            r#"
-            SELECT histogram
-            FROM proxy_perf_stage_hourly
-            WHERE bucket_start_epoch = ?1 AND stage = ?2
-            "#,
-        )
-        .bind(bucket_start_epoch)
-        .bind(&stage)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let mut merged_histogram = current_histogram
-            .as_deref()
-            .map(decode_approx_histogram)
-            .unwrap_or_else(empty_approx_histogram);
-        merge_approx_histogram_into(&mut merged_histogram, &delta.histogram)?;
-        sqlx::query(
-            r#"
-            INSERT INTO proxy_perf_stage_hourly (
-                bucket_start_epoch,
-                stage,
-                sample_count,
-                sum_ms,
-                max_ms,
-                histogram,
-                updated_at
+    if upsert_perf {
+        for ((bucket_start_epoch, stage), delta) in perf {
+            let current_histogram = sqlx::query_scalar::<_, String>(
+                r#"
+                SELECT histogram
+                FROM proxy_perf_stage_hourly
+                WHERE bucket_start_epoch = ?1 AND stage = ?2
+                "#,
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
-            ON CONFLICT(bucket_start_epoch, stage) DO UPDATE SET
-                sample_count = proxy_perf_stage_hourly.sample_count + excluded.sample_count,
-                sum_ms = proxy_perf_stage_hourly.sum_ms + excluded.sum_ms,
-                max_ms = MAX(proxy_perf_stage_hourly.max_ms, excluded.max_ms),
-                histogram = excluded.histogram,
-                updated_at = datetime('now')
-            "#,
-        )
-        .bind(bucket_start_epoch)
-        .bind(&stage)
-        .bind(delta.sample_count)
-        .bind(delta.sum_ms)
-        .bind(delta.max_ms)
-        .bind(encode_approx_histogram(&merged_histogram)?)
-        .execute(&mut *tx)
-        .await?;
+            .bind(bucket_start_epoch)
+            .bind(&stage)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let mut merged_histogram = current_histogram
+                .as_deref()
+                .map(decode_approx_histogram)
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(&mut merged_histogram, &delta.histogram)?;
+            sqlx::query(
+                r#"
+                INSERT INTO proxy_perf_stage_hourly (
+                    bucket_start_epoch,
+                    stage,
+                    sample_count,
+                    sum_ms,
+                    max_ms,
+                    histogram,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+                ON CONFLICT(bucket_start_epoch, stage) DO UPDATE SET
+                    sample_count = proxy_perf_stage_hourly.sample_count + excluded.sample_count,
+                    sum_ms = proxy_perf_stage_hourly.sum_ms + excluded.sum_ms,
+                    max_ms = MAX(proxy_perf_stage_hourly.max_ms, excluded.max_ms),
+                    histogram = excluded.histogram,
+                    updated_at = datetime('now')
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(&stage)
+            .bind(delta.sample_count)
+            .bind(delta.sum_ms)
+            .bind(delta.max_ms)
+            .bind(encode_approx_histogram(&merged_histogram)?)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
-    for ((bucket_start_epoch, source, prompt_cache_key), delta) in prompt_cache {
-        sqlx::query(
-            r#"
-            INSERT INTO prompt_cache_rollup_hourly (
-                bucket_start_epoch,
-                source,
-                prompt_cache_key,
-                request_count,
-                success_count,
-                failure_count,
-                total_tokens,
-                total_cost,
-                first_seen_at,
-                last_seen_at,
-                updated_at
+    if upsert_prompt_cache {
+        for ((bucket_start_epoch, source, prompt_cache_key), delta) in prompt_cache {
+            sqlx::query(
+                r#"
+                INSERT INTO prompt_cache_rollup_hourly (
+                    bucket_start_epoch,
+                    source,
+                    prompt_cache_key,
+                    request_count,
+                    success_count,
+                    failure_count,
+                    total_tokens,
+                    total_cost,
+                    first_seen_at,
+                    last_seen_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
+                ON CONFLICT(bucket_start_epoch, source, prompt_cache_key) DO UPDATE SET
+                    request_count = prompt_cache_rollup_hourly.request_count + excluded.request_count,
+                    success_count = prompt_cache_rollup_hourly.success_count + excluded.success_count,
+                    failure_count = prompt_cache_rollup_hourly.failure_count + excluded.failure_count,
+                    total_tokens = prompt_cache_rollup_hourly.total_tokens + excluded.total_tokens,
+                    total_cost = prompt_cache_rollup_hourly.total_cost + excluded.total_cost,
+                    first_seen_at = MIN(prompt_cache_rollup_hourly.first_seen_at, excluded.first_seen_at),
+                    last_seen_at = MAX(prompt_cache_rollup_hourly.last_seen_at, excluded.last_seen_at),
+                    updated_at = datetime('now')
+                "#,
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
-            ON CONFLICT(bucket_start_epoch, source, prompt_cache_key) DO UPDATE SET
-                request_count = prompt_cache_rollup_hourly.request_count + excluded.request_count,
-                success_count = prompt_cache_rollup_hourly.success_count + excluded.success_count,
-                failure_count = prompt_cache_rollup_hourly.failure_count + excluded.failure_count,
-                total_tokens = prompt_cache_rollup_hourly.total_tokens + excluded.total_tokens,
-                total_cost = prompt_cache_rollup_hourly.total_cost + excluded.total_cost,
-                first_seen_at = MIN(prompt_cache_rollup_hourly.first_seen_at, excluded.first_seen_at),
-                last_seen_at = MAX(prompt_cache_rollup_hourly.last_seen_at, excluded.last_seen_at),
-                updated_at = datetime('now')
-            "#,
-        )
-        .bind(bucket_start_epoch)
-        .bind(&source)
-        .bind(&prompt_cache_key)
-        .bind(delta.request_count)
-        .bind(delta.success_count)
-        .bind(delta.failure_count)
-        .bind(delta.total_tokens)
-        .bind(delta.total_cost)
-        .bind(&delta.first_seen_at)
-        .bind(&delta.last_seen_at)
-        .execute(&mut *tx)
-        .await?;
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .bind(&prompt_cache_key)
+            .bind(delta.request_count)
+            .bind(delta.success_count)
+            .bind(delta.failure_count)
+            .bind(delta.total_tokens)
+            .bind(delta.total_cost)
+            .bind(&delta.first_seen_at)
+            .bind(&delta.last_seen_at)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
-    for (
-        (
-            bucket_start_epoch,
-            source,
-            prompt_cache_key,
-            upstream_account_key,
-            upstream_account_id,
-            upstream_account_name,
-        ),
-        delta,
-    ) in prompt_cache_upstream_accounts
-    {
-        sqlx::query(
-            r#"
-            INSERT INTO prompt_cache_upstream_account_hourly (
+    if upsert_prompt_cache_upstream_accounts {
+        for (
+            (
                 bucket_start_epoch,
                 source,
                 prompt_cache_key,
                 upstream_account_key,
                 upstream_account_id,
                 upstream_account_name,
-                request_count,
-                success_count,
-                failure_count,
-                total_tokens,
-                total_cost,
-                first_seen_at,
-                last_seen_at,
-                updated_at
+            ),
+            delta,
+        ) in prompt_cache_upstream_accounts
+        {
+            sqlx::query(
+                r#"
+                INSERT INTO prompt_cache_upstream_account_hourly (
+                    bucket_start_epoch,
+                    source,
+                    prompt_cache_key,
+                    upstream_account_key,
+                    upstream_account_id,
+                    upstream_account_name,
+                    request_count,
+                    success_count,
+                    failure_count,
+                    total_tokens,
+                    total_cost,
+                    first_seen_at,
+                    last_seen_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))
+                ON CONFLICT(bucket_start_epoch, source, prompt_cache_key, upstream_account_key) DO UPDATE SET
+                    request_count = prompt_cache_upstream_account_hourly.request_count + excluded.request_count,
+                    success_count = prompt_cache_upstream_account_hourly.success_count + excluded.success_count,
+                    failure_count = prompt_cache_upstream_account_hourly.failure_count + excluded.failure_count,
+                    total_tokens = prompt_cache_upstream_account_hourly.total_tokens + excluded.total_tokens,
+                    total_cost = prompt_cache_upstream_account_hourly.total_cost + excluded.total_cost,
+                    first_seen_at = MIN(prompt_cache_upstream_account_hourly.first_seen_at, excluded.first_seen_at),
+                    last_seen_at = MAX(prompt_cache_upstream_account_hourly.last_seen_at, excluded.last_seen_at),
+                    updated_at = datetime('now')
+                "#,
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))
-            ON CONFLICT(bucket_start_epoch, source, prompt_cache_key, upstream_account_key) DO UPDATE SET
-                request_count = prompt_cache_upstream_account_hourly.request_count + excluded.request_count,
-                success_count = prompt_cache_upstream_account_hourly.success_count + excluded.success_count,
-                failure_count = prompt_cache_upstream_account_hourly.failure_count + excluded.failure_count,
-                total_tokens = prompt_cache_upstream_account_hourly.total_tokens + excluded.total_tokens,
-                total_cost = prompt_cache_upstream_account_hourly.total_cost + excluded.total_cost,
-                first_seen_at = MIN(prompt_cache_upstream_account_hourly.first_seen_at, excluded.first_seen_at),
-                last_seen_at = MAX(prompt_cache_upstream_account_hourly.last_seen_at, excluded.last_seen_at),
-                updated_at = datetime('now')
-            "#,
-        )
-        .bind(bucket_start_epoch)
-        .bind(&source)
-        .bind(&prompt_cache_key)
-        .bind(&upstream_account_key)
-        .bind(upstream_account_id)
-        .bind(upstream_account_name.as_deref())
-        .bind(delta.request_count)
-        .bind(delta.success_count)
-        .bind(delta.failure_count)
-        .bind(delta.total_tokens)
-        .bind(delta.total_cost)
-        .bind(&delta.first_seen_at)
-        .bind(&delta.last_seen_at)
-        .execute(&mut *tx)
-        .await?;
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .bind(&prompt_cache_key)
+            .bind(&upstream_account_key)
+            .bind(upstream_account_id)
+            .bind(upstream_account_name.as_deref())
+            .bind(delta.request_count)
+            .bind(delta.success_count)
+            .bind(delta.failure_count)
+            .bind(delta.total_tokens)
+            .bind(delta.total_cost)
+            .bind(&delta.first_seen_at)
+            .bind(&delta.last_seen_at)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
-    for ((bucket_start_epoch, upstream_account_id, sticky_key), delta) in sticky_keys {
-        sqlx::query(
-            r#"
-            INSERT INTO upstream_sticky_key_hourly (
-                bucket_start_epoch,
-                upstream_account_id,
-                sticky_key,
-                request_count,
-                success_count,
-                failure_count,
-                total_tokens,
-                total_cost,
-                first_seen_at,
-                last_seen_at,
-                updated_at
+    if upsert_sticky_keys {
+        for ((bucket_start_epoch, upstream_account_id, sticky_key), delta) in sticky_keys {
+            sqlx::query(
+                r#"
+                INSERT INTO upstream_sticky_key_hourly (
+                    bucket_start_epoch,
+                    upstream_account_id,
+                    sticky_key,
+                    request_count,
+                    success_count,
+                    failure_count,
+                    total_tokens,
+                    total_cost,
+                    first_seen_at,
+                    last_seen_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
+                ON CONFLICT(bucket_start_epoch, upstream_account_id, sticky_key) DO UPDATE SET
+                    request_count = upstream_sticky_key_hourly.request_count + excluded.request_count,
+                    success_count = upstream_sticky_key_hourly.success_count + excluded.success_count,
+                    failure_count = upstream_sticky_key_hourly.failure_count + excluded.failure_count,
+                    total_tokens = upstream_sticky_key_hourly.total_tokens + excluded.total_tokens,
+                    total_cost = upstream_sticky_key_hourly.total_cost + excluded.total_cost,
+                    first_seen_at = MIN(upstream_sticky_key_hourly.first_seen_at, excluded.first_seen_at),
+                    last_seen_at = MAX(upstream_sticky_key_hourly.last_seen_at, excluded.last_seen_at),
+                    updated_at = datetime('now')
+                "#,
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
-            ON CONFLICT(bucket_start_epoch, upstream_account_id, sticky_key) DO UPDATE SET
-                request_count = upstream_sticky_key_hourly.request_count + excluded.request_count,
-                success_count = upstream_sticky_key_hourly.success_count + excluded.success_count,
-                failure_count = upstream_sticky_key_hourly.failure_count + excluded.failure_count,
-                total_tokens = upstream_sticky_key_hourly.total_tokens + excluded.total_tokens,
-                total_cost = upstream_sticky_key_hourly.total_cost + excluded.total_cost,
-                first_seen_at = MIN(upstream_sticky_key_hourly.first_seen_at, excluded.first_seen_at),
-                last_seen_at = MAX(upstream_sticky_key_hourly.last_seen_at, excluded.last_seen_at),
-                updated_at = datetime('now')
-            "#,
-        )
-        .bind(bucket_start_epoch)
-        .bind(upstream_account_id)
-        .bind(&sticky_key)
-        .bind(delta.request_count)
-        .bind(delta.success_count)
-        .bind(delta.failure_count)
-        .bind(delta.total_tokens)
-        .bind(delta.total_cost)
-        .bind(&delta.first_seen_at)
-        .bind(&delta.last_seen_at)
-        .execute(&mut *tx)
-        .await?;
+            .bind(bucket_start_epoch)
+            .bind(upstream_account_id)
+            .bind(&sticky_key)
+            .bind(delta.request_count)
+            .bind(delta.success_count)
+            .bind(delta.failure_count)
+            .bind(delta.total_tokens)
+            .bind(delta.total_cost)
+            .bind(&delta.first_seen_at)
+            .bind(&delta.last_seen_at)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
     Ok(())
@@ -4654,7 +4688,8 @@ async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -> Result<u6
 
     let last_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
     let mut tx = pool.begin().await?;
-    upsert_invocation_hourly_rollups_tx(tx.as_mut(), &rows).await?;
+    upsert_invocation_hourly_rollups_tx(tx.as_mut(), &rows, &INVOCATION_HOURLY_ROLLUP_TARGETS)
+        .await?;
     save_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS, last_id)
         .await?;
     tx.commit().await?;
@@ -4856,7 +4891,7 @@ async fn replay_invocation_archives_into_hourly_rollups(pool: &Pool<Sqlite>) -> 
         drop(temp_cleanup);
 
         let mut tx = pool.begin().await?;
-        upsert_invocation_hourly_rollups_tx(tx.as_mut(), &rows).await?;
+        upsert_invocation_hourly_rollups_tx(tx.as_mut(), &rows, &pending_targets).await?;
         for target in pending_targets {
             mark_hourly_rollup_archive_replayed_tx(
                 tx.as_mut(),
@@ -13815,6 +13850,7 @@ async fn persist_proxy_capture_record(
             t_resp_parse_ms: Some(record.timings.t_resp_parse_ms),
             t_persist_ms: Some(record.timings.t_persist_ms),
         }],
+        &INVOCATION_HOURLY_ROLLUP_TARGETS,
     )
     .await?;
     save_hourly_rollup_live_progress_tx(

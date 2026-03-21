@@ -1860,18 +1860,38 @@ fn ensure_forward_proxy_hourly_tz_supported(
     )))
 }
 
-fn reporting_tz_has_whole_hour_offsets(reporting_tz: Tz, range_window: &RangeWindow) -> bool {
-    let mut cursor = range_window.start;
-    while cursor < range_window.end {
-        let offset_seconds = cursor
+pub(crate) fn reporting_tz_has_whole_hour_offsets(
+    reporting_tz: Tz,
+    range_window: &RangeWindow,
+) -> bool {
+    fn offset_is_hour_aligned(reporting_tz: Tz, instant: DateTime<Utc>) -> bool {
+        instant
             .with_timezone(&reporting_tz)
             .offset()
             .fix()
-            .local_minus_utc();
-        if offset_seconds.rem_euclid(3_600) != 0 {
+            .local_minus_utc()
+            .rem_euclid(3_600)
+            == 0
+    }
+
+    let mut cursor = range_window.start;
+    let sample_step = ChronoDuration::minutes(1);
+    while cursor < range_window.end {
+        if !offset_is_hour_aligned(reporting_tz, cursor) {
             return false;
         }
-        cursor += ChronoDuration::hours(1);
+        let next = cursor + sample_step;
+        if next >= range_window.end {
+            break;
+        }
+        cursor = next;
+    }
+    if let Some(last_instant) = range_window
+        .end
+        .checked_sub_signed(ChronoDuration::nanoseconds(1))
+        .filter(|instant| *instant >= range_window.start)
+    {
+        return offset_is_hour_aligned(reporting_tz, last_instant);
     }
     true
 }
