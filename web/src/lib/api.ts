@@ -38,6 +38,30 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return JSON.parse(rawText) as T;
 }
 
+function normalizeForwardProxyHistoryTimeZone(timeZone?: string): string {
+  const candidate = timeZone ?? getBrowserTimeZone();
+  try {
+    const timeZoneName = new Intl.DateTimeFormat("en-US", {
+      timeZone: candidate,
+      timeZoneName: "shortOffset",
+      hour: "2-digit",
+    })
+      .formatToParts(new Date())
+      .find((part) => part.type === "timeZoneName")?.value;
+    const normalized = (timeZoneName ?? "").replace(/^UTC/, "GMT");
+    if (!normalized || normalized === "GMT") {
+      return candidate;
+    }
+    const match = normalized.match(/^GMT[+-]\d{1,2}(?::(\d{2}))?$/i);
+    if (!match) {
+      return candidate;
+    }
+    return (match[1] ?? "00") === "00" ? candidate : "UTC";
+  } catch {
+    return candidate;
+  }
+}
+
 export interface ApiInvocation {
   id: number;
   invokeId: string;
@@ -2261,7 +2285,7 @@ export async function fetchForwardProxyTimeseries(
 ) {
   const search = new URLSearchParams();
   search.set("range", range);
-  search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
+  search.set("timeZone", normalizeForwardProxyHistoryTimeZone(params?.timeZone));
   if (params?.bucket) {
     search.set("bucket", params.bucket);
   }

@@ -2376,7 +2376,8 @@ pub(crate) async fn fetch_timeseries(
         entry.total_count += 1;
         match record.status.as_deref() {
             Some("success") => entry.success_count += 1,
-            _ => entry.failure_count += 1,
+            Some(_) => entry.failure_count += 1,
+            None => {}
         }
         entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
         entry.total_tokens += record.total_tokens.unwrap_or(0);
@@ -2547,7 +2548,8 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             entry.total_count += 1;
             match record.status.as_deref() {
                 Some("success") => entry.success_count += 1,
-                _ => entry.failure_count += 1,
+                Some(_) => entry.failure_count += 1,
+                None => {}
             }
             entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
             entry.total_tokens += record.total_tokens.unwrap_or_default();
@@ -2733,7 +2735,8 @@ async fn fetch_timeseries_daily(
         entry.total_count += 1;
         match record.status.as_deref() {
             Some("success") => entry.success_count += 1,
-            _ => entry.failure_count += 1,
+            Some(_) => entry.failure_count += 1,
+            None => {}
         }
         entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
         entry.total_tokens += record.total_tokens.unwrap_or(0);

@@ -19484,6 +19484,86 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
 }
 
 #[tokio::test]
+async fn hourly_timeseries_exact_rows_ignore_null_status_for_failure_counts() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+
+    let pre_cutoff_local = start_of_local_day(Utc::now(), Shanghai)
+        .with_timezone(&Shanghai)
+        .naive_local()
+        - ChronoDuration::minutes(15);
+    let occurred_at = format_naive(pre_cutoff_local);
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            cost,
+            status,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("null-status-exact-hourly")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(5_i64)
+    .bind(0.05_f64)
+    .bind(None::<String>)
+    .bind("{}")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert null-status exact row");
+
+    let start = local_naive_to_utc(pre_cutoff_local - ChronoDuration::minutes(15), Shanghai);
+    let end = local_naive_to_utc(pre_cutoff_local + ChronoDuration::minutes(15), Shanghai);
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch exact hourly timeseries");
+
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count > 0)
+        .expect("should include exact bucket");
+    assert_eq!(bucket.total_count, 1);
+    assert_eq!(bucket.success_count, 0);
+    assert_eq!(bucket.failure_count, 0);
+    assert_eq!(bucket.total_tokens, 5);
+    assert_f64_close(bucket.total_cost, 0.05);
+}
+
+#[tokio::test]
 async fn forward_proxy_timeseries_rejects_non_hour_aligned_timezones() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
