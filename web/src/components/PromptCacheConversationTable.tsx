@@ -5,11 +5,11 @@ import type {
   PromptCacheConversationUpstreamAccount,
   PromptCacheConversationsResponse,
 } from "../lib/api";
+import { ConversationSparkline } from "./KeyedConversationTable";
 import {
-  ConversationSparkline,
   FALLBACK_CELL,
   findVisibleConversationChartMax,
-} from "./KeyedConversationTable";
+} from "./keyedConversationChart";
 import { Alert } from "./ui/alert";
 import { Spinner } from "./ui/spinner";
 

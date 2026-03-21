@@ -1,6 +1,12 @@
 import { useMemo } from "react";
 import { useTranslation } from "../i18n";
 import type { ConversationRequestPoint } from "../lib/api";
+import {
+  buildConversationSegments,
+  FALLBACK_CELL,
+  findVisibleConversationChartMax,
+  resolveConversationRangeEpochs,
+} from "./keyedConversationChart";
 import { Alert } from "./ui/alert";
 import {
   InlineChartTooltipSurface,
@@ -62,14 +68,6 @@ interface ConversationChartGeometry {
 
 const CHART_WIDTH = 232;
 const CHART_HEIGHT = 48;
-export const FALLBACK_CELL = "—";
-
-function parseEpoch(raw?: string | null) {
-  if (!raw) return null;
-  const epoch = Date.parse(raw);
-  if (Number.isNaN(epoch)) return null;
-  return Math.floor(epoch / 1000);
-}
 
 function formatNumber(value: number, formatter: Intl.NumberFormat) {
   if (!Number.isFinite(value)) return FALLBACK_CELL;
@@ -82,85 +80,16 @@ function formatDateLabel(raw: string, formatter: Intl.DateTimeFormat) {
   return formatter.format(value);
 }
 
-function buildSegments(
-  points: ConversationRequestPoint[],
-  rangeStartEpoch: number,
-  rangeEndEpoch: number,
-): ConversationChartSegment[] {
-  if (points.length === 0 || rangeEndEpoch <= rangeStartEpoch) return [];
-  const sorted = [...points].sort((a, b) => {
-    const aEpoch = parseEpoch(a.occurredAt) ?? 0;
-    const bEpoch = parseEpoch(b.occurredAt) ?? 0;
-    return aEpoch - bEpoch;
-  });
-
-  const segments: ConversationChartSegment[] = [];
-  for (let index = 0; index < sorted.length; index += 1) {
-    const current = sorted[index];
-    const next = sorted[index + 1];
-    const currentEpoch = parseEpoch(current.occurredAt);
-    if (currentEpoch == null) continue;
-    const startEpoch = Math.max(
-      rangeStartEpoch,
-      Math.min(rangeEndEpoch, currentEpoch),
-    );
-    const nextEpoch = next
-      ? (parseEpoch(next.occurredAt) ?? rangeEndEpoch)
-      : rangeEndEpoch;
-    const endEpoch = Math.max(startEpoch, Math.min(rangeEndEpoch, nextEpoch));
-    if (endEpoch <= startEpoch) continue;
-
-    segments.push({
-      startEpoch,
-      endEpoch,
-      cumulativeTokens: Math.max(0, current.cumulativeTokens),
-      isSuccess: current.isSuccess,
-      point: current,
-    });
-  }
-
-  return segments;
-}
-
-function resolveRangeEpochs(rangeStart: string, rangeEnd: string) {
-  const rangeStartEpoch = parseEpoch(rangeStart);
-  const rangeEndEpoch = parseEpoch(rangeEnd);
-  if (
-    rangeStartEpoch == null ||
-    rangeEndEpoch == null ||
-    rangeEndEpoch <= rangeStartEpoch
-  )
-    return null;
-  return { rangeStartEpoch, rangeEndEpoch };
-}
-
-export function findVisibleConversationChartMax<
-  TConversation extends KeyedConversationRecord,
->(conversations: TConversation[], rangeStart: string, rangeEnd: string) {
-  const range = resolveRangeEpochs(rangeStart, rangeEnd);
-  if (!range) return 0;
-  return Math.max(
-    ...conversations.flatMap((conversation) =>
-      buildSegments(
-        conversation.last24hRequests,
-        range.rangeStartEpoch,
-        range.rangeEndEpoch,
-      ).map((segment) => segment.cumulativeTokens),
-    ),
-    0,
-  );
-}
-
 function buildGeometry(
   points: ConversationRequestPoint[],
   rangeStart: string,
   rangeEnd: string,
   maxCumulativeTokens: number,
 ): ConversationChartGeometry | null {
-  const range = resolveRangeEpochs(rangeStart, rangeEnd);
+  const range = resolveConversationRangeEpochs(rangeStart, rangeEnd);
   if (!range) return null;
 
-  const segments = buildSegments(
+  const segments = buildConversationSegments(
     points,
     range.rangeStartEpoch,
     range.rangeEndEpoch,
