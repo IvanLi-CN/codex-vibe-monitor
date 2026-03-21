@@ -7240,6 +7240,179 @@ async fn forward_proxy_timeseries_includes_edge_hours_for_partial_ranges() {
 }
 
 #[tokio::test]
+async fn forward_proxy_timeseries_seeds_leading_weight_buckets_from_first_historical_sample() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(settings_response) = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec!["socks5://127.0.0.1:1084".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect("put forward proxy settings should succeed");
+    let manual_key = settings_response
+        .nodes
+        .iter()
+        .find(|node| node.source == FORWARD_PROXY_SOURCE_MANUAL)
+        .map(|node| node.key.clone())
+        .expect("manual node should exist");
+
+    {
+        let mut manager = state.forward_proxy.lock().await;
+        let runtime = manager
+            .runtime
+            .get_mut(&manual_key)
+            .expect("manual runtime should exist");
+        runtime.weight = 1.45;
+    }
+
+    let bucket0 = align_bucket_epoch((Utc::now() - ChronoDuration::hours(6)).timestamp(), 3600, 0);
+    let bucket1 = bucket0 + 3_600;
+    seed_forward_proxy_weight_bucket_at(
+        &state.pool,
+        &manual_key,
+        bucket1,
+        1,
+        0.35,
+        0.35,
+        0.35,
+        0.35,
+    )
+    .await;
+
+    let range_start = Utc
+        .timestamp_opt(bucket0, 0)
+        .single()
+        .expect("range start should be valid");
+    let range_end = Utc
+        .timestamp_opt(bucket1 + 30 * 60, 0)
+        .single()
+        .expect("range end should be valid");
+    let response = build_forward_proxy_timeseries_response(
+        state.as_ref(),
+        RangeWindow {
+            start: range_start,
+            end: range_end,
+            display_end: range_end,
+            duration: range_end - range_start,
+        },
+    )
+    .await
+    .expect("forward proxy timeseries should succeed");
+
+    let manual = response
+        .nodes
+        .iter()
+        .find(|node| node.key == manual_key)
+        .expect("manual node should remain queryable");
+    assert_eq!(manual.weight_buckets.len(), 2);
+    assert_eq!(manual.weight_buckets[0].sample_count, 0);
+    assert_f64_close(manual.weight_buckets[0].last_weight, 0.35);
+    assert_eq!(manual.weight_buckets[1].sample_count, 1);
+    assert_f64_close(manual.weight_buckets[1].last_weight, 0.35);
+}
+
+#[tokio::test]
+async fn forward_proxy_timeseries_preserves_retired_proxy_metadata() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(settings_response) = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec!["socks5://127.0.0.1:1085".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect("put forward proxy settings should succeed");
+    let manual = settings_response
+        .nodes
+        .iter()
+        .find(|node| node.source == FORWARD_PROXY_SOURCE_MANUAL)
+        .cloned()
+        .expect("manual node should exist");
+
+    let bucket_start =
+        align_bucket_epoch((Utc::now() - ChronoDuration::hours(5)).timestamp(), 3600, 0);
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        &manual.key,
+        Utc.timestamp_opt(bucket_start + 15 * 60, 0)
+            .single()
+            .expect("historical attempt timestamp should be valid"),
+        true,
+    )
+    .await;
+    seed_forward_proxy_weight_bucket_at(
+        &state.pool,
+        &manual.key,
+        bucket_start,
+        1,
+        0.72,
+        0.72,
+        0.72,
+        0.72,
+    )
+    .await;
+
+    let _ = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec![],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect("remove manual proxy from runtime");
+
+    let range_start = Utc
+        .timestamp_opt(bucket_start, 0)
+        .single()
+        .expect("range start should be valid");
+    let range_end = Utc
+        .timestamp_opt(bucket_start + 30 * 60, 0)
+        .single()
+        .expect("range end should be valid");
+    let response = build_forward_proxy_timeseries_response(
+        state.as_ref(),
+        RangeWindow {
+            start: range_start,
+            end: range_end,
+            display_end: range_end,
+            duration: range_end - range_start,
+        },
+    )
+    .await
+    .expect("forward proxy timeseries should succeed");
+
+    let archived = response
+        .nodes
+        .iter()
+        .find(|node| node.key == manual.key)
+        .expect("retired proxy should remain queryable via historical metadata");
+    assert_eq!(archived.display_name, manual.display_name);
+    assert_eq!(archived.source, manual.source);
+    assert_eq!(archived.endpoint_url, manual.endpoint_url);
+}
+
+#[tokio::test]
 async fn upsert_forward_proxy_weight_hourly_bucket_keeps_latest_sample_weight() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),

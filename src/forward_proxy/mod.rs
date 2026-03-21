@@ -169,7 +169,77 @@ pub(crate) async fn persist_forward_proxy_runtime_state(
             state.proxy_key
         )
     })?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_metadata_history (
+            proxy_key,
+            display_name,
+            source,
+            endpoint_url,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, datetime('now'))
+        ON CONFLICT(proxy_key) DO UPDATE SET
+            display_name = excluded.display_name,
+            source = excluded.source,
+            endpoint_url = excluded.endpoint_url,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(&state.proxy_key)
+    .bind(&state.display_name)
+    .bind(&state.source)
+    .bind(&state.endpoint_url)
+    .execute(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to persist forward_proxy_metadata_history row {}",
+            state.proxy_key
+        )
+    })?;
     Ok(())
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct ForwardProxyMetadataHistoryRow {
+    pub(crate) proxy_key: String,
+    pub(crate) display_name: String,
+    pub(crate) source: String,
+    pub(crate) endpoint_url: Option<String>,
+}
+
+pub(crate) async fn load_forward_proxy_metadata_history(
+    pool: &Pool<Sqlite>,
+    proxy_keys: &[String],
+) -> Result<HashMap<String, ForwardProxyMetadataHistoryRow>> {
+    if proxy_keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT proxy_key, display_name, source, endpoint_url \
+         FROM forward_proxy_metadata_history \
+         WHERE proxy_key IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for key in proxy_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(")");
+
+    let rows = query
+        .build_query_as::<ForwardProxyMetadataHistoryRow>()
+        .fetch_all(pool)
+        .await
+        .context("failed to load forward_proxy metadata history rows")?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.proxy_key.clone(), row))
+        .collect())
 }
 
 pub(crate) async fn delete_forward_proxy_runtime_rows_not_in(
@@ -750,6 +820,7 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
     }
     proxy_keys.sort();
 
+    let metadata_map = load_forward_proxy_metadata_history(&state.pool, &proxy_keys).await?;
     let weight_carry_map =
         query_forward_proxy_weight_last_before(&state.pool, fill_start_epoch, &proxy_keys).await?;
 
@@ -757,13 +828,19 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
         .into_iter()
         .map(|proxy_key| {
             let runtime = runtime_map.get(&proxy_key);
+            let metadata = metadata_map.get(&proxy_key);
             let request_points = hourly_map.get(&proxy_key);
             let weight_points = weight_hourly_map.get(&proxy_key);
-            let fallback_weight = weight_carry_map.get(&proxy_key).copied().unwrap_or(1.0);
-            let mut carry_weight = runtime.map(|item| item.weight).unwrap_or(fallback_weight);
-            if let Some(prior_weight) = weight_carry_map.get(&proxy_key).copied() {
-                carry_weight = prior_weight;
-            }
+            let fallback_weight = weight_carry_map
+                .get(&proxy_key)
+                .copied()
+                .or_else(|| {
+                    weight_points
+                        .and_then(|items| items.iter().next().map(|(_, point)| point.last_weight))
+                })
+                .or_else(|| runtime.map(|item| item.weight))
+                .unwrap_or(1.0);
+            let mut carry_weight = fallback_weight;
 
             let bucket_count = (fill_end_epoch - fill_start_epoch).max(0) / BUCKET_SECONDS;
             let buckets = (0..bucket_count)
@@ -834,11 +911,15 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
                 key: proxy_key.clone(),
                 source: runtime
                     .map(|item| item.source.clone())
+                    .or_else(|| metadata.map(|item| item.source.clone()))
                     .unwrap_or_else(|| "archived".to_string()),
                 display_name: runtime
                     .map(|item| item.display_name.clone())
+                    .or_else(|| metadata.map(|item| item.display_name.clone()))
                     .unwrap_or_else(|| proxy_key.clone()),
-                endpoint_url: runtime.and_then(|item| item.endpoint_url.clone()),
+                endpoint_url: runtime
+                    .and_then(|item| item.endpoint_url.clone())
+                    .or_else(|| metadata.and_then(|item| item.endpoint_url.clone())),
                 weight: runtime.map(|item| item.weight).unwrap_or(fallback_weight),
                 penalized: runtime.map(|item| item.is_penalized()).unwrap_or(false),
                 buckets,

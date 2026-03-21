@@ -7034,6 +7034,21 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS forward_proxy_metadata_history (
+            proxy_key TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            source TEXT NOT NULL,
+            endpoint_url TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure forward_proxy_metadata_history table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS forward_proxy_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             proxy_key TEXT NOT NULL,
