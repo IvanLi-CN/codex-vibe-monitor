@@ -16,7 +16,6 @@ const INVOCATION_ROUTE_MODE_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.routeMode') AS TEXT) END";
 const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
-const INVOCATION_UPSTREAM_ACCOUNT_NAME_TRIMMED_SQL: &str = "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END), '')";
 const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
 const PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT: usize = 3;
 const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
@@ -2479,24 +2478,17 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
         return Ok(Vec::new());
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
-    query
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(" AS prompt_cache_key, ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-        .push(" AS upstream_account_id, ")
-        .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_TRIMMED_SQL)
-        .push(
-            " AS upstream_account_name, \
-             COUNT(*) AS request_count, \
-             COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens, \
-             COALESCE(SUM(COALESCE(cost, 0.0)), 0.0) AS total_cost, \
-             MAX(occurred_at) AS last_activity_at \
-             FROM codex_invocations \
-             WHERE ",
-        )
-        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(" IN (");
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT prompt_cache_key, \
+             upstream_account_id, \
+             upstream_account_name, \
+             SUM(request_count) AS request_count, \
+             SUM(total_tokens) AS total_tokens, \
+             SUM(total_cost) AS total_cost, \
+             MAX(last_seen_at) AS last_activity_at \
+         FROM prompt_cache_upstream_account_hourly \
+         WHERE prompt_cache_key IN (",
+    );
 
     {
         let mut separated = query.separated(", ");
@@ -2511,7 +2503,7 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
 
     query
         .push(
-            " GROUP BY prompt_cache_key, upstream_account_id, upstream_account_name \
+            " GROUP BY prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name \
               ORDER BY prompt_cache_key ASC, last_activity_at DESC, upstream_account_name DESC, upstream_account_id DESC",
         )
         .build_query_as::<PromptCacheConversationUpstreamAccountSummaryRow>()

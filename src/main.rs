@@ -1520,6 +1520,22 @@ async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &Ca
             warn!(task = task.log_label(), error = %err, "startup backfill supervisor pass failed");
         }
     }
+
+    match invocation_hourly_rollup_rebuild_required(&state.pool).await {
+        Ok(true) => {
+            let _guard = state.hourly_rollup_sync_lock.lock().await;
+            if let Err(err) = sync_hourly_rollups_from_live_tables(&state.pool).await {
+                warn!(error = %err, "startup backfill failed to refresh invocation hourly rollups");
+            }
+        }
+        Ok(false) => {}
+        Err(err) => {
+            warn!(
+                error = %err,
+                "startup backfill failed to determine whether invocation hourly rollups need rebuilding"
+            );
+        }
+    }
 }
 
 fn startup_backfill_task_enabled(state: &AppState, task: StartupBackfillTask) -> bool {
@@ -2082,12 +2098,23 @@ struct ArchiveBackfillSummary {
 
 const HOURLY_ROLLUP_DATASET_INVOCATIONS: &str = "codex_invocations";
 const HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempts";
+const HOURLY_ROLLUP_REBUILD_REQUIRED_CURSOR: i64 = -1;
 const HOURLY_ROLLUP_TARGET_INVOCATIONS: &str = "invocation_rollup_hourly";
 const HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES: &str = "invocation_failure_rollup_hourly";
 const HOURLY_ROLLUP_TARGET_PROXY_PERF: &str = "proxy_perf_stage_hourly";
 const HOURLY_ROLLUP_TARGET_PROMPT_CACHE: &str = "prompt_cache_rollup_hourly";
+const HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS: &str =
+    "prompt_cache_upstream_account_hourly";
 const HOURLY_ROLLUP_TARGET_STICKY_KEYS: &str = "upstream_sticky_key_hourly";
 const HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempt_hourly";
+const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 6] = [
+    HOURLY_ROLLUP_TARGET_INVOCATIONS,
+    HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+    HOURLY_ROLLUP_TARGET_PROXY_PERF,
+    HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+    HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+    HOURLY_ROLLUP_TARGET_STICKY_KEYS,
+];
 const PERF_STAGE_TOTAL: &str = "total";
 const PERF_STAGE_REQUEST_READ: &str = "requestRead";
 const PERF_STAGE_REQUEST_PARSE: &str = "requestParse";
@@ -3856,6 +3883,7 @@ async fn mark_retention_archived_hourly_rollup_targets_tx(
             HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
             HOURLY_ROLLUP_TARGET_PROXY_PERF,
             HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+            HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
             HOURLY_ROLLUP_TARGET_STICKY_KEYS,
         ],
         "forward_proxy_attempts" => &[HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS],
@@ -4042,6 +4070,10 @@ async fn upsert_invocation_hourly_rollups_tx(
     let mut perf: BTreeMap<(i64, String), ProxyPerfStageHourlyDelta> = BTreeMap::new();
     let mut prompt_cache: BTreeMap<(i64, String, String), KeyedConversationHourlyDelta> =
         BTreeMap::new();
+    let mut prompt_cache_upstream_accounts: BTreeMap<
+        (i64, String, String, String, Option<i64>, Option<String>),
+        KeyedConversationHourlyDelta,
+    > = BTreeMap::new();
     let mut sticky_keys: BTreeMap<(i64, i64, String), KeyedConversationHourlyDelta> =
         BTreeMap::new();
 
@@ -4151,6 +4183,41 @@ async fn upsert_invocation_hourly_rollups_tx(
                 &prompt_cache_key,
                 &row.occurred_at,
             );
+            entry.request_count += 1;
+            if row.status.as_deref() == Some("success") {
+                entry.success_count += 1;
+            } else {
+                entry.failure_count += 1;
+            }
+            entry.total_tokens += row.total_tokens.unwrap_or_default();
+            entry.total_cost += row.cost.unwrap_or_default();
+
+            let upstream_account_id = upstream_account_id_from_payload(row.payload.as_deref());
+            let upstream_account_name = upstream_account_name_from_payload(row.payload.as_deref());
+            let rollup_key = prompt_cache_upstream_account_rollup_key(
+                upstream_account_id,
+                upstream_account_name.as_deref(),
+            );
+            let entry = prompt_cache_upstream_accounts
+                .entry((
+                    bucket_start_epoch,
+                    row.source.clone(),
+                    prompt_cache_key,
+                    rollup_key,
+                    upstream_account_id,
+                    upstream_account_name.clone(),
+                ))
+                .or_insert_with(|| KeyedConversationHourlyDelta {
+                    first_seen_at: row.occurred_at.clone(),
+                    last_seen_at: row.occurred_at.clone(),
+                    ..KeyedConversationHourlyDelta::default()
+                });
+            if row.occurred_at < entry.first_seen_at {
+                entry.first_seen_at = row.occurred_at.clone();
+            }
+            if row.occurred_at > entry.last_seen_at {
+                entry.last_seen_at = row.occurred_at.clone();
+            }
             entry.request_count += 1;
             if row.status.as_deref() == Some("success") {
                 entry.success_count += 1;
@@ -4372,6 +4439,65 @@ async fn upsert_invocation_hourly_rollups_tx(
         .await?;
     }
 
+    for (
+        (
+            bucket_start_epoch,
+            source,
+            prompt_cache_key,
+            upstream_account_key,
+            upstream_account_id,
+            upstream_account_name,
+        ),
+        delta,
+    ) in prompt_cache_upstream_accounts
+    {
+        sqlx::query(
+            r#"
+            INSERT INTO prompt_cache_upstream_account_hourly (
+                bucket_start_epoch,
+                source,
+                prompt_cache_key,
+                upstream_account_key,
+                upstream_account_id,
+                upstream_account_name,
+                request_count,
+                success_count,
+                failure_count,
+                total_tokens,
+                total_cost,
+                first_seen_at,
+                last_seen_at,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))
+            ON CONFLICT(bucket_start_epoch, source, prompt_cache_key, upstream_account_key) DO UPDATE SET
+                request_count = prompt_cache_upstream_account_hourly.request_count + excluded.request_count,
+                success_count = prompt_cache_upstream_account_hourly.success_count + excluded.success_count,
+                failure_count = prompt_cache_upstream_account_hourly.failure_count + excluded.failure_count,
+                total_tokens = prompt_cache_upstream_account_hourly.total_tokens + excluded.total_tokens,
+                total_cost = prompt_cache_upstream_account_hourly.total_cost + excluded.total_cost,
+                first_seen_at = MIN(prompt_cache_upstream_account_hourly.first_seen_at, excluded.first_seen_at),
+                last_seen_at = MAX(prompt_cache_upstream_account_hourly.last_seen_at, excluded.last_seen_at),
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(&source)
+        .bind(&prompt_cache_key)
+        .bind(&upstream_account_key)
+        .bind(upstream_account_id)
+        .bind(upstream_account_name.as_deref())
+        .bind(delta.request_count)
+        .bind(delta.success_count)
+        .bind(delta.failure_count)
+        .bind(delta.total_tokens)
+        .bind(delta.total_cost)
+        .bind(&delta.first_seen_at)
+        .bind(&delta.last_seen_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+
     for ((bucket_start_epoch, upstream_account_id, sticky_key), delta) in sticky_keys {
         sqlx::query(
             r#"
@@ -4574,11 +4700,58 @@ async fn replay_live_forward_proxy_attempt_hourly_rollups(pool: &Pool<Sqlite>) -
     Ok(rows.len() as u64)
 }
 
-async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
+async fn reset_invocation_hourly_rollups_tx(tx: &mut SqliteConnection) -> Result<()> {
+    for table in INVOCATION_HOURLY_ROLLUP_TARGETS {
+        sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    let mut replay_query =
+        QueryBuilder::<Sqlite>::new("DELETE FROM hourly_rollup_archive_replay WHERE dataset = ");
+    replay_query
+        .push_bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .push(" AND target IN (");
+    {
+        let mut separated = replay_query.separated(", ");
+        for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
+            separated.push_bind(target);
+        }
+    }
+    replay_query.push(")");
+    replay_query.build().execute(&mut *tx).await?;
+
+    sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
+async fn rebuild_invocation_hourly_rollups_from_sources(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    reset_invocation_hourly_rollups_tx(tx.as_mut()).await?;
+    tx.commit().await?;
+
+    replay_invocation_archives_into_hourly_rollups(pool).await?;
     loop {
         let updated = replay_live_invocation_hourly_rollups(pool).await?;
         if updated == 0 {
             break;
+        }
+    }
+    Ok(())
+}
+
+async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
+    if invocation_hourly_rollup_rebuild_required(pool).await? {
+        rebuild_invocation_hourly_rollups_from_sources(pool).await?;
+    } else {
+        loop {
+            let updated = replay_live_invocation_hourly_rollups(pool).await?;
+            if updated == 0 {
+                break;
+            }
         }
     }
     loop {
@@ -4611,6 +4784,7 @@ async fn replay_invocation_archives_into_hourly_rollups(pool: &Pool<Sqlite>) -> 
             HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
             HOURLY_ROLLUP_TARGET_PROXY_PERF,
             HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+            HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
             HOURLY_ROLLUP_TARGET_STICKY_KEYS,
         ] {
             if !hourly_rollup_archive_replayed(
@@ -6566,6 +6740,41 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_prompt_cache_rollup_hourly_key_bucket")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS prompt_cache_upstream_account_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            prompt_cache_key TEXT NOT NULL,
+            upstream_account_key TEXT NOT NULL,
+            upstream_account_id INTEGER,
+            upstream_account_name TEXT,
+            request_count INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, source, prompt_cache_key, upstream_account_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt_cache_upstream_account_hourly table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_prompt_cache_upstream_account_hourly_key_bucket
+        ON prompt_cache_upstream_account_hourly (prompt_cache_key, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_prompt_cache_upstream_account_hourly_key_bucket")?;
 
     sqlx::query(
         r#"
@@ -12176,6 +12385,17 @@ fn upstream_account_id_from_payload(payload: Option<&str>) -> Option<i64> {
     value.get("upstreamAccountId").and_then(json_value_to_i64)
 }
 
+fn upstream_account_name_from_payload(payload: Option<&str>) -> Option<String> {
+    let payload = payload?;
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    value
+        .get("upstreamAccountName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn prompt_cache_key_from_payload(payload: Option<&str>) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
@@ -12197,6 +12417,21 @@ fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn prompt_cache_upstream_account_rollup_key(
+    upstream_account_id: Option<i64>,
+    upstream_account_name: Option<&str>,
+) -> String {
+    let normalized_name = upstream_account_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (upstream_account_id, normalized_name) {
+        (Some(account_id), Some(account_name)) => format!("id:{account_id}|name:{account_name}"),
+        (Some(account_id), None) => format!("id:{account_id}"),
+        (None, Some(account_name)) => format!("name:{account_name}"),
+        (None, None) => "unknown".to_string(),
+    }
 }
 
 async fn load_hourly_rollup_live_progress(pool: &Pool<Sqlite>, dataset: &str) -> Result<i64> {
@@ -12228,6 +12463,39 @@ async fn save_hourly_rollup_live_progress_tx(
     .execute(&mut *tx)
     .await?;
     Ok(())
+}
+
+async fn mark_invocation_hourly_rollups_rebuild_required_tx(
+    tx: &mut SqliteConnection,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_REBUILD_REQUIRED_CURSOR)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn mark_invocation_hourly_rollups_rebuild_required(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    mark_invocation_hourly_rollups_rebuild_required_tx(tx.as_mut()).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn invocation_hourly_rollup_rebuild_required(pool: &Pool<Sqlite>) -> Result<bool> {
+    Ok(
+        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?
+            == HOURLY_ROLLUP_REBUILD_REQUIRED_CURSOR,
+    )
 }
 
 async fn mark_hourly_rollup_archive_replayed_tx(
@@ -13817,6 +14085,9 @@ async fn backfill_proxy_usage_tokens_from_cursor(
                 .rows_affected();
                 updated_this_batch += affected;
             }
+            if updated_this_batch > 0 {
+                mark_invocation_hourly_rollups_rebuild_required_tx(tx.as_mut()).await?;
+            }
             tx.commit().await?;
             summary.updated += updated_this_batch;
         }
@@ -14048,9 +14319,16 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 .rows_affected();
                 updated_this_batch += affected;
             }
+            if updated_this_batch > 0 {
+                mark_invocation_hourly_rollups_rebuild_required_tx(tx.as_mut()).await?;
+            }
             tx.commit().await?;
             summary.updated += updated_this_batch;
         }
+    }
+
+    if summary.updated > 0 {
+        mark_invocation_hourly_rollups_rebuild_required(pool).await?;
     }
 
     Ok(BackfillBatchOutcome {
@@ -14255,6 +14533,10 @@ async fn backfill_proxy_prompt_cache_keys_from_cursor(
             .rows_affected();
             summary.updated += affected;
         }
+    }
+
+    if summary.updated > 0 {
+        mark_invocation_hourly_rollups_rebuild_required(pool).await?;
     }
 
     Ok(BackfillBatchOutcome {
@@ -14981,6 +15263,7 @@ async fn backfill_failure_classification_from_cursor(
         summary.scanned += rows.len() as u64;
 
         let mut tx = pool.begin().await?;
+        let mut updated_this_batch = 0_u64;
         for row in rows {
             let existing_kind = row
                 .failure_kind
@@ -15044,6 +15327,7 @@ async fn backfill_failure_classification_from_cursor(
                 .await?
                 .rows_affected();
                 summary.updated += affected;
+                updated_this_batch += affected;
                 continue;
             }
 
@@ -15081,6 +15365,10 @@ async fn backfill_failure_classification_from_cursor(
             .await?
             .rows_affected();
             summary.updated += affected;
+            updated_this_batch += affected;
+        }
+        if updated_this_batch > 0 {
+            mark_invocation_hourly_rollups_rebuild_required_tx(tx.as_mut()).await?;
         }
         tx.commit().await?;
     }

@@ -16401,6 +16401,114 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_preserve_upstream_account_history_after_raw_rows_are_removed() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        account_id: Option<i64>,
+        account_name: Option<&str>,
+        total_tokens: i64,
+        cost: f64,
+    ) {
+        let mut payload = json!({ "promptCacheKey": key });
+        if let Some(account_id) = account_id {
+            payload["upstreamAccountId"] = json!(account_id);
+        }
+        if let Some(account_name) = account_name {
+            payload["upstreamAccountName"] = json!(account_name);
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    insert_row(
+        &state.pool,
+        "pck-upstream-history-beta",
+        now - ChronoDuration::hours(48),
+        "pck-upstream-history",
+        None,
+        Some("Beta"),
+        40,
+        0.4,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-upstream-recent-beta",
+        now - ChronoDuration::hours(2),
+        "pck-upstream-history",
+        Some(2),
+        Some("Beta"),
+        15,
+        0.15,
+    )
+    .await;
+
+    ensure_hourly_rollups_caught_up(state.as_ref())
+        .await
+        .expect("hourly rollups should catch up before raw rows are removed");
+
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("pck-upstream-history-beta")
+        .execute(&state.pool)
+        .await
+        .expect("delete archived-equivalent raw row");
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversations should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-upstream-history")
+        .expect("conversation should survive raw-row removal through hourly rollups");
+
+    let beta = conversation
+        .upstream_accounts
+        .iter()
+        .find(|account| account.upstream_account_id == Some(2))
+        .expect("beta account should preserve historical totals");
+    assert_eq!(beta.upstream_account_name.as_deref(), Some("Beta"));
+    assert_eq!(beta.request_count, 2);
+    assert_eq!(beta.total_tokens, 55);
+    assert!((beta.total_cost - 0.55).abs() < 1e-9);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_filter() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -17181,6 +17289,61 @@ async fn backfill_proxy_prompt_cache_keys_updates_payload_and_is_idempotent() {
         .expect("second prompt cache key backfill should succeed");
     assert_eq!(summary_second.scanned, 0);
     assert_eq!(summary_second.updated, 0);
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn sync_hourly_rollups_rebuilds_after_prompt_cache_key_backfill_updates_existing_rows() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let temp_dir = make_temp_test_dir("hourly-rollup-rebuild-after-prompt-cache-backfill");
+    let request_path = temp_dir.join("request.json");
+    write_backfill_request_payload(&request_path, Some("pck-rollup-rebuild"));
+
+    insert_proxy_prompt_cache_backfill_row(
+        &pool,
+        "proxy-pck-rollup-rebuild",
+        &request_path,
+        r#"{"endpoint":"/v1/responses","requesterIp":"198.51.100.77"}"#,
+    )
+    .await;
+
+    bootstrap_hourly_rollups(&pool)
+        .await
+        .expect("initial hourly rollup bootstrap should succeed");
+
+    let initial_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_rollup_hourly WHERE prompt_cache_key = ?1",
+    )
+    .bind("pck-rollup-rebuild")
+    .fetch_one(&pool)
+    .await
+    .expect("query initial prompt cache rollup count");
+    assert_eq!(initial_count, 0);
+
+    let summary = backfill_proxy_prompt_cache_keys(&pool, None)
+        .await
+        .expect("prompt cache key backfill should succeed");
+    assert_eq!(summary.updated, 1);
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("hourly rollup sync should rebuild invocation-backed rollups");
+
+    let request_count: i64 = sqlx::query_scalar(
+        "SELECT request_count FROM prompt_cache_rollup_hourly WHERE prompt_cache_key = ?1",
+    )
+    .bind("pck-rollup-rebuild")
+    .fetch_one(&pool)
+    .await
+    .expect("query rebuilt prompt cache rollup row");
+    assert_eq!(request_count, 1);
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
