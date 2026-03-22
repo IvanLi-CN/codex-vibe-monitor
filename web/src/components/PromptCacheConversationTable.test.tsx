@@ -38,6 +38,17 @@ function renderTable(stats: PromptCacheConversationsResponse) {
   );
 }
 
+function formatZhDateTime(raw: string) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(raw));
+}
+
 function createConversation(
   overrides: Partial<PromptCacheConversation> & {
     promptCacheKey: string;
@@ -480,6 +491,8 @@ describe("PromptCacheConversationTable", () => {
     };
 
     const html = renderTable(stats);
+    const createdAtLabel = formatZhDateTime("2026-03-02T00:00:00Z");
+    const lastActivityLabel = formatZhDateTime("2026-03-02T16:00:00Z");
 
     expect(html).toContain("上游账号");
     expect(html).toContain("总计");
@@ -495,6 +508,10 @@ describe("PromptCacheConversationTable", () => {
     expect(html).toContain("US$1.2345");
     expect(html).toContain("创建");
     expect(html).toContain("活动");
+    expect(html).toContain(createdAtLabel);
+    expect(html).toContain(lastActivityLabel);
+    expect(html).toContain("w-[15%]");
+    expect(html).toContain("tabular-nums");
   });
 
   it("opens and closes the upstream account drawer from prompt cache rows", async () => {
