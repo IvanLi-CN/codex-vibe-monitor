@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.20.0",
+  "base_stable_version": "1.19.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-22T19:12:19Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.20.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7ca9afdea19f59fed89e2a9c7c5249e31d29a7b7",
+  "pr_number": 200,
+  "pr_title": "feat(account-pool): add upstream account pagination and bulk actions",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.20.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.20.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "1e57d69e48a5025008bff7ce7e8eb4f037133922",
+  "type_label": "type:minor"
+}
