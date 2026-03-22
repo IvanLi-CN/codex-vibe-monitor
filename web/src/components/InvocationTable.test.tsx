@@ -12,6 +12,7 @@ import {
   formatServiceTier,
   getFastIndicatorState,
   isPriorityServiceTier,
+  resolveInvocationEndpointDisplay,
 } from '../lib/invocation'
 import { InvocationTable } from './InvocationTable'
 import { getReasoningEffortTone } from './invocation-table-reasoning'
@@ -138,6 +139,44 @@ describe('service tier helpers', () => {
     expect(getFastIndicatorState('priority', undefined)).toBe('requested_only')
     expect(getFastIndicatorState('auto', 'priority')).toBe('effective')
     expect(getFastIndicatorState('flex', 'auto')).toBe('none')
+  })
+})
+
+describe('resolveInvocationEndpointDisplay', () => {
+  it('maps the recognized invocation endpoints onto badge metadata', () => {
+    expect(resolveInvocationEndpointDisplay(' /v1/responses ')).toEqual({
+      kind: 'responses',
+      endpointValue: '/v1/responses',
+      badgeVariant: 'default',
+      labelKey: 'table.endpoint.responsesBadge',
+    })
+    expect(resolveInvocationEndpointDisplay('/v1/chat/completions')).toEqual({
+      kind: 'chat',
+      endpointValue: '/v1/chat/completions',
+      badgeVariant: 'secondary',
+      labelKey: 'table.endpoint.chatBadge',
+    })
+    expect(resolveInvocationEndpointDisplay('/v1/responses/compact')).toEqual({
+      kind: 'compact',
+      endpointValue: '/v1/responses/compact',
+      badgeVariant: 'info',
+      labelKey: 'table.endpoint.compactBadge',
+    })
+  })
+
+  it('keeps unknown or missing endpoints on the raw fallback path', () => {
+    expect(resolveInvocationEndpointDisplay('/v1/responses/experimental')).toEqual({
+      kind: 'raw',
+      endpointValue: '/v1/responses/experimental',
+      badgeVariant: null,
+      labelKey: null,
+    })
+    expect(resolveInvocationEndpointDisplay(undefined)).toEqual({
+      kind: 'raw',
+      endpointValue: '—',
+      badgeVariant: null,
+      labelKey: null,
+    })
   })
 })
 
@@ -413,16 +452,16 @@ describe('InvocationTable', () => {
     expect(afterExpandMatches.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('colors compact endpoint paths without adding extra summary badges', () => {
+  it('renders recognized endpoints as badges and keeps unknown endpoints on the raw-path fallback', () => {
     const html = renderTable([
       {
         id: 21,
-        invokeId: 'invocation-compact-marker',
+        invokeId: 'invocation-responses-badge',
         occurredAt: '2026-03-07T03:13:53Z',
         createdAt: '2026-03-07T03:13:53Z',
         source: 'proxy',
-        proxyDisplayName: 'codex-compact-edge',
-        endpoint: '/v1/responses/compact',
+        proxyDisplayName: 'codex-responses-edge',
+        endpoint: '/v1/responses',
         model: 'gpt-5.3-codex',
         status: 'success',
         totalTokens: 2048,
@@ -430,24 +469,56 @@ describe('InvocationTable', () => {
       },
       {
         id: 22,
-        invokeId: 'invocation-standard-marker',
+        invokeId: 'invocation-chat-badge',
         occurredAt: '2026-03-07T03:13:52Z',
         createdAt: '2026-03-07T03:13:52Z',
         source: 'proxy',
         proxyDisplayName: LONG_PROXY_NAME,
-        endpoint: '/v1/responses',
+        endpoint: '/v1/chat/completions',
         model: 'gpt-5.3-codex',
         status: 'success',
         totalTokens: 1024,
         cost: 0.0021,
       },
+      {
+        id: 23,
+        invokeId: 'invocation-compact-badge',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        proxyDisplayName: 'codex-compact-edge',
+        endpoint: '/v1/responses/compact',
+        model: 'gpt-5.3-codex',
+        status: 'success',
+        totalTokens: 512,
+        cost: 0.0011,
+      },
+      {
+        id: 24,
+        invokeId: 'invocation-raw-endpoint',
+        occurredAt: '2026-03-07T03:13:50Z',
+        createdAt: '2026-03-07T03:13:50Z',
+        source: 'proxy',
+        proxyDisplayName: 'codex-raw-edge',
+        endpoint: '/v1/responses/' + 'very-long-segment-'.repeat(4),
+        model: 'gpt-5.3-codex',
+        status: 'success',
+        totalTokens: 256,
+        cost: 0.0006,
+      },
     ])
 
-    expect(html).not.toContain('data-testid="invocation-compact-badge"')
-    expect(html.match(/data-testid="invocation-endpoint-path"/g)?.length ?? 0).toBe(4)
+    expect(html.match(/data-testid="invocation-endpoint-badge"/g)?.length ?? 0).toBe(6)
+    expect(html.match(/data-testid="invocation-endpoint-path"/g)?.length ?? 0).toBe(2)
+    expect(html.match(/data-endpoint-kind="responses"/g)?.length ?? 0).toBe(2)
+    expect(html.match(/data-endpoint-kind="chat"/g)?.length ?? 0).toBe(2)
     expect(html.match(/data-endpoint-kind="compact"/g)?.length ?? 0).toBe(2)
-    expect(html).toContain('text-info')
+    expect(html.match(/data-endpoint-kind="raw"/g)?.length ?? 0).toBe(2)
+    expect(html).toContain('Responses')
+    expect(html).toContain('Chat')
+    expect(html).toContain('远程压缩')
     expect(html).toContain('/v1/responses/compact')
+    expect(html).toContain('/v1/responses/very-long-segment-')
   })
 
   it('renders stable proxy selectors for long proxy-name truncation coverage', () => {

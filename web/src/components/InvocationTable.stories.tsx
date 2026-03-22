@@ -337,6 +337,70 @@ const fastIndicatorRecords: ApiInvocation[] = [
   },
 ]
 
+const endpointBadgeRecords: ApiInvocation[] = [
+  {
+    id: 1501,
+    invokeId: 'inv_endpoint_badge_responses',
+    occurredAt: '2026-02-25T10:36:00Z',
+    createdAt: '2026-02-25T10:36:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Endpoint-responses',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'success',
+    totalTokens: 1234,
+    cost: 0.0031,
+    tUpstreamTtfbMs: 108.6,
+    tTotalMs: 602.4,
+  },
+  {
+    id: 1502,
+    invokeId: 'inv_endpoint_badge_chat',
+    occurredAt: '2026-02-25T10:37:00Z',
+    createdAt: '2026-02-25T10:37:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Endpoint-chat',
+    endpoint: '/v1/chat/completions',
+    model: 'gpt-5',
+    status: 'failed',
+    totalTokens: 888,
+    cost: 0.0024,
+    errorMessage: 'upstream timeout while waiting first byte',
+    tUpstreamTtfbMs: null,
+    tTotalMs: 30004.8,
+  },
+  {
+    id: 1503,
+    invokeId: 'inv_endpoint_badge_compact',
+    occurredAt: '2026-02-25T10:38:00Z',
+    createdAt: '2026-02-25T10:38:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Endpoint-compact',
+    endpoint: '/v1/responses/compact',
+    model: 'gpt-5.4',
+    status: 'success',
+    totalTokens: 640,
+    cost: 0.0017,
+    tUpstreamTtfbMs: 92.2,
+    tTotalMs: 511.3,
+  },
+  {
+    id: 1504,
+    invokeId: 'inv_endpoint_badge_raw',
+    occurredAt: '2026-02-25T10:39:00Z',
+    createdAt: '2026-02-25T10:39:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Endpoint-raw',
+    endpoint: '/v1/responses/' + 'very-long-segment-'.repeat(5),
+    model: 'gpt-5.4-mini',
+    status: 'success',
+    totalTokens: 420,
+    cost: 0.0011,
+    tUpstreamTtfbMs: 132.8,
+    tTotalMs: 744.6,
+  },
+]
+
 const reasoningEffortRecords: ApiInvocation[] = [
   {
     id: 2001,
@@ -1421,6 +1485,22 @@ export const FastIndicatorStates: Story = {
   },
   args: {
     records: fastIndicatorRecords,
+    isLoading: false,
+    error: null,
+  },
+}
+
+export const EndpointBadgeStates: Story = {
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Shows the endpoint-summary matrix: recognized `/v1/responses`, `/v1/chat/completions`, and `/v1/responses/compact` render as human-readable badges, while an unknown long endpoint stays on the raw monospace fallback path. Expanded details still retain the original endpoint text.',
+      },
+    },
+  },
+  args: {
+    records: endpointBadgeRecords,
     isLoading: false,
     error: null,
   },

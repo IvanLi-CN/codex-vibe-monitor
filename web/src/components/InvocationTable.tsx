@@ -9,8 +9,10 @@ import {
   isPoolRouteMode,
   formatServiceTier,
   getFastIndicatorState,
+  resolveInvocationEndpointDisplay,
   resolveInvocationAccountLabel,
   type FastIndicatorState,
+  type InvocationEndpointDisplay,
 } from '../lib/invocation'
 import { resolveInvocationDisplayStatus } from '../lib/invocationStatus'
 import { useTranslation } from '../i18n'
@@ -40,7 +42,6 @@ const STATUS_META: Record<
 
 const FALLBACK_STATUS_META = { variant: 'secondary', key: 'table.status.unknown' as TranslationKey }
 const FALLBACK_CELL = '—'
-const COMPACT_ENDPOINT = '/v1/responses/compact'
 
 type InvocationDetailLevel = 'full' | 'structured_only'
 
@@ -162,29 +163,46 @@ function renderFastIndicator(state: FastIndicatorState, t: (key: TranslationKey)
   )
 }
 
-function isCompactEndpoint(endpoint: string | null | undefined) {
-  return endpoint?.trim() === COMPACT_ENDPOINT
-}
-
-function renderEndpointPath(
-  endpointValue: string,
-  isCompactEndpointValue: boolean,
-  t: (key: TranslationKey) => string,
-  className?: string,
-) {
+function renderEndpointRawPath(endpointValue: string, className?: string) {
   return (
     <span
-      className={cn(
-        'block truncate whitespace-nowrap font-mono',
-        isCompactEndpointValue ? 'font-medium text-info' : 'text-base-content/70',
-        className,
-      )}
-      title={isCompactEndpointValue ? `${endpointValue} · ${t('table.endpoint.compactHint')}` : endpointValue}
+      className={cn('block truncate whitespace-nowrap font-mono text-base-content/70', className)}
+      title={endpointValue}
       data-testid="invocation-endpoint-path"
-      data-endpoint-kind={isCompactEndpointValue ? 'compact' : 'default'}
+      data-endpoint-kind="raw"
     >
       {endpointValue}
     </span>
+  )
+}
+
+function renderEndpointSummary(
+  endpointDisplay: InvocationEndpointDisplay,
+  t: (key: TranslationKey) => string,
+  className?: string,
+) {
+  if (endpointDisplay.kind === 'raw' || endpointDisplay.labelKey == null || endpointDisplay.badgeVariant == null) {
+    return renderEndpointRawPath(endpointDisplay.endpointValue, className)
+  }
+
+  const title =
+    endpointDisplay.kind === 'compact'
+      ? `${t('table.endpoint.compactHint')} · ${endpointDisplay.endpointValue}`
+      : endpointDisplay.endpointValue
+
+  return (
+    <Badge
+      variant={endpointDisplay.badgeVariant}
+      className={cn(
+        'max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]',
+        className,
+      )}
+      title={title}
+      data-testid="invocation-endpoint-badge"
+      data-endpoint-kind={endpointDisplay.kind}
+    >
+      <span className="block max-w-full truncate whitespace-nowrap">{t(endpointDisplay.labelKey)}</span>
+    </Badge>
   )
 }
 
@@ -213,7 +231,7 @@ interface InvocationRowViewModel {
   reasoningEffortValue: string
   totalTokensValue: string
   endpointValue: string
-  isCompactEndpoint: boolean
+  endpointDisplay: InvocationEndpointDisplay
   errorMessage: string
   totalLatencyValue: string
   firstByteLatencyValue: string
@@ -394,8 +412,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const recordId = record.id
         const isInFlight = normalizedStatus === 'running' || normalizedStatus === 'pending'
         const errorMessage = record.errorMessage?.trim() ?? ''
-        const endpointValue = record.endpoint?.trim() || FALLBACK_CELL
-        const isCompactEndpointValue = isCompactEndpoint(record.endpoint)
+        const endpointDisplay = resolveInvocationEndpointDisplay(record.endpoint)
+        const endpointValue = endpointDisplay.endpointValue
         const proxyDisplayName = resolveProxyDisplayName(record)
         const accountLabel = resolveInvocationAccountLabel(
           record.routeMode,
@@ -484,7 +502,11 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
             value: renderAccountValue(accountLabel, record.upstreamAccountId ?? null, accountClickable, 'font-mono text-sm'),
           },
           { key: 'proxy', label: t('table.details.proxy'), value: proxyDisplayName },
-          { key: 'endpoint', label: t('table.details.endpoint'), value: record.endpoint || FALLBACK_CELL },
+          {
+            key: 'endpoint',
+            label: t('table.details.endpoint'),
+            value: <span className="font-mono">{endpointValue}</span>,
+          },
           { key: 'requesterIp', label: t('table.details.requesterIp'), value: record.requesterIp || FALLBACK_CELL },
           { key: 'promptCacheKey', label: t('table.details.promptCacheKey'), value: record.promptCacheKey || FALLBACK_CELL },
           { key: 'totalLatency', label: t('table.details.totalLatency'), value: totalLatencyValue },
@@ -556,7 +578,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           reasoningEffortValue,
           totalTokensValue: formatOptionalNumber(record.totalTokens, numberFormatter),
           endpointValue,
-          isCompactEndpoint: isCompactEndpointValue,
+          endpointDisplay,
           errorMessage,
           totalLatencyValue,
           firstByteLatencyValue,
@@ -744,7 +766,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <div className="mt-3 space-y-1 border-t border-base-300/65 pt-2">
                 <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">{t('table.details.endpoint')}</div>
-                {renderEndpointPath(row.endpointValue, row.isCompactEndpoint, t, 'text-xs')}
+                {renderEndpointSummary(row.endpointDisplay, t, 'text-xs')}
                 <div className="truncate text-xs" title={row.errorMessage || undefined}>{row.errorMessage || FALLBACK_CELL}</div>
               </div>
 
@@ -931,7 +953,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       </td>
                       <td className="hidden min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:table-cell xl:px-3">
                         <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
-                          {renderEndpointPath(row.endpointValue, row.isCompactEndpoint, t)}
+                          {renderEndpointSummary(row.endpointDisplay, t)}
                           <span className="block truncate whitespace-nowrap" title={row.errorMessage || undefined}>
                             {row.errorMessage || FALLBACK_CELL}
                           </span>
