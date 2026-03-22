@@ -4,12 +4,12 @@
 
 - Status: 已完成（4/4）
 - Created: 2026-03-18
-- Last: 2026-03-19
+- Last: 2026-03-22
 
 ## 背景
 
 - 当前号池新增页只支持单账号 OAuth、批量 OAuth 与 API Key 三条创建路径，还不能直接接收已经拿到的 Codex OAuth 凭据 JSON。
-- 运营侧手里已有形如 `type/email/account_id/access_token/refresh_token/id_token/expired/last_refresh` 的本地 JSON 文件，需要批量导入并在入库前确认账号是否仍然可用。
+- 运营侧手里已有形如 `type/email/account_id/access_token/refresh_token/id_token/expired/last_refresh` 的本地 JSON 文件，需要批量导入并在入库前确认账号是否仍然可用；其中部分历史导出会把 `expired` 留空。
 - 现有 UI 没有“批量校验混合结果”承载面，无法像参考 `mixed-results` 那样直观看到成功、耗尽、失效、错误与输入内重复。
 
 ## 目标 / 非目标
@@ -32,7 +32,8 @@
 
 ### 输入与匹配
 
-- 每个文件必须是单个 JSON object，且至少包含：`type=codex`、`email`、`account_id`、`access_token`、`refresh_token`、`id_token`、`expired`。
+- 每个文件必须是单个 JSON object，且至少包含：`type=codex`、`email`、`account_id`、`access_token`、`refresh_token`、`id_token`；`expired` 可以为空或缺失，但此时服务端必须能按 `access_token.exp -> id_token.exp` 顺序推导出有效的 `tokenExpiresAt`。
+- 若 `expired` 为非空字符串，则仍必须是合法 RFC3339 时间戳；这类显式无效值不会回退到 token `exp`。
 - 服务端会解析 `id_token` claims，并要求它与顶层 `email/account_id` 一致；不一致按 `invalid` 返回。
 - 命中现有账号时优先按 `chatgpt_account_id` 匹配；若缺失或旧数据不完整，可回退到归一化 `email` 匹配。
 
@@ -59,6 +60,7 @@
 ## 验收标准
 
 - Given 用户选择多个合法 OAuth JSON 文件，When 点击开始验证，Then 页面展示 mixed-results 风格结果弹窗，并能按状态筛选。
+- Given 某导入文件的 `expired` 为空或缺失，但 token 内含有效 `exp`，When 点击开始验证，Then 该文件不会因缺少 `expired` 被判 invalid，且后端会优先采用 `access_token.exp`、其次采用 `id_token.exp` 生成 `tokenExpiresAt`。
 - Given 用户一次选择上百个文件，When 校验进行中，Then 顶部描述、统计卡与结果行会按单条文件实时推进，而不是按 100 条批次跳变。
 - Given 用户一次选择上百个文件，When 导入触发多批次请求，Then 结果仍聚合为单一列表视图，分页保持每页 100 条，且不会因为单次请求体过大而返回 `413`。
 - Given 某些文件已失效或结构错误，When 验证结束，Then 这些行显示 `invalid` 或 `error`，且不会阻塞其它可用行导入。
@@ -91,6 +93,7 @@
 
 ## Change log
 
+- 2026-03-22：放宽导入文件中的 `expired` 契约；空值或缺失时允许回退到 `access_token.exp -> id_token.exp`，但非空无效 RFC3339 仍保持 `invalid`。
 - 2026-03-19：补充导入路由专用 `32 MiB` body limit、前端 `100` 条分批验证/导入、共享测试机 413 复现结论与大请求 HTTP 回归要求。
 - 2026-03-19：将验证阶段改为 `validation-jobs + SSE` 逐条实时返回，补充任务取消与“仅表体滚动”的对话框布局约束，并新增相关前后端回归测试。
 - 2026-03-19：补充“导入阶段复用 validation job 缓存结果”的约束，避免 101 线上在 600+ 可导入账号场景下因重复 probe + 立即 sync 导致单次导入持续 30 分钟以上。
