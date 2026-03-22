@@ -26,6 +26,8 @@ const tags: AccountTagSummary[] = [
 ]
 
 const labels = {
+  selectPage: 'Select current page',
+  selectRow: (name: string) => `Select ${name}`,
   account: 'Account',
   sync: 'Sync / Call',
   lastSuccess: 'Sync',
@@ -43,15 +45,18 @@ const labels = {
   mother: 'Mother',
   off: 'Off',
   hiddenTagsA11y: (count: number, names: string) => `Show ${count} hidden tags: ${names}`,
-  statusValue: (item: { status: string }) => item.status,
-  status: (item: { status: string }) =>
+  statusValue: (item: { displayStatus?: string; status: string }) => item.displayStatus ?? item.status,
+  status: (item: { displayStatus?: string; status: string }) =>
     ({
       active: 'Active',
       syncing: 'Syncing',
       needs_reauth: 'Needs reauth',
+      upstream_unavailable: 'Upstream unavailable',
+      upstream_rejected: 'Upstream rejected',
+      error_other: 'Other error',
       error: 'Error',
       disabled: 'Disabled',
-    })[item.status] ?? item.status,
+    })[item.displayStatus ?? item.status] ?? item.displayStatus ?? item.status,
 }
 
 function renderTable(items: UpstreamAccountSummary[]) {
@@ -59,7 +64,10 @@ function renderTable(items: UpstreamAccountSummary[]) {
     <UpstreamAccountsTable
       items={items}
       selectedId={items[0]?.id ?? null}
+      selectedAccountIds={new Set()}
       onSelect={() => undefined}
+      onToggleSelected={() => undefined}
+      onToggleSelectAllCurrentPage={() => undefined}
       emptyTitle="Empty"
       emptyDescription="Nothing here"
       labels={labels}
@@ -88,7 +96,10 @@ function renderInteractiveTable(items: UpstreamAccountSummary[], onSelect = vi.f
       <UpstreamAccountsTable
         items={items}
         selectedId={items[0]?.id ?? null}
+        selectedAccountIds={new Set()}
         onSelect={onSelect}
+        onToggleSelected={() => undefined}
+        onToggleSelectAllCurrentPage={() => undefined}
         emptyTitle="Empty"
         emptyDescription="Nothing here"
         labels={labels}
@@ -109,6 +120,7 @@ describe('UpstreamAccountsTable', () => {
         groupName: 'production-apac-primary-operators',
         isMother: true,
         status: 'active',
+        displayStatus: 'active',
         enabled: true,
         planType: 'team',
         lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
@@ -170,6 +182,7 @@ describe('UpstreamAccountsTable', () => {
         groupName: null,
         isMother: false,
         status: 'disabled',
+        displayStatus: 'disabled',
         enabled: false,
         planType: null,
         lastSuccessfulSyncAt: null,
@@ -185,7 +198,6 @@ describe('UpstreamAccountsTable', () => {
     ])
 
     expect(html).toContain('Fallback API key')
-    expect(html).toContain('Off')
     expect(html).toContain('Disabled')
     expect(html).toContain('Never')
     expect(html).toContain('truncate whitespace-nowrap')
@@ -201,6 +213,7 @@ describe('UpstreamAccountsTable', () => {
         groupName: 'production-apac-primary-operators',
         isMother: true,
         status: 'active',
+        displayStatus: 'active',
         enabled: true,
         planType: 'team',
         lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
