@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-03-14
-- Last: 2026-03-18
+- Last: 2026-03-22
 
 ## 背景 / 问题陈述
 
@@ -73,6 +73,7 @@
 - 用户进入 `号池 -> Tags` 页后，可按搜索词和规则开关过滤 tag 列表，并查看每个 tag 影响的账号与分组规模。
 - 路由收到带 stickyKey / promptCacheKey 的请求时，若已有 sticky route，优先尝试原账号；若原账号不可继续且其最终规则禁止 `cut-out`，则立即失败；否则再从候选池中筛掉不满足 `cut-in` 或会话上限守卫的账号。
 - 没有 tag 的账号仍按现有 `secondary -> primary -> last_selected -> id` 排序参与候选选择。
+- 至少配置了一个本地 `5 小时` 或 `7 天` 限额的账号，在 sticky 新分配或迁移时会额外受“最近 30 分钟活跃 sticky 对话数是否超过 2”的软降权影响；两个本地限额都为空的账号不受这条软降权影响，继续沿用既有候选排序。
 
 ### Edge cases / errors
 
@@ -99,6 +100,7 @@
 - Given 一个账号关联多个 tag，When 打开账号详情，Then 页面会展示最终生效规则，并清楚标注由哪些 tag 共同决定。
 - Given 某 tag 禁止 `allowCutOut`，When sticky 绑定账号无法继续服务，Then 该会话不会迁移到其他账号，而是直接返回无可用账号/上游失败。
 - Given 某目标账号禁止 `allowCutIn`，When 需要接收其他账号迁移来的 sticky 会话，Then 该候选会被跳过。
+- Given 某账号未配置本地 `5 小时` 与 `7 天` 限额，When 它最近 30 分钟已有超过 2 个活跃 sticky 对话并参与新的 sticky 候选选择，Then 它仍按既有 `secondary -> primary -> last_selected -> id` 排序参与比较，不会被半小时 sticky 软降权降到回退桶。
 - Given 进入 `号池 -> Tags` 页，When 搜索或筛选 tag，Then 列表会更新并显示关联账号数量、关联分组数量与规则摘要。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
@@ -117,6 +119,7 @@
 
 ## Change log
 
+- 2026-03-22：补充半小时活跃 sticky 软降权的适用范围，明确该软降权只作用于至少配置了一个本地 `5 小时` 或 `7 天` 限额的账号；两个本地限额都为空的账号继续沿用既有候选排序，不受该软降权影响。
 - 2026-03-18：补充账号页与新增页的 tag 字段交互契约，明确必须收敛为“内联 chips + 尾部添加触发器 + anchored popover 搜索/多选/创建”的单控件模型，并要求多选过程保持 popover 打开；本轮 PR 视觉证据继续限定为 Storybook mock-only。
 
 ## Visual Evidence (PR)
