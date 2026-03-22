@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.19.0",
+  "base_stable_version": "1.18.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-22T12:04:05Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.19.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7a4db1cfe186b582084fad0cca44f5c81c577e9c",
+  "pr_number": 202,
+  "pr_title": "feat(pool): trace upstream attempts",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.19.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.19.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "506e1765950bf01171fd43cd33eb92b4e2cf3613",
+  "type_label": "type:minor"
+}
