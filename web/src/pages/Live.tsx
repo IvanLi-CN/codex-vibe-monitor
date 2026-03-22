@@ -13,6 +13,7 @@ import type { TranslationKey } from "../i18n";
 import type { PromptCacheConversationSelection } from "../lib/api";
 import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
 import { cn } from "../lib/utils";
+import { SelectField } from "../components/ui/select-field";
 
 const LIMIT_OPTIONS = [20, 50, 100];
 const PROMPT_CACHE_SELECTION_OPTIONS: Array<
@@ -218,28 +219,21 @@ export default function LivePage() {
                 {t("live.conversations.description")}
               </p>
             </div>
-            <label className="field w-40">
-              <span className="field-label">
-                {t("live.conversations.selectionLabel")}
-              </span>
-              <select
-                data-testid="live-prompt-cache-selection"
-                className="field-select field-select-sm"
-                value={conversationSelectionValue}
-                onChange={(event) => {
-                  const next = promptCacheSelectionOptions.find(
-                    (option) => option.value === event.target.value,
-                  );
-                  if (next) setConversationSelection(next.selection);
-                }}
-              >
-                {promptCacheSelectionOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <SelectField
+              label={t("live.conversations.selectionLabel")}
+              className="w-40"
+              name="livePromptCacheSelection"
+              data-testid="live-prompt-cache-selection"
+              size="sm"
+              value={conversationSelectionValue}
+              options={promptCacheSelectionOptions}
+              onValueChange={(value) => {
+                const next = promptCacheSelectionOptions.find(
+                  (option) => option.value === value,
+                );
+                if (next) setConversationSelection(next.selection);
+              }}
+            />
           </div>
           <PromptCacheConversationTable
             stats={conversationStats}
@@ -255,20 +249,18 @@ export default function LivePage() {
             <div className="section-heading">
               <h2 className="section-title">{t("live.chart.title")}</h2>
             </div>
-            <label className="field w-36">
-              <span className="field-label">{t("live.window.label")}</span>
-              <select
-                className="field-select field-select-sm"
-                value={limit}
-                onChange={(event) => setLimit(Number(event.target.value))}
-              >
-                {LIMIT_OPTIONS.map((value) => (
-                  <option key={value} value={value}>
-                    {t("live.option.records", { count: value })}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <SelectField
+              label={t("live.window.label")}
+              className="w-36"
+              name="liveWindowSize"
+              size="sm"
+              value={String(limit)}
+              options={LIMIT_OPTIONS.map((value) => ({
+                value: String(value),
+                label: t("live.option.records", { count: value }),
+              }))}
+              onValueChange={(value) => setLimit(Number(value))}
+            />
           </div>
           <InvocationChart records={chartRecords} isLoading={isLoading} />
         </div>

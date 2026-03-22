@@ -13,6 +13,7 @@
 - `web/src/components/ui/alert.tsx`：`default / info / success / warning / error` 五类提示面板。
 - `web/src/components/ui/switch.tsx`：布尔开关，`checked` 态使用 `primary`，`unchecked` 态停留在 `base-300`。
 - `web/src/components/ui/dialog.tsx`、`web/src/components/ui/popover.tsx`、`web/src/components/ui/tooltip.tsx`、`web/src/components/ui/info-tooltip.tsx`：浮层与提示类组件。
+- `web/src/components/ui/select-field.tsx`：simple dropdown 的唯一公开入口；业务页不得直接组合 `ui/select.tsx` low-level primitives。
 - `web/src/components/ui/filterable-combobox.tsx`：输入+筛选+列表框的组合输入模式。
 - `web/src/components/ui/form-field-feedback.tsx`、`web/src/components/ui/floating-field-error.tsx`：表单标签与错误/说明信息。
 - `web/src/components/ui/spinner.tsx`：`sm / md / lg` 三档加载旋转器。
@@ -20,6 +21,7 @@
 ### 表单与输入反馈
 
 - 表单标签优先使用 `.field`、`.field-label` 与 `FormFieldFeedback`，而不是每个页面自己拼标签和错误提示布局。
+- simple dropdown 统一走 `SelectField`，不要回退到浏览器原生 `<select>` 或页面内手写 `SelectTrigger/Content/Item`。
 - 输入类组件统一使用 focus ring，而不是只依赖边框变色。
 - 错误态允许在 field feedback 中出现较长文案，但输入本体仍应保持单一职责，不嵌入多段说明。
 

@@ -58,6 +58,39 @@ beforeAll(() => {
     writable: true,
     value: true,
   })
+  if (typeof globalThis.PointerEvent === 'undefined') {
+    Object.defineProperty(window, 'PointerEvent', {
+      configurable: true,
+      writable: true,
+      value: MouseEvent,
+    })
+    Object.defineProperty(globalThis, 'PointerEvent', {
+      configurable: true,
+      writable: true,
+      value: MouseEvent,
+    })
+  }
+  if (typeof HTMLElement.prototype.hasPointerCapture !== 'function') {
+    Object.defineProperty(HTMLElement.prototype, 'hasPointerCapture', {
+      configurable: true,
+      writable: true,
+      value: () => false,
+    })
+  }
+  if (typeof HTMLElement.prototype.setPointerCapture !== 'function') {
+    Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    })
+  }
+  if (typeof HTMLElement.prototype.releasePointerCapture !== 'function') {
+    Object.defineProperty(HTMLElement.prototype, 'releasePointerCapture', {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    })
+  }
 })
 
 afterEach(() => {
@@ -84,6 +117,30 @@ function rerender(ui: React.ReactNode) {
   act(() => {
     root?.render(ui)
   })
+}
+
+function pressElement(element: HTMLElement) {
+  act(() => {
+    if (typeof PointerEvent === 'function') {
+      element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+      element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+    }
+    element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
+function getSelectTrigger(label: string) {
+  const trigger = Array.from(document.body.querySelectorAll('button[role="combobox"]')).find(
+    (candidate) =>
+      candidate instanceof HTMLButtonElement &&
+      candidate.getAttribute('aria-label') === label,
+  )
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error(`missing select trigger: ${label}`)
+  }
+  return trigger
 }
 
 async function flushAsync() {
@@ -188,14 +245,12 @@ describe('RecordsPage suggestions', () => {
 
     const modelInput = host?.querySelector('#records-filter-model')
     const rangePresetSelect = host?.querySelector('select[name="rangePreset"]')
+    const rangePresetTrigger = getSelectTrigger('records.filters.rangePreset')
     const keywordInput = host?.querySelector('input[name="keyword"]')
     const minTotalTokensInput = host?.querySelector('input[name="minTotalTokens"]')
 
     if (!(modelInput instanceof HTMLInputElement)) {
       throw new Error('missing model input')
-    }
-    if (!(rangePresetSelect instanceof HTMLSelectElement)) {
-      throw new Error('missing range preset select')
     }
     if (!(keywordInput instanceof HTMLInputElement)) {
       throw new Error('missing keyword input')
@@ -208,7 +263,8 @@ describe('RecordsPage suggestions', () => {
     expect(modelInput.getAttribute('autocorrect')).toBe('off')
     expect(modelInput.getAttribute('autocapitalize')).toBe('none')
     expect(modelInput.getAttribute('spellcheck')).toBe('false')
-    expect(rangePresetSelect.getAttribute('autocomplete')).toBe('off')
+    expect(rangePresetSelect).toBeNull()
+    expect(rangePresetTrigger.getAttribute('aria-label')).toBe('records.filters.rangePreset')
     expect(keywordInput.autocomplete).toBe('off')
     expect(keywordInput.getAttribute('autocorrect')).toBe('off')
     expect(keywordInput.getAttribute('autocapitalize')).toBe('none')
@@ -651,15 +707,17 @@ describe('RecordsPage new data action', () => {
 
     render(<RecordsPage />)
 
-    const select = host?.querySelector('select[name="upstreamScope"]')
-    if (!(select instanceof HTMLSelectElement)) {
-      throw new Error('missing upstream scope select')
+    const trigger = getSelectTrigger('records.filters.upstreamScope')
+    pressElement(trigger)
+    const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
+      (candidate) =>
+        candidate instanceof HTMLElement &&
+        candidate.textContent === 'records.filters.upstreamScope.internal',
+    )
+    if (!(option instanceof HTMLElement)) {
+      throw new Error('missing upstream scope option')
     }
-
-    act(() => {
-      select.value = 'internal'
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    })
+    pressElement(option)
 
     expect(updateDraft).toHaveBeenCalledWith('upstreamScope', 'internal')
   })
