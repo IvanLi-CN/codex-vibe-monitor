@@ -103,6 +103,7 @@ pub(crate) struct UpstreamAccountsRuntime {
     account_ops: AccountOpCoordinator,
     validation_jobs: Arc<Mutex<HashMap<String, Arc<ImportedOauthValidationJob>>>>,
     bulk_sync_jobs: Arc<Mutex<HashMap<String, Arc<BulkUpstreamAccountSyncJob>>>>,
+    bulk_sync_creation: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +246,7 @@ impl UpstreamAccountsRuntime {
             account_ops: AccountOpCoordinator::default(),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_jobs: Arc::new(Mutex::new(HashMap::new())),
+            bulk_sync_creation: Arc::new(Mutex::new(())),
         })
     }
 
@@ -280,6 +282,7 @@ impl UpstreamAccountsRuntime {
             account_ops: AccountOpCoordinator::new(maintenance_parallelism),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_jobs: Arc::new(Mutex::new(HashMap::new())),
+            bulk_sync_creation: Arc::new(Mutex::new(())),
         }
     }
 
@@ -301,6 +304,16 @@ impl UpstreamAccountsRuntime {
 
     async fn get_bulk_sync_job(&self, job_id: &str) -> Option<Arc<BulkUpstreamAccountSyncJob>> {
         self.bulk_sync_jobs.lock().await.get(job_id).cloned()
+    }
+
+    async fn get_running_bulk_sync_job(&self) -> Option<(String, Arc<BulkUpstreamAccountSyncJob>)> {
+        let jobs = self.bulk_sync_jobs.lock().await;
+        for (job_id, job) in jobs.iter() {
+            if job.terminal_event.lock().await.is_none() {
+                return Some((job_id.clone(), job.clone()));
+            }
+        }
+        None
     }
 
     async fn remove_bulk_sync_job(&self, job_id: &str) -> Option<Arc<BulkUpstreamAccountSyncJob>> {
@@ -3188,6 +3201,18 @@ fn spawn_bulk_upstream_account_sync_job(
     });
 }
 
+async fn build_bulk_upstream_account_sync_job_response(
+    job_id: String,
+    job: &Arc<BulkUpstreamAccountSyncJob>,
+) -> BulkUpstreamAccountSyncJobResponse {
+    let snapshot = { job.snapshot.lock().await.clone() };
+    BulkUpstreamAccountSyncJobResponse {
+        job_id,
+        counts: compute_bulk_upstream_account_sync_counts(&snapshot.rows),
+        snapshot,
+    }
+}
+
 pub(crate) async fn create_imported_oauth_validation_job(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3232,6 +3257,12 @@ pub(crate) async fn create_bulk_upstream_account_sync_job(
         ));
     }
     let account_ids = normalize_bulk_upstream_account_ids(&payload.account_ids)?;
+    let _creation_guard = state.upstream_accounts.bulk_sync_creation.lock().await;
+    if let Some((job_id, job)) = state.upstream_accounts.get_running_bulk_sync_job().await {
+        return Ok(Json(
+            build_bulk_upstream_account_sync_job_response(job_id, &job).await,
+        ));
+    }
     let job_id = random_hex(16)?;
     let snapshot = BulkUpstreamAccountSyncSnapshot {
         job_id: job_id.clone(),
@@ -3246,6 +3277,7 @@ pub(crate) async fn create_bulk_upstream_account_sync_job(
         .upstream_accounts
         .insert_bulk_sync_job(job_id.clone(), job.clone())
         .await;
+    drop(_creation_guard);
     spawn_bulk_upstream_account_sync_job(
         state.clone(),
         state.upstream_accounts.clone(),
@@ -3334,12 +3366,9 @@ pub(crate) async fn get_bulk_upstream_account_sync_job(
         .get_bulk_sync_job(&job_id)
         .await
         .ok_or_else(|| (StatusCode::NOT_FOUND, "bulk sync job not found".to_string()))?;
-    let snapshot = { job.snapshot.lock().await.clone() };
-    Ok(Json(BulkUpstreamAccountSyncJobResponse {
-        job_id,
-        counts: compute_bulk_upstream_account_sync_counts(&snapshot.rows),
-        snapshot,
-    }))
+    Ok(Json(
+        build_bulk_upstream_account_sync_job_response(job_id, &job).await,
+    ))
 }
 
 pub(crate) async fn stream_bulk_upstream_account_sync_job_events(
@@ -10842,6 +10871,48 @@ mod tests {
         assert_eq!(cached.normalized.email, "alpha@duckmail.sbs");
         assert_eq!(cached.normalized.chatgpt_account_id, "acct_alpha");
         assert_eq!(cached.probe.credentials.refresh_token, "refresh-token");
+    }
+
+    #[tokio::test]
+    async fn create_bulk_upstream_account_sync_job_reuses_existing_running_job() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let snapshot = BulkUpstreamAccountSyncSnapshot {
+            job_id: "running-job".to_string(),
+            status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+            rows: vec![BulkUpstreamAccountSyncRow {
+                account_id: 5,
+                display_name: "Existing OAuth".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_PENDING.to_string(),
+                detail: None,
+            }],
+        };
+        let counts = compute_bulk_upstream_account_sync_counts(&snapshot.rows);
+        state
+            .upstream_accounts
+            .insert_bulk_sync_job(
+                snapshot.job_id.clone(),
+                Arc::new(BulkUpstreamAccountSyncJob::new(snapshot.clone())),
+            )
+            .await;
+
+        let response = create_bulk_upstream_account_sync_job(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(BulkUpstreamAccountSyncJobRequest {
+                account_ids: vec![9, 11],
+            }),
+        )
+        .await
+        .expect("reuse running bulk sync job")
+        .0;
+
+        assert_eq!(response.job_id, "running-job");
+        assert_eq!(response.snapshot.job_id, "running-job");
+        assert_eq!(response.snapshot.rows.len(), 1);
+        assert_eq!(response.snapshot.rows[0].account_id, 5);
+        assert_eq!(response.counts.total, counts.total);
+        assert_eq!(response.counts.completed, counts.completed);
+        assert_eq!(state.upstream_accounts.bulk_sync_jobs.lock().await.len(), 1);
     }
 
     #[test]

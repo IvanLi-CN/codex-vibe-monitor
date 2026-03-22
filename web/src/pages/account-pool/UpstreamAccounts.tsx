@@ -591,6 +591,7 @@ export default function UpstreamAccountsPage() {
   const [bulkSyncSnapshot, setBulkSyncSnapshot] = useState<BulkUpstreamAccountSyncSnapshot | null>(null)
   const [bulkSyncCounts, setBulkSyncCounts] = useState<BulkUpstreamAccountSyncCounts | null>(null)
   const [bulkSyncError, setBulkSyncError] = useState<string | null>(null)
+  const [isBulkSyncStarting, setIsBulkSyncStarting] = useState(false)
   const bulkSyncEventSourceRef = useRef<EventSource | null>(null)
   const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] = useState<HTMLElement | null>(null)
@@ -1141,6 +1142,7 @@ export default function UpstreamAccountsPage() {
   }
 
   const isBulkSyncRunning = bulkSyncSnapshot?.status === 'running'
+  const isBulkSyncBusy = isBulkSyncRunning || isBulkSyncStarting
 
   const handleToggleSelectedAccount = useCallback((accountId: number, checked: boolean) => {
     setSelectedAccountIds((current) => {
@@ -1213,7 +1215,8 @@ export default function UpstreamAccountsPage() {
   }, [])
 
   const handleStartBulkSync = useCallback(async () => {
-    if (selectedAccountIds.length === 0 || isBulkSyncRunning) return
+    if (selectedAccountIds.length === 0 || isBulkSyncBusy) return
+    setIsBulkSyncStarting(true)
     setBulkActionError(null)
     setBulkActionMessage(null)
     setBulkSyncError(null)
@@ -1299,11 +1302,13 @@ export default function UpstreamAccountsPage() {
       }
     } catch (err) {
       setBulkSyncError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsBulkSyncStarting(false)
     }
   }, [
     closeBulkSyncEventSource,
     getBulkSyncJob,
-    isBulkSyncRunning,
+    isBulkSyncBusy,
     refresh,
     selectedAccountIds,
     startBulkSyncJob,
@@ -1520,7 +1525,7 @@ export default function UpstreamAccountsPage() {
                       size="sm"
                       variant="secondary"
                       onClick={() => void handleBulkAction({ accountIds: selectedAccountIds, action: 'enable' })}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
                     >
                       {t('accountPool.upstreamAccounts.bulk.enable')}
                     </Button>
@@ -1529,7 +1534,7 @@ export default function UpstreamAccountsPage() {
                       size="sm"
                       variant="secondary"
                       onClick={() => void handleBulkAction({ accountIds: selectedAccountIds, action: 'disable' })}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
                     >
                       {t('accountPool.upstreamAccounts.bulk.disable')}
                     </Button>
@@ -1541,7 +1546,7 @@ export default function UpstreamAccountsPage() {
                         setBulkGroupName('')
                         setBulkGroupDialogOpen(true)
                       }}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
                     >
                       {t('accountPool.upstreamAccounts.bulk.setGroup')}
                     </Button>
@@ -1550,7 +1555,7 @@ export default function UpstreamAccountsPage() {
                       size="sm"
                       variant="secondary"
                       onClick={() => handleOpenBulkTagsDialog('add_tags')}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
                     >
                       {t('accountPool.upstreamAccounts.bulk.addTags')}
                     </Button>
@@ -1559,7 +1564,7 @@ export default function UpstreamAccountsPage() {
                       size="sm"
                       variant="secondary"
                       onClick={() => handleOpenBulkTagsDialog('remove_tags')}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
                     >
                       {t('accountPool.upstreamAccounts.bulk.removeTags')}
                     </Button>
@@ -1568,8 +1573,9 @@ export default function UpstreamAccountsPage() {
                       size="sm"
                       variant="secondary"
                       onClick={() => void handleStartBulkSync()}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy}
                     >
+                      {isBulkSyncStarting ? <Spinner size="sm" className="mr-2" /> : null}
                       {t('accountPool.upstreamAccounts.bulk.sync')}
                     </Button>
                     <Button
@@ -1577,7 +1583,7 @@ export default function UpstreamAccountsPage() {
                       size="sm"
                       variant="destructive"
                       onClick={() => setBulkDeleteDialogOpen(true)}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
                     >
                       {t('accountPool.upstreamAccounts.bulk.delete')}
                     </Button>

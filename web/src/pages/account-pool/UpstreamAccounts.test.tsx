@@ -607,6 +607,112 @@ describe("UpstreamAccountsPage duplicates", () => {
     );
   });
 
+  it("prevents starting bulk sync twice while the create request is still pending", async () => {
+    const startBulkSyncRequest = deferred<never>();
+    const startBulkSyncJob = vi.fn(() => startBulkSyncRequest.promise);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          status: "active",
+          displayStatus: "active",
+          enabled: true,
+          isMother: true,
+          planType: "team",
+          primaryWindow: null,
+          secondaryWindow: null,
+          credits: null,
+          localLimits: null,
+          tags: [],
+          effectiveRoutingRule: defaultEffectiveRoutingRule,
+        },
+      ],
+      hasUngroupedAccounts: true,
+      writesEnabled: true,
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      metrics: {
+        total: 1,
+        oauth: 1,
+        apiKey: 0,
+        attention: 0,
+      },
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
+        enabled: true,
+        isMother: true,
+        planType: "team",
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      detail: null,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      beginOauthMailboxSession: vi.fn(),
+      beginOauthMailboxSessionForAddress: vi.fn(),
+      getOauthMailboxStatuses: vi.fn(),
+      removeOauthMailboxSession: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      saveGroupNote: vi.fn(),
+      runBulkAction: vi.fn(),
+      startBulkSyncJob,
+      getBulkSyncJob: vi.fn(),
+      stopBulkSyncJob: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      groups: [],
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickCheckboxByLabel(/select existing oauth/i);
+    const syncButton = clickButton(/sync selected/i);
+    await flushAsync();
+
+    expect(startBulkSyncJob).toHaveBeenCalledTimes(1);
+    expect(syncButton.disabled).toBe(true);
+
+    act(() => {
+      syncButton.click();
+    });
+    await flushAsync();
+
+    expect(startBulkSyncJob).toHaveBeenCalledTimes(1);
+
+    startBulkSyncRequest.reject(new Error("network interrupted"));
+    await flushAsync();
+  });
+
   it("prioritizes the selected accounts tag union when removing tags in bulk", () => {
     hookMocks.useUpstreamAccounts.mockReturnValue({
       items: [

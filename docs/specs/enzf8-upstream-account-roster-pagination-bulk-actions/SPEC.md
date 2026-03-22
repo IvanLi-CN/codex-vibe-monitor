@@ -85,6 +85,7 @@
 
 - `POST /api/pool/upstream-accounts/bulk-sync-jobs`
   - 创建后台同步 job，只接受显式 `accountIds[]`。
+  - 同一时间最多存在 1 个运行中的 job；若已有运行中 job，创建请求直接返回该 job 的当前 snapshot，不再新建任务。
 - `GET /api/pool/upstream-accounts/bulk-sync-jobs/:jobId`
   - 返回当前 snapshot。
 - `GET /api/pool/upstream-accounts/bulk-sync-jobs/:jobId/events`
@@ -101,6 +102,7 @@
 - Given 用户切换状态筛选，When 查看列表 badge、筛选结果和顶部 attention 卡，Then 三者都基于同一 `displayStatus` 口径。
 - Given 用户执行批量启用、停用、删除、设置分组、加标签或减标签，When 请求完成，Then 返回逐账号成功/失败摘要且成功项不因单账号失败回滚。
 - Given 用户发起批量同步，When job 运行中，Then 页面通过 SSE 持续收到 snapshot 与 row 进度，并在完成后刷新列表。
+- Given 用户在批量同步创建请求尚未返回时连续点击，When 请求命中前后端限制，Then 只会保留 1 个运行中的同步 job，后续创建请求复用现有 job。
 - Given 批量同步中包含 disabled 账号，When job 结束，Then disabled 账号被标记为失败或跳过原因，其余账号仍继续同步。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
