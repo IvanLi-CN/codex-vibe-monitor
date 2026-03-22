@@ -46,6 +46,7 @@ const items: UpstreamAccountSummary[] = [
     groupName: 'production',
     isMother: true,
     status: 'active',
+    displayStatus: 'active',
     enabled: true,
     email: 'tokyo@example.com',
     chatgptAccountId: 'org_tokyo',
@@ -88,6 +89,7 @@ const items: UpstreamAccountSummary[] = [
     groupName: 'staging',
     isMother: false,
     status: 'needs_reauth',
+    displayStatus: 'needs_reauth',
     enabled: true,
     maskedApiKey: 'sk-live••••••c9f2',
     lastSyncedAt: '2026-03-11T08:10:00.000Z',
@@ -130,6 +132,8 @@ const items: UpstreamAccountSummary[] = [
 ]
 
 const labels = {
+  selectPage: 'Select current page',
+  selectRow: (name: string) => `Select ${name}`,
   account: 'Account',
   sync: 'Sync / Call',
   lastSuccess: 'Sync',
@@ -147,15 +151,18 @@ const labels = {
   mother: 'Mother',
   off: 'Off',
   hiddenTagsA11y: (count: number, names: string) => `Show ${count} hidden tags: ${names}`,
-  statusValue: (item: { status: string }) => item.status,
-  status: (item: { status: string }) =>
+  statusValue: (item: { displayStatus?: string; status: string }) => item.displayStatus ?? item.status,
+  status: (item: { displayStatus?: string; status: string }) =>
     ({
       active: 'Active',
       syncing: 'Syncing',
       needs_reauth: 'Needs reauth',
+      upstream_unavailable: 'Upstream unavailable',
+      upstream_rejected: 'Upstream rejected',
+      error_other: 'Other error',
       error: 'Error',
       disabled: 'Disabled',
-    })[item.status] ?? item.status,
+    })[item.displayStatus ?? item.status] ?? item.displayStatus ?? item.status,
 }
 
 const meta = {
@@ -177,7 +184,10 @@ const meta = {
   args: {
     items,
     selectedId: 11,
+    selectedAccountIds: new Set<number>(),
     onSelect: () => undefined,
+    onToggleSelected: () => undefined,
+    onToggleSelectAllCurrentPage: () => undefined,
     emptyTitle: 'No upstream account yet',
     emptyDescription: 'Create an OAuth or API key account to start building the pool.',
     labels,
@@ -228,6 +238,7 @@ export const CompactLongLabels: Story = {
         },
         enabled: false,
         status: 'disabled',
+        displayStatus: 'disabled',
         planType: null,
       },
     ],

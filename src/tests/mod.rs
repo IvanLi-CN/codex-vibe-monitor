@@ -3112,6 +3112,19 @@ async fn list_upstream_accounts_includes_last_activity_at() {
         .find(|item| item.get("id").and_then(serde_json::Value::as_i64) == Some(account_id))
         .expect("account summary");
 
+    assert_eq!(response_json["page"].as_u64(), Some(1));
+    assert_eq!(response_json["pageSize"].as_u64(), Some(20));
+    assert_eq!(response_json["total"].as_u64(), Some(1));
+    assert_eq!(response_json["metrics"]["total"].as_u64(), Some(1));
+    assert_eq!(response_json["metrics"]["oauth"].as_u64(), Some(0));
+    assert_eq!(response_json["metrics"]["apiKey"].as_u64(), Some(1));
+    assert_eq!(response_json["metrics"]["attention"].as_u64(), Some(0));
+    assert_eq!(
+        account
+            .get("displayStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("active")
+    );
     assert_eq!(
         account
             .get("lastActivityAt")
@@ -3211,6 +3224,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         Query(ListUpstreamAccountsQuery {
             group_search: Some("prod".to_string()),
             group_ungrouped: None,
+            status: None,
+            page: None,
+            page_size: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id, vip_tag_id],
         }),
     )
@@ -3235,6 +3251,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         Query(ListUpstreamAccountsQuery {
             group_search: None,
             group_ungrouped: Some(true),
+            status: None,
+            page: None,
+            page_size: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id],
         }),
     )
@@ -3249,6 +3268,94 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         .filter_map(|item| item.get("displayName").and_then(serde_json::Value::as_str))
         .collect::<Vec<_>>();
     assert_eq!(ungrouped_filtered_names, vec!["Gamma"]);
+}
+
+#[tokio::test]
+async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_side() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let alpha_id = insert_test_pool_api_key_account(&state, "Alpha", "upstream-alpha").await;
+    let beta_id = insert_test_pool_api_key_account(&state, "Beta", "upstream-beta").await;
+    let gamma_id = insert_test_pool_api_key_account(&state, "Gamma", "upstream-gamma").await;
+    for index in 0..19 {
+        let display_name = format!("Extra {index:02}");
+        let api_key = format!("upstream-extra-{index:02}");
+        insert_test_pool_api_key_account(&state, &display_name, &api_key).await;
+    }
+
+    sqlx::query("UPDATE pool_upstream_accounts SET enabled = 0 WHERE id = ?1")
+        .bind(beta_id)
+        .execute(&state.pool)
+        .await
+        .expect("disable beta account");
+
+    let Json(active_page_two) = list_upstream_accounts(
+        State(state.clone()),
+        Query(ListUpstreamAccountsQuery {
+            group_search: None,
+            group_ungrouped: None,
+            status: Some("active".to_string()),
+            page: Some(2),
+            page_size: Some(20),
+            tag_ids: Vec::new(),
+        }),
+    )
+    .await
+    .expect("list active upstream accounts page two");
+    let active_page_two_json =
+        serde_json::to_value(active_page_two).expect("serialize active page two response");
+    let active_names = active_page_two_json["items"]
+        .as_array()
+        .expect("active page items array")
+        .iter()
+        .filter_map(|item| item.get("displayName").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(active_names, vec!["Alpha"]);
+    assert_eq!(active_page_two_json["total"].as_u64(), Some(21));
+    assert_eq!(active_page_two_json["page"].as_u64(), Some(2));
+    assert_eq!(active_page_two_json["pageSize"].as_u64(), Some(20));
+    assert_eq!(active_page_two_json["metrics"]["total"].as_u64(), Some(21));
+    assert_eq!(active_page_two_json["metrics"]["apiKey"].as_u64(), Some(21));
+    assert_eq!(
+        active_page_two_json["metrics"]["attention"].as_u64(),
+        Some(0)
+    );
+
+    let Json(disabled_only) = list_upstream_accounts(
+        State(state),
+        Query(ListUpstreamAccountsQuery {
+            group_search: None,
+            group_ungrouped: None,
+            status: Some("disabled".to_string()),
+            page: Some(1),
+            page_size: Some(20),
+            tag_ids: Vec::new(),
+        }),
+    )
+    .await
+    .expect("list disabled upstream accounts");
+    let disabled_only_json =
+        serde_json::to_value(disabled_only).expect("serialize disabled response");
+    let disabled_items = disabled_only_json["items"]
+        .as_array()
+        .expect("disabled items array");
+    assert_eq!(disabled_only_json["total"].as_u64(), Some(1));
+    assert_eq!(disabled_items.len(), 1);
+    assert_eq!(
+        disabled_items[0]
+            .get("id")
+            .and_then(serde_json::Value::as_i64),
+        Some(beta_id)
+    );
+    assert_eq!(
+        disabled_items[0]
+            .get("displayStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("disabled")
+    );
+    assert_ne!(alpha_id, gamma_id);
 }
 
 #[tokio::test]

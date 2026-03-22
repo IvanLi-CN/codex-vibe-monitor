@@ -194,6 +194,29 @@ const ACCOUNT_DETAIL_FIXTURE = {
   history: [],
 }
 
+const POOL_ATTEMPTS_FIXTURE = [
+  {
+    id: 1,
+    invokeId: 'inv_layout_9001',
+    occurredAt: '2026-02-26T02:35:52Z',
+    endpoint: '/v1/responses/compact',
+    upstreamAccountId: 7,
+    upstreamAccountName: 'Pool Alpha',
+    attemptIndex: 1,
+    distinctAccountIndex: 1,
+    sameAccountRetryIndex: 1,
+    startedAt: '2026-02-26T02:35:52Z',
+    finishedAt: '2026-02-26T02:35:53Z',
+    status: 'success',
+    httpStatus: 200,
+    connectLatencyMs: 42.3,
+    firstByteLatencyMs: 15.2,
+    streamLatencyMs: 188.4,
+    upstreamRequestId: 'req_layout_pool_9001',
+    createdAt: '2026-02-26T02:35:53Z',
+  },
+]
+
 interface TableMetrics {
   clientWidth: number
   scrollWidth: number
@@ -226,6 +249,15 @@ async function mockInvocations(page: Page) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(INVOCATION_FIXTURE),
+      })
+      return
+    }
+
+    if (pathname === '/api/invocations/inv_layout_9001/pool-attempts') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(POOL_ATTEMPTS_FIXTURE),
       })
       return
     }
@@ -423,9 +455,13 @@ test.describe('InvocationTable layout regression', () => {
           const items = page.getByTestId('invocation-list-item')
           await expect(mobileList.locator('[data-testid="invocation-fast-icon"][data-fast-state="effective"]')).toHaveCount(2)
           await expect(mobileList.locator('[data-testid="invocation-fast-icon"][data-fast-state="requested_only"]')).toHaveCount(2)
-          await expect(mobileList.locator('[data-testid="invocation-compact-badge"]')).toHaveCount(0)
-          await expect(items.nth(0).getByTestId('invocation-endpoint-path')).toHaveAttribute('data-endpoint-kind', 'compact')
-          await expect(items.nth(0).getByTestId('invocation-endpoint-path')).toHaveClass(/text-info/)
+          await expect(mobileList.locator('[data-testid="invocation-endpoint-badge"]')).toHaveCount(4)
+          await expect(items.nth(0).getByTestId('invocation-endpoint-badge')).toHaveAttribute('data-endpoint-kind', 'compact')
+          await expect(items.nth(0).getByTestId('invocation-endpoint-badge')).toContainText(/远程压缩|Compact/)
+          await expect(items.nth(1).getByTestId('invocation-endpoint-path')).toHaveAttribute('data-endpoint-kind', 'raw')
+          await expect(items.nth(1).getByTestId('invocation-endpoint-path')).toContainText('/v1/responses/very-long-segment-')
+          await expect(items.nth(2).getByTestId('invocation-endpoint-badge')).toHaveAttribute('data-endpoint-kind', 'responses')
+          await expect(items.nth(3).getByTestId('invocation-endpoint-badge')).toHaveAttribute('data-endpoint-kind', 'responses')
           await expect(items.nth(0).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'effective')
           await expect(items.nth(1).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'requested_only')
           await expect(items.nth(2).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'requested_only')
@@ -461,14 +497,20 @@ test.describe('InvocationTable layout regression', () => {
           const tableRows = tableScroll.locator('tbody tr')
           await expect(tableScroll.locator('[data-testid="invocation-fast-icon"][data-fast-state="effective"]')).toHaveCount(2)
           await expect(tableScroll.locator('[data-testid="invocation-fast-icon"][data-fast-state="requested_only"]')).toHaveCount(2)
-          await expect(tableScroll.locator('[data-testid="invocation-compact-badge"]')).toHaveCount(0)
+          await expect(tableScroll.locator('[data-testid="invocation-endpoint-badge"]:visible')).toHaveCount(
+            viewport.width >= 1280 ? 4 : 0,
+          )
           await expect(tableRows.nth(0).getByTestId('invocation-account-name')).toContainText('Pool Alpha')
           await expect(tableRows.nth(1).getByTestId('invocation-account-name')).toContainText(/反向代理|Reverse proxy/)
           if (viewport.width >= 1280) {
-            const compactEndpointPath = tableRows.nth(0).locator('[data-testid="invocation-endpoint-path"]:visible')
-            await expect(compactEndpointPath).toHaveCount(1)
-            await expect(compactEndpointPath).toHaveAttribute('data-endpoint-kind', 'compact')
-            await expect(compactEndpointPath).toHaveClass(/text-info/)
+            const compactEndpointBadge = tableRows.nth(0).locator('[data-testid="invocation-endpoint-badge"]:visible')
+            await expect(compactEndpointBadge).toHaveCount(1)
+            await expect(compactEndpointBadge).toHaveAttribute('data-endpoint-kind', 'compact')
+            await expect(compactEndpointBadge).toContainText(/远程压缩|Compact/)
+            const rawEndpointPath = tableRows.nth(1).locator('[data-testid="invocation-endpoint-path"]:visible')
+            await expect(rawEndpointPath).toHaveCount(1)
+            await expect(rawEndpointPath).toHaveAttribute('data-endpoint-kind', 'raw')
+            await expect(rawEndpointPath).toContainText('/v1/responses/very-long-segment-')
           }
           await expect(tableRows.nth(0).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'effective')
           await expect(tableRows.nth(1).getByTestId('invocation-fast-icon')).toHaveAttribute('data-fast-state', 'requested_only')

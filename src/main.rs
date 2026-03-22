@@ -5743,7 +5743,22 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             "/api/pool/tags/:id",
             get(get_tag).patch(update_tag).delete(delete_tag),
         )
-        .route("/api/pool/upstream-accounts", get(list_upstream_accounts))
+        .route(
+            "/api/pool/upstream-accounts",
+            get(list_upstream_accounts).post(bulk_update_upstream_accounts),
+        )
+        .route(
+            "/api/pool/upstream-accounts/bulk-sync-jobs",
+            post(create_bulk_upstream_account_sync_job),
+        )
+        .route(
+            "/api/pool/upstream-accounts/bulk-sync-jobs/:jobId/events",
+            get(stream_bulk_upstream_account_sync_job_events),
+        )
+        .route(
+            "/api/pool/upstream-accounts/bulk-sync-jobs/:jobId",
+            get(get_bulk_upstream_account_sync_job).delete(cancel_bulk_upstream_account_sync_job),
+        )
         .route(
             "/api/pool/upstream-account-groups/*groupName",
             put(update_upstream_account_group),

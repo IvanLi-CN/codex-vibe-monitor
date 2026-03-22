@@ -11,6 +11,8 @@ interface AccountTagFilterComboboxProps {
   value: number[]
   onValueChange: (value: number[]) => void
   disabled?: boolean
+  prioritizedTagIds?: number[]
+  disabledTagIds?: number[]
   placeholder?: string
   searchPlaceholder?: string
   emptyLabel?: string
@@ -42,6 +44,8 @@ export function AccountTagFilterCombobox({
   value,
   onValueChange,
   disabled = false,
+  prioritizedTagIds,
+  disabledTagIds,
   placeholder = 'All tags',
   searchPlaceholder = 'Search tags...',
   emptyLabel = 'No matching tags.',
@@ -55,17 +59,40 @@ export function AccountTagFilterCombobox({
 
   const availableTags = useMemo(() => normalizeTags(tags), [tags])
   const selectedTagIdSet = useMemo(() => new Set(value), [value])
+  const prioritizedTagIdSet = useMemo(
+    () => new Set(prioritizedTagIds ?? []),
+    [prioritizedTagIds],
+  )
+  const disabledTagIdSet = useMemo(
+    () => new Set(disabledTagIds ?? []),
+    [disabledTagIds],
+  )
   const selectedTags = useMemo(
     () => availableTags.filter((tag) => selectedTagIdSet.has(tag.id)),
     [availableTags, selectedTagIdSet],
   )
   const filteredTags = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase()
-    if (!keyword) return availableTags
-    return availableTags.filter((tag) => tag.name.toLocaleLowerCase().includes(keyword))
-  }, [availableTags, query])
+    const visibleTags = keyword
+      ? availableTags.filter((tag) => tag.name.toLocaleLowerCase().includes(keyword))
+      : availableTags
+    return [...visibleTags].sort((left, right) => {
+      const leftPrioritized = prioritizedTagIdSet.has(left.id)
+      const rightPrioritized = prioritizedTagIdSet.has(right.id)
+      if (leftPrioritized !== rightPrioritized) {
+        return leftPrioritized ? -1 : 1
+      }
+      const leftDisabled = disabledTagIdSet.has(left.id)
+      const rightDisabled = disabledTagIdSet.has(right.id)
+      if (leftDisabled !== rightDisabled) {
+        return leftDisabled ? 1 : -1
+      }
+      return left.name.localeCompare(right.name)
+    })
+  }, [availableTags, disabledTagIdSet, prioritizedTagIdSet, query])
 
   const toggleTag = (tagId: number) => {
+    if (disabledTagIdSet.has(tagId)) return
     const next = selectedTagIdSet.has(tagId)
       ? value.filter((currentId) => currentId !== tagId)
       : [...value, tagId]
@@ -138,8 +165,15 @@ export function AccountTagFilterCombobox({
                 <CommandGroup>
                   {filteredTags.map((tag) => {
                     const selected = selectedTagIdSet.has(tag.id)
+                    const tagDisabled = disabledTagIdSet.has(tag.id)
                     return (
-                      <CommandItem key={tag.id} value={tag.name} onSelect={() => toggleTag(tag.id)}>
+                      <CommandItem
+                        key={tag.id}
+                        value={tag.name}
+                        disabled={tagDisabled}
+                        onSelect={() => toggleTag(tag.id)}
+                        className={cn(tagDisabled && 'text-base-content/40')}
+                      >
                         <AppIcon
                           name="check"
                           className={cn(
