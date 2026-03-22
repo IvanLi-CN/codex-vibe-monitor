@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.18.3",
+  "base_stable_version": "1.18.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-22T07:49:23Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.18.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "9455b0303a05e914daedbb00d2a2d80f93ed244d",
+  "pr_number": 199,
+  "pr_title": "fix(upstream-accounts): accept imported oauth without expired",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.18.3",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.18.3,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "63f0b365b868acad1b5b41670750c16da24fb38d",
+  "type_label": "type:patch"
+}
