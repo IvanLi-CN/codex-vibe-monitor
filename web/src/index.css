@@ -271,50 +271,49 @@ body {
 
   .invocation-endpoint-badge {
     box-shadow:
-      inset 0 1px 0 color-mix(in oklab, white 48%, transparent),
-      0 8px 18px color-mix(in oklab, oklch(var(--color-neutral)) 9%, transparent);
+      inset 0 1px 0 color-mix(in oklab, white 28%, transparent),
+      0 8px 18px color-mix(in oklab, oklch(var(--color-neutral)) 16%, transparent);
+    text-shadow: 0 1px 0 rgba(15, 23, 42, 0.18);
   }
 
   .invocation-endpoint-badge[data-endpoint-kind='responses'] {
-    background-color: oklch(var(--color-primary) / 0.16);
-    border-color: oklch(var(--color-primary) / 0.42);
-    color: color-mix(in oklab, oklch(var(--color-primary)) 82%, oklch(var(--color-neutral)) 18%);
+    background-color: color-mix(in oklab, oklch(var(--color-primary)) 78%, oklch(var(--color-neutral)) 22%);
+    background-image: linear-gradient(
+      135deg,
+      color-mix(in oklab, oklch(var(--color-primary)) 90%, white 10%),
+      color-mix(in oklab, oklch(var(--color-primary)) 62%, oklch(var(--color-secondary)) 38%)
+    );
+    border-color: color-mix(in oklab, oklch(var(--color-primary)) 72%, white 28%);
+    color: oklch(var(--color-primary-content));
   }
 
   .invocation-endpoint-badge[data-endpoint-kind='chat'] {
-    background-color: oklch(var(--color-secondary) / 0.18);
-    border-color: oklch(var(--color-secondary) / 0.4);
-    color: color-mix(in oklab, oklch(var(--color-secondary)) 80%, oklch(var(--color-neutral)) 20%);
+    background-color: color-mix(in oklab, oklch(var(--color-success)) 54%, oklch(var(--color-secondary)) 46%);
+    background-image: linear-gradient(
+      135deg,
+      color-mix(in oklab, oklch(var(--color-success)) 72%, white 8%),
+      color-mix(in oklab, oklch(var(--color-success)) 52%, oklch(var(--color-secondary)) 48%)
+    );
+    border-color: color-mix(in oklab, oklch(var(--color-success)) 56%, white 24%);
+    color: oklch(var(--color-neutral-content));
   }
 
   .invocation-endpoint-badge[data-endpoint-kind='compact'] {
-    background-color: oklch(var(--color-info) / 0.2);
-    border-color: oklch(var(--color-info) / 0.44);
-    color: color-mix(in oklab, oklch(var(--color-info)) 80%, oklch(var(--color-neutral)) 20%);
+    background-color: color-mix(in oklab, oklch(var(--color-warning)) 62%, oklch(var(--color-accent)) 38%);
+    background-image: linear-gradient(
+      135deg,
+      color-mix(in oklab, oklch(var(--color-warning)) 88%, white 6%),
+      color-mix(in oklab, oklch(var(--color-warning)) 60%, oklch(var(--color-accent)) 40%)
+    );
+    border-color: color-mix(in oklab, oklch(var(--color-warning)) 74%, white 14%);
+    color: oklch(var(--color-warning-content));
   }
 
   [data-theme='vibe-dark'] .invocation-endpoint-badge {
     box-shadow:
       inset 0 1px 0 color-mix(in oklab, white 16%, transparent),
       0 10px 22px color-mix(in oklab, oklch(var(--color-neutral)) 18%, transparent);
-  }
-
-  [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='responses'] {
-    background-color: oklch(var(--color-primary) / 0.24);
-    border-color: oklch(var(--color-primary) / 0.5);
-    color: color-mix(in oklab, oklch(var(--color-primary)) 88%, white 12%);
-  }
-
-  [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='chat'] {
-    background-color: oklch(var(--color-secondary) / 0.24);
-    border-color: oklch(var(--color-secondary) / 0.5);
-    color: color-mix(in oklab, oklch(var(--color-secondary)) 88%, white 12%);
-  }
-
-  [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='compact'] {
-    background-color: oklch(var(--color-info) / 0.26);
-    border-color: oklch(var(--color-info) / 0.54);
-    color: color-mix(in oklab, oklch(var(--color-info)) 88%, white 12%);
+    text-shadow: 0 1px 0 rgba(2, 6, 23, 0.3);
   }
 
   .field {
