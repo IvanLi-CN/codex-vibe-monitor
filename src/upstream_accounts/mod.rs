@@ -74,6 +74,8 @@ const DEFAULT_USAGE_LIMIT_ID: &str = "codex";
 const DEFAULT_API_KEY_LIMIT_UNIT: &str = "requests";
 const POOL_SETTINGS_SINGLETON_ID: i64 = 1;
 const DEFAULT_STICKY_KEY_LIMIT: i64 = 50;
+const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 30;
+const POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT: i64 = 2;
 const USAGE_PATH_STYLE_CHATGPT: &str = "/wham/usage";
 const USAGE_PATH_STYLE_CODEX_API: &str = "/api/codex/usage";
 const UPSTREAM_USAGE_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
@@ -1501,6 +1503,7 @@ struct AccountRoutingCandidateRow {
     secondary_used_percent: Option<f64>,
     primary_used_percent: Option<f64>,
     last_selected_at: Option<String>,
+    active_sticky_conversations: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -9293,6 +9296,9 @@ async fn load_account_routing_candidates(
     pool: &Pool<Sqlite>,
     excluded_ids: &HashSet<i64>,
 ) -> Result<Vec<AccountRoutingCandidateRow>> {
+    let active_sticky_cutoff = format_utc_iso(
+        Utc::now() - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES),
+    );
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
@@ -9311,7 +9317,17 @@ async fn load_account_routing_candidates(
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_used_percent,
-            account.last_selected_at
+            account.last_selected_at,
+            (
+                SELECT COUNT(*)
+                FROM pool_sticky_routes route
+                WHERE route.account_id = account.id
+                  AND route.last_seen_at >=
+        "#,
+    );
+    query.push_bind(&active_sticky_cutoff).push(
+        r#"
+            ) AS active_sticky_conversations
         FROM pool_upstream_accounts account
         WHERE account.provider = 
         "#,
@@ -9345,11 +9361,17 @@ fn compare_routing_candidates(
     lhs: &AccountRoutingCandidateRow,
     rhs: &AccountRoutingCandidateRow,
 ) -> std::cmp::Ordering {
+    let lhs_over_soft_limit = lhs.active_sticky_conversations > POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT;
+    let rhs_over_soft_limit = rhs.active_sticky_conversations > POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT;
     let lhs_secondary = lhs.secondary_used_percent.unwrap_or(0.0);
     let rhs_secondary = rhs.secondary_used_percent.unwrap_or(0.0);
-    lhs_secondary
-        .partial_cmp(&rhs_secondary)
-        .unwrap_or(std::cmp::Ordering::Equal)
+    lhs_over_soft_limit
+        .cmp(&rhs_over_soft_limit)
+        .then_with(|| {
+            lhs_secondary
+                .partial_cmp(&rhs_secondary)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .then_with(|| {
             lhs.primary_used_percent
                 .unwrap_or(0.0)
@@ -10075,6 +10097,10 @@ mod tests {
             invocation_success_full_days: DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
             invocation_max_days: DEFAULT_INVOCATION_MAX_DAYS,
             forward_proxy_attempts_retention_days: DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
+            pool_upstream_request_attempts_retention_days:
+                DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
+            pool_upstream_request_attempts_archive_ttl_days:
+                DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
             stats_source_snapshots_retention_days: DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
             quota_snapshot_full_days: DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
             crs_stats: None,

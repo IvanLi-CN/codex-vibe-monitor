@@ -1,6 +1,10 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { AppIcon } from './AppIcon'
-import type { ApiInvocation } from '../lib/api'
+import {
+  fetchInvocationPoolAttempts,
+  type ApiInvocation,
+  type ApiPoolUpstreamRequestAttempt,
+} from '../lib/api'
 import {
   formatResponseContentEncoding,
   formatProxyWeightDelta,
@@ -206,6 +210,32 @@ function renderEndpointSummary(
   )
 }
 
+function formatPoolAttemptAccountLabel(attempt: ApiPoolUpstreamRequestAttempt) {
+  const accountName = attempt.upstreamAccountName?.trim()
+  if (accountName) return accountName
+  if (typeof attempt.upstreamAccountId === 'number' && Number.isFinite(attempt.upstreamAccountId)) {
+    return `#${Math.trunc(attempt.upstreamAccountId)}`
+  }
+  return FALLBACK_CELL
+}
+
+function poolAttemptStatusMeta(
+  status: string | null | undefined,
+): { variant: 'success' | 'warning' | 'error' | 'secondary'; key: TranslationKey } {
+  switch (status?.trim().toLowerCase()) {
+    case 'success':
+      return { variant: 'success', key: 'table.poolAttempts.status.success' }
+    case 'http_failure':
+      return { variant: 'error', key: 'table.poolAttempts.status.httpFailure' }
+    case 'transport_failure':
+      return { variant: 'warning', key: 'table.poolAttempts.status.transportFailure' }
+    case 'budget_exhausted_final':
+      return { variant: 'error', key: 'table.poolAttempts.status.budgetExhaustedFinal' }
+    default:
+      return { variant: 'secondary', key: 'table.poolAttempts.status.unknown' }
+  }
+}
+
 interface InvocationRowViewModel {
   record: ApiInvocation
   rowKey: string
@@ -252,6 +282,15 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
     if (typeof window === 'undefined') return false
     return window.matchMedia('(min-width: 1280px)').matches
   })
+  const [poolAttemptsByInvokeId, setPoolAttemptsByInvokeId] = useState<
+    Record<string, ApiPoolUpstreamRequestAttempt[] | undefined>
+  >({})
+  const [poolAttemptLoadingByInvokeId, setPoolAttemptLoadingByInvokeId] = useState<
+    Record<string, boolean | undefined>
+  >({})
+  const [poolAttemptErrorByInvokeId, setPoolAttemptErrorByInvokeId] = useState<
+    Record<string, string | null | undefined>
+  >({})
 
   const toggleLabels = useMemo(() => {
     if (locale === 'zh') {
@@ -509,6 +548,27 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           },
           { key: 'requesterIp', label: t('table.details.requesterIp'), value: record.requesterIp || FALLBACK_CELL },
           { key: 'promptCacheKey', label: t('table.details.promptCacheKey'), value: record.promptCacheKey || FALLBACK_CELL },
+          {
+            key: 'poolAttemptCount',
+            label: t('table.details.poolAttemptCount'),
+            value: formatOptionalText(
+              record.poolAttemptCount != null ? String(record.poolAttemptCount) : undefined,
+            ),
+          },
+          {
+            key: 'poolDistinctAccountCount',
+            label: t('table.details.poolDistinctAccountCount'),
+            value: formatOptionalText(
+              record.poolDistinctAccountCount != null
+                ? String(record.poolDistinctAccountCount)
+                : undefined,
+            ),
+          },
+          {
+            key: 'poolAttemptTerminalReason',
+            label: t('table.details.poolAttemptTerminalReason'),
+            value: formatOptionalText(record.poolAttemptTerminalReason),
+          },
           { key: 'totalLatency', label: t('table.details.totalLatency'), value: totalLatencyValue },
           { key: 'firstByteLatency', label: t('table.details.firstByteLatency'), value: firstByteLatencyValue },
           { key: 'responseContentEncoding', label: t('table.details.httpCompression'), value: responseContentEncodingValue },
@@ -592,6 +652,10 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   )
 
   const hasInFlightRows = useMemo(() => rows.some((row) => row.isInFlight), [rows])
+  const expandedRecord = useMemo(
+    () => rows.find((row) => row.rowKey === expandedId)?.record ?? null,
+    [expandedId, rows],
+  )
 
   useEffect(() => {
     if (!hasInFlightRows) return
@@ -602,7 +666,198 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
     return () => window.clearInterval(id)
   }, [hasInFlightRows])
 
+  useEffect(() => {
+    if (!expandedRecord || !isPoolRouteMode(expandedRecord.routeMode)) return
+    const invokeId = expandedRecord.invokeId
+    if (poolAttemptsByInvokeId[invokeId] || poolAttemptLoadingByInvokeId[invokeId]) return
+
+    let cancelled = false
+    setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: true }))
+    setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: null }))
+
+    fetchInvocationPoolAttempts(invokeId)
+      .then((attempts) => {
+        if (cancelled) return
+        setPoolAttemptsByInvokeId((current) => ({ ...current, [invokeId]: attempts }))
+      })
+      .catch((error) => {
+        if (cancelled) return
+        const message = error instanceof Error ? error.message : String(error)
+        setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: message }))
+      })
+      .finally(() => {
+        if (cancelled) return
+        setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: false }))
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [expandedRecord])
+
+  const renderPoolAttemptsContent = (record: ApiInvocation) => {
+    const invokeId = record.invokeId
+    const attempts = poolAttemptsByInvokeId[invokeId]
+    const isLoadingAttempts = !!poolAttemptLoadingByInvokeId[invokeId]
+    const attemptsError = poolAttemptErrorByInvokeId[invokeId]
+
+    if (!isPoolRouteMode(record.routeMode)) {
+      return (
+        <div
+          className="rounded-lg border border-base-300/70 bg-base-200/45 px-3 py-2 text-sm text-base-content/70"
+          data-testid="pool-attempts-empty"
+        >
+          {t('table.poolAttempts.notPool')}
+        </div>
+      )
+    }
+
+    const summaryParts = [
+      `${t('table.details.poolAttemptCount')}: ${formatOptionalText(
+        record.poolAttemptCount != null ? String(record.poolAttemptCount) : undefined,
+      )}`,
+      `${t('table.details.poolDistinctAccountCount')}: ${formatOptionalText(
+        record.poolDistinctAccountCount != null ? String(record.poolDistinctAccountCount) : undefined,
+      )}`,
+      `${t('table.details.poolAttemptTerminalReason')}: ${formatOptionalText(
+        record.poolAttemptTerminalReason,
+      )}`,
+    ]
+
+    return (
+      <div className="flex flex-col gap-3" data-testid="pool-attempts-section">
+        <div className="space-y-1">
+          <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+            {t('table.poolAttempts.title')}
+          </span>
+          <div className="text-xs text-base-content/60">{summaryParts.join(' · ')}</div>
+        </div>
+
+        {isLoadingAttempts ? (
+          <div
+            className="inline-flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-200/45 px-3 py-2 text-sm text-base-content/70"
+            data-testid="pool-attempts-loading"
+          >
+            <Spinner size="sm" aria-label={t('table.poolAttempts.loading')} />
+            <span>{t('table.poolAttempts.loading')}</span>
+          </div>
+        ) : attemptsError ? (
+          <div
+            className="rounded-lg border border-error/25 bg-error/8 px-3 py-2 text-sm text-error"
+            data-testid="pool-attempts-error"
+          >
+            {t('table.poolAttempts.loadError', { error: attemptsError })}
+          </div>
+        ) : !attempts || attempts.length === 0 ? (
+          <div
+            className="rounded-lg border border-base-300/70 bg-base-200/45 px-3 py-2 text-sm text-base-content/70"
+            data-testid="pool-attempts-empty"
+          >
+            {t('table.poolAttempts.empty')}
+          </div>
+        ) : (
+          <div className="space-y-2" data-testid="pool-attempts-list">
+            {attempts.map((attempt) => {
+              const statusMeta = poolAttemptStatusMeta(attempt.status)
+              const accountLabel = formatPoolAttemptAccountLabel(attempt)
+              const httpStatusValue =
+                typeof attempt.httpStatus === 'number' && Number.isFinite(attempt.httpStatus)
+                  ? String(Math.trunc(attempt.httpStatus))
+                  : FALLBACK_CELL
+
+              return (
+                <div
+                  key={`${attempt.id}-${attempt.attemptIndex}`}
+                  className="rounded-lg border border-base-300/70 bg-base-100/70 p-3"
+                  data-testid="pool-attempt-item"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={statusMeta.variant}>{t(statusMeta.key)}</Badge>
+                    <span className="font-mono text-xs text-base-content/70">
+                      #{attempt.attemptIndex}
+                    </span>
+                    <span className="text-sm font-medium">{accountLabel}</span>
+                  </div>
+                  <div className="mt-2 grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-3">
+                    <div className="flex items-start gap-2">
+                      <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                        {t('table.poolAttempts.retry')}
+                      </span>
+                      <span className="font-mono">
+                        {attempt.sameAccountRetryIndex}/{attempt.distinctAccountIndex}
+                      </span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                        {t('table.poolAttempts.httpStatus')}
+                      </span>
+                      <span className="font-mono">{httpStatusValue}</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                        {t('table.poolAttempts.failureKind')}
+                      </span>
+                      <span className="font-mono break-all">
+                        {formatOptionalText(attempt.failureKind)}
+                      </span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                        {t('table.poolAttempts.connectLatency')}
+                      </span>
+                      <span className="font-mono">{formatMilliseconds(attempt.connectLatencyMs)}</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                        {t('table.poolAttempts.firstByteLatency')}
+                      </span>
+                      <span className="font-mono">
+                        {formatMilliseconds(attempt.firstByteLatencyMs)}
+                      </span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                        {t('table.poolAttempts.streamLatency')}
+                      </span>
+                      <span className="font-mono">{formatMilliseconds(attempt.streamLatencyMs)}</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                        {t('table.poolAttempts.startedAt')}
+                      </span>
+                      <span className="font-mono">{formatDetailTimestamp(attempt.startedAt)}</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                        {t('table.poolAttempts.finishedAt')}
+                      </span>
+                      <span className="font-mono">{formatDetailTimestamp(attempt.finishedAt)}</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                        {t('table.poolAttempts.upstreamRequestId')}
+                      </span>
+                      <span className="font-mono break-all">
+                        {formatOptionalText(attempt.upstreamRequestId)}
+                      </span>
+                    </div>
+                  </div>
+                  {attempt.errorMessage?.trim() ? (
+                    <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
+                      {attempt.errorMessage}
+                    </pre>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const renderExpandedContent = (
+    record: ApiInvocation,
     detailId: string,
     detailPairs: Array<{ key: string; label: string; value: ReactNode }>,
     timingPairs: Array<{ label: string; value: string }>,
@@ -642,6 +897,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           ))}
         </div>
       </div>
+
+      {renderPoolAttemptsContent(record)}
 
       {errorMessage && (
         <div className="flex flex-col gap-2">
@@ -773,6 +1030,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
               {isExpanded && (
                 <div className="mt-3 rounded-lg border border-base-300/70 bg-base-200/58">
                   {renderExpandedContent(
+                    row.record,
                     listDetailId,
                     row.detailPairs,
                     row.timingPairs,
@@ -981,6 +1239,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                       <tr className="bg-base-200/68">
                         <td colSpan={isXlUp ? 9 : 8} className="border-t border-base-300/65 px-2 py-2.5 xl:px-3">
                           {renderExpandedContent(
+                            row.record,
                             tableDetailId,
                             row.detailPairs,
                             row.timingPairs,

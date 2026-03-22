@@ -194,6 +194,29 @@ const ACCOUNT_DETAIL_FIXTURE = {
   history: [],
 }
 
+const POOL_ATTEMPTS_FIXTURE = [
+  {
+    id: 1,
+    invokeId: 'inv_layout_9001',
+    occurredAt: '2026-02-26T02:35:52Z',
+    endpoint: '/v1/responses/compact',
+    upstreamAccountId: 7,
+    upstreamAccountName: 'Pool Alpha',
+    attemptIndex: 1,
+    distinctAccountIndex: 1,
+    sameAccountRetryIndex: 1,
+    startedAt: '2026-02-26T02:35:52Z',
+    finishedAt: '2026-02-26T02:35:53Z',
+    status: 'success',
+    httpStatus: 200,
+    connectLatencyMs: 42.3,
+    firstByteLatencyMs: 15.2,
+    streamLatencyMs: 188.4,
+    upstreamRequestId: 'req_layout_pool_9001',
+    createdAt: '2026-02-26T02:35:53Z',
+  },
+]
+
 interface TableMetrics {
   clientWidth: number
   scrollWidth: number
@@ -226,6 +249,15 @@ async function mockInvocations(page: Page) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(INVOCATION_FIXTURE),
+      })
+      return
+    }
+
+    if (pathname === '/api/invocations/inv_layout_9001/pool-attempts') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(POOL_ATTEMPTS_FIXTURE),
       })
       return
     }
