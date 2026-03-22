@@ -9,13 +9,7 @@ import { useFailureSummary } from '../hooks/useFailureSummary'
 import { useTranslation } from '../i18n'
 import { ErrorReasonPieChart } from '../components/ErrorReasonPieChart'
 import { Alert } from '../components/ui/alert'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../components/ui/select'
+import { SelectField } from '../components/ui/select-field'
 import type { FailureScope } from '../lib/api'
 import {
   resolveStatsBucketOptions,
@@ -114,30 +108,22 @@ export default function StatsPage() {
               <p className="section-description">{t('stats.subtitle')}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <Select value={range} onValueChange={(value) => setRange(value as typeof range)}>
-                <SelectTrigger className="min-w-[8.5rem]" data-testid="stats-range-select-trigger" aria-label={t('stats.subtitle')}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {rangeOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={effectiveBucket} onValueChange={setBucket}>
-                <SelectTrigger className="min-w-[7rem]" data-testid="stats-bucket-select-trigger" aria-label={t('stats.trendTitle')}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {bucketOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SelectField
+                options={rangeOptions}
+                value={range}
+                onValueChange={(value) => setRange(value as typeof range)}
+                triggerClassName="min-w-[8.5rem]"
+                data-testid="stats-range-select-trigger"
+                aria-label={t('stats.subtitle')}
+              />
+              <SelectField
+                options={bucketOptions}
+                value={effectiveBucket}
+                onValueChange={setBucket}
+                triggerClassName="min-w-[7rem]"
+                data-testid="stats-bucket-select-trigger"
+                aria-label={t('stats.trendTitle')}
+              />
             </div>
           </div>
           <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />
@@ -194,21 +180,15 @@ export default function StatsPage() {
                 </p>
               )}
             </div>
-            <label className="field w-full max-w-[14rem]">
-              <span className="field-label text-sm">{t('stats.errors.scope.label')}</span>
-              <Select value={errorScope} onValueChange={(value) => setErrorScope(value as FailureScope)}>
-                <SelectTrigger data-testid="stats-error-scope-select-trigger" aria-label={t('stats.errors.scope.label')}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {scopeOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
+            <SelectField
+              label={t('stats.errors.scope.label')}
+              className="w-full max-w-[14rem]"
+              options={scopeOptions}
+              value={errorScope}
+              onValueChange={(value) => setErrorScope(value as FailureScope)}
+              data-testid="stats-error-scope-select-trigger"
+              aria-label={t('stats.errors.scope.label')}
+            />
           </div>
           <div className="metric-grid w-full grid-cols-1 sm:grid-cols-4">
             <div className="metric-cell">

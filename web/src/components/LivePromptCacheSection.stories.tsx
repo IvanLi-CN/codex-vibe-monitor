@@ -5,6 +5,7 @@ import { useTranslation, I18nProvider } from "../i18n";
 import {
   PromptCacheConversationTable,
 } from "./PromptCacheConversationTable";
+import { SelectField } from "./ui/select-field";
 import type {
   PromptCacheConversation,
   PromptCacheConversationSelection,
@@ -349,29 +350,26 @@ function LivePromptCacheSectionStory() {
               {t("live.conversations.description")}
             </p>
           </div>
-          <label className="field w-40">
-            <span className="field-label">
-              {t("live.conversations.selectionLabel")}
-            </span>
-            <select
-              data-testid="live-prompt-cache-selection"
-              className="field-select field-select-sm"
-              value={selectionValue}
-              onChange={(event) => setSelectionValue(event.target.value)}
-            >
-              {SELECTION_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.kind === "count"
-                    ? t("live.conversations.option.count", {
-                        count: option.count,
-                      })
-                    : t("live.conversations.option.activityHours", {
-                        hours: option.hours,
-                      })}
-                </option>
-              ))}
-            </select>
-          </label>
+          <SelectField
+            className="w-40"
+            label={t("live.conversations.selectionLabel")}
+            name="livePromptCacheSelection"
+            size="sm"
+            data-testid="live-prompt-cache-selection"
+            value={selectionValue}
+            onValueChange={setSelectionValue}
+            options={SELECTION_OPTIONS.map((option) => ({
+              value: option.value,
+              label:
+                option.kind === "count"
+                  ? t("live.conversations.option.count", {
+                      count: option.count,
+                    })
+                  : t("live.conversations.option.activityHours", {
+                      hours: option.hours,
+                    }),
+            }))}
+          />
         </div>
         <PromptCacheConversationTable
           stats={stats}
@@ -408,18 +406,23 @@ type Story = StoryObj<typeof meta>;
 export const InteractiveFilters: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const select = canvas.getByTestId(
-      "live-prompt-cache-selection",
-    ) as HTMLSelectElement;
+    const trigger = canvas.getByTestId("live-prompt-cache-selection");
+    const documentScope = within(canvasElement.ownerDocument.body);
 
-    await userEvent.selectOptions(select, "activityWindow:3");
-    await expect(select.value).toBe("activityWindow:3");
+    await userEvent.click(trigger);
+    await userEvent.click(
+      await documentScope.findByRole("option", { name: /近 3 小时活动/i }),
+    );
+    await expect(trigger.textContent ?? "").toContain("近 3 小时活动");
     await expect(
       canvas.getByText(/有 7 个对话命中活动时间窗/i),
     ).toBeInTheDocument();
 
-    await userEvent.selectOptions(select, "count:20");
-    await expect(select.value).toBe("count:20");
+    await userEvent.click(trigger);
+    await userEvent.click(
+      await documentScope.findByRole("option", { name: /20 个对话/i }),
+    );
+    await expect(trigger.textContent ?? "").toContain("20 个对话");
     await expect(
       canvas.getByText(/有 25 个更新创建的对话因未在近 24 小时活动而未显示/i),
     ).toBeInTheDocument();

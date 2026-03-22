@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { RecordsNewDataButton } from '../components/RecordsNewDataButton'
 import { Button } from '../components/ui/button'
 import { FilterableCombobox } from '../components/ui/filterable-combobox'
+import { SelectField } from '../components/ui/select-field'
 import { InvocationRecordsSummaryCards } from '../components/InvocationRecordsSummaryCards'
 import { InvocationRecordsTable } from '../components/InvocationRecordsTable'
 import { useInvocationRecords } from '../hooks/useInvocationRecords'
@@ -16,7 +17,7 @@ import {
   type InvocationSuggestionsResponse,
   type InvocationUpstreamScope,
 } from '../lib/api'
-import { nativeFormAutocompleteOffProps, textInputAutocompleteOffProps } from '../lib/form-autocomplete'
+import { textInputAutocompleteOffProps } from '../lib/form-autocomplete'
 import { buildInvocationSuggestionsQuery, createDefaultCustomRange, RECORDS_PAGE_SIZE_OPTIONS } from '../lib/invocationRecords'
 import { cn } from '../lib/utils'
 
@@ -268,26 +269,18 @@ export default function RecordsPage() {
             </div>
 
             <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <label className="field">
-                <span className="field-label">{t('records.filters.rangePreset')}</span>
-                <select
-                  {...nativeFormAutocompleteOffProps}
-                  name="rangePreset"
-                  className="field-select"
-                  value={draft.rangePreset}
-                  onChange={(event) => handleRangePresetChange(event.target.value as InvocationRangePreset)}
-                >
-                  {rangeOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <SelectField
+                className="field"
+                label={t('records.filters.rangePreset')}
+                name="rangePreset"
+                value={draft.rangePreset}
+                options={rangeOptions}
+                onValueChange={(value) => handleRangePresetChange(value as InvocationRangePreset)}
+              />
               <label className="field">
                 <span className="field-label">{t('records.filters.from')}</span>
                 <input
-                  {...nativeFormAutocompleteOffProps}
+                  {...textInputAutocompleteOffProps}
                   className={inputClassName}
                   type="datetime-local"
                   name="customFrom"
@@ -302,7 +295,7 @@ export default function RecordsPage() {
               <label className="field">
                 <span className="field-label">{t('records.filters.to')}</span>
                 <input
-                  {...nativeFormAutocompleteOffProps}
+                  {...textInputAutocompleteOffProps}
                   className={inputClassName}
                   type="datetime-local"
                   name="customTo"
@@ -314,22 +307,20 @@ export default function RecordsPage() {
                   }}
                 />
               </label>
-              <label className="field">
-                <span className="field-label">{t('records.filters.status')}</span>
-                <select
-                  {...nativeFormAutocompleteOffProps}
-                  name="status"
-                  className="field-select"
-                  value={draft.status}
-                  onChange={(event) => updateDraft('status', event.target.value)}
-                >
-                  <option value="">{t('records.filters.status.all')}</option>
-                  <option value="success">{t('records.filters.status.success')}</option>
-                  <option value="failed">{t('records.filters.status.failed')}</option>
-                  <option value="running">{t('records.filters.status.running')}</option>
-                  <option value="pending">{t('records.filters.status.pending')}</option>
-                </select>
-              </label>
+              <SelectField
+                className="field"
+                label={t('records.filters.status')}
+                name="status"
+                value={draft.status}
+                options={[
+                  { value: '', label: t('records.filters.status.all') },
+                  { value: 'success', label: t('records.filters.status.success') },
+                  { value: 'failed', label: t('records.filters.status.failed') },
+                  { value: 'running', label: t('records.filters.status.running') },
+                  { value: 'pending', label: t('records.filters.status.pending') },
+                ]}
+                onValueChange={(value) => updateDraft('status', value)}
+              />
 
               <label className="field">
                 <span className="field-label">{t('records.filters.model')}</span>
@@ -382,38 +373,28 @@ export default function RecordsPage() {
                   onOpenChange={handleSuggestionOpenChange('endpoint')}
                 />
               </label>
-              <label className="field">
-                <span className="field-label">{t('records.filters.failureClass')}</span>
-                <select
-                  {...nativeFormAutocompleteOffProps}
-                  name="failureClass"
-                  className="field-select"
-                  value={draft.failureClass}
-                  onChange={(event) => updateDraft('failureClass', event.target.value)}
-                >
-                  <option value="">{t('records.filters.failureClass.all')}</option>
-                  <option value="service_failure">{t('records.filters.failureClass.service')}</option>
-                  <option value="client_failure">{t('records.filters.failureClass.client')}</option>
-                  <option value="client_abort">{t('records.filters.failureClass.abort')}</option>
-                </select>
-              </label>
+              <SelectField
+                className="field"
+                label={t('records.filters.failureClass')}
+                name="failureClass"
+                value={draft.failureClass}
+                options={[
+                  { value: '', label: t('records.filters.failureClass.all') },
+                  { value: 'service_failure', label: t('records.filters.failureClass.service') },
+                  { value: 'client_failure', label: t('records.filters.failureClass.client') },
+                  { value: 'client_abort', label: t('records.filters.failureClass.abort') },
+                ]}
+                onValueChange={(value) => updateDraft('failureClass', value)}
+              />
 
-              <label className="field">
-                <span className="field-label">{t('records.filters.upstreamScope')}</span>
-                <select
-                  {...nativeFormAutocompleteOffProps}
-                  name="upstreamScope"
-                  className="field-select"
-                  value={draft.upstreamScope}
-                  onChange={(event) => updateDraft('upstreamScope', event.target.value as InvocationUpstreamScope)}
-                >
-                  {upstreamScopeOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <SelectField
+                className="field"
+                label={t('records.filters.upstreamScope')}
+                name="upstreamScope"
+                value={draft.upstreamScope}
+                options={upstreamScopeOptions}
+                onValueChange={(value) => updateDraft('upstreamScope', value as InvocationUpstreamScope)}
+              />
 
               <label className="field">
                 <span className="field-label">{t('records.filters.failureKind')}</span>
@@ -480,7 +461,7 @@ export default function RecordsPage() {
               <label className="field">
                 <span className="field-label">{t('records.filters.minTotalTokens')}</span>
                 <input
-                  {...nativeFormAutocompleteOffProps}
+                  {...textInputAutocompleteOffProps}
                   name="minTotalTokens"
                   className={inputClassName}
                   type="number"
@@ -493,7 +474,7 @@ export default function RecordsPage() {
               <label className="field">
                 <span className="field-label">{t('records.filters.maxTotalTokens')}</span>
                 <input
-                  {...nativeFormAutocompleteOffProps}
+                  {...textInputAutocompleteOffProps}
                   name="maxTotalTokens"
                   className={inputClassName}
                   type="number"
@@ -506,7 +487,7 @@ export default function RecordsPage() {
               <label className="field">
                 <span className="field-label">{t('records.filters.minTotalMs')}</span>
                 <input
-                  {...nativeFormAutocompleteOffProps}
+                  {...textInputAutocompleteOffProps}
                   name="minTotalMs"
                   className={inputClassName}
                   type="number"
@@ -518,7 +499,7 @@ export default function RecordsPage() {
               <label className="field">
                 <span className="field-label">{t('records.filters.maxTotalMs')}</span>
                 <input
-                  {...nativeFormAutocompleteOffProps}
+                  {...textInputAutocompleteOffProps}
                   name="maxTotalMs"
                   className={inputClassName}
                   type="number"
@@ -586,51 +567,42 @@ export default function RecordsPage() {
               <div className="rounded-full border border-base-300/70 bg-base-100/55 px-3 py-2 text-sm font-medium text-base-content/80">
                 {t('records.list.totalCount', { count: total })}
               </div>
-              <label className="field min-w-[7rem]">
-                <span className="field-label">{t('records.list.pageSize')}</span>
-                <select
-                  name="pageSize"
-                  className="field-select field-select-sm"
-                  value={pageSize}
-                  disabled={listControlsDisabled}
-                  onChange={(event) => void setPageSize(Number(event.target.value))}
-                >
-                  {RECORDS_PAGE_SIZE_OPTIONS.map((value) => (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field min-w-[10rem]">
-                <span className="field-label">{t('records.list.sortBy')}</span>
-                <select
-                  name="sortBy"
-                  className="field-select field-select-sm"
-                  value={sortBy}
-                  disabled={listControlsDisabled}
-                  onChange={(event) => handleSortByChange(event.target.value as InvocationSortBy)}
-                >
-                  {sortOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field min-w-[8rem]">
-                <span className="field-label">{t('records.list.sortOrder')}</span>
-                <select
-                  name="sortOrder"
-                  className="field-select field-select-sm"
-                  value={sortOrder}
-                  disabled={listControlsDisabled}
-                  onChange={(event) => handleSortOrderChange(event.target.value as InvocationSortOrder)}
-                >
-                  <option value="desc">{t('records.list.sort.desc')}</option>
-                  <option value="asc">{t('records.list.sort.asc')}</option>
-                </select>
-              </label>
+              <SelectField
+                className="min-w-[7rem]"
+                label={t('records.list.pageSize')}
+                name="pageSize"
+                size="sm"
+                value={String(pageSize)}
+                disabled={listControlsDisabled}
+                options={RECORDS_PAGE_SIZE_OPTIONS.map((value) => ({
+                  value: String(value),
+                  label: String(value),
+                }))}
+                onValueChange={(value) => void setPageSize(Number(value))}
+              />
+              <SelectField
+                className="min-w-[10rem]"
+                label={t('records.list.sortBy')}
+                name="sortBy"
+                size="sm"
+                value={sortBy}
+                disabled={listControlsDisabled}
+                options={sortOptions}
+                onValueChange={(value) => handleSortByChange(value as InvocationSortBy)}
+              />
+              <SelectField
+                className="min-w-[8rem]"
+                label={t('records.list.sortOrder')}
+                name="sortOrder"
+                size="sm"
+                value={sortOrder}
+                disabled={listControlsDisabled}
+                options={[
+                  { value: 'desc', label: t('records.list.sort.desc') },
+                  { value: 'asc', label: t('records.list.sort.asc') },
+                ]}
+                onValueChange={(value) => handleSortOrderChange(value as InvocationSortOrder)}
+              />
             </div>
           </div>
 
