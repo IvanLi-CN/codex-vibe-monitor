@@ -2885,6 +2885,74 @@ async fn insert_test_pool_api_key_account_with_options(
         .expect("load inserted test pool upstream account id")
 }
 
+async fn insert_test_pool_limit_sample(
+    state: &Arc<AppState>,
+    account_id: i64,
+    primary_used_percent: Option<f64>,
+    secondary_used_percent: Option<f64>,
+) {
+    ensure_upstream_accounts_schema(&state.pool)
+        .await
+        .expect("ensure upstream account schema");
+    let captured_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_limit_samples (
+            account_id, captured_at, limit_id, limit_name, plan_type,
+            primary_used_percent, primary_window_minutes, primary_resets_at,
+            secondary_used_percent, secondary_window_minutes, secondary_resets_at,
+            credits_has_credits, credits_unlimited, credits_balance
+        ) VALUES (
+            ?1, ?2, NULL, NULL, NULL,
+            ?3, 300, NULL,
+            ?4, 300, NULL,
+            NULL, NULL, NULL
+        )
+        "#,
+    )
+    .bind(account_id)
+    .bind(&captured_at)
+    .bind(primary_used_percent)
+    .bind(secondary_used_percent)
+    .execute(&state.pool)
+    .await
+    .expect("insert test pool limit sample");
+}
+
+async fn set_test_account_status(pool: &SqlitePool, account_id: i64, status: &str) {
+    sqlx::query("UPDATE pool_upstream_accounts SET status = ?1 WHERE id = ?2")
+        .bind(status)
+        .bind(account_id)
+        .execute(pool)
+        .await
+        .expect("set test pool account status");
+}
+
+async fn upsert_test_sticky_route_at(
+    pool: &SqlitePool,
+    sticky_key: &str,
+    account_id: i64,
+    last_seen_at: &str,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO pool_sticky_routes (
+            sticky_key, account_id, created_at, updated_at, last_seen_at
+        ) VALUES (?1, ?2, ?3, ?3, ?3)
+        ON CONFLICT(sticky_key) DO UPDATE SET
+            account_id = excluded.account_id,
+            updated_at = excluded.updated_at,
+            last_seen_at = excluded.last_seen_at
+        "#,
+    )
+    .bind(sticky_key)
+    .bind(account_id)
+    .bind(last_seen_at)
+    .execute(pool)
+    .await
+    .expect("upsert test sticky route");
+}
+
 async fn insert_test_pool_oauth_account(
     state: &Arc<AppState>,
     display_name: &str,
@@ -10578,6 +10646,187 @@ async fn wait_for_test_sticky_route_account_id(pool: &SqlitePool, sticky_key: &s
         sleep(Duration::from_millis(25)).await;
     }
     None
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_keeps_existing_sticky_binding_when_source_is_over_soft_limit()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+
+    insert_test_pool_limit_sample(&state, primary_id, Some(90.0), Some(90.0)).await;
+    insert_test_pool_limit_sample(&state, secondary_id, Some(5.0), Some(5.0)).await;
+    for sticky_key in [
+        "sticky-bound",
+        "sticky-bound-extra-001",
+        "sticky-bound-extra-002",
+        "sticky-bound-extra-003",
+    ] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, primary_id, &recent_seen_at).await;
+    }
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), Some("sticky-bound"), &[])
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, primary_id);
+    assert_ne!(account.account_id, secondary_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_prefers_candidates_within_soft_sticky_limit() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let overloaded_id =
+        insert_test_pool_api_key_account(&state, "Overloaded", "upstream-overloaded").await;
+    let available_id =
+        insert_test_pool_api_key_account(&state, "Available", "upstream-available").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+
+    insert_test_pool_limit_sample(&state, overloaded_id, Some(5.0), Some(5.0)).await;
+    insert_test_pool_limit_sample(&state, available_id, Some(80.0), Some(80.0)).await;
+    for sticky_key in [
+        "sticky-overloaded-001",
+        "sticky-overloaded-002",
+        "sticky-overloaded-003",
+    ] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, overloaded_id, &recent_seen_at).await;
+    }
+
+    let account = match resolve_pool_account_for_request(
+        state.as_ref(),
+        Some("sticky-prefer-available"),
+        &[],
+    )
+    .await
+    .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, available_id);
+    assert_ne!(account.account_id, overloaded_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_falls_back_to_over_soft_limit_bucket_when_needed() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let preferred_id =
+        insert_test_pool_api_key_account(&state, "Preferred", "upstream-preferred").await;
+    let fallback_id =
+        insert_test_pool_api_key_account(&state, "Fallback", "upstream-fallback").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+
+    insert_test_pool_limit_sample(&state, preferred_id, Some(5.0), Some(5.0)).await;
+    insert_test_pool_limit_sample(&state, fallback_id, Some(65.0), Some(65.0)).await;
+    for sticky_key in [
+        "sticky-preferred-001",
+        "sticky-preferred-002",
+        "sticky-preferred-003",
+    ] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, preferred_id, &recent_seen_at).await;
+    }
+    for sticky_key in [
+        "sticky-fallback-001",
+        "sticky-fallback-002",
+        "sticky-fallback-003",
+    ] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, fallback_id, &recent_seen_at).await;
+    }
+
+    let account =
+        match resolve_pool_account_for_request(state.as_ref(), Some("sticky-soft-fallback"), &[])
+            .await
+            .expect("resolve pool account")
+        {
+            PoolAccountResolution::Resolved(account) => account,
+            other => panic!("pool account should resolve, got {other:?}"),
+        };
+
+    assert_eq!(account.account_id, preferred_id);
+    assert_ne!(account.account_id, fallback_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_falls_back_after_soft_bucket_candidate_rejects_cut_in() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let source_id = insert_test_pool_api_key_account(&state, "Source", "upstream-source").await;
+    let guarded_id = insert_test_pool_api_key_account(&state, "Guarded", "upstream-guarded").await;
+    let overloaded_id =
+        insert_test_pool_api_key_account(&state, "Overloaded", "upstream-overloaded").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now_iso = format_utc_iso(Utc::now());
+
+    upsert_test_sticky_route_at(&state.pool, "sticky-transfer", source_id, &recent_seen_at).await;
+    set_test_account_status(&state.pool, source_id, "error").await;
+    insert_test_pool_limit_sample(&state, guarded_id, Some(5.0), Some(5.0)).await;
+    insert_test_pool_limit_sample(&state, overloaded_id, Some(80.0), Some(80.0)).await;
+    for sticky_key in [
+        "sticky-overloaded-cut-in-001",
+        "sticky-overloaded-cut-in-002",
+        "sticky-overloaded-cut-in-003",
+    ] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, overloaded_id, &recent_seen_at).await;
+    }
+
+    let disallow_cut_in_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, guard_enabled, lookback_hours, max_conversations,
+            allow_cut_out, allow_cut_in, created_at, updated_at
+        ) VALUES (?1, 0, NULL, NULL, 1, 0, ?2, ?2)
+        RETURNING id
+        "#,
+    )
+    .bind("no-cut-in")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert no-cut-in tag");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (
+            account_id, tag_id, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind(guarded_id)
+    .bind(disallow_cut_in_tag_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("attach no-cut-in tag");
+
+    let account =
+        match resolve_pool_account_for_request(state.as_ref(), Some("sticky-transfer"), &[])
+            .await
+            .expect("resolve pool account")
+        {
+            PoolAccountResolution::Resolved(account) => account,
+            other => panic!("pool account should resolve, got {other:?}"),
+        };
+
+    assert_eq!(account.account_id, overloaded_id);
+    assert_ne!(account.account_id, guarded_id);
 }
 
 #[tokio::test]
