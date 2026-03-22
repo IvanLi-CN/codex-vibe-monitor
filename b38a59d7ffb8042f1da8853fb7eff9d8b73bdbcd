@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.19.2",
+  "base_stable_version": "1.19.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-22T16:48:51Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.19.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8ecb84a79f0142df45d9c8e5963507c88a21bce7",
+  "pr_number": 205,
+  "pr_title": "fix: exempt empty local limits from sticky deprioritization",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.19.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.19.2,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "b38a59d7ffb8042f1da8853fb7eff9d8b73bdbcd",
+  "type_label": "type:patch"
+}
