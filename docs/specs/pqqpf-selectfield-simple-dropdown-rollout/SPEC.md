@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成（5/5）
 - Created: 2026-03-22
 - Last: 2026-03-22
 
@@ -93,10 +93,10 @@
 ## 实现里程碑（Milestones / Delivery checklist）
 
 - [x] M1: 新建 spec，冻结 `SelectField` API、迁移范围与 fast-track merge-ready 收口标准。
-- [ ] M2: 新增 `SelectField` 封装并接管 `Stats` 当前 direct primitive 组装。
-- [ ] M3: 完成 `Live`、`Records`、`Settings`、`Tags`、`UpstreamAccounts` simple dropdown 迁移，并清零生产代码与 stories 中的 `.field-select*` 使用。
-- [ ] M4: 新增 `SelectField` Storybook showcase，更新相关 tests/stories，并加上源码契约测试。
-- [ ] M5: 完成 fast-track 提交、push、PR、checks 与 review-loop 收敛到 merge-ready。
+- [x] M2: 新增 `SelectField` 封装并接管 `Stats` 当前 direct primitive 组装。
+- [x] M3: 完成 `Live`、`Records`、`Settings`、`Tags`、`UpstreamAccounts` simple dropdown 迁移，并清零生产代码与 stories 中的 `.field-select*` 使用。
+- [x] M4: 新增 `SelectField` Storybook showcase，更新相关 tests/stories，并加上源码契约测试。
+- [x] M5: 完成 fast-track 提交、push、PR、checks 与 review-loop 收敛到 merge-ready。
 
 ## 方案概述（Approach, high-level）
 
@@ -116,6 +116,9 @@
 ## 变更记录（Change log）
 
 - 2026-03-22: 创建 spec，冻结全站 simple dropdown 统一收口到 `SelectField` 的范围、接口与验收口径。
+- 2026-03-22: 完成 `SelectField` 封装、页面迁移、Storybook 独立展示、源码契约测试与 `.field-select*` 清理。
+- 2026-03-22: 本地验证通过 `cd web && bun run test`、`cd web && bun run build`、`cd web && bun run build-storybook`、`cd web && bun run test:e2e -- proxy-model-settings.spec.ts`。
+- 2026-03-22: PR #201 已创建并进入快车道收敛，`codex review --base origin/main` 未发现离散阻塞回归。
 
 ## 参考（References）
 
