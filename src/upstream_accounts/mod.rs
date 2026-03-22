@@ -9293,6 +9293,16 @@ fn resolve_pool_account_upstream_base_url(
         .map_or_else(|| Ok(global_upstream_base_url.clone()), Ok)
 }
 
+pub(crate) fn canonical_pool_upstream_route_key(url: &Url) -> String {
+    let mut normalized = url.clone();
+    normalized.set_query(None);
+    normalized.set_fragment(None);
+    if normalized.path().is_empty() {
+        normalized.set_path("/");
+    }
+    normalized.to_string()
+}
+
 fn normalize_required_secret(raw: &str, field_name: &str) -> Result<String, (StatusCode, String)> {
     let value = raw.trim();
     if value.is_empty() {
@@ -9825,6 +9835,12 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) upstream_base_url: Url,
 }
 
+impl PoolResolvedAccount {
+    pub(crate) fn upstream_route_key(&self) -> String {
+        canonical_pool_upstream_route_key(&self.upstream_base_url)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum PoolAccountResolution {
     Resolved(PoolResolvedAccount),
@@ -9877,11 +9893,13 @@ pub(crate) async fn resolve_pool_account_for_request(
     state: &AppState,
     sticky_key: Option<&str>,
     excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
 ) -> Result<PoolAccountResolution> {
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
     let mut saw_non_rate_limited_routing_candidate = false;
     let mut saw_non_routing_candidate = false;
+    let mut sticky_route_excluded_by_route_key = false;
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -9902,7 +9920,10 @@ pub(crate) async fn resolve_pool_account_for_request(
             tried.insert(route.account_id);
             if is_account_selectable_for_routing(&row) {
                 if let Some(account) = prepare_pool_account(state, &row).await? {
-                    return Ok(PoolAccountResolution::Resolved(account));
+                    if !excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
+                        return Ok(PoolAccountResolution::Resolved(account));
+                    }
+                    sticky_route_excluded_by_route_key = true;
                 }
                 saw_non_rate_limited_routing_candidate = true;
             } else if is_account_rate_limited_for_routing(&row) {
@@ -9918,6 +9939,7 @@ pub(crate) async fn resolve_pool_account_for_request(
         if sticky_source_rule
             .as_ref()
             .is_some_and(|rule| !rule.allow_cut_out)
+            && !sticky_route_excluded_by_route_key
         {
             return Ok(PoolAccountResolution::BlockedByPolicy(
                 "sticky conversation cannot cut out of the current account because a tag rule forbids it"
@@ -9956,6 +9978,9 @@ pub(crate) async fn resolve_pool_account_for_request(
             continue;
         }
         if let Some(account) = prepare_pool_account(state, &row).await? {
+            if excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
+                continue;
+            }
             return Ok(PoolAccountResolution::Resolved(account));
         }
         saw_non_rate_limited_routing_candidate = true;
@@ -11238,6 +11263,9 @@ mod tests {
             database_path: PathBuf::from(":memory:"),
             poll_interval: Duration::from_secs(10),
             request_timeout: Duration::from_secs(5),
+            pool_upstream_responses_attempt_timeout: Duration::from_secs(
+                DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
+            ),
             openai_proxy_handshake_timeout: Duration::from_secs(
                 DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
             ),

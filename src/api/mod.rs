@@ -1737,6 +1737,7 @@ async fn query_pool_attempt_records_from_archive_range(
                 sticky_key,
                 upstream_account_id,
                 NULL AS upstream_account_name,
+                NULL AS upstream_route_key,
                 attempt_index,
                 distinct_account_index,
                 same_account_retry_index,
@@ -1792,6 +1793,7 @@ async fn query_pool_attempt_records_from_live(
             attempts.sticky_key,
             attempts.upstream_account_id,
             accounts.display_name AS upstream_account_name,
+            attempts.upstream_route_key,
             attempts.attempt_index,
             attempts.distinct_account_index,
             attempts.same_account_retry_index,
@@ -4688,6 +4690,8 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     pub(crate) upstream_account_id: Option<i64>,
     #[sqlx(default)]
     pub(crate) upstream_account_name: Option<String>,
+    #[sqlx(default)]
+    pub(crate) upstream_route_key: Option<String>,
     pub(crate) attempt_index: i64,
     pub(crate) distinct_account_index: i64,
     pub(crate) same_account_retry_index: i64,
