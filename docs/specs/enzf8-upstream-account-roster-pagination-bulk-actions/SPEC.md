@@ -132,6 +132,19 @@
 - 风险：批量同步需要同时维护 actor 串行和 SSE 快照一致性，若 row 终态与 snapshot 聚合不同步，前端进度面板会出现闪烁或错误计数。
 - 风险：批量标签增减依赖逐账号读取并更新标签集合，若结果摘要口径不清晰，容易让用户误判部分成功。
 
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Operational
+  state: bulk-selection-toolbar-and-pagination
+  evidence_note: 验证账号列表面板已具备跨页批量工具条、账号状态筛选位，以及分页 footer 中的页码与每页条数控件；当前页勾选后会展示批量启用、停用、分组、标签、同步与删除入口。
+  image:
+  ![上游账号列表批量工具条与分页控件](./assets/upstream-accounts-bulk-toolbar-pagination-storybook.png)
+
 ## 变更记录（Change log）
 
 - 2026-03-22: 创建 spec，冻结分页、展示状态、跨页选择、批量操作与批量同步的范围和契约。
