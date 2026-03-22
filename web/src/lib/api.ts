@@ -1519,6 +1519,15 @@ export interface UpstreamAccountSummary {
   groupName?: string | null;
   isMother: boolean;
   status: "active" | "syncing" | "needs_reauth" | "error" | "disabled" | string;
+  displayStatus?:
+    | "active"
+    | "syncing"
+    | "needs_reauth"
+    | "upstream_unavailable"
+    | "upstream_rejected"
+    | "error_other"
+    | "disabled"
+    | string;
   enabled: boolean;
   email?: string | null;
   chatgptAccountId?: string | null;
@@ -1566,13 +1575,104 @@ export interface UpstreamAccountListResponse {
   items: UpstreamAccountSummary[];
   groups: UpstreamAccountGroupSummary[];
   hasUngroupedAccounts: boolean;
+  total?: number;
+  page?: number;
+  pageSize?: number;
+  metrics?: UpstreamAccountListMetrics;
   routing?: PoolRoutingSettings | null;
 }
 
 export interface FetchUpstreamAccountsQuery {
   groupSearch?: string;
   groupUngrouped?: boolean;
+  status?: string;
+  page?: number;
+  pageSize?: number;
   tagIds?: number[];
+}
+
+export interface UpstreamAccountListMetrics {
+  total: number;
+  oauth: number;
+  apiKey: number;
+  attention: number;
+}
+
+export interface BulkUpstreamAccountActionPayload {
+  accountIds: number[];
+  action:
+    | "enable"
+    | "disable"
+    | "delete"
+    | "set_group"
+    | "add_tags"
+    | "remove_tags"
+    | string;
+  groupName?: string | null;
+  tagIds?: number[];
+}
+
+export interface BulkUpstreamAccountActionResult {
+  accountId: number;
+  displayName?: string | null;
+  status: "succeeded" | "failed" | string;
+  detail?: string | null;
+}
+
+export interface BulkUpstreamAccountActionResponse {
+  action: string;
+  requestedCount: number;
+  completedCount: number;
+  succeededCount: number;
+  failedCount: number;
+  results: BulkUpstreamAccountActionResult[];
+}
+
+export interface BulkUpstreamAccountSyncJobPayload {
+  accountIds: number[];
+}
+
+export interface BulkUpstreamAccountSyncCounts {
+  total: number;
+  completed: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+}
+
+export interface BulkUpstreamAccountSyncRow {
+  accountId: number;
+  displayName: string;
+  status: "pending" | "succeeded" | "failed" | "skipped" | string;
+  detail?: string | null;
+}
+
+export interface BulkUpstreamAccountSyncSnapshot {
+  jobId: string;
+  status: "running" | "completed" | "failed" | "cancelled" | string;
+  rows: BulkUpstreamAccountSyncRow[];
+}
+
+export interface BulkUpstreamAccountSyncJobResponse {
+  jobId: string;
+  snapshot: BulkUpstreamAccountSyncSnapshot;
+  counts: BulkUpstreamAccountSyncCounts;
+}
+
+export interface BulkUpstreamAccountSyncSnapshotEventPayload {
+  snapshot: BulkUpstreamAccountSyncSnapshot;
+  counts: BulkUpstreamAccountSyncCounts;
+}
+
+export interface BulkUpstreamAccountSyncRowEventPayload {
+  row: BulkUpstreamAccountSyncRow;
+  counts: BulkUpstreamAccountSyncCounts;
+}
+
+export interface BulkUpstreamAccountSyncFailedEventPayload {
+  snapshot: BulkUpstreamAccountSyncSnapshot;
+  counts: BulkUpstreamAccountSyncCounts;
+  error: string;
 }
 
 export interface LoginSessionStatusResponse {
@@ -1959,6 +2059,8 @@ function normalizeUpstreamAccountSummary(
   const kind = typeof payload.kind === "string" ? payload.kind : "";
   const provider = typeof payload.provider === "string" ? payload.provider : "";
   const status = typeof payload.status === "string" ? payload.status : "error";
+  const displayStatus =
+    typeof payload.displayStatus === "string" ? payload.displayStatus : status;
   if (id == null || !displayName || !kind || !provider) return null;
   return {
     id,
@@ -1968,6 +2070,7 @@ function normalizeUpstreamAccountSummary(
     groupName: typeof payload.groupName === "string" ? payload.groupName : null,
     isMother: payload.isMother === true,
     status,
+    displayStatus,
     enabled: payload.enabled !== false,
     email: typeof payload.email === "string" ? payload.email : null,
     chatgptAccountId:
@@ -2007,6 +2110,18 @@ function normalizeUpstreamAccountSummary(
     effectiveRoutingRule: normalizeEffectiveRoutingRule(
       payload.effectiveRoutingRule,
     ),
+  };
+}
+
+function normalizeUpstreamAccountListMetrics(
+  raw: unknown,
+): UpstreamAccountListMetrics {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    total: normalizeFiniteNumber(payload.total) ?? 0,
+    oauth: normalizeFiniteNumber(payload.oauth) ?? 0,
+    apiKey: normalizeFiniteNumber(payload.apiKey) ?? 0,
+    attention: normalizeFiniteNumber(payload.attention) ?? 0,
   };
 }
 
@@ -2097,6 +2212,9 @@ function normalizeUpstreamAccountListResponse(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
   const groupsRaw = Array.isArray(payload.groups) ? payload.groups : [];
+  const total = normalizeFiniteNumber(payload.total) ?? 0;
+  const page = normalizeFiniteNumber(payload.page) ?? 1;
+  const pageSize = normalizeFiniteNumber(payload.pageSize) ?? 20;
   return {
     writesEnabled: payload.writesEnabled !== false,
     items: itemsRaw
@@ -2106,6 +2224,10 @@ function normalizeUpstreamAccountListResponse(
       .map(normalizeUpstreamAccountGroupSummary)
       .filter((item): item is UpstreamAccountGroupSummary => item != null),
     hasUngroupedAccounts: payload.hasUngroupedAccounts === true,
+    total,
+    page,
+    pageSize,
+    metrics: normalizeUpstreamAccountListMetrics(payload.metrics),
     routing: normalizePoolRoutingSettings(payload.routing),
   };
 }
@@ -2327,6 +2449,146 @@ export function normalizeImportedOauthValidationFailedEventPayload(
   return {
     snapshot: normalizeImportedOauthValidationResponse(payload.snapshot),
     counts: normalizeImportedOauthValidationCounts(payload.counts),
+    error,
+  };
+}
+
+function normalizeBulkUpstreamAccountActionResult(
+  raw: unknown,
+): BulkUpstreamAccountActionResult | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const accountId = normalizeFiniteNumber(payload.accountId);
+  const status = typeof payload.status === "string" ? payload.status : "";
+  if (accountId == null || !status) return null;
+  return {
+    accountId,
+    displayName:
+      typeof payload.displayName === "string" ? payload.displayName : null,
+    status,
+    detail: typeof payload.detail === "string" ? payload.detail : null,
+  };
+}
+
+function normalizeBulkUpstreamAccountSyncCounts(
+  raw: unknown,
+): BulkUpstreamAccountSyncCounts {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    total: normalizeFiniteNumber(payload.total) ?? 0,
+    completed: normalizeFiniteNumber(payload.completed) ?? 0,
+    succeeded: normalizeFiniteNumber(payload.succeeded) ?? 0,
+    failed: normalizeFiniteNumber(payload.failed) ?? 0,
+    skipped: normalizeFiniteNumber(payload.skipped) ?? 0,
+  };
+}
+
+function normalizeBulkUpstreamAccountSyncRow(
+  raw: unknown,
+): BulkUpstreamAccountSyncRow | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const accountId = normalizeFiniteNumber(payload.accountId);
+  const displayName =
+    typeof payload.displayName === "string" ? payload.displayName : "";
+  const status = typeof payload.status === "string" ? payload.status : "";
+  if (accountId == null || !displayName || !status) return null;
+  return {
+    accountId,
+    displayName,
+    status,
+    detail: typeof payload.detail === "string" ? payload.detail : null,
+  };
+}
+
+function normalizeBulkUpstreamAccountSyncSnapshot(
+  raw: unknown,
+): BulkUpstreamAccountSyncSnapshot {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
+  const status = typeof payload.status === "string" ? payload.status : "";
+  if (!jobId || !status) {
+    throw new Error("Request failed: invalid bulk upstream account sync snapshot payload");
+  }
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  return {
+    jobId,
+    status,
+    rows: rows
+      .map(normalizeBulkUpstreamAccountSyncRow)
+      .filter((item): item is BulkUpstreamAccountSyncRow => item != null),
+  };
+}
+
+function normalizeBulkUpstreamAccountActionResponse(
+  raw: unknown,
+): BulkUpstreamAccountActionResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const action = typeof payload.action === "string" ? payload.action : "";
+  if (!action) {
+    throw new Error("Request failed: invalid bulk upstream account action payload");
+  }
+  const results = Array.isArray(payload.results) ? payload.results : [];
+  return {
+    action,
+    requestedCount: normalizeFiniteNumber(payload.requestedCount) ?? 0,
+    completedCount: normalizeFiniteNumber(payload.completedCount) ?? 0,
+    succeededCount: normalizeFiniteNumber(payload.succeededCount) ?? 0,
+    failedCount: normalizeFiniteNumber(payload.failedCount) ?? 0,
+    results: results
+      .map(normalizeBulkUpstreamAccountActionResult)
+      .filter((item): item is BulkUpstreamAccountActionResult => item != null),
+  };
+}
+
+function normalizeBulkUpstreamAccountSyncJobResponse(
+  raw: unknown,
+): BulkUpstreamAccountSyncJobResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
+  if (!jobId) {
+    throw new Error("Request failed: invalid bulk upstream account sync job payload");
+  }
+  return {
+    jobId,
+    snapshot: normalizeBulkUpstreamAccountSyncSnapshot(payload.snapshot),
+    counts: normalizeBulkUpstreamAccountSyncCounts(payload.counts),
+  };
+}
+
+export function normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
+  raw: unknown,
+): BulkUpstreamAccountSyncSnapshotEventPayload {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    snapshot: normalizeBulkUpstreamAccountSyncSnapshot(payload.snapshot),
+    counts: normalizeBulkUpstreamAccountSyncCounts(payload.counts),
+  };
+}
+
+export function normalizeBulkUpstreamAccountSyncRowEventPayload(
+  raw: unknown,
+): BulkUpstreamAccountSyncRowEventPayload {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const row = normalizeBulkUpstreamAccountSyncRow(payload.row);
+  if (!row) {
+    throw new Error("Request failed: invalid bulk upstream account sync row payload");
+  }
+  return {
+    row,
+    counts: normalizeBulkUpstreamAccountSyncCounts(payload.counts),
+  };
+}
+
+export function normalizeBulkUpstreamAccountSyncFailedEventPayload(
+  raw: unknown,
+): BulkUpstreamAccountSyncFailedEventPayload {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const error = typeof payload.error === "string" ? payload.error : "";
+  if (!error) {
+    throw new Error("Request failed: invalid bulk upstream account sync failed payload");
+  }
+  return {
+    snapshot: normalizeBulkUpstreamAccountSyncSnapshot(payload.snapshot),
+    counts: normalizeBulkUpstreamAccountSyncCounts(payload.counts),
     error,
   };
 }
@@ -2663,6 +2925,9 @@ export async function fetchUpstreamAccounts(
   if (query?.groupSearch) search.set("groupSearch", query.groupSearch);
   if (query?.groupUngrouped != null)
     search.set("groupUngrouped", String(query.groupUngrouped));
+  if (query?.status) search.set("status", query.status);
+  if (query?.page != null) search.set("page", String(query.page));
+  if (query?.pageSize != null) search.set("pageSize", String(query.pageSize));
   for (const tagId of query?.tagIds ?? []) {
     search.append("tagIds", String(tagId));
   }
@@ -2950,6 +3215,16 @@ export async function updateUpstreamAccountGroup(
   return normalized;
 }
 
+export async function bulkUpdateUpstreamAccounts(
+  payload: BulkUpstreamAccountActionPayload,
+): Promise<BulkUpstreamAccountActionResponse> {
+  const response = await fetchJson<unknown>("/api/pool/upstream-accounts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return normalizeBulkUpstreamAccountActionResponse(response);
+}
+
 export async function deleteUpstreamAccount(accountId: number): Promise<void> {
   await fetchJson(`/api/pool/upstream-accounts/${accountId}`, {
     method: "DELETE",
@@ -2968,6 +3243,39 @@ export async function syncUpstreamAccount(
   return normalizeUpstreamAccountDetail(response);
 }
 
+export async function createBulkUpstreamAccountSyncJob(
+  payload: BulkUpstreamAccountSyncJobPayload,
+): Promise<BulkUpstreamAccountSyncJobResponse> {
+  const response = await fetchJson<unknown>(
+    "/api/pool/upstream-accounts/bulk-sync-jobs",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  return normalizeBulkUpstreamAccountSyncJobResponse(response);
+}
+
+export async function fetchBulkUpstreamAccountSyncJob(
+  jobId: string,
+): Promise<BulkUpstreamAccountSyncJobResponse> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/bulk-sync-jobs/${encodeURIComponent(jobId)}`,
+  );
+  return normalizeBulkUpstreamAccountSyncJobResponse(response);
+}
+
+export async function cancelBulkUpstreamAccountSyncJob(
+  jobId: string,
+): Promise<void> {
+  await fetchJson(
+    `/api/pool/upstream-accounts/bulk-sync-jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
 export function createEventSource(path: string) {
   return new EventSource(withBase(path));
 }
@@ -2976,4 +3284,10 @@ export function createImportedOauthValidationJobEventSource(jobId: string) {
   return createEventSource(
     `/api/pool/upstream-accounts/oauth/imports/validation-jobs/${encodeURIComponent(jobId)}/events`,
   )
+}
+
+export function createBulkUpstreamAccountSyncJobEventSource(jobId: string) {
+  return createEventSource(
+    `/api/pool/upstream-accounts/bulk-sync-jobs/${encodeURIComponent(jobId)}/events`,
+  );
 }

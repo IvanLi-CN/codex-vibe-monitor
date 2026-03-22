@@ -169,6 +169,8 @@ const baseTranslations = {
       "Search groups...",
     "accountPool.upstreamAccounts.groupFilterEmpty": "No matching groups.",
     "accountPool.upstreamAccounts.groupFilterUseValue": 'Filter by "{{value}}"',
+    "accountPool.upstreamAccounts.statusFilterLabel": "Account status",
+    "accountPool.upstreamAccounts.statusFilter.all": "All statuses",
     "accountPool.upstreamAccounts.tagFilterLabel": "Account tags",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "All tags",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "Search tags...",
@@ -465,8 +467,69 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.status.active": "Active",
     "accountPool.upstreamAccounts.status.syncing": "Syncing",
     "accountPool.upstreamAccounts.status.needs_reauth": "Needs re-auth",
+    "accountPool.upstreamAccounts.status.upstream_unavailable":
+      "Upstream unavailable",
+    "accountPool.upstreamAccounts.status.upstream_rejected":
+      "Upstream rejected",
+    "accountPool.upstreamAccounts.status.error_other": "Other error",
     "accountPool.upstreamAccounts.status.error": "Error",
     "accountPool.upstreamAccounts.status.disabled": "Disabled",
+    "accountPool.upstreamAccounts.bulk.selectedCount":
+      "{{count}} accounts selected across pages",
+    "accountPool.upstreamAccounts.bulk.enable": "Enable",
+    "accountPool.upstreamAccounts.bulk.disable": "Disable",
+    "accountPool.upstreamAccounts.bulk.setGroup": "Set group",
+    "accountPool.upstreamAccounts.bulk.addTags": "Add tags",
+    "accountPool.upstreamAccounts.bulk.removeTags": "Remove tags",
+    "accountPool.upstreamAccounts.bulk.sync": "Sync selected",
+    "accountPool.upstreamAccounts.bulk.delete": "Delete selected",
+    "accountPool.upstreamAccounts.bulk.clearSelection": "Clear selection",
+    "accountPool.upstreamAccounts.bulk.selectPage": "Select current page",
+    "accountPool.upstreamAccounts.bulk.selectRow": "Select {{name}}",
+    "accountPool.upstreamAccounts.bulk.apply": "Apply",
+    "accountPool.upstreamAccounts.bulk.actionLabel.enable": "Enable",
+    "accountPool.upstreamAccounts.bulk.actionLabel.disable": "Disable",
+    "accountPool.upstreamAccounts.bulk.actionLabel.delete": "Delete",
+    "accountPool.upstreamAccounts.bulk.actionLabel.set_group": "Set group",
+    "accountPool.upstreamAccounts.bulk.actionLabel.add_tags": "Add tags",
+    "accountPool.upstreamAccounts.bulk.actionLabel.remove_tags":
+      "Remove tags",
+    "accountPool.upstreamAccounts.bulk.resultSummary":
+      "{{action}} finished: {{succeeded}} succeeded, {{failed}} failed.",
+    "accountPool.upstreamAccounts.bulk.syncProgressTitle":
+      "Bulk sync progress",
+    "accountPool.upstreamAccounts.bulk.syncProgressSummary":
+      "{{completed}} / {{total}} done · {{succeeded}} succeeded · {{failed}} failed · {{skipped}} skipped",
+    "accountPool.upstreamAccounts.bulk.cancelSync": "Cancel sync",
+    "accountPool.upstreamAccounts.bulk.dismissSync": "Dismiss",
+    "accountPool.upstreamAccounts.bulk.rowStatus.pending": "Pending",
+    "accountPool.upstreamAccounts.bulk.rowStatus.succeeded": "Succeeded",
+    "accountPool.upstreamAccounts.bulk.rowStatus.failed": "Failed",
+    "accountPool.upstreamAccounts.bulk.rowStatus.skipped": "Skipped",
+    "accountPool.upstreamAccounts.bulk.groupDialogTitle":
+      "Set group for selected accounts",
+    "accountPool.upstreamAccounts.bulk.groupDialogDescription":
+      "Enter a group name to overwrite the selected accounts. Leave it empty to clear the group.",
+    "accountPool.upstreamAccounts.bulk.groupField": "Target group",
+    "accountPool.upstreamAccounts.bulk.groupPlaceholder":
+      "Type a group name or leave empty to clear",
+    "accountPool.upstreamAccounts.bulk.addTagsDialogTitle":
+      "Add tags to selected accounts",
+    "accountPool.upstreamAccounts.bulk.removeTagsDialogTitle":
+      "Remove tags from selected accounts",
+    "accountPool.upstreamAccounts.bulk.tagsDialogDescription":
+      "Choose one or more existing tags for the selected accounts.",
+    "accountPool.upstreamAccounts.bulk.tagsField": "Tags",
+    "accountPool.upstreamAccounts.bulk.tagsPlaceholder": "Choose tags",
+    "accountPool.upstreamAccounts.bulk.deleteDialogTitle":
+      "Delete selected accounts",
+    "accountPool.upstreamAccounts.bulk.deleteDialogDescription":
+      "Delete {{count}} selected accounts? This cannot be undone.",
+    "accountPool.upstreamAccounts.pagination.summary":
+      "Page {{page}} / {{pageCount}} · {{total}} accounts",
+    "accountPool.upstreamAccounts.pagination.pageSize": "Page size",
+    "accountPool.upstreamAccounts.pagination.previous": "Previous",
+    "accountPool.upstreamAccounts.pagination.next": "Next",
     "accountPool.upstreamAccounts.hints.dataPlaneUnavailableTitle":
       "The OAuth data plane is unavailable",
     "accountPool.upstreamAccounts.hints.dataPlaneUnavailableBody":
@@ -1397,6 +1460,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupFilterSearchPlaceholder": "搜索分组...",
     "accountPool.upstreamAccounts.groupFilterEmpty": "没有匹配的分组。",
     "accountPool.upstreamAccounts.groupFilterUseValue": "按“{{value}}”筛选",
+    "accountPool.upstreamAccounts.statusFilterLabel": "账号状态",
+    "accountPool.upstreamAccounts.statusFilter.all": "全部状态",
     "accountPool.upstreamAccounts.tagFilterLabel": "账号标签",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "全部标签",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "搜索标签...",
@@ -1665,8 +1730,62 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.status.active": "正常",
     "accountPool.upstreamAccounts.status.syncing": "同步中",
     "accountPool.upstreamAccounts.status.needs_reauth": "需要重新授权",
+    "accountPool.upstreamAccounts.status.upstream_unavailable": "上游不可达",
+    "accountPool.upstreamAccounts.status.upstream_rejected": "上游拒绝",
+    "accountPool.upstreamAccounts.status.error_other": "其它异常",
     "accountPool.upstreamAccounts.status.error": "异常",
     "accountPool.upstreamAccounts.status.disabled": "已停用",
+    "accountPool.upstreamAccounts.bulk.selectedCount":
+      "已跨页选中 {{count}} 个账号",
+    "accountPool.upstreamAccounts.bulk.enable": "批量启用",
+    "accountPool.upstreamAccounts.bulk.disable": "批量停用",
+    "accountPool.upstreamAccounts.bulk.setGroup": "设置分组",
+    "accountPool.upstreamAccounts.bulk.addTags": "增加标签",
+    "accountPool.upstreamAccounts.bulk.removeTags": "移除标签",
+    "accountPool.upstreamAccounts.bulk.sync": "批量同步",
+    "accountPool.upstreamAccounts.bulk.delete": "批量删除",
+    "accountPool.upstreamAccounts.bulk.clearSelection": "清空选择",
+    "accountPool.upstreamAccounts.bulk.selectPage": "选择当前页",
+    "accountPool.upstreamAccounts.bulk.selectRow": "选择 {{name}}",
+    "accountPool.upstreamAccounts.bulk.apply": "应用",
+    "accountPool.upstreamAccounts.bulk.actionLabel.enable": "批量启用",
+    "accountPool.upstreamAccounts.bulk.actionLabel.disable": "批量停用",
+    "accountPool.upstreamAccounts.bulk.actionLabel.delete": "批量删除",
+    "accountPool.upstreamAccounts.bulk.actionLabel.set_group": "设置分组",
+    "accountPool.upstreamAccounts.bulk.actionLabel.add_tags": "增加标签",
+    "accountPool.upstreamAccounts.bulk.actionLabel.remove_tags": "移除标签",
+    "accountPool.upstreamAccounts.bulk.resultSummary":
+      "{{action}}完成：成功 {{succeeded}} 个，失败 {{failed}} 个。",
+    "accountPool.upstreamAccounts.bulk.syncProgressTitle": "批量同步进度",
+    "accountPool.upstreamAccounts.bulk.syncProgressSummary":
+      "已完成 {{completed}} / {{total}} · 成功 {{succeeded}} · 失败 {{failed}} · 跳过 {{skipped}}",
+    "accountPool.upstreamAccounts.bulk.cancelSync": "取消同步",
+    "accountPool.upstreamAccounts.bulk.dismissSync": "收起",
+    "accountPool.upstreamAccounts.bulk.rowStatus.pending": "等待中",
+    "accountPool.upstreamAccounts.bulk.rowStatus.succeeded": "成功",
+    "accountPool.upstreamAccounts.bulk.rowStatus.failed": "失败",
+    "accountPool.upstreamAccounts.bulk.rowStatus.skipped": "跳过",
+    "accountPool.upstreamAccounts.bulk.groupDialogTitle": "批量设置分组",
+    "accountPool.upstreamAccounts.bulk.groupDialogDescription":
+      "输入分组名后会覆盖所选账号的分组；留空则清空分组。",
+    "accountPool.upstreamAccounts.bulk.groupField": "目标分组",
+    "accountPool.upstreamAccounts.bulk.groupPlaceholder":
+      "输入分组名，留空则清空",
+    "accountPool.upstreamAccounts.bulk.addTagsDialogTitle": "批量增加标签",
+    "accountPool.upstreamAccounts.bulk.removeTagsDialogTitle":
+      "批量移除标签",
+    "accountPool.upstreamAccounts.bulk.tagsDialogDescription":
+      "为所选账号选择一个或多个已有标签。",
+    "accountPool.upstreamAccounts.bulk.tagsField": "标签",
+    "accountPool.upstreamAccounts.bulk.tagsPlaceholder": "选择标签",
+    "accountPool.upstreamAccounts.bulk.deleteDialogTitle": "批量删除账号",
+    "accountPool.upstreamAccounts.bulk.deleteDialogDescription":
+      "确认删除这 {{count}} 个已选账号吗？此操作不可恢复。",
+    "accountPool.upstreamAccounts.pagination.summary":
+      "第 {{page}} / {{pageCount}} 页，共 {{total}} 个账号",
+    "accountPool.upstreamAccounts.pagination.pageSize": "每页",
+    "accountPool.upstreamAccounts.pagination.previous": "上一页",
+    "accountPool.upstreamAccounts.pagination.next": "下一页",
     "accountPool.upstreamAccounts.hints.dataPlaneUnavailableTitle":
       "OAuth 数据面当前不可用",
     "accountPool.upstreamAccounts.hints.dataPlaneUnavailableBody":
