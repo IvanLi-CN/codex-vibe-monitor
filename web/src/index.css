@@ -270,94 +270,49 @@ body {
   }
 
   .invocation-endpoint-badge {
-    position: relative;
-    min-height: 1.3rem;
-    min-width: 4.9rem;
-    gap: 0.42rem;
-    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 84%, oklch(var(--color-base-200)) 16%);
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 72%, transparent);
-    box-shadow:
-      inset 0 1px 0 color-mix(in oklab, white 10%, transparent),
-      0 4px 12px color-mix(in oklab, oklch(var(--color-neutral)) 8%, transparent);
-    backdrop-filter: blur(10px);
-  }
-
-  .invocation-endpoint-badge::before {
-    content: '';
-    flex: none;
-    width: 2px;
-    height: 0.72rem;
-    border-radius: 999px;
-    background: currentColor;
-    opacity: 0.82;
+    background-image: none;
+    box-shadow: none;
   }
 
   .invocation-endpoint-badge[data-endpoint-kind='responses'] {
-    background-image: linear-gradient(
-      90deg,
-      color-mix(in oklab, oklch(var(--color-primary)) 12%, transparent) 0%,
-      transparent 44%
-    );
-    border-color: color-mix(in oklab, oklch(var(--color-primary)) 30%, oklch(var(--color-base-300)) 70%);
-    color: color-mix(in oklab, oklch(var(--color-primary)) 58%, oklch(var(--color-base-content)) 42%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 88%, oklch(var(--color-primary)) 12%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 66%, oklch(var(--color-primary)) 34%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 42%, oklch(var(--color-primary)) 58%);
   }
 
   .invocation-endpoint-badge[data-endpoint-kind='chat'] {
-    background-image: linear-gradient(
-      90deg,
-      color-mix(in oklab, oklch(var(--color-secondary)) 14%, transparent) 0%,
-      transparent 44%
-    );
-    border-color: color-mix(in oklab, oklch(var(--color-secondary)) 32%, oklch(var(--color-base-300)) 68%);
-    color: color-mix(in oklab, oklch(var(--color-secondary)) 54%, oklch(var(--color-base-content)) 46%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 88%, oklch(var(--color-secondary)) 12%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 64%, oklch(var(--color-secondary)) 36%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 46%, oklch(var(--color-secondary)) 54%);
   }
 
   .invocation-endpoint-badge[data-endpoint-kind='compact'] {
-    background-image: linear-gradient(
-      90deg,
-      color-mix(in oklab, oklch(var(--color-warning)) 15%, transparent) 0%,
-      transparent 44%
-    );
-    border-color: color-mix(in oklab, oklch(var(--color-warning)) 34%, oklch(var(--color-base-300)) 66%);
-    color: color-mix(in oklab, oklch(var(--color-warning)) 52%, oklch(var(--color-base-content)) 48%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 89%, oklch(var(--color-warning)) 11%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 62%, oklch(var(--color-warning)) 38%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 50%, oklch(var(--color-warning)) 50%);
   }
 
   [data-theme='vibe-dark'] .invocation-endpoint-badge {
-    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 78%, oklch(var(--color-neutral)) 22%);
-    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 78%, transparent);
-    box-shadow:
-      inset 0 1px 0 color-mix(in oklab, white 6%, transparent),
-      0 6px 16px color-mix(in oklab, oklch(var(--color-neutral)) 14%, transparent);
+    background-image: none;
+    box-shadow: none;
   }
 
   [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='responses'] {
-    background-image: linear-gradient(
-      90deg,
-      color-mix(in oklab, oklch(var(--color-primary)) 18%, transparent) 0%,
-      transparent 44%
-    );
-    border-color: color-mix(in oklab, oklch(var(--color-primary)) 36%, oklch(var(--color-base-300)) 64%);
-    color: color-mix(in oklab, oklch(var(--color-primary)) 66%, oklch(var(--color-base-content)) 34%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 82%, oklch(var(--color-primary)) 18%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 54%, oklch(var(--color-primary)) 46%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 38%, oklch(var(--color-primary)) 62%);
   }
 
   [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='chat'] {
-    background-image: linear-gradient(
-      90deg,
-      color-mix(in oklab, oklch(var(--color-secondary)) 20%, transparent) 0%,
-      transparent 44%
-    );
-    border-color: color-mix(in oklab, oklch(var(--color-secondary)) 38%, oklch(var(--color-base-300)) 62%);
-    color: color-mix(in oklab, oklch(var(--color-secondary)) 62%, oklch(var(--color-base-content)) 38%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 82%, oklch(var(--color-secondary)) 18%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 52%, oklch(var(--color-secondary)) 48%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 42%, oklch(var(--color-secondary)) 58%);
   }
 
   [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='compact'] {
-    background-image: linear-gradient(
-      90deg,
-      color-mix(in oklab, oklch(var(--color-warning)) 18%, transparent) 0%,
-      transparent 44%
-    );
-    border-color: color-mix(in oklab, oklch(var(--color-warning)) 36%, oklch(var(--color-base-300)) 64%);
-    color: color-mix(in oklab, oklch(var(--color-warning)) 60%, oklch(var(--color-base-content)) 40%);
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 83%, oklch(var(--color-warning)) 17%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 50%, oklch(var(--color-warning)) 50%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 46%, oklch(var(--color-warning)) 54%);
   }
 
   .field {
