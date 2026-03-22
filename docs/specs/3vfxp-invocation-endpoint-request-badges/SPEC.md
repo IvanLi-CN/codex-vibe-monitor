@@ -132,7 +132,27 @@
 
 ## Visual Evidence (PR)
 
-None yet.
+- source_type: `storybook_canvas`
+- target_program: `mock-only`
+- capture_scope: `element`
+- sensitive_exclusion: `N/A`
+- submission_gate: `pending-owner-approval`
+- story_id_or_title: `Monitoring/InvocationTable/Endpoint Badge States`
+- state: `dark theme / recognized endpoint badges + raw fallback`
+- evidence_note: `验证 InvocationTable 摘要区中 Responses、Chat、远程压缩三类已识别请求使用主题内配色显示 badge，而未知 endpoint 仍保持原始路径 fallback。`
+
+![InvocationTable endpoint badges dark theme](./assets/invocation-endpoint-badges-dark.png)
+
+- source_type: `storybook_canvas`
+- target_program: `mock-only`
+- capture_scope: `element`
+- sensitive_exclusion: `N/A`
+- submission_gate: `pending-owner-approval`
+- story_id_or_title: `Monitoring/InvocationTable/Endpoint Badge States`
+- state: `light theme / recognized endpoint badges + raw fallback`
+- evidence_note: `验证同一组 endpoint badge 在亮色主题下仍保持主题内配色和 raw fallback 语义。`
+
+![InvocationTable endpoint badges light theme](./assets/invocation-endpoint-badges-light.png)
 
 ## 资产晋升（Asset promotion）
 
