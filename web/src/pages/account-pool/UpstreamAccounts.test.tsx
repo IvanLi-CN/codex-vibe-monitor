@@ -214,6 +214,21 @@ function clickFirstRosterRow() {
   return row
 }
 
+function clickCheckboxByLabel(matcher: RegExp) {
+  const checkbox = Array.from(document.body.querySelectorAll('input[type="checkbox"]')).find(
+    (candidate) =>
+      candidate instanceof HTMLInputElement &&
+      matcher.test(candidate.getAttribute('aria-label') || ''),
+  )
+  if (!(checkbox instanceof HTMLInputElement)) {
+    throw new Error(`missing checkbox: ${matcher}`)
+  }
+  act(() => {
+    checkbox.click()
+  })
+  return checkbox
+}
+
 function clickCombobox(matcher: RegExp) {
   const trigger = Array.from(document.body.querySelectorAll('button[role="combobox"]')).find(
     (candidate) =>
@@ -590,6 +605,137 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).not.toContain(
       "was saved, but the upstream identity looks duplicated.",
     );
+  });
+
+  it("prioritizes the selected accounts tag union when removing tags in bulk", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          status: "active",
+          displayStatus: "active",
+          enabled: true,
+          isMother: true,
+          planType: "team",
+          primaryWindow: null,
+          secondaryWindow: null,
+          credits: null,
+          localLimits: null,
+          tags: [{ id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule }],
+          effectiveRoutingRule: defaultEffectiveRoutingRule,
+        },
+        {
+          id: 9,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Another OAuth",
+          groupName: "prod",
+          status: "active",
+          displayStatus: "active",
+          enabled: true,
+          isMother: false,
+          planType: "pro",
+          primaryWindow: null,
+          secondaryWindow: null,
+          credits: null,
+          localLimits: null,
+          tags: [{ id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule }],
+          effectiveRoutingRule: defaultEffectiveRoutingRule,
+        },
+      ],
+      hasUngroupedAccounts: true,
+      writesEnabled: true,
+      total: 2,
+      page: 1,
+      pageSize: 20,
+      metrics: {
+        total: 2,
+        oauth: 2,
+        apiKey: 0,
+        attention: 0,
+      },
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
+        enabled: true,
+        isMother: true,
+        planType: "team",
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        tags: [{ id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule }],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      detail: null,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      beginOauthMailboxSession: vi.fn(),
+      beginOauthMailboxSessionForAddress: vi.fn(),
+      getOauthMailboxStatuses: vi.fn(),
+      removeOauthMailboxSession: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      saveGroupNote: vi.fn(),
+      runBulkAction: vi.fn(),
+      startBulkSyncJob: vi.fn(),
+      getBulkSyncJob: vi.fn(),
+      stopBulkSyncJob: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      groups: [],
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickCheckboxByLabel(/select existing oauth/i);
+    clickCheckboxByLabel(/select another oauth/i);
+    clickButton(/remove tags/i);
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    if (!(dialog instanceof HTMLElement)) {
+      throw new Error("missing bulk remove tags dialog");
+    }
+
+    const combobox = dialog.querySelector('button[role="combobox"]');
+    if (!(combobox instanceof HTMLButtonElement)) {
+      throw new Error("missing bulk tag combobox");
+    }
+    pressButton(combobox);
+
+    const options = Array.from(document.body.querySelectorAll('[cmdk-item]')) as HTMLElement[];
+    expect(options.map((option) => option.textContent?.trim())).toEqual([
+      "burst-safe",
+      "vip",
+      "prod-apac",
+      "sticky-pool",
+    ]);
+    expect(options[0]?.getAttribute("aria-disabled")).toBe("false");
+    expect(options[1]?.getAttribute("aria-disabled")).toBe("false");
+    expect(options[2]?.getAttribute("aria-disabled")).toBe("true");
+    expect(options[3]?.getAttribute("aria-disabled")).toBe("true");
   });
 
   it("blocks saving when the edited display name conflicts with another account", () => {

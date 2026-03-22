@@ -504,6 +504,7 @@ export default function UpstreamAccountsPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
+  const [selectedAccountSummaries, setSelectedAccountSummaries] = useState<Record<number, UpstreamAccountSummary>>({})
   const accountListQuery = useMemo(() => {
     const normalizedQuery = groupFilterQuery.trim()
     const allLabel = t('accountPool.upstreamAccounts.groupFilter.all').toLocaleLowerCase()
@@ -688,6 +689,28 @@ export default function UpstreamAccountsPage() {
       setIsDeleteConfirmOpen(false)
     }
   }, [writesEnabled])
+
+  useEffect(() => {
+    setSelectedAccountSummaries((current) => {
+      const currentPageMap = new Map(items.map((item) => [item.id, item]))
+      const next: Record<number, UpstreamAccountSummary> = {}
+      for (const accountId of selectedAccountIds) {
+        const summary = currentPageMap.get(accountId) ?? current[accountId]
+        if (summary) {
+          next[accountId] = summary
+        }
+      }
+      const currentKeys = Object.keys(current)
+      const nextKeys = Object.keys(next)
+      if (
+        currentKeys.length === nextKeys.length &&
+        nextKeys.every((key) => current[Number(key)] === next[Number(key)])
+      ) {
+        return current
+      }
+      return next
+    })
+  }, [items, selectedAccountIds])
 
   useEffect(() => {
     setGroupDraftNotes((current) => {
@@ -892,6 +915,23 @@ export default function UpstreamAccountsPage() {
   const detailDisplayNameConflict = useMemo(
     () => findDisplayNameConflict(items, draft.displayName, selectedDetail?.id ?? null),
     [draft.displayName, items, selectedDetail?.id],
+  )
+  const bulkRemovableTagIds = useMemo(() => {
+    const removableIds = new Set<number>()
+    for (const summary of Object.values(selectedAccountSummaries)) {
+      for (const tag of summary.tags ?? []) {
+        removableIds.add(tag.id)
+      }
+    }
+    return Array.from(removableIds)
+  }, [selectedAccountSummaries])
+  const bulkRemovableTagIdSet = useMemo(
+    () => new Set(bulkRemovableTagIds),
+    [bulkRemovableTagIds],
+  )
+  const bulkUnavailableTagIds = useMemo(
+    () => tagItems.filter((tag) => !bulkRemovableTagIdSet.has(tag.id)).map((tag) => tag.id),
+    [bulkRemovableTagIdSet, tagItems],
   )
   const tagFieldLabels = {
     label: t('accountPool.tags.field.label'),
@@ -1766,6 +1806,8 @@ export default function UpstreamAccountsPage() {
               <AccountTagFilterCombobox
                 tags={tagItems}
                 value={bulkTagIds}
+                prioritizedTagIds={bulkTagMode === 'remove_tags' ? bulkRemovableTagIds : undefined}
+                disabledTagIds={bulkTagMode === 'remove_tags' ? bulkUnavailableTagIds : undefined}
                 placeholder={t('accountPool.upstreamAccounts.bulk.tagsPlaceholder')}
                 searchPlaceholder={t('accountPool.upstreamAccounts.tagFilterSearchPlaceholder')}
                 emptyLabel={t('accountPool.upstreamAccounts.tagFilterEmpty')}
