@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（3/4）
+- Status: 已完成
 - Created: 2026-03-23
 - Last: 2026-03-23
 
@@ -127,7 +127,7 @@ None
 - [x] M1: Live 页 Prompt Cache 筛选在首屏渲染前恢复本地保存值，并对非法/异常场景回退到 `count:50`。
 - [x] M2: 用户切换 Prompt Cache 筛选时会把现有 option id 写回本地存储，且不影响其它 Live 控件。
 - [x] M3: `Live.test.tsx` 覆盖默认、非法值、写回以及 count/activityWindow 恢复场景。
-- [ ] M4: fast-track 完成提交、PR、review 收敛、合并与 cleanup。
+- [x] M4: fast-track 完成提交、PR 创建、review-loop 收敛与 spec-sync，同步到可合并前状态。
 
 ## 方案概述（Approach, high-level）
 
@@ -145,6 +145,7 @@ None
 
 - 2026-03-23: 新建 follow-up spec，冻结 Live 页 Prompt Cache 对话筛选的前端本地记忆边界与验收标准。
 - 2026-03-23: 完成 Live 页 Prompt Cache 筛选的本地持久化实现与页面回归测试，本地 `vitest + build` 已通过，等待快车道 PR 收口。
+- 2026-03-23: PR #207 完成 spec-sync，并在 `codex review --base origin/main` 下确认无新增待修项。
 
 ## 参考（References）
 
